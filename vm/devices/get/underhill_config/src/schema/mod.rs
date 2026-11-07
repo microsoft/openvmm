@@ -82,12 +82,11 @@ impl crate::Vtl2Settings {
             v1::validate_version(decoded.version, errors)?;
         }
 
-        let mut fixed = decoded.fixed.unwrap_or_default().parse(errors)?;
+        let mut fixed = Self::read_fixed(decoded.fixed.unwrap_or_default(), errors)?;
         let mut dynamic = decoded.dynamic.unwrap_or_default().parse(errors)?;
 
         let mut nic_devices: Option<Vec<crate::NicDevice>> = None;
         let mut nic_acceleration: Option<Vec<crate::NicDevice>> = None;
-
         for chunk in &decoded.namespace_settings {
             if chunk.settings.is_empty() {
                 errors.push(v1::Error::EmptyNamespaceChunk(chunk.namespace.as_ref()));
@@ -97,7 +96,7 @@ impl crate::Vtl2Settings {
                     has_base = true;
                     let base: Vtl2SettingsBase = Self::read(&chunk.settings)?;
                     v1::validate_version(base.version, errors)?;
-                    fixed = base.fixed.unwrap_or_default().parse(errors)?;
+                    fixed = Self::read_fixed(base.fixed.unwrap_or_default(), errors)?;
                     dynamic = base.dynamic.unwrap_or_default().parse(errors)?;
                 }
                 NAMESPACE_NETWORK_DEVICE => {
@@ -161,6 +160,25 @@ impl crate::Vtl2Settings {
         }
 
         Ok(old_settings)
+    }
+
+    fn read_fixed(
+        fixed: Vtl2SettingsFixed,
+        errors: &mut ParseErrors<'_>,
+    ) -> Result<crate::Vtl2SettingsFixed, ParseErrorInner> {
+        let mut settings: crate::Vtl2SettingsFixed = fixed.parse(errors)?;
+        if let Some(raw_attested_settings) = fixed
+            .attested_settings
+            .as_deref()
+            .filter(|bytes| !bytes.is_empty())
+        {
+            let attested_settings: Vtl2AttestedSettings = Self::read(raw_attested_settings)?;
+            settings.attested_settings = Some(crate::Vtl2AttestedSettings {
+                version: attested_settings.version,
+                init_data_hash: Some(openssl::sha::sha256(raw_attested_settings)),
+            });
+        }
+        Ok(settings)
     }
 
     fn read<'a, T>(data: &'a [u8]) -> Result<T, ParseError>
@@ -278,6 +296,153 @@ mod test {
         let mut buf = Vec::new();
         settings.encode(&mut buf).unwrap();
         crate::Vtl2Settings::read_from(&buf, Default::default()).unwrap();
+    }
+
+    #[test]
+    fn smoke_test_attested_settings_in_base_namespace() {
+        let settings = crate::Vtl2Settings::read_from(
+            include_bytes!("vtl2s_test_attested_settings_base.json"),
+            Default::default(),
+        )
+        .unwrap();
+        let attested_settings = settings.fixed.attested_settings.unwrap();
+        assert_eq!(1, attested_settings.version);
+        assert_eq!(
+            Some([
+                0xa9, 0xc6, 0x34, 0xb8, 0x84, 0x64, 0xae, 0xd6, 0x9d, 0x67, 0xaf, 0xeb, 0xd6, 0x84,
+                0x4f, 0x56, 0xfd, 0xa3, 0x85, 0xe8, 0x99, 0xaf, 0xf9, 0xb1, 0x40, 0xb3, 0x74, 0x98,
+                0xc6, 0x56, 0xc8, 0xa3,
+            ]),
+            attested_settings.init_data_hash
+        );
+    }
+
+    #[test]
+    fn smoke_test_attested_settings_in_base_namespace_pb() {
+        let mut raw_attested_settings = Vec::new();
+        Vtl2AttestedSettings { version: 1 }
+            .encode(&mut raw_attested_settings)
+            .unwrap();
+        let expected_hash = openssl::sha::sha256(&raw_attested_settings);
+
+        let base = Vtl2SettingsBase {
+            version: 1,
+            fixed: Some(Vtl2SettingsFixed {
+                attested_settings: Some(raw_attested_settings),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut raw_base = Vec::new();
+        base.encode(&mut raw_base).unwrap();
+
+        let settings = Vtl2Settings {
+            namespace_settings: vec![Vtl2SettingsChunk {
+                namespace: NAMESPACE_BASE.into(),
+                settings: raw_base,
+            }],
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        settings.encode(&mut buf).unwrap();
+
+        let settings = crate::Vtl2Settings::read_from(&buf, Default::default()).unwrap();
+        let attested_settings = settings.fixed.attested_settings.unwrap();
+        assert_eq!(1, attested_settings.version);
+        assert_eq!(Some(expected_hash), attested_settings.init_data_hash);
+    }
+
+    fn attested_settings_inputs(payload: Option<&[u8]>) -> Vec<Vec<u8>> {
+        let fixed = Vtl2SettingsFixed {
+            attested_settings: payload.map(|bytes| bytes.to_vec()),
+            ..Default::default()
+        };
+        let legacy = Vtl2Settings {
+            version: 1,
+            fixed: Some(fixed.clone()),
+            ..Default::default()
+        };
+        let mut inputs = vec![legacy.encode_to_vec(), serde_json::to_vec(&legacy).unwrap()];
+        let base = Vtl2SettingsBase {
+            version: 1,
+            fixed: Some(fixed),
+            ..Default::default()
+        };
+        for raw_base in [base.encode_to_vec(), serde_json::to_vec(&base).unwrap()] {
+            let namespaced = Vtl2Settings {
+                namespace_settings: vec![Vtl2SettingsChunk {
+                    namespace: NAMESPACE_BASE.into(),
+                    settings: raw_base,
+                }],
+                ..Default::default()
+            };
+            inputs.push(namespaced.encode_to_vec());
+            inputs.push(serde_json::to_vec(&namespaced).unwrap());
+        }
+        inputs
+    }
+
+    #[test]
+    fn attested_settings_hashes_original_json_bytes() {
+        let payloads: &[&[u8]] = &[br#"{"version":"V1"}"#, b"{ \"version\": \"V1\" }\n"];
+        for &payload in payloads {
+            for input in attested_settings_inputs(Some(payload)) {
+                let settings = crate::Vtl2Settings::read_from(&input, Default::default()).unwrap();
+                let attested_settings = settings.fixed.attested_settings.unwrap();
+                assert_eq!(1, attested_settings.version);
+                assert_eq!(
+                    Some(openssl::sha::sha256(payload)),
+                    attested_settings.init_data_hash
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn attested_settings_hashes_original_protobuf_bytes() {
+        // Unknown fields must remain part of the hash even though decoding drops them.
+        let payloads: &[&[u8]] = &[&[0x08, 0x01], &[0x10, 0x2a, 0x08, 0x01]];
+        for &payload in payloads {
+            for input in attested_settings_inputs(Some(payload)) {
+                let settings = crate::Vtl2Settings::read_from(&input, Default::default()).unwrap();
+                let attested_settings = settings.fixed.attested_settings.unwrap();
+                assert_eq!(1, attested_settings.version);
+                assert_eq!(
+                    Some(openssl::sha::sha256(payload)),
+                    attested_settings.init_data_hash
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn attested_settings_rejects_malformed_json() {
+        for input in attested_settings_inputs(Some(br#"{"version":"#)) {
+            assert!(matches!(
+                crate::Vtl2Settings::read_from(&input, Default::default()),
+                Err(ParseError::Json(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn attested_settings_rejects_malformed_protobuf() {
+        for input in attested_settings_inputs(Some(&[0x08])) {
+            assert!(matches!(
+                crate::Vtl2Settings::read_from(&input, Default::default()),
+                Err(ParseError::Protobuf(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn attested_settings_absent_or_empty_remains_optional() {
+        for payload in [None, Some(&[][..])] {
+            for input in attested_settings_inputs(payload) {
+                let settings = crate::Vtl2Settings::read_from(&input, Default::default()).unwrap();
+                assert!(settings.fixed.attested_settings.is_none());
+            }
+        }
     }
 
     #[test]

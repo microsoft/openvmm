@@ -9738,6 +9738,7 @@ dependencies = [
  "guid",
  "inspect",
  "mesh",
+ "openssl",
  "prost",
  "serde",
  "serde_json",
