@@ -33,7 +33,11 @@
 //!    or vectored exception handlers (Windows) intercept access violations.
 //!    When a fault occurs, the handler searches the recovery descriptor table
 //!    for a matching instruction pointer range and, if found, redirects
-//!    execution to the recovery code.
+//!    execution to the recovery code. Any other fault is passed on: on Unix to
+//!    the signal's previous action, such as the Rust runtime's stack overflow
+//!    handler or the default action, and on Windows to the next exception
+//!    handler. It therefore terminates the process with the original signal
+//!    or exception, as it would without these handlers.
 //!
 //! 4. **Thread-local fault tracking**: The faulting address and fault details
 //!    are stored in thread-local storage, allowing the caller to determine
@@ -484,11 +488,97 @@ type Context = libc::__darwin_mcontext64;
 #[cfg(windows)]
 type Context = windows_sys::Win32::System::Diagnostics::Debug::CONTEXT;
 
+/// The signals that report the access faults that trycopy recovers from.
+#[cfg(unix)]
+const HANDLED_SIGNALS: &[libc::c_int] = &[
+    libc::SIGSEGV,
+    libc::SIGBUS,
+    // SIGILL is used on Linux/aarch64 to signal certain memory access
+    // faults from a hypervisor.
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    libc::SIGILL,
+];
+
+/// The actions that [`HANDLED_SIGNALS`] had before trycopy installed its
+/// handler, in the same order.
+#[cfg(unix)]
+static PREVIOUS_ACTIONS: std::sync::OnceLock<Vec<libc::sigaction>> = std::sync::OnceLock::new();
+
+/// Passes a fault that no recovery region covers to the action that `sig` had
+/// before trycopy installed its handler, so that trycopy does not change how
+/// the fault terminates the process.
+///
+/// That action is typically the Rust runtime's handler, which reports a stack
+/// overflow and aborts, and otherwise restores the default action, as this
+/// function does when there was no handler. The default action terminates the
+/// process with `sig` and dumps the faulting instruction's state when that
+/// instruction faults again after the handler returns. As with the Rust
+/// runtime's handler alone, if another thread has made the address accessible
+/// in the meantime, execution continues with the default action installed.
+///
+/// # Safety
+/// Must be called from the handler for `sig`, with that handler's arguments.
+#[cfg(unix)]
+unsafe fn chain_fault(sig: libc::c_int, info: *mut libc::siginfo_t, ucontext: *mut libc::c_void) {
+    type SigInfoHandler =
+        unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
+    type Handler = unsafe extern "C" fn(libc::c_int);
+
+    let previous = HANDLED_SIGNALS
+        .iter()
+        .position(|&handled| handled == sig)
+        .and_then(|index| PREVIOUS_ACTIONS.get()?.get(index));
+    match previous {
+        Some(action)
+            if action.sa_sigaction != libc::SIG_DFL && action.sa_sigaction != libc::SIG_IGN =>
+        {
+            // SAFETY: `sa_sigaction` holds a handler of the type that
+            // `SA_SIGINFO` selects, which is called with the arguments of the
+            // signal being handled, as the kernel would have called it.
+            unsafe {
+                if action.sa_flags & libc::SA_SIGINFO != 0 {
+                    std::mem::transmute::<libc::sighandler_t, SigInfoHandler>(action.sa_sigaction)(
+                        sig, info, ucontext,
+                    );
+                } else {
+                    std::mem::transmute::<libc::sighandler_t, Handler>(action.sa_sigaction)(sig);
+                }
+            }
+        }
+        _ => {
+            // Restore the default action. A synchronous fault cannot be
+            // ignored, so returning re-executes the faulting instruction, which
+            // then terminates the process with `sig`.
+            //
+            // SAFETY: `sigaction` is async-signal-safe, and a zeroed action
+            // with `SIG_DFL` is valid.
+            unsafe {
+                let action = libc::sigaction {
+                    sa_sigaction: libc::SIG_DFL,
+                    ..core::mem::zeroed()
+                };
+                libc::sigaction(sig, &action, std::ptr::null_mut());
+            }
+        }
+    }
+}
+
 /// # Safety
 /// This function installs global signal handlers. It must only be called once.
 #[cfg(unix)]
 unsafe fn install_signal_handlers() {
-    fn handle_signal(sig: i32, info: &libc::siginfo_t, ucontext: &mut libc::ucontext_t) {
+    /// # Safety
+    /// Must only be called by the kernel as an `SA_SIGINFO` signal handler.
+    unsafe extern "C" fn handle_signal(
+        sig: libc::c_int,
+        info_ptr: *mut libc::siginfo_t,
+        ucontext_ptr: *mut libc::c_void,
+    ) {
+        // SAFETY: an `SA_SIGINFO` handler receives valid signal information
+        // and an exclusively borrowed user context.
+        let (info, ucontext) =
+            unsafe { (&*info_ptr, &mut *ucontext_ptr.cast::<libc::ucontext_t>()) };
+
         #[cfg(target_os = "linux")]
         let ctx = &mut ucontext.uc_mcontext;
 
@@ -540,27 +630,35 @@ unsafe fn install_signal_handlers() {
 
         let recovered = recover(ctx, failure);
         if !recovered {
-            std::process::abort();
+            // SAFETY: called from the handler for `sig` with its arguments.
+            unsafe { chain_fault(sig, info_ptr, ucontext_ptr) };
         }
     }
 
-    // SAFETY: installing signal handlers as documented.
+    // SAFETY: installing signal handlers as documented. The previous actions
+    // are recorded before the handlers that read them are installed.
     unsafe {
+        let previous = HANDLED_SIGNALS
+            .iter()
+            .map(|&signal| {
+                let mut previous: libc::sigaction = core::mem::zeroed();
+                libc::sigaction(signal, std::ptr::null(), &mut previous);
+                previous
+            })
+            .collect();
+        assert!(
+            PREVIOUS_ACTIONS.set(previous).is_ok(),
+            "signal handlers are installed only once"
+        );
+
         let act = libc::sigaction {
             sa_sigaction: handle_signal as *const () as usize,
-            sa_flags: libc::SA_SIGINFO,
+            // Run on the thread's alternate signal stack, if it has one, so
+            // that a stack overflow still reaches the Rust runtime's handler.
+            sa_flags: libc::SA_SIGINFO | libc::SA_ONSTACK,
             ..core::mem::zeroed()
         };
-        for signal in [
-            libc::SIGSEGV,
-            libc::SIGBUS,
-            // SIGILL is used on Linux/aarch64 to signal certain memory access
-            // faults from a hypervisor.
-            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-            libc::SIGILL,
-        ] {
-            // TODO: chain to previous handler. Doing so safely and correctly
-            // might require running this code before `main`, via a constructor.
+        for &signal in HANDLED_SIGNALS {
             libc::sigaction(signal, &act, std::ptr::null_mut());
         }
     }
@@ -994,6 +1092,96 @@ mod tests {
                 std::io::Error::last_os_error()
             );
         }
+    }
+
+    /// Selects the fault that [`unrecovered_fault_child`] raises in a child
+    /// process.
+    #[cfg(target_os = "linux")]
+    const UNRECOVERED_FAULT_CHILD: &str = "TRYCOPY_TEST_UNRECOVERED_FAULT";
+
+    /// Runs [`unrecovered_fault_child`] in a child process that raises
+    /// `fault`, returning the child's exit status and standard error.
+    #[cfg(target_os = "linux")]
+    fn run_unrecovered_fault_child(fault: &str) -> (std::process::ExitStatus, String) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::unrecovered_fault_child", "--nocapture"])
+            .env(UNRECOVERED_FAULT_CHILD, fault)
+            .output()
+            .unwrap();
+        (
+            output.status,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    /// Recurses until the stack overflows.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[inline(never)]
+    fn overflow_stack(depth: u64) -> u64 {
+        let frame = std::hint::black_box([depth; 64]);
+        if frame[0] == u64::MAX {
+            return 0;
+        }
+        overflow_stack(depth + 1).wrapping_add(frame[63])
+    }
+
+    /// In a child process started by [`run_unrecovered_fault_child`], raises
+    /// a fault outside any recovery region after installing the trycopy
+    /// handlers. Does nothing in the test process itself.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unrecovered_fault_child() {
+        let Some(fault) = std::env::var_os(UNRECOVERED_FAULT_CHILD) else {
+            return;
+        };
+        // Don't leave a core dump behind for an expected crash.
+        //
+        // SAFETY: PR_SET_DUMPABLE takes no pointers and affects only this
+        // child process.
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
+        initialize_try_copy();
+        match fault.to_str().unwrap() {
+            "access" => {
+                let mapping = GuardedMapping::new();
+                // SAFETY: the middle page is reserved but inaccessible, and no
+                // recovery region covers this read.
+                let _value = unsafe { std::ptr::read_volatile(mapping.ptr.add(mapping.page_size)) };
+            }
+            #[cfg(target_env = "gnu")]
+            "stack_overflow" => {
+                std::thread::Builder::new()
+                    .stack_size(256 * 1024)
+                    .spawn(|| overflow_stack(0))
+                    .unwrap()
+                    .join()
+                    .unwrap();
+            }
+            fault => panic!("unknown fault {fault}"),
+        }
+        panic!("the fault did not terminate the process");
+    }
+
+    /// A fault outside a recovery region terminates the process with its own
+    /// signal, as it would without trycopy, rather than with SIGABRT.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unrecovered_fault_terminates_with_its_signal() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let (status, stderr) = run_unrecovered_fault_child("access");
+        assert_eq!(status.signal(), Some(libc::SIGSEGV), "{status}\n{stderr}");
+    }
+
+    /// A stack overflow still reaches the Rust runtime's handler, which
+    /// reports it, once trycopy handles SIGSEGV.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn unrecovered_stack_overflow_is_reported() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let (status, stderr) = run_unrecovered_fault_child("stack_overflow");
+        assert_eq!(status.signal(), Some(libc::SIGABRT), "{status}\n{stderr}");
+        assert!(stderr.contains("has overflowed its stack"), "{stderr}");
     }
 
     #[test]
