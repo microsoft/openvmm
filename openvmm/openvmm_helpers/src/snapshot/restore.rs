@@ -402,11 +402,15 @@ fn validate_snapshot_directory(
 #[cfg(test)]
 mod tests {
     use super::super::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
+    #[cfg(target_os = "linux")]
+    use super::super::fs::initialize_snapshot_memory_backing_file;
     use super::super::microvm::paired_scratch_manifest;
     use super::super::microvm::test_machine_contract;
     use super::super::publish::write_snapshot;
     #[cfg(target_os = "linux")]
     use super::super::publish::write_snapshot_from_memory_and_scratch_files;
+    #[cfg(target_os = "linux")]
+    use super::super::publish::write_snapshot_from_owned_memory_and_scratch_files;
     use super::super::tests::test_manifest;
     use super::*;
     use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
@@ -881,6 +885,63 @@ mod tests {
                 .to_string()
                 .contains("memory generation changed after it was opened")
         );
+    }
+
+    /// A capture with automatic RAM publishes `memory.bin` as a hard link of
+    /// the RAM file that the source created beside the destination, and the
+    /// source removes that file's temporary name when it tears down, after the
+    /// commit. The removal changes `memory.bin`'s change time, but not its
+    /// identity, length, modification time, or content, so a restore that
+    /// opened the snapshot before the removal still maps the memory that it
+    /// opened.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn source_ram_removal_after_open_keeps_the_memory_generation() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let ram = tempfile::Builder::new()
+            .prefix(".openvmm-microvm-memory-")
+            .tempfile_in(dir.path())
+            .unwrap();
+        initialize_snapshot_memory_backing_file(ram.as_file(), 1024).unwrap();
+        let mut ram_handle = ram.reopen().unwrap();
+        ram_handle.write_all(&[0x5a_u8; 1024]).unwrap();
+        write_snapshot_from_owned_memory_and_scratch_files(
+            &snap_dir,
+            &test_manifest(),
+            b"state",
+            &ram_handle,
+            None,
+        )
+        .unwrap();
+        let memory_path = snap_dir.join(MEMORY_FILE_NAME);
+        let published = std::fs::metadata(&memory_path).unwrap();
+        assert_eq!(published.ino(), ram.as_file().metadata().unwrap().ino());
+        assert_eq!(published.nlink(), 2);
+
+        let snapshot = OpenedSnapshot::open(&snap_dir).unwrap();
+        // Let the clock pass the recorded times, even on a file system that
+        // keeps them in whole seconds.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        drop(ram);
+
+        let unlinked = std::fs::metadata(&memory_path).unwrap();
+        assert_eq!(unlinked.nlink(), 1);
+        assert_ne!(
+            (unlinked.ctime(), unlinked.ctime_nsec()),
+            (published.ctime(), published.ctime_nsec())
+        );
+        assert_eq!(
+            (unlinked.mtime(), unlinked.mtime_nsec()),
+            (published.mtime(), published.mtime_nsec())
+        );
+        snapshot.validate_memory_generation(1024).unwrap();
+        let mut memory = snapshot.duplicate_memory_file_for_mapping(1024).unwrap();
+        let mut bytes = Vec::new();
+        memory.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, vec![0x5a_u8; 1024]);
     }
 
     #[cfg(windows)]

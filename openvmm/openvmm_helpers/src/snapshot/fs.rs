@@ -1010,6 +1010,13 @@ fn reject_windows_reparse_point(
     Ok(())
 }
 
+/// The generation of an opened file on Linux: its device, inode, length, and
+/// modification time. It leaves out the change time, which a change of the
+/// file's links, mode, or owner moves without changing its content. The source
+/// of a capture with automatic RAM removes its RAM file's temporary name as it
+/// tears down, after the commit, which moves the change time of the
+/// `memory.bin` that links the same file, and a restore that opened the
+/// snapshot before then must still find the generation that it opened.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct OpenedFileGeneration {
@@ -1018,8 +1025,6 @@ pub(super) struct OpenedFileGeneration {
     length: u64,
     modified_seconds: i64,
     modified_nanoseconds: i64,
-    changed_seconds: i64,
-    changed_nanoseconds: i64,
 }
 
 #[cfg(windows)]
@@ -1058,8 +1063,6 @@ pub(super) fn opened_file_generation(
         length: metadata.len(),
         modified_seconds: metadata.mtime(),
         modified_nanoseconds: metadata.mtime_nsec(),
-        changed_seconds: metadata.ctime(),
-        changed_nanoseconds: metadata.ctime_nsec(),
     })
 }
 
