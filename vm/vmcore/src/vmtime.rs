@@ -557,7 +557,12 @@ impl VmTimeSourceBuilder {
             let state = Arc::get_mut(&mut state).unwrap().get_mut();
             match time {
                 TimeState::Stopped(vmtime) => state.reset(vmtime),
-                TimeState::Started(timestamp) => state.start(timestamp),
+                TimeState::Started(timestamp) => {
+                    // Starting resumes from the stopped time, so stop at the
+                    // running clock's start time before joining that clock.
+                    state.reset(timestamp.vmtime);
+                    state.start(timestamp);
+                }
             }
         }
         let mut keeper = SecondaryKeeper {
@@ -964,11 +969,14 @@ impl VmTimerPeriodic {
 
 #[cfg(test)]
 mod tests {
+    use super::SavedState;
     use super::VmTime;
+    use super::VmTimeAccess;
     use super::VmTimeKeeper;
     use futures::FutureExt;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use pal_async::timer::Instant;
     use pal_async::timer::PolledTimer;
     use std::future::poll_fn;
     use std::time::Duration;
@@ -1035,6 +1043,174 @@ mod tests {
             _ = poll_fn(|cx| access.poll_timeout(cx)).fuse() => panic!("unexpected wait completion"),
         }
         keeper.stop().await;
+    }
+
+    /// Asserts that each of `sources` reads the VM time of `keeper`: its stop
+    /// time while VM time is stopped or, while VM time runs, the clock that
+    /// the keeper started, anchored at the keeper's start timestamp.
+    #[track_caller]
+    fn assert_keeper_time(keeper: &VmTimeKeeper, sources: &[&VmTimeAccess]) {
+        match keeper.time {
+            super::TimeState::Stopped(vmtime) => {
+                for source in sources {
+                    assert_eq!(source.now(), vmtime, "{}", source.name);
+                    assert_eq!(source.host_time(vmtime), None, "{}", source.name);
+                }
+            }
+            super::TimeState::Started(start) => {
+                for source in sources {
+                    assert_eq!(
+                        source.host_time(start.vmtime),
+                        Some(start.os_time()),
+                        "{}",
+                        source.name
+                    );
+                    let before = keeper.time.now(Instant::now()).vmtime;
+                    let now = source.now();
+                    let after = keeper.time.now(Instant::now()).vmtime;
+                    assert!(
+                        !now.is_before(before) && !after.is_before(now),
+                        "{}: {before:?} {now:?} {after:?}",
+                        source.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// Checks that a timeout of `access` fires once VM time reaches it.
+    async fn check_timeout_fires(driver: &DefaultDriver, access: &mut VmTimeAccess) {
+        let deadline = access.now().wrapping_add(Duration::from_millis(10));
+        access.set_timeout(deadline);
+        let mut timer = PolledTimer::new(driver);
+        futures::select! {
+            _ = timer.sleep(Duration::from_secs(10)).fuse() => panic!("unexpected timeout"),
+            now = poll_fn(|cx| access.poll_timeout(cx)).fuse() => {
+                assert!(now.is_after(deadline));
+            }
+        }
+    }
+
+    /// Builds a source while VM time runs from a restored time other than 0.
+    #[async_test]
+    async fn test_build_while_running_after_restore(driver: DefaultDriver) {
+        let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        keeper
+            .restore(SavedState::from_vmtime(VmTime::from_100ns(1_000_000)))
+            .await;
+        keeper.start().await;
+        let mut access = keeper
+            .builder()
+            .build(&driver)
+            .await
+            .unwrap()
+            .access("test");
+        assert_keeper_time(&keeper, &[&access]);
+        check_timeout_fires(&driver, &mut access).await;
+        keeper.stop().await;
+        assert_keeper_time(&keeper, &[&access]);
+    }
+
+    /// Builds a source while VM time runs again after it advanced and stopped.
+    #[async_test]
+    async fn test_build_while_running_after_restart(driver: DefaultDriver) {
+        let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let existing = keeper
+            .builder()
+            .build(&driver)
+            .await
+            .unwrap()
+            .access("existing");
+        keeper.start().await;
+        PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(10))
+            .await;
+        keeper.stop().await;
+        assert_ne!(keeper.save().vmtime, VmTime::from_100ns(0));
+        keeper.start().await;
+        let mut access = keeper.builder().build(&driver).await.unwrap().access("new");
+        assert_keeper_time(&keeper, &[&existing, &access]);
+        check_timeout_fires(&driver, &mut access).await;
+        keeper.stop().await;
+        assert_keeper_time(&keeper, &[&existing, &access]);
+    }
+
+    /// Builds a source in each keeper state, with VM time stopped or running,
+    /// from 0 or from a later time. The new source reads the keeper's VM time
+    /// and then follows the keeper's stops, starts, resets, and restores, like
+    /// a source built before.
+    #[async_test]
+    async fn test_build_in_every_keeper_state(driver: DefaultDriver) {
+        let zero = VmTime::from_100ns(0);
+        let later = VmTime::from_100ns(1_000_000);
+        for (vmtime, running) in [(zero, false), (later, false), (zero, true), (later, true)] {
+            let mut keeper = VmTimeKeeper::new(&driver, zero);
+            let existing = keeper
+                .builder()
+                .build(&driver)
+                .await
+                .unwrap()
+                .access("existing");
+            keeper.restore(SavedState::from_vmtime(vmtime)).await;
+            if running {
+                keeper.start().await;
+            }
+            let mut access = keeper.builder().build(&driver).await.unwrap().access("new");
+            assert_keeper_time(&keeper, &[&existing, &access]);
+            if !running {
+                keeper.start().await;
+                assert_keeper_time(&keeper, &[&existing, &access]);
+            }
+            check_timeout_fires(&driver, &mut access).await;
+            let before_stop = access.now();
+            keeper.stop().await;
+            assert!(!keeper.save().vmtime.is_before(before_stop));
+            assert_keeper_time(&keeper, &[&existing, &access]);
+            keeper.reset().await;
+            assert_keeper_time(&keeper, &[&existing, &access]);
+            keeper
+                .restore(SavedState::from_vmtime(VmTime::from_100ns(5_000_000)))
+                .await;
+            assert_keeper_time(&keeper, &[&existing, &access]);
+            keeper.start().await;
+            assert_keeper_time(&keeper, &[&existing, &access]);
+            check_timeout_fires(&driver, &mut access).await;
+            keeper.stop().await;
+            assert_keeper_time(&keeper, &[&existing, &access]);
+        }
+    }
+
+    /// Builds a source just before and one just after each of the keeper's
+    /// restores, starts, and stops. The keeper handles registrations and
+    /// requests one at a time, so a source registered before a request
+    /// receives it with the sources built earlier, and one registered after it
+    /// starts from the state that the request left. Every source then reads
+    /// the keeper's VM time.
+    #[async_test]
+    async fn test_build_before_and_after_keeper_requests(driver: DefaultDriver) {
+        let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut sources = Vec::new();
+        for round in 1..=4 {
+            for request in ["restore", "start", "stop"] {
+                let before = keeper.builder().build(&driver).await.unwrap();
+                sources.push(before.access(format!("before {request} {round}")));
+                match request {
+                    "restore" => {
+                        keeper
+                            .restore(SavedState::from_vmtime(VmTime::from_100ns(
+                                round * 1_000_000,
+                            )))
+                            .await
+                    }
+                    "start" => keeper.start().await,
+                    "stop" => keeper.stop().await,
+                    _ => unreachable!(),
+                }
+                let after = keeper.builder().build(&driver).await.unwrap();
+                sources.push(after.access(format!("after {request} {round}")));
+                assert_keeper_time(&keeper, &sources.iter().collect::<Vec<_>>());
+            }
+        }
     }
 
     #[async_test]
