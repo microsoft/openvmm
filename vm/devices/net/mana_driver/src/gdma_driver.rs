@@ -61,11 +61,13 @@ use gdma_defs::HWC_DATA_TYPE_HW_VPORT_LINK_DISCONNECT;
 use gdma_defs::HWC_DEV_ID;
 use gdma_defs::HWC_INIT_DATA_CQID;
 use gdma_defs::HWC_INIT_DATA_GPA_MKEY;
+use gdma_defs::HWC_INIT_DATA_MAX_NUM_CQS;
 use gdma_defs::HWC_INIT_DATA_PDID;
 use gdma_defs::HWC_INIT_DATA_RQID;
 use gdma_defs::HWC_INIT_DATA_SQID;
 use gdma_defs::HwcInitEqIdDb;
 use gdma_defs::HwcInitTypeData;
+use gdma_defs::HwcRxOob;
 use gdma_defs::HwcTxOob;
 use gdma_defs::HwcTxOobFlags3;
 use gdma_defs::HwcTxOobFlags4;
@@ -76,6 +78,8 @@ use gdma_defs::SMC_MSG_TYPE_REPORT_HWC_TIMEOUT_VERSION;
 use gdma_defs::Sge;
 use gdma_defs::SmcMessageType;
 use gdma_defs::SmcProtoHdr;
+use gdma_defs::bnic::ManaCommandCode;
+use gdma_defs::bnic::ManaQueryDeviceCfgResp;
 use inspect::Inspect;
 use pal_async::driver::Driver;
 use std::collections::HashMap;
@@ -382,6 +386,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let mut eq = Eq::new_eq(dma_buffer.subblock(0, PAGE_SIZE), DoorbellPage::null(), 0);
 
         let mut cq_id = None;
+        let mut max_num_cqs = None;
         let mut rq_id = None;
         let mut sq_id = None;
         let mut db_id = None;
@@ -421,6 +426,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     let data = HwcInitTypeData::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     match data.ty() {
                         HWC_INIT_DATA_CQID => cq_id = Some(data.value()),
+                        HWC_INIT_DATA_MAX_NUM_CQS => max_num_cqs = Some(data.value()),
                         HWC_INIT_DATA_RQID => rq_id = Some(data.value()),
                         HWC_INIT_DATA_SQID => sq_id = Some(data.value()),
                         HWC_INIT_DATA_GPA_MKEY => gpa_mkey = Some(data.value()),
@@ -507,13 +513,32 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             reset_request_pending: None,
         };
 
+        let max_num_cqs = max_num_cqs.context("max number of CQs not provided")?;
+        anyhow::ensure!(
+            this.cq.id() < max_num_cqs,
+            "HWC CQ ID {:#x} exceeds advertised CQ limit {max_num_cqs:#x}",
+            this.cq.id(),
+        );
+
         this.push_rqe();
 
         let max_vf_resources = this
             .query_max_resources()
             .await
             .context("query_max_resources")?;
-        tracing::info!("Max VF resources: {:?}", max_vf_resources);
+        tracing::info!(
+            max_sq = max_vf_resources.max_sq,
+            max_rq = max_vf_resources.max_rq,
+            max_cq = max_vf_resources.max_cq,
+            max_eq = max_vf_resources.max_eq,
+            max_db = max_vf_resources.max_db,
+            max_mst = max_vf_resources.max_mst,
+            max_cq_mod_ctx = max_vf_resources.max_cq_mod_ctx,
+            max_mod_cq = max_vf_resources.max_mod_cq,
+            max_msix = max_vf_resources.max_msix,
+            hwc_max_num_cqs = max_num_cqs,
+            "Max VF resources"
+        );
 
         let device = this.device.as_mut().expect("device should be present");
         let num_msix = num_vps
@@ -934,35 +959,54 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     mem_key,
                 )
             };
-            self.wait_cq().await.with_context(cq_wait_context)?;
-            self.wait_cq().await.with_context(cq_wait_context)?;
+            let first_cqe = self.wait_cq().await.with_context(cq_wait_context)?;
+            let second_cqe = self.wait_cq().await.with_context(cq_wait_context)?;
+            let cqes = [first_cqe, second_cqe];
+            let received_size = match validate_completions(&hdr, &cqes, self.sq.id(), self.rq.id())
+            {
+                Ok(received_size) => received_size,
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        request_type = hdr.req.msg_type,
+                        activity_id = hdr.activity_id,
+                        dev_type = hdr.dev_id.ty.0,
+                        dev_instance = hdr.dev_id.instance,
+                        "HWC completion validation failed"
+                    );
+                    return Err(err.into());
+                }
+            };
             self.sq.advance_head(sqe_len);
             self.rq.advance_head(RWQE_SIZE);
-            self.push_rqe();
 
+            // Save the response before returning the DMA page to the device.
             let resp_hdr = self
                 .dma_buffer
                 .read_obj::<GdmaRespHdr>(RESPONSE_PAGE * PAGE_SIZE);
-
-            if resp_hdr.response.msg_size < size_of::<Resp>() as u32 {
-                anyhow::bail!(
-                    "response too small, request={:#x}, activity_id={:#x}",
-                    req_msg_type,
-                    hdr.activity_id
-                );
-            }
-            if resp_hdr.status != 0 {
-                anyhow::bail!(
-                    "failed with {:#x}, request={:#x}, activity_id={:#x}",
-                    resp_hdr.status,
-                    req_msg_type,
-                    hdr.activity_id
-                );
-            }
-
             let resp = self
                 .dma_buffer
                 .read_obj::<Resp>(RESPONSE_PAGE * PAGE_SIZE + size_of_val(&resp_hdr));
+            self.push_rqe();
+
+            if let Err(err) = validate_response(&hdr, &resp_hdr, size_of::<Resp>(), received_size) {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    request_type = hdr.req.msg_type,
+                    expected_type = hdr.resp.msg_type,
+                    response_type = resp_hdr.response.msg_type,
+                    activity_id = hdr.activity_id,
+                    response_activity_id = resp_hdr.activity_id,
+                    dev_type = hdr.dev_id.ty.0,
+                    dev_instance = hdr.dev_id.instance,
+                    response_size = resp_hdr.response.msg_size,
+                    received_size,
+                    response_status = resp_hdr.status,
+                    "HWC response validation failed"
+                );
+                return Err(err.into());
+            }
+
             Ok(resp)
         };
         let resp = match hw_access.await {
@@ -1509,5 +1553,479 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             GdmaDestroyDmaRegionReq { gdma_region },
         )
         .await
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+enum CompletionValidationError {
+    #[error("HWC receive completion queue mismatch: expected={expected}, received={received}")]
+    QueueIdMismatch { expected: u32, received: u32 },
+}
+
+fn validate_completions(
+    req_hdr: &GdmaReqHdr,
+    cqes: &[Cqe; 2],
+    sq_id: u32,
+    rq_id: u32,
+) -> Result<Option<u32>, CompletionValidationError> {
+    // The checks for duplicate completion direction and send queue ID mismatch
+    // are warning-only for now. If the tracing shows hits, it may be worth rejecting.
+    let same_wq_direction = cqes[0].params.is_send_wq() == cqes[1].params.is_send_wq();
+    if same_wq_direction {
+        tracelimit::warn_ratelimited!(
+            is_send_wq = cqes[0].params.is_send_wq(),
+            request_msg_type = req_hdr.req.msg_type,
+            activity_id = req_hdr.activity_id,
+            "Both HWC completions have the same direction; expected one send and one receive"
+        );
+    }
+    for cqe in cqes {
+        let send_queue_id_mismatch = cqe.params.is_send_wq() && cqe.params.wq_number() != sq_id;
+        if send_queue_id_mismatch {
+            tracelimit::warn_ratelimited!(
+                expected_send_queue_id = sq_id,
+                received_send_queue_id = cqe.params.wq_number(),
+                request_msg_type = req_hdr.req.msg_type,
+                activity_id = req_hdr.activity_id,
+                "HWC send completion queue ID does not match the request's send queue"
+            );
+        }
+    }
+
+    let mut received_size = None;
+    for cqe in cqes.iter().filter(|cqe| !cqe.params.is_send_wq()) {
+        let received = cqe.params.wq_number();
+        if received != rq_id {
+            return Err(CompletionValidationError::QueueIdMismatch {
+                expected: rq_id,
+                received,
+            });
+        }
+        let (rx_oob, _) =
+            HwcRxOob::read_from_prefix(&cqe.data).expect("CQE data holds HWC receive OOB");
+        received_size = Some(rx_oob.tx_oob_data_size);
+    }
+    Ok(received_size)
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+enum ResponseValidationError {
+    #[error("HWC response message type mismatch, expected={expected:#x}, received={received:#x}")]
+    MessageTypeMismatch { expected: u32, received: u32 },
+    #[error("HWC response activity ID mismatch, expected={expected:#x}, received={received:#x}")]
+    ActivityIdMismatch { expected: u32, received: u32 },
+    #[error("response too small, size={received}, minimum={minimum}")]
+    TooSmall { received: u32, minimum: usize },
+    #[error("HWC response truncated, received={received}, minimum={minimum}")]
+    Truncated { received: u32, minimum: usize },
+    #[error("HWC response failed with {0:#x}")]
+    FailedStatus(u32),
+}
+
+fn validate_response(
+    req_hdr: &GdmaReqHdr,
+    resp_hdr: &GdmaRespHdr,
+    payload_size: usize,
+    received_size: Option<u32>,
+) -> Result<(), ResponseValidationError> {
+    let header_size = size_of::<GdmaRespHdr>();
+    if let Some(received_size) = received_size
+        && (received_size as usize) < header_size
+    {
+        return Err(ResponseValidationError::Truncated {
+            received: received_size,
+            minimum: header_size,
+        });
+    }
+
+    if resp_hdr.response.msg_type != req_hdr.resp.msg_type {
+        return Err(ResponseValidationError::MessageTypeMismatch {
+            expected: req_hdr.resp.msg_type,
+            received: resp_hdr.response.msg_type,
+        });
+    }
+
+    if resp_hdr.activity_id != req_hdr.activity_id {
+        return Err(ResponseValidationError::ActivityIdMismatch {
+            expected: req_hdr.activity_id,
+            received: resp_hdr.activity_id,
+        });
+    }
+
+    if resp_hdr.status != 0 {
+        return Err(ResponseValidationError::FailedStatus(resp_hdr.status));
+    }
+
+    let min_payload_size = if req_hdr.resp.msg_type == ManaCommandCode::MANA_QUERY_DEV_CONFIG.0 {
+        // V1 ends before the MTU and link-speed fields. Older firmware may
+        // omit those fields even when a newer response version is requested.
+        std::mem::offset_of!(ManaQueryDeviceCfgResp, adapter_mtu)
+    } else {
+        payload_size
+    };
+    let min_response_size = size_of::<GdmaRespHdr>() + min_payload_size;
+    if let Some(received_size) = received_size
+        && (received_size as usize) < min_response_size
+    {
+        return Err(ResponseValidationError::Truncated {
+            received: received_size,
+            minimum: min_response_size,
+        });
+    }
+    if (resp_hdr.response.msg_size as usize) < min_response_size {
+        return Err(ResponseValidationError::TooSmall {
+            received: resp_hdr.response.msg_size,
+            minimum: min_response_size,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use CompletionValidationError::QueueIdMismatch;
+    use ResponseValidationError::ActivityIdMismatch;
+    use ResponseValidationError::FailedStatus;
+    use ResponseValidationError::MessageTypeMismatch;
+    use ResponseValidationError::TooSmall;
+    use ResponseValidationError::Truncated;
+    use gdma_defs::bnic::MANA_QUERY_DEV_CONFIG_RESPONSE_V4;
+    use gdma_defs::bnic::ManaCreateWqobjResp;
+    use test_with_tracing::test;
+
+    fn check_validate_completions(
+        first: (bool, u32),
+        second: (bool, u32),
+        expected: Result<Option<u32>, CompletionValidationError>,
+    ) {
+        let cqes = [first, second].map(|(is_send, queue_id)| {
+            let oob = HwcRxOob {
+                tx_oob_data_size: if is_send { 96 } else { 48 },
+                ..FromZeros::new_zeroed()
+            };
+            let mut cqe = Cqe::new_zeroed();
+            cqe.params = cqe.params.with_is_send_wq(is_send).with_wq_number(queue_id);
+            cqe.data[..size_of_val(&oob)].copy_from_slice(oob.as_bytes());
+            cqe
+        });
+
+        assert_eq!(
+            validate_completions(&GdmaReqHdr::new_zeroed(), &cqes, 3, 5),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_validate_completions_send_then_receive() {
+        check_validate_completions((true, 3), (false, 5), Ok(Some(48)));
+    }
+
+    #[test]
+    fn test_validate_completions_receive_then_send() {
+        check_validate_completions((false, 5), (true, 3), Ok(Some(48)));
+    }
+
+    #[test]
+    fn test_validate_completions_two_send() {
+        check_validate_completions((true, 3), (true, 3), Ok(None));
+    }
+
+    #[test]
+    fn test_validate_completions_two_receive() {
+        check_validate_completions((false, 5), (false, 5), Ok(Some(48)));
+    }
+
+    #[test]
+    fn test_validate_completions_wrong_send_queue() {
+        check_validate_completions((true, 4), (false, 5), Ok(Some(48)));
+    }
+
+    #[test]
+    fn test_validate_completions_wrong_receive_queue() {
+        check_validate_completions(
+            (true, 3),
+            (false, 6),
+            Err(QueueIdMismatch {
+                expected: 5,
+                received: 6,
+            }),
+        );
+    }
+
+    fn check_validate_response(
+        msg_type: u32,
+        activity_id: u32,
+        status: u32,
+        expected: Result<(), ResponseValidationError>,
+    ) {
+        let mut hdr = GdmaReqHdr::new_zeroed();
+        hdr.req.msg_type = 1;
+        hdr.resp.msg_type = 2;
+        hdr.activity_id = 7;
+        let mut resp_hdr = GdmaRespHdr::new_zeroed();
+        resp_hdr.response.msg_type = msg_type;
+        resp_hdr.response.msg_size = 32;
+        resp_hdr.activity_id = activity_id;
+        resp_hdr.status = status;
+
+        assert_eq!(
+            validate_response(&hdr, &resp_hdr, size_of::<()>(), Some(32)),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_validate_response_matching_response() {
+        check_validate_response(2, 7, 0, Ok(()));
+    }
+
+    #[test]
+    fn test_validate_response_message_type_mismatch() {
+        check_validate_response(
+            3,
+            7,
+            0,
+            Err(MessageTypeMismatch {
+                expected: 2,
+                received: 3,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_validate_response_activity_id_mismatch() {
+        check_validate_response(
+            2,
+            8,
+            0,
+            Err(ActivityIdMismatch {
+                expected: 7,
+                received: 8,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_validate_response_failed_status() {
+        check_validate_response(2, 7, 1, Err(FailedStatus(1)));
+    }
+
+    fn check_create_wq_response_size(
+        msg_size: u32,
+        received_size: Option<u32>,
+        status: u32,
+        expected: Result<(), ResponseValidationError>,
+    ) {
+        let mut hdr = GdmaReqHdr::new_zeroed();
+        hdr.req.msg_type = ManaCommandCode::MANA_CREATE_WQ_OBJ.0;
+        hdr.resp.msg_type = hdr.req.msg_type;
+        let mut resp_hdr = GdmaRespHdr::new_zeroed();
+        resp_hdr.response.msg_type = hdr.resp.msg_type;
+        resp_hdr.response.msg_size = msg_size;
+        resp_hdr.status = status;
+
+        assert_eq!(
+            validate_response(
+                &hdr,
+                &resp_hdr,
+                size_of::<ManaCreateWqobjResp>(),
+                received_size,
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_header_only() {
+        check_create_wq_response_size(
+            32,
+            Some(48),
+            0,
+            Err(TooSmall {
+                received: 32,
+                minimum: 48,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_truncated_payload() {
+        check_create_wq_response_size(
+            47,
+            Some(48),
+            0,
+            Err(TooSmall {
+                received: 47,
+                minimum: 48,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_complete() {
+        check_create_wq_response_size(48, Some(48), 0, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_failed_header_only() {
+        check_create_wq_response_size(32, Some(32), 1, Err(FailedStatus(1)));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_truncated_received_header() {
+        check_create_wq_response_size(
+            48,
+            Some(31),
+            0,
+            Err(Truncated {
+                received: 31,
+                minimum: 32,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_truncated_failed_header() {
+        check_create_wq_response_size(
+            48,
+            Some(31),
+            1,
+            Err(Truncated {
+                received: 31,
+                minimum: 32,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_truncated_received_payload() {
+        check_create_wq_response_size(
+            48,
+            Some(47),
+            0,
+            Err(Truncated {
+                received: 47,
+                minimum: 48,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_failed_header_unset_size() {
+        check_create_wq_response_size(0, Some(32), 1, Err(FailedStatus(1)));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_failed_header_success_size() {
+        check_create_wq_response_size(48, Some(32), 1, Err(FailedStatus(1)));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_unknown_received_size() {
+        check_create_wq_response_size(48, None, 0, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_unknown_received_size_short_declared() {
+        check_create_wq_response_size(
+            47,
+            None,
+            0,
+            Err(TooSmall {
+                received: 47,
+                minimum: 48,
+            }),
+        );
+    }
+
+    fn check_query_dev_config_response_size(
+        msg_size: u32,
+        received_size: u32,
+        expected: Result<(), ResponseValidationError>,
+    ) {
+        let mut hdr = GdmaReqHdr::new_zeroed();
+        hdr.req.msg_type = ManaCommandCode::MANA_QUERY_DEV_CONFIG.0;
+        hdr.resp.msg_type = hdr.req.msg_type;
+        hdr.resp.msg_version = MANA_QUERY_DEV_CONFIG_RESPONSE_V4;
+        let mut resp_hdr = GdmaRespHdr::new_zeroed();
+        resp_hdr.response.msg_type = hdr.resp.msg_type;
+        resp_hdr.response.msg_size = msg_size;
+
+        assert_eq!(
+            validate_response(
+                &hdr,
+                &resp_hdr,
+                size_of::<ManaQueryDeviceCfgResp>(),
+                Some(received_size),
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_query_dev_config_response_size_truncated_v1() {
+        check_query_dev_config_response_size(
+            71,
+            72,
+            Err(TooSmall {
+                received: 71,
+                minimum: 72,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_query_dev_config_response_size_v1_compatible() {
+        check_query_dev_config_response_size(72, 72, Ok(()));
+    }
+
+    #[test]
+    fn test_query_dev_config_response_size_v4() {
+        check_query_dev_config_response_size(80, 80, Ok(()));
+    }
+
+    #[test]
+    fn test_query_dev_config_response_size_v1_received_with_v4_size() {
+        check_query_dev_config_response_size(80, 72, Ok(()));
+    }
+
+    #[test]
+    fn test_query_dev_config_response_size_truncated_received_v1() {
+        check_query_dev_config_response_size(
+            80,
+            71,
+            Err(Truncated {
+                received: 71,
+                minimum: 72,
+            }),
+        );
+    }
+
+    fn check_empty_response_size(msg_size: u32, expected: Result<(), ResponseValidationError>) {
+        let hdr = GdmaReqHdr::new_zeroed();
+        let mut resp_hdr = GdmaRespHdr::new_zeroed();
+        resp_hdr.response.msg_size = msg_size;
+
+        assert_eq!(
+            validate_response(&hdr, &resp_hdr, size_of::<()>(), Some(32)),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_empty_response_size_truncated_header() {
+        check_empty_response_size(
+            31,
+            Err(TooSmall {
+                received: 31,
+                minimum: 32,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_empty_response_size_complete_header() {
+        check_empty_response_size(32, Ok(()));
     }
 }

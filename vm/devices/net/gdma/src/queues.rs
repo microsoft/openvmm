@@ -554,13 +554,56 @@ impl Queues {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers as helper;
     use gdma_defs::CLIENT_OOB_8;
     use gdma_defs::CLIENT_OOB_24;
     use gdma_defs::CLIENT_OOB_32;
+    use gdma_defs::GdmaQueueType;
     use gdma_defs::Sge;
     use gdma_defs::WqeParams;
+    use pal_async::DefaultPool;
+    use test_with_tracing::test;
 
     const WQ_GPA: u64 = 0x1000;
+
+    #[test]
+    fn queue_counts_match_allocation_capacity() {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        for (ty, capacity, count) in [
+            (GdmaQueueType::GDMA_SQ, 64, queues.max_sqs()),
+            (GdmaQueueType::GDMA_RQ, 64, queues.max_rqs()),
+            (GdmaQueueType::GDMA_CQ, 128, queues.max_cqs()),
+            (GdmaQueueType::GDMA_EQ, 64, queues.max_eqs()),
+        ] {
+            assert_eq!(count as usize, capacity, "{ty:?}");
+            let allocate = || match ty {
+                GdmaQueueType::GDMA_SQ => queues.alloc_wq(true, helper::region(helper::SQ)),
+                GdmaQueueType::GDMA_RQ => queues.alloc_wq(false, helper::region(helper::RQ)),
+                GdmaQueueType::GDMA_CQ => {
+                    queues.alloc_cq(helper::region(helper::CQ), ID_OFFSET as u32)
+                }
+                GdmaQueueType::GDMA_EQ => queues.alloc_eq(helper::region(helper::EQ), 0),
+                _ => unreachable!(),
+            };
+            for index in 0..capacity {
+                let id = allocate().unwrap();
+                assert_eq!(id, (index + ID_OFFSET) as u32, "{ty:?}");
+            }
+            assert!(matches!(allocate(), Err(QueueAllocError::NoMoreQueues)));
+            let last_id = (capacity + ID_OFFSET - 1) as u32;
+            assert!(last_id >= count, "{ty:?}: counts do not bound queue IDs");
+            match ty {
+                GdmaQueueType::GDMA_SQ => queues.free_wq(true, last_id),
+                GdmaQueueType::GDMA_RQ => queues.free_wq(false, last_id),
+                GdmaQueueType::GDMA_CQ => queues.free_cq(last_id),
+                GdmaQueueType::GDMA_EQ => queues.free_eq(last_id),
+                _ => unreachable!(),
+            }
+            .unwrap();
+            assert_eq!(allocate().unwrap(), last_id, "{ty:?}");
+        }
+    }
 
     /// Writes a WQE at `offset` in the queue the way a driver lays it out and
     /// returns its aligned length.
