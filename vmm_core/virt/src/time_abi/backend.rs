@@ -105,8 +105,10 @@ pub trait TimeAbiBackend: Send + Sync {
     /// every instantiated VP is bound, and after the TSC writes of a cold
     /// boot, a restore's synchronized set, or a reset, and before any VP runs.
     /// A backend that measures the offset reads VP 0's TSC between two host
-    /// TSC reads and keeps the tightest of a bounded number of reads. Fails
-    /// with `E_TSC_ANCHOR`.
+    /// TSC reads, as [`super::tsc::OffsetSearch`] says, keeps the tightest
+    /// read, and fails with `E_TSC_ANCHOR` unless a read pairs the offset
+    /// within [`super::tsc::OFFSET_BOUND_NS`], since every time sample carries
+    /// the offset's uncertainty.
     fn guest_tsc_offset(&self) -> Result<GuestTscOffset, TimeAbiError>;
 }
 
