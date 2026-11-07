@@ -50,7 +50,6 @@ use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::collections::hash_map;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::future::Future;
@@ -241,10 +240,28 @@ struct Unit {
     inspect_sensitivity: inspect::SensitivityLevel,
 }
 
-/// An error returned when a state unit name is already in use.
+/// An error returned when a state unit cannot be added to a set.
+///
+/// A unit that cannot be added leaves the set unchanged.
 #[derive(Debug, Error)]
-#[error("state unit name {0} is in use")]
-pub struct NameInUse(Arc<str>);
+pub enum UnitBuildError {
+    /// Another unit in the set has the name.
+    #[error("state unit name {0} is in use")]
+    NameInUse(Arc<str>),
+    /// A unit that the new unit depends on, or is a dependency of, has been
+    /// removed from the set.
+    #[error("state unit {unit} refers to removed state unit {removed}")]
+    RemovedUnit {
+        /// The name of the new unit.
+        unit: Arc<str>,
+        /// The name of the removed unit.
+        removed: Arc<str>,
+    },
+}
+
+/// The error returned by [`UnitBuilder::build`] and [`UnitBuilder::spawn`],
+/// under its name from when they only checked the unit name.
+pub type NameInUse = UnitBuildError;
 
 #[derive(Debug, Error)]
 #[error("critical unit communication failure: {name}")]
@@ -475,8 +492,8 @@ impl StateUnits {
         UnitBuilder {
             units: self,
             name: name.into(),
-            dependencies: BTreeSet::new(),
-            dependents: BTreeSet::new(),
+            dependencies: BTreeMap::new(),
+            dependents: BTreeMap::new(),
             inspect_sensitivity: inspect::SensitivityLevel::Unspecified,
         }
     }
@@ -788,6 +805,30 @@ impl StateUnits {
 }
 
 impl Inner {
+    /// Checks that a unit named `name`, with `dependencies` and `dependents`
+    /// by ID and name, can be added to the set.
+    fn check_new_unit(
+        &self,
+        name: &Arc<str>,
+        dependencies: &BTreeMap<u64, Arc<str>>,
+        dependents: &BTreeMap<u64, Arc<str>>,
+    ) -> Result<(), UnitBuildError> {
+        if self.names.contains_key(name) {
+            return Err(UnitBuildError::NameInUse(name.clone()));
+        }
+        if let Some(removed) = dependencies
+            .iter()
+            .chain(dependents)
+            .find_map(|(id, other)| (!self.units.contains_key(id)).then_some(other))
+        {
+            return Err(UnitBuildError::RemovedUnit {
+                unit: name.clone(),
+                removed: removed.clone(),
+            });
+        }
+        Ok(())
+    }
+
     fn ready_set(&self, unit_ids: Option<&[u64]>) -> ReadySet {
         let map = |id, unit: &Unit| {
             (
@@ -879,8 +920,10 @@ fn state_change<I: 'static, R: 'static + Send, Req: FnOnce(Rpc<I, R>) -> StateRe
 pub struct UnitBuilder<'a> {
     units: &'a StateUnits,
     name: Arc<str>,
-    dependencies: BTreeSet<u64>,
-    dependents: BTreeSet<u64>,
+    // The units to order this one with, by ID, and their names, which a build
+    // reports if the unit has been removed by then.
+    dependencies: BTreeMap<u64, Arc<str>>,
+    dependents: BTreeMap<u64, Arc<str>>,
     inspect_sensitivity: inspect::SensitivityLevel,
 }
 
@@ -890,7 +933,8 @@ impl UnitBuilder<'_> {
     /// Operations will be ordered to ensure that a dependency will stop after
     /// its dependants, and that it will reset or restore before its dependants.
     pub fn depends_on(mut self, handle: &UnitHandle) -> Self {
-        self.dependencies.insert(self.handle_id(handle));
+        let UnitId { name, id } = self.unit_id(handle);
+        self.dependencies.insert(id, name);
         self
     }
 
@@ -899,7 +943,8 @@ impl UnitBuilder<'_> {
     /// Operations will be ordered to ensure that a dependency will stop after
     /// its dependants, and that it will reset or restore before its dependants.
     pub fn dependency_of(mut self, handle: &UnitHandle) -> Self {
-        self.dependents.insert(self.handle_id(handle));
+        let UnitId { name, id } = self.unit_id(handle);
+        self.dependents.insert(id, name);
         self
     }
 
@@ -909,40 +954,53 @@ impl UnitBuilder<'_> {
         self
     }
 
-    fn handle_id(&self, handle: &UnitHandle) -> u64 {
+    fn unit_id(&self, handle: &UnitHandle) -> UnitId {
         // Ensure this handle is associated with this set of state units.
         assert_eq!(
             Weak::as_ptr(handle.inner.as_ref().unwrap()),
             Arc::as_ptr(&self.units.inner)
         );
-        handle.id.id
+        handle.id.clone()
     }
 
     /// Adds a new state unit sending requests to `send`.
-    pub fn build(self, send: Sender<StateRequest>) -> Result<UnitHandle, NameInUse> {
+    ///
+    /// Fails, and leaves the set unchanged, if another unit has the name, or
+    /// if a unit passed to [`Self::depends_on`] or [`Self::dependency_of`] has
+    /// been removed since.
+    pub fn build(self, send: Sender<StateRequest>) -> Result<UnitHandle, UnitBuildError> {
         let id = {
             let mut inner = self.units.inner.lock();
+            // Check everything before changing the set, so that a unit that
+            // cannot be added leaves no name, edge, or ID behind.
+            inner.check_new_unit(&self.name, &self.dependencies, &self.dependents)?;
             let id = inner.next_id;
-            let entry = match inner.names.entry(self.name.clone()) {
-                hash_map::Entry::Occupied(_) => return Err(NameInUse(self.name)),
-                hash_map::Entry::Vacant(e) => e,
-            };
-            entry.insert(id);
+            inner.names.insert(self.name.clone(), id);
 
-            for &dep in &self.dependencies {
-                inner.units.get_mut(&dep).unwrap().dependents.insert(id);
+            for &dep in self.dependencies.keys() {
+                inner
+                    .units
+                    .get_mut(&dep)
+                    .expect("dependency exists")
+                    .dependents
+                    .insert(id);
             }
 
-            for &dep in &self.dependents {
-                inner.units.get_mut(&dep).unwrap().dependencies.insert(id);
+            for &dep in self.dependents.keys() {
+                inner
+                    .units
+                    .get_mut(&dep)
+                    .expect("dependent exists")
+                    .dependencies
+                    .insert(id);
             }
             inner.units.insert(
                 id,
                 Unit {
                     name: self.name.clone(),
                     send,
-                    dependencies: self.dependencies,
-                    dependents: self.dependents,
+                    dependencies: self.dependencies.into_keys().collect(),
+                    dependents: self.dependents.into_keys().collect(),
                     state: State::Stopped,
                     inspect_sensitivity: self.inspect_sensitivity,
                 },
@@ -970,7 +1028,7 @@ impl UnitBuilder<'_> {
         self,
         spawner: impl Spawn,
         f: F,
-    ) -> Result<SpawnedUnit<Fut::Output>, NameInUse>
+    ) -> Result<SpawnedUnit<Fut::Output>, UnitBuildError>
     where
         F: FnOnce(Receiver<StateRequest>) -> Fut,
         Fut: 'static + Send + Future,
@@ -1047,6 +1105,8 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod build;
+
     use super::StateTransitionErrorKind;
     use super::StateUnit;
     use super::StateUnits;
