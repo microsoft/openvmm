@@ -9,6 +9,7 @@ mod intel_vtd_wiring;
 mod ioapic_iommu_wiring;
 mod pcie_topology;
 mod pcie_wiring;
+mod read_memory;
 mod smmu_wiring;
 
 use self::device_removal::DeviceRemovalState;
@@ -3976,11 +3977,7 @@ impl LoadedVm {
                     }
                     VmRpc::ReadMemory(rpc) => {
                         rpc.handle_failable_sync(|(gpa, size)| {
-                            let mut bytes = vec![0u8; size];
-                            self.inner
-                                .gm
-                                .read_at(gpa, bytes.as_mut_slice())
-                                .map(|_| bytes)
+                            read_memory::read_guest_memory(&self.inner.gm, gpa, size)
                         });
                     }
                     VmRpc::WriteMemory(rpc) => rpc.handle_failable_sync(|(gpa, bytes)| {
