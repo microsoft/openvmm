@@ -187,3 +187,132 @@ fn a_removal_racing_a_build_leaves_the_set_consistent() {
         assert_no_dangling_edges(&inner);
     }
 }
+
+/// A build fails, without changing the set, if the new unit would depend,
+/// directly or through other units, on a unit that it would also be a
+/// dependency of, whether `depends_on` or `dependency_of` made the edges.
+#[test]
+fn dependency_cycles_fail_the_build_without_changing_the_set() {
+    let units = StateUnits::new();
+    // The dependency edges, each from a unit to one that it depends on, are
+    // c -> b -> a -> e, where `e.dependency_of(a)` made the last one.
+    let a = add(&units, "a");
+    let b = units
+        .add("b")
+        .depends_on(&a)
+        .build(mesh::channel().0)
+        .unwrap();
+    let c = units
+        .add("c")
+        .depends_on(&b)
+        .build(mesh::channel().0)
+        .unwrap();
+    let e = units
+        .add("e")
+        .dependency_of(&a)
+        .build(mesh::channel().0)
+        .unwrap();
+    let before = Inventory::of(&units);
+
+    let cycles = [
+        // x -> a -> x
+        (units.add("x").depends_on(&a).dependency_of(&a), "a"),
+        // x -> c -> b -> a -> x
+        (units.add("x").depends_on(&c).dependency_of(&a), "a"),
+        // x -> a -> e -> x, through the edge that `dependency_of` made
+        (units.add("x").depends_on(&a).dependency_of(&e), "e"),
+        // x -> c -> b -> x, with each edge requested twice
+        (
+            units
+                .add("x")
+                .depends_on(&c)
+                .depends_on(&c)
+                .dependency_of(&b)
+                .dependency_of(&b),
+            "b",
+        ),
+    ];
+    for (builder, expected) in cycles {
+        let err = builder.build(mesh::channel().0).unwrap_err();
+        let UnitBuildError::DependencyCycle { unit, dependent } = &err else {
+            panic!("{err}");
+        };
+        assert_eq!((&**unit, &**dependent), ("x", expected));
+        assert_eq!(Inventory::of(&units), before);
+    }
+
+    // Paths beside existing ones form no cycle: b -> x -> a beside b -> a, and
+    // c -> y -> b and c -> y -> e beside c -> b -> a -> e, where y reaches a
+    // and e along two paths each.
+    let x = units
+        .add("x")
+        .depends_on(&a)
+        .dependency_of(&b)
+        .build(mesh::channel().0)
+        .unwrap();
+    let y = units
+        .add("y")
+        .depends_on(&b)
+        .depends_on(&e)
+        .dependency_of(&c)
+        .build(mesh::channel().0)
+        .unwrap();
+    let inner = units.inner.lock();
+    assert_eq!(
+        inner.units[&id(&b)].dependencies,
+        BTreeSet::from([id(&a), id(&x)])
+    );
+    assert_eq!(
+        inner.units[&id(&c)].dependencies,
+        BTreeSet::from([id(&b), id(&y)])
+    );
+    assert_eq!(
+        inner.units[&id(&y)].dependencies,
+        BTreeSet::from([id(&b), id(&e)])
+    );
+    assert_no_dangling_edges(&inner);
+}
+
+/// Ordered state changes wait for a unit's dependencies, or for its dependents
+/// when stopping, so the units of a cycle would wait for one another forever.
+/// Adding a unit that would close a cycle fails, even while the units run, and
+/// the set still stops and starts.
+#[async_test]
+async fn rejected_cycles_leave_ordered_state_changes_able_to_complete(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let a = units
+        .add("a")
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    let b = units
+        .add("b")
+        .depends_on(a.handle())
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    units.start().await;
+
+    for builder in [
+        units
+            .add("x")
+            .depends_on(a.handle())
+            .dependency_of(a.handle()),
+        units
+            .add("x")
+            .depends_on(b.handle())
+            .dependency_of(a.handle()),
+    ] {
+        let err = builder
+            .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+            .unwrap_err();
+        assert!(
+            matches!(err, UnitBuildError::DependencyCycle { .. }),
+            "{err}"
+        );
+    }
+
+    units.start_stopped_units().await;
+    units.stop().await;
+    units.reset().await.unwrap();
+    units.start().await;
+    units.stop().await;
+}

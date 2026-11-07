@@ -257,6 +257,17 @@ pub enum UnitBuildError {
         /// The name of the removed unit.
         removed: Arc<str>,
     },
+    /// The new unit would depend, directly or through other units, on a unit
+    /// that it would also be a dependency of. No state change that orders the
+    /// units could complete with such a cycle.
+    #[error("state unit {unit} would form a dependency cycle with state unit {dependent}")]
+    DependencyCycle {
+        /// The name of the new unit.
+        unit: Arc<str>,
+        /// The name of the unit that the new unit would both depend on and be a
+        /// dependency of.
+        dependent: Arc<str>,
+    },
 }
 
 /// The error returned by [`UnitBuilder::build`] and [`UnitBuilder::spawn`],
@@ -826,6 +837,29 @@ impl Inner {
                 removed: removed.clone(),
             });
         }
+        // The units in the set form no cycle, so a new cycle would run from the
+        // new unit to one of its dependencies, along existing dependency edges
+        // to one of its dependents, and back to the new unit. Without
+        // dependents, nothing leads back to the new unit.
+        if dependents.is_empty() {
+            return Ok(());
+        }
+        let mut pending = dependencies.keys().copied().collect::<Vec<_>>();
+        let mut reached = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if let Some(dependent) = dependents.get(&id) {
+                return Err(UnitBuildError::DependencyCycle {
+                    unit: name.clone(),
+                    dependent: dependent.clone(),
+                });
+            }
+            // A unit that is not in the set has no edges to follow.
+            if reached.insert(id)
+                && let Some(unit) = self.units.get(&id)
+            {
+                pending.extend(&unit.dependencies);
+            }
+        }
         Ok(())
     }
 
@@ -861,6 +895,11 @@ struct ReadyState {
 }
 
 impl ReadySet {
+    /// Waits, in turn, for each unit of `deps` in this set to finish its state
+    /// change, and returns false at the first one that failed.
+    ///
+    /// [`UnitBuilder::build`] rejects dependency cycles, so an operation's
+    /// waits all end once every unit answers its own request.
     async fn wait(&self, op: &str, id: u64, deps: &[u64]) -> bool {
         for dep in deps {
             if let Some(dep) = self.0.get(dep) {
@@ -965,9 +1004,9 @@ impl UnitBuilder<'_> {
 
     /// Adds a new state unit sending requests to `send`.
     ///
-    /// Fails, and leaves the set unchanged, if another unit has the name, or
-    /// if a unit passed to [`Self::depends_on`] or [`Self::dependency_of`] has
-    /// been removed since.
+    /// Fails, and leaves the set unchanged, if another unit has the name, if
+    /// a unit passed to [`Self::depends_on`] or [`Self::dependency_of`] has
+    /// been removed since, or if the new unit would form a dependency cycle.
     pub fn build(self, send: Sender<StateRequest>) -> Result<UnitHandle, UnitBuildError> {
         let id = {
             let mut inner = self.units.inner.lock();
