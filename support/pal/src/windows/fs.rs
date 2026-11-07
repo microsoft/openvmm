@@ -6,12 +6,18 @@ pub mod sparse;
 
 use super::chk_status;
 use super::dos_to_nt_path;
+use std::ffi::OsString;
 use std::ffi::c_void;
 use std::fs;
 use std::io;
 use std::mem::zeroed;
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::AsRawHandle;
+use std::path::Component;
 use std::path::Path;
+use std::path::PathBuf;
+use std::path::Prefix;
 use std::ptr::null_mut;
 use widestring::U16CString;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
@@ -96,13 +102,82 @@ pub fn is_unix_socket(path: &Path) -> io::Result<bool> {
         && data.dwReserved0 == IO_REPARSE_TAG_AF_UNIX)
 }
 
+/// Returns `path` in a form that the Win32 file functions take whatever its
+/// length. Without the extended-length `\\?\` prefix, `CreateDirectoryW`
+/// refuses a path of 248 or more UTF-16 code units, and the other functions,
+/// such as `CreateFileW` and `MoveFileExW`, one of 260 or more.
+///
+/// The path is resolved, as Win32 resolves it, before the prefix is added,
+/// since the file system takes an extended-length path as given, and a path
+/// shorter than 248 code units keeps its resolved form. Win32 also takes an NT
+/// path, `\??\...`, as given, and refuses an empty path itself, so both keep
+/// their form, as do verbatim and device paths.
+pub fn extended_length_path(path: &Path) -> io::Result<PathBuf> {
+    let raw = path.as_os_str();
+    if raw.is_empty() || raw.encode_wide().take(4).eq(r"\??\".encode_utf16()) {
+        return Ok(path.to_path_buf());
+    }
+    let path = std::path::absolute(path)?;
+    if path.as_os_str().encode_wide().count() < 248 {
+        return Ok(path);
+    }
+    let (prefix, skip) = match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(_) => (r"\\?\", 0),
+            Prefix::UNC(..) => (r"\\?\UNC\", 2),
+            _ => ("", 0),
+        },
+        _ => ("", 0),
+    };
+    let extended = prefix
+        .encode_utf16()
+        .chain(path.as_os_str().encode_wide().skip(skip))
+        .collect::<Vec<_>>();
+    Ok(OsString::from_wide(&extended).into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn test_query_stat_lx() {
         let result = query_stat_lx_by_name(r"C:\\".as_ref()).unwrap();
         assert_ne!(0, result.FileId);
+    }
+
+    #[test]
+    fn extended_length_paths_prefix_resolved_long_paths() {
+        let extended = |path: &str| extended_length_path(Path::new(path)).unwrap();
+        let name = |length| "a".repeat(length);
+
+        // Disk and UNC paths take the prefix from 248 UTF-16 code units, once
+        // resolved.
+        let short = format!(r"C:\{}", name(244));
+        let long = format!(r"C:\{}", name(245));
+        assert_eq!(extended(&short), Path::new(&short));
+        assert_eq!(extended(&long), Path::new(&format!(r"\\?\{long}")));
+        let long = format!(r"\\server\share\{}", name(233));
+        assert_eq!(
+            extended(&long),
+            Path::new(&format!(r"\\?\UNC\{}", &long[2..]))
+        );
+        assert_eq!(
+            extended(&format!("C:/{}/./child/../leaf", name(300))),
+            Path::new(&format!(r"\\?\C:\{}\leaf", name(300)))
+        );
+        let relative = std::env::current_dir().unwrap().join(name(300));
+        assert_eq!(extended(&name(300)), extended(relative.to_str().unwrap()));
+
+        // Verbatim, NT, device, and empty paths keep their form.
+        for path in [
+            format!(r"\\?\C:\{}", name(300)),
+            format!(r"\??\C:\{}", name(300)),
+            format!(r"\\.\C:\{}", name(300)),
+            String::new(),
+        ] {
+            assert_eq!(extended(&path), Path::new(&path));
+        }
     }
 }
