@@ -96,8 +96,7 @@ use virt::time_abi::msr::amd_config_msr_write;
 use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::tsc::GuestTscOffset;
-use virt::time_abi::tsc::OFFSET_ATTEMPTS;
-use virt::time_abi::tsc::OFFSET_TARGET_CYCLES;
+use virt::time_abi::tsc::OffsetSearch;
 use virt::x86::topology::per_vp_cpuid_bits;
 use whp::abi::WHV_CPUID_OUTPUT;
 use whp::abi::WHV_EXTENDED_VM_EXITS;
@@ -1215,28 +1214,24 @@ impl TimeAbiBackend for WhpPartitionInner {
         for (_, vtlp) in self.vtlps() {
             vtlp.set_time_frozen(false);
         }
+        let tsc_hz = self.native_tsc_hz()?;
+        let search = OffsetSearch::at_rate(tsc_hz);
         let bsp = self.vtl0.whp.vp(VpIndex::BSP.index());
-        let offset = GuestTscOffset::measure(OFFSET_ATTEMPTS, OFFSET_TARGET_CYCLES, || {
-            bsp.get_register(whp::Register64::Tsc)
-        })
-        .map_err(|err| {
-            TimeAbiError::new(
-                TimeAbiCode::TscAnchor,
-                format!("cannot read the TSC of VP 0: {err}"),
-            )
-        })?
-        .ok_or_else(|| {
-            TimeAbiError::new(
-                TimeAbiCode::TscAnchor,
-                "the host TSC went backwards around every read of VP 0's TSC",
-            )
-        })?;
-        tracing::info!(
-            offset = format_args!("{:#x}", offset.offset),
-            uncertainty_cycles = offset.uncertainty,
-            "time ABI: guest TSC offset"
-        );
-        Ok(offset)
+        let measured = GuestTscOffset::measure(search, || bsp.get_register(whp::Register64::Tsc))
+            .map_err(|err| {
+                TimeAbiError::new(
+                    TimeAbiCode::TscAnchor,
+                    format!("cannot read the TSC of VP 0: {err}"),
+                )
+            })?
+            .ok_or_else(|| {
+                TimeAbiError::new(
+                    TimeAbiCode::TscAnchor,
+                    "the host TSC went backwards around every read of VP 0's TSC",
+                )
+            })?;
+        measured.log(tsc_hz);
+        measured.within_bound(search, tsc_hz)
     }
 }
 
@@ -3043,12 +3038,12 @@ mod whp_tests {
         };
         partition.resume_time().unwrap();
         let bsp = partition.vp(0);
+        let search = OffsetSearch::at_rate(whp::capabilities::processor_clock_frequency().unwrap());
         let measure = || {
-            GuestTscOffset::measure(OFFSET_ATTEMPTS, OFFSET_TARGET_CYCLES, || {
-                bsp.get_register(whp::Register64::Tsc)
-            })
-            .unwrap()
-            .unwrap()
+            GuestTscOffset::measure(search, || bsp.get_register(whp::Register64::Tsc))
+                .unwrap()
+                .unwrap()
+                .offset
         };
         let first = measure();
         std::thread::sleep(std::time::Duration::from_millis(500));
