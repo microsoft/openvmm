@@ -1157,6 +1157,54 @@ mod tests {
         keeper.stop().await;
     }
 
+    #[test]
+    fn test_timeout_half_the_ring_after_start() {
+        // A time source task that never yields blocks its executor's thread for
+        // good, so run the executor on a thread of its own, and fail the test
+        // if it does not finish in time.
+        let (send, recv) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            pal_async::DefaultPool::run_with(async |driver| {
+                let start = VmTime::from_100ns(0);
+                let mut keeper = VmTimeKeeper::new(&driver, start);
+                let mut access = keeper
+                    .builder()
+                    .build(&driver)
+                    .await
+                    .unwrap()
+                    .access("test");
+                keeper.start().await;
+                PolledTimer::new(&driver)
+                    .sleep(Duration::from_millis(10))
+                    .await;
+
+                // Half the ring after the start, the earliest time that VM
+                // time's circular order puts before the start. As VM time has
+                // run since the start, that order puts it after now.
+                let timeout = VmTime::from_100ns(start.as_100ns().wrapping_add(1 << 63));
+                assert!(timeout.is_after(access.now()));
+                assert!(timeout.is_before(start));
+                access.set_timeout_if_before(timeout);
+                check_unrepresentable_timeout(&driver, &mut access).await;
+                assert_eq!(
+                    access.host_time(timeout),
+                    Some(Instant::from_nanos(u64::MAX))
+                );
+                keeper.stop().await;
+            });
+            let _ = send.send(());
+        });
+        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+            recv.recv_timeout(Duration::from_secs(10))
+        {
+            panic!("the test did not finish within 10 seconds");
+        }
+        // The thread finished, or it panicked and dropped `send`.
+        thread
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    }
+
     #[async_test]
     async fn test_timeout_nearly_half_the_ring_ahead(driver: DefaultDriver) {
         let start = VmTime::from_100ns(0);
