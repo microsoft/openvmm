@@ -33,7 +33,12 @@
 //!    or vectored exception handlers (Windows) intercept access violations.
 //!    When a fault occurs, the handler searches the recovery descriptor table
 //!    for a matching instruction pointer range and, if found, redirects
-//!    execution to the recovery code.
+//!    execution to the recovery code. Any other fault is passed on: on Unix to
+//!    the signal's previous action, such as the Rust runtime's stack overflow
+//!    handler or the default action, after a line on standard error reports
+//!    the fault, and on Windows to the next exception handler. It therefore
+//!    terminates the process with the original signal or exception, as it
+//!    would without these handlers.
 //!
 //! 4. **Thread-local fault tracking**: The faulting address and fault details
 //!    are stored in thread-local storage, allowing the caller to determine
@@ -484,11 +489,254 @@ type Context = libc::__darwin_mcontext64;
 #[cfg(windows)]
 type Context = windows_sys::Win32::System::Diagnostics::Debug::CONTEXT;
 
+/// The signals that report the access faults that trycopy recovers from.
+#[cfg(unix)]
+const HANDLED_SIGNALS: &[libc::c_int] = &[
+    libc::SIGSEGV,
+    libc::SIGBUS,
+    // SIGILL is used on Linux/aarch64 to signal certain memory access
+    // faults from a hypervisor.
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    libc::SIGILL,
+];
+
+/// The actions that [`HANDLED_SIGNALS`] had before trycopy installed its
+/// handler, in the same order.
+#[cfg(unix)]
+static PREVIOUS_ACTIONS: std::sync::OnceLock<Vec<libc::sigaction>> = std::sync::OnceLock::new();
+
+/// The executable's load bias and the address range of its loadable segments,
+/// used to report a faulting instruction as an offset in the executable.
+#[cfg(target_os = "linux")]
+static EXECUTABLE_LAYOUT: std::sync::OnceLock<(usize, std::ops::Range<usize>)> =
+    std::sync::OnceLock::new();
+
+/// Returns the executable's load bias and the address range of its loadable
+/// segments, as the C runtime describes the executable: the first object that
+/// `dl_iterate_phdr` reports.
+///
+/// The C runtime determines the bias of every kind of executable. The program
+/// headers in the auxiliary vector give it only through their `PT_PHDR`
+/// entry, which the GNU linker omits from an executable without an
+/// interpreter. A static PIE executable, such as Rust links for
+/// `x86_64-unknown-linux-musl`, lacks it, although it is loaded at a nonzero
+/// address.
+///
+/// Not async-signal-safe, since `dl_iterate_phdr` may take a lock.
+#[cfg(target_os = "linux")]
+fn executable_layout() -> Option<(usize, std::ops::Range<usize>)> {
+    /// Stores the layout of the first object in the `Option` that `data`
+    /// points to, and stops the iteration.
+    ///
+    /// # Safety
+    /// Must only be called by `dl_iterate_phdr`, with `data` pointing to an
+    /// `Option<(usize, Range<usize>)>`.
+    unsafe extern "C" fn first_object(
+        info: *mut libc::dl_phdr_info,
+        _size: libc::size_t,
+        data: *mut libc::c_void,
+    ) -> libc::c_int {
+        // SAFETY: `dl_iterate_phdr` passes a valid description of a loaded
+        // object, and the caller passes `data` as documented.
+        let (info, layout) = unsafe {
+            (
+                &*info,
+                &mut *data.cast::<Option<(usize, std::ops::Range<usize>)>>(),
+            )
+        };
+        if !info.dlpi_phdr.is_null() {
+            // SAFETY: the object's program headers stay mapped while it is
+            // loaded.
+            let headers =
+                unsafe { std::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum.into()) };
+            let bias = info.dlpi_addr as usize;
+            let (start, end) = headers.iter().filter(|h| h.p_type == libc::PT_LOAD).fold(
+                (usize::MAX, 0),
+                |(start, end), h| {
+                    (
+                        start.min(h.p_vaddr as usize),
+                        end.max(h.p_vaddr.wrapping_add(h.p_memsz) as usize),
+                    )
+                },
+            );
+            *layout =
+                (start < end).then(|| (bias, bias.wrapping_add(start)..bias.wrapping_add(end)));
+        }
+        // Stop after the first object, which is the executable.
+        1
+    }
+
+    let mut layout = None;
+    // SAFETY: `first_object` is passed a pointer to the layout, as it requires.
+    unsafe { libc::dl_iterate_phdr(Some(first_object), (&raw mut layout).cast()) };
+    layout
+}
+
+/// A line of text built without allocating, for use in a signal handler.
+#[cfg(unix)]
+struct SignalSafeLine {
+    buf: [u8; 192],
+    len: usize,
+}
+
+#[cfg(unix)]
+impl SignalSafeLine {
+    fn new() -> Self {
+        Self {
+            buf: [0; 192],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> &mut Self {
+        let len = bytes.len().min(self.buf.len() - self.len);
+        self.buf[self.len..][..len].copy_from_slice(&bytes[..len]);
+        self.len += len;
+        self
+    }
+
+    fn push_hex(&mut self, value: usize) -> &mut Self {
+        let mut digits = [b'0'; 2 + 2 * size_of::<usize>()];
+        digits[1] = b'x';
+        for (i, digit) in digits[2..].iter_mut().rev().enumerate() {
+            *digit = b"0123456789abcdef"[(value >> (4 * i)) & 0xf];
+        }
+        self.push(&digits)
+    }
+
+    fn push_decimal(&mut self, value: i32) -> &mut Self {
+        if value < 0 {
+            self.push(b"-");
+        }
+        let mut value = value.unsigned_abs();
+        let mut digits = [0; 10];
+        let mut start = digits.len();
+        loop {
+            start -= 1;
+            digits[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        self.push(&digits[start..])
+    }
+}
+
+/// Reports a fault that no recovery region covers on standard error, with
+/// the signal, its code, the faulting address (if the signal has one), and
+/// the faulting instruction. On Linux, the report also gives the instruction
+/// as an offset in the executable, which a symbolizer such as `addr2line` can
+/// resolve.
+///
+/// Uses only async-signal-safe operations.
+#[cfg(unix)]
+fn report_unrecovered_fault(sig: libc::c_int, code: libc::c_int, address: *mut u8, ip: usize) {
+    let name: &[u8] = match sig {
+        libc::SIGSEGV => b"SIGSEGV",
+        libc::SIGBUS => b"SIGBUS",
+        libc::SIGILL => b"SIGILL",
+        _ => b"signal",
+    };
+    let mut line = SignalSafeLine::new();
+    line.push(b"trycopy: unrecovered ")
+        .push(name)
+        .push(b" (code ")
+        .push_decimal(code)
+        .push(b")");
+    if sig == libc::SIGSEGV || sig == libc::SIGBUS {
+        line.push(b" at address ").push_hex(address.addr());
+    }
+    line.push(b" from instruction ").push_hex(ip);
+    #[cfg(target_os = "linux")]
+    if let Some((bias, range)) = EXECUTABLE_LAYOUT.get() {
+        if range.contains(&ip) {
+            line.push(b" (executable offset ")
+                .push_hex(ip.wrapping_sub(*bias))
+                .push(b")");
+        }
+    }
+    line.push(b"\n");
+    // SAFETY: `write` is async-signal-safe, and the buffer is valid for
+    // `line.len` bytes. Nothing can be done if the write fails.
+    unsafe { libc::write(libc::STDERR_FILENO, line.buf.as_ptr().cast(), line.len) };
+}
+
+/// Passes a fault that no recovery region covers to the action that `sig` had
+/// before trycopy installed its handler, so that trycopy does not change how
+/// the fault terminates the process.
+///
+/// That action is typically the Rust runtime's handler, which reports a stack
+/// overflow and aborts, and otherwise restores the default action, as this
+/// function does when there was no handler. The default action terminates the
+/// process with `sig` and dumps the faulting instruction's state when that
+/// instruction faults again after the handler returns. As with the Rust
+/// runtime's handler alone, if another thread has made the address accessible
+/// in the meantime, execution continues with the default action installed.
+///
+/// # Safety
+/// Must be called from the handler for `sig`, with that handler's arguments.
+#[cfg(unix)]
+unsafe fn chain_fault(sig: libc::c_int, info: *mut libc::siginfo_t, ucontext: *mut libc::c_void) {
+    type SigInfoHandler =
+        unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
+    type Handler = unsafe extern "C" fn(libc::c_int);
+
+    let previous = HANDLED_SIGNALS
+        .iter()
+        .position(|&handled| handled == sig)
+        .and_then(|index| PREVIOUS_ACTIONS.get()?.get(index));
+    match previous {
+        Some(action)
+            if action.sa_sigaction != libc::SIG_DFL && action.sa_sigaction != libc::SIG_IGN =>
+        {
+            // SAFETY: `sa_sigaction` holds a handler of the type that
+            // `SA_SIGINFO` selects, which is called with the arguments of the
+            // signal being handled, as the kernel would have called it.
+            unsafe {
+                if action.sa_flags & libc::SA_SIGINFO != 0 {
+                    std::mem::transmute::<libc::sighandler_t, SigInfoHandler>(action.sa_sigaction)(
+                        sig, info, ucontext,
+                    );
+                } else {
+                    std::mem::transmute::<libc::sighandler_t, Handler>(action.sa_sigaction)(sig);
+                }
+            }
+        }
+        _ => {
+            // Restore the default action. A synchronous fault cannot be
+            // ignored, so returning re-executes the faulting instruction, which
+            // then terminates the process with `sig`.
+            //
+            // SAFETY: `sigaction` is async-signal-safe, and a zeroed action
+            // with `SIG_DFL` is valid.
+            unsafe {
+                let action = libc::sigaction {
+                    sa_sigaction: libc::SIG_DFL,
+                    ..core::mem::zeroed()
+                };
+                libc::sigaction(sig, &action, std::ptr::null_mut());
+            }
+        }
+    }
+}
+
 /// # Safety
 /// This function installs global signal handlers. It must only be called once.
 #[cfg(unix)]
 unsafe fn install_signal_handlers() {
-    fn handle_signal(sig: i32, info: &libc::siginfo_t, ucontext: &mut libc::ucontext_t) {
+    /// # Safety
+    /// Must only be called by the kernel as an `SA_SIGINFO` signal handler.
+    unsafe extern "C" fn handle_signal(
+        sig: libc::c_int,
+        info_ptr: *mut libc::siginfo_t,
+        ucontext_ptr: *mut libc::c_void,
+    ) {
+        // SAFETY: an `SA_SIGINFO` handler receives valid signal information
+        // and an exclusively borrowed user context.
+        let (info, ucontext) =
+            unsafe { (&*info_ptr, &mut *ucontext_ptr.cast::<libc::ucontext_t>()) };
+
         #[cfg(target_os = "linux")]
         let ctx = &mut ucontext.uc_mcontext;
 
@@ -540,27 +788,43 @@ unsafe fn install_signal_handlers() {
 
         let recovered = recover(ctx, failure);
         if !recovered {
-            std::process::abort();
+            report_unrecovered_fault(sig, info.si_code, address, get_context_ip(ctx));
+            // SAFETY: called from the handler for `sig` with its arguments.
+            unsafe { chain_fault(sig, info_ptr, ucontext_ptr) };
         }
     }
 
-    // SAFETY: installing signal handlers as documented.
+    // Determine the executable's layout here, not in the handler, which only
+    // reads it: `executable_layout` is not async-signal-safe.
+    #[cfg(target_os = "linux")]
+    if let Some(layout) = executable_layout() {
+        let _ = EXECUTABLE_LAYOUT.set(layout);
+    }
+
+    // SAFETY: installing signal handlers as documented. The previous actions
+    // are recorded before the handlers that read them are installed.
     unsafe {
+        let previous = HANDLED_SIGNALS
+            .iter()
+            .map(|&signal| {
+                let mut previous: libc::sigaction = core::mem::zeroed();
+                libc::sigaction(signal, std::ptr::null(), &mut previous);
+                previous
+            })
+            .collect();
+        assert!(
+            PREVIOUS_ACTIONS.set(previous).is_ok(),
+            "signal handlers are installed only once"
+        );
+
         let act = libc::sigaction {
             sa_sigaction: handle_signal as *const () as usize,
-            sa_flags: libc::SA_SIGINFO,
+            // Run on the thread's alternate signal stack, if it has one, so
+            // that a stack overflow still reaches the Rust runtime's handler.
+            sa_flags: libc::SA_SIGINFO | libc::SA_ONSTACK,
             ..core::mem::zeroed()
         };
-        for signal in [
-            libc::SIGSEGV,
-            libc::SIGBUS,
-            // SIGILL is used on Linux/aarch64 to signal certain memory access
-            // faults from a hypervisor.
-            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-            libc::SIGILL,
-        ] {
-            // TODO: chain to previous handler. Doing so safely and correctly
-            // might require running this code before `main`, via a constructor.
+        for &signal in HANDLED_SIGNALS {
             libc::sigaction(signal, &act, std::ptr::null_mut());
         }
     }
@@ -994,6 +1258,119 @@ mod tests {
                 std::io::Error::last_os_error()
             );
         }
+    }
+
+    /// Selects the fault that [`unrecovered_fault_child`] raises in a child
+    /// process.
+    #[cfg(target_os = "linux")]
+    const UNRECOVERED_FAULT_CHILD: &str = "TRYCOPY_TEST_UNRECOVERED_FAULT";
+
+    /// Runs [`unrecovered_fault_child`] in a child process that raises
+    /// `fault`, returning the child's exit status and standard error.
+    #[cfg(target_os = "linux")]
+    fn run_unrecovered_fault_child(fault: &str) -> (std::process::ExitStatus, String) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::unrecovered_fault_child", "--nocapture"])
+            .env(UNRECOVERED_FAULT_CHILD, fault)
+            .output()
+            .unwrap();
+        (
+            output.status,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    /// Recurses until the stack overflows.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[inline(never)]
+    fn overflow_stack(depth: u64) -> u64 {
+        let frame = std::hint::black_box([depth; 64]);
+        if frame[0] == u64::MAX {
+            return 0;
+        }
+        overflow_stack(depth + 1).wrapping_add(frame[63])
+    }
+
+    /// In a child process started by [`run_unrecovered_fault_child`], raises
+    /// a fault outside any recovery region after installing the trycopy
+    /// handlers. Does nothing in the test process itself.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unrecovered_fault_child() {
+        let Some(fault) = std::env::var_os(UNRECOVERED_FAULT_CHILD) else {
+            return;
+        };
+        // Don't leave a core dump behind for an expected crash.
+        //
+        // SAFETY: PR_SET_DUMPABLE takes no pointers and affects only this
+        // child process.
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
+        initialize_try_copy();
+        match fault.to_str().unwrap() {
+            "access" => {
+                let mapping = GuardedMapping::new();
+                // SAFETY: the middle page is within the reservation.
+                let address = unsafe { mapping.ptr.add(mapping.page_size) };
+                eprintln!("faulting at address {:#018x}", address.addr());
+                // SAFETY: the middle page is reserved but inaccessible, and no
+                // recovery region covers this read.
+                let _value = unsafe { std::ptr::read_volatile(address) };
+            }
+            #[cfg(target_env = "gnu")]
+            "stack_overflow" => {
+                std::thread::Builder::new()
+                    .stack_size(256 * 1024)
+                    .spawn(|| overflow_stack(0))
+                    .unwrap()
+                    .join()
+                    .unwrap();
+            }
+            fault => panic!("unknown fault {fault}"),
+        }
+        panic!("the fault did not terminate the process");
+    }
+
+    /// A fault outside a recovery region terminates the process with its own
+    /// signal, as it would without trycopy, rather than with SIGABRT.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unrecovered_fault_terminates_with_its_signal() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let (status, stderr) = run_unrecovered_fault_child("access");
+        assert_eq!(status.signal(), Some(libc::SIGSEGV), "{status}\n{stderr}");
+    }
+
+    /// A fault outside a recovery region is reported on standard error with its
+    /// code, its address, and the faulting instruction's executable offset.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unrecovered_fault_is_reported() {
+        let (_, stderr) = run_unrecovered_fault_child("access");
+        let address = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("faulting at address "))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        let report = stderr
+            .lines()
+            .find(|line| line.starts_with("trycopy: "))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        // An access to an inaccessible page reports SEGV_ACCERR.
+        let prefix = format!("trycopy: unrecovered SIGSEGV (code 2) at address {address} ");
+        assert!(report.starts_with(&prefix), "{report}");
+        assert!(report.contains(" (executable offset 0x"), "{report}");
+    }
+
+    /// A stack overflow still reaches the Rust runtime's handler, which
+    /// reports it, once trycopy handles SIGSEGV.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn unrecovered_stack_overflow_is_reported() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let (status, stderr) = run_unrecovered_fault_child("stack_overflow");
+        assert_eq!(status.signal(), Some(libc::SIGABRT), "{status}\n{stderr}");
+        assert!(stderr.contains("has overflowed its stack"), "{stderr}");
     }
 
     #[test]
