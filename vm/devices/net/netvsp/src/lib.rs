@@ -4820,6 +4820,11 @@ impl Coordinator {
                     .map(RxId)
                     .collect::<Vec<_>>();
 
+                // The guest reads the tag from the VLAN PPI.
+                let rx_offloads = net_backend::RxOffloadSupport {
+                    vlan: true,
+                    ..Default::default()
+                };
                 let mut initial_rx = initial_rx.as_slice();
                 let mut range_start = 0;
                 let primary_queue_excluded = !active_queues.is_empty() && active_queues[0] != 0;
@@ -4831,7 +4836,7 @@ impl Coordinator {
                     // buffers.
                     queue_config.push(QueueConfig {
                         driver: Box::new(drivers[0].clone()),
-                        enabled_rx_offloads: Default::default(),
+                        enabled_rx_offloads: rx_offloads,
                     });
                     per_queue_rx.push(Vec::new());
                     rx_buffers.push(RxBufferRange::new(
@@ -4867,7 +4872,7 @@ impl Coordinator {
                     let (this, rest) = initial_rx.split_at(end);
                     queue_config.push(QueueConfig {
                         driver: Box::new(drivers[queue_index as usize].clone()),
-                        enabled_rx_offloads: Default::default(),
+                        enabled_rx_offloads: rx_offloads,
                     });
                     per_queue_rx.push(this.to_vec());
                     initial_rx = rest;

@@ -25,6 +25,7 @@ mod tap_tests {
     use net_backend::Endpoint;
     use net_backend::QueueConfig;
     use net_backend::RxId;
+    use net_backend::RxOffloadSupport;
     use net_backend::TxFlags;
     use net_backend::TxId;
     use net_backend::TxMetadata;
@@ -226,6 +227,79 @@ mod tap_tests {
         assert_eq!(
             sent,
             frame.len() as isize,
+            "sendto: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    /// Sends a frame through a packet socket with a vnet header asking for a checksum.
+    fn send_frame_with_partial_checksum(
+        name: &str,
+        frame: &[u8],
+        csum_start: u16,
+        csum_offset: u16,
+    ) {
+        const ETH_P_ALL: u16 = 0x0003;
+        const PACKET_VNET_HDR: libc::c_int = 15;
+        const VIRTIO_NET_HDR_F_NEEDS_CSUM: u8 = 1;
+
+        // SAFETY: Creating an AF_PACKET socket; the test namespace grants
+        // CAP_NET_RAW.
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_PACKET,
+                libc::SOCK_RAW,
+                i32::from(ETH_P_ALL.to_be()),
+            )
+        };
+        assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+        // SAFETY: fd is a valid, newly created file descriptor.
+        let socket = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+
+        let enable: libc::c_int = 1;
+        // SAFETY: the option is an int, passed with its size.
+        let ret = unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_PACKET,
+                PACKET_VNET_HDR,
+                std::ptr::from_ref(&enable).cast(),
+                size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(ret, 0, "setsockopt: {}", std::io::Error::last_os_error());
+
+        let name = std::ffi::CString::new(name).unwrap();
+        // SAFETY: name is a valid, nul-terminated interface name.
+        let ifindex = unsafe { libc::if_nametoindex(name.as_ptr()) };
+        assert_ne!(ifindex, 0);
+        // SAFETY: All-zero is a valid sockaddr_ll starting state.
+        let mut addr: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
+        addr.sll_family = libc::AF_PACKET as u16;
+        addr.sll_protocol = ETH_P_ALL.to_be();
+        addr.sll_ifindex = ifindex as i32;
+
+        // The 10-byte `virtio_net_hdr`: flags, gso_type, hdr_len, gso_size, csum_start,
+        // csum_offset.
+        let mut bytes = vec![VIRTIO_NET_HDR_F_NEEDS_CSUM, 0, 0, 0, 0, 0];
+        bytes.extend_from_slice(&csum_start.to_le_bytes());
+        bytes.extend_from_slice(&csum_offset.to_le_bytes());
+        bytes.extend_from_slice(frame);
+
+        // SAFETY: socket, bytes, and sockaddr_ll are valid for sendto().
+        let sent = unsafe {
+            libc::sendto(
+                socket.as_raw_fd(),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                0,
+                std::ptr::from_ref(&addr).cast(),
+                size_of_val(&addr) as libc::socklen_t,
+            )
+        };
+        assert_eq!(
+            sent,
+            bytes.len() as isize,
             "sendto: {}",
             std::io::Error::last_os_error()
         );
@@ -434,6 +508,169 @@ mod tap_tests {
         let n = queue.rx_poll(&mut pool, &mut packets).unwrap();
         assert_eq!(n, 1);
         assert_eq!(packets[0].0, usable.0);
+    }
+
+    /// A frame of `len` bytes with `tpid` and [`RX_TCI`] after the MAC addresses, filled with
+    /// `marker`.
+    fn tagged_frame(len: usize, tpid: u16, marker: u8) -> Vec<u8> {
+        let mut frame = vec![marker; len];
+        frame[..12].copy_from_slice(&[0x02, 0, 0, 0, 0, 0x99, 0x02, 0, 0, 0, 0, 0x77]);
+        frame[12..14].copy_from_slice(&tpid.to_be_bytes());
+        frame[14..16].copy_from_slice(&RX_TCI.to_be_bytes());
+        if len >= 18 {
+            frame[16..18].copy_from_slice(&0x88b5u16.to_be_bytes());
+        }
+        frame
+    }
+
+    /// A distinct value in each field, so a swapped pair fails.
+    const RX_TCI: u16 = (5 << 13) | (1 << 12) | 0x123;
+
+    fn assert_rx_tci(meta: &net_backend::RxMetadata) {
+        let vlan = meta.vlan.expect("the tag is out of band");
+        assert_eq!(vlan.priority(), 5);
+        assert!(vlan.drop_eligible_indicator());
+        assert_eq!(vlan.vlan_id(), 0x123);
+    }
+
+    fn stripped(frame: &[u8]) -> Vec<u8> {
+        [&frame[..12], &frame[16..]].concat()
+    }
+
+    /// A queue on a fresh tap with `offloads`.
+    async fn rx_queue(
+        driver: &DefaultDriver,
+        name: &str,
+        offloads: RxOffloadSupport,
+    ) -> (
+        TapEndpoint,
+        Box<dyn net_backend::Queue>,
+        net_backend::tests::Bufs,
+        guestmem::GuestMemory,
+    ) {
+        let mut endpoint = new_endpoint(name).unwrap();
+        disable_ipv6(name);
+        configure_tap(name, "10.0.0.1/24");
+        let (pool, mem) = make_pool();
+        let config = vec![QueueConfig {
+            driver: Box::new(driver.clone()),
+            enabled_rx_offloads: offloads,
+        }];
+        let mut queues = Vec::new();
+        endpoint
+            .get_queues(config, None, &mut queues)
+            .await
+            .unwrap();
+        (endpoint, queues.pop().unwrap(), pool, mem)
+    }
+
+    fn out_of_band_vlan() -> RxOffloadSupport {
+        RxOffloadSupport {
+            vlan: true,
+            ..Default::default()
+        }
+    }
+
+    /// The metadata and bytes delivered to `id`. `Bufs` lays buffers out by id, 2048 apart.
+    fn delivered(
+        pool: &net_backend::tests::Bufs,
+        mem: &guestmem::GuestMemory,
+        id: RxId,
+    ) -> (net_backend::RxMetadata, Vec<u8>) {
+        let meta = pool.rx_metadata(id).expect("delivered");
+        let mut bytes = vec![0; meta.len];
+        mem.read_at(u64::from(id.0) * 2048, &mut bytes).unwrap();
+        (meta, bytes)
+    }
+
+    /// A full-size tagged frame is 4 bytes over a buffer sized for the MTU. It fits with the tag
+    /// out of band, and is dropped with the tag inline. The small frame sent after it is what
+    /// gets delivered if it is dropped.
+    async fn test_tap_rx_vlan_strip_makes_a_full_size_frame_fit(driver: DefaultDriver) {
+        const MTU_FRAME: usize = 1514;
+        let id = RxId(1);
+        let frame = tagged_frame(MTU_FRAME + 4, 0x8100, 0x5a);
+        let small = tagged_frame(100, 0x8100, 0x6b);
+
+        let (endpoint, mut queue, mut pool, mem) =
+            rx_queue(&driver, "tap0", out_of_band_vlan()).await;
+        pool.set_capacity(id, MTU_FRAME as u32);
+        queue.rx_avail(&mut pool, &[id]);
+        send_ethernet_frame("tap0", &frame);
+        send_ethernet_frame("tap0", &small);
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+        let (meta, bytes) = delivered(&pool, &mem, id);
+        assert_eq!(meta.len, MTU_FRAME);
+        assert_eq!(bytes, stripped(&frame));
+        assert_rx_tci(&meta);
+        drop((endpoint, queue));
+
+        let (_endpoint, mut queue, mut pool, mem) =
+            rx_queue(&driver, "tap1", Default::default()).await;
+        pool.set_capacity(id, MTU_FRAME as u32);
+        queue.rx_avail(&mut pool, &[id]);
+        send_ethernet_frame("tap1", &frame);
+        send_ethernet_frame("tap1", &small);
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+        let (meta, bytes) = delivered(&pool, &mem, id);
+        assert_eq!(bytes, small);
+        assert!(meta.vlan.is_none());
+    }
+
+    /// An outer 802.1ad tag and a frame too short for a tag and an EtherType stay as they are. At
+    /// 18 bytes the tag comes out.
+    async fn test_tap_rx_vlan_strip_leaves_what_is_not_a_tag(driver: DefaultDriver) {
+        let (_endpoint, mut queue, mut pool, mem) =
+            rx_queue(&driver, "tap0", out_of_band_vlan()).await;
+        for (id, frame) in [
+            (1, tagged_frame(200, 0x88a8, 0x11)),
+            (2, tagged_frame(16, 0x8100, 0x22)),
+            (3, tagged_frame(17, 0x8100, 0x33)),
+        ] {
+            let id = RxId(id);
+            queue.rx_avail(&mut pool, &[id]);
+            send_ethernet_frame("tap0", &frame);
+            poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+            let (meta, bytes) = delivered(&pool, &mem, id);
+            assert_eq!(bytes, frame);
+            assert!(meta.vlan.is_none());
+            let mut packets = [RxId(0); 2];
+            assert_eq!(queue.rx_poll(&mut pool, &mut packets).unwrap(), 1);
+        }
+
+        let id = RxId(4);
+        let frame = tagged_frame(18, 0x8100, 0x44);
+        queue.rx_avail(&mut pool, &[id]);
+        send_ethernet_frame("tap0", &frame);
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+        let (meta, bytes) = delivered(&pool, &mem, id);
+        assert_eq!(bytes, stripped(&frame));
+        assert_rx_tci(&meta);
+    }
+
+    /// A partial checksum names a byte of the frame, so it moves with the bytes.
+    async fn test_tap_rx_vlan_strip_moves_a_partial_checksum(driver: DefaultDriver) {
+        let id = RxId(1);
+        let (_endpoint, mut queue, mut pool, mem) = rx_queue(
+            &driver,
+            "tap0",
+            RxOffloadSupport {
+                checksum: true,
+                vlan: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let frame = tagged_frame(200, 0x8100, 0x55);
+        queue.rx_avail(&mut pool, &[id]);
+        send_frame_with_partial_checksum("tap0", &frame, 38, 6);
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+        let (meta, bytes) = delivered(&pool, &mem, id);
+        assert_rx_tci(&meta);
+        assert_eq!(bytes, stripped(&frame));
+        let checksum = meta.offload.checksum_metadata().expect("still partial");
+        assert_eq!(checksum.start, 34);
+        assert_eq!(checksum.offset, 6);
     }
 
     /// Validates that flooding tx_avail doesn't panic or error — packets are
@@ -757,6 +994,18 @@ mod tap_tests {
             async_trial(
                 "tap_rx_reuses_undersized_buffer",
                 test_tap_rx_reuses_undersized_buffer,
+            ),
+            async_trial(
+                "tap_rx_vlan_strip_makes_a_full_size_frame_fit",
+                test_tap_rx_vlan_strip_makes_a_full_size_frame_fit,
+            ),
+            async_trial(
+                "tap_rx_vlan_strip_leaves_what_is_not_a_tag",
+                test_tap_rx_vlan_strip_leaves_what_is_not_a_tag,
+            ),
+            async_trial(
+                "tap_rx_vlan_strip_moves_a_partial_checksum",
+                test_tap_rx_vlan_strip_moves_a_partial_checksum,
             ),
             async_trial("tap_tx_wouldblock_drops", test_tap_tx_wouldblock_drops),
             async_trial("tap_tx_with_offloads", test_tap_tx_with_offloads),
