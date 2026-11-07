@@ -35,11 +35,13 @@
 //!    for a matching instruction pointer range and, if found, redirects
 //!    execution to the recovery code. Any other fault is passed on: on Unix to
 //!    the signal's previous action, such as the Rust runtime's stack overflow
-//!    handler or the default action, and on Windows to the next exception
-//!    handler. It therefore terminates the process with the original signal
-//!    or exception, as it would without these handlers. Like the kernel, the
-//!    Unix handler applies the previous action's signal mask and runs a
-//!    one-shot (`SA_RESETHAND`) action only for the first such fault.
+//!    handler or the default action, after a line on standard error reports
+//!    the fault if standard error takes it promptly, and on Windows to the
+//!    next exception handler. It therefore terminates the process with the
+//!    original signal or exception, as it would without these handlers. Like
+//!    the kernel, the Unix handler applies the previous action's signal mask
+//!    and runs a one-shot (`SA_RESETHAND`) action only for the first such
+//!    fault.
 //!
 //! 4. **Thread-local fault tracking**: The faulting address and fault details
 //!    are stored in thread-local storage, allowing the caller to determine
@@ -506,6 +508,197 @@ const HANDLED_SIGNALS: &[libc::c_int] = &[
 #[cfg(unix)]
 static PREVIOUS_ACTIONS: std::sync::OnceLock<Vec<libc::sigaction>> = std::sync::OnceLock::new();
 
+/// The executable's load bias and the address range of its loadable segments,
+/// used to report a faulting instruction as an offset in the executable.
+#[cfg(target_os = "linux")]
+static EXECUTABLE_LAYOUT: std::sync::OnceLock<(usize, std::ops::Range<usize>)> =
+    std::sync::OnceLock::new();
+
+/// Returns the executable's load bias and the address range of its loadable
+/// segments, as the C runtime describes the executable: the first object that
+/// `dl_iterate_phdr` reports.
+///
+/// The C runtime determines the bias of every kind of executable. The program
+/// headers in the auxiliary vector give it only through their `PT_PHDR`
+/// entry, which the GNU linker omits from an executable without an
+/// interpreter. A static PIE executable, such as Rust links for
+/// `x86_64-unknown-linux-musl`, lacks it, although it is loaded at a nonzero
+/// address.
+///
+/// Not async-signal-safe, since `dl_iterate_phdr` may take a lock.
+#[cfg(target_os = "linux")]
+fn executable_layout() -> Option<(usize, std::ops::Range<usize>)> {
+    /// Stores the layout of the first object in the `Option` that `data`
+    /// points to, and stops the iteration.
+    ///
+    /// # Safety
+    /// Must only be called by `dl_iterate_phdr`, with `data` pointing to an
+    /// `Option<(usize, Range<usize>)>`.
+    unsafe extern "C" fn first_object(
+        info: *mut libc::dl_phdr_info,
+        _size: libc::size_t,
+        data: *mut libc::c_void,
+    ) -> libc::c_int {
+        // SAFETY: `dl_iterate_phdr` passes a valid description of a loaded
+        // object, and the caller passes `data` as documented.
+        let (info, layout) = unsafe {
+            (
+                &*info,
+                &mut *data.cast::<Option<(usize, std::ops::Range<usize>)>>(),
+            )
+        };
+        if !info.dlpi_phdr.is_null() {
+            // SAFETY: the object's program headers stay mapped while it is
+            // loaded.
+            let headers =
+                unsafe { std::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum.into()) };
+            let bias = info.dlpi_addr as usize;
+            let (start, end) = headers.iter().filter(|h| h.p_type == libc::PT_LOAD).fold(
+                (usize::MAX, 0),
+                |(start, end), h| {
+                    (
+                        start.min(h.p_vaddr as usize),
+                        end.max(h.p_vaddr.wrapping_add(h.p_memsz) as usize),
+                    )
+                },
+            );
+            *layout =
+                (start < end).then(|| (bias, bias.wrapping_add(start)..bias.wrapping_add(end)));
+        }
+        // Stop after the first object, which is the executable.
+        1
+    }
+
+    let mut layout = None;
+    // SAFETY: `first_object` is passed a pointer to the layout, as it requires.
+    unsafe { libc::dl_iterate_phdr(Some(first_object), (&raw mut layout).cast()) };
+    layout
+}
+
+/// A line of text built without allocating, for use in a signal handler.
+#[cfg(unix)]
+struct SignalSafeLine {
+    buf: [u8; SIGNAL_SAFE_LINE_CAPACITY],
+    len: usize,
+}
+
+/// The longest [`SignalSafeLine`]. It is shorter than `PIPE_BUF`, so that a
+/// single `write` adds a line to a pipe whole.
+#[cfg(unix)]
+const SIGNAL_SAFE_LINE_CAPACITY: usize = 192;
+#[cfg(unix)]
+const _: () = assert!(SIGNAL_SAFE_LINE_CAPACITY <= libc::PIPE_BUF);
+
+#[cfg(unix)]
+impl SignalSafeLine {
+    fn new() -> Self {
+        Self {
+            buf: [0; SIGNAL_SAFE_LINE_CAPACITY],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> &mut Self {
+        let len = bytes.len().min(self.buf.len() - self.len);
+        self.buf[self.len..][..len].copy_from_slice(&bytes[..len]);
+        self.len += len;
+        self
+    }
+
+    fn push_hex(&mut self, value: usize) -> &mut Self {
+        let mut digits = [b'0'; 2 + 2 * size_of::<usize>()];
+        digits[1] = b'x';
+        for (i, digit) in digits[2..].iter_mut().rev().enumerate() {
+            *digit = b"0123456789abcdef"[(value >> (4 * i)) & 0xf];
+        }
+        self.push(&digits)
+    }
+
+    fn push_decimal(&mut self, value: i32) -> &mut Self {
+        if value < 0 {
+            self.push(b"-");
+        }
+        let mut value = value.unsigned_abs();
+        let mut digits = [0; 10];
+        let mut start = digits.len();
+        loop {
+            start -= 1;
+            digits[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        self.push(&digits[start..])
+    }
+}
+
+/// How long, in milliseconds, a report waits for standard error to take it.
+#[cfg(unix)]
+const REPORT_TIMEOUT_MS: libc::c_int = 100;
+
+/// Reports a fault that no recovery region covers on standard error, with
+/// the signal, its code, the faulting address (if the signal has one), and
+/// the faulting instruction. On Linux, the report also gives the instruction
+/// as an offset in the executable, which a symbolizer such as `addr2line` can
+/// resolve.
+///
+/// The report is best-effort: it is skipped if standard error cannot take it
+/// within [`REPORT_TIMEOUT_MS`], so that a stalled reader of a full pipe does
+/// not keep the fault from being passed on.
+///
+/// Uses only async-signal-safe operations.
+#[cfg(unix)]
+fn report_unrecovered_fault(sig: libc::c_int, code: libc::c_int, address: *mut u8, ip: usize) {
+    let name: &[u8] = match sig {
+        libc::SIGSEGV => b"SIGSEGV",
+        libc::SIGBUS => b"SIGBUS",
+        libc::SIGILL => b"SIGILL",
+        _ => b"signal",
+    };
+    let mut line = SignalSafeLine::new();
+    line.push(b"trycopy: unrecovered ")
+        .push(name)
+        .push(b" (code ")
+        .push_decimal(code)
+        .push(b")");
+    if sig == libc::SIGSEGV || sig == libc::SIGBUS {
+        line.push(b" at address ").push_hex(address.addr());
+    }
+    line.push(b" from instruction ").push_hex(ip);
+    #[cfg(target_os = "linux")]
+    if let Some((bias, range)) = EXECUTABLE_LAYOUT.get() {
+        if range.contains(&ip) {
+            line.push(b" (executable offset ")
+                .push_hex(ip.wrapping_sub(*bias))
+                .push(b")");
+        }
+    }
+    line.push(b"\n");
+    // Write the line with a single `write`, without retrying, and only if
+    // `poll` reports that standard error can take it, after waiting briefly
+    // for room. Setting `O_NONBLOCK` instead would change standard error's
+    // open file description, which other processes may share. A pipe that
+    // `poll` reports writable takes a line shorter than `PIPE_BUF` whole
+    // without blocking, unless another thread fills it between the `poll` and
+    // the `write`. An error or a hang-up skips the line too, so that a pipe
+    // without a reader does not raise SIGPIPE.
+    let mut stderr = libc::pollfd {
+        fd: libc::STDERR_FILENO,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: `poll` is async-signal-safe, and `stderr` is a valid `pollfd`.
+    let writable = unsafe { libc::poll(&mut stderr, 1, REPORT_TIMEOUT_MS) } == 1
+        && stderr.revents & libc::POLLOUT != 0
+        && stderr.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) == 0;
+    if writable {
+        // SAFETY: `write` is async-signal-safe, and the buffer is valid for
+        // `line.len` bytes. Nothing can be done if the write fails.
+        unsafe { libc::write(libc::STDERR_FILENO, line.buf.as_ptr().cast(), line.len) };
+    }
+}
+
 /// Passes a fault that no recovery region covers to the action that `sig` had
 /// before trycopy installed its handler, so that trycopy does not change how
 /// the fault terminates the process.
@@ -767,12 +960,20 @@ unsafe fn install_signal_handlers() {
 
         let recovered = recover(ctx, failure);
         if !recovered {
+            report_unrecovered_fault(sig, info.si_code, address, get_context_ip(ctx));
             // SAFETY: called from the handler for `sig` with its arguments.
             unsafe { chain_fault(sig, info_ptr, ucontext_ptr, saved_errno) };
         }
 
         // SAFETY: `errno` points to the calling thread's `errno`.
         unsafe { errno.write(saved_errno) };
+    }
+
+    // Determine the executable's layout here, not in the handler, which only
+    // reads it: `executable_layout` is not async-signal-safe.
+    #[cfg(target_os = "linux")]
+    if let Some(layout) = executable_layout() {
+        let _ = EXECUTABLE_LAYOUT.set(layout);
     }
 
     // SAFETY: installing signal handlers as documented. The previous actions
@@ -1239,15 +1440,22 @@ mod tests {
     #[cfg(target_os = "linux")]
     const UNRECOVERED_FAULT_CHILD: &str = "TRYCOPY_TEST_UNRECOVERED_FAULT";
 
+    /// Returns a command that runs [`unrecovered_fault_child`] in a child
+    /// process that raises `fault`.
+    #[cfg(target_os = "linux")]
+    fn unrecovered_fault_child_command(fault: &str) -> std::process::Command {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "tests::unrecovered_fault_child", "--nocapture"])
+            .env(UNRECOVERED_FAULT_CHILD, fault);
+        command
+    }
+
     /// Runs [`unrecovered_fault_child`] in a child process that raises
     /// `fault`, returning the child's exit status and standard error.
     #[cfg(target_os = "linux")]
     fn run_unrecovered_fault_child(fault: &str) -> (std::process::ExitStatus, String) {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "tests::unrecovered_fault_child", "--nocapture"])
-            .env(UNRECOVERED_FAULT_CHILD, fault)
-            .output()
-            .unwrap();
+        let output = unrecovered_fault_child_command(fault).output().unwrap();
         (
             output.status,
             String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -1379,6 +1587,65 @@ mod tests {
         }
     }
 
+    /// The page size, for [`repairing_handler`].
+    #[cfg(target_os = "linux")]
+    static REPAIR_PAGE_SIZE: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    /// The `errno` that [`repairing_handler`] started with, or -1 before it
+    /// runs.
+    #[cfg(target_os = "linux")]
+    static REPAIR_ENTRY_ERRNO: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+    /// A SIGSEGV handler that records the `errno` that it starts with in
+    /// [`REPAIR_ENTRY_ERRNO`] and repairs a fault by making the faulting page
+    /// readable, and exits with status 98 if it cannot.
+    #[cfg(target_os = "linux")]
+    extern "C" fn repairing_handler(
+        _: libc::c_int,
+        info: *mut libc::siginfo_t,
+        _: *mut libc::c_void,
+    ) {
+        // SAFETY: `__errno_location` has no preconditions, and it points to
+        // this thread's `errno`.
+        let entry_errno = unsafe { libc::__errno_location().read() };
+        REPAIR_ENTRY_ERRNO.store(entry_errno, std::sync::atomic::Ordering::Relaxed);
+        let page_size = REPAIR_PAGE_SIZE.load(std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: an `SA_SIGINFO` handler receives valid signal information,
+        // and `mprotect` and `_exit` only make system calls.
+        unsafe {
+            let page = (*info).si_addr().map_addr(|addr| addr & !(page_size - 1));
+            if libc::mprotect(page, page_size, libc::PROT_READ) != 0 {
+                libc::_exit(98);
+            }
+        }
+    }
+
+    /// Installs [`repairing_handler`] as the SIGSEGV handler.
+    #[cfg(target_os = "linux")]
+    fn install_repairing_handler() {
+        // SAFETY: `sysconf` has no preconditions.
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        REPAIR_PAGE_SIZE.store(
+            usize::try_from(page_size).unwrap(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        // SAFETY: the handler calls only functions that make system calls,
+        // and a zeroed action is valid.
+        let result = unsafe {
+            libc::sigaction(
+                libc::SIGSEGV,
+                &libc::sigaction {
+                    sa_sigaction: repairing_handler as *const () as libc::sighandler_t,
+                    sa_flags: libc::SA_SIGINFO,
+                    ..std::mem::zeroed()
+                },
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+    }
+
     /// In a child process started by [`run_unrecovered_fault_child`], raises
     /// a fault outside any recovery region after installing the trycopy
     /// handlers, and for `one_shot_handler`, [`one_shot_handler`] before them.
@@ -1398,15 +1665,47 @@ mod tests {
             "one_shot_handler" => install_one_shot_handler(),
             "masked_handler" => install_mask_checking_handler(0),
             "nodefer_handler" => install_mask_checking_handler(libc::SA_NODEFER),
+            "repaired_access" => install_repairing_handler(),
             _ => {}
         }
         initialize_try_copy();
         match fault.to_str().unwrap() {
             "access" | "one_shot_handler" | "masked_handler" | "nodefer_handler" => {
                 let mapping = GuardedMapping::new();
+                // SAFETY: the middle page is within the reservation.
+                let address = unsafe { mapping.ptr.add(mapping.page_size) };
+                eprintln!("faulting at address {:#018x}", address.addr());
+                // SAFETY: the middle page is reserved but inaccessible, and no
+                // recovery region covers this read.
+                let _value = unsafe { std::ptr::read_volatile(address) };
+            }
+            "silent_access" => {
+                // Write nothing first: standard error may be full.
+                let mapping = GuardedMapping::new();
                 // SAFETY: the middle page is reserved but inaccessible, and no
                 // recovery region covers this read.
                 let _value = unsafe { std::ptr::read_volatile(mapping.ptr.add(mapping.page_size)) };
+            }
+            "repaired_access" => {
+                let mapping = GuardedMapping::new();
+                // SAFETY: `__errno_location` has no preconditions.
+                let errno = unsafe { libc::__errno_location() };
+                // SAFETY: `errno` points to this thread's `errno`, and the
+                // middle page is within the reservation. No recovery region
+                // covers the read, but the previous handler makes the page
+                // readable when it faults.
+                let errno_after = unsafe {
+                    errno.write_volatile(libc::EDOM);
+                    std::ptr::read_volatile(mapping.ptr.add(mapping.page_size));
+                    errno.read_volatile()
+                };
+                println!(
+                    "errno at the previous handler's entry: {}",
+                    REPAIR_ENTRY_ERRNO.load(std::sync::atomic::Ordering::Relaxed)
+                );
+                println!("errno after the repaired fault: {errno_after}");
+                // SAFETY: `_exit` has no preconditions.
+                unsafe { libc::_exit(0) };
             }
             #[cfg(target_env = "gnu")]
             "stack_overflow" => {
@@ -1431,6 +1730,112 @@ mod tests {
 
         let (status, stderr) = run_unrecovered_fault_child("access");
         assert_eq!(status.signal(), Some(libc::SIGSEGV), "{status}\n{stderr}");
+    }
+
+    /// A fault outside a recovery region is reported on standard error with its
+    /// code, its address, and the faulting instruction's executable offset.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unrecovered_fault_is_reported() {
+        let (_, stderr) = run_unrecovered_fault_child("access");
+        let address = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("faulting at address "))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        let report = stderr
+            .lines()
+            .find(|line| line.starts_with("trycopy: "))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        // An access to an inaccessible page reports SEGV_ACCERR.
+        let prefix = format!("trycopy: unrecovered SIGSEGV (code 2) at address {address} ");
+        assert!(report.starts_with(&prefix), "{report}");
+        assert!(report.contains(" (executable offset 0x"), "{report}");
+    }
+
+    /// A fault outside a recovery region terminates the process although
+    /// standard error is a full pipe whose reader has stalled: the report waits
+    /// only briefly for room, and is then skipped.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unrecovered_fault_terminates_with_full_stderr() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::ExitStatusExt;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        // Fill the pipe without blocking, and then let writes to it block
+        // again, as they do to a pipe whose reader has stalled.
+        let fd = writer.as_raw_fd();
+        // SAFETY: `fd` is the pipe's open write end, and `fill` is valid.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            assert_ne!(flags, -1);
+            assert_ne!(libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK), -1);
+            let fill = [b'x'; 4096];
+            for len in [fill.len(), 1] {
+                while libc::write(fd, fill.as_ptr().cast(), len) > 0 {}
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EAGAIN)
+                );
+            }
+            assert_ne!(libc::fcntl(fd, libc::F_SETFL, flags), -1);
+        }
+        let mut child = unrecovered_fault_child_command("silent_access")
+            .stdout(std::process::Stdio::null())
+            .stderr(writer)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("the child did not terminate within 10 seconds");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(status.signal(), Some(libc::SIGSEGV), "{status}");
+        // The child wrote nothing to the pipe: the report was skipped.
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).unwrap();
+        assert!(
+            output.iter().all(|&byte| byte == b'x'),
+            "{}",
+            String::from_utf8_lossy(&output)
+        );
+    }
+
+    /// A fault outside a recovery region that a previous handler repairs leaves
+    /// `errno` as it was, both when that handler starts and after it returns,
+    /// although writing the report fails.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn repaired_fault_preserves_errno() {
+        // Writes to `/dev/full` fail with ENOSPC.
+        let output = unrecovered_fault_child_command("repaired_access")
+            .stderr(
+                std::fs::File::options()
+                    .write(true)
+                    .open("/dev/full")
+                    .unwrap(),
+            )
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", output.status);
+        for when in [
+            "at the previous handler's entry",
+            "after the repaired fault",
+        ] {
+            let line = format!("errno {when}: {}\n", libc::EDOM);
+            assert!(stdout.contains(&line), "{stdout}");
+        }
     }
 
     /// A stack overflow still reaches the Rust runtime's handler, which
