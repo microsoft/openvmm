@@ -94,8 +94,7 @@ use virt::time_abi::msr::amd_config_msr_write;
 use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::tsc::GuestTscOffset;
-use virt::time_abi::tsc::OFFSET_ATTEMPTS;
-use virt::time_abi::tsc::OFFSET_TARGET_CYCLES;
+use virt::time_abi::tsc::OffsetSearch;
 
 /// The identity MSRs that OpenVMM serves. The hypervisor raises #GP for
 /// every other MSR of the identity range.
@@ -1328,24 +1327,23 @@ impl TimeAbiBackend for MshvPartition {
                 error_chain(&error)
             ))
         })?;
-        let offset = GuestTscOffset::measure(OFFSET_ATTEMPTS, OFFSET_TARGET_CYCLES, || {
-            get_vp_tsc(&self.inner.vmfd, VpIndex::BSP)
-        })
-        .map_err(|error| {
-            anchor_error(format!(
-                "cannot read the TSC of VP 0: {}",
-                error_chain(&error)
-            ))
-        })?
-        .ok_or_else(|| {
-            anchor_error("the host TSC went backwards around every read of VP 0's TSC".into())
-        })?;
-        tracing::info!(
-            offset = format_args!("{:#x}", offset.offset),
-            uncertainty_cycles = offset.uncertainty,
-            "time ABI: guest TSC offset"
-        );
-        Ok(offset)
+        let tsc_hz = self.native_tsc_hz()?;
+        let search = OffsetSearch::at_rate(tsc_hz);
+        let measured =
+            GuestTscOffset::measure(search, || get_vp_tsc(&self.inner.vmfd, VpIndex::BSP))
+                .map_err(|error| {
+                    anchor_error(format!(
+                        "cannot read the TSC of VP 0: {}",
+                        error_chain(&error)
+                    ))
+                })?
+                .ok_or_else(|| {
+                    anchor_error(
+                        "the host TSC went backwards around every read of VP 0's TSC".into(),
+                    )
+                })?;
+        measured.log(tsc_hz);
+        measured.within_bound(search, tsc_hz)
     }
 }
 
