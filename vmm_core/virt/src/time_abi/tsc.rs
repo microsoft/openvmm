@@ -58,6 +58,12 @@ pub fn cycles_to_ns_ceil(cycles: u64, tsc_hz: u64) -> u64 {
     u64::try_from(ns).unwrap_or(u64::MAX)
 }
 
+/// Converts `ns` nanoseconds to cycles at `tsc_hz`, rounding down.
+pub fn ns_to_cycles(ns: u64, tsc_hz: u64) -> u64 {
+    let cycles = u128::from(ns) * u128::from(tsc_hz) / 1_000_000_000;
+    u64::try_from(cycles).unwrap_or(u64::MAX)
+}
+
 /// Pairs a host operation with the bracket of host TSC reads around it.
 ///
 /// Returns the host TSC at the middle of the bracket and the pairing
@@ -73,6 +79,17 @@ pub const OFFSET_ATTEMPTS: usize = 8;
 
 /// An offset measurement this tight, in cycles, ends the reads early.
 pub const OFFSET_TARGET_CYCLES: u64 = 2_000;
+
+/// An offset measurement whose tightest reading is still wider than this, in
+/// nanoseconds, after [`OFFSET_ATTEMPTS`] reads, reads on. Every time sample
+/// adds the offset's uncertainty to its pairing, which the guest requires
+/// within 100 µs, and on a nested host every register read can take
+/// milliseconds for a while when other partitions run.
+pub const OFFSET_WIDE_NS: u64 = 50_000;
+
+/// Guest TSC reads that a backend's offset measurement takes at most, as many
+/// as a capture anchor tries.
+pub const OFFSET_MAX_ATTEMPTS: usize = 64;
 
 /// The offset of a guest's TSC from the host TSC that this process reads.
 ///
@@ -111,18 +128,25 @@ impl GuestTscOffset {
     }
 
     /// Measures the offset of a guest TSC that `read` returns, reading it
-    /// between two host TSC reads up to `attempts` times, and keeps the
-    /// tightest reading. It stops early at an uncertainty of `target` cycles.
-    /// Returns `None` if the host TSC went backwards around every read.
+    /// between two host TSC reads, and keeps the tightest reading. It reads
+    /// `attempts` times, stopping early at an uncertainty of `target` cycles,
+    /// and then reads on while the tightest reading is wider than `wide`
+    /// cycles, up to `limit` reads in all. Returns `None` if the host TSC went
+    /// backwards around every read.
     // xtask-fmt allow-target-arch cpu-intrinsic
     #[cfg(target_arch = "x86_64")]
     pub fn measure<E>(
         attempts: usize,
         target: u64,
+        wide: u64,
+        limit: usize,
         mut read: impl FnMut() -> Result<u64, E>,
     ) -> Result<Option<Self>, E> {
         let mut tightest: Option<Self> = None;
-        for _ in 0..attempts {
+        for count in 0..attempts.max(limit) {
+            if count >= attempts && tightest.is_some_and(|tightest| tightest.uncertainty <= wide) {
+                break;
+            }
             let (bracket, guest_tsc) = HostTscBracket::around(&mut read);
             let Some(candidate) = Self::from_bracket(guest_tsc?, bracket) else {
                 continue;
@@ -151,6 +175,15 @@ mod tests {
         assert_eq!(cycles_to_ns_ceil(2_194_804, 2_194_804_000), 1_000_000);
         assert_eq!(cycles_to_ns_ceil(2_195, 2_194_804_000), 1_001);
         assert_eq!(cycles_to_ns_ceil(u64::MAX, 1), u64::MAX);
+    }
+
+    #[test]
+    fn nanosecond_conversion_rounds_down() {
+        assert_eq!(ns_to_cycles(0, 2_000_000_000), 0);
+        // The wide offset at the 2.79 GHz rate of the nested WHP runners.
+        assert_eq!(ns_to_cycles(OFFSET_WIDE_NS, 2_793_440_195), 139_672);
+        assert_eq!(ns_to_cycles(1, 999_999_999), 0);
+        assert_eq!(ns_to_cycles(u64::MAX, u64::MAX), u64::MAX);
     }
 
     #[test]
@@ -216,7 +249,9 @@ mod tests {
     fn measurement_keeps_the_tightest_reading() {
         // A guest TSC that runs one million cycles ahead of the host TSC.
         let read = || Ok::<_, ()>(safe_intrinsics::rdtsc().wrapping_add(1_000_000));
-        let offset = GuestTscOffset::measure(8, 0, read).unwrap().unwrap();
+        let offset = GuestTscOffset::measure(8, 0, u64::MAX, 8, read)
+            .unwrap()
+            .unwrap();
         // The read lies between the two host reads, so the offset is within
         // the uncertainty of one million cycles.
         assert!(
@@ -226,7 +261,81 @@ mod tests {
             }),
             "{offset:?}"
         );
-        assert_eq!(GuestTscOffset::measure(4, 0, || Err::<u64, _>(7)), Err(7));
-        assert_eq!(GuestTscOffset::measure(0, 0, read), Ok(None));
+        assert_eq!(
+            GuestTscOffset::measure(4, 0, u64::MAX, 4, || Err::<u64, _>(7)),
+            Err(7)
+        );
+        assert_eq!(GuestTscOffset::measure(0, 0, u64::MAX, 0, read), Ok(None));
+    }
+
+    /// The cycles for which a stalled read of the guest TSC stalls.
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    const STALL_CYCLES: u64 = 400_000;
+
+    /// The width of a wide measurement in the tests: a stalled read is wider.
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    const WIDE_CYCLES: u64 = 100_000;
+
+    /// Measures the offset of a guest TSC that equals the host TSC, whose
+    /// first `stalled` reads take [`STALL_CYCLES`] each, as a nested host's
+    /// register reads can for a while, and returns the offset and the number
+    /// of reads.
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    fn measure_stalled(stalled: usize) -> (GuestTscOffset, usize) {
+        let mut reads = 0;
+        let offset =
+            GuestTscOffset::measure(OFFSET_ATTEMPTS, 0, WIDE_CYCLES, OFFSET_MAX_ATTEMPTS, || {
+                reads += 1;
+                if reads <= stalled {
+                    let start = safe_intrinsics::rdtsc();
+                    while safe_intrinsics::rdtsc().wrapping_sub(start) < STALL_CYCLES {}
+                }
+                Ok::<_, ()>(safe_intrinsics::rdtsc())
+            })
+            .unwrap()
+            .unwrap();
+        (offset, reads)
+    }
+
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn measurement_reads_on_while_its_reads_are_wide() {
+        // Every read of the first attempts stalls, so their tightest reading is
+        // wide; the measurement reads on until a read is no longer wide.
+        let (offset, reads) = measure_stalled(OFFSET_ATTEMPTS);
+        assert!(offset.uncertainty <= WIDE_CYCLES, "{offset:?}");
+        assert!(
+            (OFFSET_ATTEMPTS + 1..=OFFSET_MAX_ATTEMPTS).contains(&reads),
+            "{reads} reads"
+        );
+        assert!(offset.agrees_with(&GuestTscOffset {
+            offset: 0,
+            uncertainty: 0
+        }));
+    }
+
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn measurement_takes_its_attempts_when_one_is_not_wide() {
+        // Only the first read stalls: the tightest of the attempts is not wide,
+        // so the measurement takes no further read.
+        let (offset, reads) = measure_stalled(1);
+        assert!(offset.uncertainty <= WIDE_CYCLES, "{offset:?}");
+        assert_eq!(reads, OFFSET_ATTEMPTS);
+    }
+
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn measurement_stops_at_its_limit() {
+        // Every read stalls: the measurement keeps the tightest of them all.
+        let (offset, reads) = measure_stalled(usize::MAX);
+        assert!(offset.uncertainty > WIDE_CYCLES, "{offset:?}");
+        assert_eq!(reads, OFFSET_MAX_ATTEMPTS);
     }
 }

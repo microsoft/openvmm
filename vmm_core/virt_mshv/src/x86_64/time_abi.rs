@@ -95,7 +95,10 @@ use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::tsc::GuestTscOffset;
 use virt::time_abi::tsc::OFFSET_ATTEMPTS;
+use virt::time_abi::tsc::OFFSET_MAX_ATTEMPTS;
 use virt::time_abi::tsc::OFFSET_TARGET_CYCLES;
+use virt::time_abi::tsc::OFFSET_WIDE_NS;
+use virt::time_abi::tsc::ns_to_cycles;
 
 /// The identity MSRs that OpenVMM serves. The hypervisor raises #GP for
 /// every other MSR of the identity range.
@@ -1328,9 +1331,18 @@ impl TimeAbiBackend for MshvPartition {
                 error_chain(&error)
             ))
         })?;
-        let offset = GuestTscOffset::measure(OFFSET_ATTEMPTS, OFFSET_TARGET_CYCLES, || {
-            get_vp_tsc(&self.inner.vmfd, VpIndex::BSP)
-        })
+        let wide = ns_to_cycles(OFFSET_WIDE_NS, self.native_tsc_hz()?);
+        let mut reads = 0;
+        let offset = GuestTscOffset::measure(
+            OFFSET_ATTEMPTS,
+            OFFSET_TARGET_CYCLES,
+            wide,
+            OFFSET_MAX_ATTEMPTS,
+            || {
+                reads += 1;
+                get_vp_tsc(&self.inner.vmfd, VpIndex::BSP)
+            },
+        )
         .map_err(|error| {
             anchor_error(format!(
                 "cannot read the TSC of VP 0: {}",
@@ -1343,6 +1355,7 @@ impl TimeAbiBackend for MshvPartition {
         tracing::info!(
             offset = format_args!("{:#x}", offset.offset),
             uncertainty_cycles = offset.uncertainty,
+            reads,
             "time ABI: guest TSC offset"
         );
         Ok(offset)

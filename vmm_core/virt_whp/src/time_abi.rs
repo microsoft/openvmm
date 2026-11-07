@@ -97,7 +97,10 @@ use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::tsc::GuestTscOffset;
 use virt::time_abi::tsc::OFFSET_ATTEMPTS;
+use virt::time_abi::tsc::OFFSET_MAX_ATTEMPTS;
 use virt::time_abi::tsc::OFFSET_TARGET_CYCLES;
+use virt::time_abi::tsc::OFFSET_WIDE_NS;
+use virt::time_abi::tsc::ns_to_cycles;
 use virt::x86::topology::per_vp_cpuid_bits;
 use whp::abi::WHV_CPUID_OUTPUT;
 use whp::abi::WHV_EXTENDED_VM_EXITS;
@@ -1216,9 +1219,18 @@ impl TimeAbiBackend for WhpPartitionInner {
             vtlp.set_time_frozen(false);
         }
         let bsp = self.vtl0.whp.vp(VpIndex::BSP.index());
-        let offset = GuestTscOffset::measure(OFFSET_ATTEMPTS, OFFSET_TARGET_CYCLES, || {
-            bsp.get_register(whp::Register64::Tsc)
-        })
+        let wide = ns_to_cycles(OFFSET_WIDE_NS, self.native_tsc_hz()?);
+        let mut reads = 0;
+        let offset = GuestTscOffset::measure(
+            OFFSET_ATTEMPTS,
+            OFFSET_TARGET_CYCLES,
+            wide,
+            OFFSET_MAX_ATTEMPTS,
+            || {
+                reads += 1;
+                bsp.get_register(whp::Register64::Tsc)
+            },
+        )
         .map_err(|err| {
             TimeAbiError::new(
                 TimeAbiCode::TscAnchor,
@@ -1234,6 +1246,7 @@ impl TimeAbiBackend for WhpPartitionInner {
         tracing::info!(
             offset = format_args!("{:#x}", offset.offset),
             uncertainty_cycles = offset.uncertainty,
+            reads,
             "time ABI: guest TSC offset"
         );
         Ok(offset)
@@ -3044,9 +3057,13 @@ mod whp_tests {
         partition.resume_time().unwrap();
         let bsp = partition.vp(0);
         let measure = || {
-            GuestTscOffset::measure(OFFSET_ATTEMPTS, OFFSET_TARGET_CYCLES, || {
-                bsp.get_register(whp::Register64::Tsc)
-            })
+            GuestTscOffset::measure(
+                OFFSET_ATTEMPTS,
+                OFFSET_TARGET_CYCLES,
+                u64::MAX,
+                OFFSET_ATTEMPTS,
+                || bsp.get_register(whp::Register64::Tsc),
+            )
             .unwrap()
             .unwrap()
         };
