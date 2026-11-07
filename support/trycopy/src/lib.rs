@@ -35,9 +35,10 @@
 //!    for a matching instruction pointer range and, if found, redirects
 //!    execution to the recovery code. Any other fault is passed on: on Unix to
 //!    the signal's previous action, such as the Rust runtime's stack overflow
-//!    handler or the default action, and on Windows to the next exception
-//!    handler. It therefore terminates the process with the original signal
-//!    or exception, as it would without these handlers.
+//!    handler or the default action, after a line on standard error reports
+//!    the fault, and on Windows to the next exception handler. It therefore
+//!    terminates the process with the original signal or exception, as it
+//!    would without these handlers.
 //!
 //! 4. **Thread-local fault tracking**: The faulting address and fault details
 //!    are stored in thread-local storage, allowing the caller to determine
@@ -504,6 +505,163 @@ const HANDLED_SIGNALS: &[libc::c_int] = &[
 #[cfg(unix)]
 static PREVIOUS_ACTIONS: std::sync::OnceLock<Vec<libc::sigaction>> = std::sync::OnceLock::new();
 
+/// The executable's load bias and the address range of its loadable segments,
+/// used to report a faulting instruction as an offset in the executable.
+#[cfg(target_os = "linux")]
+static EXECUTABLE_LAYOUT: std::sync::OnceLock<(usize, std::ops::Range<usize>)> =
+    std::sync::OnceLock::new();
+
+/// Returns the executable's load bias and the address range of its loadable
+/// segments, as the C runtime describes the executable: the first object that
+/// `dl_iterate_phdr` reports.
+///
+/// The C runtime determines the bias of every kind of executable. The program
+/// headers in the auxiliary vector give it only through their `PT_PHDR`
+/// entry, which the GNU linker omits from an executable without an
+/// interpreter. A static PIE executable, such as Rust links for
+/// `x86_64-unknown-linux-musl`, lacks it, although it is loaded at a nonzero
+/// address.
+///
+/// Not async-signal-safe, since `dl_iterate_phdr` may take a lock.
+#[cfg(target_os = "linux")]
+fn executable_layout() -> Option<(usize, std::ops::Range<usize>)> {
+    /// Stores the layout of the first object in the `Option` that `data`
+    /// points to, and stops the iteration.
+    ///
+    /// # Safety
+    /// Must only be called by `dl_iterate_phdr`, with `data` pointing to an
+    /// `Option<(usize, Range<usize>)>`.
+    unsafe extern "C" fn first_object(
+        info: *mut libc::dl_phdr_info,
+        _size: libc::size_t,
+        data: *mut libc::c_void,
+    ) -> libc::c_int {
+        // SAFETY: `dl_iterate_phdr` passes a valid description of a loaded
+        // object, and the caller passes `data` as documented.
+        let (info, layout) = unsafe {
+            (
+                &*info,
+                &mut *data.cast::<Option<(usize, std::ops::Range<usize>)>>(),
+            )
+        };
+        if !info.dlpi_phdr.is_null() {
+            // SAFETY: the object's program headers stay mapped while it is
+            // loaded.
+            let headers =
+                unsafe { std::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum.into()) };
+            let bias = info.dlpi_addr as usize;
+            let (start, end) = headers.iter().filter(|h| h.p_type == libc::PT_LOAD).fold(
+                (usize::MAX, 0),
+                |(start, end), h| {
+                    (
+                        start.min(h.p_vaddr as usize),
+                        end.max(h.p_vaddr.wrapping_add(h.p_memsz) as usize),
+                    )
+                },
+            );
+            *layout =
+                (start < end).then(|| (bias, bias.wrapping_add(start)..bias.wrapping_add(end)));
+        }
+        // Stop after the first object, which is the executable.
+        1
+    }
+
+    let mut layout = None;
+    // SAFETY: `first_object` is passed a pointer to the layout, as it requires.
+    unsafe { libc::dl_iterate_phdr(Some(first_object), (&raw mut layout).cast()) };
+    layout
+}
+
+/// A line of text built without allocating, for use in a signal handler.
+#[cfg(unix)]
+struct SignalSafeLine {
+    buf: [u8; 192],
+    len: usize,
+}
+
+#[cfg(unix)]
+impl SignalSafeLine {
+    fn new() -> Self {
+        Self {
+            buf: [0; 192],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> &mut Self {
+        let len = bytes.len().min(self.buf.len() - self.len);
+        self.buf[self.len..][..len].copy_from_slice(&bytes[..len]);
+        self.len += len;
+        self
+    }
+
+    fn push_hex(&mut self, value: usize) -> &mut Self {
+        let mut digits = [b'0'; 2 + 2 * size_of::<usize>()];
+        digits[1] = b'x';
+        for (i, digit) in digits[2..].iter_mut().rev().enumerate() {
+            *digit = b"0123456789abcdef"[(value >> (4 * i)) & 0xf];
+        }
+        self.push(&digits)
+    }
+
+    fn push_decimal(&mut self, value: i32) -> &mut Self {
+        if value < 0 {
+            self.push(b"-");
+        }
+        let mut value = value.unsigned_abs();
+        let mut digits = [0; 10];
+        let mut start = digits.len();
+        loop {
+            start -= 1;
+            digits[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        self.push(&digits[start..])
+    }
+}
+
+/// Reports a fault that no recovery region covers on standard error, with
+/// the signal, its code, the faulting address (if the signal has one), and
+/// the faulting instruction. On Linux, the report also gives the instruction
+/// as an offset in the executable, which a symbolizer such as `addr2line` can
+/// resolve.
+///
+/// Uses only async-signal-safe operations.
+#[cfg(unix)]
+fn report_unrecovered_fault(sig: libc::c_int, code: libc::c_int, address: *mut u8, ip: usize) {
+    let name: &[u8] = match sig {
+        libc::SIGSEGV => b"SIGSEGV",
+        libc::SIGBUS => b"SIGBUS",
+        libc::SIGILL => b"SIGILL",
+        _ => b"signal",
+    };
+    let mut line = SignalSafeLine::new();
+    line.push(b"trycopy: unrecovered ")
+        .push(name)
+        .push(b" (code ")
+        .push_decimal(code)
+        .push(b")");
+    if sig == libc::SIGSEGV || sig == libc::SIGBUS {
+        line.push(b" at address ").push_hex(address.addr());
+    }
+    line.push(b" from instruction ").push_hex(ip);
+    #[cfg(target_os = "linux")]
+    if let Some((bias, range)) = EXECUTABLE_LAYOUT.get() {
+        if range.contains(&ip) {
+            line.push(b" (executable offset ")
+                .push_hex(ip.wrapping_sub(*bias))
+                .push(b")");
+        }
+    }
+    line.push(b"\n");
+    // SAFETY: `write` is async-signal-safe, and the buffer is valid for
+    // `line.len` bytes. Nothing can be done if the write fails.
+    unsafe { libc::write(libc::STDERR_FILENO, line.buf.as_ptr().cast(), line.len) };
+}
+
 /// Passes a fault that no recovery region covers to the action that `sig` had
 /// before trycopy installed its handler, so that trycopy does not change how
 /// the fault terminates the process.
@@ -630,9 +788,17 @@ unsafe fn install_signal_handlers() {
 
         let recovered = recover(ctx, failure);
         if !recovered {
+            report_unrecovered_fault(sig, info.si_code, address, get_context_ip(ctx));
             // SAFETY: called from the handler for `sig` with its arguments.
             unsafe { chain_fault(sig, info_ptr, ucontext_ptr) };
         }
+    }
+
+    // Determine the executable's layout here, not in the handler, which only
+    // reads it: `executable_layout` is not async-signal-safe.
+    #[cfg(target_os = "linux")]
+    if let Some(layout) = executable_layout() {
+        let _ = EXECUTABLE_LAYOUT.set(layout);
     }
 
     // SAFETY: installing signal handlers as documented. The previous actions
@@ -1143,9 +1309,12 @@ mod tests {
         match fault.to_str().unwrap() {
             "access" => {
                 let mapping = GuardedMapping::new();
+                // SAFETY: the middle page is within the reservation.
+                let address = unsafe { mapping.ptr.add(mapping.page_size) };
+                eprintln!("faulting at address {:#018x}", address.addr());
                 // SAFETY: the middle page is reserved but inaccessible, and no
                 // recovery region covers this read.
-                let _value = unsafe { std::ptr::read_volatile(mapping.ptr.add(mapping.page_size)) };
+                let _value = unsafe { std::ptr::read_volatile(address) };
             }
             #[cfg(target_env = "gnu")]
             "stack_overflow" => {
@@ -1170,6 +1339,26 @@ mod tests {
 
         let (status, stderr) = run_unrecovered_fault_child("access");
         assert_eq!(status.signal(), Some(libc::SIGSEGV), "{status}\n{stderr}");
+    }
+
+    /// A fault outside a recovery region is reported on standard error with its
+    /// code, its address, and the faulting instruction's executable offset.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unrecovered_fault_is_reported() {
+        let (_, stderr) = run_unrecovered_fault_child("access");
+        let address = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("faulting at address "))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        let report = stderr
+            .lines()
+            .find(|line| line.starts_with("trycopy: "))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        // An access to an inaccessible page reports SEGV_ACCERR.
+        let prefix = format!("trycopy: unrecovered SIGSEGV (code 2) at address {address} ");
+        assert!(report.starts_with(&prefix), "{report}");
+        assert!(report.contains(" (executable offset 0x"), "{report}");
     }
 
     /// A stack overflow still reaches the Rust runtime's handler, which
