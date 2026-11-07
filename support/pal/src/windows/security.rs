@@ -9,9 +9,7 @@ use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::os::windows::prelude::*;
-use std::path::Component;
 use std::path::Path;
-use std::path::Prefix;
 use std::ptr::NonNull;
 use std::ptr::null_mut;
 use std::str::FromStr;
@@ -398,44 +396,13 @@ where
     }
 }
 
-/// Encodes `path` for the Win32 creation functions. Without the extended-length
-/// `\\?\` prefix, `CreateDirectoryW` refuses a path of 248 or more UTF-16 code
-/// units and `CreateFileW` one of 260 or more.
-///
-/// The path is resolved, as Win32 resolves it, before the prefix is added,
-/// since the file system takes an extended-length path as given. Win32 also
-/// takes an NT path, `\??\...`, as given, and refuses an empty path itself, so
-/// both keep their form.
+/// Encodes `path` for the Win32 creation functions, in the form that
+/// [`extended_length_path`](super::fs::extended_length_path) returns, which
+/// they take whatever its length.
 fn secure_create_path(path: &Path) -> std::io::Result<U16CString> {
-    fn encode(path: &Path) -> std::io::Result<U16CString> {
-        U16CString::from_os_str(path.as_os_str())
-            .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))
-    }
-
-    let raw = path.as_os_str();
-    if raw.is_empty() || raw.encode_wide().take(4).eq(r"\??\".encode_utf16()) {
-        return encode(path);
-    }
-    let path = std::path::absolute(path)?;
-    let name = encode(&path)?;
-    if name.len() < 248 {
-        return Ok(name);
-    }
-    let (prefix, skip) = match path.components().next() {
-        Some(Component::Prefix(prefix)) => match prefix.kind() {
-            Prefix::Disk(_) => (r"\\?\", 0),
-            Prefix::UNC(..) => (r"\\?\UNC\", 2),
-            _ => ("", 0),
-        },
-        _ => ("", 0),
-    };
-    U16CString::from_vec(
-        prefix
-            .encode_utf16()
-            .chain(name.as_slice().iter().copied().skip(skip))
-            .collect::<Vec<_>>(),
-    )
-    .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))
+    let path = super::fs::extended_length_path(path)?;
+    U16CString::from_os_str(path.as_os_str())
+        .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))
 }
 
 /// Creates a directory with `security_descriptor` applied atomically.
@@ -597,7 +564,9 @@ mod tests {
     use std::io::Write;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::ffi::OsStringExt;
+    use std::path::Component;
     use std::path::PathBuf;
+    use std::path::Prefix;
     use test_with_tracing::test;
     use widestring::U16CStr;
     use windows_sys::Win32::Foundation::LocalFree;
