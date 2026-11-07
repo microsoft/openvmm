@@ -444,6 +444,101 @@ fn persistent_head_stall_fails_open() {
     assert_eq!(server.stats().heads, attempts);
 }
 
+/// What a [`silent_server`] sees.
+#[derive(Debug)]
+enum SilentEvent {
+    /// It accepted a connection.
+    Accepted,
+    /// The client closed a connection, having first sent `first`, if it sent
+    /// anything at all.
+    Closed { first: Option<u8> },
+}
+
+/// Starts a server on the loopback interface that accepts connections but
+/// never sends a byte on them, as a server, or the network path to it, that
+/// goes silent once the TCP handshake is done. Returns its port, and a channel
+/// on which it reports each connection that it accepts and each that the
+/// client closes.
+///
+/// Like [`TestHttpServer`], it runs until the process exits.
+fn silent_server() -> (u16, mpsc::Receiver<SilentEvent>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (send, recv) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            if send.send(SilentEvent::Accepted).is_err() {
+                // The test has finished.
+                break;
+            }
+            let send = send.clone();
+            std::thread::spawn(move || {
+                let mut first = None;
+                let mut buf = [0; 4096];
+                // Take in whatever the client sends, and answer none of it.
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            first.get_or_insert(buf[0]);
+                        }
+                    }
+                }
+                let _ = send.send(SilentEvent::Closed { first });
+            });
+        }
+    });
+    (port, recv)
+}
+
+/// The TLS record type of handshake messages, with which the ClientHello that
+/// opens a TLS connection begins.
+const TLS_HANDSHAKE_RECORD: u8 = 0x16;
+
+/// Blobs are normally served over HTTPS, so each new connection begins with a
+/// TLS handshake, inside the connector and before any request is sent. When
+/// the server, or the network path to it, goes silent before answering the
+/// ClientHello, that stall must be bounded like the others: the open fails
+/// with a timeout after its attempts, each on a connection of its own that is
+/// closed when the attempt gives up, rather than waiting for good.
+#[test]
+fn stalled_tls_handshake_fails_open() {
+    let (port, events) = silent_server();
+    let options = fast_options();
+    let attempts = options.max_attempts as usize;
+    let url = format!("https://127.0.0.1:{port}/blob");
+    let r = bounded("open", async move {
+        HttpBlob::with_options(&url, options).await.map(drop)
+    });
+    let err = r.expect_err("opened a blob whose server never answered the TLS handshake");
+    assert!(
+        err.downcast_ref::<std::io::Error>()
+            .is_some_and(|err| err.kind() == std::io::ErrorKind::TimedOut),
+        "expected a timeout, got: {err:#}"
+    );
+
+    let mut accepted = 0;
+    let mut closed = 0;
+    while closed < attempts {
+        match events.recv_timeout(LIMIT) {
+            Ok(SilentEvent::Accepted) => accepted += 1,
+            Ok(SilentEvent::Closed { first }) => {
+                assert_eq!(
+                    first,
+                    Some(TLS_HANDSHAKE_RECORD),
+                    "a connection did not begin a TLS handshake"
+                );
+                closed += 1;
+            }
+            Err(_) => panic!("only {closed} of {attempts} stalled connections were closed"),
+        }
+    }
+    // The server reports each connection's acceptance before its close, so
+    // every connection that has been closed has been counted.
+    assert_eq!(accepted, attempts, "wrong number of connections");
+}
+
 /// A connection whose request timed out must be closed, not returned to the
 /// pool, where a later request would find it and stall in turn.
 #[test]
