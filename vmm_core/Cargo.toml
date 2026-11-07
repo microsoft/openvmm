@@ -63,6 +63,9 @@ cvm_tracing.workspace = true
 iced-x86 = { optional = true, workspace = true, features = ["std", "fast_fmt"] }
 
 [dev-dependencies]
+chipset_device.workspace = true
+guid.workspace = true
+inspect = { workspace = true, features = ["initiate"] }
 test_with_tracing.workspace = true
 
 [build-dependencies]

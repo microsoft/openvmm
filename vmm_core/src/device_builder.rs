@@ -55,8 +55,13 @@ impl DynamicVpciDevice {
     }
 
     /// Removes the VPCI bus before removing its underlying PCI device.
+    ///
+    /// The bus remains available to VPs and to inspection while its VMBus
+    /// channel is revoked.
     pub async fn remove(self) {
-        self.vpci_bus.close().revoke().await;
+        // Release the lock before waiting for the revocation.
+        let revoke = self.vpci_bus.lock().revoke();
+        revoke.await;
         self.vpci_unit.remove().await;
         self.pci_unit.remove().await;
     }
@@ -273,4 +278,229 @@ pub async fn resolve_and_add_pci_device(
         .await?;
 
     Ok(device)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DynamicVpciDevice;
+    use chipset_device::ChipsetDevice;
+    use chipset_device::io::IoResult;
+    use chipset_device::pci::ByteEnabledDwordRead;
+    use chipset_device::pci::ByteEnabledDwordWrite;
+    use chipset_device::pci::PciConfigSpace;
+    use futures::poll;
+    use guestmem::GuestMemory;
+    use inspect::InspectMut;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use parking_lot::Mutex;
+    use state_unit::StateUnits;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use test_with_tracing::test;
+    use vm_resource::ResourceResolver;
+    use vmbus_channel::bus::OfferInput;
+    use vmbus_channel::bus::OfferResources;
+    use vmbus_channel::bus::ParentBus;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::NoSavedState;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
+    use vmcore::vpci_msi::MapVpciInterrupt;
+    use vmcore::vpci_msi::MsiAddressData;
+    use vmcore::vpci_msi::RegisterInterruptError;
+    use vmcore::vpci_msi::VpciInterruptMapper;
+    use vmcore::vpci_msi::VpciInterruptParameters;
+    use vmotherboard::BaseChipsetBuilder;
+    use vmotherboard::DebugEventHandler;
+    use vmotherboard::PowerEvent;
+    use vmotherboard::PowerEventHandler;
+    use vmotherboard::options::BaseChipsetDevices;
+    use vmotherboard::options::BaseChipsetFoundation;
+    use vpci::bus::VpciBus;
+    use vpci::bus::VpciBusConfig;
+
+    /// A PCI device without BARs.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct TestPciDevice;
+
+    impl ChipsetDevice for TestPciDevice {
+        fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
+            Some(self)
+        }
+    }
+
+    impl PciConfigSpace for TestPciDevice {
+        fn pci_cfg_read(&mut self, _offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+            value.set(0);
+            IoResult::Ok
+        }
+
+        fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> IoResult {
+            IoResult::Ok
+        }
+    }
+
+    impl ChangeDeviceState for TestPciDevice {
+        fn start(&mut self) {}
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+    }
+
+    impl SaveRestore for TestPciDevice {
+        type SavedState = NoSavedState;
+
+        fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        fn restore(&mut self, NoSavedState: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    struct NoInterrupts;
+
+    impl MapVpciInterrupt for NoInterrupts {
+        async fn register_interrupt(
+            &self,
+            _vector_count: u32,
+            _params: &VpciInterruptParameters<'_>,
+        ) -> Result<MsiAddressData, RegisterInterruptError> {
+            Err(RegisterInterruptError::new("interrupts are not supported"))
+        }
+
+        async fn unregister_interrupt(&self, _address: u64, _data: u32) {}
+    }
+
+    struct NoEvents;
+
+    impl PowerEventHandler for NoEvents {
+        fn on_power_event(&self, _evt: PowerEvent) {}
+    }
+
+    impl DebugEventHandler for NoEvents {
+        fn on_debug_break(&self, _vp: Option<u32>) {}
+    }
+
+    /// A VMBus that holds each offered channel until the test releases it, so
+    /// that the channel's revocation stays pending until then.
+    #[derive(Clone, Default)]
+    struct HeldChannels(Arc<Mutex<Vec<OfferInput>>>);
+
+    impl HeldChannels {
+        fn release(&self) {
+            self.0.lock().clear();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ParentBus for HeldChannels {
+        async fn add_child(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
+            self.0.lock().push(request);
+            Ok(OfferResources::new(GuestMemory::empty(), None))
+        }
+
+        fn clone_bus(&self) -> Box<dyn ParentBus> {
+            Box::new(self.clone())
+        }
+
+        fn use_event(&self) -> bool {
+            false
+        }
+    }
+
+    #[async_test]
+    async fn removal_keeps_the_bus_open_while_its_channel_is_revoked(driver: DefaultDriver) {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let units = StateUnits::new();
+        let (vmtime_send, _vmtime_recv) = mesh::channel();
+        let vmtime_unit = units.add("vmtime").build(vmtime_send).unwrap();
+        let vmtime_keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let vmtime = vmtime_keeper.builder().build(&driver).await.unwrap();
+        let events = Arc::new(NoEvents);
+        let chipset = BaseChipsetBuilder::new(
+            BaseChipsetFoundation {
+                is_restoring: false,
+                untrusted_dma_memory: GuestMemory::empty(),
+                trusted_vtl0_dma_memory: GuestMemory::empty(),
+                power_event_handler: events.clone(),
+                debug_event_handler: events,
+                vmtime: &vmtime,
+                vmtime_unit: &vmtime_unit,
+                doorbell_registration: None,
+            },
+            BaseChipsetDevices::empty(),
+        )
+        .build(&driver_source, &units, &ResourceResolver::new())
+        .await
+        .unwrap();
+        let (_chipset, devices) = chipset.chipset_builder.build().unwrap();
+
+        // Assemble the device as `build_dynamic_vpci_device` does, but offer
+        // its channel to a VMBus that the test controls.
+        let (pci_unit, pci_device) = devices
+            .add_dyn_device(&driver_source, &units, "pci", async |_| {
+                anyhow::Ok(TestPciDevice)
+            })
+            .await
+            .unwrap();
+        let mut pending_offer = None;
+        let (vpci_unit, vpci_bus) = devices
+            .add_dyn_device(&driver_source, &units, "vpci", async |register_mmio| {
+                let (bus, offer) = VpciBus::new_unoffered(
+                    VpciBusConfig {
+                        instance_id: guid::guid!("6f1bc3e5-07a5-4b4f-9d36-0c5e4ad0f6f1"),
+                        vtom: None,
+                        vnode: None,
+                    },
+                    pci_device.clone(),
+                    register_mmio,
+                    VpciInterruptMapper::new(Arc::new(NoInterrupts)),
+                )?;
+                pending_offer = Some(offer);
+                anyhow::Ok(bus)
+            })
+            .await
+            .unwrap();
+        let vmbus = HeldChannels::default();
+        pending_offer
+            .unwrap()
+            .offer_registered(&vpci_bus, &driver_source, &vmbus, false)
+            .await
+            .unwrap();
+        let eject = vpci_bus.lock().eject_control();
+        let device = DynamicVpciDevice {
+            pci_unit,
+            vpci_unit,
+            eject,
+            vpci_bus: vpci_bus.clone(),
+        };
+
+        // Removal revokes the channel and then waits until the VMBus releases
+        // it.
+        let mut removal = pin!(device.remove());
+        assert!(poll!(&mut removal).is_pending());
+
+        // Meanwhile, the bus still serves inspection through its state unit...
+        let mut inspection = inspect::inspect("vpci/state", &units);
+        inspection.resolve().await;
+        assert_eq!(inspection.results().json().to_string(), r#""revoked""#);
+        // ...and VP accesses, which chipset dispatch makes only to an open bus.
+        assert!(vpci_bus.lock_if_open().is_some());
+        assert!(poll!(&mut removal).is_pending());
+
+        vmbus.release();
+        removal.await;
+        assert!(vpci_bus.lock_if_open().is_none());
+        assert!(pci_device.lock_if_open().is_none());
+    }
 }
