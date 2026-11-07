@@ -206,13 +206,11 @@ impl FlowNodeWithConfig for Node {
                                   ctx: &mut NodeCtx<'_>| {
             if write_cargo_bin.is_some() || !ensure_installed.is_empty() {
                 if auto_install || matches!(ctx.backend(), FlowBackend::Github) {
-                    let added_to_path = if matches!(
-                        ctx.backend(),
-                        FlowBackend::Github | FlowBackend::Ado
-                    ) {
-                        // Run in a separate step so the CI agent updates PATH before
-                        // the installer invokes the newly installed tools.
-                        Some(ctx.emit_rust_step("add default cargo home to path", |_| {
+                    let added_to_path = match ctx.backend() {
+                        FlowBackend::Github | FlowBackend::Ado => {
+                            // Run in a separate step so the CI agent updates PATH before
+                            // the installer invokes the newly installed tools.
+                            Some(ctx.emit_rust_step("add default cargo home to path", |_| {
                             |rt| {
                                 // Preserve the resolved home across snippets with different working directories.
                                 let cargo_home = home::cargo_home()?;
@@ -241,8 +239,8 @@ impl FlowNodeWithConfig for Node {
                                 Ok(())
                             }
                         }))
-                    } else {
-                        None
+                        }
+                        _ => None,
                     };
 
                     let rust_toolchain = rust_toolchain.clone();
