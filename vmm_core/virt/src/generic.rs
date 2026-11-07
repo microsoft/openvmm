@@ -528,6 +528,15 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// Returns the source of the initial virtual processor state.
     fn initial_vp_state_source(&self) -> InitialVpStateSource;
 
+    /// Completes partition initialization after all guest memory is attached.
+    ///
+    /// Call this once, before binding processors or using the partition's
+    /// capabilities or state. A partition without guest memory can be
+    /// finalized as soon as it is built.
+    fn finalize_memory(&self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Returns a trait object for initial page imports during the initial start
     /// flow.
     fn supports_initial_page_acceptance(
