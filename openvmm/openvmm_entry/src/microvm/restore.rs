@@ -5,6 +5,7 @@
 
 use super::console::MICROVM_CONSOLE_STABLE_ID;
 use super::console::MICROVM_CONTROL_CONSOLE_STABLE_ID;
+use super::console::microvm_console_discarding_listener_matches;
 use super::console::microvm_console_listener_replacement_matches;
 use super::filesystem::validate_microvm_filesystem_slot;
 use crate::Options;
@@ -76,6 +77,23 @@ fn align_restore_console_listener_attachments(
             expected_attachment.clone_from(saved_attachment);
         }
     }
+}
+
+/// Returns the boot console attachment from which a restore builds the
+/// machine contract that the snapshot must match: the saved disconnected
+/// attachment, if the restore attached a listener to it, which discards guest
+/// output while no client is connected as the disconnected attachment does,
+/// and `expected`, the restore's own attachment, otherwise.
+fn restore_console_contract_attachment<'a>(
+    saved: &'a [SnapshotAttachment],
+    expected: Option<&'a SnapshotAttachment>,
+) -> Option<&'a SnapshotAttachment> {
+    let expected = expected?;
+    saved
+        .iter()
+        .find(|attachment| attachment.stable_id == MICROVM_CONSOLE_STABLE_ID)
+        .filter(|saved| microvm_console_discarding_listener_matches(saved, expected))
+        .or(Some(expected))
 }
 
 /// Restore-time inputs that shape a microVM configuration.
@@ -698,6 +716,8 @@ pub(crate) fn validate_restore_contract(
     // A dormant-slot snapshot captured no filesystem, so a filesystem that the
     // restore attaches to the slot is not part of the snapshot's contract.
     let filesystem = filesystem.filter(|_| saved_contract.microvm_filesystem.is_some());
+    let console_attachment =
+        restore_console_contract_attachment(&saved_contract.attachments, console_attachment);
     let mut expected_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
         expected_hypervisor,
         openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
@@ -831,6 +851,51 @@ pub(crate) mod tests {
         align_restore_console_listener_attachments(&saved, &mut expected);
 
         assert_eq!(expected, vec![saved_attachment]);
+    }
+
+    #[test]
+    fn a_restore_listener_of_a_disconnected_boot_console_keeps_the_saved_contract() {
+        let saved = SnapshotAttachment {
+            stable_id: MICROVM_CONSOLE_STABLE_ID.to_owned(),
+            kind: "virtio-console".to_owned(),
+            required: false,
+            reconnect_policy: "discard-while-disconnected".to_owned(),
+            identity_kind: "disconnected".to_owned(),
+            identity: b"discard".to_vec(),
+            length: 0,
+            reconnect_timeout_ms: 0,
+        };
+        let listener = SnapshotAttachment {
+            identity_kind: "unix-socket".to_owned(),
+            identity: b"/snapshots/clone.console".to_vec(),
+            ..saved.clone()
+        };
+        let saved_attachments = [saved.clone()];
+
+        // The restore's contract records the saved disconnected attachment,
+        // whose device discards output as the listener's does.
+        assert_eq!(
+            restore_console_contract_attachment(&saved_attachments, Some(&listener)),
+            Some(&saved)
+        );
+
+        // Any other attachment is checked as the restore supplies it.
+        let retaining = SnapshotAttachment {
+            reconnect_policy: "recreate-listener".to_owned(),
+            ..listener.clone()
+        };
+        assert_eq!(
+            restore_console_contract_attachment(&saved_attachments, Some(&retaining)),
+            Some(&retaining)
+        );
+        assert_eq!(
+            restore_console_contract_attachment(&[], Some(&listener)),
+            Some(&listener)
+        );
+        assert_eq!(
+            restore_console_contract_attachment(&saved_attachments, None),
+            None
+        );
     }
 
     #[test]

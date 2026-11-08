@@ -9,6 +9,7 @@ use super::console::ConsoleEndpoint;
 use super::console::effective_microvm_console;
 use super::console::effective_microvm_control_console;
 use super::console::microvm_console_attachments_share_endpoint;
+use super::console::microvm_console_disconnect_policy;
 use super::console::microvm_console_socket_cleanup;
 use super::console::microvm_control_broker_config;
 use super::console::validate_microvm_console_attachment_namespace;
@@ -55,7 +56,6 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::Duration;
 use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
-use virtio_resources::console::attachment::VirtioConsoleReconnectPolicy;
 use virtio_resources::console::control::VirtioControlConsoleBrokerConfig;
 use vm_manifest_builder::MachineArch;
 use vm_resource::IntoResource;
@@ -653,12 +653,11 @@ impl<'a> MicrovmConfigBuilder<'a> {
     ) -> virtio_resources::console::VirtioConsoleHandle {
         virtio_resources::console::VirtioConsoleHandle {
             backend,
-            disconnect_policy: if self.active
-                && !self.console.as_ref().is_some_and(|(_, attachment, _)| {
-                    attachment.reconnect_policy
-                        == VirtioConsoleReconnectPolicy::DiscardWhileDisconnected
-                }) {
-                VirtioConsoleDisconnectPolicy::Retain
+            disconnect_policy: if self.active {
+                self.console.as_ref().map_or(
+                    VirtioConsoleDisconnectPolicy::Retain,
+                    |(_, attachment, _)| microvm_console_disconnect_policy(attachment),
+                )
             } else {
                 VirtioConsoleDisconnectPolicy::Discard
             },
