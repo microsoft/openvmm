@@ -1317,7 +1317,7 @@ pub(crate) mod test_cpuid {
 
     /// Pinned CPU profiles of each vendor, and Granite Rapids', the first to
     /// reach the V2 extended topology leaf `0x1F`.
-    pub const PROFILES: [&str; 8] = [
+    pub const PROFILES: [&str; 9] = [
         "intel.skylake-sp.v1",
         "intel.icelake-sp.v1",
         "intel.emeraldrapids.v1",
@@ -1326,6 +1326,7 @@ pub(crate) mod test_cpuid {
         "amd.genoa.v1",
         "amd.genoa.v2",
         "amd.turin.v1",
+        "amd.turin.v2",
     ];
 
     /// Returns the topology of a VM with `vp_count` VPs in one socket.

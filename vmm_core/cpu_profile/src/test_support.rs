@@ -679,6 +679,251 @@ pub(crate) fn turin_kvm_entries() -> Vec<CpuidEntry> {
     entries(&TURIN_KVM_CPUID)
 }
 
+/// The CPUID that KVM reports on the Ubuntu 24.04 and 26.04 GitHub-hosted
+/// Actions runners with an AMD EPYC 9V45, under Linux 7.0
+/// (7.0.0-1019-azure), as `--cpu-fingerprint` recorded it
+/// (microsoft/nvx#409): [`TURIN_KVM_CPUID`], which `amd.turin.v1` derives
+/// from, but for these leaves. The Azure hosts no longer present the TSA
+/// immunities in `0x80000021` ECX, and this KVM offers CET's shadow stack
+/// with its XSAVE states, and enumerates that `EFER.LMSLE` is unsupported.
+pub(crate) const TURIN_KVM_LINUX_7_CHANGES: [(u32, Option<u32>, [u32; 4]); 6] = [
+    (0x7, Some(0), [0x1, 0xf1bf_07ab, 0x0040_5fc6, 0x2000_0110]),
+    (0xd, Some(1), [0xf, 0x9a8, 0x1800, 0]),
+    (0xd, Some(0xb), [0x10, 0, 0x1, 0]),
+    (0xd, Some(0xc), [0x18, 0, 0x1, 0]),
+    (0x8000_0008, None, [0x0030_3030, 0x5012_0005, 0x400f, 0]),
+    (0x8000_0021, None, [0x204, 0, 0, 0]),
+];
+
+/// The feature MSRs that the KVM of [`TURIN_KVM_LINUX_7_CHANGES`] reports:
+/// the microcode patch level, `MSR_PLATFORM_INFO`, Intel's
+/// `IA32_ARCH_CAPABILITIES` and `IA32_PERF_CAPABILITIES`, which KVM
+/// emulates on AMD hosts too, and `DE_CFG`.
+pub(crate) const TURIN_KVM_LINUX_7_MSRS: [(u32, u64); 5] = [
+    (0x8b, 0xffff_ffff),
+    (0xce, 0x8000_0000),
+    (IA32_ARCH_CAPABILITIES, 0x4000_0000_0c00_0069),
+    (0x345, 0),
+    (0xc001_1029, 0x2),
+];
+
+/// Returns the fingerprint of the KVM of [`TURIN_KVM_LINUX_7_CHANGES`],
+/// with its feature MSRs.
+pub(crate) fn turin_kvm_linux_7_fingerprint() -> CpuFingerprint {
+    let cpuid = changed_entries(&TURIN_KVM_CPUID, &TURIN_KVM_LINUX_7_CHANGES);
+    let mut backend = BackendFingerprint::new("kvm", "test", cpuid);
+    backend.set_feature_msrs(TURIN_KVM_LINUX_7_MSRS);
+    backend_host_fingerprint(backend)
+}
+
+/// The CPUID that KVM reports on the Ubuntu 22.04 GitHub-hosted Actions
+/// runners with an AMD EPYC 9V45, under Linux 6.8 (6.8.0-1070-azure), as
+/// `--cpu-fingerprint` recorded it (microsoft/nvx#409): [`TURIN_KVM_CPUID`]
+/// but for these leaves. As under Linux 7.0
+/// ([`TURIN_KVM_LINUX_7_CHANGES`]), it has no TSA immunity. Its KVM
+/// predates Linux 6.13, from which KVM offers the IBPB_RET enumeration,
+/// `0x80000008` EBX bit 30, and it reports no guest physical address size
+/// in `0x80000008` EAX, and neither the TSC-deadline timer nor the
+/// hypervisor bit in leaf 1.
+pub(crate) const TURIN_KVM_LINUX_6_8_CHANGES: [(u32, Option<u32>, [u32; 4]); 3] = [
+    (
+        0x1,
+        None,
+        [0x00b0_0f21, 0x0010_0800, 0x76fa_3203, 0x078b_fbff],
+    ),
+    (0x8000_0008, None, [0x3030, 0x1002_0005, 0x400f, 0]),
+    (0x8000_0021, None, [0x204, 0, 0, 0]),
+];
+
+/// Returns the fingerprint of the KVM of [`TURIN_KVM_LINUX_6_8_CHANGES`],
+/// with its feature MSRs, those of [`TURIN_KVM_LINUX_7_MSRS`] but
+/// `MSR_PLATFORM_INFO`, which it does not report.
+pub(crate) fn turin_kvm_linux_6_8_fingerprint() -> CpuFingerprint {
+    let cpuid = changed_entries(&TURIN_KVM_CPUID, &TURIN_KVM_LINUX_6_8_CHANGES);
+    let mut backend = BackendFingerprint::new("kvm", "test", cpuid);
+    backend.set_feature_msrs(
+        TURIN_KVM_LINUX_7_MSRS
+            .into_iter()
+            .filter(|&(index, _)| index != 0xce),
+    );
+    backend_host_fingerprint(backend)
+}
+
+/// The CPUID of an AMD EPYC 9V45 (Turin: family 0x1a, model 2, stepping 1)
+/// as WHP presents it in an Azure VM with nested virtualization, a
+/// GitHub-hosted Actions runner with Windows Server 2025 (Microsoft Hv
+/// 10.0.26100.33648), which `--cpu-fingerprint` recorded
+/// (microsoft/nvx#409): each leaf, subleaf, and the registers of a probe
+/// partition that enables every processor and XSAVE feature WHP offers
+/// ([`TURIN_WHP_HOST`]). As on the Genoa hosts ([`GENOA_WHP_CPUID`]), that
+/// WHP enumerates the basic leaves only up to 0xD and presents nothing in
+/// `0x80000021`: neither `LFENCE` serialization nor the TSA immunities that
+/// [`TURIN_KVM_CPUID`]'s host presents. It offers the AVX-512 and CET XSAVE
+/// states.
+pub(crate) const TURIN_WHP_CPUID: [(u32, Option<u32>, [u32; 4]); 61] = [
+    (0x0, None, [0xd, 0x6874_7541, 0x444d_4163, 0x6974_6e65]),
+    (0x1, None, [0x00b0_0f21, 0x800, 0x76fa_3203, 0x078b_fbff]),
+    (0x2, None, [0; 4]),
+    (0x3, None, [0; 4]),
+    (0x4, Some(0), [0; 4]),
+    (0x5, None, [0; 4]),
+    (0x6, None, [0, 0, 0x1, 0]),
+    (0x7, Some(0), [0x1, 0xf1bf_07a9, 0x0040_5fc6, 0x110]),
+    (0x7, Some(1), [0x30, 0, 0, 0]),
+    (0x8, None, [0; 4]),
+    (0x9, None, [0; 4]),
+    (0xa, None, [0; 4]),
+    (0xb, Some(0), [0; 4]),
+    (0xc, None, [0; 4]),
+    (0xd, Some(0), [0xe7, 0x980, 0x980, 0]),
+    (0xd, Some(1), [0xf, 0x9a8, 0x1800, 0]),
+    (0xd, Some(2), [0x100, 0x240, 0, 0]),
+    (0xd, Some(5), [0x40, 0x340, 0, 0]),
+    (0xd, Some(6), [0x200, 0x380, 0, 0]),
+    (0xd, Some(7), [0x400, 0x580, 0, 0]),
+    (0xd, Some(0xb), [0x10, 0, 0x1, 0]),
+    (0xd, Some(0xc), [0x18, 0, 0x1, 0]),
+    (0x4000_0000, None, [0; 4]),
+    (
+        0x8000_0000,
+        None,
+        [0x8000_0021, 0x6874_7541, 0x444d_4163, 0x6974_6e65],
+    ),
+    (
+        0x8000_0001,
+        None,
+        [0x00b0_0f21, 0x4000_0000, 0x0040_03f3, 0x2fd3_fbff],
+    ),
+    (
+        0x8000_0002,
+        None,
+        [0x2044_4d41, 0x4359_5045, 0x3456_3920, 0x3639_2035],
+    ),
+    (
+        0x8000_0003,
+        None,
+        [0x726f_432d, 0x7250_2065, 0x7365_636f, 0x2072_6f73],
+    ),
+    (
+        0x8000_0004,
+        None,
+        [0x2020_2020, 0x2020_2020, 0x2020_2020, 0x0020_2020],
+    ),
+    (
+        0x8000_0005,
+        None,
+        [0xff60_ff40, 0xff60_ff40, 0x300c_0140, 0x2008_0140],
+    ),
+    (
+        0x8000_0006,
+        None,
+        [0x4080_2040, 0x6080_4040, 0x0400_8140, 0x0c00_9140],
+    ),
+    (0x8000_0007, None, [0; 4]),
+    (0x8000_0008, None, [0x3030, 0x7002_0015, 0, 0x0001_0000]),
+    (0x8000_0009, None, [0; 4]),
+    (0x8000_000a, None, [0; 4]),
+    (0x8000_000b, None, [0; 4]),
+    (0x8000_000c, None, [0; 4]),
+    (0x8000_000d, None, [0; 4]),
+    (0x8000_000e, None, [0; 4]),
+    (0x8000_000f, None, [0; 4]),
+    (0x8000_0010, None, [0; 4]),
+    (0x8000_0011, None, [0; 4]),
+    (0x8000_0012, None, [0; 4]),
+    (0x8000_0013, None, [0; 4]),
+    (0x8000_0014, None, [0; 4]),
+    (0x8000_0015, None, [0; 4]),
+    (0x8000_0016, None, [0; 4]),
+    (0x8000_0017, None, [0; 4]),
+    (0x8000_0018, None, [0; 4]),
+    (0x8000_0019, None, [0; 4]),
+    (0x8000_001a, None, [0x2, 0, 0, 0]),
+    (0x8000_001b, None, [0; 4]),
+    (0x8000_001c, None, [0; 4]),
+    (0x8000_001d, Some(0), [0x121, 0x02c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(1), [0x122, 0x01c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(2), [0x143, 0x03c0_003f, 0x3ff, 0x2]),
+    (0x8000_001d, Some(3), [0x163, 0x03c0_003f, 0x7fff, 0x1]),
+    (0x8000_001d, Some(4), [0; 4]),
+    (0x8000_001e, None, [0; 4]),
+    (0x8000_001f, None, [0; 4]),
+    (0x8000_0020, None, [0; 4]),
+    (0x8000_0021, None, [0; 4]),
+];
+
+/// The processor features that WHP offers the host of [`TURIN_WHP_CPUID`]:
+/// none of the TSA immunities.
+pub(crate) const TURIN_WHP_HOST: HvFeatures = HvFeatures {
+    banks: [0x0602_0fcb_67f7_9fbf, 0x0000_0000_e000_01ed],
+    xsave: 0x41ff_ffdf,
+};
+
+/// Returns the fingerprint of the WHP host of [`TURIN_WHP_CPUID`], with its
+/// processor features, as `--cpu-fingerprint` recorded them.
+pub(crate) fn turin_whp_fingerprint() -> CpuFingerprint {
+    whp_fingerprint(entries(&TURIN_WHP_CPUID), TURIN_WHP_HOST)
+}
+
+/// The processor features that the WHP of Windows Server 2022 (Microsoft Hv
+/// 10.0.20348.5773) offers a GitHub-hosted Actions runner with an AMD EPYC
+/// 9V45: [`TURIN_WHP_HOST`]'s but for bank 1, which offers the invariant TSC
+/// and neither BTC_NO nor the IBPB_RET and StibpAlwaysOn enumerations
+/// (`ibpb_rsb_flush_support` and `stibp_always_on_support`).
+pub(crate) const TURIN_WHP_SERVER_2022_HOST: HvFeatures = HvFeatures {
+    banks: [0x0602_0fcb_67f7_9fbf, 0x0000_0000_0000_01cf],
+    xsave: 0x41ff_ffdf,
+};
+
+/// Returns the fingerprint of the WHP of [`TURIN_WHP_SERVER_2022_HOST`], as
+/// `--cpu-fingerprint` recorded it (microsoft/nvx#409): its CPUID is
+/// [`TURIN_WHP_CPUID`] but for `0x80000007` EDX, which presents the
+/// invariant TSC, and `0x80000008` EBX, which presents none of what bank 1
+/// lacks.
+pub(crate) fn turin_whp_server_2022_fingerprint() -> CpuFingerprint {
+    let cpuid = changed_entries(
+        &TURIN_WHP_CPUID,
+        &[
+            (0x8000_0007, None, [0, 0, 0, 0x100]),
+            (0x8000_0008, None, [0x3030, 0x1000_0015, 0, 0x0001_0000]),
+        ],
+    );
+    whp_fingerprint(cpuid, TURIN_WHP_SERVER_2022_HOST)
+}
+
+/// Returns the fingerprint of a WHP host whose probe partition reports
+/// `cpuid`, with the processor features `host`, under the names that
+/// `--cpu-fingerprint` records them with.
+fn whp_fingerprint(cpuid: Vec<CpuidEntry>, host: HvFeatures) -> CpuFingerprint {
+    let mut backend = BackendFingerprint::new("whp", "test", cpuid);
+    let [bank0, bank1] = host.banks;
+    backend.set_feature_bank("whp.capability.ProcessorFeatures", bank0);
+    backend.set_feature_bank("whp.capability.ProcessorFeaturesBanks.bank0", bank0);
+    backend.set_feature_bank("whp.capability.ProcessorFeaturesBanks.bank1", bank1);
+    backend.set_feature_bank("whp.capability.ProcessorXsaveFeatures", host.xsave);
+    backend_host_fingerprint(backend)
+}
+
+/// Returns a recorded CPUID `table` as fingerprint entries, with the
+/// registers of each of `changes` in place of its leaf's and subleaf's, or
+/// added where the table lacks them.
+fn changed_entries(
+    table: &[(u32, Option<u32>, [u32; 4])],
+    changes: &[(u32, Option<u32>, [u32; 4])],
+) -> Vec<CpuidEntry> {
+    let mut table = table.to_vec();
+    for &(leaf, subleaf, registers) in changes {
+        match table
+            .iter_mut()
+            .find(|entry| (entry.0, entry.1) == (leaf, subleaf))
+        {
+            Some(entry) => entry.2 = registers,
+            None => table.push((leaf, subleaf, registers)),
+        }
+    }
+    entries(&table)
+}
+
 /// The CPUID of an Intel Xeon 6973P-C (Granite Rapids: family 6, model 0xad,
 /// stepping 1) as WHP presents it in an Azure VM with nested virtualization,
 /// a `Standard_D4s_v7` runner with Windows 25H2, which `--cpu-fingerprint`
