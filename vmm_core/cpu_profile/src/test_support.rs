@@ -789,6 +789,95 @@ pub(crate) fn granite_rapids_whp_fingerprint() -> CpuFingerprint {
     );
     backend_host_fingerprint(backend)
 }
+/// The CPUID of an Intel Xeon 6973P-C (Granite Rapids: family 6, model 0xad,
+/// stepping 1) as KVM reports it in an Azure VM with nested virtualization, a
+/// GitHub-hosted Actions runner with Linux 7.0, which `--cpu-fingerprint`
+/// recorded. That KVM offers AMX's features but not its tile states, which
+/// need a permission that the fingerprint does not request, no CET state,
+/// and AVX10.1 with its leaf `0x24`, as the WHP of
+/// [`GRANITE_RAPIDS_WHP_CPUID`] does.
+pub(crate) const GRANITE_RAPIDS_KVM_CPUID: [(u32, Option<u32>, [u32; 4]); 60] = [
+    (0x0, None, [0x24, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]),
+    (
+        0x1,
+        None,
+        [0x000a_06d1, 0x0004_0800, 0xf7fa_3223, 0x0f8b_fbff],
+    ),
+    (0x2, None, [0x00fe_ff01, 0xf0, 0, 0]),
+    (0x3, None, [0; 4]),
+    (0x4, Some(0), [0x0400_4121, 0x02c0_003f, 0x3f, 0]),
+    (0x4, Some(1), [0x0400_4122, 0x03c0_003f, 0x3f, 0]),
+    (0x4, Some(2), [0x0400_4143, 0x03c0_003f, 0x7ff, 0]),
+    (0x4, Some(3), [0x0400_c163, 0x03c0_003f, 0x0007_7fff, 0]),
+    (0x4, Some(4), [0; 4]),
+    (0x5, None, [0; 4]),
+    (0x6, None, [0x4, 0, 0, 0]),
+    (0x7, Some(0), [0x2, 0xf1bf_2fbb, 0x1a41_5f66, 0x23c1_4010]),
+    (0x7, Some(1), [0x0020_1c30, 0, 0, 0x0008_4000]),
+    (0x7, Some(2), [0, 0, 0, 0x1]),
+    (0x8, None, [0; 4]),
+    (0x9, None, [0; 4]),
+    (0xa, None, [0; 4]),
+    (0xb, Some(0), [0; 4]),
+    (0xc, None, [0; 4]),
+    (0xd, Some(0), [0xe7, 0xa80, 0xa80, 0]),
+    (0xd, Some(1), [0x1f, 0x980, 0, 0]),
+    (0xd, Some(2), [0x100, 0x240, 0, 0]),
+    (0xd, Some(5), [0x40, 0x440, 0, 0]),
+    (0xd, Some(6), [0x200, 0x480, 0, 0]),
+    (0xd, Some(7), [0x400, 0x680, 0, 0]),
+    (0xe, None, [0; 4]),
+    (0xf, Some(0), [0; 4]),
+    (0x10, Some(0), [0; 4]),
+    (0x11, None, [0; 4]),
+    (0x12, Some(0), [0; 4]),
+    (0x13, None, [0; 4]),
+    (0x14, Some(0), [0; 4]),
+    (0x15, None, [0; 4]),
+    (0x16, None, [0; 4]),
+    (0x17, Some(0), [0; 4]),
+    (0x18, Some(0), [0; 4]),
+    (0x19, None, [0; 4]),
+    (0x1a, None, [0; 4]),
+    (0x1b, None, [0; 4]),
+    (0x1c, None, [0; 4]),
+    (0x1d, Some(0), [0x1, 0, 0, 0]),
+    (0x1d, Some(1), [0x0400_2000, 0x0008_0040, 0x10, 0]),
+    (0x1e, Some(0), [0, 0x4010, 0, 0]),
+    (0x1f, Some(0), [0; 4]),
+    (0x20, None, [0; 4]),
+    (0x21, None, [0; 4]),
+    (0x22, None, [0; 4]),
+    (0x23, None, [0; 4]),
+    (0x24, Some(0), [0, 0x0007_0001, 0, 0]),
+    (
+        0x4000_0000,
+        None,
+        [0x4000_0001, 0x4b4d_564b, 0x564b_4d56, 0x4d],
+    ),
+    (0x4000_0001, None, [0x0100_7efb, 0, 0, 0]),
+    (0x8000_0000, None, [0x8000_0008, 0, 0, 0]),
+    (0x8000_0001, None, [0, 0, 0x121, 0x2c10_0800]),
+    (0x8000_0002, None, [0; 4]),
+    (0x8000_0003, None, [0; 4]),
+    (0x8000_0004, None, [0; 4]),
+    (0x8000_0005, None, [0; 4]),
+    (0x8000_0006, None, [0, 0, 0x0800_7040, 0]),
+    (0x8000_0007, None, [0, 0, 0, 0x100]),
+    (0x8000_0008, None, [0x0030_3930, 0, 0, 0]),
+];
+
+/// The `IA32_ARCH_CAPABILITIES` value that the KVM of
+/// [`GRANITE_RAPIDS_KVM_CPUID`]'s host reports for guests.
+pub(crate) const GRANITE_RAPIDS_KVM_ARCH_CAPABILITIES: u64 = 0x0c00_e16d;
+
+/// Returns the fingerprint of the KVM host of [`GRANITE_RAPIDS_KVM_CPUID`],
+/// with its `IA32_ARCH_CAPABILITIES` value.
+pub(crate) fn granite_rapids_kvm_fingerprint() -> CpuFingerprint {
+    let mut backend = BackendFingerprint::new("kvm", "test", entries(&GRANITE_RAPIDS_KVM_CPUID));
+    backend.set_feature_msrs([(IA32_ARCH_CAPABILITIES, GRANITE_RAPIDS_KVM_ARCH_CAPABILITIES)]);
+    backend_host_fingerprint(backend)
+}
 /// Returns a recorded CPUID `table` as fingerprint entries.
 fn entries(table: &[(u32, Option<u32>, [u32; 4])]) -> Vec<CpuidEntry> {
     table

@@ -1396,12 +1396,16 @@ mod tests {
     /// The signature of the test profile's CPU, an Ice Lake-SP Xeon.
     const TEST_SIGNATURE: u32 = 0x0006_06a6;
 
-    /// The signature of a Granite Rapids Xeon, family 6 model 173 stepping 1,
-    /// which no pinned profile serves.
-    const GRANITE_RAPIDS: u32 = 0x000a_06d1;
+    /// The signature of a Sapphire Rapids Xeon, family 6 model 143 stepping
+    /// 8, which no pinned profile serves.
+    const SAPPHIRE_RAPIDS: u32 = 0x0008_06f8;
 
-    /// The brand string of the Granite Rapids test CPU.
-    const GRANITE_RAPIDS_BRAND: &str = "Intel(R) Xeon(R) 6973P-C";
+    /// The brand string of the Sapphire Rapids test CPU.
+    const SAPPHIRE_RAPIDS_BRAND: &str = "Intel(R) Xeon(R) Platinum 8480C";
+
+    /// The signature of a Granite Rapids Xeon, family 6 model 173 stepping 1,
+    /// which `intel.graniterapids.v1` serves.
+    const GRANITE_RAPIDS: u32 = 0x000a_06d1;
 
     /// No test hook.
     const NO_HOOKS: TimeAbiTestHooks = TimeAbiTestHooks {
@@ -1691,13 +1695,16 @@ mod tests {
         );
     }
 
-    /// The effective CPUID ends leaf 0Bh with Intel's terminating subleaf,
-    /// which carries VP 0's x2APIC ID; the backend sets each VP's own. No
-    /// pinned profile reaches leaf 1Fh.
+    /// The effective CPUID ends leaf 0Bh, and leaf 1Fh where the profile
+    /// reaches it, as `intel.graniterapids.v1` does, with Intel's terminating
+    /// subleaf, which carries VP 0's x2APIC ID; the backend sets each VP's
+    /// own. Leaf 1Fh describes the same levels as leaf 0Bh.
     #[test]
     fn effective_cpuid_terminates_the_extended_topology() {
+        let mut reached_1f = false;
         for profile in cpu_profile::pinned_profiles() {
-            assert!(profile.lookup(0, 0)[0] < 0x1f, "{}", profile.id());
+            let reaches_1f = profile.lookup(0, 0)[0] >= 0x1f;
+            reached_1f |= reaches_1f;
             for vp_count in [1, 2, 8] {
                 let effective =
                     effective_cpuid(profile, &topology(vp_count, X2ApicState::Supported)).unwrap();
@@ -1711,18 +1718,29 @@ mod tests {
                 let leaf_b = subleaves(0xb);
                 assert_eq!(leaf_b.len(), 3, "{}: {leaf_b:x?}", profile.id());
                 assert_eq!(leaf_b[2], (Some(2), [0, 0, 2, 0], [!0; 4]));
-                assert!(subleaves(0x1f).is_empty());
+                let leaf_1f = subleaves(0x1f);
+                if reaches_1f {
+                    assert_eq!(leaf_1f, leaf_b, "{}", profile.id());
+                } else {
+                    assert!(leaf_1f.is_empty(), "{}: {leaf_1f:x?}", profile.id());
+                }
 
                 let (_, config) = partition_config(&partition_profile(profile), &effective);
-                let terminator = config
-                    .cpuid
-                    .leaves()
-                    .iter()
-                    .find(|leaf| leaf.function == 0xb && leaf.index == Some(2))
-                    .unwrap();
-                assert_eq!(terminator.mask, [!0, !0, !0, 0]);
+                for function in [0xb, 0x1f] {
+                    let terminator = config
+                        .cpuid
+                        .leaves()
+                        .iter()
+                        .find(|leaf| leaf.function == function && leaf.index == Some(2));
+                    if function == 0xb || reaches_1f {
+                        assert_eq!(terminator.unwrap().mask, [!0, !0, !0, 0]);
+                    } else {
+                        assert!(terminator.is_none(), "{}", profile.id());
+                    }
+                }
             }
         }
+        assert!(reached_1f);
     }
 
     #[test]
@@ -2406,20 +2424,25 @@ mod tests {
     #[test]
     fn auto_falls_back_to_host_profiles_only_where_they_serve() {
         let tiger_lake = HostCpuSignature::new(*b"GenuineIntel", 0x0008_06c1);
-        let granite_rapids = HostCpuSignature::new(*b"GenuineIntel", GRANITE_RAPIDS);
+        let sapphire_rapids = HostCpuSignature::new(*b"GenuineIntel", SAPPHIRE_RAPIDS);
         let zen3 = HostCpuSignature::new(*b"AuthenticAMD", 0x00a2_0f12);
         let icelake = HostCpuSignature::new(*b"GenuineIntel", TEST_SIGNATURE);
+        let granite_rapids = HostCpuSignature::new(*b"GenuineIntel", GRANITE_RAPIDS);
         let milan = HostCpuSignature::new(*b"AuthenticAMD", 0x00a0_0f11);
         let hygon = HostCpuSignature::new(*b"HygonGenuine", 0x0090_0f01);
         let select = |requested, host, hooks| select_on_host(requested, host, None, hooks);
 
-        for host in [&tiger_lake, &granite_rapids, &zen3] {
+        for host in [&tiger_lake, &sapphire_rapids, &zen3] {
             for hooks in [&NO_HOOKS, &HOST_CPU_UNKNOWN] {
                 assert!(falls_back(host, hooks), "{host}");
                 assert!(is_fallback(&select(cpu_profile::AUTO, host, hooks)));
             }
         }
-        for (host, id) in [(&icelake, TEST_PROFILE), (&milan, "amd.milan.v1")] {
+        for (host, id) in [
+            (&icelake, TEST_PROFILE),
+            (&granite_rapids, "intel.graniterapids.v1"),
+            (&milan, "amd.milan.v1"),
+        ] {
             assert!(!falls_back(host, &NO_HOOKS), "{host}");
             assert_eq!(
                 selected(select(cpu_profile::AUTO, host, &NO_HOOKS))
@@ -2459,8 +2482,8 @@ mod tests {
     /// form, which the link prefills with the CPU.
     #[test]
     fn auto_falls_back_to_a_host_profile_and_warns() {
-        let host = HostCpuSignature::new(*b"GenuineIntel", GRANITE_RAPIDS);
-        let fingerprint = test_fingerprint("kvm", GRANITE_RAPIDS, GRANITE_RAPIDS_BRAND);
+        let host = HostCpuSignature::new(*b"GenuineIntel", SAPPHIRE_RAPIDS);
+        let fingerprint = test_fingerprint("kvm", SAPPHIRE_RAPIDS, SAPPHIRE_RAPIDS_BRAND);
         let profile = fall_back(&host, || Ok(fingerprint.clone())).unwrap();
         assert!(profile.is_host());
         assert_eq!(profile.id(), "intel.host.v1");
@@ -2483,8 +2506,8 @@ mod tests {
             lines[0],
             format!(
                 "NVX-CPU-PROFILE-FALLBACK: no built-in CPU profile serves this host's CPU, \
-                 GenuineIntel 6/173/1 (Intel(R) Xeon(R) 6973P-C), so --cpu-profile auto fell \
-                 back to intel.host.v1 ({digest}), a profile derived from this host's kvm \
+                 GenuineIntel 6/143/8 (Intel(R) Xeon(R) Platinum 8480C), so --cpu-profile auto \
+                 fell back to intel.host.v1 ({digest}), a profile derived from this host's kvm \
                  backend for development."
             )
         );
@@ -2502,9 +2525,9 @@ mod tests {
                 "  openvmm --hypervisor kvm --cpu-fingerprint fingerprint.json",
                 "and attach fingerprint.json to a CPU profile request:",
                 "  https://github.com/microsoft/nvx/issues/new?template=cpu-profile.yml\
-                 &title=CPU%20profile%3A%20GenuineIntel%206%2F173%2F1%20%28Intel%28R%29%20Xeon\
-                 %28R%29%206973P-C%29&signature=GenuineIntel%206%2F173%2F1\
-                 &cpu=Intel%28R%29%20Xeon%28R%29%206973P-C",
+                 &title=CPU%20profile%3A%20GenuineIntel%206%2F143%2F8%20%28Intel%28R%29%20Xeon\
+                 %28R%29%20Platinum%208480C%29&signature=GenuineIntel%206%2F143%2F8\
+                 &cpu=Intel%28R%29%20Xeon%28R%29%20Platinum%208480C",
             ]
         );
     }
@@ -2514,8 +2537,8 @@ mod tests {
     /// pinned profile serves.
     #[test]
     fn explicit_host_profiles_invite_requests_only_where_no_profile_serves() {
-        let fingerprint = test_fingerprint("whp", GRANITE_RAPIDS, GRANITE_RAPIDS_BRAND);
-        let host = HostCpuSignature::new(*b"GenuineIntel", GRANITE_RAPIDS);
+        let fingerprint = test_fingerprint("whp", SAPPHIRE_RAPIDS, SAPPHIRE_RAPIDS_BRAND);
+        let host = HostCpuSignature::new(*b"GenuineIntel", SAPPHIRE_RAPIDS);
         let profile = host_partition_profile(&fingerprint, &host).unwrap();
         let digest = profile.digest_string();
         let invited = host_profile_warning(
@@ -2529,7 +2552,8 @@ mod tests {
             invited.starts_with(&format!(
                 "--cpu-profile host selected intel.host.v1 ({digest}), a profile derived from \
                  this host's whp backend for development; no built-in CPU profile serves this \
-                 host's CPU, GenuineIntel 6/173/1 (Intel(R) Xeon(R) 6973P-C).\nIt is not pinned"
+                 host's CPU, GenuineIntel 6/143/8 (Intel(R) Xeon(R) Platinum 8480C).\nIt is not \
+                 pinned"
             )),
             "{invited}"
         );
@@ -2577,13 +2601,13 @@ mod tests {
             "az-AZ_09.~%20%2F%28R%29%26%3D%3F%23%25%2B%C3%A9"
         );
         // A CPU without a brand string prefills only its signature.
-        let fingerprint = test_fingerprint("mshv", GRANITE_RAPIDS, "");
-        assert_eq!(describe_cpu(&fingerprint.host.cpu), "GenuineIntel 6/173/1");
+        let fingerprint = test_fingerprint("mshv", SAPPHIRE_RAPIDS, "");
+        assert_eq!(describe_cpu(&fingerprint.host.cpu), "GenuineIntel 6/143/8");
         assert_eq!(
             cpu_profile_request_url(&fingerprint.host.cpu),
             format!(
-                "{CPU_PROFILE_REQUEST_URL}&title=CPU%20profile%3A%20GenuineIntel%206%2F173%2F1\
-                 &signature=GenuineIntel%206%2F173%2F1"
+                "{CPU_PROFILE_REQUEST_URL}&title=CPU%20profile%3A%20GenuineIntel%206%2F143%2F8\
+                 &signature=GenuineIntel%206%2F143%2F8"
             )
         );
         assert_eq!(
@@ -2599,16 +2623,16 @@ mod tests {
     /// and a backend that cannot boot the derived profile.
     #[test]
     fn a_fallback_that_cannot_boot_says_that_auto_fell_back() {
-        let host = HostCpuSignature::new(*b"GenuineIntel", GRANITE_RAPIDS);
+        let host = HostCpuSignature::new(*b"GenuineIntel", SAPPHIRE_RAPIDS);
         let fell_back = FellBack::new(&host).to_string();
         assert_eq!(
             fell_back,
             "--cpu-profile auto fell back to a host CPU profile, because no built-in CPU \
-             profile serves this host's CPU, GenuineIntel 6/173/1, but this host cannot boot one"
+             profile serves this host's CPU, GenuineIntel 6/143/8, but this host cannot boot one"
         );
 
         let no_rdtscp =
-            test_fingerprint_with("whp", GRANITE_RAPIDS, GRANITE_RAPIDS_BRAND, |cpuid| {
+            test_fingerprint_with("whp", SAPPHIRE_RAPIDS, SAPPHIRE_RAPIDS_BRAND, |cpuid| {
                 for entry in cpuid.iter_mut() {
                     if entry.key() == (0x8000_0001, None) {
                         let mut registers = entry.registers();
@@ -2926,10 +2950,10 @@ mod tests {
     /// serves only the capture host's CPU model and stepping.
     #[test]
     fn restore_takes_a_fallback_profile_from_the_snapshot() {
-        let host = HostCpuSignature::new(*b"GenuineIntel", GRANITE_RAPIDS);
-        let fingerprint = test_fingerprint("kvm", GRANITE_RAPIDS, GRANITE_RAPIDS_BRAND);
+        let host = HostCpuSignature::new(*b"GenuineIntel", SAPPHIRE_RAPIDS);
+        let fingerprint = test_fingerprint("kvm", SAPPHIRE_RAPIDS, SAPPHIRE_RAPIDS_BRAND);
         let fallback = fall_back(&host, || Ok(fingerprint)).unwrap();
-        let record = host_profile_record(&fallback, GRANITE_RAPIDS);
+        let record = host_profile_record(&fallback, SAPPHIRE_RAPIDS);
         assert_eq!(fallback.record().encoding, record.profile.as_slice());
         assert_eq!(
             fallback.record().digest.as_slice(),
@@ -2943,11 +2967,11 @@ mod tests {
             assert_eq!(*restored, *fallback);
             assert_eq!(restored.record(), fallback.record());
 
-            let stepping_2 = HostCpuSignature::new(*b"GenuineIntel", GRANITE_RAPIDS + 1);
+            let stepping_9 = HostCpuSignature::new(*b"GenuineIntel", SAPPHIRE_RAPIDS + 1);
             assert_eq!(
                 selected(select_on_host(
                     fallback.id(),
-                    &stepping_2,
+                    &stepping_9,
                     Some(&record),
                     hooks
                 ))

@@ -458,6 +458,7 @@ mod tests {
     const CASCADE_LAKE: u32 = 0x0005_0657;
     const ICELAKE: u32 = 0x0006_06a6;
     const EMERALDRAPIDS: u32 = 0x000c_06f2;
+    const GRANITE_RAPIDS: u32 = 0x000a_06d1;
     const ALDER_LAKE: u32 = 0x0009_06a3;
     const ALDER_LAKE_S: u32 = 0x0009_0672;
     const TIGER_LAKE: u32 = 0x0008_06c1;
@@ -484,7 +485,7 @@ mod tests {
     /// The pinned JSON files, the source of the static data, and their golden
     /// digests. Released profiles are immutable: changing a golden digest is
     /// a deliberate act, here.
-    const FILES: [(&str, &str, &str); 8] = [
+    const FILES: [(&str, &str, &str); 9] = [
         (
             "intel.skylake-sp.v1",
             include_str!("../profiles/intel.skylake-sp.v1.json"),
@@ -499,6 +500,11 @@ mod tests {
             "intel.emeraldrapids.v1",
             include_str!("../profiles/intel.emeraldrapids.v1.json"),
             "sha256:73c084783f26df29871c72200ea34470e4afec6187bf96de6ac051dbaed6727d",
+        ),
+        (
+            "intel.graniterapids.v1",
+            include_str!("../profiles/intel.graniterapids.v1.json"),
+            "sha256:362212bdc29d955b02f294878cc3a9f7a557572c5e36dc2710ecd4790e9c71f1",
         ),
         (
             "intel.alderlake.v1",
@@ -703,6 +709,11 @@ mod tests {
                 "intel.emeraldrapids.v1",
                 "emeraldrapids",
             ),
+            (
+                intel(GRANITE_RAPIDS),
+                "intel.graniterapids.v1",
+                "graniterapids",
+            ),
             (intel(ALDER_LAKE), "intel.alderlake.v1", "alderlake"),
             (intel(ALDER_LAKE_S), "intel.alderlake.v1", "alderlake"),
             (amd(MILAN), "amd.milan.v1", "milan"),
@@ -795,6 +806,8 @@ mod tests {
                     (6, 143),
                     (6, 151),
                     (6, 154),
+                    (6, 173),
+                    (6, 174),
                     (6, 207),
                     (25, 1),
                     (25, 17),
