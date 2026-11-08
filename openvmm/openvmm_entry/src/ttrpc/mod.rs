@@ -596,6 +596,27 @@ impl Vm {
     }
 }
 
+/// A created VM, which [`VmService::launch_vm`] launches: its VM worker's
+/// parameters, the receiver of the worker's halt notifications, its device
+/// channels, and its controller's inputs.
+struct VmLaunch {
+    worker: VmWorkerParameters,
+    notify: mesh::Receiver<vmm_core_defs::HaltReason>,
+    vm: Vm,
+    controller: ControllerLaunch,
+}
+
+/// The inputs of the [`VmController`] of a created VM.
+struct ControllerLaunch {
+    igvm_path: Option<PathBuf>,
+    memory_backing_file: Option<PathBuf>,
+    memory: u64,
+    processors: u32,
+    crash_dump_path: Option<PathBuf>,
+    microvm: crate::vm_controller::MicrovmController,
+    guest_power_actions: GuestPowerActions,
+}
+
 #[derive(Default)]
 struct IommufdContexts {
     #[cfg(target_os = "linux")]
@@ -1034,10 +1055,16 @@ impl VmService {
     }
 
     async fn create_vm(&mut self, request: vmservice::CreateVmRequest) -> anyhow::Result<()> {
-        let (microvm, req_config) = microvm::CreateVm::new(request)?;
-        self.create_vm_inner(req_config, microvm, None)
-            .await
-            .map(drop)
+        if self.vm.is_some() {
+            bail!("VM already created");
+        }
+        let launch = if microvm::requested(&request)? {
+            microvm::create(&self.driver, request).await?
+        } else {
+            microvm::validate_standard_request(&request)?;
+            self.create_standard_vm(request, None).await?.0
+        };
+        self.launch_vm(launch).await
     }
 
     async fn restore_vm(
@@ -1068,14 +1095,15 @@ impl VmService {
         }
         // A microVM restores from its authoritative manifest through CreateVM's
         // microVM snapshot configuration instead.
-        let (microvm, config) = microvm::CreateVm::new(vmservice::CreateVmRequest {
+        let request = vmservice::CreateVmRequest {
             config: Some(config),
             ..Default::default()
-        })?;
-        if microvm.is_active() {
+        };
+        if microvm::requested(&request)? {
             return Err(anyhow!(Code::InvalidArgument)
                 .context("RestoreVM does not restore a microVM; use CreateVM's microvm_snapshot"));
         }
+        microvm::validate_standard_request(&request)?;
 
         // Read the manifest and check the snapshot ID before doing any
         // expensive VM construction, so a wrong snapshot fails fast. The rest
@@ -1089,59 +1117,110 @@ impl VmService {
         )
         .map_err(|err| anyhow!(Code::FailedPrecondition).context(format!("{err:#}")))?;
 
-        let snapshot_id = self
-            .create_vm_inner(
-                config,
-                microvm,
+        let (launch, snapshot_id) = self
+            .create_standard_vm(
+                request,
                 Some(RestoreParameters {
                     source_dir,
                     manifest,
                     state_bytes,
                 }),
             )
-            .await?
-            .context("restore did not produce a snapshot ID")?;
+            .await?;
+        let snapshot_id = snapshot_id.context("restore did not produce a snapshot ID")?;
+        self.launch_vm(launch).await?;
         Ok(vmservice::RestoreVmResponse {
             snapshot_id: snapshot_id.to_string(),
         })
     }
 
-    /// Creates a VM, optionally restoring it from a snapshot. Returns the
-    /// snapshot ID from the manifest when restoring.
-    async fn create_vm_inner(
-        &mut self,
-        mut req_config: vmservice::VmConfig,
-        mut microvm: microvm::CreateVm,
-        restore: Option<RestoreParameters>,
-    ) -> anyhow::Result<Option<Guid>> {
-        if self.vm.is_some() {
-            bail!("VM already created");
-        }
+    /// Launches the VM worker and the controller of a created VM.
+    async fn launch_vm(&mut self, launch: VmLaunch) -> anyhow::Result<()> {
+        let VmLaunch {
+            worker,
+            notify,
+            vm,
+            controller,
+        } = launch;
+        let restore_ready_required = worker.restore_ready_sink.is_some();
 
-        validate_platform_config(&req_config)?;
+        // Create a VmmMesh for local/in-process workers.
+        let mesh = VmmMesh::new(&self.driver, true)?;
+        let vm_host = mesh
+            .make_host("vm", None)
+            .await
+            .context("spawning vm process failed")?;
+        let vm_worker = vm_host.launch_worker(VM_WORKER, worker).await?;
 
-        let hypervisor = if microvm.is_active() {
-            openvmm_helpers::hypervisor::microvm::choose_microvm_hypervisor()?
-        } else {
-            openvmm_helpers::hypervisor::choose_hypervisor()?
-        };
-        let source_hypervisor = hypervisor.id().to_owned();
-        microvm.prepare_restore(source_hypervisor)?;
-        let restore_ready_path = microvm.take_restore_ready_path();
-        let restore_ready_sink = if restore_ready_path.is_empty() {
+        // Create channels for VmController.
+        let (vm_controller_send, vm_controller_recv) = mesh::channel();
+        let (event_send, event_recv) = mesh::channel();
+        let ControllerLaunch {
+            igvm_path,
+            memory_backing_file,
+            memory,
+            processors,
+            crash_dump_path,
+            microvm,
+            guest_power_actions,
+        } = controller;
+        // SaveVM saves a standard VM through its memory backing file. A microVM
+        // captures its own snapshots.
+        let save_memory_backing_file = if microvm.active {
             None
         } else {
-            Some(
-                crate::snapshot_restore::connect_restore_ready_sink(Path::new(&restore_ready_path))
-                    .context("failed to connect restore readiness endpoint")?,
-            )
+            memory_backing_file.clone()
         };
-        let restore_ready_required = restore_ready_sink.is_some();
-        microvm.finish_prepare(&req_config)?;
-        anyhow::ensure!(
-            !(microvm.is_active() && req_config.vmgs.is_some()),
-            "microVM does not support VMGS"
-        );
+
+        // Build VmController with no paravisor-specific fields.
+        let controller = VmController {
+            mesh,
+            vm_worker,
+            vnc_worker: None,
+            gdb_worker: None,
+            diag_inspector: None,
+            vtl2_settings: None,
+            ged_rpc: None,
+            vm_rpc: vm.worker_rpc.clone(),
+            paravisor_diag: None,
+            igvm_path,
+            memory_backing_file,
+            memory,
+            processors,
+            log_file: None,
+            crash_dump_path,
+            microvm,
+            guest_power_actions,
+        };
+
+        // Spawn the controller task.
+        let controller_task = self.driver.spawn("vm-controller", async move {
+            let _ = controller.run(vm_controller_recv, event_send, notify).await;
+        });
+
+        self.vm_controller = Some(vm_controller_send);
+        self.vm_controller_events = Some(event_recv);
+        self.controller_task = Some(controller_task);
+        self.vm = Some(Arc::new(vm));
+        self.snapshot_saved = false;
+        self.memory_backing_file = save_memory_backing_file;
+        self.restore_ready_pending = restore_ready_required;
+        self.lifecycle = VmLifecycle::Paused;
+        Ok(())
+    }
+
+    /// Creates a VM of the standard machine profile, optionally restoring it
+    /// from a snapshot. Also returns the snapshot ID from the manifest when
+    /// restoring.
+    async fn create_standard_vm(
+        &mut self,
+        request: vmservice::CreateVmRequest,
+        restore: Option<RestoreParameters>,
+    ) -> anyhow::Result<(VmLaunch, Option<Guid>)> {
+        let mut req_config = request.config.context("missing configuration")?;
+        validate_platform_config(&req_config)?;
+
+        let hypervisor = openvmm_helpers::hypervisor::choose_hypervisor()?;
         let vmgs = build_vmgs(req_config.vmgs.take()).await?;
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
 
@@ -1164,7 +1243,6 @@ impl VmService {
         }
         let any_serial_configured = ports.iter().any(|port| port.is_some());
         let com1_configured = ports[0].is_some();
-        let has_requested_microvm_console = microvm.has_requested_console(&req_config);
 
         #[cfg(guest_arch = "aarch64")]
         let arch = vm_manifest_builder::MachineArch::Aarch64;
@@ -1211,33 +1289,27 @@ impl VmService {
                 if isolation.is_some() {
                     bail!("VM-service SNP isolation currently supports only IGVM boot");
                 }
-                let kernel = if let Some(kernel) = microvm.restore_kernel()? {
-                    kernel
-                } else {
-                    File::open(boot.kernel_path).context("failed to open kernel")?
-                };
+                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
                 let initrd = if boot.initrd_path.is_empty() {
                     None
                 } else {
                     Some(File::open(boot.initrd_path).context("failed to open initrd")?)
                 };
-                let cmdline =
-                    microvm.command_line(boot.kernel_cmdline, has_requested_microvm_console)?;
                 (
                     LoadMode::Linux {
                         kernel,
                         initrd,
-                        cmdline,
-                        enable_serial: !microvm.is_active(),
+                        cmdline: boot.kernel_cmdline,
+                        enable_serial: true,
                         isolation: openvmm_defs::config::LinuxIsolationConfig::None,
-                        boot_mode: microvm.direct_boot_mode(),
-                        smbios: if microvm.is_active() {
-                            Box::default()
-                        } else {
-                            smbios
-                        },
+                        boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                        smbios,
                     },
-                    microvm.base_chipset_type(req_config.disable_hv),
+                    if req_config.disable_hv {
+                        vm_manifest_builder::BaseChipsetType::UnenlightenedLinuxDirect
+                    } else {
+                        vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect
+                    },
                     None,
                     None,
                 )
@@ -1339,11 +1411,8 @@ impl VmService {
             BuiltPcieTopology::default()
         };
 
-        let ports = microvm.configure_serial_ports(ports)?;
-        let mut chipset_builder = VmManifestBuilder::new(base_chipset_type, arch);
-        if let Some(ports) = ports {
-            chipset_builder = chipset_builder.with_serial(ports);
-        }
+        let mut chipset_builder =
+            VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
         let acpi_power_button_rpc = if supports_acpi_power_button(&load_mode) {
             let (send, recv) = mesh::channel();
             let irq = match arch {
@@ -1371,10 +1440,9 @@ impl VmService {
         }
         let layout_config = chipset_builder.layout_config();
         let layout_config = apply_mmio_overrides(layout_config, req_config.memory_config.as_ref())?;
-        let mut chipset = chipset_builder
+        let chipset = chipset_builder
             .build()
             .context("failed to build vm configuration")?;
-        microvm.add_chipset_devices(&mut chipset.chipset_devices)?;
 
         // Build the NUMA topology. A `MemoryConfig` and an explicit
         // `NumaConfig` are mutually exclusive (mirrors the CLI `--memory` vs
@@ -1391,14 +1459,7 @@ impl VmService {
                 .context("memory backing file cannot be specified when restoring a snapshot"));
         }
 
-        anyhow::ensure!(
-            !(microvm.is_active() && memory_backing_file.is_some()),
-            "microVM does not support a memory backing file"
-        );
-
-        let (numa, config_mem_size) = if let Some(restored) = microvm.restore_numa() {
-            restored
-        } else if let Some(numa_config) = req_config.numa_config.take() {
+        let (numa, config_mem_size) = if let Some(numa_config) = req_config.numa_config.take() {
             if req_config.memory_config.is_some() {
                 bail!("memory_config and numa_config are mutually exclusive");
             }
@@ -1429,7 +1490,10 @@ impl VmService {
             (numa, mem_size)
         };
 
-        let config_proc_count = microvm.processor_count();
+        let config_proc_count = req_config
+            .processor_config
+            .as_ref()
+            .map_or(1, |config| config.processor_count);
         let arch = parse_arch_topology_overrides(req_config.processor_config.as_ref())?;
 
         let mut config = Config {
@@ -1481,7 +1545,6 @@ impl VmService {
             layout: layout_config,
             rtc_delta_milliseconds: 0,
         };
-        microvm.apply_config(&mut config);
 
         let guest_power_actions = guest_power_actions_from_proto(req_config.guest_power_actions)?;
 
@@ -1497,9 +1560,7 @@ impl VmService {
 
         let mut scsi_rpc = None;
         let mut consomme_rpc = std::collections::HashMap::new();
-        microvm.add_restored_devices(&mut config)?;
-        if let Some(mut devices_config) = req_config.devices_config {
-            microvm.take_devices(&mut config, &mut devices_config)?;
+        if let Some(devices_config) = req_config.devices_config {
             if !devices_config.scsi_disks.is_empty() {
                 let mut devices = Vec::new();
                 for disk in devices_config.scsi_disks {
@@ -1611,8 +1672,6 @@ impl VmService {
             }
         }
 
-        microvm.finish_devices(&mut config)?;
-
         if let Some(hvsocket_config) = req_config.hvsocket_config {
             let vmbus = config
                 .vmbus
@@ -1625,118 +1684,69 @@ impl VmService {
             vmbus.vsock_path = Some(hvsocket_config.path);
         }
 
-        microvm.prepare_launch(&config, config_mem_size)?;
-        let worker_fields = microvm.worker_fields()?;
+        openvmm_defs::microvm::validate_machine_config(&config, None)?;
 
-        let (send, recv) = mesh::channel();
-        let (notify_send, notify_recv) = mesh::channel();
-
-        // Create a VmmMesh for local/in-process workers.
-        let mesh = VmmMesh::new(&self.driver, true)?;
-        let vm_host = mesh
-            .make_host("vm", None)
-            .await
-            .context("spawning vm process failed")?;
-
-        let (shared_memory, saved_state, active_memory_backing_file, snapshot_id) =
-            if let Some(restore) = &restore {
-                let prepared =
-                    prepare_snapshot_restore(restore, config_mem_size, config_proc_count)?;
-                (
-                    Some(prepared.shared_memory),
-                    Some(prepared.saved_state),
-                    Some(restore.source_dir.join("memory.bin")),
-                    Some(prepared.snapshot_id),
-                )
-            } else {
-                let shared_memory = memory_backing_file
-                    .as_ref()
-                    .map(|path| {
-                        openvmm_helpers::shared_memory::open_memory_backing_file(
-                            path,
-                            config_mem_size,
-                        )
-                    })
-                    .transpose()?;
-                (shared_memory, None, memory_backing_file, None)
-            };
-
-        let worker = vm_host
-            .launch_worker(
-                VM_WORKER,
-                VmWorkerParameters {
-                    hypervisor,
-                    cfg: config,
-                    saved_state: saved_state.or(worker_fields.saved_state),
-                    shared_memory: shared_memory.or(worker_fields.shared_memory),
-                    shared_memory_copy_on_write: worker_fields.shared_memory_copy_on_write,
-                    snapshot_restore_guards: worker_fields.snapshot_restore_guards,
-                    snapshot_boundary_requests: worker_fields.snapshot_boundary_requests,
-                    snapshot_ready: worker_fields.snapshot_ready,
-                    restore_time: worker_fields.restore_time,
-                    restore_ready_sink,
-                    restore_gate_timeout: worker_fields.restore_gate_timeout,
-                    restore_vp_count: worker_fields.restore_vp_count,
-                    rpc: recv,
-                    notify: notify_send,
-                },
+        let (shared_memory, saved_state, memory_backing_file, snapshot_id) = if let Some(restore) =
+            &restore
+        {
+            let prepared = prepare_snapshot_restore(restore, config_mem_size, config_proc_count)?;
+            (
+                Some(prepared.shared_memory),
+                Some(prepared.saved_state),
+                Some(restore.source_dir.join("memory.bin")),
+                Some(prepared.snapshot_id),
             )
-            .await?;
-
-        let memory = config_mem_size;
-        let processors = config_proc_count;
-
-        // Create channels for VmController.
-        let (vm_controller_send, vm_controller_recv) = mesh::channel();
-        let (event_send, event_recv) = mesh::channel();
-        let controller_fields = microvm.into_controller();
-
-        // Build VmController with no paravisor-specific fields.
-        let controller = VmController {
-            mesh,
-            vm_worker: worker,
-            vnc_worker: None,
-            gdb_worker: None,
-            diag_inspector: None,
-            vtl2_settings: None,
-            ged_rpc: None,
-            vm_rpc: send.clone(),
-            paravisor_diag: None,
-            igvm_path,
-            memory_backing_file: active_memory_backing_file
-                .clone()
-                .or(controller_fields.memory_backing_file),
-            memory,
-            processors,
-            log_file: None,
-            crash_dump_path: req_config.crash_dump_path.map(Into::into),
-            microvm: controller_fields.microvm,
-            guest_power_actions,
+        } else {
+            let shared_memory = memory_backing_file
+                .as_ref()
+                .map(|path| {
+                    openvmm_helpers::shared_memory::open_memory_backing_file(path, config_mem_size)
+                })
+                .transpose()?;
+            (shared_memory, None, memory_backing_file, None)
         };
 
-        // Spawn the controller task.
-        let controller_task = self.driver.spawn("vm-controller", async move {
-            let _ = controller
-                .run(vm_controller_recv, event_send, notify_recv)
-                .await;
-        });
-
-        self.vm_controller = Some(vm_controller_send);
-        self.vm_controller_events = Some(event_recv);
-        self.controller_task = Some(controller_task);
-        self.vm = Some(Arc::new(Vm {
-            shutdown_rpc,
-            acpi_power_button_rpc,
-            scsi_rpc,
-            consomme_rpc,
-            worker_rpc: send,
-            iommufds: Arc::new(iommufds),
-        }));
-        self.snapshot_saved = false;
-        self.memory_backing_file = active_memory_backing_file;
-        self.restore_ready_pending = restore_ready_required;
-        self.lifecycle = VmLifecycle::Paused;
-        Ok(snapshot_id)
+        let (worker_rpc, rpc) = mesh::channel();
+        let (notify_send, notify) = mesh::channel();
+        Ok((
+            VmLaunch {
+                worker: VmWorkerParameters {
+                    hypervisor,
+                    cfg: config,
+                    saved_state,
+                    shared_memory,
+                    shared_memory_copy_on_write: false,
+                    snapshot_restore_guards: None,
+                    snapshot_boundary_requests: None,
+                    snapshot_ready: None,
+                    restore_time: None,
+                    restore_ready_sink: None,
+                    restore_gate_timeout: None,
+                    restore_vp_count: None,
+                    rpc,
+                    notify: notify_send,
+                },
+                notify,
+                vm: Vm {
+                    shutdown_rpc,
+                    acpi_power_button_rpc,
+                    scsi_rpc,
+                    consomme_rpc,
+                    worker_rpc,
+                    iommufds: Arc::new(iommufds),
+                },
+                controller: ControllerLaunch {
+                    igvm_path,
+                    memory_backing_file,
+                    memory: config_mem_size,
+                    processors: config_proc_count,
+                    crash_dump_path: req_config.crash_dump_path.map(Into::into),
+                    microvm: Default::default(),
+                    guest_power_actions,
+                },
+            },
+            snapshot_id,
+        ))
     }
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
@@ -3209,10 +3219,21 @@ fn build_virtio_fs(
         read_only,
         guest_mount_target,
         read_write,
+        denied_paths,
+        allowed_paths,
+        writable_paths,
+        owner,
+        aggregate_children,
     } = config;
     const VIRTIO_FS_TAG_LEN: usize = 36;
     anyhow::ensure!(
-        guest_mount_target.is_empty() && !read_write,
+        guest_mount_target.is_empty()
+            && !read_write
+            && denied_paths.is_empty()
+            && allowed_paths.is_empty()
+            && writable_paths.is_empty()
+            && owner == vmservice::virtio_fs::Owner::Unspecified as i32
+            && aggregate_children.is_empty(),
         "standard-machine virtio-fs does not accept microVM mount fields"
     );
     anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");

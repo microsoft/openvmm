@@ -187,6 +187,23 @@ impl SnapshotScratchRestoreModeCli {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct SnapshotGenerationIdCli(pub(crate) [u8; 16]);
 
+impl TryFrom<&[u8]> for SnapshotGenerationIdCli {
+    type Error = anyhow::Error;
+
+    /// Takes the generation's 16 bytes, which the management RPC supplies
+    /// without the hexadecimal text of the command line.
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let generation = <[u8; 16]>::try_from(value)
+            .ok()
+            .context("snapshot generation ID must be exactly 16 bytes")?;
+        anyhow::ensure!(
+            generation.iter().any(|byte| *byte != 0),
+            "snapshot generation ID must be nonzero"
+        );
+        Ok(Self(generation))
+    }
+}
+
 impl FromStr for SnapshotGenerationIdCli {
     type Err = anyhow::Error;
 
@@ -200,11 +217,7 @@ impl FromStr for SnapshotGenerationIdCli {
             *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
                 .context("snapshot generation ID contains invalid hexadecimal")?;
         }
-        anyhow::ensure!(
-            generation.iter().any(|byte| *byte != 0),
-            "snapshot generation ID must be nonzero"
-        );
-        Ok(Self(generation))
+        Self::try_from(generation.as_slice())
     }
 }
 

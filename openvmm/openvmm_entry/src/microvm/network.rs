@@ -4,7 +4,6 @@
 //! MicroVM static network identity and egress policy.
 
 use crate::Options;
-use crate::VmResources;
 use crate::cli_args;
 use crate::cli_args::EndpointConfigCli;
 use net_backend_resources::consomme::static_ipv4::StaticIpv4Config;
@@ -176,7 +175,6 @@ pub(super) fn microvm_network_endpoint(
     policy: &net_backend_resources::egress::EgressPolicy,
     loopback_forwards: &[cli_args::microvm::MicrovmLoopbackForwardCli],
     private_network_ingress: Option<net_backend_resources::consomme::PrivateNetworkIngress>,
-    _resources: &mut VmResources,
 ) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
     let ports = loopback_forwards
         .iter()

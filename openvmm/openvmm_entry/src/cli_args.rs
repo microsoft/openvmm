@@ -37,35 +37,47 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
 
+/// Runs `f` on a thread with a larger stack on Windows, where clap's deep
+/// stack usage in debug builds overflows the default.
+///
+/// In non-optimized builds, clap uses an embarrassing amount of stack space
+/// to construct the `Command` instance for `Options`, more than the Windows
+/// default of 1MB. This has been known since 2023:
+/// <https://github.com/clap-rs/clap/issues/5134>, but no one has stepped up
+/// to fix it.
+///
+/// Work around this by running the code on a thread with lots of stack
+/// space. This is easier and more reliable than configuring the PE binary to
+/// have a larger stack.
+fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
+    if cfg!(windows) {
+        std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(0x400000)
+                .spawn_scoped(s, f)
+                .unwrap()
+                .join()
+                .unwrap()
+        })
+    } else {
+        f()
+    }
+}
+
 /// Parse CLI options, using a thread with a larger stack on Windows to avoid
 /// stack overflow in debug builds due to clap's deep stack usage.
 /// See <https://github.com/clap-rs/clap/issues/5134>.
 pub(crate) fn parse_options() -> Options {
-    // In non-optimized builds, clap uses an embarrassing amount of stack space
-    // to construct the `Command` instance for `Options`, more than the Windows
-    // default of 1MB. This has been known since 2023:
-    // <https://github.com/clap-rs/clap/issues/5134>, but no one has stepped up
-    // to fix it.
-    //
-    // Work around this by running the code on a thread with lots of stack
-    // space. This is easier and more reliable than configuring the PE binary to
-    // have a larger stack.
-    fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
-        if cfg!(windows) {
-            std::thread::scope(|s| {
-                std::thread::Builder::new()
-                    .stack_size(0x400000)
-                    .spawn_scoped(s, f)
-                    .unwrap()
-                    .join()
-                    .unwrap()
-            })
-        } else {
-            f()
-        }
-    }
-
     on_big_stack(Options::parse)
+}
+
+/// Returns the options of a command line that selects the microVM machine
+/// profile and nothing else, with every other option at its default, which
+/// the management RPC sets from a request.
+#[cfg(any(feature = "ttrpc", feature = "grpc"))]
+pub(crate) fn microvm_options() -> anyhow::Result<Options> {
+    on_big_stack(|| Options::try_parse_from(["openvmm", "--machine", "microvm"]))
+        .context("failed to build the microVM command-line options")
 }
 
 const DEFAULT_MEMORY_SIZE: u64 = 1024 * 1024 * 1024;
