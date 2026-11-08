@@ -3312,7 +3312,6 @@ mod tests {
             match load_mode {
                 LoadMode::Linux { .. } => "linux",
                 LoadMode::Uefi { .. } => "uefi",
-                #[cfg(guest_arch = "x86_64")]
                 LoadMode::Pcat { .. } => "pcat",
                 LoadMode::Igvm { .. } => "igvm",
                 LoadMode::None => "none",
