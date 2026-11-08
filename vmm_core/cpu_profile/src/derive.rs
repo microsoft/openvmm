@@ -27,7 +27,8 @@
 //!    ([`INTEL_SPECULATION_ENUMERATIONS`]), go too.
 //! 3. The XSAVE features are the intersection, within [`ALLOWED_XCR0`], and
 //!    the XSAVE leaf is rebuilt from them; every host must agree on the
-//!    layout. A feature whose XSAVE state is not enabled is cleared.
+//!    layout. A feature whose XSAVE state is not enabled is cleared, AMX's
+//!    too, whose tile states [`ALLOWED_XCR0`] never enables.
 //! 4. The brand string is generic per generation, such as
 //!    `Intel(R) Xeon(R) Processor (<display name>)`,
 //!    `Intel(R) Core(TM) Processor (<display name>)`, or
@@ -116,7 +117,9 @@ pub const AMD_DATA_LEAVES: [u32; 4] = [
 ];
 
 /// The XCR0 bits a profile may enable: x87, SSE, AVX, MPX, AVX-512, and
-/// PKRU. AMX needs dynamic XSAVE permissions that no backend grants yet.
+/// PKRU. Not AMX's tile states: KVM enables them only with a dynamic XSAVE
+/// permission, which OpenVMM does not request, and a profile is the same on
+/// every backend, so profiles clear AMX's features too.
 pub const ALLOWED_XCR0: u64 = 0x2ff;
 
 /// The IA32_XSS bits a profile may enable: none yet.
@@ -927,11 +930,20 @@ fn apply_policy(vendor: CpuVendor, combined: &Table) -> Result<Table, DeriveErro
 }
 
 /// Clears the features whose XSAVE state `xcr0` does not enable.
+///
+/// MSHV and WHP derive a partition's processor features from the profile's
+/// CPUID bits ([`hv_banks::profile_features`]), so a feature that stayed
+/// without its state would still be the partition's. AMX's would: on a
+/// Granite Rapids host, such a WHP partition presents AMX's XSAVE components
+/// (`0xd.17` and `0xd.18`) and tile palette (`0x1d.1`), which the profile
+/// does not list, and a cold boot fails with `E_CPU_UNLISTED`
+/// (microsoft/nvx#1055).
 fn clear_stateless_features(leaves: &mut Table, xcr0: u64) {
     const AVX: u64 = 1 << 2;
     const MPX: u64 = 3 << 3;
     const AVX512: u64 = 7 << 5;
     const PKRU: u64 = 1 << 9;
+    const AMX: u64 = 3 << 17;
     let enabled = |state: u64| xcr0 & state == state;
     if let Some(value) = leaves.get_mut(&(0x1, None)) {
         if !enabled(AVX) {
@@ -960,6 +972,10 @@ fn clear_stateless_features(leaves: &mut Table, xcr0: u64) {
             // PKU.
             value[2] &= !(1 << 3);
         }
+        if !enabled(AMX) {
+            // AMX-BF16, AMX-TILE, and AMX-INT8.
+            value[3] &= !(1 << 22 | 1 << 24 | 1 << 25);
+        }
     }
     if let Some(value) = leaves.get_mut(&(0x7, Some(1))) {
         if !enabled(AVX) {
@@ -969,6 +985,11 @@ fn clear_stateless_features(leaves: &mut Table, xcr0: u64) {
         if !enabled(AVX512) {
             // AVX512-BF16.
             value[0] &= !(1 << 5);
+        }
+        if !enabled(AMX) {
+            // AMX-FP16 and AMX-COMPLEX.
+            value[0] &= !(1 << 21);
+            value[3] &= !(1 << 8);
         }
     }
 }
@@ -991,16 +1012,20 @@ fn brand_leaves(brand: &str) -> [[u32; 4]; 3] {
 mod tests {
     use super::*;
     use crate::cpuid::CpuidEntry;
+    use crate::test_support::GRANITE_RAPIDS_WHP_HOST;
     use crate::test_support::fingerprint;
     use crate::test_support::fingerprint_with;
     use crate::test_support::genoa_kvm_entries;
     use crate::test_support::genoa_mshv_fingerprint;
     use crate::test_support::genoa_whp_fingerprint;
+    use crate::test_support::granite_rapids_whp_entries;
+    use crate::test_support::granite_rapids_whp_fingerprint;
     use crate::test_support::host_fingerprint;
     use crate::test_support::milan_whp_entries;
     use crate::test_support::profile;
     use crate::test_support::profile_entries;
     use crate::test_support::turin_kvm_entries;
+    use hvdef::HvX64PartitionProcessorXsaveFeatures as XsaveBank;
     use test_with_tracing::test;
 
     const ICELAKE: &str = "intel.icelake-sp.v1";
@@ -1206,6 +1231,61 @@ mod tests {
         assert_eq!(derived.lookup(7, 0)[2] & (1 << 1 | 1 << 14), 0);
         assert_eq!(derived.lookup(0xd, 0)[2], 832);
         assert_eq!(derived.xsave_components().len(), 1);
+    }
+
+    /// AMX's tile states are outside [`ALLOWED_XCR0`], so a profile clears
+    /// AMX's features too. The WHP of a Granite Rapids host offers AMX
+    /// (`test_support::GRANITE_RAPIDS_WHP_CPUID`), and a WHP partition takes
+    /// its processor features from its profile's CPUID bits, so the partition
+    /// of that host's host profile now enables no AMX state either. With
+    /// AMX's features set, it presented AMX's XSAVE components and tile
+    /// palette outside the profile, and every cold boot failed with
+    /// `E_CPU_UNLISTED` (microsoft/nvx#1055).
+    #[test]
+    fn a_profile_has_no_amx_without_its_xsave_states() {
+        const AMX_7_0_EDX: u32 = 1 << 22 | 1 << 24 | 1 << 25;
+        const AMX_FP16: u32 = 1 << 21;
+        let whp = granite_rapids_whp_fingerprint();
+        // The fixture is the fingerprint that the issue posted.
+        assert_eq!(
+            whp.surface_digest,
+            "sha256:6ea62e2941525b3ab863bc98f916753f8e2634445cf63a8dc704d80feb96b29d"
+        );
+        let offered = |leaf, subleaf| cpuid::lookup(&whp.backend.cpuid, leaf, subleaf).unwrap();
+        assert_eq!(offered(7, 0)[3] & AMX_7_0_EDX, AMX_7_0_EDX);
+        assert_eq!(offered(7, 1)[0] & AMX_FP16, AMX_FP16);
+        assert_eq!(whp.backend.xsave.xcr0_supported.0 & 3 << 17, 3 << 17);
+        let available = XsaveBank::from(GRANITE_RAPIDS_WHP_HOST.xsave);
+        assert!(available.amx_tile_support() && available.amx_fp16_support());
+
+        let host = derive_host_profile(&whp).unwrap();
+        assert_eq!(host.xcr0(), 0xe7);
+        assert_eq!(host.lookup(7, 0)[3] & AMX_7_0_EDX, 0);
+        assert_eq!(host.lookup(7, 1)[0] & AMX_FP16, 0);
+        // The other features of leaf 7.0 EDX stay: FSRM, SERIALIZE,
+        // TSXLDTRK, AVX512-FP16, and IA32_ARCH_CAPABILITIES. CET's IBT goes,
+        // as on every host.
+        assert_eq!(
+            host.lookup(7, 0)[3],
+            1 << 4 | 1 << 14 | 1 << 16 | 1 << 23 | 1 << 29
+        );
+        let features = hv_banks::profile_features(&host, GRANITE_RAPIDS_WHP_HOST).unwrap();
+        let xsave = XsaveBank::from(features.xsave);
+        assert!(!xsave.amx_tile_support(), "{xsave:?}");
+        assert!(!xsave.amx_bf16_support(), "{xsave:?}");
+        assert!(!xsave.amx_int8_support(), "{xsave:?}");
+        assert!(!xsave.amx_fp16_support(), "{xsave:?}");
+        assert!(!xsave.xfd_support(), "{xsave:?}");
+        assert!(xsave.avx512_support(), "{xsave:?}");
+
+        // AMX-COMPLEX, which this host does not offer, goes too.
+        const AMX_COMPLEX: u32 = 1 << 8;
+        assert_eq!(offered(7, 1)[3] & AMX_COMPLEX, 0);
+        let mut entries = granite_rapids_whp_entries();
+        set(&mut entries, 7, Some(1), 3, |edx| edx | AMX_COMPLEX);
+        let complex = derive_host_profile(&host_fingerprint("whp", entries)).unwrap();
+        assert_eq!(complex.lookup(7, 1)[3] & AMX_COMPLEX, 0);
+        assert_eq!(complex.lookup(7, 1)[3], host.lookup(7, 1)[3]);
     }
 
     #[test]
