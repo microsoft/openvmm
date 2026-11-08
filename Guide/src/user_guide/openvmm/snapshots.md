@@ -395,7 +395,10 @@ generation: 6/151 and 6/154), `amd.milan.v1` (AMD EPYC, third generation:
 25/17), and `amd.turin.v1` (AMD EPYC, fifth generation: 26/2).
 `amd.genoa.v2` drops what `amd.genoa.v1` presents in `0x80000021`, `LFENCE`
 serialization and the TSA immunities, which not every Genoa host's
-hypervisor presents. `--cpu-profile <ID>` selects one; the default,
+hypervisor presents. No profile presents AMX: its tile states need a
+dynamic XSAVE permission that OpenVMM does not request from KVM, and every
+backend presents the same profile. `--cpu-profile <ID>` selects one; the
+default,
 `auto`, selects the latest revision of the host's generation's profile. An
 earlier revision stays pinned, so its snapshots still restore. An Intel or
 AMD host that no pinned profile serves boots on a host profile
