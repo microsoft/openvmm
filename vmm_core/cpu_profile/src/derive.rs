@@ -19,9 +19,10 @@
 //!    management, performance monitoring, debug, SGX, RDT, PT, CET, key
 //!    locker) are cleared, in AMD profiles also where AMD enumerates them
 //!    (SVM, IBS, LWP, the performance counter extensions, MONITORX, RDPRU,
-//!    PPIN, CPPC, and the like). AMD's speculation controls and immunities
-//!    stay, those of `0x80000021` included, but for what KVM cannot present:
-//!    `BTC_NO` goes, and PSFD stays only beside a `SPEC_CTRL` control
+//!    PPIN, CPPC, and the like), and so is AVX10, whose leaf `0x24` keeps no
+//!    data ([`AVX10`]). AMD's speculation controls and immunities stay, those
+//!    of `0x80000021` included, but for what KVM cannot present: `BTC_NO`
+//!    goes, and PSFD stays only beside a `SPEC_CTRL` control
 //!    ([`has_spec_ctrl_control`]). Intel's enumerations of its speculation
 //!    controls and `IA32_ARCH_CAPABILITIES`, which KVM adds on AMD hosts
 //!    ([`INTEL_SPECULATION_ENUMERATIONS`]), go too.
@@ -153,6 +154,12 @@ pub const AMD_BTC_NO: u32 = 1 << 29;
 /// controls in `0x80000008` EBX and have no `IA32_ARCH_CAPABILITIES`, so AMD
 /// profiles clear them.
 pub const INTEL_SPECULATION_ENUMERATIONS: u32 = 1 << 26 | 1 << 27 | 1 << 29 | 1 << 31;
+
+/// `CPUID.(7,1):EDX[19]`, AVX10, whose version and vector lengths leaf `0x24`
+/// enumerates. Profiles clear it, because leaf `0x24` is not a data leaf:
+/// AVX10.1, its first version, has no instruction that the AVX-512 feature
+/// bits, which stay, do not enumerate.
+pub const AVX10: u32 = 1 << 19;
 
 /// Returns whether a CPUID whose `CPUID.(7,0):EDX` is `leaf7_edx` and whose
 /// `CPUID.0x80000008:EBX` is `ext8_ebx` enumerates a `SPEC_CTRL` control, as
@@ -809,6 +816,8 @@ fn apply_policy(vendor: CpuVendor, combined: &Table) -> Result<Table, DeriveErro
         0,
         1 << 15 | 1 << 18 | 1 << 19 | 1 << 20,
     );
+    // CPUID.(7,1): no AVX10, whose leaf 0x24 keeps no data.
+    edit(&mut leaves, (0x7, Some(1)), 3, 0, AVX10);
     // CPUID.0x80000001: RDTSCP (time ABI).
     require(
         &leaves,
@@ -1286,6 +1295,57 @@ mod tests {
         let complex = derive_host_profile(&host_fingerprint("whp", entries)).unwrap();
         assert_eq!(complex.lookup(7, 1)[3] & AMX_COMPLEX, 0);
         assert_eq!(complex.lookup(7, 1)[3], host.lookup(7, 1)[3]);
+    }
+
+    /// Leaf `0x24` keeps no data, so a profile clears AVX10, which leaf
+    /// `0x24` describes, rather than enumerate AVX10 with version 0. The WHP
+    /// of the Granite Rapids host offers AVX10.1 at every vector length; its
+    /// host profile keeps the AVX-512 features, which enumerate every
+    /// instruction of AVX10.1, and its WHP partition has no AVX10.
+    #[test]
+    fn a_profile_has_no_avx10_without_its_leaf() {
+        let whp = granite_rapids_whp_fingerprint();
+        let offered = |leaf, subleaf| cpuid::lookup(&whp.backend.cpuid, leaf, subleaf).unwrap();
+        assert_eq!(offered(7, 1)[3] & AVX10, AVX10);
+        // Version 1, with 128-, 256-, and 512-bit vectors.
+        assert_eq!(offered(0x24, 0), [0, 0x7_0001, 0, 0]);
+        let available = XsaveBank::from(GRANITE_RAPIDS_WHP_HOST.xsave);
+        assert!(available.avx10_1_256_support() && available.avx10_1_512_support());
+
+        let host = derive_host_profile(&whp).unwrap();
+        assert_eq!(host.lookup(7, 1)[3] & AVX10, 0);
+        assert_eq!(host.lookup(0x24, 0), [0; 4]);
+        // AVX512F, DQ, IFMA, CD, BW, and VL; VBMI, VBMI2, GFNI, VAES,
+        // VPCLMULQDQ, VNNI, BITALG, and VPOPCNTDQ; FP16; and BF16 stay.
+        let avx512 = [
+            (
+                0,
+                1,
+                1 << 16 | 1 << 17 | 1 << 21 | 1 << 28 | 1 << 30 | 1 << 31,
+            ),
+            (
+                0,
+                2,
+                1 << 1 | 1 << 6 | 1 << 8 | 1 << 9 | 1 << 10 | 1 << 11 | 1 << 12 | 1 << 14,
+            ),
+            (0, 3, 1 << 23),
+            (1, 0, 1 << 5),
+        ];
+        for (subleaf, register, bits) in avx512 {
+            assert_eq!(
+                host.lookup(7, subleaf)[register] & bits,
+                bits,
+                "7.{subleaf}"
+            );
+        }
+        let features = hv_banks::profile_features(&host, GRANITE_RAPIDS_WHP_HOST).unwrap();
+        let xsave = XsaveBank::from(features.xsave);
+        assert!(!xsave.avx10_1_256_support(), "{xsave:?}");
+        assert!(!xsave.avx10_1_512_support(), "{xsave:?}");
+        assert!(
+            xsave.avx512_support() && xsave.avx512_fp16_support(),
+            "{xsave:?}"
+        );
     }
 
     #[test]
