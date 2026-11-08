@@ -118,9 +118,11 @@ external storage-throttling condition has been eliminated.
 ```admonish warning
 After a host-driven save, the VM remains **paused**. Guest-requested microVM
 capture instead terminates the source process after publication commits.
-If automatic-RAM publication fails after creating its staging link, OpenVMM
-removes the complete staging directory before resuming; if cleanup cannot be
-proved, it terminates the source instead.
+If publication fails, OpenVMM removes the staging directory, its manifest
+first, so that restore cannot open what a failed removal leaves behind. It
+resumes the source only once it has proved the removal of any staged manifest
+and, once automatic-RAM publication has tried to create its staging link, of
+the complete directory; otherwise, it terminates the source instead.
 ```
 
 While a guest-requested snapshot boundary is held, VM-worker management RPCs
