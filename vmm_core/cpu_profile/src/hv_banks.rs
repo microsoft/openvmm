@@ -781,8 +781,9 @@ mod tests {
     /// The processor features the hypervisors offered on the fleet's hosts
     /// (CPU fingerprints): WHP's capability and MSHV's host partition
     /// properties on the bare-metal Skylake-SP hosts and on the Ice Lake-SP
-    /// (8370C) and Emerald Rapids (8573C) Azure runners.
-    const HOSTS: [(&str, &str, HvFeatures); 6] = [
+    /// (8370C) and Emerald Rapids (8573C) Azure runners, and WHP's on a
+    /// Granite Rapids (6973P-C) Azure runner.
+    const HOSTS: [(&str, &str, HvFeatures); 7] = [
         (
             "intel.skylake-sp.v1",
             "whp 4114",
@@ -806,6 +807,11 @@ mod tests {
                 banks: [0x0e0a_8bff_e7f7_859f, 0x0000_000c_0000_0051],
                 xsave: 0x7f_ffdf,
             },
+        ),
+        (
+            "intel.graniterapids.v1",
+            "whp 6973P-C",
+            crate::test_support::GRANITE_RAPIDS_WHP_HOST,
         ),
         (
             "intel.skylake-sp.v1",
