@@ -1043,6 +1043,10 @@ mod tests {
     use crate::test_support::profile;
     use crate::test_support::profile_entries;
     use crate::test_support::turin_kvm_entries;
+    use crate::test_support::turin_kvm_linux_6_8_fingerprint;
+    use crate::test_support::turin_kvm_linux_7_fingerprint;
+    use crate::test_support::turin_whp_fingerprint;
+    use crate::test_support::turin_whp_server_2022_fingerprint;
     use hvdef::HvX64PartitionProcessorXsaveFeatures as XsaveBank;
     use test_with_tracing::test;
 
@@ -1747,6 +1751,136 @@ mod tests {
             pinned.physical_address_width()
         );
         assert_eq!(derived.msrs(), pinned.msrs());
+    }
+
+    /// `amd.turin.v2` is the policy's profile of the Turin hosts of today's
+    /// GitHub-hosted Actions runners, Azure VMs with an AMD EPYC 9V45: the
+    /// KVM of Ubuntu 22.04, with Linux 6.8, and of Ubuntu 24.04 and 26.04,
+    /// with Linux 7.0, and the WHP of Windows Server 2022 and 2025
+    /// (`test_support::turin_*_fingerprint`), whose fixtures reproduce the
+    /// surface digests that `--cpu-fingerprint` recorded. None supports
+    /// `amd.turin.v1`: the Azure hosts no longer present its TSA
+    /// immunities. Every one supports v2, which is v1 without them, `LFENCE`
+    /// serialization, NoSmmCtlMsr, the zero basic leaves above 0xD, and the
+    /// StibpAlwaysOn and IBPB_RET enumerations, which qualify controls,
+    /// STIBP and IBPB, that no AMD profile presents. The KVM host that v1
+    /// derives from supports v2 too, and adds nothing to it.
+    #[test]
+    fn the_second_turin_profile_serves_the_runners() {
+        let pinned = profile("amd.turin.v2");
+        let first = profile("amd.turin.v1");
+        let hosts = [
+            (
+                turin_kvm_linux_6_8_fingerprint(),
+                "sha256:db4ea3ed88ca1118508eb935a1a9e29077be548102b10d9c291d72922e2712f6",
+            ),
+            (
+                turin_kvm_linux_7_fingerprint(),
+                "sha256:9178a96a739d800bc66acb265933d14875b01f239bdac686b9cd3cee947398c9",
+            ),
+            (
+                turin_whp_server_2022_fingerprint(),
+                "sha256:f14afa510f096a08b0891b714d9b15b0860eb02bfa67d3c31a14524b8a526a49",
+            ),
+            (
+                turin_whp_fingerprint(),
+                "sha256:9a3849f69ffe08ce076088fe1a1cdaa2dff0b2000a70413a9e9455ca1abf787a",
+            ),
+        ];
+        for (host, digest) in &hosts {
+            assert_eq!(host.surface_digest, *digest, "{}", host.backend.name);
+        }
+        let hosts = hosts.map(|(host, _)| host);
+        let derived = derive_profile(generation("turin"), 2, &hosts).unwrap();
+        assert_eq!(derived.id(), pinned.id());
+        assert_eq!(derived.description(), pinned.description());
+        assert_eq!(derived.generation(), pinned.generation());
+        assert_eq!(derived.cpuid(), pinned.cpuid());
+        assert_eq!(derived.xcr0(), pinned.xcr0());
+        assert_eq!(derived.xss(), pinned.xss());
+        assert_eq!(derived.xsave_components(), pinned.xsave_components());
+        assert_eq!(
+            derived.physical_address_width(),
+            pinned.physical_address_width()
+        );
+        assert_eq!(derived.msrs(), pinned.msrs());
+        assert_eq!(derived.provenance(), pinned.provenance());
+
+        // v1 but for the maximum basic leaf, 0x80000008 EBX, and 0x80000021.
+        const STIBP_ALWAYS_ON: u32 = 1 << 17;
+        const IBPB_RET: u32 = 1 << 30;
+        assert_eq!((first.lookup(0, 0)[0], pinned.lookup(0, 0)[0]), (0x1c, 0xd));
+        assert_eq!(
+            (
+                first.lookup(0x8000_0008, 0)[1],
+                pinned.lookup(0x8000_0008, 0)[1]
+            ),
+            (STIBP_ALWAYS_ON | IBPB_RET | 0x5, 0x5)
+        );
+        assert_eq!(first.lookup(0x8000_0021, 0), [0x204, 0, 0x6, 0]);
+        assert_eq!(pinned.lookup(0x8000_0021, 0), [0; 4]);
+        for entry in first.cpuid() {
+            let (leaf, subleaf) = entry.key();
+            match pinned
+                .cpuid()
+                .iter()
+                .find(|pinned| pinned.key() == (leaf, subleaf))
+            {
+                Some(_) if [0, 0x8000_0008, 0x8000_0021].contains(&leaf) => {}
+                Some(pinned) => assert_eq!(pinned, entry),
+                None => {
+                    assert!((0xe..=0x1c).contains(&leaf), "{leaf:#x}");
+                    assert_eq!(entry.values(), [0; 4], "{leaf:#x}");
+                }
+            }
+        }
+
+        let violations = |profile: &CpuProfile, host: &CpuFingerprint| {
+            crate::support_violations(
+                profile,
+                &crate::HostCpuSurface::from_fingerprint(&host.backend),
+            )
+        };
+        let tsa = "CPUID 0x80000021 ECX bits 1, 2 are not supported";
+        let whp = [
+            "CPUID 0x0 EAX[31:0] is 0x1c, above the supported 0xd",
+            "CPUID 0x80000021 EAX bits 2, 9 are not supported",
+            tsa,
+        ];
+        for (host, expected) in hosts.iter().zip([
+            &["CPUID 0x80000008 EBX bit 30 is not supported", tsa][..],
+            &[tsa],
+            &[
+                whp[0],
+                "CPUID 0x80000008 EBX bits 17, 30 are not supported",
+                whp[1],
+                whp[2],
+            ],
+            &whp,
+        ]) {
+            assert_eq!(violations(first, host), expected, "{}", host.backend.name);
+            assert_eq!(
+                violations(pinned, host),
+                Vec::<String>::new(),
+                "{}",
+                host.backend.name
+            );
+        }
+
+        let v1_host = host_fingerprint("kvm", turin_kvm_entries());
+        assert_eq!(violations(pinned, &v1_host), Vec::<String>::new());
+        let mut more = hosts.to_vec();
+        more.push(v1_host);
+        let again = derive_profile(generation("turin"), 2, &more).unwrap();
+        assert_eq!(again.cpuid(), pinned.cpuid());
+        assert_eq!(again.xcr0(), pinned.xcr0());
+        assert_eq!(again.xss(), pinned.xss());
+        assert_eq!(again.xsave_components(), pinned.xsave_components());
+        assert_eq!(
+            again.physical_address_width(),
+            pinned.physical_address_width()
+        );
+        assert_eq!(again.msrs(), pinned.msrs());
     }
 
     /// KVM enumerates Intel's speculation controls and
