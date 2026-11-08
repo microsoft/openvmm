@@ -472,7 +472,7 @@ impl VmController {
                 } else if write_error.is_some_and(|error| !error.is_rollback_safe()) {
                     tracing::error!(
                         error = error.as_ref() as &dyn std::error::Error,
-                        "snapshot failed before commit but automatic RAM alias cleanup is uncertain; terminating source"
+                        "snapshot failed before commit but staging cleanup is uncertain; terminating source"
                     );
                     GuestSnapshotAction::Terminate { exit_code: 1 }
                 } else {

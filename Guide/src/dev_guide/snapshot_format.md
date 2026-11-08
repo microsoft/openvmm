@@ -80,9 +80,12 @@ as a fallback on Linux; Windows uses a dense copy. Both paths use an
 already-open handle rather than reopening its pathname, so replacing the source
 path cannot substitute different bytes.
 Successful guest-requested capture is terminal for the source. If publication
-fails after the automatic link exists, OpenVMM removes and durably flushes the
-private staging directory before allowing rollback; uncertain cleanup makes
-the source terminate instead of resume.
+fails, OpenVMM removes the private staging directory, its manifest first, and
+allows rollback only once it has proved the removal of any staged manifest, so
+that restore cannot open what remains, and, once it has tried to create the
+automatic link, of the complete directory. On Linux, proving a removal
+includes flushing its directory. Uncertain cleanup makes the source terminate
+instead of resume.
 
 Restore likewise opens the snapshot directory once and resolves its artifacts
 relative to that handle. Windows uses read-only handles with `FILE_SHARE_READ`
