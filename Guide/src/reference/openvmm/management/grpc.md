@@ -245,6 +245,89 @@ and [Arm SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
 When editing `vmservice.proto`, follow the
 [Protocol Buffers enum conventions](../../../dev_guide/contrib/code.md#protocol-buffers-enums).
 
+## microVM machines
+
+`VMConfig.machine_profile` `MICROVM`, or a `CreateVMRequest.microvm_snapshot`
+with a `restore_path`, creates a microVM. The server converts the request to
+the options of an `openvmm --machine microvm` command line, and then creates,
+captures, and restores the microVM with the command line's code for those
+options. Each field takes the value of its option, as the following table
+shows, and that option's rules validate it, so a microVM request accepts
+exactly the settings that the command line accepts, and an error names the
+option.
+
+| Field | Command-line option |
+| --- | --- |
+| `MemoryConfig.memory_mb` | `--memory size=` |
+| `MemoryConfig.backing_file_path` | `--memory file=` |
+| `ProcessorConfig.processor_count` | `--processors` |
+| `DirectBoot.kernel_path`, `initrd_path`, and `kernel_cmdline` | `--kernel`, `--initrd`, and `--cmdline` |
+| `VMConfig.cpu_profile` | `--cpu-profile` |
+| `VMConfig.nested_virt`, `guest_watchdog`, and an SNP `isolation_config` | `--nested-virt`, `--guest-watchdog`, and `--isolation snp`, which a microVM refuses |
+| `DevicesConfig.virtio_consoles` | `--virtio-console listen=` or `connect=`, or, with an empty `socket_path`, `none` |
+| `DevicesConfig.virtiofs_config` | `--mount`, or `--mount-aggregate` with a `--mount-child` per `aggregate_children` entry |
+| `VirtioFs.denied_paths`, `allowed_paths`, and `writable_paths` | `--mount-deny`, `--mount-allow`, and `--mount-write` |
+| `VirtioFs.owner` | `--mount-owner` |
+| `DevicesConfig.microvm_sandbox_blocks` | `--microvm-sandbox-block` |
+| `MicrovmNetwork.address` | `--net` |
+| `MicrovmNetwork.profile` | `--network-profile` |
+| `MicrovmNetwork.egress`, `ingress`, and `host_loopback` | `--network-egress`, `--network-ingress`, and `--host-loopback` |
+| `MicrovmNetwork.egress_allow` and `egress_deny` | `--network-egress-allow` and `--network-egress-deny` |
+| `MicrovmNetwork.proxy` | `--network-proxy` |
+| `MicrovmNetwork.host_loopback_forwards` | `--host-loopback-forward` |
+| `MicrovmNetwork.allow_hosts`, `block_hosts`, and `allow_endpoints` | `--allow-host`, `--block-host`, and `--allow-endpoint` |
+| `MicrovmSnapshotConfig.destination_path` | `--snapshot-destination` |
+| `MicrovmSnapshotConfig.memory_capacity_bytes` | `--memory-capacity` |
+| `MicrovmSnapshotConfig.snapshot_tier` | `--snapshot-tier` |
+| `MicrovmSnapshotConfig.snapshot_generation_id` | `--snapshot-generation-id` |
+| `MicrovmSnapshotConfig.snapshot_scratch_restore_mode` | `--snapshot-scratch-restore-mode` |
+| `MicrovmSnapshotConfig.restore_path` | `--restore-snapshot` |
+| `MicrovmSnapshotConfig.restore_ready_path` | `--restore-ready-path` |
+| `MicrovmSnapshotConfig.restore_processor_count` | `--restore-processors` |
+| `MicrovmSnapshotConfig.restore_memory_bytes` | `--restore-memory` |
+| `MicrovmSnapshotConfig.restore_gate_timeout_ms` | `--restore-gate-timeout-ms` |
+| `MicrovmSnapshotConfig.restore_generation_id` | `--restore-generation-id` |
+| `MicrovmSnapshotConfig.restore_absent_scratch` | `--restore-absent-scratch` |
+| `MicrovmSnapshotConfig.restore_network_policy` | `--restore-network-policy` |
+
+A string field takes its option's syntax: `MicrovmNetwork.address` is
+`IPv4/PREFIX`, such as `10.0.0.2/24`, each egress rule is
+`CIDR[:tcp[:PORT[-PORT]]|:udp[:PORT[-PORT]]|:icmp]`, `proxy` and each
+`allow_endpoints` entry `IPv4:PORT`, and each `allow_hosts` or `block_hosts`
+entry `IPv4[/PREFIX]`. An enumeration's unspecified value, a zero number, an
+empty string, and a false flag leave the option out, so that its default
+applies. A storage generation is the 16 bytes of the option's 32 hexadecimal
+characters. A sandbox block's `role` is its option's `ROLE`, and its
+`backend` and `read_only` its `DISK` and `,ro`: the distro layer must be
+read-only and scratch writable, and a microVM that captures or restores a
+snapshot requires an unformatted raw `FileDisk` without direct I/O. An
+aggregate `VirtioFs` leaves `root_path` empty and `read_write` false, since
+the aggregate's root is read-only, and names its children's access modes and
+kinds instead; with `--mount-aggregate`, every access-policy path is absolute.
+The protocol adds its own rules on which fields a request combines: a restore
+field requires `restore_path`, a capture field `destination_path`, the
+`allow_hosts`, `block_hosts`, and `allow_endpoints` lists exclude one another,
+and a microVM takes at most one `virtiofs_config` and one `virtio_consoles`
+entry, no other `DevicesConfig` device, and only serial port 0, portb, which
+receives the guest's output and is never read.
+
+The fork's fields of upstream's messages follow upstream's protobuf field
+numbers, so that bindings generated from this fork's `vmservice.proto` also
+encode upstream's requests: `VMConfig.machine_profile` and `cpu_profile` take
+fields 23 and 24, `MemoryConfig.backing_file_path` field 10,
+`DevicesConfig.microvm_sandbox_blocks` and `microvm_network` fields 7 and 8,
+and `VirtioFs.guest_mount_target` to `aggregate_children` fields 4 to 10.
+Standard-machine requests reject these fields, and microVM attachments reject
+`VirtioFs.read_only=true` before opening device resources; use `read_write`
+to select a microVM attachment's access mode.
+
+`VMConfig.MICROVM` is numeric value 1 and accepts exactly 1, 2, 4, or 8
+processors. Snapshots record microVM ABI value 1 and boot layout value 1,
+which identifies the Linux-direct MP-table layout, and restore refuses a
+snapshot of any other value. A snapshot captured over the management RPC
+restores from the command line, and the reverse, as long as the restore
+repeats the settings that the command line's restore requires.
+
 ## microVM snapshots
 
 `CreateVMRequest.microvm_snapshot` exposes the microVM capture and
@@ -259,16 +342,33 @@ restore flow over both transports:
   client bounds it by ending the server.
   `memory_capacity_bytes` optionally reserves an immutable, 128-MiB-aligned
   RAM capacity while keeping the configured base memory as the exact
-  `memory.bin` payload and initial Linux direct e820 map.
+  `memory.bin` payload and initial Linux direct e820 map. Without
+  `MemoryConfig.backing_file_path`, the server backs guest RAM with a file
+  that it creates next to the destination and moves into the snapshot; with
+  one, the capture copies that file, which it leaves in place.
+  `snapshot_tier` is required exactly for a microVM with sandbox blocks: a
+  `platform` capture records the blocks unbound and its scratch fresh, and
+  its kernel command line, `kernel_cmdline` included, may hold only the
+  tokens that all its clones share, so it leaves the filesystem slot dormant;
+  the `workload-start` and `instance-checkpoint` tiers bind the blocks to
+  `snapshot_generation_id` and publish the paired scratch, whose restore-time
+  materialization `snapshot_scratch_restore_mode` records.
 * `restore_path` selects manifest-authoritative restore. `config` may be
   absent, or may contain only the matching microVM profile, an optional exact
   processor-count assertion, a `cpu_profile` that the restore accepts (see
-  below), serial port 0 host
-  attachment, which receives portb's output and is never read, matching `DevicesConfig.virtio_consoles` and
-  `DevicesConfig.virtiofs_config` attachments, and guest power actions.
-  Guest-visible boot, memory, processor topology, other device, NUMA, and PCIe
-  fields are rejected. A saved listener is reconstructed from the manifest; a saved
-  client requires the matching path configuration.
+  below), serial port 0 host attachment, the guest power actions, and the
+  restore-time devices that the command line's restore takes: the
+  `virtio_consoles` and `virtiofs_config` attachments, the sandbox blocks, and
+  the network policy, without an address, which the restore takes from the
+  snapshot. Guest-visible boot, memory, processor topology, other device,
+  NUMA, and PCIe fields are rejected. A saved listener is reconstructed from
+  the manifest; a saved client requires the matching path configuration. A
+  restore attaches the read-only layers again, and a scratch device, or
+  `restore_absent_scratch`, only for a platform snapshot, whose scratch is
+  fresh; the paired scratch of a later tier comes from the snapshot, and its
+  restore requires `restore_generation_id`. A networked restore repeats the
+  snapshot's network policy, which `restore_network_policy` replaces for the
+  NIC template of a platform snapshot or of a snapshot without a tier.
 * Every restore delivers the restore packet with fresh entropy, and every
   microVM process receives a fresh, non-serialized 16-byte generation ID
   through the fixed portb selector. On restore, the ID is the first 16 bytes
@@ -288,7 +388,10 @@ restore flow over both transports:
   the memory-target flag of the restore packet, with the expansion
   ranges (none at the base size); zero leaves the flag clear.
 * `restore_gate_timeout_ms` bounds gated guest repair. Zero selects the
-  60-second default; a nonzero value is valid only with `restore_path`.
+  60-second default; a nonzero value is valid only with `restore_path`. The
+  restore of a snapshot with a tier, a restore with a processor or memory
+  target, and a restore that replaces the network policy of a snapshot without
+  a tier gate host input until the guest acknowledges the restore.
 * `restore_ready_path` names an existing Unix domain socket on Linux or a
   `//./pipe/...` named pipe on Windows. `ResumeVM` writes and flushes exactly
   `OPENVMM_RESTORE_READY_V1\n` after all fatal restore startup work completes.
@@ -298,33 +401,31 @@ restore flow over both transports:
   Windows flush completion waits until the complete frame has been consumed.
 
 On cold boot, `DevicesConfig.virtio_consoles` may hold one entry, which
-configures a microVM Unix socket or named-pipe endpoint. Listener mode
-recreates the path on restore.
+configures a microVM Unix socket or named-pipe endpoint, or, with an empty
+`socket_path` and `connect` false, the console with no endpoint, which
+discards the guest's output, as `--virtio-console none` does. A console takes
+no TCP endpoint, so the server never opens one, and a restore refuses a
+snapshot whose console recorded one. Listener mode recreates the path on
+restore, and a restore may attach a listener at a fresh path to a console that
+has no endpoint, which then keeps discarding the guest's output while no
+client is connected.
 Client mode is required and uses a five-second connection timeout
 before vCPUs start. The device uses MMIO `0xd0002000`, IRQ 18, and selects
 `hvc1`; its canonical path and policy become the stable restore attachment.
 
 `DevicesConfig.virtiofs_config` may bind one HostFs attachment to the fixed
-microVM slot. Set `tag` to `microvm`, supply `root_path`, and set
-`guest_mount_target` to an absolute Linux path. `read_write=false` selects the
-default read-only policy. The management API cannot set an access policy, so a
-cold-booted attachment has no denied, allowed, or writable paths. Restoring an
-active attachment requires the exact same canonical root path, tag, guest
-target, and access mode, and the live root must retain its saved identity;
-the snapshot's denied, allowed, and writable paths apply again. A snapshot
-captured with the slot dormant may
-omit the attachment or supply a new one; after `ResumeVM`, the guest explicitly
-mounts tag `microvm`. The fixed device uses MMIO `0xd0001000`, IRQ 17, one
-request queue, and no DAX window. The management API binds only a single
-directory: it cannot attach an aggregate of several host directories, as the
-command line's `--mount-aggregate` does, and it cannot restore a snapshot of
-one.
-
-`VirtioFs.read_only` keeps upstream's protobuf field 3, and the microVM's
-`guest_mount_target` and `read_write` use fields 4 and 5. Standard-machine
-attachments reject the microVM mount fields, and microVM attachments reject
-`read_only=true` before opening device resources. Use `read_write` to select
-a microVM attachment's access mode.
+microVM slot. Set `tag` to `microvm` and `guest_mount_target` to an absolute
+Linux path, and supply either `root_path`, one host directory, or
+`aggregate_children`, several host directories or regular files.
+`read_write=false` selects the default read-only policy of a single
+directory, and the access-policy paths and `owner` apply as the command line's
+options do. Restoring an active attachment requires the exact same canonical
+roots, tag, guest target, access modes, policy paths, and owner, and the live
+roots must retain their saved identities. A snapshot captured with the slot
+dormant may omit the attachment or supply a new one, and only a platform
+snapshot an aggregate; after `ResumeVM`, the guest explicitly mounts tag
+`microvm`. The fixed device uses MMIO `0xd0001000`, IRQ 17, one request queue,
+and no DAX window.
 
 Capture and restore paths are mutually exclusive. A successful capture halts
 the managed source VM at the committed boundary and terminates the OpenVMM
@@ -341,12 +442,6 @@ fails it, and the restore then publishes no event, as
 [Snapshots](../../../user_guide/openvmm/snapshots.md#restoring-a-snapshot)
 describes.
 
-`VMConfig.MICROVM` is numeric value 1 and accepts exactly 1, 2, 4, or 8
-processors. RPC construction is currently blockless; role-bearing sandbox
-blocks remain CLI-only. Snapshots record microVM ABI value 1 and boot layout
-value 1, which identifies the Linux-direct MP-table layout, and restore
-refuses a snapshot of any other value.
-
 `VMConfig.cpu_profile` selects the microVM's CPU profile as
 [`--cpu-profile`](cli.md) does, with the same values and checks: `auto`, the
 default, which an empty value also selects, for the built-in profile of the
@@ -359,13 +454,10 @@ for a profile that the host cannot boot, such as with
 `host`; any other value fails with `E_PROFILE_UNKNOWN`. A standard VM rejects
 a nonempty `cpu_profile`.
 
-Every upstream `VMConfig` field keeps upstream's protobuf field number. The
-fork's `machine_profile` and `cpu_profile` use fields 23 and 24, after
-upstream's, so bindings generated from this fork's `vmservice.proto` also
-encode upstream's requests.
-
-The API has the same KVM/MSHV/WHP backend, no-block device, artifact integrity,
-and security restrictions documented under [`--snapshot-destination`].
+The API has the same KVM/MSHV/WHP backend, sandbox block, artifact integrity,
+and security restrictions documented under [`--snapshot-destination`]. The
+management API cannot restore a snapshot with a control console, which needs
+an authenticated broker attachment that it cannot provide.
 
 [`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto
 [`--snapshot-destination`]: ./cli.md

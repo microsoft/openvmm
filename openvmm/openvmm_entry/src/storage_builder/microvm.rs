@@ -5,7 +5,6 @@
 
 use super::StorageBuilder;
 use super::VirtioBlkDisk;
-use crate::VmResources;
 use crate::cli_args::DiskCliKind;
 use crate::disk_open;
 use anyhow::Context;
@@ -437,11 +436,11 @@ impl StorageBuilder {
     }
 
     /// Adds the sandbox block devices of a microVM at their fixed virtio-mmio
-    /// slots, in role order.
-    pub(super) fn build_microvm_sandbox_blocks(
+    /// slots, in role order, and their snapshot sources to `resources`.
+    pub(crate) fn build_microvm_sandbox_blocks(
         &mut self,
         config: &mut Config,
-        resources: &mut VmResources,
+        resources: &mut crate::microvm::MicrovmResources,
     ) -> anyhow::Result<()> {
         if config.machine_profile != MachineProfile::Microvm {
             return Ok(());
@@ -464,7 +463,7 @@ impl StorageBuilder {
                         read_only: vblk.read_only,
                     });
                 if let Some(source) = block.snapshot_source {
-                    resources.microvm.sandbox_block_sources.push(source);
+                    resources.sandbox_block_sources.push(source);
                 }
             }
             config

@@ -29,7 +29,6 @@ use super::output::spawn_output;
 use super::restore::fresh_microvm_generation_id;
 use crate::ConsoleState;
 use crate::Options;
-use crate::VmResources;
 use crate::cli_args;
 use crate::cli_args::SerialConfigCli;
 use crate::cli_args::VirtioBusCli;
@@ -67,7 +66,9 @@ use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 
 /// MicroVM state computed while building a VM configuration from the command
-/// line. All methods are no-ops for the standard machine profile.
+/// line, or from a management RPC request that the server converts to the
+/// command line's options. All methods are no-ops for the standard machine
+/// profile.
 pub(crate) struct MicrovmConfigBuilder<'a> {
     opt: &'a Options,
     restore: &'a MicrovmRestore,
@@ -79,10 +80,19 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     control_console: Option<ConsoleEndpoint>,
     control_broker_config: Option<VirtioControlConsoleBrokerConfig>,
     control_console_backend: Option<Resource<SerialBackendHandle>>,
-    portb: Option<(Resource<SerialBackendHandle>, OutputCompletion)>,
+    portb: Option<PortbHost>,
     /// The drain of the boot console's relay to the terminal.
     console_relay: Option<RelayDrain>,
     resources: MicrovmResources,
+}
+
+/// The host side of portb.
+enum PortbHost {
+    /// The terminal or stderr, with the completion of its output relay.
+    Terminal(Resource<SerialBackendHandle>, OutputCompletion),
+    /// The serial port 0 endpoint of a management RPC request, if it has one.
+    #[cfg(any(feature = "ttrpc", feature = "grpc"))]
+    Endpoint(Option<Resource<SerialBackendHandle>>),
 }
 
 impl<'a> MicrovmConfigBuilder<'a> {
@@ -280,8 +290,19 @@ impl<'a> MicrovmConfigBuilder<'a> {
             console_state,
             serial_driver,
         )?;
-        self.portb = Some((backend, output));
+        self.portb = Some(PortbHost::Terminal(backend, output));
         Ok(())
+    }
+
+    /// Connects the host side of portb to `endpoint`, the serial port 0
+    /// endpoint of a management RPC request, instead of the terminal, or
+    /// leaves portb disconnected without one. Only a connected endpoint has
+    /// output to drain.
+    #[cfg(any(feature = "ttrpc", feature = "grpc"))]
+    pub(crate) fn set_portb_endpoint(&mut self, endpoint: Option<Resource<SerialBackendHandle>>) {
+        if self.active {
+            self.portb = Some(PortbHost::Endpoint(endpoint));
+        }
     }
 
     /// Connects the host side of the boot virtio-console and the dedicated
@@ -406,13 +427,26 @@ impl<'a> MicrovmConfigBuilder<'a> {
         &mut self,
         chipset_devices: &mut Vec<ChipsetDeviceHandle>,
     ) -> anyhow::Result<()> {
-        let Some((io, output_completion)) = self.portb.take() else {
-            return Ok(());
+        let (io, output_drain) = match self.portb.take() {
+            None => return Ok(()),
+            Some(PortbHost::Terminal(io, output_completion)) => {
+                let (drain, output_drain) =
+                    MicrovmOutputDrain::new(Some(output_completion), self.console_relay.take());
+                self.resources.output_drain = Some(drain);
+                (io, Some(output_drain))
+            }
+            #[cfg(any(feature = "ttrpc", feature = "grpc"))]
+            Some(PortbHost::Endpoint(Some(io))) => {
+                let (drain, output_drain) = MicrovmOutputDrain::new(None, None);
+                self.resources.output_drain = Some(drain);
+                (io, Some(output_drain))
+            }
+            #[cfg(any(feature = "ttrpc", feature = "grpc"))]
+            Some(PortbHost::Endpoint(None)) => {
+                (DisconnectedSerialBackendHandle.into_resource(), None)
+            }
         };
         let opt = self.opt;
-        let (drain, output_drain) =
-            MicrovmOutputDrain::new(Some(output_completion), self.console_relay.take());
-        self.resources.output_drain = Some(drain);
         let (generation_id, time_abi_restore) = if self.restore.machine_contract.is_some() {
             let network = if self.restore.network_settings {
                 let network = self
@@ -440,7 +474,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             resource: MicrovmPortbHandle {
                 io,
                 generation_id,
-                output_drain: Some(output_drain),
+                output_drain,
                 time_abi,
             }
             .into_resource(),
@@ -538,7 +572,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
     pub(crate) fn add_virtio_devices(
         &mut self,
         add_virtio_device: &mut impl FnMut(VirtioBusCli, Resource<VirtioDeviceHandle>),
-        resources: &mut VmResources,
     ) -> anyhow::Result<()> {
         if let Some(network) = self.network.as_ref() {
             let config = &network.config;
@@ -547,7 +580,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 &network.policy,
                 &self.opt.microvm.host_loopback_forward,
                 self.opt.microvm_private_network_ingress(),
-                resources,
             )?;
             add_virtio_device(
                 VirtioBusCli::Mmio,
@@ -693,11 +725,13 @@ impl<'a> MicrovmConfigBuilder<'a> {
     }
 
     /// Completes the microVM configuration after the storage devices have been
-    /// added, and validates the machine contract of every profile.
+    /// added, and validates the machine contract of every profile. `resources`
+    /// holds the snapshot sources of the sandbox blocks, which the storage
+    /// builder added, and receives the rest of the microVM's host resources.
     pub(crate) fn finish(
         mut self,
         cfg: &mut Config,
-        resources: &mut VmResources,
+        resources: &mut MicrovmResources,
     ) -> anyhow::Result<()> {
         let opt = self.opt;
         let restore_machine_contract = self.restore.machine_contract.as_ref();
@@ -834,8 +868,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
         }
         openvmm_defs::microvm::validate_machine_config(cfg, requested_hypervisor)?;
 
-        let sandbox_block_sources = std::mem::take(&mut resources.microvm.sandbox_block_sources);
-        resources.microvm = MicrovmResources {
+        let sandbox_block_sources = std::mem::take(&mut resources.sandbox_block_sources);
+        *resources = MicrovmResources {
             sandbox_block_sources,
             ..std::mem::take(&mut self.resources)
         };

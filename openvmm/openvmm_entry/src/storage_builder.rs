@@ -904,7 +904,7 @@ impl StorageBuilder {
             resources.nvme_vtl2_rpc = Some(send);
         }
 
-        self.build_microvm_sandbox_blocks(config, resources)?;
+        self.build_microvm_sandbox_blocks(config, &mut resources.microvm)?;
         for (i, vblk) in std::mem::take(&mut self.vtl0_virtio_blk_disks)
             .into_iter()
             .enumerate()
