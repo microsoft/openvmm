@@ -398,9 +398,10 @@ describes the source definitions.
   If a device fails to stop its host input, OpenVMM resumes host input and the
   guest continues without a snapshot, unless resuming fails too, which ends the
   VM. Delivering portb output waits for a connected peer to read it; output
-  accepted while no portb peer is connected is saved in the snapshot and
-  written by the restored VM. A request with no configured destination is
-  ignored and the guest continues. Capture requires 1, 2, 4, or 8 vCPUs,
+  that portb has not delivered, because no peer is connected or a write to the
+  endpoint failed, is saved in the snapshot and written by the restored VM.
+  A request with no configured destination is ignored and the guest
+  continues. Capture requires 1, 2, 4, or 8 vCPUs,
   KVM, MSHV, or WHP, and shared file-backed RAM. Sandbox block media must
   be cached regular raw files with nonzero 512-byte-aligned geometry. An
   attached virtio console saves accepted but undelivered input and the offset
