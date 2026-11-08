@@ -24,33 +24,17 @@ pub(crate) use console::MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND;
 #[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) use console::MICROVM_CONTROL_CONSOLE_STABLE_ID;
 pub(crate) use console::MicrovmConsoleSocketCleanup;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use console::microvm_console_attachment_from_cli;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
+#[cfg(all(test, any(feature = "ttrpc", feature = "grpc")))]
 pub(crate) use console::microvm_console_attachment_from_snapshot;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
+#[cfg(all(test, any(feature = "ttrpc", feature = "grpc")))]
 pub(crate) use console::microvm_console_disconnect_policy;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use console::microvm_console_socket_cleanup;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use console::validate_microvm_console_attachment_namespace;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use filesystem::microvm_filesystem_attachment;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use filesystem::microvm_filesystem_from_snapshot;
 pub(crate) use filesystem::validate_microvm_filesystem_private_storage;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use filesystem::validate_microvm_filesystem_slot;
 pub(crate) use launch::MicrovmLaunch;
 pub(crate) use restore::ExpectedRestoreContract;
 pub(crate) use restore::MicrovmRestore;
 pub(crate) use restore::TimeAbiRestore;
 pub(crate) use restore::TimeAbiRestoreOptions;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use restore::fresh_microvm_generation_id;
 pub(crate) use restore::prepare_restore;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use restore::restore_packet_base;
 pub(crate) use restore::validate_restore_contract;
 pub(crate) use verify::fatal_error_message;
 pub(crate) use verify::report_time_abi_verification;
