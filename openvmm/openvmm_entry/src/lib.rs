@@ -1361,10 +1361,11 @@ async fn vm_config_from_command_line(
         TpmVersionCli::V185 => TpmVersion::V185,
     });
 
-    // A snapshot restore builds the load mode of the boot it was saved from.
-    // The VM worker skips the initial firmware load when it restores saved
-    // state, but a later guest reset loads this firmware again, and the
-    // device configuration depends on it.
+    // A snapshot restore builds the load mode of its boot flags. The VM worker
+    // skips the initial firmware load when it restores saved state, but a
+    // later guest reset loads this firmware again, and the device
+    // configuration depends on it. A restore without boot flags has no load
+    // mode.
     if let Some(igvm) = &opt.igvm {
         let cli_args::UefiCli {
             firmware,
@@ -1493,6 +1494,9 @@ async fn vm_config_from_command_line(
             hibernation_enabled: opt.hibernation,
             force_firmware_version: *force_firmware_version,
         };
+    } else if opt.restore_snapshot.is_some() && opt.kernel.0.is_none() {
+        load_mode = LoadMode::None;
+        with_hv = true;
     } else {
         // Linux Direct
         let mut cmdline = "panic=-1 debug".to_string();
@@ -3305,7 +3309,8 @@ mod tests {
     }
 
     /// `--restore-snapshot` keeps the load mode of its boot flags, so a guest
-    /// reset after the restore loads that firmware again.
+    /// reset after the restore loads that firmware again. Without boot flags
+    /// it restores with no load mode.
     #[test]
     fn restore_keeps_the_load_mode_of_its_boot_command_line() {
         fn kind(load_mode: &LoadMode) -> &'static str {
@@ -3333,6 +3338,7 @@ mod tests {
             let linux = ["--kernel", kernel.as_str(), "--initrd", initrd.as_str()];
 
             for (boot, expected) in [
+                (vec![], "none"),
                 (linux.to_vec(), "linux"),
                 ([&linux[..], &["--device-tree"]].concat(), "linux"),
                 (vec![uefi.as_str()], "uefi"),
@@ -3340,7 +3346,12 @@ mod tests {
                 let mut args = vec!["openvmm", "--single-process"];
                 args.extend(&boot);
                 args.extend(["--restore-snapshot", snapshot.to_str().unwrap()]);
-                let opt = Options::try_parse_from(&args).unwrap();
+                let mut opt = Options::try_parse_from(&args).unwrap();
+                if boot.is_empty() {
+                    // No default kernel from the environment.
+                    opt.kernel.0 = None;
+                    opt.initrd.0 = None;
+                }
                 let mesh = VmmMesh::new(&driver, true).unwrap();
                 let (config, _) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
                     .await
