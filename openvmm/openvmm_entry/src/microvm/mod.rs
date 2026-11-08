@@ -18,6 +18,7 @@ pub(crate) use config::MicrovmConfigBuilder;
 pub(crate) use console::MICROVM_CONSOLE_ATTACHMENT_KIND;
 #[cfg(test)]
 pub(crate) use console::MICROVM_CONSOLE_STABLE_ID;
+pub(crate) use console::MICROVM_CONSOLE_TCP_REFUSED;
 #[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) use console::MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND;
 #[cfg(any(feature = "ttrpc", feature = "grpc"))]

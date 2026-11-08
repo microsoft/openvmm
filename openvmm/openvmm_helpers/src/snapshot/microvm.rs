@@ -1308,13 +1308,15 @@ pub fn microvm_machine_contract(
         })
         .transpose()?;
     if let Some(attachment) = console_attachment {
+        // A boot console never has a TCP endpoint, which a guest could reach
+        // through the host-loopback mapping of its gateway.
         let policy_is_valid = match attachment.reconnect_policy.as_str() {
             "recreate-listener" => {
                 !attachment.required
                     && attachment.reconnect_timeout_ms == 0
                     && matches!(
                         attachment.identity_kind.as_str(),
-                        "unix-socket" | "named-pipe" | "tcp"
+                        "unix-socket" | "named-pipe"
                     )
             }
             "reconnect-client" => {
@@ -1323,7 +1325,7 @@ pub fn microvm_machine_contract(
                         == openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS
                     && matches!(
                         attachment.identity_kind.as_str(),
-                        "unix-socket" | "named-pipe" | "tcp"
+                        "unix-socket" | "named-pipe"
                     )
             }
             "require-inherited-attachment" => {
@@ -2535,8 +2537,8 @@ mod tests {
             kind: "virtio-console".to_owned(),
             required: false,
             reconnect_policy: "recreate-listener".to_owned(),
-            identity_kind: "tcp".to_owned(),
-            identity: b"127.0.0.1:5555".to_vec(),
+            identity_kind: "unix-socket".to_owned(),
+            identity: b"/run/nvx/console.sock".to_vec(),
             length: 0,
             reconnect_timeout_ms: 0,
         }
@@ -2667,6 +2669,12 @@ mod tests {
     }
 
     fn generated_console_contract() -> SnapshotMachineContract {
+        console_contract(microvm_console_attachment()).unwrap()
+    }
+
+    /// Returns the contract of a snapshot whose boot console has the
+    /// attachment `console`.
+    fn console_contract(console: SnapshotAttachment) -> anyhow::Result<SnapshotMachineContract> {
         microvm_machine_contract(
             "whp",
             MICROVM_BOOT_LAYOUT_VERSION,
@@ -2674,7 +2682,7 @@ mod tests {
                 .to_owned(),
             None,
             None,
-            Some(microvm_console_attachment()),
+            Some(console),
             None,
             Vec::new(),
             1,
@@ -2698,7 +2706,6 @@ mod tests {
             crate::snapshot::time::tests::test_time_contract(),
             crate::snapshot::time::tests::test_cpu_profile(),
         )
-        .unwrap()
     }
 
     fn generated_control_console_contract_with_attachment(
@@ -3313,6 +3320,31 @@ mod tests {
     }
 
     #[test]
+    fn generated_microvm_console_contract_refuses_tcp_endpoints() {
+        // A guest reaches loopback TCP through its gateway's host-loopback
+        // mapping, so neither a listener nor a client console is on TCP.
+        let listener = SnapshotAttachment {
+            identity_kind: "tcp".to_owned(),
+            identity: b"127.0.0.1:5555".to_vec(),
+            ..microvm_console_attachment()
+        };
+        let client = SnapshotAttachment {
+            required: true,
+            reconnect_policy: "reconnect-client".to_owned(),
+            reconnect_timeout_ms: openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS,
+            ..listener.clone()
+        };
+        for attachment in [listener, client] {
+            let policy = attachment.reconnect_policy.clone();
+            let error = console_contract(attachment).unwrap_err();
+            assert!(
+                error.to_string().contains("unsupported reconnect policy"),
+                "{policy}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn generated_microvm_control_console_contract_has_distinct_fixed_abi() {
         let contract = generated_control_console_contract();
         let boot = contract
@@ -3795,7 +3827,7 @@ mod tests {
         manifest.vp_count = 1;
         manifest.machine_contract = Some(contract.clone());
         let mut expected = contract;
-        expected.attachments[0].identity = b"127.0.0.1:6666".to_vec();
+        expected.attachments[0].identity = b"/run/nvx/other-console.sock".to_vec();
         let error = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
         assert!(error.to_string().contains("attachment inventory"));
     }
