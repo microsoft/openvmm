@@ -944,7 +944,7 @@ impl CreateVm {
                 &snapshot_attachment,
                 &restore.path,
             )?;
-            let (backend, disconnect_policy) = match endpoint_config {
+            let backend = match endpoint_config {
                 SerialConfigCli::Pipe(path) => {
                     let backend = bind_serial_without_cleanup(&path).with_context(|| {
                         format!(
@@ -954,9 +954,9 @@ impl CreateVm {
                     })?;
                     self.resources.console_socket_cleanup =
                         crate::microvm::microvm_console_socket_cleanup(path)?;
-                    (backend, VirtioConsoleDisconnectPolicy::Retain)
+                    backend
                 }
-                SerialConfigCli::ConnectPipe(path) => (
+                SerialConfigCli::ConnectPipe(path) => {
                     crate::serial_io::connect::connect_serial_with_timeout(
                         &path,
                         Duration::from_millis(
@@ -968,15 +968,16 @@ impl CreateVm {
                             "failed to reconnect virtio console client: {}",
                             path.display()
                         )
-                    })?,
-                    VirtioConsoleDisconnectPolicy::Retain,
-                ),
-                SerialConfigCli::None => (
-                    DisconnectedSerialBackendHandle.into_resource(),
-                    VirtioConsoleDisconnectPolicy::Discard,
-                ),
+                    })?
+                }
+                SerialConfigCli::None => DisconnectedSerialBackendHandle.into_resource(),
                 _ => unreachable!("saved microVM console was validated as an attachment"),
             };
+            // A listener that the restore attached to a disconnected console
+            // discards guest output while no client is connected, as the
+            // saved device does.
+            let disconnect_policy =
+                crate::microvm::microvm_console_disconnect_policy(&resource_attachment);
             config.virtio_devices.push((
                 openvmm_defs::config::VirtioBus::Mmio,
                 virtio_resources::console::VirtioConsoleHandle {
