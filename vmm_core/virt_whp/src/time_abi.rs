@@ -1315,11 +1315,13 @@ pub(crate) mod test_cpuid {
     use vm_topology::processor::x86::ApicMode;
     use vm_topology::processor::x86::X2ApicState;
 
-    /// Pinned CPU profiles of each vendor.
-    pub const PROFILES: [&str; 7] = [
+    /// Pinned CPU profiles of each vendor, and Granite Rapids', the first to
+    /// reach the V2 extended topology leaf `0x1F`.
+    pub const PROFILES: [&str; 8] = [
         "intel.skylake-sp.v1",
         "intel.icelake-sp.v1",
         "intel.emeraldrapids.v1",
+        "intel.graniterapids.v1",
         "amd.milan.v1",
         "amd.genoa.v1",
         "amd.genoa.v2",

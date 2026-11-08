@@ -512,8 +512,8 @@ mod tests {
     const GENOA: HostCpuSignature = HostCpuSignature::new(*b"AuthenticAMD", 0x00a1_0f11);
     const SKYLAKE_SP: HostCpuSignature = HostCpuSignature::new(*b"GenuineIntel", 0x0005_0654);
     /// A CPU that no built-in profile serves, so `auto` falls back to a host
-    /// profile.
-    const GRANITE_RAPIDS: HostCpuSignature = HostCpuSignature::new(*b"GenuineIntel", 0x000a_06d1);
+    /// profile: a Sapphire Rapids Xeon.
+    const SAPPHIRE_RAPIDS: HostCpuSignature = HostCpuSignature::new(*b"GenuineIntel", 0x0008_06f8);
     /// A CPU of a vendor that host profiles do not serve.
     const HYGON: HostCpuSignature = HostCpuSignature::new(*b"HygonGenuine", 0x0090_0f01);
 
@@ -535,7 +535,7 @@ mod tests {
         // `auto` already used a host profile, or none could serve the CPU.
         assert!(!falls_back_to_host_profile(
             unsupported,
-            Some(&GRANITE_RAPIDS)
+            Some(&SAPPHIRE_RAPIDS)
         ));
         assert!(!falls_back_to_host_profile(unsupported, Some(&HYGON)));
         // The host CPU is not identified.
