@@ -407,10 +407,11 @@ The guest CPU is a pinned CPU profile: one per CPU generation, the same on
 every backend. OpenVMM pins `intel.skylake-sp.v1` (Xeon Scalable, first
 generation: family 6, model 85, steppings 0 to 4), `intel.icelake-sp.v1`
 (Xeon Scalable, third generation: 6/106), `intel.emeraldrapids.v1` (Xeon
-Scalable, fifth generation: 6/207), `intel.alderlake.v1` (Core, twelfth
-generation: 6/151 and 6/154), `amd.milan.v1` (AMD EPYC, third generation:
-25/1), `amd.genoa.v1` and `amd.genoa.v2` (AMD EPYC, fourth generation:
-25/17), and `amd.turin.v1` (AMD EPYC, fifth generation: 26/2).
+Scalable, fifth generation: 6/207), `intel.graniterapids.v1` (Xeon 6 with
+P-cores: 6/173), `intel.alderlake.v1` (Core, twelfth generation: 6/151 and
+6/154), `amd.milan.v1` (AMD EPYC, third generation: 25/1), `amd.genoa.v1`
+and `amd.genoa.v2` (AMD EPYC, fourth generation: 25/17), and
+`amd.turin.v1` (AMD EPYC, fifth generation: 26/2).
 `amd.genoa.v2` drops what `amd.genoa.v1` presents in `0x80000021`, `LFENCE`
 serialization and the TSA immunities, which not every Genoa host's
 hypervisor presents. No profile presents AMX: its tile states need a
