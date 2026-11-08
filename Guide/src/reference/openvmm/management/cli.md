@@ -1056,7 +1056,12 @@ Serial devices can be configured to appear as different devices inside the guest
     attached to `hvc1`. A guest-requested exit writes the boot console output
     that the device accepted before OpenVMM exits.
   * `none`: keep the device present and explicitly discard guest TX while
-    disconnected.
+    disconnected. A restore caller can supply
+    `--virtio-console listen=<FRESH-ENDPOINT>`, a Unix socket beside the
+    snapshot directory or a `//./pipe/openvmm-microvm-<NAME>` pipe, to read the
+    restored guest's console. The listener keeps discarding guest TX while no
+    client is connected, so the guest never waits for a client. A restore
+    refuses every other replacement of a disconnected console.
 
   A microVM refuses TCP endpoints, `listen=tcp:IP:PORT` and
   `connect=tcp:IP:PORT`, and a snapshot whose boot console has one. Unless

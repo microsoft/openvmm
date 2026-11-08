@@ -29,6 +29,8 @@ pub(crate) use console::microvm_console_attachment_from_cli;
 #[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) use console::microvm_console_attachment_from_snapshot;
 #[cfg(any(feature = "ttrpc", feature = "grpc"))]
+pub(crate) use console::microvm_console_disconnect_policy;
+#[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) use console::microvm_console_socket_cleanup;
 #[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) use console::validate_microvm_console_attachment_namespace;
