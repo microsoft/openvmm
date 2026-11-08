@@ -165,9 +165,17 @@ timeout; only the listener endpoint identity may change. Restore callers use
 listener, `--microvm-control-console listen=<FRESH-ENDPOINT>` with
 `--microvm-control-auth-stdin`. OpenVMM validates an approved replacement
 without reopening or canonicalizing the captured listener path, so the source
-generation's private directory need not survive until restore. Client,
-inherited-provider, and disconnected attachments retain their stricter saved
-identity requirements.
+generation's private directory need not survive until restore. Client and
+inherited-provider attachments retain their stricter saved identity
+requirements. A disconnected boot console, which `--virtio-console none`
+captures, may take a listener at restore,
+`--virtio-console listen=<FRESH-ENDPOINT>`: a Unix socket beside the snapshot
+directory, or a named pipe in the `//./pipe/openvmm-microvm-<NAME>` namespace,
+as a saved listener must be. The device is the one that the snapshot saved, so
+the listener keeps discarding guest TX while no client is connected, and a
+restored guest never waits for a client that went away. A disconnected console
+takes no other attachment, and a disconnected control console stays
+disconnected.
 
 MicroVM orchestrators can add `--restore-ready-path <PATH>`. OpenVMM connects
 to an existing Unix domain socket on Linux or named pipe on Windows and writes

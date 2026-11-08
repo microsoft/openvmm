@@ -65,6 +65,66 @@ pub(super) fn microvm_console_listener_replacement_matches(
         && saved.reconnect_timeout_ms == requested.reconnect_timeout_ms
 }
 
+/// Returns whether `requested` is a listener that a restore attached to
+/// `saved`, a disconnected boot console: a Unix socket or named pipe that
+/// keeps discarding guest output while no client is connected, so that only
+/// the endpoint differs from the saved attachment.
+pub(super) fn microvm_console_discarding_listener_matches(
+    saved: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+    requested: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+) -> bool {
+    saved.stable_id == MICROVM_CONSOLE_STABLE_ID
+        && saved.kind == MICROVM_CONSOLE_ATTACHMENT_KIND
+        && saved.reconnect_policy == "discard-while-disconnected"
+        && saved.identity_kind == "disconnected"
+        && saved.stable_id == requested.stable_id
+        && saved.kind == requested.kind
+        && saved.required == requested.required
+        && saved.reconnect_policy == requested.reconnect_policy
+        && matches!(
+            requested.identity_kind.as_str(),
+            "unix-socket" | "named-pipe"
+        )
+        && saved.length == requested.length
+        && saved.reconnect_timeout_ms == requested.reconnect_timeout_ms
+}
+
+/// Returns the attachment of a listener at `requested`, a Unix socket or named
+/// pipe, that a restore attaches to a disconnected boot console. Like the
+/// disconnected attachment, it discards guest output while no client is
+/// connected, so the guest never waits for a client.
+fn microvm_console_discarding_listener(
+    requested: &SerialConfigCli,
+) -> anyhow::Result<ConsoleEndpoint> {
+    use virtio_resources::console::attachment::VirtioConsoleReconnectPolicy;
+
+    anyhow::ensure!(
+        matches!(requested, SerialConfigCli::Pipe(_)),
+        "a restore attaches only a socket or pipe listener to a disconnected virtio-console"
+    );
+    let (effective, mut attachment, mut snapshot) = microvm_console_attachment_from_cli(requested)?;
+    attachment.reconnect_policy = VirtioConsoleReconnectPolicy::DiscardWhileDisconnected;
+    snapshot.reconnect_policy = "discard-while-disconnected".to_owned();
+    Ok((effective, attachment, snapshot))
+}
+
+/// Returns what the boot console's device does with guest output while no
+/// client is connected to its host endpoint: a disconnected attachment, or a
+/// listener that a restore attached to one, discards it, and every other
+/// attachment retains it until a client connects.
+pub(crate) fn microvm_console_disconnect_policy(
+    attachment: &virtio_resources::console::attachment::VirtioConsoleAttachment,
+) -> virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy {
+    use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
+    use virtio_resources::console::attachment::VirtioConsoleReconnectPolicy;
+
+    if attachment.reconnect_policy == VirtioConsoleReconnectPolicy::DiscardWhileDisconnected {
+        VirtioConsoleDisconnectPolicy::Discard
+    } else {
+        VirtioConsoleDisconnectPolicy::Retain
+    }
+}
+
 pub(crate) struct MicrovmConsoleSocketCleanup {
     #[cfg(unix)]
     path: PathBuf,
@@ -529,6 +589,20 @@ fn microvm_console_attachment_from_snapshot_with_identity(
         "snapshot microVM console identity is not canonical"
     );
     if let Some(requested) = requested {
+        // A restore may attach a socket or pipe listener to a disconnected
+        // boot console, which then keeps discarding guest output while no
+        // client is connected.
+        if !control_console
+            && attachment.reconnect_policy == "discard-while-disconnected"
+            && matches!(requested, SerialConfigCli::Pipe(_))
+        {
+            let listener = microvm_console_discarding_listener(requested)?;
+            anyhow::ensure!(
+                microvm_console_discarding_listener_matches(attachment, &listener.2),
+                "restore-time virtio-console listener does not match the snapshot attachment contract"
+            );
+            return Ok(listener);
+        }
         let requested = if control_console {
             microvm_control_console_attachment_from_cli(requested)?
         } else {
@@ -713,6 +787,9 @@ mod tests {
     use super::*;
     use clap::Parser as _;
     use test_with_tracing::test;
+    use virtio_resources::console::attachment::VirtioConsoleAttachmentMode;
+    use virtio_resources::console::attachment::VirtioConsoleBackendKind;
+    use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
     use virtio_resources::console::attachment::VirtioConsoleReconnectPolicy;
 
     fn socket_attachment(path: &Path) -> openvmm_helpers::snapshot::microvm::SnapshotAttachment {
@@ -1086,6 +1163,228 @@ mod tests {
             microvm_console_attachment_from_snapshot(&snapshot, None).unwrap();
         assert!(matches!(restored, SerialConfigCli::None));
         assert_eq!(restored_snapshot, snapshot);
+    }
+
+    /// Asserts that `restored`, what a restore attached to a disconnected
+    /// boot console `snapshot`, is a listener at `endpoint` of the backend
+    /// `backend_kind`, which discards guest output while no client is
+    /// connected, and which differs from the saved attachment in its endpoint
+    /// alone.
+    fn assert_discarding_listener(
+        snapshot: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+        restored: &ConsoleEndpoint,
+        endpoint: &Path,
+        backend_kind: VirtioConsoleBackendKind,
+    ) {
+        let (config, resource, restored_attachment) = restored;
+        let SerialConfigCli::Pipe(path) = config else {
+            panic!("restore did not attach a listener");
+        };
+        assert!(path.ends_with(endpoint.file_name().unwrap()));
+        assert_eq!(resource.mode, VirtioConsoleAttachmentMode::Listen);
+        assert_eq!(resource.backend_kind, backend_kind);
+        assert_eq!(
+            resource.reconnect_policy,
+            VirtioConsoleReconnectPolicy::DiscardWhileDisconnected
+        );
+        assert!(!resource.required);
+        assert_eq!(resource.reconnect_timeout_ms, 0);
+        assert_eq!(
+            microvm_console_disconnect_policy(resource),
+            VirtioConsoleDisconnectPolicy::Discard
+        );
+        assert_eq!(
+            restored_attachment.reconnect_policy,
+            "discard-while-disconnected"
+        );
+        assert_ne!(restored_attachment.identity, snapshot.identity);
+        assert!(microvm_console_discarding_listener_matches(
+            snapshot,
+            restored_attachment
+        ));
+        assert!(!microvm_console_listener_replacement_matches(
+            snapshot,
+            restored_attachment
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_attachment_takes_a_restore_listener_that_keeps_discarding() {
+        let (_, _, snapshot) = microvm_console_attachment_from_cli(&SerialConfigCli::None).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = directory.path().join("clone.console");
+
+        let restored = microvm_console_attachment_from_snapshot(
+            &snapshot,
+            Some(&SerialConfigCli::Pipe(endpoint.clone())),
+        )
+        .unwrap();
+
+        assert_discarding_listener(
+            &snapshot,
+            &restored,
+            &endpoint,
+            VirtioConsoleBackendKind::UnixSocket,
+        );
+        assert_eq!(restored.2.identity_kind, "unix-socket");
+        // The listener's socket must be beside the snapshot, as a listener
+        // that a snapshot recorded must be.
+        validate_microvm_console_attachment_namespace(
+            &restored.2,
+            &directory.path().join("snapshot"),
+        )
+        .unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        assert!(
+            validate_microvm_console_attachment_namespace(
+                &restored.2,
+                &elsewhere.path().join("snapshot")
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn disconnected_attachment_takes_a_restore_pipe_listener_that_keeps_discarding() {
+        let (_, _, snapshot) = microvm_console_attachment_from_cli(&SerialConfigCli::None).unwrap();
+        let endpoint = PathBuf::from("//./pipe/openvmm-microvm-clone-console");
+
+        let restored = microvm_console_attachment_from_snapshot(
+            &snapshot,
+            Some(&SerialConfigCli::Pipe(endpoint.clone())),
+        )
+        .unwrap();
+
+        assert_discarding_listener(
+            &snapshot,
+            &restored,
+            &endpoint,
+            VirtioConsoleBackendKind::NamedPipe,
+        );
+        assert_eq!(restored.2.identity_kind, "named-pipe");
+        assert!(
+            microvm_console_attachment_from_snapshot(
+                &snapshot,
+                Some(&SerialConfigCli::Pipe(PathBuf::from("//./pipe/unrelated")))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn disconnected_attachment_refuses_every_other_restore_attachment() {
+        let (_, _, snapshot) = microvm_console_attachment_from_cli(&SerialConfigCli::None).unwrap();
+        #[cfg(unix)]
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let client = directory.path().join("client.console");
+        #[cfg(windows)]
+        let client = PathBuf::from("//./pipe/openvmm-microvm-client-console");
+        for (requested, what) in [
+            (
+                SerialConfigCli::Tcp("127.0.0.1:5555".parse().unwrap()),
+                "a TCP listener",
+            ),
+            (
+                SerialConfigCli::ConnectTcp("127.0.0.1:5555".parse().unwrap()),
+                "a TCP client",
+            ),
+            (
+                SerialConfigCli::ConnectPipe(client),
+                "a socket or pipe client",
+            ),
+            (SerialConfigCli::Console, "the terminal"),
+        ] {
+            assert!(
+                microvm_console_attachment_from_snapshot(&snapshot, Some(&requested)).is_err(),
+                "a disconnected boot console took {what} at a restore"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_control_console_refuses_a_restore_listener() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (_, _, snapshot) =
+            microvm_control_console_attachment_from_cli(&SerialConfigCli::None).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let requested = SerialConfigCli::Pipe(directory.path().join("control.sock"));
+
+        assert!(
+            microvm_console_attachment_from_snapshot_with_identity(
+                &snapshot,
+                Some(&requested),
+                MICROVM_CONTROL_CONSOLE_STABLE_ID,
+                MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn only_a_disconnected_boot_console_takes_a_discarding_listener() {
+        let disconnected = microvm_console_attachment_from_cli(&SerialConfigCli::None)
+            .unwrap()
+            .2;
+        let listener = openvmm_helpers::snapshot::microvm::SnapshotAttachment {
+            reconnect_policy: "discard-while-disconnected".to_owned(),
+            identity_kind: "unix-socket".to_owned(),
+            identity: b"/snapshots/clone.console".to_vec(),
+            ..disconnected.clone()
+        };
+        assert!(microvm_console_discarding_listener_matches(
+            &disconnected,
+            &listener
+        ));
+
+        // A listener that retains output, or whose contract changes beyond
+        // its endpoint, is no discarding replacement.
+        let retaining = openvmm_helpers::snapshot::microvm::SnapshotAttachment {
+            reconnect_policy: "recreate-listener".to_owned(),
+            ..listener.clone()
+        };
+        let required = openvmm_helpers::snapshot::microvm::SnapshotAttachment {
+            required: true,
+            ..listener.clone()
+        };
+        let tcp = openvmm_helpers::snapshot::microvm::SnapshotAttachment {
+            identity_kind: "tcp".to_owned(),
+            identity: b"127.0.0.1:5555".to_vec(),
+            ..listener.clone()
+        };
+        for requested in [&retaining, &required, &tcp, &disconnected] {
+            assert!(!microvm_console_discarding_listener_matches(
+                &disconnected,
+                requested
+            ));
+        }
+
+        // Neither does a saved listener, nor the control console.
+        let saved_listener = socket_attachment(Path::new("source.sock"));
+        assert!(!microvm_console_discarding_listener_matches(
+            &saved_listener,
+            &listener
+        ));
+        let control = openvmm_helpers::snapshot::microvm::SnapshotAttachment {
+            stable_id: MICROVM_CONTROL_CONSOLE_STABLE_ID.to_owned(),
+            kind: MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND.to_owned(),
+            ..disconnected
+        };
+        let control_listener = openvmm_helpers::snapshot::microvm::SnapshotAttachment {
+            stable_id: MICROVM_CONTROL_CONSOLE_STABLE_ID.to_owned(),
+            kind: MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND.to_owned(),
+            ..listener
+        };
+        assert!(!microvm_console_discarding_listener_matches(
+            &control,
+            &control_listener
+        ));
     }
 
     #[test]
