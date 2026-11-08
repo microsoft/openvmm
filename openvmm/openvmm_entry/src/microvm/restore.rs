@@ -651,18 +651,6 @@ pub(crate) struct TimeAbiRestore {
 }
 
 impl TimeAbiRestore {
-    /// Returns the snapshot's time contract.
-    #[cfg(any(feature = "ttrpc", feature = "grpc"))]
-    pub(crate) fn contract(&self) -> &SnapshotTimeContract {
-        &self.contract
-    }
-
-    /// Returns the snapshot's CPU profile record.
-    #[cfg(any(feature = "ttrpc", feature = "grpc"))]
-    pub(crate) fn cpu_profile(&self) -> &SnapshotCpuProfile {
-        &self.cpu_profile
-    }
-
     /// Returns the worker's restore input. The worker seals the time fields
     /// of the restore packet through `restore_record`, and `packet_selected`,
     /// when present, reports the guest's first selection of the packet.
