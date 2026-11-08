@@ -207,7 +207,7 @@ impl KnownGeneration {
 }
 
 /// The generations profiles exist for.
-pub const KNOWN_GENERATIONS: [KnownGeneration; 7] = [
+pub const KNOWN_GENERATIONS: [KnownGeneration; 8] = [
     KnownGeneration {
         vendor: CpuVendor::Intel,
         name: "skylake-sp",
@@ -229,6 +229,14 @@ pub const KNOWN_GENERATIONS: [KnownGeneration; 7] = [
         cpus: &[(6, 207, [0, 15])],
         description: "Intel Xeon Scalable, fifth generation (Emerald Rapids)",
         brand: "Intel(R) Xeon(R) Processor (Emerald Rapids)",
+    },
+    KnownGeneration {
+        vendor: CpuVendor::Intel,
+        name: "graniterapids",
+        // Granite Rapids-AP and -SP (173). Granite Rapids-D is model 174.
+        cpus: &[(6, 173, [0, 15])],
+        description: "Intel Xeon 6 with P-cores (Granite Rapids)",
+        brand: "Intel(R) Xeon(R) Processor (Granite Rapids)",
     },
     KnownGeneration {
         vendor: CpuVendor::Intel,
@@ -1027,6 +1035,7 @@ mod tests {
     use crate::test_support::genoa_kvm_entries;
     use crate::test_support::genoa_mshv_fingerprint;
     use crate::test_support::genoa_whp_fingerprint;
+    use crate::test_support::granite_rapids_kvm_fingerprint;
     use crate::test_support::granite_rapids_whp_entries;
     use crate::test_support::granite_rapids_whp_fingerprint;
     use crate::test_support::host_fingerprint;
@@ -1562,6 +1571,73 @@ mod tests {
                 crate::support_violations(pinned, &surface),
                 Vec::<String>::new(),
                 "{id}"
+            );
+        }
+    }
+
+    /// The pinned Granite Rapids profile is the policy's profile of the hosts
+    /// it was derived from, Intel Xeon 6973P-C VMs on Azure: the WHP of a
+    /// runner of microsoft/nvx#1055 (`test_support::GRANITE_RAPIDS_WHP_CPUID`)
+    /// and the KVM of a GitHub-hosted Actions runner
+    /// (`GRANITE_RAPIDS_KVM_CPUID`), whose surface a second such runner
+    /// shared. It has neither AMX, whose tile states the KVM fingerprint
+    /// lacks and the policy never enables, nor AVX10, nor CET, which only WHP
+    /// offers, and both hosts support it.
+    #[test]
+    fn the_granite_rapids_profile_is_its_hosts_derivation() {
+        let pinned = profile("intel.graniterapids.v1");
+        let kvm = granite_rapids_kvm_fingerprint();
+        let whp = granite_rapids_whp_fingerprint();
+        let derived = derive_profile(
+            generation("graniterapids"),
+            1,
+            &[kvm.clone(), kvm.clone(), whp.clone()],
+        )
+        .unwrap();
+        assert_eq!(derived.id(), pinned.id());
+        assert_eq!(derived.description(), pinned.description());
+        assert_eq!(derived.generation(), pinned.generation());
+        assert_eq!(derived.cpuid(), pinned.cpuid());
+        assert_eq!(derived.xcr0(), pinned.xcr0());
+        assert_eq!(derived.xss(), pinned.xss());
+        assert_eq!(derived.xsave_components(), pinned.xsave_components());
+        assert_eq!(
+            derived.physical_address_width(),
+            pinned.physical_address_width()
+        );
+        assert_eq!(derived.msrs(), pinned.msrs());
+        assert_eq!(
+            derived
+                .provenance()
+                .sources
+                .iter()
+                .map(|source| (source.backend.as_str(), source.hosts))
+                .collect::<Vec<_>>(),
+            [("kvm", 2), ("whp", 1)]
+        );
+        assert_eq!(brand(pinned), "Intel(R) Xeon(R) Processor (Granite Rapids)");
+
+        assert_eq!(pinned.xcr0(), 0xe7);
+        assert_eq!(
+            pinned.lookup(7, 0)[3] & (1 << 20 | 1 << 22 | 1 << 24 | 1 << 25),
+            0
+        );
+        assert_eq!(pinned.lookup(7, 1)[0] & 1 << 21, 0);
+        assert_eq!(pinned.lookup(7, 1)[3] & AVX10, 0);
+        assert_eq!(pinned.lookup(0x24, 0), [0; 4]);
+        // The immunities that both KVM and WHP's banks present: neither
+        // GDS_NO nor SKIP_L1DFL_VMENTRY, which only KVM presents.
+        assert_eq!(
+            pinned.msr(IA32_ARCH_CAPABILITIES),
+            Some((0x0800_e121, ARCH_CAPABILITIES_PINNED_MASK))
+        );
+        for host in [&kvm, &whp] {
+            let surface = crate::HostCpuSurface::from_fingerprint(&host.backend);
+            assert_eq!(
+                crate::support_violations(pinned, &surface),
+                Vec::<String>::new(),
+                "{}",
+                host.backend.name
             );
         }
     }
