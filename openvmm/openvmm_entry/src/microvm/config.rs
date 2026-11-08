@@ -306,7 +306,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     self.resources.console_socket_cleanup = microvm_console_socket_cleanup(path)?;
                     Some(backend)
                 }
-                SerialConfigCli::Tcp(address) => Some(serial_io::bind_tcp_serial(&address)?),
                 SerialConfigCli::ConnectPipe(path) => Some(
                     serial_io::connect::connect_serial_with_timeout(
                         &path,
@@ -321,14 +320,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         )
                     })?,
                 ),
-                SerialConfigCli::ConnectTcp(address) => {
-                    Some(serial_io::connect::connect_tcp_serial(
-                        &address,
-                        Duration::from_millis(
-                            openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS,
-                        ),
-                    )?)
-                }
                 SerialConfigCli::Console => {
                     let (backend, _, relay) = setup_host_console(
                         "virtio-console",
