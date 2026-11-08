@@ -26,6 +26,14 @@ pub(crate) const MICROVM_CONTROL_CONSOLE_STABLE_ID: &str = "console:microvm-cont
 pub(crate) const MICROVM_CONSOLE_ATTACHMENT_KIND: &str = "virtio-console";
 pub(crate) const MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND: &str = "virtio-control-console";
 
+/// Why a microVM console refuses a TCP endpoint. Unless host loopback is
+/// denied, a guest's gateway maps the guest's TCP flows onto host loopback,
+/// so any guest on the host whose egress policy permits the port could
+/// connect to a loopback TCP listener, its own console's or another VM's, or
+/// to the listener that a client endpoint connects to. The boot console does
+/// not authenticate its client, so that guest would drive the console.
+pub(crate) const MICROVM_CONSOLE_TCP_REFUSED: &str = "microVM consoles do not accept TCP endpoints, which guests can reach through the host-loopback mapping of their gateways; use listen=PATH or connect=PATH with a Unix socket or named pipe";
+
 pub(super) fn microvm_console_attachments_share_endpoint(
     left: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
     right: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
@@ -251,47 +259,8 @@ fn microvm_console_attachment_from_cli_with_identity(
                 },
             )
         }
-        SerialConfigCli::Tcp(address) | SerialConfigCli::ConnectTcp(address) => {
-            anyhow::ensure!(
-                address.port() != 0,
-                "microVM console TCP endpoint requires a nonzero stable port"
-            );
-            anyhow::ensure!(
-                address.ip().is_loopback(),
-                "microVM console TCP endpoints must use a loopback address"
-            );
-            let is_client = matches!(config, SerialConfigCli::ConnectTcp(_));
-            (
-                if is_client {
-                    SerialConfigCli::ConnectTcp(*address)
-                } else {
-                    SerialConfigCli::Tcp(*address)
-                },
-                VirtioConsoleBackendKind::Tcp,
-                "tcp",
-                address.to_string(),
-                if is_client {
-                    VirtioConsoleAttachmentMode::Connect
-                } else {
-                    VirtioConsoleAttachmentMode::Listen
-                },
-                if is_client {
-                    VirtioConsoleReconnectPolicy::ReconnectClient
-                } else {
-                    VirtioConsoleReconnectPolicy::RecreateListener
-                },
-                if is_client {
-                    "reconnect-client"
-                } else {
-                    "recreate-listener"
-                },
-                is_client,
-                if is_client {
-                    openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS
-                } else {
-                    0
-                },
-            )
+        SerialConfigCli::Tcp(_) | SerialConfigCli::ConnectTcp(_) => {
+            anyhow::bail!("{MICROVM_CONSOLE_TCP_REFUSED}")
         }
         SerialConfigCli::Console => (
             SerialConfigCli::Console,
@@ -316,7 +285,7 @@ fn microvm_console_attachment_from_cli_with_identity(
             0,
         ),
         _ => anyhow::bail!(
-            "microVM virtio-console requires listen=..., connect=..., console, or none"
+            "microVM virtio-console requires listen=PATH, connect=PATH, console, or none"
         ),
     };
     anyhow::ensure!(
@@ -457,7 +426,6 @@ pub(crate) fn validate_microvm_console_attachment_namespace(
                 "microVM console pipe is outside //./pipe/openvmm-microvm-<NAME>"
             );
         }
-        "tcp" => {}
         "provider" => {}
         "disconnected" => {}
         kind => anyhow::bail!("unsupported microVM console identity kind '{kind}'"),
@@ -481,6 +449,12 @@ fn microvm_console_attachment_from_snapshot_with_identity(
             && attachment.kind == attachment_kind
             && attachment.length == 0,
         "snapshot has an invalid microVM console attachment"
+    );
+    // Older captures could record a TCP endpoint, which a restore would
+    // expose again.
+    anyhow::ensure!(
+        attachment.identity_kind != "tcp",
+        "snapshot microVM console has a TCP endpoint, which guests can reach through the host-loopback mapping of their gateways; capture the snapshot again with a Unix socket or named pipe"
     );
     let identity = std::str::from_utf8(&attachment.identity)
         .context("snapshot microVM console identity is not valid UTF-8")?;
@@ -529,19 +503,9 @@ fn microvm_console_attachment_from_snapshot_with_identity(
         {
             SerialConfigCli::Pipe(PathBuf::from(identity))
         }
-        ("recreate-listener", "tcp") => SerialConfigCli::Tcp(
-            identity
-                .parse()
-                .context("snapshot microVM console TCP identity is invalid")?,
-        ),
         ("reconnect-client", "unix-socket" | "named-pipe") if !control_console => {
             SerialConfigCli::ConnectPipe(PathBuf::from(identity))
         }
-        ("reconnect-client", "tcp") => SerialConfigCli::ConnectTcp(
-            identity
-                .parse()
-                .context("snapshot microVM console TCP identity is invalid")?,
-        ),
         ("require-inherited-attachment", "provider") => requested
             .cloned()
             .context("snapshot requires --virtio-console console as a replacement attachment")?,
@@ -823,7 +787,7 @@ mod tests {
 
     #[test]
     fn client_attachment_is_required_and_bounded() {
-        let requested = SerialConfigCli::ConnectTcp("127.0.0.1:5555".parse().unwrap());
+        let (_directory, requested) = client_endpoint();
         let (_, resource, snapshot) = microvm_console_attachment_from_cli(&requested).unwrap();
         assert!(snapshot.required);
         assert_eq!(snapshot.reconnect_policy, "reconnect-client");
@@ -839,8 +803,28 @@ mod tests {
         assert!(microvm_console_attachment_from_snapshot(&snapshot, None).is_err());
         let (restored, _, restored_snapshot) =
             microvm_console_attachment_from_snapshot(&snapshot, Some(&requested)).unwrap();
-        assert!(matches!(restored, SerialConfigCli::ConnectTcp(_)));
+        assert!(matches!(restored, SerialConfigCli::ConnectPipe(_)));
         assert_eq!(restored_snapshot, snapshot);
+    }
+
+    /// Returns a client endpoint of this host's kind, and the directory that
+    /// holds a Unix socket's path.
+    fn client_endpoint() -> (Option<tempfile::TempDir>, SerialConfigCli) {
+        #[cfg(windows)]
+        {
+            (
+                None,
+                SerialConfigCli::ConnectPipe(PathBuf::from(
+                    "//./pipe/openvmm-microvm-client-console",
+                )),
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("client.sock");
+            (Some(directory), SerialConfigCli::ConnectPipe(path))
+        }
     }
 
     #[cfg(unix)]
@@ -1006,19 +990,67 @@ mod tests {
     }
 
     #[test]
-    fn tcp_attachment_rejects_non_loopback_addresses() {
-        assert!(
-            microvm_console_attachment_from_cli(&SerialConfigCli::Tcp(
-                "0.0.0.0:5555".parse().unwrap()
-            ))
-            .is_err()
-        );
-        assert!(
-            microvm_console_attachment_from_cli(&SerialConfigCli::ConnectTcp(
-                "192.0.2.1:5555".parse().unwrap()
-            ))
-            .is_err()
-        );
+    fn tcp_attachments_are_refused() {
+        // A guest reaches host loopback through its gateway, so no address,
+        // loopback included, makes a TCP listener or its client safe.
+        for address in [
+            "127.0.0.1:5555",
+            "[::1]:5555",
+            "0.0.0.0:5555",
+            "192.0.2.1:5555",
+        ] {
+            let address = address.parse().unwrap();
+            for config in [
+                SerialConfigCli::Tcp(address),
+                SerialConfigCli::ConnectTcp(address),
+            ] {
+                let error = microvm_console_attachment_from_cli(&config).unwrap_err();
+                assert_eq!(error.to_string(), MICROVM_CONSOLE_TCP_REFUSED, "{config:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn tcp_snapshot_attachments_are_refused_at_restore() {
+        let listener = openvmm_helpers::snapshot::microvm::SnapshotAttachment {
+            stable_id: MICROVM_CONSOLE_STABLE_ID.to_owned(),
+            kind: MICROVM_CONSOLE_ATTACHMENT_KIND.to_owned(),
+            required: false,
+            reconnect_policy: "recreate-listener".to_owned(),
+            identity_kind: "tcp".to_owned(),
+            identity: b"127.0.0.1:5555".to_vec(),
+            length: 0,
+            reconnect_timeout_ms: 0,
+        };
+        let client = openvmm_helpers::snapshot::microvm::SnapshotAttachment {
+            required: true,
+            reconnect_policy: "reconnect-client".to_owned(),
+            reconnect_timeout_ms: openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS,
+            ..listener.clone()
+        };
+        let address = "127.0.0.1:5555".parse().unwrap();
+        // Neither the saved endpoint nor a replacement of any kind restores.
+        for attachment in [&listener, &client] {
+            for requested in [
+                None,
+                Some(SerialConfigCli::Tcp(address)),
+                Some(SerialConfigCli::ConnectTcp(address)),
+                Some(SerialConfigCli::None),
+            ] {
+                let error =
+                    microvm_console_attachment_from_snapshot(attachment, requested.as_ref())
+                        .unwrap_err();
+                assert!(
+                    error.to_string().contains("TCP endpoint"),
+                    "{}: {error}",
+                    attachment.reconnect_policy
+                );
+            }
+            assert!(
+                validate_microvm_console_attachment_namespace(attachment, Path::new("snapshot"))
+                    .is_err()
+            );
+        }
     }
 
     #[test]
@@ -1033,13 +1065,8 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            microvm_console_attachment_from_snapshot(
-                &snapshot,
-                Some(&SerialConfigCli::ConnectTcp(
-                    "127.0.0.1:5555".parse().unwrap()
-                ))
-            )
-            .is_err()
+            microvm_console_attachment_from_snapshot(&snapshot, Some(&SerialConfigCli::None))
+                .is_err()
         );
     }
 
