@@ -1329,4 +1329,53 @@ mod tests {
             }
         }
     }
+
+    /// The WHP of the Turin runners, Windows Server 2025's
+    /// (`test_support::TURIN_WHP_HOST`) and 2022's
+    /// (`test_support::TURIN_WHP_SERVER_2022_HOST`), offers neither TSA
+    /// immunity, so it cannot present `amd.turin.v1`, which pins both, and
+    /// presents `amd.turin.v2`, which clears them. Server 2022's offers
+    /// neither the IBPB_RET nor the StibpAlwaysOn enumeration either, which
+    /// v1 pins and v2 clears too.
+    #[test]
+    fn the_turin_whp_hosts_present_the_second_turin_profile() {
+        for (os, host, lacks) in [
+            (
+                "Windows Server 2025",
+                crate::test_support::TURIN_WHP_HOST,
+                "tsa_l1_no_support, tsa_sq_no_support",
+            ),
+            (
+                "Windows Server 2022",
+                crate::test_support::TURIN_WHP_SERVER_2022_HOST,
+                "ibpb_rsb_flush_support, stibp_always_on_support, \
+                 tsa_l1_no_support, tsa_sq_no_support",
+            ),
+        ] {
+            let error = profile_features(profile("amd.turin.v1"), host).unwrap_err();
+            assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported, "{os}");
+            assert!(
+                error.message.ends_with(&format!("they lack {lacks}")),
+                "{os}: {error}"
+            );
+
+            let features = profile_features(profile("amd.turin.v2"), host).unwrap();
+            for word in HvFeatureWord::ALL {
+                assert_eq!(
+                    features.word(word) & !host.word(word),
+                    0,
+                    "{os}: {}",
+                    word.name()
+                );
+            }
+            for name in [
+                "tsa_l1_no_support",
+                "tsa_sq_no_support",
+                "ibpb_rsb_flush_support",
+                "stibp_always_on_support",
+            ] {
+                assert!(!has(&features, HvFeatureWord::Bank1, name), "{os}: {name}");
+            }
+        }
+    }
 }
