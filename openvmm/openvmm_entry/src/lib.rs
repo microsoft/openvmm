@@ -1985,10 +1985,9 @@ async fn vm_config_from_command_line(
             }),
         };
 
-    microvm.add_virtio_devices(
-        &mut |bus, resource| add_virtio_device(bus, resource, &mut pcie_devices),
-        &mut resources,
-    )?;
+    microvm.add_virtio_devices(&mut |bus, resource| {
+        add_virtio_device(bus, resource, &mut pcie_devices)
+    })?;
 
     for cli_cfg in &opt.virtio_net {
         if cli_cfg.underhill {
@@ -2360,7 +2359,7 @@ async fn vm_config_from_command_line(
             device.port_name
         );
     }
-    microvm.finish(&mut cfg, &mut resources)?;
+    microvm.finish(&mut cfg, &mut resources.microvm)?;
     resources.serial_driver = Some(serial_driver);
     validate_snp_config(&cfg)?;
     Ok((cfg, resources))

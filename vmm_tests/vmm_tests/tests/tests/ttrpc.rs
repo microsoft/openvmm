@@ -16,6 +16,7 @@ use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use guid::Guid;
 use mesh::CancelContext;
+use microvm::test_ttrpc_microvm_device_snapshots;
 use microvm::test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot;
 use openvmm_ttrpc_vmservice as vmservice;
 use pal_async::DefaultDriver;
@@ -42,10 +43,15 @@ const PMEM_HOST_MARKER: &str = "ttrpc-pmem-host";
 const PMEM_GUEST_MARKER: &str = "ttrpc-pmem-guest";
 const PMEM_GUEST_OFFSET: usize = 4096;
 
-// Registered here, rather than in the `microvm` module, to keep the test named
-// `ttrpc::test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot`.
+// Registered here, rather than in the `microvm` module, to keep the tests named
+// `ttrpc::test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot` and
+// `ttrpc::test_ttrpc_microvm_device_snapshots`.
 petri::test!(
     test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot,
+    microvm::lifecycle_and_snapshot_artifacts
+);
+petri::test!(
+    test_ttrpc_microvm_device_snapshots,
     microvm::lifecycle_and_snapshot_artifacts
 );
 

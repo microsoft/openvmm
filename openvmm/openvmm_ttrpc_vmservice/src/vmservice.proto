@@ -202,8 +202,12 @@ message MemoryConfig {
     uint64 low_mmio_gap_in_mb = 7;
     uint64 high_mmio_base_in_mb = 8;
     uint64 high_mmio_gap_in_mb = 9;
-    // Optional host file used to back guest memory. SaveVM requires
-    // file-backed memory. Must not be set for RestoreVM.
+    // Optional host file used to back guest memory, as the command line's
+    // `--memory file=PATH` selects it. SaveVM requires file-backed memory, and
+    // RestoreVM refuses it. A microVM capture publishes the snapshot's memory
+    // by copying this file, which it leaves in place; without one, a microVM
+    // allocates RAM, or, for a capture, creates the backing file itself. A
+    // microVM restore refuses it.
     optional string backing_file_path = 10;
 }
 
@@ -265,6 +269,107 @@ message DevicesConfig {
     // Single-port console devices, enumerated by the guest as hvc0, hvc1, and
     // so on in list order.
     repeated VirtioConsoleConfig virtio_consoles = 6;
+    // microVM only: the fixed-role sandbox block devices, at most one per
+    // role, in role order, as the command line's --microvm-sandbox-block
+    // attaches them.
+    repeated MicrovmSandboxBlock microvm_sandbox_blocks = 7;
+    // microVM only: the virtio-net device and its network policy, as the
+    // command line's --net and microVM network options configure them.
+    MicrovmNetwork microvm_network = 8;
+}
+
+// A fixed-role sandbox block device of the microVM machine profile, as the
+// command line's `--microvm-sandbox-block ROLE:DISK` attaches it. The role
+// assigns the device its fixed virtio-mmio address and IRQ.
+message MicrovmSandboxBlock {
+    enum Role {
+        // A role must be specified.
+        ROLE_UNSPECIFIED = 0;
+        // The read-only distro layer.
+        ROLE_DISTRO = 1;
+        // The writable scratch device.
+        ROLE_SCRATCH = 2;
+    }
+
+    // Required.
+    Role role = 1;
+    // Required backing disk. A microVM that captures or restores a snapshot
+    // requires an unformatted raw FileDisk without direct I/O.
+    DiskBackend backend = 2;
+    // Expose the block read-only, as `,ro` does on the command line: required
+    // for the distro layer and refused for scratch.
+    bool read_only = 3;
+}
+
+// The virtio-net device of the microVM machine profile. Each field takes the
+// value of the command-line option that its comment names, with the same
+// syntax, defaults, and rules.
+message MicrovmNetwork {
+    // Default action for one direction of microVM network traffic.
+    enum Action {
+        // The option is absent, and the command line's default applies.
+        ACTION_UNSPECIFIED = 0;
+        // Permit traffic in this direction.
+        ACTION_ALLOW = 1;
+        // Deny traffic in this direction.
+        ACTION_DENY = 2;
+    }
+
+    // Host-network implementation contract of the NIC.
+    enum Profile {
+        // A profile must be specified.
+        PROFILE_UNSPECIFIED = 0;
+        // The cross-platform user-mode Consomme NAT implementation.
+        PROFILE_PORTABLE = 1;
+    }
+
+    // One localhost port allowed to initiate traffic toward the guest.
+    message HostLoopbackForward {
+        enum Protocol {
+            // A protocol must be specified.
+            PROTOCOL_UNSPECIFIED = 0;
+            // Forward a TCP listener.
+            PROTOCOL_TCP = 1;
+            // Forward a UDP socket.
+            PROTOCOL_UDP = 2;
+        }
+
+        // Required.
+        Protocol protocol = 1;
+        // Required nonzero host port.
+        uint32 host_port = 2;
+        // Required nonzero guest port.
+        uint32 guest_port = 3;
+    }
+
+    // The guest's static IPv4 address and prefix, such as "10.0.0.2/24"
+    // (--net). Required at a cold boot. A restore takes the address from the
+    // snapshot and refuses one.
+    string address = 1;
+    // Required (--network-profile).
+    Profile profile = 2;
+    // --network-egress
+    Action egress = 3;
+    // --network-ingress
+    Action ingress = 4;
+    // --network-egress-allow rules, each
+    // "CIDR[:tcp[:PORT[-PORT]]|:udp[:PORT[-PORT]]|:icmp]".
+    repeated string egress_allow = 5;
+    // --network-egress-deny rules, in the same syntax.
+    repeated string egress_deny = 6;
+    // --host-loopback
+    Action host_loopback = 7;
+    // --network-proxy: the exact guest-gateway TCP endpoint "IPv4:PORT"
+    // retained when host loopback is denied.
+    string proxy = 8;
+    // --host-loopback-forward
+    repeated HostLoopbackForward host_loopback_forwards = 9;
+    // --allow-host destinations, each "IPv4[/PREFIX]".
+    repeated string allow_hosts = 10;
+    // --block-host destinations, each "IPv4[/PREFIX]".
+    repeated string block_hosts = 11;
+    // --allow-endpoint destinations, each "IPv4:PORT".
+    repeated string allow_endpoints = 12;
 }
 
 // An endpoint PCIe device function. Attached behind a port in the topology
@@ -931,6 +1036,31 @@ message SMBIOSConfig {
 
 // Snapshot options for the microVM machine profile.
 message MicrovmSnapshotConfig {
+    // Sandbox capture tier of a microVM with sandbox blocks.
+    enum SnapshotTier {
+        // No tier: required for a capture without sandbox blocks.
+        SNAPSHOT_TIER_UNSPECIFIED = 0;
+        // Fleet-wide clone point before image or sandbox configuration is
+        // consumed.
+        SNAPSHOT_TIER_PLATFORM = 1;
+        // Tenant-scoped reusable clone point at the workload handoff.
+        SNAPSHOT_TIER_WORKLOAD_START = 2;
+        // Single-use continuation of one stopped instance.
+        SNAPSHOT_TIER_INSTANCE_CHECKPOINT = 3;
+    }
+
+    // Restore-time materialization policy recorded for paired scratch.
+    enum ScratchRestoreMode {
+        // The command line's default, private-copy.
+        SCRATCH_RESTORE_MODE_UNSPECIFIED = 0;
+        // Create an independent private file, falling back to sparse copying.
+        SCRATCH_RESTORE_MODE_PRIVATE_COPY = 1;
+        // Require a filesystem copy-on-write clone.
+        SCRATCH_RESTORE_MODE_COPY_ON_WRITE = 2;
+        // Attach the paired scratch file after the resume snapshot is claimed.
+        SCRATCH_RESTORE_MODE_DIRECT_CLAIMED = 3;
+    }
+
     // Publish a guest-requested snapshot to this previously nonexistent path.
     // The capture has no deadline; the client bounds it by ending the server.
     string destination_path = 1;
@@ -954,6 +1084,29 @@ message MicrovmSnapshotConfig {
     uint64 memory_capacity_bytes = 7;
     // Per-launch total RAM target for restore. Zero selects the snapshot base.
     uint64 restore_memory_bytes = 8;
+    // Capture tier (--snapshot-tier). Required exactly for a capture with
+    // sandbox blocks.
+    SnapshotTier snapshot_tier = 9;
+    // Immutable storage generation of the sandbox blocks of a capture
+    // (--snapshot-generation-id): 16 bytes, not all zero. Required for the
+    // workload-start and instance-checkpoint tiers, which bind the blocks to
+    // it.
+    bytes snapshot_generation_id = 10;
+    // Restore-time materialization policy recorded for the paired scratch of
+    // a capture (--snapshot-scratch-restore-mode).
+    ScratchRestoreMode snapshot_scratch_restore_mode = 11;
+    // Storage generation of the sandbox blocks of a restore
+    // (--restore-generation-id): 16 bytes, not all zero. Required to restore
+    // a workload-start or instance-checkpoint snapshot, whose recorded
+    // generation it must match.
+    bytes restore_generation_id = 12;
+    // Attach a platform snapshot's fresh scratch with no file
+    // (--restore-absent-scratch). Do not pass a scratch block with it.
+    bool restore_absent_scratch = 13;
+    // Install this restore's network policy in place of the complete deny-all
+    // policy that the NIC of a platform snapshot, or of a snapshot without a
+    // tier, was captured with (--restore-network-policy).
+    bool restore_network_policy = 14;
 }
 
 message CreateVMRequest {
@@ -1194,6 +1347,32 @@ message WindowsPCIDevice {
 }
 
 message VirtioFs {
+    // Host identity that performs the guest's operations on a microVM share.
+    enum Owner {
+        // The command line's default, OWNER_VMM.
+        OWNER_UNSPECIFIED = 0;
+        // Run every operation as OpenVMM, which owns the files the guest
+        // creates.
+        OWNER_VMM = 1;
+        // Run each operation as its guest caller's UID and GID, with root
+        // squashed to the owner of the export root (Linux only).
+        OWNER_CALLER = 2;
+    }
+
+    // One host directory or regular file of an aggregate microVM share, as
+    // the command line's --mount-child exposes it.
+    message AggregateChild {
+        // Required name under the aggregate's root: 1 to 64 ASCII letters,
+        // digits, '.', '_', or '-'.
+        string name = 1;
+        // Required host directory, or with `file` a regular host file.
+        string host_path = 2;
+        // Select the read-write access mode; false selects read-only.
+        bool read_write = 3;
+        // Expose `host_path` as a regular file rather than a directory.
+        bool file = 4;
+    }
+
     string tag = 1;
     string root_path = 2;
     // Standard-machine access flag. Must be false for a microVM.
@@ -1204,10 +1383,28 @@ message VirtioFs {
     // Enable the microVM common read-write contract. False selects read-only.
     // Must be false for a standard-machine virtio-fs device.
     bool read_write = 5;
+    // microVM only: existing host paths that the share hides (--mount-deny).
+    repeated string denied_paths = 6;
+    // microVM only: existing host paths inside denied paths that the guest
+    // can reach again (--mount-allow).
+    repeated string allowed_paths = 7;
+    // microVM only: the only host paths of a read-write share that the guest
+    // can modify (--mount-write).
+    repeated string writable_paths = 8;
+    // microVM only: the host identity of the guest's operations
+    // (--mount-owner).
+    Owner owner = 9;
+    // microVM only: the children of an aggregate share, mounted at
+    // `guest_mount_target` (--mount-aggregate with one --mount-child per
+    // entry). An aggregate leaves `root_path` empty and `read_write` false,
+    // since its root is read-only.
+    repeated AggregateChild aggregate_children = 10;
 }
 
 message VirtioConsoleConfig {
-    // Path to a named pipe or Unix domain socket for the console backend.
+    // Path to a named pipe or Unix domain socket for the console backend. A
+    // microVM console without a path, and without connect, has no endpoint
+    // (--virtio-console none).
     string socket_path = 1;
     // When true, connect to an existing pipe/socket at socket_path as a client
     // instead of creating a new server listener. Used when the host has already

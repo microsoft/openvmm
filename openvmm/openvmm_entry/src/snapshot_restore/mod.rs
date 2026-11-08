@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Snapshot restore of a VM launched from the command line, and the restore
-//! steps it shares with the management RPC endpoint.
+//! Snapshot restore of a VM launched from the command line, or created over
+//! the management RPC, which restores with the command line's options.
 //!
 //! A `--restore-snapshot` launch opens one exact snapshot generation first
 //! ([`SnapshotRestore::open`]); a microVM derives its restore-time
@@ -23,10 +23,6 @@
 mod prepare;
 mod ready;
 
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use prepare::prepare_snapshot_restore_for_config;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use ready::connect_restore_ready_sink;
 pub(crate) use ready::restore_ready_sink;
 
 use crate::Options;
