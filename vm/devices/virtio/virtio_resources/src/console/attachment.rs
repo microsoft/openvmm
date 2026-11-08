@@ -17,11 +17,13 @@ pub enum VirtioConsoleDisconnectPolicy {
     Retain,
 }
 
+/// The kind of a console's host endpoint. A TCP endpoint is not among them:
+/// a guest could reach a loopback TCP listener through the host-loopback
+/// mapping of its gateway.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, MeshPayload)]
 pub enum VirtioConsoleBackendKind {
     UnixSocket,
     NamedPipe,
-    Tcp,
     Inherited,
     Disconnected,
 }

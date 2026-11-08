@@ -1028,16 +1028,22 @@ impl Options {
         );
         if let Some(console) = &self.virtio_console {
             anyhow::ensure!(
+                !matches!(
+                    console,
+                    SerialConfigCli::Tcp(_) | SerialConfigCli::ConnectTcp(_)
+                ),
+                "{}",
+                crate::microvm::MICROVM_CONSOLE_TCP_REFUSED
+            );
+            anyhow::ensure!(
                 matches!(
                     console,
                     SerialConfigCli::Pipe(_)
-                        | SerialConfigCli::Tcp(_)
                         | SerialConfigCli::ConnectPipe(_)
-                        | SerialConfigCli::ConnectTcp(_)
                         | SerialConfigCli::Console
                         | SerialConfigCli::None
                 ),
-                "microVM virtio-console requires listen=..., connect=..., console, or none"
+                "microVM virtio-console requires listen=PATH, connect=PATH, console, or none"
             );
         }
         anyhow::ensure!(
@@ -2440,15 +2446,39 @@ mod tests {
             .unwrap();
             valid_mshv.validate_microvm_options().unwrap();
         }
+        let console_endpoint = if cfg!(windows) {
+            "listen=//./pipe/openvmm-microvm-console-test"
+        } else {
+            "listen=console.sock"
+        };
         let valid_console = Options::try_parse_from([
             "openvmm",
             "--machine",
             "microvm",
             "--virtio-console",
-            "listen=tcp:127.0.0.1:5555",
+            console_endpoint,
         ])
         .unwrap();
         valid_console.validate_microvm_options().unwrap();
+        // Guests reach loopback TCP through their gateways, so the boot
+        // console takes no TCP endpoint.
+        for tcp in ["listen=tcp:127.0.0.1:5555", "connect=tcp:127.0.0.1:5555"] {
+            let error = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--virtio-console",
+                tcp,
+            ])
+            .unwrap()
+            .validate_microvm_options()
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                crate::microvm::MICROVM_CONSOLE_TCP_REFUSED,
+                "{tcp}"
+            );
+        }
         let valid_control_console = Options::try_parse_from([
             "openvmm",
             "--machine",
@@ -2570,7 +2600,7 @@ mod tests {
                 "--machine",
                 "microvm",
                 "--virtio-console",
-                "listen=tcp:127.0.0.1:5555",
+                console_endpoint,
                 "--virtio-console-pcie-port",
                 "port0",
             ],

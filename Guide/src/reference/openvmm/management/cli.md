@@ -237,8 +237,10 @@ describes the source definitions.
   with `--restore-network-policy`.
   Omitting the option preserves the existing guest-gateway-to-host-loopback
   mapping, from the IPv4 gateway to host IPv4 loopback and from the IPv6
-  gateway to host IPv6 loopback, without publishing guest ports. `deny` blocks
-  general gateway and host-local destinations and rejects every
+  gateway to host IPv6 loopback, without publishing guest ports. The guest
+  then reaches every host-loopback listener that its egress policy permits,
+  which is why microVM consoles take no TCP endpoint; see `--virtio-console`.
+  `deny` blocks general gateway and host-local destinations and rejects every
   `--host-loopback-forward`.
 
   `--network-proxy <IPv4:TCP-PORT>` preserves one exact proxy endpoint when
@@ -1041,23 +1043,30 @@ Serial devices can be configured to appear as different devices inside the guest
 
   A microVM accepts these explicit attachment policies:
 
-  * `listen=PATH` or `listen=tcp:IP:PORT`: save the canonical endpoint and
-    recreate the optional listener on restore. Unix sockets must be beside the
-    snapshot directory. Windows pipes use the
-    `//./pipe/openvmm-microvm-<NAME>` namespace. TCP ports must be nonzero.
-    TCP addresses must be loopback addresses. A restore caller can resupply
-    `--virtio-console listen=<FRESH-ENDPOINT>` with `--restore-snapshot` to
-    replace the saved listener identity while preserving the attachment
-    contract. Omitting the option recreates the saved listener endpoint.
-  * `connect=PATH` or `connect=tcp:IP:PORT`: require a client connection before
-    vCPUs start. Cold boot and restore use a five-second timeout. The
-    restore command must explicitly resupply the matching client attachment.
+  * `listen=PATH`: save the canonical endpoint and recreate the optional
+    listener on restore. Unix sockets must be beside the snapshot directory.
+    Windows pipes use the `//./pipe/openvmm-microvm-<NAME>` namespace. A
+    restore caller can resupply `--virtio-console listen=<FRESH-ENDPOINT>` with
+    `--restore-snapshot` to replace the saved listener identity while
+    preserving the attachment contract. Omitting the option recreates the
+    saved listener endpoint.
+  * `connect=PATH`: require a client connection before vCPUs start. Cold boot
+    and restore use a five-second timeout. The restore command must explicitly
+    resupply the matching client attachment.
   * `console`: require the restore caller to supply the same inherited terminal
     attachment. Portb recovery output moves to stderr while the terminal is
     attached to `hvc1`. A guest-requested exit writes the boot console output
     that the device accepted before OpenVMM exits.
   * `none`: keep the device present and explicitly discard guest TX while
     disconnected.
+
+  A microVM refuses TCP endpoints, `listen=tcp:IP:PORT` and
+  `connect=tcp:IP:PORT`, and a snapshot whose boot console has one. Unless
+  `--host-loopback deny` is given, a guest's gateway maps the guest's TCP flows
+  onto host loopback, so any guest on the host whose egress policy permits the
+  port could connect to a loopback TCP listener, its own console's or another
+  VM's, or to the listener that a client endpoint connects to. The boot console
+  does not authenticate its client, so such a guest would drive the console.
 
   A generic byte stream guarantees no replay up to OpenVMM's backend write
   boundary; it cannot prove that the remote application consumed bytes without
@@ -1141,8 +1150,8 @@ The `BACKEND` argument is the same for all serial devices:
       up to listen on the given path. Serial input and output is relayed to this
       pipe/socket.
   * `listen=tcp:IP:PORT`: As with `listen=PATH`, but listen for TCP
-      connections on the given IP address and port. A microVM requires a
-      loopback IP such as `127.0.0.1` or `::1`.
+      connections on the given IP address and port. A microVM's consoles
+      refuse it and `connect=tcp:IP:PORT`; see `--virtio-console`.
   * `connect=PATH`: Connect to an existing named pipe or Unix socket.
   * `connect=tcp:IP:PORT`: Connect to an existing TCP listener.
 
