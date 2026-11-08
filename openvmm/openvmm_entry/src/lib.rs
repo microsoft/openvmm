@@ -262,8 +262,7 @@ fn base_chipset_type(opt: &Options) -> BaseChipsetType {
 
 /// Whether the VM gets an ACPI power button.
 ///
-/// This reads the boot flags rather than the load mode, which is
-/// `LoadMode::None` when restoring a snapshot.
+/// This reads the boot flags, the same way `base_chipset_type` does.
 fn acpi_power_button_enabled(opt: &Options) -> bool {
     if opt.igvm.is_some() {
         false
@@ -1362,12 +1361,11 @@ async fn vm_config_from_command_line(
         TpmVersionCli::V185 => TpmVersion::V185,
     });
 
-    if opt.restore_snapshot.is_some() {
-        // Snapshot restore: skip firmware loading entirely. Device state and
-        // memory come from the snapshot directory.
-        load_mode = LoadMode::None;
-        with_hv = true;
-    } else if let Some(igvm) = &opt.igvm {
+    // A snapshot restore builds the load mode of the boot it was saved from.
+    // The VM worker skips the initial firmware load when it restores saved
+    // state, but a later guest reset loads this firmware again, and the
+    // device configuration depends on it.
+    if let Some(igvm) = &opt.igvm {
         let cli_args::UefiCli {
             firmware,
             debug: _,
@@ -3302,6 +3300,55 @@ mod tests {
                         .any(|device| device.name == "acpi-power-button");
                     assert_eq!(built, has_button, "{args:?}");
                 }
+            }
+        });
+    }
+
+    /// `--restore-snapshot` keeps the load mode of its boot flags, so a guest
+    /// reset after the restore loads that firmware again.
+    #[test]
+    fn restore_keeps_the_load_mode_of_its_boot_command_line() {
+        fn kind(load_mode: &LoadMode) -> &'static str {
+            match load_mode {
+                LoadMode::Linux { .. } => "linux",
+                LoadMode::Uefi { .. } => "uefi",
+                #[cfg(guest_arch = "x86_64")]
+                LoadMode::Pcat { .. } => "pcat",
+                LoadMode::Igvm { .. } => "igvm",
+                LoadMode::None => "none",
+            }
+        }
+
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let file = |name: &str| {
+                let path = temp_dir.path().join(name);
+                File::create(&path).unwrap();
+                path.to_str().unwrap().to_owned()
+            };
+            let kernel = file("kernel");
+            let initrd = file("initrd");
+            let uefi = format!("--uefi=firmware={}", file("firmware"));
+            // The config build does not read the snapshot directory.
+            let snapshot = temp_dir.path().join("snapshot");
+            let linux = ["--kernel", kernel.as_str(), "--initrd", initrd.as_str()];
+
+            for (boot, expected) in [
+                (linux.to_vec(), "linux"),
+                ([&linux[..], &["--device-tree"]].concat(), "linux"),
+                (vec![uefi.as_str()], "uefi"),
+            ] {
+                let mut args = vec!["openvmm", "--single-process"];
+                args.extend(&boot);
+                args.extend(["--restore-snapshot", snapshot.to_str().unwrap()]);
+                let opt = Options::try_parse_from(&args).unwrap();
+                let mesh = VmmMesh::new(&driver, true).unwrap();
+                let (config, _) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                    .await
+                    .unwrap();
+                mesh.shutdown().await;
+
+                assert_eq!(kind(&config.load_mode), expected, "{args:?}");
             }
         });
     }
