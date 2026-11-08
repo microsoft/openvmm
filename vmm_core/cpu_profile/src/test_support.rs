@@ -679,6 +679,116 @@ pub(crate) fn turin_kvm_entries() -> Vec<CpuidEntry> {
     entries(&TURIN_KVM_CPUID)
 }
 
+/// The CPUID of an Intel Xeon 6973P-C (Granite Rapids: family 6, model 0xad,
+/// stepping 1) as WHP presents it in an Azure VM with nested virtualization,
+/// a `Standard_D4s_v7` runner with Windows 25H2, which `--cpu-fingerprint`
+/// recorded (microsoft/nvx#1055): each leaf, subleaf, and the registers of a
+/// probe partition that enables every processor and XSAVE feature WHP offers
+/// ([`GRANITE_RAPIDS_WHP_HOST`]). That WHP offers AMX's and CET's XSAVE
+/// states, besides AVX-512's, AMX's features and tile leaves `0x1d` and
+/// `0x1e`, and AVX10.1 with its leaf `0x24`.
+pub(crate) const GRANITE_RAPIDS_WHP_CPUID: [(u32, Option<u32>, [u32; 4]); 69] = [
+    (0x0, None, [0x24, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]),
+    (0x1, None, [0x000a_06d1, 0x800, 0x76fa_3203, 0x0f8b_fbff]),
+    (0x2, None, [0x00fe_ff01, 0xf0, 0, 0]),
+    (0x3, None, [0; 4]),
+    (0x4, Some(0), [0x121, 0x02c0_003f, 0x3f, 0]),
+    (0x4, Some(1), [0x122, 0x03c0_003f, 0x3f, 0]),
+    (0x4, Some(2), [0x143, 0x03c0_003f, 0x7ff, 0]),
+    (0x4, Some(3), [0x163, 0x03c0_003f, 0x0007_7fff, 0]),
+    (0x4, Some(4), [0; 4]),
+    (0x5, None, [0; 4]),
+    (0x6, None, [0, 0, 0x1, 0]),
+    (0x7, Some(0), [0x2, 0xf1bf_2fb9, 0x1a41_5fe6, 0x23d1_4010]),
+    (0x7, Some(1), [0x0020_1c30, 0, 0, 0x0008_4000]),
+    (0x7, Some(2), [0, 0, 0, 0x1]),
+    (0x8, None, [0; 4]),
+    (0x9, None, [0; 4]),
+    (0xa, None, [0; 4]),
+    (0xb, Some(0), [0; 4]),
+    (0xc, None, [0; 4]),
+    (0xd, Some(0), [0x0006_00e7, 0x2b00, 0x2b00, 0]),
+    (0xd, Some(1), [0x1f, 0x2a00, 0x1800, 0]),
+    (0xd, Some(2), [0x100, 0x240, 0, 0]),
+    (0xd, Some(5), [0x40, 0x440, 0, 0]),
+    (0xd, Some(6), [0x200, 0x480, 0, 0]),
+    (0xd, Some(7), [0x400, 0x680, 0, 0]),
+    (0xd, Some(0xb), [0x10, 0, 0x1, 0]),
+    (0xd, Some(0xc), [0x18, 0, 0x1, 0]),
+    (0xd, Some(0x11), [0x40, 0xac0, 0x2, 0]),
+    (0xd, Some(0x12), [0x2000, 0xb00, 0x6, 0]),
+    (0xe, None, [0; 4]),
+    (0xf, Some(0), [0; 4]),
+    (0xf, Some(1), [0; 4]),
+    (0x10, Some(0), [0; 4]),
+    (0x10, Some(1), [0; 4]),
+    (0x10, Some(2), [0; 4]),
+    (0x10, Some(3), [0; 4]),
+    (0x11, None, [0; 4]),
+    (0x12, Some(0), [0; 4]),
+    (0x12, Some(1), [0; 4]),
+    (0x12, Some(2), [0; 4]),
+    (0x13, None, [0; 4]),
+    (0x14, Some(0), [0; 4]),
+    (0x15, None, [0; 4]),
+    (0x16, None, [0; 4]),
+    (0x17, Some(0), [0; 4]),
+    (0x18, Some(0), [0; 4]),
+    (0x19, None, [0; 4]),
+    (0x1a, None, [0; 4]),
+    (0x1b, None, [0; 4]),
+    (0x1c, None, [0; 4]),
+    (0x1d, Some(0), [0x1, 0, 0, 0]),
+    (0x1d, Some(1), [0x0400_2000, 0x0008_0040, 0x10, 0]),
+    (0x1e, Some(0), [0, 0x4010, 0, 0]),
+    (0x1f, Some(0), [0; 4]),
+    (0x20, None, [0; 4]),
+    (0x21, None, [0; 4]),
+    (0x22, None, [0; 4]),
+    (0x23, None, [0; 4]),
+    (0x24, Some(0), [0, 0x0007_0001, 0, 0]),
+    (0x4000_0000, None, [0; 4]),
+    (0x8000_0000, None, [0x8000_0008, 0, 0, 0]),
+    (0x8000_0001, None, [0, 0, 0x121, 0x2c10_0800]),
+    (
+        0x8000_0002,
+        None,
+        [0x6574_6e49, 0x2952_286c, 0x6f65_5820, 0x2952_286e],
+    ),
+    (0x8000_0003, None, [0x3739_3620, 0x432d_5033, 0, 0]),
+    (0x8000_0004, None, [0; 4]),
+    (0x8000_0005, None, [0; 4]),
+    (0x8000_0006, None, [0, 0, 0x0800_7040, 0]),
+    (0x8000_0007, None, [0; 4]),
+    (0x8000_0008, None, [0x3930, 0, 0, 0]),
+];
+
+/// The processor features that WHP offers the host of
+/// [`GRANITE_RAPIDS_WHP_CPUID`], AMX's included.
+pub(crate) const GRANITE_RAPIDS_WHP_HOST: HvFeatures = HvFeatures {
+    banks: [0x2e0a_8bff_e7f7_859f, 0x0001_200e_0ef9_f7f1],
+    xsave: 0x38_7eff_ffdf,
+};
+
+/// Returns [`GRANITE_RAPIDS_WHP_CPUID`] as fingerprint entries.
+pub(crate) fn granite_rapids_whp_entries() -> Vec<CpuidEntry> {
+    entries(&GRANITE_RAPIDS_WHP_CPUID)
+}
+
+/// Returns the fingerprint of the WHP host of [`GRANITE_RAPIDS_WHP_CPUID`],
+/// with its processor features, as `--cpu-fingerprint` recorded them.
+pub(crate) fn granite_rapids_whp_fingerprint() -> CpuFingerprint {
+    let mut backend = BackendFingerprint::new("whp", "test", granite_rapids_whp_entries());
+    let [bank0, bank1] = GRANITE_RAPIDS_WHP_HOST.banks;
+    backend.set_feature_bank("whp.capability.ProcessorFeatures", bank0);
+    backend.set_feature_bank("whp.capability.ProcessorFeaturesBanks.bank0", bank0);
+    backend.set_feature_bank("whp.capability.ProcessorFeaturesBanks.bank1", bank1);
+    backend.set_feature_bank(
+        "whp.capability.ProcessorXsaveFeatures",
+        GRANITE_RAPIDS_WHP_HOST.xsave,
+    );
+    backend_host_fingerprint(backend)
+}
 /// Returns a recorded CPUID `table` as fingerprint entries.
 fn entries(table: &[(u32, Option<u32>, [u32; 4])]) -> Vec<CpuidEntry> {
     table
