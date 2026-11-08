@@ -397,8 +397,9 @@ generation: 6/151 and 6/154), `amd.milan.v1` (AMD EPYC, third generation:
 serialization and the TSA immunities, which not every Genoa host's
 hypervisor presents. No profile presents AMX: its tile states need a
 dynamic XSAVE permission that OpenVMM does not request from KVM, and every
-backend presents the same profile. `--cpu-profile <ID>` selects one; the
-default,
+backend presents the same profile. Nor does any present AVX10, whose leaf
+`0x24` no profile keeps; the AVX-512 features enumerate every instruction
+of AVX10.1. `--cpu-profile <ID>` selects one; the default,
 `auto`, selects the latest revision of the host's generation's profile. An
 earlier revision stays pinned, so its snapshots still restore. An Intel or
 AMD host that no pinned profile serves boots on a host profile
