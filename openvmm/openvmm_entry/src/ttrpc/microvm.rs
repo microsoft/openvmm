@@ -951,10 +951,6 @@ impl CreateVm {
                         crate::microvm::microvm_console_socket_cleanup(path)?;
                     (backend, VirtioConsoleDisconnectPolicy::Retain)
                 }
-                SerialConfigCli::Tcp(address) => (
-                    crate::serial_io::bind_tcp_serial(&address)?,
-                    VirtioConsoleDisconnectPolicy::Retain,
-                ),
                 SerialConfigCli::ConnectPipe(path) => (
                     crate::serial_io::connect::connect_serial_with_timeout(
                         &path,
@@ -968,15 +964,6 @@ impl CreateVm {
                             path.display()
                         )
                     })?,
-                    VirtioConsoleDisconnectPolicy::Retain,
-                ),
-                SerialConfigCli::ConnectTcp(address) => (
-                    crate::serial_io::connect::connect_tcp_serial(
-                        &address,
-                        Duration::from_millis(
-                            openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS,
-                        ),
-                    )?,
                     VirtioConsoleDisconnectPolicy::Retain,
                 ),
                 SerialConfigCli::None => (
