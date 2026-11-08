@@ -4,7 +4,9 @@
 //! Snapshot publication. Artifacts are written and flushed in a private
 //! staging directory next to the destination, which is then renamed into
 //! place in one operation; failures roll back and clean up the staging
-//! directory.
+//! directory. A failure is rollback-safe only once the staging directory is
+//! proven to hold neither a snapshot that restore can open nor an alias to
+//! live source RAM.
 
 use super::SnapshotManifest;
 use super::format::MANIFEST_FILE_NAME;
@@ -53,22 +55,27 @@ pub fn check_snapshot_destination(dir: &Path) -> anyhow::Result<()> {
 /// Error publishing a snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotWriteError {
-    /// Nothing was published at the final destination.
+    /// Nothing was published at the final destination, and nothing that
+    /// remains of the staging directory is a snapshot that restore can open or
+    /// an alias to live source RAM.
     #[error(transparent)]
     BeforeCommit(#[from] anyhow::Error),
-    /// Publication did not commit, but an alias to live source RAM may remain.
+    /// Publication did not commit, but its staging directory may still hold a
+    /// snapshot that restore can open, or an alias to live source RAM.
     ///
-    /// Callers must terminate rather than resume the source. The reported
-    /// private staging path may require operator cleanup after termination.
+    /// Callers must terminate rather than resume the source, so that the
+    /// staged snapshot cannot start a second copy of it. The reported private
+    /// staging path may require operator cleanup after termination.
     #[error(
-        "snapshot failed before commit at {path:?}, and automatic RAM staging alias cleanup is uncertain: publication error: {error:#}; cleanup error: {cleanup_error:#}"
+        "snapshot failed before commit at {path:?}, and staging cleanup is uncertain: publication error: {error:#}; cleanup error: {cleanup_error:#}"
     )]
     CleanupUncertain {
-        /// Staging directory that may retain an alias to live source RAM.
+        /// Staging directory that may retain a snapshot that restore can open,
+        /// or an alias to live source RAM.
         path: PathBuf,
         /// Original publication failure.
         error: anyhow::Error,
-        /// Failure removing or proving absence of the staging alias.
+        /// Failure removing or proving absence of the staged manifest or alias.
         #[source]
         cleanup_error: anyhow::Error,
     },
@@ -156,10 +163,11 @@ pub fn write_snapshot_from_memory_and_scratch_files(
 /// The caller must use this only for automatic backing whose lifetime it owns,
 /// and must stop all writers before calling. It must terminate the source after
 /// success or [`SnapshotWriteError::Committed`]. A
-/// [`SnapshotWriteError::BeforeCommit`] proves that staging was removed and the
+/// [`SnapshotWriteError::BeforeCommit`] proves that staging holds neither an
+/// alias of the source's RAM nor a snapshot that restore can open, so the
 /// source may resume. [`SnapshotWriteError::CleanupUncertain`] requires source
-/// termination because a private staging alias may remain. Unsupported hard
-/// links fall back to an independent sparse-aware copy.
+/// termination because either may remain. Unsupported hard links fall back to
+/// an independent sparse-aware copy.
 pub fn write_snapshot_from_owned_memory_and_scratch_files(
     dir: &Path,
     manifest: &SnapshotManifest,
@@ -307,6 +315,9 @@ fn stage_snapshot(
             "snapshot manifest exceeds the maximum size of {MAX_MANIFEST_SIZE_BYTES} bytes",
         );
         let manifest_write = openvmm_defs::profile::ProfileSpan::start();
+        // From this point, the staging directory may be a snapshot that
+        // restore can open, until its manifest is proven absent.
+        staging.mark_staged_manifest();
         write_bytes(&manifest_path, &manifest_bytes, "snapshot manifest")?;
         manifest_write.complete(
             "capture",
@@ -338,8 +349,13 @@ fn stage_snapshot(
 struct StagingDirectory {
     path: Option<PathBuf>,
     source_memory_alias: bool,
+    /// Whether the staging directory may hold a manifest, which makes it a
+    /// snapshot that restore can open.
+    staged_manifest: bool,
     #[cfg(test)]
     inject_cleanup_failure: bool,
+    #[cfg(test)]
+    inject_directory_removal_failure: bool,
 }
 
 impl StagingDirectory {
@@ -360,8 +376,11 @@ impl StagingDirectory {
                     return Ok(Self {
                         path: Some(path),
                         source_memory_alias: false,
+                        staged_manifest: false,
                         #[cfg(test)]
                         inject_cleanup_failure: false,
+                        #[cfg(test)]
+                        inject_directory_removal_failure: false,
                     });
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -400,10 +419,18 @@ impl StagingDirectory {
         self.source_memory_alias = true;
     }
 
+    fn mark_staged_manifest(&mut self) {
+        self.staged_manifest = true;
+    }
+
     fn rollback(mut self, error: anyhow::Error) -> SnapshotWriteError {
-        if self.source_memory_alias
-            && let Err(cleanup_error) = self.remove_staging_directory()
-        {
+        let Err(cleanup_error) = self.remove_staging_directory() else {
+            return SnapshotWriteError::BeforeCommit(error);
+        };
+        // What remains is safe to leave behind a resumed source only when it
+        // is neither a snapshot that restore can open, which would start a
+        // second copy of the source, nor an alias to its live RAM.
+        if self.source_memory_alias || self.staged_manifest {
             return SnapshotWriteError::CleanupUncertain {
                 path: self
                     .path
@@ -413,13 +440,10 @@ impl StagingDirectory {
                 cleanup_error,
             };
         }
-
-        if let Err(cleanup_error) = self.remove_staging_directory() {
-            tracing::warn!(
-                error = cleanup_error.as_ref() as &dyn std::error::Error,
-                "failed to remove independent snapshot staging artifacts"
-            );
-        }
+        tracing::warn!(
+            error = cleanup_error.as_ref() as &dyn std::error::Error,
+            "failed to remove snapshot staging artifacts that restore cannot open"
+        );
         SnapshotWriteError::BeforeCommit(error)
     }
 
@@ -431,6 +455,16 @@ impl StagingDirectory {
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
+        if self.staged_manifest {
+            // Without its manifest, restore cannot open what the rest of the
+            // removal may leave behind.
+            remove_staged_manifest(path)?;
+            self.staged_manifest = false;
+        }
+        #[cfg(test)]
+        if self.inject_directory_removal_failure {
+            anyhow::bail!("injected snapshot staging directory removal failure");
+        }
         let parent = snapshot_parent(path).to_owned();
         match fs_err::remove_dir_all(path) {
             Ok(()) => {}
@@ -453,6 +487,31 @@ impl StagingDirectory {
     }
 }
 
+/// Removes the manifest from the staging directory at `path`, proves it
+/// absent, and flushes the directory where directories can be flushed, so that
+/// the directory is no longer a snapshot that restore can open.
+fn remove_staged_manifest(path: &Path) -> anyhow::Result<()> {
+    let manifest_path = path.join(MANIFEST_FILE_NAME);
+    match fs_err::remove_file(&manifest_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to remove staged snapshot manifest {}",
+                    manifest_path.display()
+                )
+            });
+        }
+    }
+    anyhow::ensure!(
+        !path_exists(&manifest_path)?,
+        "staged snapshot manifest still exists after removal: {}",
+        manifest_path.display()
+    );
+    sync_directory(path).context("failed to flush staged snapshot manifest removal")
+}
+
 impl Drop for StagingDirectory {
     fn drop(&mut self) {
         if let Some(path) = &self.path {
@@ -460,6 +519,7 @@ impl Drop for StagingDirectory {
                 tracing::error!(
                     error = &error as &dyn std::error::Error,
                     source_memory_alias = self.source_memory_alias,
+                    staged_manifest = self.staged_manifest,
                     path = %path.display(),
                     "failed to remove dropped snapshot staging directory"
                 );
@@ -905,6 +965,97 @@ mod tests {
         assert!(!error.is_committed());
         assert!(!error.is_rollback_safe());
         assert!(matches!(error, SnapshotWriteError::CleanupUncertain { .. }));
+    }
+
+    #[test]
+    fn uncertain_cleanup_of_complete_independent_staging_is_not_rollback_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let memory_path = dir.path().join("memory.bin");
+        std::fs::write(&memory_path, vec![0x5a_u8; 1024]).unwrap();
+        let memory_file = std::fs::File::open(&memory_path).unwrap();
+        let mut staging = stage_snapshot(
+            &snap_dir,
+            &test_manifest(),
+            b"state",
+            &memory_file,
+            None,
+            MemoryPublication::IndependentCopy,
+        )
+        .unwrap();
+        // Restore can open the complete staging directory as a snapshot.
+        read_snapshot_manifest(staging.path()).unwrap();
+        let staging_path = staging.path().to_owned();
+
+        // The final rename fails, and so does the removal of the staging
+        // directory.
+        std::fs::create_dir(&snap_dir).unwrap();
+        std::fs::write(snap_dir.join("sentinel"), b"keep").unwrap();
+        let publish_error = staging.publish(&snap_dir).unwrap_err();
+        staging.inject_cleanup_failure = true;
+        let error = staging.rollback(publish_error);
+
+        assert!(!error.is_committed());
+        assert!(!error.is_rollback_safe());
+        assert!(matches!(
+            error,
+            SnapshotWriteError::CleanupUncertain { ref path, .. } if *path == staging_path
+        ));
+        assert_eq!(std::fs::read(snap_dir.join("sentinel")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn independent_staging_without_its_manifest_is_rollback_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let memory_path = dir.path().join("memory.bin");
+        std::fs::write(&memory_path, vec![0x5a_u8; 1024]).unwrap();
+        let memory_file = std::fs::File::open(&memory_path).unwrap();
+        let mut staging = stage_snapshot(
+            &snap_dir,
+            &test_manifest(),
+            b"state",
+            &memory_file,
+            None,
+            MemoryPublication::IndependentCopy,
+        )
+        .unwrap();
+        let staging_path = staging.path().to_owned();
+
+        // The removal stops after the manifest, which it removes first, so
+        // restore cannot open what it leaves behind.
+        staging.inject_directory_removal_failure = true;
+        staging.remove_staging_directory().unwrap_err();
+        assert!(!staging_path.join(MANIFEST_FILE_NAME).exists());
+        assert!(staging_path.join(STATE_FILE_NAME).exists());
+        assert!(staging_path.join(MEMORY_FILE_NAME).exists());
+        let open_error = match read_snapshot_manifest(&staging_path) {
+            Ok(_) => panic!("staging without its manifest unexpectedly opened"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{open_error:#}").contains("failed to open snapshot manifest"),
+            "{open_error:#}"
+        );
+
+        let error = staging.rollback(anyhow::anyhow!("injected publication failure"));
+
+        assert!(!error.is_committed());
+        assert!(error.is_rollback_safe());
+    }
+
+    #[test]
+    fn uncertain_cleanup_of_staging_that_never_held_a_manifest_is_rollback_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let mut staging = StagingDirectory::create(dir.path(), &snap_dir).unwrap();
+        std::fs::write(staging.path().join(STATE_FILE_NAME), b"state").unwrap();
+        staging.inject_cleanup_failure = true;
+
+        let error = staging.rollback(anyhow::anyhow!("injected staging failure"));
+
+        assert!(!error.is_committed());
+        assert!(error.is_rollback_safe());
     }
 
     #[cfg(target_os = "linux")]
