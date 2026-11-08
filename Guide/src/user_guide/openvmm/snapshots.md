@@ -366,16 +366,24 @@ the value read back changes nothing; any other write raises #GP.
 Each time sample pairs host UTC with the guest TSC on the host, so the guest
 needs no tight bracket of its own around the port write: the guest TSC is the
 host TSC plus an offset, which KVM reports, and which MSHV and WHP measure
-from VP 0's TSC at every start, before any VP runs. Each sample also
-publishes the host's clock correction, which the guest applies instead of
-estimating it. OpenVMM reads it from the host's time service: on Linux, the
-frequency correction, tick, status, and maximum error that `adjtimex`
-reports, and on Windows, the time adjustment that
-`GetSystemTimeAdjustmentPrecise` reports, with an adjustment that Windows
-does not apply reported as a free-running clock. The correction refers to
-the declared rate, so on a restore it includes the deviation of the native
-rate. A paravirtual clock is still not exposed: the samples only discipline
-the guest's wall clock, and the TSC remains its clocksource.
+from VP 0's TSC at every start, before any VP runs. Every sample until the
+next start carries the measured offset's uncertainty, and a host stall can
+slow every read while it lasts: on a nested host, tearing down another VM's
+memory stalls every hypercall for milliseconds at a time, in bursts that can
+span a second or more. So once its first 8 reads leave the offset wider than
+50 µs, half the 100 µs within which the guest accepts a sample, the
+measurement reads on until a read is within that bound, and the start waits
+for it. If no read is within the bound after 10 seconds of the host TSC, the
+start fails with `E_TSC_ANCHOR`, as a capture fails without an anchor within
+its bound. Each sample also publishes the host's clock correction, which the
+guest applies instead of estimating it. OpenVMM reads it from the host's time
+service: on Linux, the frequency correction, tick, status, and maximum error
+that `adjtimex` reports, and on Windows, the time adjustment that
+`GetSystemTimeAdjustmentPrecise` reports, with an adjustment that Windows does
+not apply reported as a free-running clock. The correction refers to the
+declared rate, so on a restore it includes the deviation of the native rate. A
+paravirtual clock is still not exposed: the samples only discipline the
+guest's wall clock, and the TSC remains its clocksource.
 
 The guest CPU is a pinned CPU profile: one per CPU generation, the same on
 every backend. OpenVMM pins `intel.skylake-sp.v1` (Xeon Scalable, first
