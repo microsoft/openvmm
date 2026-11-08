@@ -110,6 +110,11 @@ impl PortbTimeAbi {
 /// microVM portb byte channel: raw guest output, the restore packet, the
 /// generation ID, and time samples. It takes no host input: it never reads
 /// its host endpoint, and its input-pending status bit, bit 0, stays clear.
+///
+/// Guest output that the endpoint has not accepted, because no peer is
+/// connected or a write failed with any error, stays buffered, up to 1 MiB:
+/// a later write delivers it, to the next peer when the failure disconnected
+/// the backend, and a snapshot saves it for the restored VM.
 #[derive(InspectMut)]
 pub struct MicrovmPortb {
     #[inspect(skip)]
@@ -302,31 +307,34 @@ impl MicrovmPortb {
     fn poll_tx(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         while !self.tx_buffer.is_empty() {
             let (buffer, _) = self.tx_buffer.as_slices();
-            match Pin::new(&mut self.io).poll_write(cx, buffer) {
-                Poll::Ready(Ok(0)) => return Poll::Ready(Err(ErrorKind::WriteZero.into())),
+            let error = match Pin::new(&mut self.io).poll_write(cx, buffer) {
+                Poll::Ready(Ok(0)) => ErrorKind::WriteZero.into(),
                 Poll::Ready(Ok(count)) => {
                     self.tx_buffer.drain(..count);
+                    continue;
                 }
-                Poll::Ready(Err(error)) if error.kind() == ErrorKind::BrokenPipe => {
-                    // A write that disconnected the backend leaves the next
-                    // peer to `poll_connect`, so poll again to wait for it.
-                    if !self.io.is_connected() {
-                        cx.waker().wake_by_ref();
-                    }
-                    return Poll::Ready(Err(error));
-                }
-                Poll::Ready(Err(error)) => {
-                    tracelimit::error_ratelimited!(
-                        len = buffer.len(),
-                        error = &error as &dyn std::error::Error,
-                        "microVM portb output failed; dropping buffered bytes"
-                    );
-                    self.tx_buffer.clear();
-                    self.tx_waker = Some(cx.waker().clone());
-                    return Poll::Ready(Err(error));
-                }
+                Poll::Ready(Err(error)) => error,
                 Poll::Pending => return Poll::Pending,
+            };
+            // Keep the bytes that the endpoint did not accept, whatever the
+            // error, for the next write or a snapshot. A broken pipe only
+            // reports a peer that left.
+            if error.kind() != ErrorKind::BrokenPipe {
+                tracelimit::warn_ratelimited!(
+                    buffered_bytes = self.tx_buffer.len(),
+                    error = &error as &dyn std::error::Error,
+                    "microVM portb output failed; keeping buffered bytes"
+                );
             }
+            if self.io.is_connected() {
+                // Retry at the next guest write.
+                self.tx_waker = Some(cx.waker().clone());
+            } else {
+                // A write that disconnected the backend leaves the next
+                // peer to `poll_connect`, so poll again to wait for it.
+                cx.waker().wake_by_ref();
+            }
+            return Poll::Ready(Err(error));
         }
         self.tx_waker = Some(cx.waker().clone());
         Poll::Ready(Ok(()))
@@ -343,11 +351,15 @@ impl ChangeDeviceState for MicrovmPortb {
     fn start(&mut self) {}
 
     async fn stop(&mut self) {
-        // Drain every byte the endpoint accepts immediately. A guest-requested
-        // snapshot flushes the output before stopping the device. Any remaining
-        // VMM-owned bytes are serialized and retried against the reconstructed
-        // endpoint after restore.
-        let _ = self.poll_tx(&mut Context::from_waker(Waker::noop()));
+        // Write what a connected endpoint accepts at once; a guest-requested
+        // snapshot has already flushed the output. A backend without a peer
+        // can discard writes and report them as written, as the socket and
+        // named-pipe backends do, so it gets none. The bytes that the endpoint
+        // does not accept stay buffered: a snapshot saves them, and the
+        // restored VM writes them to its endpoint.
+        if self.io.is_connected() {
+            let _ = self.poll_tx(&mut Context::from_waker(Waker::noop()));
+        }
     }
 
     async fn reset(&mut self) {
@@ -1098,6 +1110,59 @@ mod tests {
     }
 
     #[test]
+    fn portb_failed_write_keeps_output_for_the_restored_vm() {
+        // Whatever the error, the output that a write fails to deliver stays
+        // buffered, whether a snapshot's flush or the device's stop meets it.
+        for kind in [
+            ErrorKind::BrokenPipe,
+            ErrorKind::ConnectionReset,
+            ErrorKind::Other,
+        ] {
+            for flush in [true, false] {
+                let state = Arc::new(Mutex::new(OutputState {
+                    error: Some(kind),
+                    ..Default::default()
+                }));
+                let (requests, receiver) = mesh::channel();
+                let mut portb = MicrovmPortb::new(
+                    Box::new(Connected::new(BufferedOutput(state.clone()))),
+                    TEST_GENERATION_ID,
+                    test_time_abi(None),
+                )
+                .with_output_drain(Some(receiver));
+                assert!(matches!(portb.io_write(DATA_PORT, b"marker"), IoResult::Ok));
+                if flush {
+                    let result =
+                        requests.call_failable(std::convert::identity, MicrovmPortbDrain::Flush);
+                    portb.poll_device(&mut Context::from_waker(Waker::noop()));
+                    assert!(result.now_or_never().unwrap().is_err(), "{kind:?}");
+                }
+                futures::executor::block_on(portb.stop());
+                let saved = portb.save().unwrap();
+                assert_eq!(saved.tx_buffer, b"marker", "{kind:?}, flush: {flush}");
+
+                // The restored VM writes the output to its endpoint.
+                let restored_state = Arc::new(Mutex::new(OutputState {
+                    writable: true,
+                    ..Default::default()
+                }));
+                let mut restored = MicrovmPortb::new(
+                    Box::new(Connected::new(BufferedOutput(restored_state.clone()))),
+                    TEST_GENERATION_ID,
+                    test_time_abi(None),
+                );
+                restored.restore(saved).unwrap();
+                restored.poll_device(&mut Context::from_waker(Waker::noop()));
+                assert_eq!(
+                    restored_state.lock().bytes,
+                    b"marker",
+                    "{kind:?}, flush: {flush}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn portb_output_error_preserves_the_next_write_wakeup() {
         use std::sync::atomic::AtomicBool;
         use std::sync::atomic::Ordering;
@@ -1122,7 +1187,7 @@ mod tests {
             TEST_GENERATION_ID,
             test_time_abi(None),
         );
-        assert!(matches!(portb.io_write(DATA_PORT, b"lost"), IoResult::Ok));
+        assert!(matches!(portb.io_write(DATA_PORT, b"kept "), IoResult::Ok));
         portb.poll_device(&mut cx);
         state.lock().error = None;
         state.lock().writable = true;
@@ -1132,7 +1197,8 @@ mod tests {
         ));
         assert!(wake.0.load(Ordering::Relaxed));
         portb.poll_device(&mut cx);
-        assert_eq!(state.lock().bytes, b"next write");
+        // The failed write kept its bytes, which precede the next write's.
+        assert_eq!(state.lock().bytes, b"kept next write");
     }
 
     struct ConnectWithByte {
@@ -1252,6 +1318,9 @@ mod tests {
         connected: bool,
         /// The connected peer has left.
         departed: bool,
+        /// The departed peer reset the connection, so a write fails with
+        /// `ConnectionReset`, as a TCP socket can report, not `BrokenPipe`.
+        reset: bool,
         /// The backend reports a departed peer when polled for disconnection,
         /// as a socket does once it sees the peer's hangup.
         reports_departure: bool,
@@ -1314,10 +1383,20 @@ mod tests {
             data: &[u8],
         ) -> Poll<io::Result<usize>> {
             let mut state = self.0.lock();
+            if !state.connected {
+                // As the socket and named-pipe backends do, a write without a
+                // peer is discarded and reported as written.
+                return Poll::Ready(Ok(data.len()));
+            }
             if state.departed {
                 // As a socket backend does, a failed write disconnects.
                 state.connected = false;
-                return Poll::Ready(Err(ErrorKind::BrokenPipe.into()));
+                let kind = if state.reset {
+                    ErrorKind::ConnectionReset
+                } else {
+                    ErrorKind::BrokenPipe
+                };
+                return Poll::Ready(Err(kind.into()));
             }
             state.bytes.extend_from_slice(data);
             Poll::Ready(Ok(data.len()))
@@ -1392,6 +1471,70 @@ mod tests {
         state.lock().next_peer = true;
         portb.poll_device(&mut cx);
         assert_eq!(state.lock().bytes, b"output");
+    }
+
+    #[test]
+    fn portb_keeps_output_for_the_next_peer_once_a_write_finds_the_peer_reset() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+        use std::task::Wake;
+
+        struct PollWake(AtomicBool);
+        impl Wake for PollWake {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let wake = Arc::new(PollWake(AtomicBool::new(false)));
+        let waker = Waker::from(wake.clone());
+        let mut cx = Context::from_waker(&waker);
+        let (mut portb, state) = listening_portb();
+        state.lock().departed = true;
+        state.lock().reset = true;
+        assert!(matches!(portb.io_write(DATA_PORT, b"output"), IoResult::Ok));
+        portb.poll_device(&mut cx);
+        assert!(!state.lock().connected);
+        assert!(wake.0.load(Ordering::Relaxed));
+        assert_eq!(portb.tx_buffer, b"output");
+
+        state.lock().next_peer = true;
+        portb.poll_device(&mut cx);
+        assert_eq!(state.lock().bytes, b"output");
+    }
+
+    #[test]
+    fn portb_stop_keeps_output_while_no_peer_is_connected() {
+        let state = Arc::new(Mutex::new(ListenerState::default()));
+        let mut portb = MicrovmPortb::new(
+            Box::new(Listener(state.clone())),
+            TEST_GENERATION_ID,
+            test_time_abi(None),
+        );
+        assert!(matches!(portb.io_write(DATA_PORT, b"output"), IoResult::Ok));
+        portb.poll_device(&mut Context::from_waker(Waker::noop()));
+        futures::executor::block_on(portb.stop());
+        assert_eq!(portb.save().unwrap().tx_buffer, b"output");
+    }
+
+    #[test]
+    fn portb_snapshot_keeps_output_once_a_failed_write_disconnects_the_endpoint() {
+        // The write that finds the peer gone, or its connection reset, fails
+        // and disconnects the backend, which then discards writes.
+        for reset in [false, true] {
+            let (portb, state) = listening_portb();
+            let (requests, receiver) = mesh::channel();
+            let mut portb = portb.with_output_drain(Some(receiver));
+            state.lock().departed = true;
+            state.lock().reset = reset;
+            assert!(matches!(portb.io_write(DATA_PORT, b"output"), IoResult::Ok));
+            let flush = requests.call_failable(std::convert::identity, MicrovmPortbDrain::Flush);
+            portb.poll_device(&mut Context::from_waker(Waker::noop()));
+            assert!(flush.now_or_never().unwrap().is_err(), "reset: {reset}");
+            assert!(!state.lock().connected);
+            futures::executor::block_on(portb.stop());
+            assert_eq!(portb.save().unwrap().tx_buffer, b"output", "reset: {reset}");
+        }
     }
 
     #[test]
