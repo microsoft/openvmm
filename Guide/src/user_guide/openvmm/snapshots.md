@@ -411,10 +411,13 @@ Scalable, fifth generation: 6/207), `intel.graniterapids.v1` (Xeon 6 with
 P-cores: 6/173), `intel.alderlake.v1` (Core, twelfth generation: 6/151 and
 6/154), `amd.milan.v1` (AMD EPYC, third generation: 25/1), `amd.genoa.v1`
 and `amd.genoa.v2` (AMD EPYC, fourth generation: 25/17), and
-`amd.turin.v1` (AMD EPYC, fifth generation: 26/2).
+`amd.turin.v1` and `amd.turin.v2` (AMD EPYC, fifth generation: 26/2).
 `amd.genoa.v2` drops what `amd.genoa.v1` presents in `0x80000021`, `LFENCE`
 serialization and the TSA immunities, which not every Genoa host's
-hypervisor presents. No profile presents AMX: its tile states need a
+hypervisor presents, and `amd.turin.v2` drops the same from
+`amd.turin.v1`, with the StibpAlwaysOn and IBPB_RET enumerations of
+`0x80000008`, which qualify controls that no AMD profile presents. No
+profile presents AMX: its tile states need a
 dynamic XSAVE permission that OpenVMM does not request from KVM, and every
 backend presents the same profile. Nor does any present AVX10, whose leaf
 `0x24` no profile keeps; the AVX-512 features enumerate every instruction

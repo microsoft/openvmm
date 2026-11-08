@@ -485,7 +485,7 @@ mod tests {
     /// The pinned JSON files, the source of the static data, and their golden
     /// digests. Released profiles are immutable: changing a golden digest is
     /// a deliberate act, here.
-    const FILES: [(&str, &str, &str); 9] = [
+    const FILES: [(&str, &str, &str); 10] = [
         (
             "intel.skylake-sp.v1",
             include_str!("../profiles/intel.skylake-sp.v1.json"),
@@ -530,6 +530,11 @@ mod tests {
             "amd.turin.v1",
             include_str!("../profiles/amd.turin.v1.json"),
             "sha256:0d9d044922eae3f27442178249f0b60feb0db07efe446e6641a1fcbfbb3a04ff",
+        ),
+        (
+            "amd.turin.v2",
+            include_str!("../profiles/amd.turin.v2.json"),
+            "sha256:a02762733623b106eb9b2a801006dab41088315ca2708f0e0f5ddee19900d731",
         ),
     ];
 
@@ -720,7 +725,7 @@ mod tests {
             (amd(MILAN_X), "amd.milan.v1", "milan"),
             (amd(GENOA), "amd.genoa.v2", "genoa"),
             (amd(GENOA_STEPPING_2), "amd.genoa.v2", "genoa"),
-            (amd(TURIN), "amd.turin.v1", "turin"),
+            (amd(TURIN), "amd.turin.v2", "turin"),
         ] {
             assert_eq!(select_auto(&host).unwrap().id(), id);
             assert_eq!(select(AUTO, &host).unwrap().id(), id);
@@ -870,8 +875,8 @@ mod tests {
 
         // Another generation of the same vendor.
         assert_eq!(
-            select("amd.turin.v1", &amd(TURIN)).unwrap().id(),
-            "amd.turin.v1"
+            select("amd.turin.v2", &amd(TURIN)).unwrap().id(),
+            "amd.turin.v2"
         );
         assert_eq!(
             code(select("amd.genoa.v1", &amd(TURIN))),
@@ -887,6 +892,10 @@ mod tests {
         assert_eq!(
             select("amd.genoa.v1", &amd(GENOA)).unwrap().id(),
             "amd.genoa.v1"
+        );
+        assert_eq!(
+            select("amd.turin.v1", &amd(TURIN)).unwrap().id(),
+            "amd.turin.v1"
         );
     }
 
