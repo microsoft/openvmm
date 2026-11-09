@@ -70,6 +70,10 @@ pub struct SnapshotManifest {
     /// Bitmask of configuration sections consumed before capture.
     #[mesh(15)]
     pub consumed_config_sections: u32,
+    // Upstream OpenVMM assigns field 18 to the `snapshot_id` that its SaveVM
+    // API records, and reserves fields 19 and 20 for
+    // `compatibility_bundle_digest` and `memory_artifacts`, so no other field
+    // of this manifest takes them.
 }
 
 /// Validate that a snapshot manifest is compatible with the running VM config.
