@@ -2243,7 +2243,9 @@ pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Res
                 manifest.restore_policy == SNAPSHOT_RESTORE_POLICY_RESUME,
                 "direct-claimed scratch materialization requires resume restore policy"
             ),
-            _ => unreachable!("machine-contract shape validation rejects unknown restore modes"),
+            // Restore runs this check before the machine-contract shape check,
+            // so refuse an unknown mode here, with that check's error.
+            mode => anyhow::bail!("snapshot scratch restore mode '{mode}' is unsupported"),
         }
     }
     if manifest.snapshot_tier == SNAPSHOT_TIER_PLATFORM {
