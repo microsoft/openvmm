@@ -975,9 +975,11 @@ impl UhProcessor<'_, CcaBacked> {
 
         let vp = self.vp_index();
 
-        // Returned pending state is now durable in the software GIC. Seed the
-        // next active/pending list with active entries only; pending state will
-        // be selected again below according to priority and PMR.
+        // Returned pending state is now durable in the software GIC. Retain
+        // active entries here and rebuild pending entries from the model below.
+        // Pending LR entries may be masked: the virtual CPU interface applies
+        // the guest's PMR and preemption rules when deciding whether to signal
+        // an interrupt.
         let mut candidates = logical_lrs
             .into_iter()
             .filter(|lr| lr_is_active(*lr))
