@@ -82,7 +82,7 @@ features = [
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
-[target.'cfg(unix)'.dev-dependencies]
+[dev-dependencies]
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

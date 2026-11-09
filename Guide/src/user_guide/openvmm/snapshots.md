@@ -88,8 +88,9 @@ OpenVMM writes and flushes `manifest.bin`, `state.bin`, and `memory.bin` in a
 sibling staging directory. Host-driven saves and user-supplied microVM backing
 use an independent memory copy. Automatic microVM backing uses its exact RAM
 file when the filesystem supports hard links. The destination must not already
-exist, so existing data is never overwritten. Publishing the completed
-directory is the commit point.
+exist, so existing data is never overwritten, and publication fails rather than
+replace one that appears during the capture, even an empty directory.
+Publishing the completed directory is the commit point.
 
 On Windows, NTFS zero-fills a file below any write that starts past the file's
 valid data length, and a newly created RAM backing file has none. Capture
