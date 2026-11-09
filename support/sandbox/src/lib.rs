@@ -13,6 +13,9 @@
 mod prepare;
 mod profile;
 
+#[cfg(target_os = "linux")]
+mod unix;
+
 pub use prepare::HandleTag;
 pub use prepare::Identity;
 pub use prepare::RawHandle;

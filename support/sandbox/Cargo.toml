@@ -10,6 +10,7 @@ rust-version.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+fs-err.workspace = true
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
