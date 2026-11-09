@@ -615,7 +615,7 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
     writable: bool,
     locked_range: T,
 ) -> anyhow::Result<Option<LockedRangeImpl<'a, T>>> {
-    if !mem.supports_locking() {
+    if !mem.supports_kernel_lock() {
         // Memory behind an emulated IOMMU has no stable host mapping to lock,
         // so fall back to a bounce buffer via read_at/write_at.
         return Ok(None);

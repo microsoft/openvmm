@@ -7,7 +7,7 @@
 use crate::rndisprot;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
-use guestmem::LockedPages;
+use guestmem::UserLockedPages;
 use net_backend::BufferAccess;
 use net_backend::L4Protocol;
 use net_backend::RxBufferSegment;
@@ -43,7 +43,7 @@ pub enum GuestBuffersError {
 pub struct GuestBuffers {
     mem: GuestMemory,
     _gpadl: GpadlView,
-    locked_pages: LockedPages,
+    locked_pages: UserLockedPages,
     gpns: Vec<u64>,
     sub_allocation_size: u32,
     mtu: u32,
@@ -109,7 +109,7 @@ impl GuestBuffers {
 
         let gpns = gpadl.first().unwrap().gpns().to_vec();
         let locked_pages = mem
-            .lock_gpns(guestmem::AccessType::Write, false, &gpns)
+            .lock_user_gpns(guestmem::AccessType::Write, &gpns)
             .map_err(GuestBuffersError::GpnLock)?;
         Ok(Self {
             mem,
