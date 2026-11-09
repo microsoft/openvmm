@@ -643,6 +643,12 @@ describes the source definitions.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
   `platform`, `workload-start`, or `instance-checkpoint`. The first two are
   reusable clone policies; instance checkpoints use single-use resume policy.
+  A `platform` capture's kernel command line may hold only the tokens that all
+  its clones share: those that OpenVMM writes, `nvx_sandbox=1`, a canonical
+  `maxcpus=`, and these guest kernel tuning parameters, each at most once:
+  `mitigations=off`, `mitigations=auto`, or `mitigations=auto,nosmt`,
+  `no_timer_check`, `quiet`, and `loglevel=0` to `loglevel=7`. Capture and
+  every restore refuse any other token.
 * `--snapshot-generation-id <32-HEX-DIGITS>`: Supply the immutable storage
   generation of the capture's sandbox blocks. A `workload-start` or
   `instance-checkpoint` capture requires it and records it as the identity of
