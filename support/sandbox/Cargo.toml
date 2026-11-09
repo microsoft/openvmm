@@ -8,9 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+caps.workspace = true
 fs-err.workspace = true
+landlock.workspace = true
 libc.workspace = true
 seccompiler.workspace = true
 

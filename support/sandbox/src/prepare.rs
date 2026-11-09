@@ -128,8 +128,8 @@ pub struct WindowsPreparation {
 /// returned [`SandboxProcessConfig`] to its platform process builder.
 ///
 /// * `profile` — the worker's linked policy. On Linux only its launch-relevant
-///   bits are consulted here (the worker self-applies the rest); on Windows
-///   its entire LPAC portion is reflected
+///   bits are consulted here (the worker self-applies the rest in
+///   [`apply`](crate::apply)); on Windows its entire LPAC portion is reflected
 ///   into [`WindowsPreparation`].
 /// * `identity` — the per-spawn identity. Unix UID/GID requests are unsupported
 ///   and return [`Error::RequiredPrimitiveUnavailable`]; Windows AppContainer
@@ -151,7 +151,7 @@ pub struct WindowsPreparation {
 ///
 /// This only records the child-visible descriptor number. The process builder
 /// must map an owned source descriptor to that number and apply the preparation
-/// before spawning; the worker must still establish its own confinement.
+/// before spawning; the worker must still call [`apply`](crate::apply).
 pub fn prepare(
     profile: &Profile,
     identity: &Identity,
