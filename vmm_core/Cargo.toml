@@ -62,6 +62,9 @@ zerocopy.workspace = true
 cvm_tracing.workspace = true
 iced-x86 = { optional = true, workspace = true, features = ["std", "fast_fmt"] }
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 
