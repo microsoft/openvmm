@@ -31,6 +31,12 @@ pub const RESTORE_ENTROPY_LEN: usize = 64;
 /// address, or an IPv4 address and twelve zero bytes, or zeros without a DNS
 /// server.
 pub const RESTORE_DNS_SERVER_LEN: usize = 16;
+/// The length of the activation record's length field, which follows the
+/// DNS server record in a packet with [`FLAG_ACTIVATION`], and keeps the
+/// record's bytes aligned to the guest's four-byte reads.
+pub const RESTORE_ACTIVATION_LENGTH_LEN: usize = 4;
+/// The most bytes of an activation record.
+pub const MAX_RESTORE_ACTIVATION_LEN: usize = 1024;
 /// The most memory ranges a packet can carry.
 pub const MAX_RESTORE_RANGES: usize = u8::MAX as usize;
 /// The online VP targets a packet can carry; 0 means no processor target.
@@ -50,8 +56,18 @@ pub const FLAG_TEST_HOOKS: u8 = 1 << 3;
 /// restore that replaces the network policy of a snapshot without a tier.
 /// Without it, both are zero.
 pub const FLAG_NETWORK: u8 = 1 << 4;
-const RESTORE_PACKET_FLAGS: u8 =
-    FLAG_DOWNTIME_UTC | FLAG_MEMORY_TARGET | FLAG_ACK_REQUIRED | FLAG_TEST_HOOKS | FLAG_NETWORK;
+/// The packet ends with the activation record of a platform clone, which
+/// the launcher supplied: its length, a little-endian `u32` from 1 to
+/// [`MAX_RESTORE_ACTIVATION_LEN`], then its bytes, which OpenVMM passes to
+/// the guest without reading them. A guest that predates the flag refuses
+/// the packet by its reserved bit, rather than ignore the record.
+pub const FLAG_ACTIVATION: u8 = 1 << 5;
+const RESTORE_PACKET_FLAGS: u8 = FLAG_DOWNTIME_UTC
+    | FLAG_MEMORY_TARGET
+    | FLAG_ACK_REQUIRED
+    | FLAG_TEST_HOOKS
+    | FLAG_NETWORK
+    | FLAG_ACTIVATION;
 
 /// The bits of the network byte that give the family of the DNS server: 0
 /// for none, [`NETWORK_DNS_IPV4`], or [`NETWORK_DNS_IPV6`].
@@ -118,6 +134,10 @@ pub enum RestorePacketError {
     /// not zero, or is not zero although the network byte names no DNS server.
     #[error("invalid DNS server")]
     DnsServer,
+    /// The activation record is empty, or longer than
+    /// [`MAX_RESTORE_ACTIVATION_LEN`] bytes.
+    #[error("activation record is {0} bytes, not 1 to {MAX_RESTORE_ACTIVATION_LEN}")]
+    Activation(usize),
     /// The record length does not match its counts.
     #[error("record is {actual} bytes, expected {expected}")]
     Length {
@@ -259,6 +279,11 @@ pub struct RestorePacketBase {
     /// The network settings of a restore that replaces the network policy of
     /// a snapshot without a tier, which set [`FLAG_NETWORK`].
     pub network: Option<RestoreNetwork>,
+    /// The activation record of a platform clone, which sets
+    /// [`FLAG_ACTIVATION`]: 1 to [`MAX_RESTORE_ACTIVATION_LEN`] bytes that
+    /// the launcher supplied, which the guest decodes. The record carries no
+    /// secret, since the packet is no confidential channel.
+    pub activation: Option<Vec<u8>>,
 }
 
 impl RestorePacketBase {
@@ -278,6 +303,11 @@ impl RestorePacketBase {
         if let Some(network) = &self.network {
             network.validate()?;
         }
+        if let Some(record) = &self.activation
+            && !(1..=MAX_RESTORE_ACTIVATION_LEN).contains(&record.len())
+        {
+            return Err(RestorePacketError::Activation(record.len()));
+        }
         Ok(())
     }
 
@@ -287,6 +317,10 @@ impl RestorePacketBase {
             + RESTORE_RANGE_LEN * self.ranges.len()
             + RESTORE_ENTROPY_LEN
             + RESTORE_DNS_SERVER_LEN
+            + self
+                .activation
+                .as_ref()
+                .map_or(0, |record| RESTORE_ACTIVATION_LENGTH_LEN + record.len())
     }
 }
 
@@ -330,6 +364,7 @@ impl RestorePacket {
             (self.base.ack_required, FLAG_ACK_REQUIRED),
             (self.time.test_hooks, FLAG_TEST_HOOKS),
             (self.base.network.is_some(), FLAG_NETWORK),
+            (self.base.activation.is_some(), FLAG_ACTIVATION),
         ] {
             if set {
                 flags |= flag;
@@ -360,6 +395,12 @@ impl RestorePacket {
                     network.dns_server_record()
                 }),
         );
+        if let Some(record) = &self.base.activation {
+            // The validation bounds the record by MAX_RESTORE_ACTIVATION_LEN,
+            // which fits the length field.
+            bytes.extend_from_slice(&(record.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(record);
+        }
         debug_assert_eq!(bytes.len(), self.base.encoded_len());
         Ok(bytes)
     }
@@ -383,7 +424,27 @@ impl RestorePacket {
         let range_count = usize::from(header[6]);
         let entropy_offset = RESTORE_PACKET_HEADER_LEN + RESTORE_RANGE_LEN * range_count;
         let dns_server_offset = entropy_offset + RESTORE_ENTROPY_LEN;
-        let expected = dns_server_offset + RESTORE_DNS_SERVER_LEN;
+        let activation_offset = dns_server_offset + RESTORE_DNS_SERVER_LEN;
+        let record_offset = activation_offset + RESTORE_ACTIVATION_LENGTH_LEN;
+        let expected = if flags & FLAG_ACTIVATION != 0 {
+            let length: &[u8; RESTORE_ACTIVATION_LENGTH_LEN] = bytes
+                .get(activation_offset..record_offset)
+                .and_then(|length| length.try_into().ok())
+                .ok_or(RestorePacketError::Length {
+                    expected: record_offset,
+                    actual: bytes.len(),
+                })?;
+            // A length beyond the bound fails before the packet's length
+            // is checked against it.
+            let length = u32::from_le_bytes(*length);
+            let length = usize::try_from(length)
+                .ok()
+                .filter(|length| *length <= MAX_RESTORE_ACTIVATION_LEN)
+                .ok_or(RestorePacketError::Activation(length as usize))?;
+            record_offset + length
+        } else {
+            activation_offset
+        };
         if bytes.len() != expected {
             return Err(RestorePacketError::Length {
                 expected,
@@ -403,8 +464,10 @@ impl RestorePacket {
                 }
             })
             .collect();
-        let dns_server_record: &[u8; RESTORE_DNS_SERVER_LEN] =
-            bytes[dns_server_offset..].try_into().unwrap();
+        let dns_server_record: &[u8; RESTORE_DNS_SERVER_LEN] = bytes
+            [dns_server_offset..activation_offset]
+            .try_into()
+            .unwrap();
         let network = if flags & FLAG_NETWORK != 0 {
             Some(RestoreNetwork::decode(header[7], dns_server_record)?)
         } else if header[7] != 0 || *dns_server_record != [0; RESTORE_DNS_SERVER_LEN] {
@@ -412,6 +475,7 @@ impl RestorePacket {
         } else {
             None
         };
+        let activation = (flags & FLAG_ACTIVATION != 0).then(|| bytes[record_offset..].to_vec());
         let packet = Self {
             base: RestorePacketBase {
                 online_vp_count: header[5],
@@ -421,6 +485,7 @@ impl RestorePacket {
                 ranges,
                 entropy: bytes[entropy_offset..dns_server_offset].try_into().unwrap(),
                 network,
+                activation,
             },
             time: RestoreTimeRecord {
                 downtime_ns: u64_at(16),
@@ -626,6 +691,7 @@ mod tests {
                 ranges: Vec::new(),
                 entropy: entropy(),
                 network: None,
+                activation: None,
             },
             time: RestoreTimeRecord {
                 downtime_ns: 0x0102_0304_0506_0708,
@@ -655,6 +721,7 @@ mod tests {
                 ],
                 entropy: entropy(),
                 network: None,
+                activation: None,
             },
             time: RestoreTimeRecord {
                 downtime_ns: 30_000_000_000,
@@ -713,7 +780,8 @@ mod tests {
         };
         assert_eq!(mutate(0, b'X'), RestorePacketError::Magic);
         assert_eq!(mutate(3, 4), RestorePacketError::Version(4));
-        assert_eq!(mutate(4, 0x2a), RestorePacketError::Reserved);
+        assert_eq!(mutate(4, 0x4a), RestorePacketError::Reserved);
+        assert_eq!(mutate(4, 0x8a), RestorePacketError::Reserved);
         assert_eq!(mutate(7, 1), RestorePacketError::Reserved);
         assert_eq!(mutate(5, 3), RestorePacketError::OnlineVpCount(3));
         assert_eq!(mutate(4, 0x08), RestorePacketError::MemoryRanges(2));
@@ -903,6 +971,98 @@ mod tests {
             RestorePacket::decode(&good[..dns_server]).unwrap_err(),
             RestorePacketError::Length { .. }
         ));
+    }
+
+    fn activation_packet(record: Vec<u8>) -> RestorePacket {
+        let mut packet = packet_with_ranges();
+        packet.base.activation = Some(record);
+        packet
+    }
+
+    #[test]
+    fn golden_packet_with_an_activation_record() {
+        let packet = activation_packet(vec![0xa1, 0xa2, 0xa3]);
+        let bytes = packet.encode().unwrap();
+        let plain = packet_with_ranges().encode().unwrap();
+        // The activation flag, then the record after the DNS server: its
+        // length, a little-endian u32, and its bytes.
+        let mut expected = plain.clone();
+        expected[4] |= FLAG_ACTIVATION;
+        expected.extend([3, 0, 0, 0, 0xa1, 0xa2, 0xa3]);
+        assert_eq!(bytes, expected);
+        assert_eq!(bytes.len(), packet.base.encoded_len());
+        assert_eq!(RestorePacket::decode(&bytes).unwrap(), packet);
+
+        // The longest record.
+        let packet = activation_packet(vec![0x5a; MAX_RESTORE_ACTIVATION_LEN]);
+        let bytes = packet.encode().unwrap();
+        assert_eq!(
+            bytes.len(),
+            plain.len() + RESTORE_ACTIVATION_LENGTH_LEN + MAX_RESTORE_ACTIVATION_LEN
+        );
+        assert_eq!(
+            bytes[plain.len()..plain.len() + 4],
+            [0x00, 0x04, 0x00, 0x00]
+        );
+        assert_eq!(RestorePacket::decode(&bytes).unwrap(), packet);
+    }
+
+    #[test]
+    fn activation_records_are_bounded() {
+        for length in [0, MAX_RESTORE_ACTIVATION_LEN + 1] {
+            assert_eq!(
+                activation_packet(vec![0; length]).encode().unwrap_err(),
+                RestorePacketError::Activation(length)
+            );
+        }
+
+        let good = activation_packet(vec![0xa1, 0xa2, 0xa3]).encode().unwrap();
+        let length = good.len() - 7;
+        // An empty record, and one longer than the bound, whose bytes are
+        // all there, or whose length is too large to read.
+        let mut empty = good[..length + 4].to_vec();
+        empty[length..].copy_from_slice(&[0; 4]);
+        assert_eq!(
+            RestorePacket::decode(&empty).unwrap_err(),
+            RestorePacketError::Activation(0)
+        );
+        let mut long = good[..length].to_vec();
+        long.extend((MAX_RESTORE_ACTIVATION_LEN as u32 + 1).to_le_bytes());
+        long.resize(long.len() + MAX_RESTORE_ACTIVATION_LEN + 1, 0);
+        assert_eq!(
+            RestorePacket::decode(&long).unwrap_err(),
+            RestorePacketError::Activation(MAX_RESTORE_ACTIVATION_LEN + 1)
+        );
+        let mut huge = good[..length].to_vec();
+        huge.extend(u32::MAX.to_le_bytes());
+        assert_eq!(
+            RestorePacket::decode(&huge).unwrap_err(),
+            RestorePacketError::Activation(u32::MAX as usize)
+        );
+        // A packet that ends within the length, or before or after the
+        // record's bytes.
+        for end in [length, length + 3, good.len() - 1] {
+            assert!(matches!(
+                RestorePacket::decode(&good[..end]).unwrap_err(),
+                RestorePacketError::Length { .. }
+            ));
+        }
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert!(matches!(
+            RestorePacket::decode(&trailing).unwrap_err(),
+            RestorePacketError::Length { .. }
+        ));
+        // Without the flag, the packet ends at the DNS server.
+        let mut unflagged = good.clone();
+        unflagged[4] &= !FLAG_ACTIVATION;
+        assert_eq!(
+            RestorePacket::decode(&unflagged).unwrap_err(),
+            RestorePacketError::Length {
+                expected: length,
+                actual: good.len()
+            }
+        );
     }
 
     fn sample() -> TimeSample {

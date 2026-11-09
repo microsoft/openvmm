@@ -313,6 +313,16 @@ pub struct MicrovmCli {
     #[clap(long, requires = "restore_snapshot")]
     pub restore_network_policy: bool,
 
+    /// Hand the guest of a platform snapshot's clone the bytes of this file,
+    /// its activation record, at the end of its restore packet.
+    ///
+    /// The record holds 1 to 1024 bytes, which OpenVMM reads before any vCPU
+    /// runs and passes to the guest without interpreting them, so they must
+    /// carry no secret. The restore gates host input until the guest has
+    /// read the packet and acknowledged the restore.
+    #[clap(long, value_name = "PATH", requires = "restore_snapshot")]
+    pub restore_activation_record: Option<PathBuf>,
+
     /// Immutable storage generation of the sandbox blocks of this restore.
     ///
     /// Required to restore a `workload-start` or `instance-checkpoint`
@@ -822,13 +832,14 @@ impl Options {
                     && self.microvm.restore_memory.is_none()
                     && !self.microvm.restore_absent_scratch
                     && !self.microvm.restore_network_policy
+                    && self.microvm.restore_activation_record.is_none()
                     && self.microvm.restore_generation_id.is_none()
                     && self.microvm.memory_capacity.is_none()
                     && self.microvm.snapshot_generation_id.is_none()
                     && self.microvm.snapshot_scratch_restore_mode.is_none()
                     && self.microvm.microvm_control_console.is_none()
                     && !self.microvm.microvm_control_auth_stdin,
-                "--network-profile, --net-tap, --mount, --mount-aggregate, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --restore-absent-scratch, --restore-network-policy, --restore-generation-id, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
+                "--network-profile, --net-tap, --mount, --mount-aggregate, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --restore-absent-scratch, --restore-network-policy, --restore-activation-record, --restore-generation-id, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
             );
             return Ok(());
         }
@@ -951,6 +962,10 @@ impl Options {
         anyhow::ensure!(
             self.restore_snapshot.is_some() || !self.microvm.restore_network_policy,
             "--restore-network-policy requires --restore-snapshot"
+        );
+        anyhow::ensure!(
+            self.restore_snapshot.is_some() || self.microvm.restore_activation_record.is_none(),
+            "--restore-activation-record requires --restore-snapshot"
         );
         anyhow::ensure!(
             self.restore_snapshot.is_some() || self.microvm.restore_generation_id.is_none(),
@@ -1836,6 +1851,68 @@ mod tests {
             "--restore-snapshot",
             "snapshot",
             "--restore-network-policy",
+        ])
+        .unwrap();
+        assert!(standard.validate_microvm_options().is_err());
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn test_microvm_restore_activation_record_requires_a_microvm_restore() {
+        let restore = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-activation-record",
+            "record",
+        ])
+        .unwrap();
+        restore.validate_microvm_options().unwrap();
+        assert_eq!(
+            restore.microvm.restore_activation_record.as_deref(),
+            Some(std::path::Path::new("record"))
+        );
+
+        // A cold boot has no restore packet.
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--restore-activation-record",
+                "record",
+            ])
+            .is_err()
+        );
+        // Clap accepts it when --snapshot-destination, which conflicts with
+        // --restore-snapshot, lifts the requirement, so the validation refuses
+        // it.
+        let cold_boot = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--snapshot-destination",
+            "snapshot",
+            "--restore-activation-record",
+            "record",
+        ])
+        .unwrap();
+        assert_eq!(
+            cold_boot
+                .validate_microvm_options()
+                .unwrap_err()
+                .to_string(),
+            "--restore-activation-record requires --restore-snapshot"
+        );
+        // Nor does a standard machine.
+        let standard = Options::try_parse_from([
+            "openvmm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-activation-record",
+            "record",
         ])
         .unwrap();
         assert!(standard.validate_microvm_options().is_err());

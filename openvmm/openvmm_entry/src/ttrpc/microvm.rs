@@ -146,6 +146,7 @@ impl MicrovmRequest {
             restore_generation_id,
             restore_absent_scratch,
             restore_network_policy,
+            restore_activation_record_path,
         } = microvm_snapshot.unwrap_or_default();
         let snapshot_destination = absolute_path(destination_path)?;
         let restore_snapshot = absolute_path(restore_path)?;
@@ -162,6 +163,10 @@ impl MicrovmRequest {
             (!restore_generation_id.is_empty(), "restore_generation_id"),
             (restore_absent_scratch, "restore_absent_scratch"),
             (restore_network_policy, "restore_network_policy"),
+            (
+                !restore_activation_record_path.is_empty(),
+                "restore_activation_record_path",
+            ),
         ] {
             anyhow::ensure!(restore || !present, "{field} requires restore_path");
         }
@@ -363,6 +368,7 @@ impl MicrovmRequest {
             generation_id_option(&restore_generation_id, "restore_generation_id")?;
         opt.microvm.restore_absent_scratch = restore_absent_scratch;
         opt.microvm.restore_network_policy = restore_network_policy;
+        opt.microvm.restore_activation_record = absolute_path(restore_activation_record_path)?;
         opt.microvm.cpu_profile = (!cpu_profile.is_empty()).then_some(cpu_profile);
 
         Ok(Self {
@@ -1194,6 +1200,7 @@ mod tests {
         assert_eq!(rpc.restore_memory, cli.restore_memory);
         assert_eq!(rpc.restore_absent_scratch, cli.restore_absent_scratch);
         assert_eq!(rpc.restore_network_policy, cli.restore_network_policy);
+        assert_eq!(rpc.restore_activation_record, cli.restore_activation_record);
         assert_eq!(rpc.restore_generation_id, cli.restore_generation_id);
         assert_eq!(rpc.restore_gate_timeout_ms, cli.restore_gate_timeout_ms);
         assert_eq!(rpc.snapshot_destination, cli.snapshot_destination);
@@ -1435,6 +1442,8 @@ mod tests {
         let snapshot = snapshot.to_str().unwrap();
         let ready = std::env::temp_dir().join("ready.sock");
         let ready = ready.to_str().unwrap();
+        let record = std::env::temp_dir().join("activation.bin");
+        let record = record.to_str().unwrap();
         let request = vmservice::CreateVmRequest {
             config: Some(vmservice::VmConfig {
                 machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
@@ -1486,6 +1495,7 @@ mod tests {
                 restore_generation_id: vec![0x22; 16],
                 restore_absent_scratch: true,
                 restore_network_policy: true,
+                restore_activation_record_path: record.to_owned(),
                 ..Default::default()
             }),
         };
@@ -1496,6 +1506,8 @@ mod tests {
             snapshot,
             "--restore-ready-path",
             ready,
+            "--restore-activation-record",
+            record,
             "--restore-processors",
             "2",
             "--restore-gate-timeout-ms",
@@ -1886,6 +1898,12 @@ mod tests {
             (
                 capture(&|request| snapshot(request).restore_network_policy = true),
                 "restore_network_policy requires restore_path",
+            ),
+            (
+                capture(&|request| {
+                    snapshot(request).restore_activation_record_path = "record".to_owned();
+                }),
+                "restore_activation_record_path requires restore_path",
             ),
             (
                 capture(&|request| snapshot(request).restore_path = "snapshot".to_owned()),

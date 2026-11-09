@@ -521,9 +521,10 @@ describes the source definitions.
   Every microVM restore makes the restore packet available on the private
   portb restore channel. The packet carries 64 bytes of fresh entropy, the
   online-VP target, the memory-expansion ranges, the downtime, the TSC rate
-  deviation, and, at a restore that replaces the network policy of a
-  snapshot without a tier, the network settings of the restore's policy; the
-  guest must consume it and explicitly reseed its RNG.
+  deviation, at a restore that replaces the network policy of a snapshot
+  without a tier, the network settings of the restore's policy, and, at a
+  platform restore with `--restore-activation-record`, the clone's activation
+  record; the guest must consume it and explicitly reseed its RNG.
   [Snapshots](../../../user_guide/openvmm/snapshots.md) documents its format,
   the portb status bits, and the time sample.
   Every microVM portb device also reports generation-ID support in status bit
@@ -597,6 +598,15 @@ describes the source definitions.
   clone from its host, and the guest of a snapshot without a tier from the
   restore packet, which carries them, and whose restore gates host input until
   the guest acknowledges that it applied them.
+* `--restore-activation-record <PATH>`: End the restore packet of a platform
+  snapshot's clone with the bytes of this file, the clone's activation record,
+  which gives the clone the settings of its own launch. The file holds 1 to
+  1024 bytes, which OpenVMM reads before any vCPU runs and passes to the guest
+  without interpreting them, so they must carry no secret. The restore gates
+  host input until the guest acknowledges it, which the guest does once it has
+  read the packet. OpenVMM rejects the option before any vCPU starts for a
+  cold boot, for a snapshot of another tier or without a tier, and for a file
+  that is empty or longer than 1024 bytes.
 * `--restore-generation-id <32-HEX-DIGITS>`: State the immutable storage
   generation of this restore's sandbox blocks. A `workload-start` or
   `instance-checkpoint` snapshot binds its read-only layers and paired scratch

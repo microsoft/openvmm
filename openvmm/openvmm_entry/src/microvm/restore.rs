@@ -14,6 +14,7 @@ use crate::cli_args::DiskCliKind;
 use crate::cli_args::microvm::MachineProfileCli;
 use crate::storage_builder::microvm::MicrovmSandboxBlockGeometry;
 use anyhow::Context;
+use chipset_resources::microvm_time::MAX_RESTORE_ACTIVATION_LEN;
 use chipset_resources::microvm_time::RESTORE_ENTROPY_LEN;
 use chipset_resources::microvm_time::RestoreMemoryRange;
 use chipset_resources::microvm_time::RestoreNetwork;
@@ -33,6 +34,7 @@ use openvmm_helpers::snapshot::microvm::SnapshotMachineContract;
 use openvmm_helpers::snapshot::microvm::SnapshotMemoryExpansionRange;
 use openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock;
 use openvmm_helpers::snapshot::restore::OpenedSnapshot;
+use std::io::Read;
 use std::path::Path;
 use virt::time_abi::HostIdentity;
 use virt::time_abi::TimeAbiTestHooks;
@@ -107,6 +109,10 @@ pub(crate) struct MicrovmRestore {
     /// restore's policy, which the guest applies before it acknowledges the
     /// gated restore.
     pub(crate) network_settings: bool,
+    /// The activation record that `--restore-activation-record` hands a
+    /// platform snapshot's clone in its restore packet, which the guest reads
+    /// before it acknowledges the gated restore.
+    pub(crate) activation_record: Option<Vec<u8>>,
     /// Whether `--restore-memory` selected an explicit RAM target.
     pub(crate) memory_target_requested: bool,
     /// Fresh private GPA ranges selected for this restore.
@@ -132,7 +138,8 @@ impl MicrovmRestore {
     /// Returns the controller's fields of the restore packet for a time ABI
     /// restore, with `network`, the network settings of the restore's policy
     /// when [`network_settings`](Self::network_settings) asks for them, and
-    /// the generation ID they imply. The generation counter is the snapshot's
+    /// the [`activation_record`](Self::activation_record), if any, and the
+    /// generation ID they imply. The generation counter is the snapshot's
     /// plus one.
     pub(crate) fn time_abi_restore_packet(
         &self,
@@ -149,6 +156,7 @@ impl MicrovmRestore {
             &self.memory_ranges,
             self.gate_required,
             network,
+            self.activation_record.clone(),
         )
     }
 }
@@ -157,9 +165,9 @@ impl MicrovmRestore {
 /// restore of a snapshot with the time contract `time`, and the generation ID
 /// they imply. The generation counter is the snapshot's plus one,
 /// `ack_required` makes the guest acknowledge the restore through port
-/// `0x605`, and `network`, the network settings of a restore that replaces
-/// the network policy of a snapshot without a tier, makes the packet version
-/// 6.
+/// `0x605`, `network` carries the network settings of a restore that replaces
+/// the network policy of a snapshot without a tier, and `activation` the
+/// activation record of a platform snapshot's clone.
 pub(crate) fn restore_packet_base(
     time: &SnapshotTimeContract,
     restore_online_vp_count: Option<u32>,
@@ -167,6 +175,7 @@ pub(crate) fn restore_packet_base(
     memory_ranges: &[SnapshotMemoryExpansionRange],
     ack_required: bool,
     network: Option<RestoreNetwork>,
+    activation: Option<Vec<u8>>,
 ) -> anyhow::Result<([u8; 16], RestorePacketBase)> {
     let generation = time.capture_generation.checked_add(1).ok_or_else(|| {
         virt::time_abi::TimeAbiError::new(
@@ -199,6 +208,7 @@ pub(crate) fn restore_packet_base(
             .collect(),
         entropy,
         network,
+        activation,
     };
     base.validate().context("restore packet is invalid")?;
     generation_id_create.complete("restore", "generation_id_create", Default::default());
@@ -215,10 +225,12 @@ pub(crate) fn restore_packet_base(
 /// `--restore-absent-scratch` attaches its fresh scratch with no file. Only a
 /// platform snapshot, or one without a tier, admits
 /// `--restore-network-policy`, and only a platform snapshot admits
-/// `--mount-aggregate` on the filesystem slot that it left dormant. A restore
-/// that replaces the network policy of a snapshot without a tier hands the
-/// guest the new policy's network settings in its restore packet, and gates
-/// host input until the guest has applied them.
+/// `--mount-aggregate` on the filesystem slot that it left dormant, and
+/// `--restore-activation-record`. A restore that replaces the network policy
+/// of a snapshot without a tier hands the guest the new policy's network
+/// settings in its restore packet, and gates host input until the guest has
+/// applied them, and so does a restore that hands a platform snapshot's clone
+/// its activation record, until the guest has read it.
 pub(crate) fn prepare_restore(
     opt: &mut Options,
     restore_snapshot: Option<&OpenedSnapshot>,
@@ -228,6 +240,7 @@ pub(crate) fn prepare_restore(
     let mut absent_scratch = None;
     let mut restore_gate_required = false;
     let mut network_settings = false;
+    let mut activation_record = None;
     let restore_memory_target_requested = opt.microvm.restore_memory.is_some();
     let mut restore_memory_ranges = Vec::new();
     if let Some(contract) =
@@ -268,6 +281,11 @@ pub(crate) fn prepare_restore(
             opt.microvm.restore_network_policy,
         ) {
             network_settings = true;
+            restore_gate_required = true;
+        }
+        if let Some(path) = opt.microvm.restore_activation_record.as_deref() {
+            validate_activation_record_restore(&manifest.snapshot_tier)?;
+            activation_record = Some(read_activation_record(path)?);
             restore_gate_required = true;
         }
         validate_filesystem_aggregate_restore(
@@ -427,6 +445,7 @@ pub(crate) fn prepare_restore(
         machine_contract: restore_machine_contract,
         gate_required: restore_gate_required,
         network_settings,
+        activation_record,
         memory_target_requested: restore_memory_target_requested,
         memory_ranges: restore_memory_ranges,
         private_scratch_dir,
@@ -476,6 +495,40 @@ fn restore_packet_carries_network_settings(
     restore_network_policy: bool,
 ) -> bool {
     restore_network_policy && snapshot_tier.is_empty()
+}
+
+/// Rejects `--restore-activation-record` for a snapshot of a tier other than
+/// the platform tier, `snapshot_tier`.
+///
+/// A platform snapshot is captured before any tenant input, so that each of
+/// its clones takes the settings of its own launch, which its activation
+/// record carries. A snapshot of a later tier continues a tenant's workload
+/// with the settings that it was captured with, and one without a tier has no
+/// activation.
+fn validate_activation_record_restore(snapshot_tier: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        snapshot_tier == openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM,
+        "--restore-activation-record requires a platform snapshot"
+    );
+    Ok(())
+}
+
+/// Reads the activation record at `path`, which the restore packet hands the
+/// guest without interpreting it: 1 to [`MAX_RESTORE_ACTIVATION_LEN`] bytes,
+/// of which it reads at most one more, so that a longer file fails without
+/// being read whole.
+fn read_activation_record(path: &Path) -> anyhow::Result<Vec<u8>> {
+    let file = fs_err::File::open(path).context("failed to open the activation record")?;
+    let mut record = Vec::new();
+    file.take(MAX_RESTORE_ACTIVATION_LEN as u64 + 1)
+        .read_to_end(&mut record)
+        .with_context(|| format!("failed to read the activation record {}", path.display()))?;
+    anyhow::ensure!(
+        (1..=MAX_RESTORE_ACTIVATION_LEN).contains(&record.len()),
+        "activation record {} must hold 1 to {MAX_RESTORE_ACTIVATION_LEN} bytes",
+        path.display()
+    );
+    Ok(record)
 }
 
 /// Rejects `--mount-aggregate`, which `aggregate` reports, on the filesystem
@@ -1136,6 +1189,50 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn only_a_platform_restore_hands_over_an_activation_record() {
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_WORKLOAD_START;
+
+        validate_activation_record_restore(SNAPSHOT_TIER_PLATFORM).unwrap();
+        for tier in [
+            "",
+            SNAPSHOT_TIER_WORKLOAD_START,
+            SNAPSHOT_TIER_INSTANCE_CHECKPOINT,
+        ] {
+            assert_eq!(
+                validate_activation_record_restore(tier)
+                    .unwrap_err()
+                    .to_string(),
+                "--restore-activation-record requires a platform snapshot",
+                "{tier}"
+            );
+        }
+    }
+
+    #[test]
+    fn activation_records_hold_one_to_the_most_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("record");
+        for length in [1, 602, MAX_RESTORE_ACTIVATION_LEN] {
+            let record: Vec<u8> = (0..length).map(|i| i as u8).collect();
+            fs_err::write(&path, &record).unwrap();
+            assert_eq!(read_activation_record(&path).unwrap(), record);
+        }
+        for length in [0, MAX_RESTORE_ACTIVATION_LEN + 1, 1 << 20] {
+            fs_err::write(&path, vec![0x5a; length]).unwrap();
+            let err = read_activation_record(&path).unwrap_err();
+            assert!(
+                err.to_string().ends_with(&format!(
+                    "must hold 1 to {MAX_RESTORE_ACTIVATION_LEN} bytes"
+                )),
+                "{err:#}"
+            );
+        }
+        assert!(read_activation_record(&dir.path().join("missing")).is_err());
+    }
+
+    #[test]
     fn only_a_platform_restore_attaches_an_aggregate_to_a_dormant_slot() {
         use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
         use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
@@ -1193,6 +1290,7 @@ pub(crate) mod tests {
             machine_contract: Some(contract),
             gate_required: true,
             network_settings: false,
+            activation_record: None,
             memory_target_requested: true,
             memory_ranges: vec![SnapshotMemoryExpansionRange {
                 gpa_start: 0x1_0000_0000,
@@ -1240,6 +1338,16 @@ pub(crate) mod tests {
             .time_abi_restore_packet(None, Some(network))
             .unwrap();
         assert_eq!(base.network, Some(network));
+        assert!(base.ack_required);
+
+        // The packet carries a platform clone's activation record.
+        let restore = MicrovmRestore {
+            activation_record: Some(vec![0xa1, 0xa2]),
+            ..time_abi_restore(6)
+        };
+        let (_, base) = restore.time_abi_restore_packet(None, None).unwrap();
+        assert_eq!(base.activation.as_deref(), Some(&[0xa1, 0xa2][..]));
+        assert_eq!(base.network, None);
         assert!(base.ack_required);
 
         assert!(restore.time_abi_restore_packet(Some(3), None).is_err());
