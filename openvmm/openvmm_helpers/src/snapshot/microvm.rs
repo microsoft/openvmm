@@ -910,7 +910,9 @@ fn canonical_memory_expansion_ranges(
             continue;
         }
         ranges.push(SnapshotMemoryExpansionRange {
-            gpa_start: capacity_range.gpa_start + logical_start - capacity_range.file_offset,
+            // Offset into the range first: its end fits in a u64, but
+            // `gpa_start + logical_start` may not.
+            gpa_start: capacity_range.gpa_start + (logical_start - capacity_range.file_offset),
             length: logical_end - logical_start,
         });
     }
@@ -4234,6 +4236,38 @@ mod tests {
             .is_err()
         );
         assert!(canonical_microvm_memory_ranges(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn memory_expansion_near_gpa_limit_does_not_overflow() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        // RAM beyond 3 GiB resumes at 4 GiB, so base RAM of 2^64 - 4 GiB ends
+        // at 2^64 - 3 GiB, where its expansion to a capacity of 2^64 - 2 GiB
+        // begins.
+        let memory_size = u64::MAX - 4 * GB + 1;
+        let capacity = u64::MAX - 2 * GB + 1;
+        let expansion = [SnapshotMemoryExpansionRange {
+            gpa_start: u64::MAX - 3 * GB + 1,
+            length: 2 * GB,
+        }];
+        assert_eq!(
+            canonical_memory_expansion_ranges(memory_size, capacity).unwrap(),
+            expansion
+        );
+
+        // Opening the snapshot checks the contract's shape, and a restore to
+        // the capacity selects the whole expansion.
+        let manifest = expandable_memory_manifest(memory_size, capacity);
+        validate_machine_contract_shape(
+            manifest.machine_contract.as_ref().unwrap(),
+            memory_size,
+            manifest.vp_count,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_restore_memory_target(&manifest, capacity).unwrap(),
+            expansion
+        );
     }
 
     fn canonical_worker_platform_command_line(processor_count: u32) -> String {
