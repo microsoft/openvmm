@@ -2300,6 +2300,20 @@ pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Res
             microvm_boot_online_vp_count(manifest.vp_count, &contract.effective_command_line)
                 .context("platform snapshot boot-online processor count is invalid")?;
         }
+        // The kernel applies the last of a parameter's values, so a tuning
+        // parameter may appear once.
+        let mut tuning_parameters = HashSet::new();
+        for token in contract
+            .effective_command_line
+            .split_ascii_whitespace()
+            .filter(|token| PLATFORM_TUNING_TOKENS.contains(token))
+        {
+            let parameter = token.split_once('=').map_or(token, |(name, _)| name);
+            anyhow::ensure!(
+                tuning_parameters.insert(parameter),
+                "platform snapshot command line contains duplicate kernel tuning parameter '{parameter}'"
+            );
+        }
         anyhow::ensure!(
             contract
                 .effective_command_line
@@ -2310,6 +2324,26 @@ pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Res
     }
     Ok(())
 }
+
+/// The guest kernel tuning parameters that a platform snapshot's command line
+/// may carry, each parameter at most once. Like the other tokens that the
+/// command line may carry, each is fixed when the guest kernel boots, is the
+/// same for every clone, and carries no tenant data.
+const PLATFORM_TUNING_TOKENS: [&str; 13] = [
+    "mitigations=off",
+    "mitigations=auto",
+    "mitigations=auto,nosmt",
+    "no_timer_check",
+    "quiet",
+    "loglevel=0",
+    "loglevel=1",
+    "loglevel=2",
+    "loglevel=3",
+    "loglevel=4",
+    "loglevel=5",
+    "loglevel=6",
+    "loglevel=7",
+];
 
 fn platform_command_line_token_is_invariant(token: &str) -> bool {
     matches!(
@@ -2325,6 +2359,7 @@ fn platform_command_line_token_is_invariant(token: &str) -> bool {
     ) || token.starts_with("nr_cpus=")
         || token.starts_with("maxcpus=")
         || token == openvmm_defs::microvm::MICROVM_CONTROL_TTY_COMMAND_LINE
+        || PLATFORM_TUNING_TOKENS.contains(&token)
         || [
             "virtio_mmio.device=",
             "virtnet_ip=",
@@ -4638,6 +4673,206 @@ mod tests {
                     canonical.replace("nvx_control_tty=hvc2", invalid_control),
                 );
             assert!(validate_manifest_contents(&manifest).is_err());
+        }
+    }
+
+    /// Returns a platform snapshot whose capture booted with `user_args`
+    /// after the sandbox tokens, as the worker records its command line.
+    fn platform_snapshot_with(user_args: &[&str]) -> SnapshotManifest {
+        let mut manifest = paired_scratch_manifest(&[0x5a; 512]);
+        make_platform_snapshot(&mut manifest);
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        // A platform capture's fresh scratch carries no restore mode.
+        contract
+            .microvm_sandbox_blocks
+            .last_mut()
+            .unwrap()
+            .restore_mode
+            .clear();
+        let processor_count = u32::try_from(contract.topology.apic_ids.len()).unwrap();
+        contract
+            .set_effective_command_line(worker_platform_command_line(processor_count, user_args));
+        manifest
+    }
+
+    /// Publishes `manifest`, with zeroed memory, as the snapshot `snap` in
+    /// `parent`, and returns its path.
+    fn publish_in(
+        parent: &Path,
+        manifest: &SnapshotManifest,
+    ) -> Result<std::path::PathBuf, super::super::publish::SnapshotWriteError> {
+        let memory = parent.join("memory.bin");
+        std::fs::write(&memory, vec![0_u8; manifest.memory_size_bytes as usize]).unwrap();
+        let snap_dir = parent.join("snap");
+        super::super::publish::write_snapshot(&snap_dir, manifest, b"state", &memory)?;
+        Ok(snap_dir)
+    }
+
+    /// The kernel tuning parameters that a platform snapshot's command line
+    /// may carry.
+    fn kernel_tuning_parameters() -> Vec<String> {
+        let mut parameters = [
+            "mitigations=off",
+            "mitigations=auto",
+            "mitigations=auto,nosmt",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        parameters.extend(["no_timer_check", "quiet"].map(str::to_owned));
+        parameters.extend((0..=7).map(|level| format!("loglevel={level}")));
+        parameters
+    }
+
+    #[test]
+    fn platform_snapshot_carries_kernel_tuning_parameters_through_publish_and_restore() {
+        let parameters = kernel_tuning_parameters();
+        for parameter in &parameters {
+            assert!(
+                platform_command_line_token_is_invariant(parameter),
+                "{parameter}"
+            );
+        }
+        // Each parameter alone, then one of each after the boot-online count,
+        // as a template that boots as its cold sandboxes do passes them.
+        let mut cases = parameters
+            .iter()
+            .map(|parameter| (vec![parameter.as_str()], 0))
+            .collect::<Vec<_>>();
+        cases.push((
+            vec![
+                "maxcpus=1",
+                "mitigations=auto,nosmt",
+                "no_timer_check",
+                "quiet",
+                "loglevel=0",
+            ],
+            1,
+        ));
+        for (user_args, boot_online) in cases {
+            let mut manifest = platform_snapshot_with(&user_args);
+            manifest
+                .machine_contract
+                .as_mut()
+                .unwrap()
+                .boot_online_vp_count = boot_online;
+            let dir = tempfile::tempdir().unwrap();
+            let snap_dir = publish_in(dir.path(), &manifest)
+                .unwrap_or_else(|error| panic!("{user_args:?}: {error:#}"));
+            let opened = super::super::restore::OpenedSnapshot::open(&snap_dir)
+                .unwrap_or_else(|error| panic!("{user_args:?}: {error:#}"));
+            let command_line = &opened
+                .manifest()
+                .machine_contract
+                .as_ref()
+                .unwrap()
+                .effective_command_line;
+            assert_eq!(
+                command_line,
+                &manifest
+                    .machine_contract
+                    .as_ref()
+                    .unwrap()
+                    .effective_command_line
+            );
+            let tokens = command_line.split_ascii_whitespace().collect::<Vec<_>>();
+            for token in &user_args {
+                assert_eq!(
+                    tokens.iter().filter(|found| *found == token).count(),
+                    1,
+                    "{token} in {command_line}"
+                );
+            }
+            super::super::restore::claim_snapshot_for_restore(&snap_dir, opened.manifest())
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn platform_snapshot_refuses_repeated_or_other_kernel_tuning_at_publish_and_restore() {
+        const DUPLICATE: &str = "platform snapshot command line contains duplicate kernel \
+                                 tuning parameter";
+        const UNSUPPORTED: &str =
+            "platform snapshot command line contains tenant or unsupported configuration";
+        let mut cases: Vec<(Vec<&str>, String)> = Vec::new();
+        for (user_args, parameter) in [
+            (&["quiet", "quiet"][..], "quiet"),
+            (&["no_timer_check", "no_timer_check"][..], "no_timer_check"),
+            (&["mitigations=off", "mitigations=off"][..], "mitigations"),
+            (&["mitigations=off", "mitigations=auto"][..], "mitigations"),
+            (
+                &["mitigations=auto,nosmt", "mitigations=off"][..],
+                "mitigations",
+            ),
+            (&["loglevel=0", "loglevel=7"][..], "loglevel"),
+            (&["loglevel=3", "quiet", "loglevel=3"][..], "loglevel"),
+        ] {
+            cases.push((user_args.to_vec(), format!("{DUPLICATE} '{parameter}'")));
+        }
+        for token in [
+            // `mitigations=` with another value.
+            "mitigations=on",
+            "mitigations=",
+            "mitigations",
+            "mitigations=Off",
+            "mitigations=auto,nosmt,off",
+            "mitigations=nosmt",
+            // Log levels outside 0 to 7.
+            "loglevel=8",
+            "loglevel=-1",
+            "loglevel=07",
+            "loglevel=",
+            "loglevel",
+            // The parameters that take no value, with one.
+            "quiet=1",
+            "no_timer_check=1",
+            // The kernel takes a dash in a name for an underscore, but the
+            // command line holds the canonical spelling alone.
+            "no-timer-check",
+            // Unknown tokens.
+            "nokaslr",
+            "debug",
+            "init=/bin/sh",
+        ] {
+            cases.push((vec![token], UNSUPPORTED.to_owned()));
+        }
+        // A token outside the set stays refused beside the admitted one.
+        cases.push((
+            vec!["mitigations=off", "mitigations=on"],
+            UNSUPPORTED.to_owned(),
+        ));
+        for (user_args, expected) in cases {
+            let manifest = platform_snapshot_with(&user_args);
+            let error = format!("{:#}", validate_manifest_contents(&manifest).unwrap_err());
+            assert_eq!(error, expected, "{user_args:?}");
+
+            // Publication refuses it, and publishes nothing.
+            let dir = tempfile::tempdir().unwrap();
+            let error = publish_in(dir.path(), &manifest).unwrap_err();
+            assert!(error.is_rollback_safe(), "{user_args:?}: {error:#}");
+            assert_eq!(format!("{error:#}"), expected, "{user_args:?}");
+            assert!(!dir.path().join("snap").exists(), "{user_args:?}");
+
+            // Restore refuses it in a snapshot whose manifest records it, and
+            // leaves the snapshot as it is.
+            let snap_dir = publish_in(dir.path(), &platform_snapshot_with(&[])).unwrap();
+            let mut recorded = super::super::restore::read_snapshot_manifest(&snap_dir).unwrap();
+            recorded.machine_contract = manifest.machine_contract.clone();
+            let encoded = mesh::payload::encode(recorded.clone());
+            let manifest_path = snap_dir.join(super::super::format::MANIFEST_FILE_NAME);
+            std::fs::write(&manifest_path, &encoded).unwrap();
+            for error in [
+                super::super::restore::OpenedSnapshot::open(&snap_dir)
+                    .err()
+                    .unwrap(),
+                super::super::restore::read_snapshot_manifest(&snap_dir)
+                    .err()
+                    .unwrap(),
+                super::super::restore::claim_snapshot_for_restore(&snap_dir, &recorded)
+                    .unwrap_err(),
+            ] {
+                assert_eq!(format!("{error:#}"), expected, "{user_args:?}");
+            }
+            assert_eq!(std::fs::read(&manifest_path).unwrap(), encoded);
         }
     }
 
