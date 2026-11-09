@@ -295,7 +295,7 @@ mod gicd {
                     enable: vec![0; n],
                     cfg: vec![0; n * 2],
                     priority: vec![0; n * 8],
-                    route: vec![0; n * 64],
+                    route: vec![0; n * 32],
                     enable_grp0: false,
                     enable_grp1: false,
                 })),
