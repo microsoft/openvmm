@@ -289,6 +289,7 @@ option.
 | `MicrovmSnapshotConfig.restore_generation_id` | `--restore-generation-id` |
 | `MicrovmSnapshotConfig.restore_absent_scratch` | `--restore-absent-scratch` |
 | `MicrovmSnapshotConfig.restore_network_policy` | `--restore-network-policy` |
+| `MicrovmSnapshotConfig.restore_activation_record_path` | `--restore-activation-record` |
 
 A string field takes its option's syntax: `MicrovmNetwork.address` is
 `IPv4/PREFIX`, such as `10.0.0.2/24`, each egress rule is

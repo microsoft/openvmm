@@ -256,7 +256,8 @@ from the data port. Its 24-byte little-endian header holds:
 - the magic `OVR` and the version;
 - flags: bit 0, the downtime came from host UTC; bit 1, a memory target;
   bit 2, the guest must acknowledge the restore through port `0x605`; bit 3,
-  a test hook is active; bit 4, the packet carries network settings;
+  a test hook is active; bit 4, the packet carries network settings; bit 5,
+  the packet ends with an activation record;
 - the online-VP target (0 for none), the memory-range count, and the network
   byte;
 - the generation counter (`u32`), which is 0 at cold boot and one more than
@@ -265,10 +266,11 @@ from the data port. Its 24-byte little-endian header holds:
 - the downtime in nanoseconds (`u64`).
 
 The `(u64 GPA start, u64 length)` memory ranges, 64 bytes of fresh entropy, and
-a 16-byte DNS server follow the header. Status bits 2, 3, and 4 report an
-online-VP target, a memory target, and one or more memory ranges, so a
-zero-range target can skip post-restore repair. The packet carries no host UTC:
-the guest sets its clock from a time sample.
+a 16-byte DNS server follow the header, and then, with flag bit 5, the
+activation record: its length (`u32`), then its bytes. Status bits 2, 3, and 4
+report an online-VP target, a memory target, and one or more memory ranges, so
+a zero-range target can skip post-restore repair. The packet carries no host
+UTC: the guest sets its clock from a time sample.
 
 A restore whose `--restore-network-policy` replaces the network policy of a
 snapshot without a tier sets flag bit 4: the packet carries the network
@@ -282,6 +284,17 @@ other bits are zero. The DNS server is an IPv6 address, or an IPv4 address and
 acknowledgement, which the guest gives once it has applied the settings. Every
 other restore, a platform clone's included, leaves flag bit 4 clear and the
 network byte and DNS server zero.
+
+A platform restore with `--restore-activation-record <PATH>` sets flag bit 5:
+the packet ends with the bytes of that file, 1 to 1024 of them, the clone's
+activation record, which gives the clone the settings of its own launch.
+OpenVMM reads the file before any vCPU runs, and passes its bytes to the guest
+without interpreting them, so they must carry no secret. Such a restore
+requires the guest's acknowledgement, which the guest gives once it has read
+the packet. Every other restore leaves flag bit 5 clear, and its packet ends
+with the DNS server, as before the flag. A guest that predates the flag
+refuses a packet that sets it, whose bit 5 it reserves, rather than ignore its
+record.
 
 Status bit 6 advertises the time sample. Writing `0xa7` to the status port
 latches a 48-byte little-endian sample, version 1:

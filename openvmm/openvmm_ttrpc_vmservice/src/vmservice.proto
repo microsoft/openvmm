@@ -1067,6 +1067,10 @@ message MicrovmSnapshotConfig {
     // policy that the NIC of a platform snapshot, or of a snapshot without a
     // tier, was captured with (--restore-network-policy).
     bool restore_network_policy = 14;
+    // File whose 1 to 1024 bytes, the activation record of a platform
+    // snapshot's clone, end the clone's restore packet
+    // (--restore-activation-record). They carry no secret.
+    string restore_activation_record_path = 15;
 }
 
 message CreateVMRequest {
