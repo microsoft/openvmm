@@ -70,39 +70,39 @@ pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
     return builder.create(path);
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+/// Renames the directory `source` to its sibling `destination` in one step,
+/// unless something exists at `destination`, which it leaves as it is. A plain
+/// rename would replace an empty directory that another process created there
+/// after publication last checked that the destination was absent.
 pub(super) fn rename_no_replace(source: &Path, destination: &Path) -> anyhow::Result<()> {
-    let source_parent = snapshot_parent(source);
-    let destination_parent = snapshot_parent(destination);
+    let parent = snapshot_parent(destination);
     anyhow::ensure!(
-        source_parent == destination_parent,
+        snapshot_parent(source) == parent,
         "snapshot staging and destination directories have different parents",
     );
-    let source_name = source
-        .file_name()
-        .context("snapshot staging path must name a directory")?;
-    let destination_name = destination
-        .file_name()
-        .context("snapshot destination must name a directory")?;
-    let parent = std::fs::File::open(destination_parent).with_context(|| {
-        format!(
-            "failed to open snapshot parent directory {}",
-            destination_parent.display()
-        )
-    })?;
-    nix::fcntl::renameat2(
-        &parent,
-        source_name,
-        &parent,
-        destination_name,
-        nix::fcntl::RenameFlags::RENAME_NOREPLACE,
-    )?;
-    Ok(())
-}
-
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-pub(super) fn rename_no_replace(source: &Path, destination: &Path) -> anyhow::Result<()> {
-    fs_err::rename(source, destination)?;
+    #[cfg(unix)]
+    {
+        let source_name = source
+            .file_name()
+            .context("snapshot staging path must name a directory")?;
+        let destination_name = destination
+            .file_name()
+            .context("snapshot destination must name a directory")?;
+        let directory = std::fs::File::open(parent).with_context(|| {
+            format!(
+                "failed to open snapshot parent directory {}",
+                parent.display()
+            )
+        })?;
+        pal::unix::fs::rename_no_replace_at(
+            &directory,
+            Path::new(source_name),
+            &directory,
+            Path::new(destination_name),
+        )?;
+    }
+    #[cfg(windows)]
+    pal::windows::fs::rename_no_replace(source, destination)?;
     Ok(())
 }
 
