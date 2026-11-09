@@ -1207,6 +1207,37 @@ mod tests {
     }
 
     #[test]
+    fn publish_does_not_replace_empty_destination_created_after_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let memory_path = dir.path().join("memory.bin");
+        std::fs::write(&memory_path, vec![0x5a_u8; 1024]).unwrap();
+        let memory_file = std::fs::File::open(&memory_path).unwrap();
+        let mut staging = stage_snapshot(
+            &snap_dir,
+            &test_manifest(),
+            b"state",
+            &memory_file,
+            None,
+            MemoryPublication::IndependentCopy,
+        )
+        .unwrap();
+        let staging_path = staging.path().to_owned();
+
+        // Another process creates the destination, empty, after the
+        // publisher's last check that it is absent. A plain rename would
+        // replace it with the snapshot.
+        std::fs::create_dir(&snap_dir).unwrap();
+        let publish_error = staging.publish(&snap_dir).unwrap_err();
+        let error = staging.rollback(publish_error);
+
+        assert!(!error.is_committed());
+        assert!(error.is_rollback_safe());
+        assert!(!staging_path.exists());
+        assert!(std::fs::read_dir(&snap_dir).unwrap().next().is_none());
+    }
+
+    #[test]
     fn write_snapshot_rejects_oversized_memory_without_publishing() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
