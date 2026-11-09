@@ -1020,13 +1020,12 @@ message VirtioFs {
     // Additional backend mount options, separated by ';'. When read_only is
     // set, "ro" is appended.
     string mount_options = 4;
-    // Host-specific virtio-fs options. Omit on non-Windows hosts.
+    // Host-specific virtio-fs options. Omitted on non-Windows hosts.
     WindowsOptions windows_options = 5;
 
     message WindowsOptions {
         // Expose shared-memory section objects instead of host files.
-        // root_path is the NT path of an existing object directory, e.g.
-        // \Sessions\1\BaseNamedObjects\<name>.
+        // root_path is the NT path of an existing object directory.
         bool shared_mem = 2;
     }
 }

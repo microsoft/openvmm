@@ -53,7 +53,6 @@ pub mod fs {
 
     #[derive(MeshPayload, Default)]
     pub struct VirtioFsWindowsOptions {
-        #[mesh(2)]
         pub shared_mem: bool,
     }
 
