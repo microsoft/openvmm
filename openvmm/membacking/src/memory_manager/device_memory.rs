@@ -45,7 +45,6 @@ impl MemoryMapper for DeviceMemoryMapper {
             region_manager: self.region_manager.clone(),
             state: Mutex::new(DeviceRegionState {
                 handle: None,
-                guest_address: None,
                 mappings: Vec::new(),
             }),
         });
@@ -65,7 +64,6 @@ struct DeviceMemoryRegion {
 #[derive(Debug)]
 struct DeviceRegionState {
     handle: Option<RegionHandle>,
-    guest_address: Option<u64>,
     mappings: Vec<DeviceMapping>,
 }
 
@@ -86,10 +84,6 @@ impl DeviceMemoryRegion {
 }
 
 impl MappedMemoryRegion for DeviceMemoryRegion {
-    fn guest_address(&self) -> Option<u64> {
-        self.state.lock().guest_address
-    }
-
     fn map(
         &self,
         offset: usize,
@@ -160,7 +154,6 @@ impl MappableGuestMemory for DeviceMemoryControl {
         #[expect(clippy::await_holding_lock)] // Treat all this as sync for now.
         block_on(async {
             let mut state = self.0.state.lock();
-            state.guest_address = None;
             if let Some(handle) = state.handle.take() {
                 handle.teardown().await;
             }
@@ -202,7 +195,6 @@ impl MappableGuestMemory for DeviceMemoryControl {
                 .map_err(io::Error::other)?;
 
             state.handle = Some(handle);
-            state.guest_address = Some(gpa);
             Ok(())
         })
     }
@@ -212,6 +204,5 @@ impl MappableGuestMemory for DeviceMemoryControl {
         if let Some(handle) = state.handle.take() {
             block_on(handle.teardown());
         }
-        state.guest_address = None;
     }
 }
