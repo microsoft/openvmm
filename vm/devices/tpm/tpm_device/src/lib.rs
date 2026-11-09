@@ -2858,7 +2858,7 @@ mod tests {
                         .unwrap();
                 }
                 tpm.flush_pending_nvram().await.unwrap();
-                let blob = tpm.rt.nvram_store.restore().await.unwrap().unwrap();
+                let blob = tpm.idle_stores().nvram.restore().await.unwrap().unwrap();
                 assert_eq!(blob.len(), nvram_size);
 
                 // Drop the TPM instance to uninitialize the underlying
