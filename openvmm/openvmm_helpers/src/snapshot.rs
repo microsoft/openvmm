@@ -105,10 +105,10 @@ pub fn validate_manifest(
 }
 
 /// Optional checks a caller can require a snapshot to pass on restore.
-/// Unset fields are not checked.
 #[derive(Default)]
 pub struct SnapshotExpectations {
-    /// The snapshot ID the manifest must contain.
+    /// If set, the manifest's snapshot ID must equal this value. If `None`,
+    /// the snapshot ID is not checked.
     pub snapshot_id: Option<guid::Guid>,
 }
 

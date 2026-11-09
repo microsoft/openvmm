@@ -30,7 +30,8 @@ file on disk rather than held in anonymous memory.
 The memory backing file and the snapshot directory must be on the **same
 filesystem**. OpenVMM creates a hard link from the backing file to
 `memory.bin` inside the snapshot directory, which does not work across
-filesystem boundaries.
+filesystem boundaries. Keep the backing file outside the snapshot directory:
+the snapshot directory must not exist before the save.
 ```
 
 ## Saving a snapshot

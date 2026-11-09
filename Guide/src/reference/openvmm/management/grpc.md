@@ -45,6 +45,8 @@ before their implementation is connected end to end.
 * RemoveVpciDevice
 * Quit
 
+## Snapshots (SaveVM and RestoreVM)
+
 `SaveVM` is a compound operation that pauses the VM and writes `manifest.bin`,
 `state.bin`, and `memory.bin` to the requested directory. The VM must use the
 `MemoryConfig.backing_file_path` setting. The currently supported

@@ -466,7 +466,11 @@ impl VmController {
             .context("save-snapshot requires --memory-backing-file")?;
 
         // Reject an existing destination before touching the VM, so a rejected
-        // save leaves the VM running.
+        // save leaves the VM running. This check is best-effort: the
+        // destination could still be created before the snapshot is written.
+        // `write_snapshot` claims it atomically with `create_dir` and never
+        // overwrites existing data, so in that case the save just fails later,
+        // with the VM paused.
         openvmm_helpers::snapshot::check_snapshot_destination(dir)?;
 
         // Pause the VM.
