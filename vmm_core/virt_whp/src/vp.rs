@@ -1111,13 +1111,9 @@ mod x86 {
                             match self.vp.partition.isolation {
                                 virt::IsolationType::None => {}
                                 virt::IsolationType::Vbs => {
-                                    // Eax report paravisor present if VTL2 enabled.
-                                    // TODO: Should Underhill be handling this?
-                                    if self.vp.partition.vtl2.is_some()
-                                        && self.state.active_vtl != Vtl::Vtl2
-                                    {
-                                        default[0] |= 1;
-                                    }
+                                    // Paravisor-present selects GHCB/TDVMCALL interfaces,
+                                    // which VBS does not implement. Match Hyper-V.
+                                    default[0] &= !1;
 
                                     // Ebx report vbs isolated type.
                                     default[1] |= 1;

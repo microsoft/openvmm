@@ -102,12 +102,11 @@ impl<T> ArcCyclicBuilder<T> {
         // Construct the inner in the "uninitialized" state with a single
         // weak reference.
         // NOTE: `Box::new` is replaced with the `box` keyword in std
-        let uninit_ptr: NonNull<_> = Box::leak(Box::new(ArcInner {
+        let uninit_ptr = NonNull::from_mut(Box::leak(Box::new(ArcInner {
             strong: atomic::AtomicUsize::new(0),
             weak: atomic::AtomicUsize::new(1),
             data: mem::MaybeUninit::<T>::uninit(),
-        }))
-        .into();
+        })));
         let init_ptr: NonNull<ArcInner<T>> = uninit_ptr.cast();
 
         // SAFETY: equivalent of calling `Weak { ptr: init_ptr }`
