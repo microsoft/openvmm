@@ -174,22 +174,22 @@ async fn idle_test<T: PetriVmmBackend>(
         .sleep(Duration::from_secs(wait_time_sec as u64))
         .await;
 
+    let arch_str = get_arch_str(isolation_type, machine_arch);
+    let vp_str = format!("{}vp", vp_count);
     let inspect_proc = vm.inspect_openhcl("proc", Some(2), None).await.unwrap();
-    let proc_json: Value = from_str(&inspect_proc.json().to_string()).unwrap();
+    let mut proc_json: Value = from_str(&inspect_proc.json().to_string()).unwrap();
 
-    tracing::info!(
-        "MEMSTAT_START:{}:MEMSTAT_END",
-        format!("{}", inspect_proc.json())
-    );
+    proc_json["vm_info"] = serde_json::json!({
+        "build_flavor": build_flavor,
+        "arch": arch_str,
+        "vps": vp_str,
+    });
+
+    tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", proc_json);
 
     // block assertions on release CVM for now so that we can collect baselines
     if isolation_type.is_none() || build_flavor == "debug" {
-        assert_against_baseline(
-            proc_json,
-            build_flavor,
-            &get_arch_str(isolation_type, machine_arch),
-            &format!("{}vp", vp_count),
-        );
+        assert_against_baseline(proc_json, build_flavor, &arch_str, &vp_str);
     }
 
     agent.power_off().await?;
