@@ -12,6 +12,7 @@
 
 mod prepare;
 mod profile;
+mod syscall_denylist;
 
 #[cfg(target_os = "linux")]
 mod unix;
@@ -29,6 +30,12 @@ pub use profile::Profile;
 pub use profile::Restrictions;
 pub use profile::RestrictionsBuilder;
 pub use profile::Syscalls;
+pub use syscall_denylist::DeniedSyscall;
+pub use syscall_denylist::Enforcement;
+pub use syscall_denylist::platform_syscall_denylist;
+
+#[cfg(target_os = "linux")]
+pub use unix::seccomp::nr_for_name;
 
 /// Process exit code reserved for required sandbox setup failures.
 pub const EXIT_SANDBOX_FAILED: i32 = 90;

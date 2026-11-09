@@ -12,6 +12,7 @@ thiserror.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 fs-err.workspace = true
 libc.workspace = true
+seccompiler.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 test_with_tracing.workspace = true
