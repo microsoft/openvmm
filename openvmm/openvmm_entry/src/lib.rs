@@ -261,9 +261,6 @@ fn base_chipset_type(opt: &Options) -> BaseChipsetType {
 }
 
 /// Whether the VM gets an ACPI power button.
-///
-/// This reads the boot flags rather than the load mode, which is
-/// `LoadMode::None` when restoring a snapshot.
 fn acpi_power_button_enabled(opt: &Options) -> bool {
     if opt.igvm.is_some() {
         false
