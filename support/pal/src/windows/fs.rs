@@ -28,6 +28,7 @@ use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 use windows_sys::Win32::Storage::FileSystem::FindClose;
 use windows_sys::Win32::Storage::FileSystem::FindFirstFileW;
+use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 use windows_sys::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
 
 pub fn query_stat_lx_by_name(path: &Path) -> io::Result<ntioapi::FILE_STAT_LX_INFORMATION> {
@@ -136,6 +137,28 @@ pub fn extended_length_path(path: &Path) -> io::Result<PathBuf> {
     Ok(OsString::from_wide(&extended).into())
 }
 
+/// Renames `from` to `to` in one step, unless something exists at `to`.
+///
+/// Unlike [`std::fs::rename`], which replaces a file at `to`, and an empty
+/// directory too where the file system supports POSIX rename semantics, such
+/// as NTFS, this fails with [`io::ErrorKind::AlreadyExists`] when anything
+/// exists there, and leaves it as it is: it is `MoveFileExW` without
+/// `MOVEFILE_REPLACE_EXISTING`, which renames a directory only within its
+/// volume. Both paths may exceed the legacy Win32 `MAX_PATH` limit.
+pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    let encode = |path: &Path| {
+        U16CString::from_os_str(extended_length_path(path)?.as_os_str())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+    };
+    let (from, to) = (encode(from)?, encode(to)?);
+    // SAFETY: Both paths are NUL-terminated and outlive the call, which
+    // retains neither.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +202,41 @@ mod tests {
         ] {
             assert_eq!(extended(&path), Path::new(&path));
         }
+    }
+
+    #[test]
+    fn rename_no_replace_leaves_existing_destinations_under_long_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        // Exceed the legacy Win32 limits of directory and file paths.
+        let mut root = directory.path().to_path_buf();
+        while root.as_os_str().encode_wide().count() <= 320 {
+            root.push("long-path-component");
+        }
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("file"), b"source").unwrap();
+        fs::create_dir(root.join("empty")).unwrap();
+        fs::write(root.join("file"), b"file").unwrap();
+
+        // `std::fs::rename` would replace the empty directory.
+        for destination in ["empty", "file"] {
+            let error = rename_no_replace(&source, &root.join(destination)).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::AlreadyExists,
+                "{destination}: {error}"
+            );
+        }
+        let error = rename_no_replace(&source, &root.join("a\0b")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(fs::read_dir(root.join("empty")).unwrap().next().is_none());
+        assert_eq!(fs::read(root.join("file")).unwrap(), b"file");
+        assert_eq!(fs::read(source.join("file")).unwrap(), b"source");
+
+        let renamed = root.join("nested").join("renamed");
+        fs::create_dir(root.join("nested")).unwrap();
+        rename_no_replace(&source, &renamed).unwrap();
+        assert!(!source.exists());
+        assert_eq!(fs::read(renamed.join("file")).unwrap(), b"source");
     }
 }

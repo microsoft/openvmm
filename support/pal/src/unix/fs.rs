@@ -3,6 +3,80 @@
 
 use std::fs::File;
 use std::io;
+use std::path::Path;
+
+/// Renames `from`, relative to the directory `from_directory`, to `to`,
+/// relative to `to_directory`, in one step, unless something exists at `to`.
+///
+/// Unlike [`std::fs::rename`], which replaces a file or an empty directory at
+/// `to`, this fails with [`io::ErrorKind::AlreadyExists`] when anything exists
+/// there, and leaves it as it is. Linux uses `renameat2` with
+/// `RENAME_NOREPLACE`, through the system call, since musl does not wrap it,
+/// and a file system that cannot rename without replacing fails it with
+/// `EINVAL`. macOS uses `renameatx_np` with `RENAME_EXCL`. Other platforms
+/// fail with [`io::ErrorKind::Unsupported`].
+pub fn rename_no_replace_at(
+    from_directory: &File,
+    from: &Path,
+    to_directory: &File,
+    to: &Path,
+) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::ffi::CString;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::ffi::OsStrExt;
+
+        let c_path = |path: &Path| {
+            CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte")
+            })
+        };
+        let (from, to) = (c_path(from)?, c_path(to)?);
+        #[cfg(target_os = "linux")]
+        let result = {
+            // SAFETY: Both descriptors are live, and both paths are
+            // NUL-terminated and outlive the call, which retains none of them.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_renameat2,
+                    from_directory.as_raw_fd(),
+                    from.as_ptr(),
+                    to_directory.as_raw_fd(),
+                    to.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            }
+        };
+        #[cfg(target_os = "macos")]
+        let result = {
+            // SAFETY: Both descriptors are live, and both paths are
+            // NUL-terminated and outlive the call, which retains none of them.
+            unsafe {
+                libc::renameatx_np(
+                    from_directory.as_raw_fd(),
+                    from.as_ptr(),
+                    to_directory.as_raw_fd(),
+                    to.as_ptr(),
+                    libc::RENAME_EXCL,
+                )
+            }
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (from_directory, from, to_directory, to);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "renaming without replacing is unsupported on this platform",
+        ))
+    }
+}
 
 /// Clones all file extents into an independently writable destination.
 pub fn reflink(source: &File, destination: &File) -> io::Result<()> {
@@ -233,5 +307,54 @@ mod tests {
         let mut expected_destination = CONTENTS.to_vec();
         expected_destination[0] = b'D';
         assert_eq!(destination_contents, expected_destination);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn test_rename_no_replace_at_leaves_existing_destinations() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let parent = File::open(root).unwrap();
+        std::fs::create_dir(root.join("source")).unwrap();
+        std::fs::write(root.join("source/file"), b"source").unwrap();
+        std::fs::create_dir(root.join("empty")).unwrap();
+        std::fs::write(root.join("file"), b"file").unwrap();
+
+        // A plain rename would replace the empty directory.
+        for destination in ["empty", "file"] {
+            let error = rename_no_replace_at(
+                &parent,
+                Path::new("source"),
+                &parent,
+                Path::new(destination),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::AlreadyExists,
+                "{destination}: {error}"
+            );
+        }
+        let error = rename_no_replace_at(&parent, Path::new("source"), &parent, Path::new("a\0b"))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            std::fs::read_dir(root.join("empty"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        assert_eq!(std::fs::read(root.join("file")).unwrap(), b"file");
+        assert_eq!(std::fs::read(root.join("source/file")).unwrap(), b"source");
+
+        // The names are relative to their own directories.
+        std::fs::create_dir(root.join("nested")).unwrap();
+        let nested = File::open(root.join("nested")).unwrap();
+        rename_no_replace_at(&parent, Path::new("source"), &nested, Path::new("renamed")).unwrap();
+        assert!(!root.join("source").exists());
+        assert_eq!(
+            std::fs::read(root.join("nested/renamed/file")).unwrap(),
+            b"source"
+        );
     }
 }
