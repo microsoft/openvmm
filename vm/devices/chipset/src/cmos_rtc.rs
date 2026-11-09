@@ -428,8 +428,7 @@ impl Rtc {
 
     fn on_alarm_timer(&mut self, now: VmTime) {
         let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
-        self.state.cmos[CmosReg::STATUS_C] =
-            status_c.with_irq_alarm(true).with_irq_combined(true).into();
+        self.state.cmos[CmosReg::STATUS_C] = status_c.with_irq_alarm(true).into();
 
         self.signal_interrupt();
 
@@ -462,10 +461,7 @@ impl Rtc {
 
     fn on_periodic_timer(&mut self) {
         let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
-        self.state.cmos[CmosReg::STATUS_C] = status_c
-            .with_irq_periodic(true)
-            .with_irq_combined(true)
-            .into();
+        self.state.cmos[CmosReg::STATUS_C] = status_c.with_irq_periodic(true).into();
 
         self.signal_interrupt();
     }
@@ -476,34 +472,34 @@ impl Rtc {
 
     fn on_update_timer(&mut self) {
         let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
-        self.state.cmos[CmosReg::STATUS_C] = status_c
-            .with_irq_update(true)
-            .with_irq_combined(true)
-            .into();
+        self.state.cmos[CmosReg::STATUS_C] = status_c.with_irq_update(true).into();
 
         self.signal_interrupt();
     }
 
     /// Signals an interrupt event, forcing an edge for enlightened interrupts.
-    fn signal_interrupt(&self) {
-        let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
-        if self.enlightened_interrupts && status_c.irq_combined() {
+    fn signal_interrupt(&mut self) {
+        let irq_combined = self.update_irqf();
+        if self.enlightened_interrupts && irq_combined {
             self.interrupt.set_level(false);
         }
-        self.sync_interrupt_line_level();
+        self.interrupt.set_level(irq_combined);
     }
 
-    /// Reconstructs the output from status register C without forcing an edge.
-    fn sync_interrupt_line_level(&self) {
+    fn update_irqf(&mut self) -> bool {
+        let status_b = StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]);
         let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
+        let irq_combined = (status_c.irq_update() && status_b.irq_enable_update())
+            || (status_c.irq_periodic() && status_b.irq_enable_periodic())
+            || (status_c.irq_alarm() && status_b.irq_enable_alarm());
+        self.state.cmos[CmosReg::STATUS_C] = status_c.with_irq_combined(irq_combined).into();
+        irq_combined
+    }
 
-        if status_c.irq_update() || status_c.irq_periodic() || status_c.irq_alarm() {
-            assert!(status_c.irq_combined());
-            self.interrupt.set_level(true);
-        } else {
-            assert!(!status_c.irq_combined());
-            self.interrupt.set_level(false);
-        }
+    /// Recomputes interrupt status and publishes its level without forcing an edge.
+    fn sync_interrupt_line_level(&mut self) {
+        let irq_combined = self.update_irqf();
+        self.interrupt.set_level(irq_combined);
     }
 
     /// Synchronize vmtime-backed timers with current timer / alarm register
@@ -630,6 +626,7 @@ impl Rtc {
                 self.state.cmos[CmosReg::STATUS_B] = new_reg.into();
 
                 self.update_timers();
+                self.sync_interrupt_line_level();
             }
             // The AMI BIOS, in all its great wisdom, writes to these read-only registers.
             // We'll just silently allow that to happen...
@@ -943,26 +940,150 @@ mod tests {
     use super::*;
     use local_clock::MockLocalClock;
     use local_clock::MockLocalClockAccessor;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
     use test_with_tracing::test;
+    use vmcore::line_interrupt::LineSetTarget;
+
+    #[derive(Default)]
+    struct RecordingTarget(Mutex<Vec<bool>>);
+
+    impl LineSetTarget for RecordingTarget {
+        fn set_irq(&self, _: u32, high: bool) {
+            self.0.lock().push(high);
+        }
+    }
+
+    #[test]
+    fn test_interrupt_masking() {
+        for enlightened in [false, true] {
+            for (source, other_source) in [(0x10, 0x20), (0x20, 0x40), (0x40, 0x10)] {
+                let (_, _, _, mut rtc) = new_test_rtc();
+                rtc.enlightened_interrupts = enlightened;
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | source);
+                let target = Arc::new(RecordingTarget::default());
+                rtc.interrupt = LineInterrupt::new_with_target("rtc", target.clone(), 0);
+                target.0.lock().clear();
+
+                let fire = |rtc: &mut Rtc| match source {
+                    0x10 => rtc.on_update_timer(),
+                    0x20 => rtc.on_alarm_timer(VmTime::from_100ns(0)),
+                    0x40 => rtc.on_periodic_timer(),
+                    _ => unreachable!(),
+                };
+                fire(&mut rtc);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source | 0x80);
+                assert_eq!(target.0.lock().last(), Some(&true));
+
+                target.0.lock().clear();
+                fire(&mut rtc);
+                if enlightened {
+                    assert_eq!(*target.0.lock(), [false, true]);
+                } else {
+                    assert!(!target.0.lock().contains(&false));
+                }
+
+                target.0.lock().clear();
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source);
+                assert_eq!(*target.0.lock(), [false]);
+
+                target.0.lock().clear();
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | other_source);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source);
+                assert!(!target.0.lock().contains(&true));
+
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | source);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source | 0x80);
+                assert_eq!(target.0.lock().last(), Some(&true));
+
+                target.0.lock().clear();
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | source);
+                assert!(!target.0.lock().contains(&false));
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), source | 0x80);
+                assert_eq!(target.0.lock().last(), Some(&false));
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0);
+
+                target.0.lock().clear();
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | other_source);
+                fire(&mut rtc);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source);
+                assert!(!target.0.lock().contains(&true));
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), source);
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_interrupt_mixed_sources() {
+        for enlightened in [false, true] {
+            let (_, _, _, mut rtc) = new_test_rtc();
+            rtc.enlightened_interrupts = enlightened;
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x76);
+            let target = Arc::new(RecordingTarget::default());
+            rtc.interrupt = LineInterrupt::new_with_target("rtc", target.clone(), 0);
+            rtc.on_periodic_timer();
+            rtc.on_update_timer();
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0xD0);
+
+            target.0.lock().clear();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x26);
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0x50);
+            assert_eq!(*target.0.lock(), [false]);
+
+            target.0.lock().clear();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x16);
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0xD0);
+            assert_eq!(*target.0.lock(), [true]);
+
+            target.0.lock().clear();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x46);
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0xD0);
+            assert!(!target.0.lock().contains(&false));
+            assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0xD0);
+            assert_eq!(target.0.lock().last(), Some(&false));
+            assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0);
+        }
+    }
+
+    #[test]
+    fn restore_masked_pending_flag_clears_stale_irqf() {
+        use vmcore::save_restore::SaveRestore;
+
+        for enlightened in [false, true] {
+            let (mut pool, _, _, mut rtc) = new_test_rtc();
+            rtc.enlightened_interrupts = enlightened;
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x46);
+            rtc.on_periodic_timer();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06);
+            let mut state = SaveRestore::save(&mut rtc).unwrap();
+            state.cmos[usize::from(CmosReg::STATUS_C.0)] = 0xC0;
+            pool.run_until(rtc.reset());
+
+            let target = Arc::new(RecordingTarget::default());
+            rtc.interrupt = LineInterrupt::new_with_target("rtc", target.clone(), 0);
+            rtc.interrupt.set_level(true);
+            target.0.lock().clear();
+            SaveRestore::restore(&mut rtc, state).unwrap();
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0x40);
+            assert_eq!(*target.0.lock(), [false]);
+
+            target.0.lock().clear();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x46);
+            assert_eq!(*target.0.lock(), [true]);
+            assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0xC0);
+            assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0);
+        }
+    }
 
     #[test]
     fn restore_enlightened_rtc_publishes_level_without_a_pulse() {
-        use parking_lot::Mutex;
-        use std::sync::Arc;
-        use vmcore::line_interrupt::LineSetTarget;
         use vmcore::save_restore::SaveRestore;
-
-        #[derive(Default)]
-        struct RecordingTarget(Mutex<Vec<bool>>);
-
-        impl LineSetTarget for RecordingTarget {
-            fn set_irq(&self, _: u32, high: bool) {
-                self.0.lock().push(high);
-            }
-        }
 
         let (mut pool, _, _, mut rtc) = new_test_rtc();
         rtc.enlightened_interrupts = true;
+        set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x46);
         rtc.on_periodic_timer();
         let state = SaveRestore::save(&mut rtc).unwrap();
         pool.run_until(rtc.reset());
