@@ -58,6 +58,7 @@ use pci_core::spec::hwid::Subclass;
 use std::io;
 use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::device_state::InputGateWait;
 use vmcore::interrupt::Interrupt;
 use vmcore::line_interrupt::LineInterrupt;
 use vmcore::save_restore::RestoreError;
@@ -840,12 +841,12 @@ impl ChangeDeviceState for VirtioPciDevice {
         self.core.confirm_start().await
     }
 
-    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
-        self.core.quiesce_input().await
+    fn quiesce_input(&mut self) -> InputGateWait {
+        self.core.quiesce_input()
     }
 
-    async fn resume_input(&mut self) -> anyhow::Result<()> {
-        self.core.resume_input().await
+    fn resume_input(&mut self) -> InputGateWait {
+        self.core.resume_input()
     }
 
     async fn stop(&mut self) {

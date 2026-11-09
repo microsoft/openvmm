@@ -27,6 +27,7 @@ use crate::transport::task::restore::StopResult;
 use guestmem::GuestMemory;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
+use vmcore::device_state::InputGateWait;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -92,19 +93,33 @@ impl VirtioTransportCore {
     }
 
     /// Stops device-specific host input before a snapshot boundary.
-    pub async fn quiesce_input(&mut self) -> anyhow::Result<()> {
-        self.device_sender
-            .call_failable(DeviceCommand::QuiesceInput, ())
-            .await?;
-        Ok(())
+    ///
+    /// The request reaches the device task's command channel now, while the
+    /// caller holds the transport, so it is ordered with the commands of the
+    /// guest's register accesses, such as its configuration accesses and
+    /// status changes. The returned wait for the task's answer does not
+    /// borrow the transport.
+    pub fn quiesce_input(&mut self) -> InputGateWait {
+        let answer = self
+            .device_sender
+            .call_failable(DeviceCommand::QuiesceInput, ());
+        InputGateWait::new(async move {
+            answer.await?;
+            Ok(())
+        })
     }
 
-    /// Resumes device-specific host input after a failed snapshot.
-    pub async fn resume_input(&mut self) -> anyhow::Result<()> {
-        self.device_sender
-            .call_failable(DeviceCommand::ResumeInput, ())
-            .await?;
-        Ok(())
+    /// Resumes device-specific host input after a failed snapshot, in the
+    /// order of the guest's register accesses, as [`Self::quiesce_input`]
+    /// stops it.
+    pub fn resume_input(&mut self) -> InputGateWait {
+        let answer = self
+            .device_sender
+            .call_failable(DeviceCommand::ResumeInput, ());
+        InputGateWait::new(async move {
+            answer.await?;
+            Ok(())
+        })
     }
 
     /// Take the device-private state captured when the queues stopped.
