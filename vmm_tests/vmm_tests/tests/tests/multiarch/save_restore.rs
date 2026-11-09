@@ -10,27 +10,16 @@ use petri::PetriVmRuntime;
 use petri::openvmm::OpenVmmPetriBackend;
 use vmm_test_macros::openvmm_test;
 
-/// Regression test for UEFI cross-process restore.
-///
-/// The in-process pulse (`verify_save_restore`) restores into the *same*
-/// worker, whose UEFI resolvers were already registered during cold boot, so it
-/// cannot reproduce the bug where restoring a UEFI snapshot onto a *fresh*
-/// worker panicked with `no resolver for uefi_logger:platform`.
-#[openvmm_test(unstable(
-    reason = "cross-process restore is new infrastructure; gate until it has soaked in CI",
-    uefi_x64(vhd(alpine_3_23_x64))
-))]
+/// Verify that a UEFI snapshot restores in a new worker process.
+#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)))]
 async fn uefi_cross_process_restore(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     verify_openvmm_cross_process_restore(config).await
 }
 
-/// Verify Linux direct cross-process restore.
-#[openvmm_test(unstable(
-    reason = "cross-process restore is new infrastructure; gate until it has soaked in CI",
-    linux_direct_x64
-))]
+/// Verify that a Linux direct boot snapshot restores in a new worker process.
+#[openvmm_test(linux_direct_x64)]
 async fn linux_direct_cross_process_restore(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {

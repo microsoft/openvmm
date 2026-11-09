@@ -247,9 +247,9 @@ impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
         };
         for (i, disk) in drive_disks.chain(vmgs_disk).enumerate() {
             if let Disk::Differencing(base) = disk {
-                *disk = Disk::FileDifferencing {
+                *disk = Disk::SqliteDifferencing {
                     base: base.clone(),
-                    diff: diff_dir.path().join(format!("disk{i}.dbhd")),
+                    dbhd_path: diff_dir.path().join(format!("disk{i}.dbhd")),
                 };
             }
         }
@@ -426,32 +426,71 @@ pub fn find_switch() -> Option<Guid> {
     None
 }
 
-/// Returns the writable top layer of a differencing disk: in memory, or in the
-/// SQLite file `diff`, which is created if it doesn't exist yet.
-fn diff_layer(diff: Option<&Path>) -> DiskLayerDescription {
-    match diff {
-        None => RamDiskLayerHandle {
-            len: None,
-            sector_size: None,
-        }
-        .into_resource()
-        .into(),
-        Some(diff) => SqliteDiskLayerHandle {
-            dbhd_path: diff.display().to_string(),
-            format_dbhd: (!diff.exists()).then_some(SqliteDiskLayerFormatParams {
-                logically_read_only: false,
-                len: None,
-            }),
-        }
-        .into_resource()
-        .into(),
+fn ram_diff_layer() -> DiskLayerDescription {
+    RamDiskLayerHandle {
+        len: None,
+        sector_size: None,
     }
+    .into_resource()
+    .into()
 }
 
-async fn memdiff_disk(
-    path: &Path,
-    diff: Option<&Path>,
-) -> anyhow::Result<Resource<DiskHandleKind>> {
+/// Returns a SQLite diff layer stored in `dbhd_path`, creating the file if it
+/// doesn't exist yet.
+fn sqlite_diff_layer(dbhd_path: &Path) -> DiskLayerDescription {
+    SqliteDiskLayerHandle {
+        dbhd_path: dbhd_path.display().to_string(),
+        format_dbhd: (!dbhd_path.exists()).then_some(SqliteDiskLayerFormatParams {
+            logically_read_only: false,
+            len: None,
+        }),
+    }
+    .into_resource()
+    .into()
+}
+
+fn layered_disk(
+    diff: DiskLayerDescription,
+    base: Vec<DiskLayerDescription>,
+) -> Resource<DiskHandleKind> {
+    LayeredDiskHandle {
+        layers: std::iter::once(diff).chain(base).collect(),
+    }
+    .into_resource()
+}
+
+/// Memory differencing disk over a local base disk.
+async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(layered_disk(
+        ram_diff_layer(),
+        local_base_layers(path).await?,
+    ))
+}
+
+/// Memory differencing disk over a remote base disk.
+fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(layered_disk(ram_diff_layer(), remote_base_layers(url)))
+}
+
+/// SQLite differencing disk over a local base disk, storing writes in
+/// `dbhd_path`.
+async fn sqldiff_disk(path: &Path, dbhd_path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(layered_disk(
+        sqlite_diff_layer(dbhd_path),
+        local_base_layers(path).await?,
+    ))
+}
+
+/// SQLite differencing disk over a remote base disk, storing writes in
+/// `dbhd_path`.
+fn sqldiff_remote_disk(url: &str, dbhd_path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(layered_disk(
+        sqlite_diff_layer(dbhd_path),
+        remote_base_layers(url),
+    ))
+}
+
+async fn local_base_layers(path: &Path) -> anyhow::Result<Vec<DiskLayerDescription>> {
     let disk = open_disk_type(
         path,
         OpenDiskOptions {
@@ -461,16 +500,10 @@ async fn memdiff_disk(
     )
     .await
     .with_context(|| format!("failed to open disk: {}", path.display()))?;
-    Ok(LayeredDiskHandle {
-        layers: vec![
-            diff_layer(diff),
-            DiskLayerHandle(disk).into_resource().into(),
-        ],
-    }
-    .into_resource())
+    Ok(vec![DiskLayerHandle(disk).into_resource().into()])
 }
 
-fn memdiff_remote_disk(url: &str, diff: Option<&Path>) -> anyhow::Result<Resource<DiskHandleKind>> {
+fn remote_base_layers(url: &str) -> Vec<DiskLayerDescription> {
     // Strip query parameters and fragments before checking the file extension.
     let url_path = url.split(['?', '#']).next().unwrap_or(url);
     let format = if url_path.ends_with(".vhd") || url_path.ends_with(".vmgs") {
@@ -493,30 +526,26 @@ fn memdiff_remote_disk(url: &str, diff: Option<&Path>) -> anyhow::Result<Resourc
         }
     };
 
-    Ok(LayeredDiskHandle {
-        layers: vec![
-            diff_layer(diff),
-            DiskLayerDescription {
-                read_cache: true,
-                write_through: false,
-                layer: SqliteAutoCacheDiskLayerHandle {
-                    cache_path: cache_dir,
-                    cache_key,
-                }
-                .into_resource(),
-            },
-            DiskLayerHandle(
-                disk_backend_resources::BlobDiskHandle {
-                    url: url.to_owned(),
-                    format,
-                }
-                .into_resource(),
-            )
-            .into_resource()
-            .into(),
-        ],
-    }
-    .into_resource())
+    vec![
+        DiskLayerDescription {
+            read_cache: true,
+            write_through: false,
+            layer: SqliteAutoCacheDiskLayerHandle {
+                cache_path: cache_dir,
+                cache_key,
+            }
+            .into_resource(),
+        },
+        DiskLayerHandle(
+            disk_backend_resources::BlobDiskHandle {
+                url: url.to_owned(),
+                format,
+            }
+            .into_resource(),
+        )
+        .into_resource()
+        .into(),
+    ]
 }
 
 async fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
@@ -546,16 +575,16 @@ async fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandl
             sector_size: None,
         })
         .into_resource(),
-        Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path, None).await?,
-        Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url, None)?,
-        Disk::FileDifferencing {
+        Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path).await?,
+        Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url)?,
+        Disk::SqliteDifferencing {
             base: DiskPath::Local(path),
-            diff,
-        } => memdiff_disk(path, Some(diff)).await?,
-        Disk::FileDifferencing {
+            dbhd_path,
+        } => sqldiff_disk(path, dbhd_path).await?,
+        Disk::SqliteDifferencing {
             base: DiskPath::Remote { url },
-            diff,
-        } => memdiff_remote_disk(url, Some(diff))?,
+            dbhd_path,
+        } => sqldiff_remote_disk(url, dbhd_path)?,
         Disk::Persistent(path) => {
             open_disk_type(
                 path.as_ref(),

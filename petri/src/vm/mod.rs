@@ -4023,13 +4023,13 @@ pub enum Disk {
     /// Memory differencing disk backed by a VHD (local or remote)
     Differencing(DiskPath),
     /// Differencing disk backed by a VHD (local or remote) that stores writes
-    /// in a SQLite file instead of memory, so they persist across VM worker
-    /// processes. The file is created on first use.
-    FileDifferencing {
+    /// in a SQLite file, so they persist across VM worker processes. The file
+    /// is created on first use.
+    SqliteDifferencing {
         /// The base disk.
         base: DiskPath,
         /// The SQLite file that stores the writes.
-        diff: PathBuf,
+        dbhd_path: PathBuf,
     },
     /// Persistent VHD
     Persistent(PathBuf),

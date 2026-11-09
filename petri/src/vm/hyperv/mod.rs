@@ -784,8 +784,8 @@ async fn petri_disk_to_hyperv(
         }
         Some(Disk::Persistent(path)) => Some(path.clone()),
         Some(Disk::Temporary(path)) => Some(path.to_path_buf()),
-        Some(Disk::FileDifferencing { .. }) => {
-            anyhow::bail!("Hyper-V backend does not support file differencing disks")
+        Some(Disk::SqliteDifferencing { .. }) => {
+            anyhow::bail!("Hyper-V backend does not support SQLite differencing disks")
         }
     })
 }
