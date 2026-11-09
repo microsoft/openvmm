@@ -1579,6 +1579,7 @@ mod tests {
             ranges: Vec::new(),
             entropy: [0x7e; 64],
             network: None,
+            activation: None,
         };
         let (send, recv) = mesh::oneshot();
         let mut restored = MicrovmPortb::new(
@@ -1673,6 +1674,7 @@ mod tests {
                 ranges,
                 entropy: [0x5a; 64],
                 network: None,
+                activation: None,
             };
             let (send, recv) = mesh::oneshot();
             let mut portb = time_abi_portb(Some(
@@ -1724,6 +1726,7 @@ mod tests {
                 )),
                 announce_listeners: true,
             }),
+            activation: None,
         };
         let (send, recv) = mesh::oneshot();
         let mut portb = time_abi_portb(Some(
@@ -1758,6 +1761,54 @@ mod tests {
         );
         assert_ne!(bytes[4] & chipset_resources::microvm_time::FLAG_NETWORK, 0);
         assert_eq!(RestorePacket::decode(&bytes).unwrap().base, base);
+        assert_eq!(
+            read_status(&mut portb),
+            STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE
+        );
+    }
+
+    #[test]
+    fn a_restore_packet_carries_an_activation_record() {
+        let record: Vec<u8> = (0..=u8::MAX).cycle().take(1021).collect();
+        let base = RestorePacketBase {
+            online_vp_count: 0,
+            memory_target: false,
+            ack_required: true,
+            generation: 7,
+            ranges: Vec::new(),
+            entropy: [0x5a; 64],
+            network: None,
+            activation: Some(record.clone()),
+        };
+        let (send, recv) = mesh::oneshot();
+        let mut portb = time_abi_portb(Some(
+            chipset_resources::microvm::MicrovmRestorePacketSource {
+                base: base.clone(),
+                time: recv,
+                selected: None,
+            },
+        ));
+        send.send(RestoreTimeRecord {
+            downtime_ns: 0,
+            downtime_utc: false,
+            rate_deviation: 0,
+            test_hooks: false,
+        });
+        assert!(matches!(
+            portb.io_write(STATUS_PORT, &[RESTORE_PACKET_SELECT]),
+            IoResult::Ok
+        ));
+        // The guest reads the packet four bytes at a time, and its last read
+        // takes the one byte that remains.
+        let bytes = read_record(&mut portb, DATA_PORT, base.encoded_len());
+        assert_eq!(bytes.len(), 104 + 4 + record.len());
+        assert_ne!(
+            bytes[4] & chipset_resources::microvm_time::FLAG_ACTIVATION,
+            0
+        );
+        assert_eq!(bytes[104..], [&[0xfd, 0x03, 0, 0], &record[..]].concat());
+        assert_eq!(RestorePacket::decode(&bytes).unwrap().base, base);
+        // Reading the last byte consumed the packet.
         assert_eq!(
             read_status(&mut portb),
             STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE
@@ -1909,6 +1960,7 @@ mod tests {
             ranges: Vec::new(),
             entropy: [0x3c; 64],
             network: None,
+            activation: None,
         };
         let time = RestoreTimeRecord {
             downtime_ns: 1_000_000,
@@ -1979,6 +2031,7 @@ mod tests {
                     ranges: Vec::new(),
                     entropy: [0; 64],
                     network: None,
+                    activation: None,
                 },
                 time: recv,
                 selected: None,
