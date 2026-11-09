@@ -7,6 +7,7 @@
 #![cfg(test)]
 
 mod dma;
+mod input_gate;
 mod interrupt;
 mod saved_state;
 mod start;
@@ -28,6 +29,7 @@ use crate::transport::VirtioMmioDevice;
 use crate::transport::VirtioPciDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
@@ -65,6 +67,7 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use test_with_tracing::test;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::device_state::InputGateWait;
 use vmcore::interrupt::Interrupt;
 use vmcore::line_interrupt::LineInterrupt;
 use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
@@ -4337,7 +4340,23 @@ trait TestTransport {
     fn start(&mut self);
     /// Drive ChangeDeviceState::confirm_start().
     fn confirm_start(&mut self) -> impl Future<Output = anyhow::Result<()>>;
+    /// Drive ChangeDeviceState::quiesce_input().
+    fn quiesce_input(&mut self) -> InputGateWait;
+    /// Drive ChangeDeviceState::resume_input().
+    fn resume_input(&mut self) -> InputGateWait;
+    /// Write `val` to the first dword of the device's configuration, as a
+    /// guest does, returning the token that completes once the device task
+    /// has applied it.
+    fn write_device_config(&mut self, val: u32) -> DeferredToken;
     fn teardown(self) -> impl Future<Output = ()>;
+}
+
+/// Returns the token of a deferred configuration write.
+fn deferred_write(result: IoResult) -> DeferredToken {
+    match result {
+        IoResult::Defer(token) => token,
+        other => panic!("expected a deferred write, got {other:?}"),
+    }
 }
 
 /// Yield to the executor and poll the transport once. This ensures the device
@@ -4414,6 +4433,16 @@ impl TestTransport for MmioTestTransport {
     }
     async fn confirm_start(&mut self) -> anyhow::Result<()> {
         ChangeDeviceState::confirm_start(&mut self.dev).await
+    }
+    fn quiesce_input(&mut self) -> InputGateWait {
+        ChangeDeviceState::quiesce_input(&mut self.dev)
+    }
+    fn resume_input(&mut self) -> InputGateWait {
+        ChangeDeviceState::resume_input(&mut self.dev)
+    }
+    fn write_device_config(&mut self, val: u32) -> DeferredToken {
+        // The device's configuration starts at offset 0x100.
+        deferred_write(self.dev.mmio_write(0x100, &val.to_le_bytes()))
     }
     async fn teardown(self) {
         self.dev.teardown().await;
@@ -4558,6 +4587,20 @@ impl TestTransport for PciTestTransport {
     }
     async fn confirm_start(&mut self) -> anyhow::Result<()> {
         ChangeDeviceState::confirm_start(&mut self.dev).await
+    }
+    fn quiesce_input(&mut self) -> InputGateWait {
+        ChangeDeviceState::quiesce_input(&mut self.dev)
+    }
+    fn resume_input(&mut self) -> InputGateWait {
+        ChangeDeviceState::resume_input(&mut self.dev)
+    }
+    fn write_device_config(&mut self, val: u32) -> DeferredToken {
+        // The device's configuration follows the common (56), notify (4), and
+        // ISR (4) regions in BAR0, which `new` maps at 0x10000000000.
+        deferred_write(
+            self.dev
+                .mmio_write(0x10000000000 + 56 + 4 + 4, &val.to_le_bytes()),
+        )
     }
     async fn teardown(self) {
         self.dev.teardown().await;
