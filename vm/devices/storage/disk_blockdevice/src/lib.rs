@@ -576,7 +576,7 @@ impl DiskIo for BlockDevice {
         // fall back to bounce buffering in that case.
         let should_bounce = self.always_bounce
             || !buffers.is_aligned(self.sector_size() as usize)
-            || !buffers.guest_memory().supports_locking();
+            || !buffers.guest_memory().supports_kernel_lock();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(true)?;
             locked.io_vecs()
@@ -638,7 +638,7 @@ impl DiskIo for BlockDevice {
         // fall back to bounce buffering in that case.
         let should_bounce = self.always_bounce
             || !buffers.is_aligned(self.sector_size() as usize)
-            || !buffers.guest_memory().supports_locking();
+            || !buffers.guest_memory().supports_kernel_lock();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(false)?;
             locked.io_vecs()

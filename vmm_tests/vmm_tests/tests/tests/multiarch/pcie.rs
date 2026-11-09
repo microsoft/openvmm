@@ -647,6 +647,89 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     Ok(())
 }
 
+/// Verify that IORT routes devices by bus range when an untranslated root
+/// precedes an SMMU-backed root on the same PCI segment.
+#[openvmm_test(linux_direct_aarch64)]
+async fn smmu_mixed_topology_shared_segment(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 2, 4)
+                .with_smmu(&["s0rc1"])
+                .with_virtio_nic("s0rc0rp0", PCIE_NIC_MAC_ADDRESSES[0])
+                .with_pcie_nvme("s0rc1rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
+                .with_custom_config(|c| {
+                    for rc in &mut c.pcie_root_complexes {
+                        for port in &mut rc.ports {
+                            port.acs_capabilities_supported = Some(0x5D);
+                        }
+                    }
+                    let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    else {
+                        unreachable!("test uses Linux direct boot");
+                    };
+                    cmdline.push_str(" iommu.passthrough=0");
+                })
+        })
+        .run()
+        .await?;
+    let sh = agent.unix_shell();
+
+    let nvme_path = cmd!(sh, "readlink -f /sys/class/nvme/nvme0/device")
+        .read()
+        .await?;
+    anyhow::ensure!(
+        nvme_path.split('/').any(|part| part == "pci0000:80"),
+        "NVMe must be behind the second root on segment 0: {nvme_path}"
+    );
+    let domain = sh
+        .read_file("/sys/class/nvme/nvme0/device/iommu_group/type")
+        .await?;
+    anyhow::ensure!(
+        matches!(domain.trim(), "DMA" | "DMA-FQ"),
+        "NVMe must use SMMU translation, got {domain:?}"
+    );
+
+    verify_net_interfaces(&sh, &PCIE_NIC_MAC_ADDRESSES[..1]).await?;
+    let interfaces = cmd!(sh, "ls /sys/class/net").read().await?;
+    let expected_mac = PCIE_NIC_MAC_ADDRESSES[0].to_string().replace('-', ":");
+    let mut found_untranslated_nic = false;
+    for interface in interfaces.split_whitespace() {
+        let address = sh
+            .read_file(format!("/sys/class/net/{interface}/address"))
+            .await?;
+        if !address.trim().eq_ignore_ascii_case(&expected_mac) {
+            continue;
+        }
+        let pci_path = cmd!(sh, "readlink -f /sys/class/net/{interface}/device/..")
+            .read()
+            .await?;
+        let pci_path = pci_path.trim();
+        anyhow::ensure!(
+            pci_path.split('/').any(|part| part == "pci0000:00"),
+            "NIC must be behind the first root on segment 0: {pci_path}"
+        );
+        cmd!(sh, "test ! -e {pci_path}/iommu_group").run().await?;
+        found_untranslated_nic = true;
+    }
+    anyhow::ensure!(found_untranslated_nic, "untranslated NIC not found");
+
+    // There is only one NVMe disk, so the segment selector cannot pick a
+    // different, untranslated endpoint.
+    verify_nvme_dma_on_segment(&sh, 1, "0000").await?;
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    let faults: Vec<_> = dmesg
+        .lines()
+        .filter(|line| line.contains("arm-smmu-v3") && line.contains("event"))
+        .collect();
+    anyhow::ensure!(faults.is_empty(), "unexpected SMMU faults: {faults:?}");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Exercise untagged DMA with software SMMU substream support advertised.
 /// The NVMe endpoint has no PASID capability, so Linux uses a single CD:
 /// S1DSS must be ignored even though IDR1.SSIDSIZE is nonzero.

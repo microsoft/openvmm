@@ -457,16 +457,21 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     /// or permission changes until they are unlocked.
     ///
     /// Returns a boolean indicating whether unlocking is required.
-    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+    fn lock_kernel_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
         let _ = gpns;
         Ok(false)
+    }
+
+    /// Locks guest pages for direct access by usermode.
+    fn lock_user_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.lock_kernel_gpns(gpns)
     }
 
     /// Unlocks the specified guest physical pages (GPNs) after exclusive access.
     ///
     /// Panics if asked to unlock a page that was not previously locked. The
     /// caller must ensure that the given slice has the same ordering as the
-    /// one passed to `lock_gpns`.
+    /// one passed to `lock_kernel_gpns` or `lock_user_gpns`.
     fn unlock_gpns(&self, gpns: &[u64]) {
         let _ = gpns;
     }
@@ -481,7 +486,7 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     }
 
     /// Returns whether this backing supports locking pages via
-    /// [`lock_gpns`](Self::lock_gpns).
+    /// [`lock_kernel_gpns`](Self::lock_kernel_gpns).
     ///
     /// Locking requires a stable host mapping (see
     /// [`mapping`](Self::mapping)), so the default returns whether a mapping
@@ -492,8 +497,13 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     ///
     /// This is authoritative: when it returns `false`, the corresponding
     /// [`GuestMemory`] locking APIs fail without invoking
-    /// [`lock_gpns`](Self::lock_gpns).
-    fn supports_locking(&self) -> bool {
+    /// [`lock_kernel_gpns`](Self::lock_kernel_gpns).
+    fn supports_kernel_lock(&self) -> bool {
+        self.mapping().is_some()
+    }
+
+    /// Returns whether pages can be locked for direct access by usermode.
+    fn supports_user_lock(&self) -> bool {
         self.mapping().is_some()
     }
 }
@@ -543,7 +553,9 @@ trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
 
     fn expose_va(&self, address: u64, len: u64) -> Result<(), GuestMemoryBackingError>;
 
-    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError>;
+    fn lock_kernel_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError>;
+
+    fn lock_user_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError>;
 
     fn unlock_gpns(&self, gpns: &[u64]);
 
@@ -607,8 +619,12 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
         self.expose_va(address, len)
     }
 
-    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
-        self.lock_gpns(gpns)
+    fn lock_kernel_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.lock_kernel_gpns(gpns)
+    }
+
+    fn lock_user_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.lock_user_gpns(gpns)
     }
 
     fn unlock_gpns(&self, gpns: &[u64]) {
@@ -724,6 +740,26 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Arc<T> {
     fn sharing(&self) -> Option<GuestMemorySharing> {
         self.as_ref().sharing()
     }
+
+    fn supports_kernel_lock(&self) -> bool {
+        self.as_ref().supports_kernel_lock()
+    }
+
+    fn supports_user_lock(&self) -> bool {
+        self.as_ref().supports_user_lock()
+    }
+
+    fn lock_kernel_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.as_ref().lock_kernel_gpns(gpns)
+    }
+
+    fn lock_user_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.as_ref().lock_user_gpns(gpns)
+    }
+
+    fn unlock_gpns(&self, gpns: &[u64]) {
+        self.as_ref().unlock_gpns(gpns)
+    }
 }
 
 // SAFETY: the allocation will stay valid for the lifetime of the object.
@@ -743,6 +779,8 @@ struct GuestMemoryAccessRange {
     offset: u64,
     len: u64,
     region: usize,
+    /// Every enclosing subrange must start on a page boundary for page locks.
+    lockable: bool,
 }
 
 impl GuestMemoryAccessRange {
@@ -757,10 +795,34 @@ impl GuestMemoryAccessRange {
             ))
         }
     }
+
+    fn translate_gpns(&self, gpns: &[u64]) -> Result<Vec<u64>, GuestMemoryBackingError> {
+        // GPNs are relative to this subrange. Convert them to the backing's
+        // page numbers before calling its lock or unlock methods.
+        // Check each full page; the lock probe checks only its first byte.
+        if !self.lockable {
+            return Err(GuestMemoryBackingError::other(self.offset, NotLockable));
+        }
+        gpns.iter()
+            .map(|&gpn| {
+                let address = gpn_to_gpa(gpn).map_err(GuestMemoryBackingError::gpn)?;
+                Ok(self.adjust_range(address, PAGE_SIZE64)? / PAGE_SIZE64)
+            })
+            .collect()
+    }
 }
 
 // SAFETY: `mapping()` is guaranteed to be valid for the lifetime of the object.
 unsafe impl GuestMemoryAccess for GuestMemoryAccessRange {
+    // A mapped subrange must not regain locking denied by its parent.
+    fn supports_kernel_lock(&self) -> bool {
+        self.lockable && self.base.supports_kernel_lock
+    }
+
+    fn supports_user_lock(&self) -> bool {
+        self.lockable && self.base.supports_user_lock
+    }
+
     fn mapping(&self) -> Option<NonNull<u8>> {
         let region = &self.base.regions[self.region];
         region.mapping.and_then(|mapping| {
@@ -811,6 +873,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryAccessRange {
                 offset: address,
                 len,
                 region: self.region,
+                lockable: self.lockable && offset.is_multiple_of(PAGE_SIZE64),
             },
         )))
     }
@@ -884,6 +947,22 @@ unsafe impl GuestMemoryAccess for GuestMemoryAccessRange {
         let region = &self.base.regions[self.region];
         Some(region.base_iova? + (self.offset & self.base.region_def.region_mask))
     }
+
+    // Let the backing prevent permission changes while these pages are locked.
+    fn lock_kernel_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.base.imp.lock_kernel_gpns(&self.translate_gpns(gpns)?)
+    }
+
+    fn lock_user_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.base.imp.lock_user_gpns(&self.translate_gpns(gpns)?)
+    }
+
+    fn unlock_gpns(&self, gpns: &[u64]) {
+        let gpns = self
+            .translate_gpns(gpns)
+            .expect("previously locked subrange pages must remain valid");
+        self.base.imp.unlock_gpns(&gpns);
+    }
 }
 
 /// Create a default guest memory subrange that verifies range limits and calls
@@ -902,6 +981,7 @@ fn create_memory_subrange(
             offset,
             len,
             region,
+            lockable: offset.is_multiple_of(PAGE_SIZE64),
         },
     ))
 }
@@ -995,11 +1075,20 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for MultiRegionGuestMemoryAccess
         }
     }
 
-    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+    fn lock_kernel_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
         let mut ret = false;
         for gpn in gpns {
             let (region, offset_in_region) = self.region(gpn * PAGE_SIZE64, PAGE_SIZE64)?;
-            ret |= region.lock_gpns(&[offset_in_region / PAGE_SIZE64])?;
+            ret |= region.lock_kernel_gpns(&[offset_in_region / PAGE_SIZE64])?;
+        }
+        Ok(ret)
+    }
+
+    fn lock_user_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        let mut ret = false;
+        for gpn in gpns {
+            let (region, offset_in_region) = self.region(gpn * PAGE_SIZE64, PAGE_SIZE64)?;
+            ret |= region.lock_user_gpns(&[offset_in_region / PAGE_SIZE64])?;
         }
         Ok(ret)
     }
@@ -1037,9 +1126,9 @@ struct GuestMemoryInner<T: ?Sized = dyn DynGuestMemoryAccess> {
     regions: Vec<MemoryRegion>,
     debug_name: Arc<str>,
     allocated: bool,
-    /// Cached result of [`GuestMemoryAccess::supports_locking`], since it is
-    /// queried on hot zero-copy paths and never changes for a given backing.
-    supports_locking: bool,
+    /// Cached backing capabilities for hot zero-copy paths.
+    supports_kernel_lock: bool,
+    supports_user_lock: bool,
     imp: T,
 }
 
@@ -1182,9 +1271,13 @@ unsafe impl GuestMemoryAccess for Empty {
         0
     }
 
-    fn supports_locking(&self) -> bool {
+    fn supports_kernel_lock(&self) -> bool {
         // This implementation trivially supports locking since there are no
         // pages to lock.
+        true
+    }
+
+    fn supports_user_lock(&self) -> bool {
         true
     }
 }
@@ -1238,7 +1331,8 @@ impl GuestMemory {
 
     fn new_inner(debug_name: Arc<str>, imp: impl GuestMemoryAccess, allocated: bool) -> Self {
         let regions = vec![MemoryRegion::new(&imp)];
-        let supports_locking = imp.supports_locking();
+        let supports_kernel_lock = imp.supports_kernel_lock();
+        let supports_user_lock = imp.supports_user_lock();
         Self {
             inner: Arc::new(GuestMemoryInner {
                 imp,
@@ -1250,7 +1344,8 @@ impl GuestMemory {
                 },
                 regions,
                 allocated,
-                supports_locking,
+                supports_kernel_lock,
+                supports_user_lock,
             }),
         }
     }
@@ -1321,11 +1416,14 @@ impl GuestMemory {
         };
 
         imps.resize_with(region_count, || None);
-        // Locking is only supported if every backing region supports it.
-        let supports_locking = imps
+        let supports_kernel_lock = imps
             .iter()
             .flatten()
-            .all(GuestMemoryAccess::supports_locking);
+            .all(GuestMemoryAccess::supports_kernel_lock);
+        let supports_user_lock = imps
+            .iter()
+            .flatten()
+            .all(GuestMemoryAccess::supports_user_lock);
         let imp = MultiRegionGuestMemoryAccess { imps, region_def };
 
         let inner = GuestMemoryInner {
@@ -1334,7 +1432,8 @@ impl GuestMemory {
             regions,
             imp,
             allocated: false,
-            supports_locking,
+            supports_kernel_lock,
+            supports_user_lock,
         };
 
         Ok(Self {
@@ -1488,15 +1587,20 @@ impl GuestMemory {
     }
 
     /// Returns whether this memory supports locking pages via
-    /// [`lock_gpns`](Self::lock_gpns) and [`lock_range`](Self::lock_range).
+    /// [`lock_kernel_gpns`](Self::lock_kernel_gpns) and [`lock_range`](Self::lock_range).
     ///
     /// Memory behind an emulated IOMMU has no stable host mapping and cannot
     /// be locked; zero-copy callers should check this and fall back to a
     /// copying path when it returns `false`. This is authoritative: when it
-    /// returns `false`, [`lock_gpns`](Self::lock_gpns) and
+    /// returns `false`, [`lock_kernel_gpns`](Self::lock_kernel_gpns) and
     /// [`lock_range`](Self::lock_range) fail with a `NotLockable` error.
-    pub fn supports_locking(&self) -> bool {
-        self.inner.supports_locking
+    pub fn supports_kernel_lock(&self) -> bool {
+        self.inner.supports_kernel_lock
+    }
+
+    /// Returns whether this view can lock pages for direct access by usermode.
+    pub fn supports_user_lock(&self) -> bool {
+        self.inner.supports_user_lock
     }
 
     /// Gets a pointer to the VA range for `gpa..gpa+len`.
@@ -1922,7 +2026,7 @@ impl GuestMemory {
     /// meaningless without a mapping (there is nothing to fault in), and not all
     /// backings implement that fallback. Callers must only reach this after
     /// confirming the page is mapped, as the lock path does via
-    /// [`GuestMemory::supports_locking`]. A non-mapping backing therefore fails
+    /// [`GuestMemory::supports_kernel_lock`]. A non-mapping backing therefore fails
     /// with a clear error rather than silently taking an unsupported path.
     fn probe_mapped_page_writable(&self, gpa: u64) -> Result<(), GuestMemoryBackingError> {
         self.run_on_mapping(
@@ -1953,14 +2057,36 @@ impl GuestMemory {
     /// read-only-until-write backing (e.g. Windows soft large pages) is raised
     /// to read-write before the caller writes through the returned pointer,
     /// while a read-only lock (e.g. read-only DMA) only faults for read.
-    pub fn lock_gpns(
+    pub fn lock_kernel_gpns(
+        &self,
+        access: AccessType,
+        gpns: &[u64],
+    ) -> Result<LockedPages, GuestMemoryError> {
+        self.lock_pages(access, true, gpns)
+    }
+
+    /// Locks guest pages for direct access by usermode.
+    pub fn lock_user_gpns(
+        &self,
+        access: AccessType,
+        gpns: &[u64],
+    ) -> Result<UserLockedPages, GuestMemoryError> {
+        self.lock_pages(access, false, gpns).map(UserLockedPages)
+    }
+
+    fn lock_pages(
         &self,
         access: AccessType,
         with_kernel_access: bool,
         gpns: &[u64],
     ) -> Result<LockedPages, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
-            if !self.inner.supports_locking {
+            let supports_locking = if with_kernel_access {
+                self.supports_kernel_lock()
+            } else {
+                self.supports_user_lock()
+            };
+            if !supports_locking {
                 let gpa = gpns.first().map_or(0, |&gpn| gpn.wrapping_mul(PAGE_SIZE64));
                 return Err(GuestMemoryBackingError::other(gpa, NotLockable));
             }
@@ -1970,7 +2096,11 @@ impl GuestMemory {
                 let page = self.probe_page_for_lock(access, with_kernel_access, gpa)?;
                 pages.push(PagePtr(page));
             }
-            let store_gpns = self.inner.imp.lock_gpns(gpns)?;
+            let store_gpns = if with_kernel_access {
+                self.inner.imp.lock_kernel_gpns(gpns)?
+            } else {
+                self.inner.imp.lock_user_gpns(gpns)?
+            };
             Ok(LockedPages {
                 pages: pages.into_boxed_slice(),
                 gpns: store_gpns.then(|| gpns.to_vec().into_boxed_slice()),
@@ -2005,7 +2135,7 @@ impl GuestMemory {
     }
 
     /// Gets a slice of guest memory assuming the memory was already locked via
-    /// [`GuestMemory::lock_gpns`].
+    /// [`GuestMemory::lock_kernel_gpns`].
     ///
     /// This is dangerous--if the pages have not been locked, then it could
     /// cause an access violation or guest memory corruption.
@@ -2147,7 +2277,7 @@ impl GuestMemory {
     ) -> Result<LockedRangeImpl<'a, T>, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
             let gpns = paged_range.gpns();
-            if !self.inner.supports_locking {
+            if !self.supports_kernel_lock() {
                 let gpa = gpns.first().map_or(0, |&gpn| gpn.wrapping_mul(PAGE_SIZE64));
                 return Err(GuestMemoryBackingError::other(gpa, NotLockable));
             }
@@ -2161,7 +2291,7 @@ impl GuestMemory {
                     self.dangerous_access_pre_locked_memory(range.start, range.len() as usize),
                 );
             }
-            let store_gpns = self.inner.imp.lock_gpns(paged_range.gpns())?;
+            let store_gpns = self.inner.imp.lock_kernel_gpns(paged_range.gpns())?;
             Ok(LockedRangeImpl {
                 mem: &self.inner,
                 gpns: store_gpns.then(|| paged_range.gpns().to_vec().into_boxed_slice()),
@@ -2268,6 +2398,17 @@ impl<'a> AsRef<[&'a Page]> for &'a LockedPages {
     }
 }
 
+/// Guest pages locked for direct access by usermode.
+#[derive(Debug)]
+pub struct UserLockedPages(LockedPages);
+
+impl UserLockedPages {
+    /// Returns pages for direct access by usermode for the lifetime of this lock.
+    pub fn pages(&self) -> &[&Page] {
+        self.0.pages()
+    }
+}
+
 /// Represents a range of locked guest pages as an ordered list of the VA sub-ranges
 /// to which the guest pages are mapped.
 /// The range may only partially span the first and last page and must fully span all
@@ -2317,6 +2458,9 @@ pub trait MappableGuestMemory: Send + Sync {
 /// Trait implemented for a region of memory that can have memory mapped into
 /// it.
 pub trait MappedMemoryRegion: Send + Sync {
+    /// Returns the region's current guest address, or `None` if it is unmapped.
+    fn guest_address(&self) -> Option<u64>;
+
     /// Maps an object at `offset` in the region.
     ///
     /// Behaves like mmap--overwrites and splits existing mappings.
@@ -2378,16 +2522,246 @@ pub trait UnmapRom: Send + Sync {
 #[cfg(test)]
 #[expect(clippy::undocumented_unsafe_blocks)]
 mod tests {
+    use crate::AccessType;
     use crate::GuestMemory;
+    use crate::GuestMemoryAccess;
+    use crate::GuestMemoryBackingError;
+    use crate::GuestMemoryError;
     use crate::PAGE_SIZE64;
     use crate::PageFaultAction;
     use crate::PageFaultError;
 
+    use parking_lot::Mutex;
     use sparse_mmap::SparseMapping;
     use std::ptr::NonNull;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
     use thiserror::Error;
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum LockOperation {
+        Lock(Vec<u64>),
+        Unlock(Vec<u64>),
+    }
+
+    struct LockMapping {
+        mapping: SparseMapping,
+        lockable: bool,
+        unlock_required: bool,
+        operations: Mutex<Vec<LockOperation>>,
+    }
+
+    impl LockMapping {
+        fn new(size: usize, lockable: bool, unlock_required: bool) -> Self {
+            let mapping = SparseMapping::new(size).unwrap();
+            mapping.alloc(0, size).unwrap();
+            Self {
+                mapping,
+                lockable,
+                unlock_required,
+                operations: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn take_operations(&self) -> Vec<LockOperation> {
+            std::mem::take(&mut *self.operations.lock())
+        }
+    }
+
+    // SAFETY: the mapping remains allocated for the full reported range.
+    unsafe impl GuestMemoryAccess for LockMapping {
+        fn mapping(&self) -> Option<NonNull<u8>> {
+            NonNull::new(self.mapping.as_ptr().cast())
+        }
+
+        fn max_address(&self) -> u64 {
+            self.mapping.len() as u64
+        }
+
+        fn supports_kernel_lock(&self) -> bool {
+            self.lockable
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            self.lockable
+        }
+
+        fn lock_kernel_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+            self.operations
+                .lock()
+                .push(LockOperation::Lock(gpns.to_vec()));
+            Ok(self.unlock_required)
+        }
+
+        fn lock_user_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+            GuestMemoryAccess::lock_kernel_gpns(self, gpns)
+        }
+
+        fn unlock_gpns(&self, gpns: &[u64]) {
+            self.operations
+                .lock()
+                .push(LockOperation::Unlock(gpns.to_vec()));
+        }
+    }
+
+    fn lock_pages(
+        memory: &GuestMemory,
+        access: AccessType,
+        kernel: bool,
+        gpns: &[u64],
+    ) -> Result<(), GuestMemoryError> {
+        if kernel {
+            memory.lock_kernel_gpns(access, gpns).map(drop)
+        } else {
+            memory.lock_user_gpns(access, gpns).map(drop)
+        }
+    }
+
+    fn check_locks(memory: &GuestMemory, backing: &LockMapping, gpns: &[u64], expected: &[u64]) {
+        for access in [AccessType::Read, AccessType::Write] {
+            for kernel in [false, true] {
+                lock_pages(memory, access, kernel, gpns).unwrap();
+                let mut operations = vec![LockOperation::Lock(expected.to_vec())];
+                if backing.unlock_required {
+                    operations.push(LockOperation::Unlock(expected.to_vec()));
+                }
+                assert_eq!(backing.take_operations(), operations);
+            }
+        }
+    }
+
+    #[test]
+    fn arc_preserves_locking_support_and_hooks() {
+        for lockable in [false, true] {
+            let backing = Arc::new(LockMapping::new(PAGE_SIZE * 2, lockable, true));
+            let memory = GuestMemory::new("arc-locking", backing.clone());
+            assert_eq!(memory.supports_kernel_lock(), lockable);
+            assert_eq!(memory.supports_user_lock(), lockable);
+            if lockable {
+                check_locks(&memory, &backing, &[1, 0], &[1, 0]);
+            } else {
+                for access in [AccessType::Read, AccessType::Write] {
+                    for kernel in [false, true] {
+                        assert!(lock_pages(&memory, access, kernel, &[0]).is_err());
+                    }
+                }
+                assert!(backing.take_operations().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn subranges_preserve_locking_support() {
+        for lockable in [false, true] {
+            let backing = Arc::new(LockMapping::new(PAGE_SIZE * 4, lockable, true));
+            let memory = GuestMemory::new("subrange-locking", backing.clone());
+            let range = memory
+                .subrange(PAGE_SIZE64, PAGE_SIZE64 * 2, false)
+                .unwrap();
+            let nested = range.subrange(PAGE_SIZE64, PAGE_SIZE64, false).unwrap();
+            for view in [&range, &nested] {
+                assert_eq!(view.supports_kernel_lock(), lockable);
+                assert_eq!(view.supports_user_lock(), lockable);
+                for access in [AccessType::Read, AccessType::Write] {
+                    for kernel in [false, true] {
+                        assert_eq!(lock_pages(view, access, kernel, &[0]).is_ok(), lockable);
+                    }
+                }
+            }
+            if !lockable {
+                assert!(backing.take_operations().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn subranges_forward_lock_hooks_with_offsets() {
+        for unlock_required in [false, true] {
+            let backing = Arc::new(LockMapping::new(PAGE_SIZE * 5, true, unlock_required));
+            let memory = GuestMemory::new("subrange-hooks", backing.clone());
+            let range = memory
+                .subrange(PAGE_SIZE64, PAGE_SIZE64 * 3, false)
+                .unwrap();
+            check_locks(&range, &backing, &[2, 0], &[3, 1]);
+            let nested = range.subrange(PAGE_SIZE64, PAGE_SIZE64 * 2, false).unwrap();
+            check_locks(&nested, &backing, &[1, 0], &[3, 2]);
+        }
+    }
+
+    #[test]
+    fn multi_region_subranges_preserve_parent_support_and_translate_gpns() {
+        for first in [false, true] {
+            for second in [false, true] {
+                let backings = [
+                    Arc::new(LockMapping::new(PAGE_SIZE, first, true)),
+                    Arc::new(LockMapping::new(PAGE_SIZE, second, true)),
+                ];
+                let memory = GuestMemory::new_multi_region(
+                    "multi-subrange",
+                    PAGE_SIZE64 * 2,
+                    backings.iter().cloned().map(Some).collect(),
+                )
+                .unwrap();
+                let range = memory
+                    .subrange(PAGE_SIZE64 * 2, PAGE_SIZE64, false)
+                    .unwrap();
+                assert_eq!(range.supports_kernel_lock(), first && second);
+                assert_eq!(range.supports_user_lock(), first && second);
+                if first && second {
+                    check_locks(&range, &backings[1], &[0], &[0]);
+                } else {
+                    for access in [AccessType::Read, AccessType::Write] {
+                        for kernel in [false, true] {
+                            assert!(lock_pages(&range, access, kernel, &[0]).is_err());
+                        }
+                    }
+                    assert!(backings[1].take_operations().is_empty());
+                }
+                assert!(backings[0].take_operations().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn unaligned_subranges_allow_copies_but_not_page_locks() {
+        let backing = Arc::new(LockMapping::new(PAGE_SIZE * 4, true, true));
+        let memory = GuestMemory::new("unaligned-subrange", backing.clone());
+        let range = memory.subrange(1, PAGE_SIZE64 * 2, false).unwrap();
+        let nested = range.subrange(PAGE_SIZE64 - 1, PAGE_SIZE64, false).unwrap();
+        for view in [&range, &nested] {
+            view.write_at(0, &[0x5a]).unwrap();
+            let mut value = [0];
+            view.read_at(0, &mut value).unwrap();
+            assert_eq!(value, [0x5a]);
+            assert!(!view.supports_kernel_lock());
+            assert!(!view.supports_user_lock());
+            for access in [AccessType::Read, AccessType::Write] {
+                for kernel in [false, true] {
+                    assert!(lock_pages(view, access, kernel, &[0]).is_err());
+                }
+            }
+        }
+        assert!(backing.take_operations().is_empty());
+    }
+
+    #[test]
+    fn subrange_locks_reject_partial_pages_and_invalid_gpns() {
+        let backing = Arc::new(LockMapping::new(PAGE_SIZE * 4, true, true));
+        let memory = GuestMemory::new("subrange-bounds", backing.clone());
+        let range = memory
+            .subrange(PAGE_SIZE64, PAGE_SIZE64 + 1, false)
+            .unwrap();
+        for access in [AccessType::Read, AccessType::Write] {
+            for kernel in [false, true] {
+                for gpns in [&[1][..], &[2], &[0, u64::MAX]] {
+                    assert!(lock_pages(&range, access, kernel, gpns).is_err());
+                    assert!(backing.take_operations().is_empty());
+                }
+            }
+        }
+    }
     /// An implementation of a GuestMemoryAccess trait that expects all of
     /// guest memory to be mapped at a given base, with mmap or the Windows
     /// equivalent. Pages that are not backed by RAM will return failure
@@ -2398,7 +2772,7 @@ mod tests {
         bitmap: Option<Vec<u8>>,
     }
 
-    unsafe impl crate::GuestMemoryAccess for GuestMemoryMapping {
+    unsafe impl GuestMemoryAccess for GuestMemoryMapping {
         fn mapping(&self) -> Option<NonNull<u8>> {
             NonNull::new(self.mapping.as_ptr().cast())
         }
@@ -2541,7 +2915,7 @@ mod tests {
     #[error("fault")]
     struct Fault;
 
-    unsafe impl crate::GuestMemoryAccess for FaultingMapping {
+    unsafe impl GuestMemoryAccess for FaultingMapping {
         fn mapping(&self) -> Option<NonNull<u8>> {
             NonNull::new(self.mapping.as_ptr().cast())
         }
@@ -2640,23 +3014,32 @@ mod tests {
     }
 
     /// A backing whose locking support can be toggled, used to exercise
-    /// [`GuestMemory::supports_locking`] aggregation. Backed by a real mapping
+    /// [`GuestMemory::supports_kernel_lock`] aggregation. Backed by a real mapping
     /// so it can participate in single- and multi-region construction.
     struct ToggleLockMapping {
         mapping: SparseMapping,
         lockable: bool,
+        locks: AtomicUsize,
+        unlocks: AtomicUsize,
+        exposures: AtomicUsize,
     }
 
     impl ToggleLockMapping {
         fn new(size: usize, lockable: bool) -> Self {
             let mapping = SparseMapping::new(size).unwrap();
             mapping.alloc(0, size).unwrap();
-            Self { mapping, lockable }
+            Self {
+                mapping,
+                lockable,
+                locks: AtomicUsize::new(0),
+                unlocks: AtomicUsize::new(0),
+                exposures: AtomicUsize::new(0),
+            }
         }
     }
 
     // SAFETY: the mapping is valid for the full range reported by `max_address`.
-    unsafe impl crate::GuestMemoryAccess for ToggleLockMapping {
+    unsafe impl GuestMemoryAccess for ToggleLockMapping {
         fn mapping(&self) -> Option<NonNull<u8>> {
             NonNull::new(self.mapping.as_ptr().cast())
         }
@@ -2665,24 +3048,75 @@ mod tests {
             self.mapping.len() as u64
         }
 
-        fn supports_locking(&self) -> bool {
+        fn supports_kernel_lock(&self) -> bool {
             self.lockable
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            self.lockable
+        }
+
+        fn lock_kernel_gpns(&self, _gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+            self.locks.fetch_add(1, Ordering::Relaxed);
+            Ok(true)
+        }
+
+        fn unlock_gpns(&self, _gpns: &[u64]) {
+            self.unlocks.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn expose_va(&self, _address: u64, _len: u64) -> Result<(), GuestMemoryBackingError> {
+            self.exposures.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
     }
 
     #[test]
-    fn test_supports_locking() {
+    fn usermode_locks_do_not_prepare_kernel_io() {
+        let backing = Arc::new(ToggleLockMapping::new(PAGE_SIZE, true));
+        let gm = GuestMemory::new("lock-access", backing.clone());
+        let pages = gm.lock_user_gpns(AccessType::Write, &[0]).unwrap();
+        assert_eq!(backing.exposures.load(Ordering::Relaxed), 0);
+        assert_eq!(backing.locks.load(Ordering::Relaxed), 1);
+        drop(pages);
+        assert_eq!(backing.unlocks.load(Ordering::Relaxed), 1);
+
+        let pages = gm.lock_kernel_gpns(AccessType::Write, &[0]).unwrap();
+        assert_eq!(backing.exposures.load(Ordering::Relaxed), 1);
+        assert_eq!(backing.locks.load(Ordering::Relaxed), 2);
+        drop(pages);
+        assert_eq!(backing.unlocks.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_arc_lock_forwarding() {
+        let backing = Arc::new(ToggleLockMapping::new(PAGE_SIZE, true));
+        let gm = GuestMemory::new("arc-lock", backing.clone());
+        let pages = gm.lock_kernel_gpns(AccessType::Read, &[0]).unwrap();
+        assert_eq!(backing.locks.load(Ordering::Relaxed), 1);
+        assert_eq!(backing.exposures.load(Ordering::Relaxed), 1);
+        drop(pages);
+        assert_eq!(backing.unlocks.load(Ordering::Relaxed), 1);
+        let backing = Arc::new(ToggleLockMapping::new(PAGE_SIZE, false));
+        let gm = GuestMemory::new("arc-no-lock", backing.clone());
+        assert!(!gm.supports_kernel_lock());
+        assert!(gm.lock_kernel_gpns(AccessType::Read, &[0]).is_err());
+        assert_eq!(backing.locks.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_supports_kernel_lock() {
         // A mapping-backed backing supports locking by default.
         let gm = GuestMemory::allocate(0x10000);
-        assert!(gm.supports_locking());
+        assert!(gm.supports_kernel_lock());
 
         // A backing that reports no locking support (e.g. on-demand
         // translation behind an emulated IOMMU) does not support locking, and
-        // `supports_locking` is authoritative: locking fails without touching
-        // the backing's `lock_gpns`.
+        // `supports_kernel_lock` is authoritative: locking fails without touching
+        // the backing's `lock_kernel_gpns`.
         let gm = GuestMemory::new("nolock", ToggleLockMapping::new(SIZE_1MB, false));
-        assert!(!gm.supports_locking());
-        assert!(gm.lock_gpns(crate::AccessType::Write, false, &[0]).is_err());
+        assert!(!gm.supports_kernel_lock());
+        assert!(gm.lock_user_gpns(AccessType::Write, &[0]).is_err());
 
         // Multi-region: locking is supported only when every present backing
         // supports it.
@@ -2695,7 +3129,7 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(gm.supports_locking());
+        assert!(gm.supports_kernel_lock());
 
         let gm = GuestMemory::new_multi_region(
             "multi-mixed",
@@ -2706,6 +3140,171 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(!gm.supports_locking());
+        assert!(!gm.supports_kernel_lock());
+    }
+}
+
+#[cfg(test)]
+mod lock_mode_tests {
+    use super::*;
+    use sparse_mmap::SparseMapping;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+
+    struct LockMapping {
+        mapping: SparseMapping,
+        user_lockable: bool,
+        kernel_lockable: bool,
+        user_locks: AtomicUsize,
+        kernel_locks: AtomicUsize,
+        exposures: AtomicUsize,
+        unlocks: AtomicUsize,
+    }
+
+    impl LockMapping {
+        fn new(user_lockable: bool, kernel_lockable: bool) -> Self {
+            let mapping = SparseMapping::new(PAGE_SIZE).unwrap();
+            mapping.alloc(0, PAGE_SIZE).unwrap();
+            Self {
+                mapping,
+                user_lockable,
+                kernel_lockable,
+                user_locks: AtomicUsize::new(0),
+                kernel_locks: AtomicUsize::new(0),
+                exposures: AtomicUsize::new(0),
+                unlocks: AtomicUsize::new(0),
+            }
+        }
+
+        fn counts(&self) -> [usize; 4] {
+            [
+                self.user_locks.load(Ordering::Relaxed),
+                self.kernel_locks.load(Ordering::Relaxed),
+                self.exposures.load(Ordering::Relaxed),
+                self.unlocks.load(Ordering::Relaxed),
+            ]
+        }
+    }
+
+    // SAFETY: the mapping remains allocated for the full reported range.
+    unsafe impl GuestMemoryAccess for LockMapping {
+        fn mapping(&self) -> Option<NonNull<u8>> {
+            NonNull::new(self.mapping.as_ptr().cast())
+        }
+
+        fn max_address(&self) -> u64 {
+            PAGE_SIZE64
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            self.user_lockable
+        }
+
+        fn supports_kernel_lock(&self) -> bool {
+            self.kernel_lockable
+        }
+
+        fn lock_user_gpns(&self, _gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+            self.user_locks.fetch_add(1, Ordering::Relaxed);
+            Ok(true)
+        }
+
+        fn lock_kernel_gpns(&self, _gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+            self.kernel_locks.fetch_add(1, Ordering::Relaxed);
+            Ok(true)
+        }
+
+        fn expose_va(&self, _address: u64, _len: u64) -> Result<(), GuestMemoryBackingError> {
+            self.exposures.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn unlock_gpns(&self, _gpns: &[u64]) {
+            self.unlocks.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn check_lock_modes(memory: &GuestMemory, backings: &[Arc<LockMapping>], gpns: &[u64]) {
+        let user_lockable = backings.iter().all(|backing| backing.user_lockable);
+        let kernel_lockable = backings.iter().all(|backing| backing.kernel_lockable);
+        assert_eq!(memory.supports_user_lock(), user_lockable);
+        assert_eq!(memory.supports_kernel_lock(), kernel_lockable);
+
+        for access in [AccessType::Read, AccessType::Write] {
+            for kernel in [false, true] {
+                let before: Vec<_> = backings.iter().map(|backing| backing.counts()).collect();
+                let supported = if kernel {
+                    kernel_lockable
+                } else {
+                    user_lockable
+                };
+                let result = if kernel {
+                    memory.lock_kernel_gpns(access, gpns).map(drop)
+                } else {
+                    memory.lock_user_gpns(access, gpns).map(drop)
+                };
+                assert_eq!(result.is_ok(), supported, "{access:?}, kernel={kernel}");
+                for (backing, [user, kernel_count, exposures, unlocks]) in
+                    backings.iter().zip(before)
+                {
+                    assert_eq!(
+                        backing.counts(),
+                        [
+                            user + usize::from(supported && !kernel),
+                            kernel_count + usize::from(supported && kernel),
+                            exposures + usize::from(supported && kernel),
+                            unlocks + usize::from(supported),
+                        ],
+                        "{access:?}, kernel={kernel}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arc_preserves_independent_lock_modes() {
+        for user in [false, true] {
+            for kernel in [false, true] {
+                let backing = Arc::new(LockMapping::new(user, kernel));
+                let memory = GuestMemory::new("lock-modes", backing.clone());
+                check_lock_modes(&memory, &[backing], &[0]);
+            }
+        }
+    }
+
+    #[test]
+    fn subranges_preserve_independent_lock_modes() {
+        for user in [false, true] {
+            for kernel in [false, true] {
+                let backing = Arc::new(LockMapping::new(user, kernel));
+                let memory = GuestMemory::new("subrange-lock-modes", backing.clone());
+                let range = memory.subrange(0, PAGE_SIZE64, false).unwrap();
+                check_lock_modes(&range, std::slice::from_ref(&backing), &[0]);
+                let nested = range.subrange(0, PAGE_SIZE64, false).unwrap();
+                check_lock_modes(&nested, &[backing], &[0]);
+            }
+        }
+    }
+
+    #[test]
+    fn multi_region_aggregates_lock_modes_independently() {
+        let modes = [(false, false), (true, false), (false, true), (true, true)];
+        for (first_user, first_kernel) in modes {
+            for (second_user, second_kernel) in modes {
+                let backings = [
+                    Arc::new(LockMapping::new(first_user, first_kernel)),
+                    Arc::new(LockMapping::new(second_user, second_kernel)),
+                ];
+                let memory = GuestMemory::new_multi_region(
+                    "multi-lock-modes",
+                    PAGE_SIZE64 * 2,
+                    backings.iter().cloned().map(Some).collect(),
+                )
+                .unwrap();
+                check_lock_modes(&memory, &backings, &[0, 2]);
+            }
+        }
     }
 }

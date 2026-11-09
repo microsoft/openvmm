@@ -113,8 +113,10 @@ pub fn start_sidecar<'a>(
             log::info!("sidecar: disabled via command line");
             return None;
         }
-        SidecarOptions::DisabledServicing => {
-            log::info!("sidecar: disabled because this is a servicing restore");
+        SidecarOptions::DisabledPerCpuStateCapacity => {
+            log::info!(
+                "sidecar: disabled because servicing per-CPU overrides exceed state capacity"
+            );
             return None;
         }
         SidecarOptions::Enabled { enable_logging, .. } => {

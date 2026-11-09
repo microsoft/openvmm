@@ -550,7 +550,7 @@ unsafe impl Sync for BoxedValue {}
 
 impl BoxedValue {
     fn new<T>(value: Box<T>) -> Self {
-        Self(NonNull::new(Box::into_raw(value).cast()).unwrap())
+        Self(NonNull::from_mut(Box::leak(value)).cast())
     }
 
     /// # Safety

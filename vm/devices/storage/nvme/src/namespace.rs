@@ -63,6 +63,7 @@ impl Namespace {
             nlbaf: 0,
             flbas: nvm::Flbas::new().with_low_index(0),
             rescap,
+            nsattr: nvm::Nsattr::new().with_write_protected(self.disk.is_read_only()),
             ..FromZeros::new_zeroed()
         };
         id.lbaf[0] = nvm::Lbaf::new().with_lbads(self.block_shift as u8);
@@ -167,6 +168,10 @@ impl Namespace {
 
                 tracing::trace!(nsid = self.nsid, lba, count, byte_count, "write");
 
+                if self.disk.is_read_only() {
+                    return Err(spec::Status::ATTEMPTED_WRITE_TO_READ_ONLY_RANGE.into());
+                }
+
                 let buffers = RequestBuffers::new(&self.mem, range.range(), false);
                 self.disk
                     .write_vectored(&buffers, lba, cdw12.fua())
@@ -191,6 +196,9 @@ impl Namespace {
                 prp.read(&self.mem, dsm_ranges.as_mut_bytes())?;
                 tracing::trace!(nsid = self.nsid, ?cdw11, ?dsm_ranges, "dsm");
                 if cdw11.ad() {
+                    if self.disk.is_read_only() {
+                        return Err(spec::Status::ATTEMPTED_WRITE_TO_READ_ONLY_RANGE.into());
+                    }
                     for range in dsm_ranges.as_ref() {
                         self.disk
                             .unmap(range.starting_lba, range.lba_count.into(), false)
@@ -255,5 +263,104 @@ fn map_disk_error(err: disk_backend::DiskError) -> NvmeError {
             spec::Status::ATTEMPTED_WRITE_TO_READ_ONLY_RANGE.into()
         }
         disk_backend::DiskError::UnsupportedEject => spec::Status::INVALID_COMMAND_OPCODE.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Namespace;
+    use crate::error::CommandResult;
+    use crate::spec;
+    use crate::spec::nvm;
+    use disklayer_ram::ram_disk;
+    use guestmem::GuestMemory;
+    use pal_async::async_test;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
+
+    const DATA_GPA: u64 = 0x1000;
+    const SECTOR_SIZE: usize = 512;
+
+    fn read_only_namespace() -> (GuestMemory, Namespace) {
+        let mem = GuestMemory::allocate(0x2000);
+        let disk = ram_disk(1 << 20, true).unwrap();
+        (mem.clone(), Namespace::new(mem, 1, disk))
+    }
+
+    /// Builds a command for `opcode` with its data buffer at `DATA_GPA`.
+    fn command(opcode: nvm::NvmOpcode) -> spec::Command {
+        let mut command = spec::Command::new_zeroed();
+        command.cdw0.set_opcode(opcode.0);
+        command.nsid = 1;
+        command.dptr[0] = DATA_GPA;
+        command
+    }
+
+    async fn status(namespace: &Namespace, command: &spec::Command) -> spec::Status {
+        match namespace.nvm_command(0x1000, command).await {
+            Ok(result) => result.status,
+            Err(err) => CommandResult::from(err).status,
+        }
+    }
+
+    #[async_test]
+    async fn write_to_read_only_namespace_fails() {
+        let (mem, namespace) = read_only_namespace();
+
+        mem.fill_at(DATA_GPA, 0xa5, SECTOR_SIZE).unwrap();
+        assert_eq!(
+            status(&namespace, &command(nvm::NvmOpcode::WRITE)).await,
+            spec::Status::ATTEMPTED_WRITE_TO_READ_ONLY_RANGE
+        );
+
+        // A read still succeeds, and returns the original (zero) contents.
+        mem.fill_at(DATA_GPA, 0xff, SECTOR_SIZE).unwrap();
+        assert_eq!(
+            status(&namespace, &command(nvm::NvmOpcode::READ)).await,
+            spec::Status::SUCCESS
+        );
+        let mut data = [0xff; SECTOR_SIZE];
+        mem.read_at(DATA_GPA, &mut data).unwrap();
+        assert_eq!(data, [0; SECTOR_SIZE]);
+    }
+
+    #[test]
+    fn identify_reports_read_only_as_write_protected() {
+        for read_only in [false, true] {
+            let mem = GuestMemory::allocate(0x1000);
+            let namespace = Namespace::new(mem, 1, ram_disk(1 << 20, read_only).unwrap());
+            let mut id = nvm::IdentifyNamespace::new_zeroed();
+            namespace.identify(id.as_mut_bytes());
+            assert_eq!(
+                id.nsattr.write_protected(),
+                read_only,
+                "read_only = {read_only}"
+            );
+        }
+    }
+
+    #[async_test]
+    async fn deallocate_on_read_only_namespace_fails() {
+        let (mem, namespace) = read_only_namespace();
+        mem.write_plain(
+            DATA_GPA,
+            &nvm::DsmRange {
+                context_attributes: 0,
+                lba_count: 1,
+                starting_lba: 0,
+            },
+        )
+        .unwrap();
+
+        // Without the deallocate attribute the command does not modify the
+        // namespace and succeeds.
+        let mut dsm = command(nvm::NvmOpcode::DSM);
+        assert_eq!(status(&namespace, &dsm).await, spec::Status::SUCCESS);
+
+        dsm.cdw11 = nvm::Cdw11Dsm::new().with_ad(true).into();
+        assert_eq!(
+            status(&namespace, &dsm).await,
+            spec::Status::ATTEMPTED_WRITE_TO_READ_ONLY_RANGE
+        );
     }
 }

@@ -1042,6 +1042,8 @@ pub enum FlowPlatformLinuxDistro {
     AzureLinux,
     /// Arch Linux (including WSL2)
     Arch,
+    /// openSUSE (including WSL2)
+    OpenSuse,
     /// Nix environment (detected via IN_NIX_SHELL env var or having a `/nix/store` in PATH)
     Nix,
     /// An unknown distribution
