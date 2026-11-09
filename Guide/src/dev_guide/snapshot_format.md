@@ -95,13 +95,17 @@ Restore likewise opens the snapshot directory once and resolves its artifacts
 relative to that handle. Windows uses read-only handles with `FILE_SHARE_READ`
 only, rejects reparse points, compares `FILE_ID_INFO` and EOF before and after
 creating the private COW section, and keeps the directory and artifact guards
-in the VM worker until teardown. Linux keeps the exact `O_NOFOLLOW` directory
-and regular-file descriptors, and before handoff rejects a change of the device,
-inode, length, or modification time of the opened manifest, state, or memory
-file, so renaming or replacing the original path cannot substitute another
-generation. A change of their links, mode, or owner alone passes, which lets a
-restore open a snapshot before the capture's source, as it tears down, removes
-its RAM file's temporary name, the other link of an automatic `memory.bin`.
+in the VM worker until teardown. Linux opens each artifact with `O_NOFOLLOW`
+and `O_NONBLOCK`, so that a FIFO without a writer, for which a blocking open
+would wait, reaches the check of the opened file's type and is refused like
+any other file that is not a regular file, and then makes a regular file's
+descriptor blocking again. It keeps the exact directory and regular-file
+descriptors, and before handoff rejects a change of the device, inode, length,
+or modification time of the opened manifest, state, or memory file, so
+renaming or replacing the original path cannot substitute another generation.
+A change of their links, mode, or owner alone passes, which lets a restore
+open a snapshot before the capture's source, as it tears down, removes its RAM
+file's temporary name, the other link of an automatic `memory.bin`.
 Linux file descriptors do not provide mandatory write exclusion; deployments
 that need authenticated or write-proof local artifacts must add a stronger mode
 such as a lease, fs-verity, or a verified artifact broker.

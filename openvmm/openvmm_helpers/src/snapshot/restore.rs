@@ -982,6 +982,72 @@ mod tests {
         );
     }
 
+    /// Restore refuses a FIFO in place of any artifact of a paired-scratch
+    /// snapshot for what it is, without waiting for the writer that a
+    /// blocking open of the FIFO would wait for.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn restore_refuses_a_writerless_fifo_artifact_without_waiting() {
+        use super::super::fs::tests::refusal_of_writerless_fifo;
+
+        let fifo_mode = nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR;
+        let scratch = vec![0x5a_u8; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        manifest.snapshot_tier = SNAPSHOT_TIER_INSTANCE_CHECKPOINT.to_owned();
+        manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_RESUME.to_owned();
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .set_effective_command_line(
+                "console=hvc0 nvx_snapshot_tier=instance-checkpoint".to_owned(),
+            );
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let memory_source = dir.path().join("memory-source.bin");
+        let scratch_source = dir.path().join("scratch-source.bin");
+        std::fs::write(&memory_source, vec![0_u8; 1024]).unwrap();
+        std::fs::write(&scratch_source, &scratch).unwrap();
+        write_snapshot_from_memory_and_scratch_files(
+            &snap_dir,
+            &manifest,
+            b"state",
+            &std::fs::File::open(&memory_source).unwrap(),
+            Some(&std::fs::File::open(&scratch_source).unwrap()),
+        )
+        .unwrap();
+
+        for name in [MANIFEST_FILE_NAME, STATE_FILE_NAME, MEMORY_FILE_NAME] {
+            let artifact = snap_dir.join(name);
+            let set_aside = dir.path().join(name);
+            std::fs::rename(&artifact, &set_aside).unwrap();
+            nix::unistd::mkfifo(&artifact, fifo_mode).unwrap();
+            let snapshot = snap_dir.clone();
+            let error = refusal_of_writerless_fifo(&artifact, move || {
+                OpenedSnapshot::open(&snapshot).map(drop)
+            });
+            assert!(
+                format!("{error:#}").contains("is not a regular file"),
+                "{name}: {error:#}"
+            );
+            std::fs::remove_file(&artifact).unwrap();
+            std::fs::rename(&set_aside, &artifact).unwrap();
+        }
+
+        // Restore opens the paired scratch once it has opened the snapshot.
+        let snapshot = OpenedSnapshot::open(&snap_dir).unwrap();
+        let scratch_path = snap_dir.join(SCRATCH_FILE_NAME);
+        std::fs::remove_file(&scratch_path).unwrap();
+        nix::unistd::mkfifo(&scratch_path, fifo_mode).unwrap();
+        let error = refusal_of_writerless_fifo(&scratch_path, move || {
+            snapshot.open_paired_scratch_file().map(drop)
+        });
+        assert!(
+            format!("{error:#}").contains("scratch.img is not a regular file"),
+            "{error:#}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn opened_memory_handle_survives_path_replacement() {

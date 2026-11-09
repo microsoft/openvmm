@@ -754,6 +754,9 @@ impl OpenedSnapshotDirectory {
         })
     }
 
+    /// Opens the artifact `name` of this directory for reading, and refuses it
+    /// without waiting unless it is a regular file, as
+    /// [`accept_opened_regular_file`] describes.
     pub(super) fn open_regular_file(
         &self,
         name: &str,
@@ -767,7 +770,7 @@ impl OpenedSnapshotDirectory {
             let fd = nix::fcntl::openat(
                 &self.file,
                 name,
-                OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
+                OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK,
                 Mode::empty(),
             )
             .map_err(nix_error)
@@ -793,7 +796,7 @@ impl OpenedSnapshotDirectory {
         #[cfg(not(any(target_os = "linux", windows)))]
         let file = open_regular_file_impl(&self.path.join(name), description)?;
 
-        validate_opened_regular_file(&file, description, &self.display_path(name))?;
+        accept_opened_regular_file(&file, description, &self.display_path(name))?;
         Ok(file)
     }
 
@@ -951,7 +954,7 @@ fn open_regular_file_impl(path: &Path, description: &str) -> anyhow::Result<std:
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -964,8 +967,30 @@ fn open_regular_file_impl(path: &Path, description: &str) -> anyhow::Result<std:
     let file = options
         .open(path)
         .with_context(|| format!("failed to open {description} at {}", path.display()))?;
-    validate_opened_regular_file(&file, description, path)?;
+    accept_opened_regular_file(&file, description, path)?;
     Ok(file)
+}
+
+/// Refuses an opened artifact that is not a regular file and, on Unix, makes
+/// the handle of one that is blocking.
+///
+/// Artifacts open without following a final link, or on Windows a reparse
+/// point, and on Unix with `O_NONBLOCK`: an open of a FIFO without a writer,
+/// or of some devices, would otherwise wait until another process acted,
+/// before the type of the opened file could be checked here. Reads of a
+/// regular file ignore the flag, but its handle outlives this check, as a
+/// restore guard and as the descriptor that the VM worker maps as RAM, so it
+/// returns to the blocking mode of an open without the flag.
+fn accept_opened_regular_file(
+    file: &std::fs::File,
+    description: &str,
+    path: &Path,
+) -> anyhow::Result<()> {
+    validate_opened_regular_file(file, description, path)?;
+    #[cfg(unix)]
+    pal::unix::pipe::set_nonblocking(file, false)
+        .with_context(|| format!("failed to make opened {description} blocking"))?;
+    Ok(())
 }
 
 fn validate_opened_regular_file(
@@ -1154,8 +1179,96 @@ pub(super) fn sync_directory(_path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod tests {
+pub(super) mod tests {
     use super::*;
+    use nix::fcntl::FcntlArg;
+    use nix::fcntl::OFlag;
+
+    /// Runs `open` on another thread, which opens the FIFO at `fifo` while
+    /// nothing has the FIFO open for writing, and returns the error with which
+    /// `open` refused it.
+    ///
+    /// Fails if `open` waits for a writer, once it has given it one, so that a
+    /// test fails rather than hangs.
+    pub(in crate::snapshot) fn refusal_of_writerless_fifo(
+        fifo: &Path,
+        open: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+    ) -> anyhow::Error {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let opener = std::thread::spawn(move || sender.send(open()).unwrap());
+        let result = match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // An open for reading and writing does not wait, and gives the
+                // waiting open its writer.
+                let _writer = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(fifo)
+                    .unwrap();
+                opener.join().unwrap();
+                panic!("the open of {} waited for a writer", fifo.display());
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::panic::resume_unwind(opener.join().unwrap_err())
+            }
+        };
+        opener.join().unwrap();
+        result.expect_err("a FIFO was opened as a regular file")
+    }
+
+    #[test]
+    fn artifact_opens_refuse_a_writerless_fifo_without_waiting() {
+        type Open = fn(&Path, &str) -> anyhow::Result<std::fs::File>;
+        let opens: [(&str, Open); 5] = [
+            ("open_regular_file in a directory", |dir, name| {
+                OpenedSnapshotDirectory::open(dir)?.open_regular_file(name, "artifact")
+            }),
+            (
+                "open_regular_file_for_identity in a directory",
+                |dir, name| {
+                    OpenedSnapshotDirectory::open(dir)?
+                        .open_regular_file_for_identity(name, "artifact")
+                },
+            ),
+            ("open_file_with_length in a directory", |dir, name| {
+                OpenedSnapshotDirectory::open(dir)?.open_file_with_length(name, 0, "artifact")
+            }),
+            ("open_regular_file", |dir, name| {
+                open_regular_file(&dir.join(name), "artifact")
+            }),
+            ("open_file_with_length", |dir, name| {
+                open_file_with_length(&dir.join(name), 0, "artifact")
+            }),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("fifo.bin");
+        nix::unistd::mkfifo(
+            &fifo,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("regular.bin"), b"").unwrap();
+
+        for (opener, open) in opens {
+            let directory = dir.path().to_owned();
+            let error =
+                refusal_of_writerless_fifo(&fifo, move || open(&directory, "fifo.bin").map(drop));
+            assert!(
+                format!("{error:#}").contains("artifact is not a regular file"),
+                "{opener}: {error:#}"
+            );
+
+            // The handle of a regular file blocks, as that of an open without
+            // O_NONBLOCK does.
+            let file = open(dir.path(), "regular.bin").unwrap();
+            let flags = nix::fcntl::fcntl(&file, FcntlArg::F_GETFL).unwrap();
+            assert!(
+                !OFlag::from_bits_retain(flags).contains(OFlag::O_NONBLOCK),
+                "{opener}"
+            );
+        }
+    }
 
     #[test]
     fn sparse_copy_fallbacks_preserve_extents_and_clone_independence() {
