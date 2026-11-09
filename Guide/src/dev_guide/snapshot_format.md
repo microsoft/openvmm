@@ -213,7 +213,9 @@ Key unsupported categories:
 ## Extending the format
 
 When adding new fields to `SnapshotManifest`, use the next available mesh
-tag number.
+tag number other than 18, 19, and 20: upstream OpenVMM assigns field 18 to
+the `snapshot_id` that its SaveVM API records, and reserves fields 19 and 20
+for `compatibility_bundle_digest` and `memory_artifacts`.
 The protobuf encoding is forward-compatible: older readers will
 ignore unknown fields. However, removing or reordering existing fields is a
 breaking change. See [Save State](contrib/save-state.md) for the full set of

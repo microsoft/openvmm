@@ -75,8 +75,9 @@ pub struct SnapshotManifest {
     /// has no snapshot ID.
     #[mesh(18, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
     pub snapshot_id: guid::Guid,
-    // Field 19 is reserved for `compatibility_bundle_digest` and field 20 for
-    // `memory_artifacts`.
+    // Upstream OpenVMM reserves field 19 for `compatibility_bundle_digest` and
+    // field 20 for `memory_artifacts`, so no other field of this manifest takes
+    // them.
 }
 
 /// Validate that a snapshot manifest is compatible with the running VM config.
