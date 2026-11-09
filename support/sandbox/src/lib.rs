@@ -10,10 +10,10 @@
 //!
 //! # Integration status and limits
 //!
-//! Worker-side Linux confinement is implemented, with concrete policies in
-//! [`profiles`]. Process-launch integration is a separate layer. Existing
-//! OpenVMM workers are not yet enabled: they still use ordinary launches and
-//! do not call the required early worker-side [`apply`].
+//! PAL supports prepared Linux sandbox launches, and Mesh accepts optional
+//! sandbox profiles. Existing OpenVMM workers are not yet enabled: they still
+//! use ordinary launches and do not call the required early worker-side
+//! [`apply`]. Tracing and profiling are separate changes.
 //!
 //! On Linux, self-mapped workers retain their host UID/GID and PID visibility.
 //! Cross-process signaling is not yet restricted, so this is not a complete
@@ -65,14 +65,14 @@ mod prepare;
 mod profile;
 mod syscall_denylist;
 
-pub mod profiles;
-
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 mod unix;
 #[cfg(windows)]
 mod windows;
+
+pub mod profiles;
 
 pub use prepare::HandleTag;
 pub use prepare::Identity;
