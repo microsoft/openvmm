@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+crypto.workspace = true
 guid = { workspace = true, features = ["mesh", "inspect"] }
 inspect.workspace = true
 mesh.workspace = true
@@ -16,7 +17,6 @@ prost.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
-openssl.workspace = true
 
 [lints]
 workspace = true

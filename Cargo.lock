@@ -9735,10 +9735,10 @@ version = "0.0.0"
 name = "underhill_config"
 version = "0.0.0"
 dependencies = [
+ "crypto",
  "guid",
  "inspect",
  "mesh",
- "openssl",
  "prost",
  "serde",
  "serde_json",

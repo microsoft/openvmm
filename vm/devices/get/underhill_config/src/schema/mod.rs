@@ -175,7 +175,7 @@ impl crate::Vtl2Settings {
             let attested_settings: Vtl2AttestedSettings = Self::read(raw_attested_settings)?;
             settings.attested_settings = Some(crate::Vtl2AttestedSettings {
                 version: attested_settings.version,
-                init_data_hash: Some(openssl::sha::sha256(raw_attested_settings)),
+                init_data_hash: Some(crypto::sha_256::sha_256(raw_attested_settings)),
             });
         }
         Ok(settings)
@@ -323,7 +323,7 @@ mod test {
         Vtl2AttestedSettings { version: 1 }
             .encode(&mut raw_attested_settings)
             .unwrap();
-        let expected_hash = openssl::sha::sha256(&raw_attested_settings);
+        let expected_hash = crypto::sha_256::sha_256(&raw_attested_settings);
 
         let base = Vtl2SettingsBase {
             version: 1,
@@ -391,7 +391,7 @@ mod test {
                 let attested_settings = settings.fixed.attested_settings.unwrap();
                 assert_eq!(1, attested_settings.version);
                 assert_eq!(
-                    Some(openssl::sha::sha256(payload)),
+                    Some(crypto::sha_256::sha_256(payload)),
                     attested_settings.init_data_hash
                 );
             }
@@ -408,7 +408,7 @@ mod test {
                 let attested_settings = settings.fixed.attested_settings.unwrap();
                 assert_eq!(1, attested_settings.version);
                 assert_eq!(
-                    Some(openssl::sha::sha256(payload)),
+                    Some(crypto::sha_256::sha_256(payload)),
                     attested_settings.init_data_hash
                 );
             }
