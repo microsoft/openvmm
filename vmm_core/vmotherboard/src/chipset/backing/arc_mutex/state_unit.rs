@@ -19,6 +19,7 @@ use state_unit::StateRequest;
 use state_unit::StateUnit;
 use std::sync::Arc;
 use std::task::Context;
+use vmcore::device_state::InputGateWait;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -98,8 +99,8 @@ trait DynDevice: InspectMut + Send {
     fn start(&mut self);
     async fn confirm_start(&mut self) -> anyhow::Result<()>;
     async fn stop(&mut self);
-    async fn quiesce_input(&mut self) -> anyhow::Result<()>;
-    async fn resume_input(&mut self) -> anyhow::Result<()>;
+    fn quiesce_input(&mut self) -> InputGateWait;
+    fn resume_input(&mut self) -> InputGateWait;
     async fn reset(&mut self);
     async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()>;
     fn poll_device(&mut self, cx: &mut Context<'_>);
@@ -120,11 +121,11 @@ impl<T: VmmChipsetDevice> DynDevice for T {
     async fn stop(&mut self) {
         self.stop().await
     }
-    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
-        vmcore::device_state::ChangeDeviceState::quiesce_input(self).await
+    fn quiesce_input(&mut self) -> InputGateWait {
+        vmcore::device_state::ChangeDeviceState::quiesce_input(self)
     }
-    async fn resume_input(&mut self) -> anyhow::Result<()> {
-        vmcore::device_state::ChangeDeviceState::resume_input(self).await
+    fn resume_input(&mut self) -> InputGateWait {
+        vmcore::device_state::ChangeDeviceState::resume_input(self)
     }
 
     async fn reset(&mut self) {
@@ -256,12 +257,22 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
         // These are currently not true.
     }
 
+    // The input gate is the one state change that the vCPUs may run through:
+    // the snapshot boundary gates host input before it stops them, and
+    // resumes a gate that failed before any of them stops. So, unlike the
+    // other state changes, it does not close the device: the chipset answers
+    // no port or MMIO access to a closed device, drops its interrupts, and
+    // panics on an EOI or a PCI configuration access to it. The gate's
+    // synchronous part runs under the ordinary lock, as a vCPU's access does,
+    // and its wait runs without the device.
     async fn quiesce_input(&mut self) -> anyhow::Result<()> {
-        self.device.clone().close().quiesce_input().await
+        let wait = self.device.lock().quiesce_input();
+        wait.await
     }
 
     async fn resume_input(&mut self) -> anyhow::Result<()> {
-        self.device.clone().close().resume_input().await
+        let wait = self.device.lock().resume_input();
+        wait.await
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {
@@ -295,9 +306,12 @@ mod tests {
     use crate::chipset::Chipset;
     use crate::chipset::io_ranges::IoRanges;
     use chipset_device::ChipsetDevice;
+    use chipset_device::interrupt::HandleEoi;
+    use chipset_device::interrupt::LineInterruptTarget;
     use chipset_device::io::IoResult;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::pio::PortIoIntercept;
+    use chipset_device_resources::IRQ_LINE_SET;
     use chipset_device_resources::ResolvedChipsetDevice;
     use closeable_mutex::CloseableMutex;
     use futures::poll;
@@ -306,6 +320,7 @@ mod tests {
     use pal_async::async_test;
     use state_unit::StateUnit;
     use state_unit::StateUnits;
+    use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
@@ -313,6 +328,8 @@ mod tests {
     use std::task::Poll;
     use test_with_tracing::test;
     use vmcore::device_state::ChangeDeviceState;
+    use vmcore::device_state::InputGateWait;
+    use vmcore::line_interrupt::LineInterrupt;
     use vmcore::save_restore::AsyncSaveRestore;
     use vmcore::save_restore::NoSavedState;
     use vmcore::save_restore::RestoreError;
@@ -840,5 +857,415 @@ mod tests {
                 assert_eq!(data, [0xff; 4]);
             }
         }
+    }
+
+    /// The VM time unit's stand-in, which the chipset's devices depend on.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct NoopUnit;
+
+    impl StateUnit for NoopUnit {
+        async fn start(&mut self) {}
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+            Ok(None)
+        }
+
+        async fn restore(&mut self, _: SavedStateBlob) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    /// A started chipset with the state units that the VM worker gives it: VM
+    /// time, the chipset, and the devices that the test adds; and a line of
+    /// its IRQ line set.
+    struct StartedChipset {
+        units: StateUnits,
+        chipset: Arc<Chipset>,
+        irq: Arc<LineInterrupt>,
+        _devices: crate::ChipsetDevices,
+        _time_unit: state_unit::SpawnedUnit<NoopUnit>,
+        _keeper: vmcore::vmtime::VmTimeKeeper,
+    }
+
+    impl StartedChipset {
+        async fn new(driver: &DefaultDriver, add: impl FnOnce(&crate::ChipsetBuilder<'_>)) -> Self {
+            let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+            let mut units = StateUnits::new();
+            let time_unit = units
+                .add("vmtime")
+                .spawn(driver.clone(), |recv| state_unit::run_unit(NoopUnit, recv))
+                .unwrap();
+            let keeper =
+                vmcore::vmtime::VmTimeKeeper::new(driver, vmcore::vmtime::VmTime::from_100ns(0));
+            let time = keeper.builder().build(driver).await.unwrap();
+            let builder = crate::ChipsetBuilder::new(
+                &source,
+                &units,
+                Arc::new(TestDebugEventHandler),
+                &time,
+                time_unit.handle(),
+                false,
+                false,
+                None,
+            );
+            add(&builder);
+            let irq = {
+                let mut inner = builder.inner.lock();
+                let (line_set, _) = inner.line_sets.line_set(&source, &units, IRQ_LINE_SET);
+                line_set.new_line(0, "test").unwrap()
+            };
+            let (chipset, devices) = builder.build().unwrap();
+            units.start().await.unwrap();
+            Self {
+                units,
+                chipset,
+                irq: Arc::new(irq),
+                _devices: devices,
+                _time_unit: time_unit,
+                _keeper: keeper,
+            }
+        }
+    }
+
+    const GATED_PORT: u16 = 0x6f0;
+
+    /// One change of a [`GatedDevice`]'s input gate: the device reports the
+    /// change on `entered` when it makes it, and the change's wait completes
+    /// when `release` does, as a virtio transport's gate waits for its device
+    /// task's reply.
+    struct GateChange {
+        entered: mesh::OneshotSender<()>,
+        release: mesh::OneshotReceiver<()>,
+    }
+
+    /// The control of a [`GateChange`]: when the change began, and the
+    /// release of its wait.
+    struct GateChangeControl {
+        entered: mesh::OneshotReceiver<()>,
+        release: mesh::OneshotSender<()>,
+    }
+
+    fn gate_change() -> (GateChange, GateChangeControl) {
+        let (entered, entered_recv) = mesh::oneshot();
+        let (release_send, release) = mesh::oneshot();
+        (
+            GateChange { entered, release },
+            GateChangeControl {
+                entered: entered_recv,
+                release: release_send,
+            },
+        )
+    }
+
+    /// A device that the VPs reach in each way that the chipset dispatches to
+    /// it: port I/O, EOIs, and its interrupt line. Each change of its input
+    /// gate waits for the test, and it records each access that it serves,
+    /// with whether its gate was closed then.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct GatedDevice {
+        gated: bool,
+        changes: std::collections::VecDeque<GateChange>,
+        accesses: Arc<parking_lot::Mutex<Vec<(&'static str, bool)>>>,
+    }
+
+    impl GatedDevice {
+        fn change_gate(
+            &mut self,
+            gated: bool,
+        ) -> impl 'static + Send + Future<Output = anyhow::Result<()>> {
+            self.gated = gated;
+            let GateChange { entered, release } =
+                self.changes.pop_front().expect("unexpected gate change");
+            entered.send(());
+            async move {
+                release.await?;
+                Ok(())
+            }
+        }
+
+        fn record(&mut self, access: &'static str) {
+            self.accesses.lock().push((access, self.gated));
+        }
+    }
+
+    impl ChangeDeviceState for GatedDevice {
+        fn start(&mut self) {}
+
+        fn quiesce_input(&mut self) -> InputGateWait {
+            InputGateWait::new(self.change_gate(true))
+        }
+
+        fn resume_input(&mut self) -> InputGateWait {
+            InputGateWait::new(self.change_gate(false))
+        }
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+    }
+
+    impl ChipsetDevice for GatedDevice {
+        fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
+            Some(self)
+        }
+
+        fn supports_handle_eoi(&mut self) -> Option<&mut dyn HandleEoi> {
+            Some(self)
+        }
+
+        fn supports_line_interrupt_target(&mut self) -> Option<&mut dyn LineInterruptTarget> {
+            Some(self)
+        }
+    }
+
+    impl PortIoIntercept for GatedDevice {
+        fn get_static_regions(&mut self) -> &[(&str, std::ops::RangeInclusive<u16>)] {
+            &[("gated", GATED_PORT..=GATED_PORT)]
+        }
+
+        fn io_read(&mut self, _: u16, data: &mut [u8]) -> IoResult {
+            data.fill(0);
+            IoResult::Ok
+        }
+
+        fn io_write(&mut self, _: u16, _: &[u8]) -> IoResult {
+            self.record("port write");
+            IoResult::Ok
+        }
+    }
+
+    impl HandleEoi for GatedDevice {
+        fn handle_eoi(&mut self, _: u32) {
+            self.record("eoi");
+        }
+    }
+
+    impl LineInterruptTarget for GatedDevice {
+        fn set_irq(&mut self, _: u32, high: bool) {
+            self.record(if high { "irq high" } else { "irq low" });
+        }
+
+        fn valid_lines(&self) -> &[std::ops::RangeInclusive<u32>] {
+            &[0..=0]
+        }
+    }
+
+    impl SaveRestore for GatedDevice {
+        type SavedState = NoSavedState;
+
+        fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+        panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default()
+    }
+
+    /// Plays a VP on a thread of its own that, once a gate change began,
+    /// writes the gated port, signals an EOI, and sets the interrupt line to
+    /// `irq_level`, then releases the change's wait. Returns the panic
+    /// message of each access that panicked.
+    fn vp_during_gate_change(
+        started: &StartedChipset,
+        control: GateChangeControl,
+        irq_level: bool,
+    ) -> mesh::OneshotReceiver<Vec<String>> {
+        let chipset = started.chipset.clone();
+        let irq = started.irq.clone();
+        let (send, recv) = mesh::oneshot();
+        std::thread::spawn(move || {
+            futures::executor::block_on(control.entered).unwrap();
+            let mut panics = Vec::new();
+            let accesses: [&dyn Fn(); 3] = [
+                &|| futures::executor::block_on(chipset.io_write(1, GATED_PORT, &[1])),
+                &|| chipset.handle_eoi(0),
+                &|| irq.set_level(irq_level),
+            ];
+            for access in accesses {
+                if let Err(panic) = std::panic::catch_unwind(AssertUnwindSafe(access)) {
+                    panics.push(panic_message(panic));
+                }
+            }
+            control.release.send(());
+            send.send(panics);
+        });
+        recv
+    }
+
+    /// The snapshot boundary gates host input while the VPs run, and resumes
+    /// a gate that failed before any VP stops: the port writes, EOIs, and
+    /// interrupts of a VP during a device's gate change, as it waits, reach
+    /// the device after the change.
+    #[pal_async::async_test]
+    async fn vp_accesses_during_an_input_gate_change_reach_the_device(driver: DefaultDriver) {
+        let (quiesce, quiesce_control) = gate_change();
+        let (resume, resume_control) = gate_change();
+        let accesses = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let started = StartedChipset::new(&driver, |builder| {
+            builder
+                .arc_mutex_device("gated")
+                .add(|services| {
+                    services.add_line_target(IRQ_LINE_SET, 0..=0, 0);
+                    GatedDevice {
+                        gated: false,
+                        changes: [quiesce, resume].into(),
+                        accesses: accesses.clone(),
+                    }
+                })
+                .unwrap();
+        })
+        .await;
+
+        let vp = vp_during_gate_change(&started, quiesce_control, true);
+        started.units.quiesce_input_for_save().await.unwrap();
+        assert_eq!(
+            (vp.await.unwrap(), std::mem::take(&mut *accesses.lock())),
+            (
+                Vec::new(),
+                vec![("port write", true), ("eoi", true), ("irq high", true)]
+            )
+        );
+
+        let vp = vp_during_gate_change(&started, resume_control, false);
+        started.units.resume_input_after_save().await.unwrap();
+        assert_eq!(
+            (vp.await.unwrap(), std::mem::take(&mut *accesses.lock())),
+            (
+                Vec::new(),
+                vec![("port write", false), ("eoi", false), ("irq low", false)]
+            )
+        );
+    }
+
+    const COUNTING_PORT: u16 = 0x6f1;
+
+    /// A device whose input gate is the default, which completes at once, as
+    /// the gates of most devices do, such as the IOAPIC's and the RTC's. It
+    /// counts the port writes and EOIs that it serves.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct CountingDevice {
+        served: Arc<AtomicUsize>,
+    }
+
+    impl ChangeDeviceState for CountingDevice {
+        fn start(&mut self) {}
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+    }
+
+    impl ChipsetDevice for CountingDevice {
+        fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
+            Some(self)
+        }
+
+        fn supports_handle_eoi(&mut self) -> Option<&mut dyn HandleEoi> {
+            Some(self)
+        }
+    }
+
+    impl PortIoIntercept for CountingDevice {
+        fn get_static_regions(&mut self) -> &[(&str, std::ops::RangeInclusive<u16>)] {
+            &[("counting", COUNTING_PORT..=COUNTING_PORT)]
+        }
+
+        fn io_read(&mut self, _: u16, data: &mut [u8]) -> IoResult {
+            data.fill(0);
+            IoResult::Ok
+        }
+
+        fn io_write(&mut self, _: u16, _: &[u8]) -> IoResult {
+            self.served.fetch_add(1, Ordering::SeqCst);
+            IoResult::Ok
+        }
+    }
+
+    impl HandleEoi for CountingDevice {
+        fn handle_eoi(&mut self, _: u32) {
+            self.served.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl SaveRestore for CountingDevice {
+        type SavedState = NoSavedState;
+
+        fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    /// A gate that completes at once, as the default does, changes under the
+    /// lock that the VPs take too: a VP that writes a port and signals EOIs in
+    /// a loop, while the snapshot boundary takes and resumes the gate again
+    /// and again, as the guest's snapshot requests make it, finds every access
+    /// served.
+    #[pal_async::async_test]
+    async fn immediate_input_gates_serve_concurrent_vp_accesses(driver: DefaultDriver) {
+        const ROUNDS: usize = 1000;
+        let served = Arc::new(AtomicUsize::new(0));
+        let started = StartedChipset::new(&driver, |builder| {
+            builder
+                .arc_mutex_device("counting")
+                .add(|_| CountingDevice {
+                    served: served.clone(),
+                })
+                .unwrap();
+        })
+        .await;
+
+        let done = Arc::new(AtomicBool::new(false));
+        let (running, running_recv) = mesh::oneshot();
+        let (send, vp) = mesh::oneshot();
+        std::thread::spawn({
+            let chipset = started.chipset.clone();
+            let done = done.clone();
+            move || {
+                let mut running = Some(running);
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    let mut issued = 0;
+                    while !done.load(Ordering::SeqCst) {
+                        futures::executor::block_on(chipset.io_write(1, COUNTING_PORT, &[1]));
+                        chipset.handle_eoi(0);
+                        issued += 2;
+                        if let Some(running) = running.take() {
+                            running.send(());
+                        }
+                    }
+                    issued
+                }));
+                send.send(result.map_err(panic_message));
+            }
+        });
+        running_recv.await.unwrap();
+        for _ in 0..ROUNDS {
+            started.units.quiesce_input_for_save().await.unwrap();
+            started.units.resume_input_after_save().await.unwrap();
+        }
+        done.store(true, Ordering::SeqCst);
+        let issued = vp.await.unwrap().unwrap();
+        assert_eq!(served.load(Ordering::SeqCst), issued);
     }
 }

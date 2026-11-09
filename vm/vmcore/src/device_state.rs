@@ -6,7 +6,48 @@
 #![forbid(unsafe_code)]
 
 use std::future::Future;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 use std::time::Duration;
+
+/// What remains of a change of a device's host-input gate once
+/// [`ChangeDeviceState::quiesce_input`] or
+/// [`ChangeDeviceState::resume_input`] has made the change's synchronous
+/// part: a future that completes with the change.
+///
+/// It does not borrow the device, so that the caller can release the device
+/// before it awaits the change.
+#[must_use = "a gate change is complete only once its wait completes"]
+pub struct InputGateWait(Option<Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>>);
+
+impl InputGateWait {
+    /// A gate change that its synchronous part completed.
+    pub fn done() -> Self {
+        Self(None)
+    }
+
+    /// A gate change that completes when `wait` does.
+    ///
+    /// `wait` must not need the device, which the vCPUs can access while it
+    /// runs: it waits for what the synchronous part started, such as the
+    /// answer of the device's task to a request that the synchronous part
+    /// sent.
+    pub fn new(wait: impl 'static + Send + Future<Output = anyhow::Result<()>>) -> Self {
+        Self(Some(Box::pin(wait)))
+    }
+}
+
+impl Future for InputGateWait {
+    type Output = anyhow::Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match &mut self.0 {
+            None => Poll::Ready(Ok(())),
+            Some(wait) => wait.as_mut().poll(cx),
+        }
+    }
+}
 
 /// Trait for transitioning device state.
 pub trait ChangeDeviceState {
@@ -43,13 +84,28 @@ pub trait ChangeDeviceState {
     }
 
     /// Stops accepting new host input before a snapshot vCPU boundary.
-    fn quiesce_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
-        async { Ok(()) }
+    ///
+    /// The vCPUs may run while the gate changes: the snapshot boundary gates
+    /// host input before it stops them, and resumes a gate that failed before
+    /// any of them stops. So a gate change has two parts. The caller makes
+    /// this call, the synchronous part, holding the device as a vCPU's access
+    /// to it does, so it must not wait. What remains to wait for, such as the
+    /// answer of the device's task to a request that this call sent, it
+    /// returns as an [`InputGateWait`], which does not borrow the device and
+    /// which the caller awaits without holding it. A vCPU's access to the
+    /// device thus comes before the synchronous part or after it, and is
+    /// served in either case.
+    fn quiesce_input(&mut self) -> InputGateWait {
+        InputGateWait::done()
     }
 
     /// Resumes host input after a failed snapshot transaction.
-    fn resume_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
-        async { Ok(()) }
+    ///
+    /// The vCPUs may run here too, so this makes the change's synchronous
+    /// part and returns what remains to wait for, as [`Self::quiesce_input`]
+    /// does.
+    fn resume_input(&mut self) -> InputGateWait {
+        InputGateWait::done()
     }
 
     /// Pauses guest-request processing in a save-consistent state.

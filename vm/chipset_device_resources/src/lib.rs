@@ -13,6 +13,7 @@ use std::ops::RangeInclusive;
 use vm_resource::CanResolveTo;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::device_state::InputGateWait;
 use vmcore::line_interrupt::LineInterrupt;
 use vmcore::save_restore::AsyncProtobufSaveRestore;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -93,8 +94,8 @@ pub trait ConfigureChipsetDevice: Send {
 trait DynChipsetDevice: ChipsetDevice + AsyncProtobufSaveRestore + InspectMut {
     fn start(&mut self);
     async fn confirm_start(&mut self) -> anyhow::Result<()>;
-    async fn quiesce_input(&mut self) -> anyhow::Result<()>;
-    async fn resume_input(&mut self) -> anyhow::Result<()>;
+    fn quiesce_input(&mut self) -> InputGateWait;
+    fn resume_input(&mut self) -> InputGateWait;
     async fn stop(&mut self);
     async fn reset(&mut self);
     async fn teardown(self: Box<Self>);
@@ -112,11 +113,11 @@ impl<T: ChangeDeviceState + ChipsetDevice + AsyncProtobufSaveRestore + InspectMu
     async fn confirm_start(&mut self) -> anyhow::Result<()> {
         ChangeDeviceState::confirm_start(self).await
     }
-    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
-        ChangeDeviceState::quiesce_input(self).await
+    fn quiesce_input(&mut self) -> InputGateWait {
+        ChangeDeviceState::quiesce_input(self)
     }
-    async fn resume_input(&mut self) -> anyhow::Result<()> {
-        ChangeDeviceState::resume_input(self).await
+    fn resume_input(&mut self) -> InputGateWait {
+        ChangeDeviceState::resume_input(self)
     }
     async fn stop(&mut self) {
         self.stop().await
@@ -160,12 +161,12 @@ impl ChangeDeviceState for ErasedChipsetDevice {
         self.0.confirm_start().await
     }
 
-    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
-        self.0.quiesce_input().await
+    fn quiesce_input(&mut self) -> InputGateWait {
+        self.0.quiesce_input()
     }
 
-    async fn resume_input(&mut self) -> anyhow::Result<()> {
-        self.0.resume_input().await
+    fn resume_input(&mut self) -> InputGateWait {
+        self.0.resume_input()
     }
 
     async fn stop(&mut self) {
