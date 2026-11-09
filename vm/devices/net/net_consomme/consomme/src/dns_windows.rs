@@ -85,7 +85,7 @@ pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
                     dns_servers.push(ipv4_addr.into());
                 } else if dns_addr.sa_family == AF_INET6 {
                     let dns_addr = &*dns.Address.lpSockaddr.cast::<SOCKADDR_IN6>();
-                    let ipv6_addr = Ipv6Addr::from(u128::from_be_bytes(dns_addr.sin6_addr.u.Byte));
+                    let ipv6_addr = Ipv6Addr::from_octets(dns_addr.sin6_addr.u.Byte);
                     dns_servers.push(ipv6_addr.into());
                 }
                 dns_p = dns.Next;

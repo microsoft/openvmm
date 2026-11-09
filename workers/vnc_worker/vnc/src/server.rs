@@ -333,21 +333,9 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 // Reject formats where channels don't fit in bits_per_pixel.
                 // A shift of 31 with an 8-bit channel would overflow u32
                 // in the pixel conversion shift operations.
-                let r_bits = if pf.red_max.get() > 0 {
-                    16 - pf.red_max.get().leading_zeros()
-                } else {
-                    0
-                };
-                let g_bits = if pf.green_max.get() > 0 {
-                    16 - pf.green_max.get().leading_zeros()
-                } else {
-                    0
-                };
-                let b_bits = if pf.blue_max.get() > 0 {
-                    16 - pf.blue_max.get().leading_zeros()
-                } else {
-                    0
-                };
+                let r_bits = pf.red_max.get().bit_width();
+                let g_bits = pf.green_max.get().bit_width();
+                let b_bits = pf.blue_max.get().bit_width();
                 // Reject: non-true-color, channels exceeding our 8-bit
                 // internal format (shift_x = 8 - bits would underflow),
                 // or shift + bits overflowing u32.
@@ -363,7 +351,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 }
                 // Warn on non-conforming max values. The RFB spec says max
                 // "should" be 2^N - 1 but uses "should" not "must". We handle
-                // any value via leading_zeros, but log unusual ones.
+                // any value via bit_width, but log unusual ones.
                 for (name, max) in [
                     ("red", pf.red_max.get()),
                     ("green", pf.green_max.get()),

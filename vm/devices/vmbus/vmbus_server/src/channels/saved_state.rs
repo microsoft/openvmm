@@ -924,17 +924,13 @@ impl std::fmt::Debug for OpenRequest {
         let user_data_display: &dyn std::fmt::Debug = if self.user_data.iter().all(|&b| b == 0) {
             &"[<all-zeroes>]"
         } else {
-            struct HexDisplay<'a>(&'a [u8; 120]);
-            impl std::fmt::Debug for HexDisplay<'_> {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    write!(f, "[")?;
-                    for byte in self.0 {
-                        write!(f, "{:02X}", byte)?;
-                    }
-                    write!(f, "]")
+            &std::fmt::from_fn(|f| {
+                write!(f, "[")?;
+                for byte in user_data {
+                    write!(f, "{:02X}", byte)?;
                 }
-            }
-            &HexDisplay(user_data)
+                write!(f, "]")
+            })
         };
 
         f.debug_struct("OpenRequest")

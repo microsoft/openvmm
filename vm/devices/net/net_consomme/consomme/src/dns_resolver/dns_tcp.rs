@@ -617,7 +617,11 @@ mod tests {
                 // Exactly one answer.
                 assert_eq!(u16::from_be_bytes([buf[2 + 6], buf[2 + 7]]), 1);
                 // The A record RDATA appears in the response.
-                assert!(buf[2..2 + resp_len].windows(4).any(|w| w == [10, 0, 0, 9]));
+                assert!(
+                    buf[2..2 + resp_len]
+                        .array_windows::<4>()
+                        .any(|w| w == &[10, 0, 0, 9])
+                );
             }
             other => panic!("expected static response, got {other:?}"),
         }

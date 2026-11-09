@@ -992,7 +992,7 @@ mod tests {
         assert_eq!(all, sorted, "flattened RAM list must be sorted");
         // Sanity: no overlaps either.
         all.sort_by_key(|r| r.start());
-        for pair in all.windows(2) {
+        for pair in all.array_windows::<2>() {
             assert!(
                 pair[0].end() <= pair[1].start(),
                 "overlapping RAM ranges: {pair:?}"

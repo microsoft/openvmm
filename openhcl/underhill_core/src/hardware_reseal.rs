@@ -39,7 +39,7 @@ use vmgs::FileId;
 use vmgs_broker::VmgsClient;
 
 const MIN_RESEAL_INTERVAL: Duration = Duration::from_secs(1);
-const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+const MAX_RETRY_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Stable servicing state-unit identifier.
 pub const STATE_UNIT_NAME: &str = "hardware_reseal";

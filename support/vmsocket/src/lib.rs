@@ -8,14 +8,16 @@
 
 #![cfg(any(windows, target_os = "linux"))]
 
-cfg_if::cfg_if! {
-    if #[cfg(windows)] {
+cfg_select! {
+    windows => {
         mod af_hyperv;
         use af_hyperv as sys;
-    } else if #[cfg(unix)] {
+    }
+    unix => {
         mod af_vsock;
         use af_vsock as sys;
     }
+    _ => {}
 }
 
 use socket2::SockAddr;

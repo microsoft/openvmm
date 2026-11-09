@@ -8,6 +8,7 @@
 //! descriptor ring just as a guest driver would.
 
 use crate::VirtioBlkDevice;
+use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_backend::UnmapBehavior;
 use disk_hook::Disk;
 use disk_hook::DiskOperation;
@@ -20,6 +21,7 @@ use pal_async::DefaultPool;
 use pal_async::async_test;
 use pal_async::timer::PolledTimer;
 use pal_event::Event;
+use pci_core::msi::MsiConnection;
 use std::future::Future;
 use std::future::poll_fn;
 use std::pin::pin;
@@ -34,6 +36,7 @@ use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
 use test_with_tracing::test;
+use virtio::PciInterruptModel;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
@@ -47,6 +50,8 @@ use virtio::test_helpers::make_available;
 use virtio::test_helpers::read_used_idx;
 use virtio::test_helpers::wait_for_used;
 use virtio::test_helpers::write_descriptor;
+use virtio::transport::VirtioPciDevice;
+use vmcore::device_state::ChangeDeviceState;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -568,6 +573,47 @@ async fn with_timeout<F: Future>(
         Either::Left((output, _)) => output,
         Either::Right(_) => panic!("{msg}"),
     }
+}
+
+#[async_test]
+async fn teardown_releases_disk_backend(driver: DefaultDriver) {
+    // The disk owns its hook, so this weak reference observes when the last
+    // disk handle is dropped.
+    let backend = Arc::new(());
+    let backend_released = Arc::downgrade(&backend);
+    let disk = HookDisk::new(64 * 1024, 512)
+        .with_sync_hook(move |_| {
+            let _backend = &backend;
+            Ok(())
+        })
+        .into_disk();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    let device = VirtioBlkDevice::new(&driver_source, disk, false, None).unwrap();
+    let msi = MsiConnection::new();
+    let mut transport = VirtioPciDevice::new(
+        Box::new(device),
+        &driver,
+        GuestMemory::empty(),
+        PciInterruptModel::Msix(&msi.target()),
+        None,
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    )
+    .unwrap();
+
+    transport.start();
+    transport.stop().await;
+    assert!(
+        backend_released.upgrade().is_some(),
+        "stop must retain the disk backend for resume"
+    );
+
+    transport.teardown().await;
+    // Do not yield: removal must release the disk before returning.
+    assert!(
+        backend_released.upgrade().is_none(),
+        "teardown returned before the disk backend was released"
+    );
 }
 
 #[async_test]

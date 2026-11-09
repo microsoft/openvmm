@@ -325,11 +325,12 @@ impl Fid for File {
 
     fn fsync(&self, data_only: bool) -> lx::Result<()> {
         let state = self.state.read();
-        state
-            .file
-            .as_ref()
-            .ok_or(lx::Error::EBADF)?
-            .fsync(data_only)
+        let file = state.file.as_ref().ok_or(lx::Error::EBADF)?;
+        if state.qid.qid_type & QID_TYPE_DIRECTORY != 0 {
+            file.fsync_dir(data_only)
+        } else {
+            file.fsync(data_only)
+        }
     }
 
     fn symlink(&self, name: &lx::LxStr, target: &lx::LxStr, gid: u32) -> lx::Result<Qid> {
@@ -514,6 +515,18 @@ mod tests {
             b"unchanged"
         );
         assert!(!tmp.path().join("new").exists());
+    }
+
+    #[test]
+    fn fsync_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("dir")).unwrap();
+        let volume = Arc::new(LxVolume::new(tmp.path()).unwrap());
+        let (dir, _) = File::new(volume, 0).unwrap();
+        dir.walk("dir".as_ref()).unwrap();
+        dir.open(OPEN_FLAG_RDONLY | OPEN_FLAG_DIRECTORY).unwrap();
+        dir.fsync(false).unwrap();
+        dir.fsync(true).unwrap();
     }
 
     #[test]

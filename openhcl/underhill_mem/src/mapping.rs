@@ -267,7 +267,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
         }
     }
 
-    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+    fn lock_kernel_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
         if let Some(protector) = self.protector.as_ref() {
             protector.lock_gpns(self.vtl, gpns)?;
             Ok(true)
@@ -684,7 +684,7 @@ impl GuestMemoryMappingBuilder {
                 continue;
             }
             let base_addr = entry.range.start();
-            let file_offset = file_starting_offset.checked_add(base_addr).unwrap();
+            let file_offset = file_starting_offset.strict_add(base_addr);
 
             tracing::trace!(base_addr, file_offset, "mapping lower ram");
 

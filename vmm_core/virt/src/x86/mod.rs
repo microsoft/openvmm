@@ -23,6 +23,7 @@ use x86defs::cpuid::ExtendedSevFeaturesEax;
 use x86defs::cpuid::ExtendedSevFeaturesEbx;
 use x86defs::cpuid::SgxCpuidSubleafEax;
 use x86defs::cpuid::Vendor;
+use x86defs::xsave::XCOMP_COMPRESSED;
 use x86defs::xsave::XSAVE_VARIABLE_OFFSET;
 
 /// VP state that can be set for initial boot.
@@ -198,8 +199,7 @@ impl X86PartitionCapabilities {
             this.xsave.supervisor_features = result[2] as u64 | ((result[3] as u64) << 32);
 
             let mut n = (this.xsave.features | this.xsave.supervisor_features) & !3;
-            while n != 0 {
-                let i = n.trailing_zeros();
+            while let Some(i) = n.lowest_one() {
                 n -= 1 << i;
                 let result = f(CpuidFunction::ExtendedStateEnumeration.0, i);
                 let feature = XsaveFeature {
@@ -310,27 +310,31 @@ pub struct XsaveFeature {
 }
 
 impl XsaveCapabilities {
+    fn variable_features(&self, mask: u64) -> impl Iterator<Item = (u32, &XsaveFeature)> {
+        // Bits 0-1 belong to the legacy area; bit 63 marks compact format.
+        let mut mask = mask & !(3 | XCOMP_COMPRESSED);
+        std::iter::from_fn(move || {
+            let i = mask.lowest_one()?;
+            mask &= !(1 << i);
+            Some((i, &self.feature_info[i as usize]))
+        })
+    }
+
     pub fn standard_len_for(&self, xfem: u64) -> u32 {
         let mut len = XSAVE_VARIABLE_OFFSET as u32;
-        for i in 2..63 {
-            if xfem & (1 << i) != 0 {
-                let feature = &self.feature_info[i as usize];
-                len = len.max(feature.offset + feature.len);
-            }
+        for (_, feature) in self.variable_features(xfem) {
+            len = len.max(feature.offset + feature.len);
         }
         len
     }
 
     pub fn compact_len_for(&self, xfem: u64) -> u32 {
         let mut len = XSAVE_VARIABLE_OFFSET as u32;
-        for i in 2..63 {
-            if xfem & (1 << i) != 0 {
-                let feature = &self.feature_info[i as usize];
-                if feature.align {
-                    len = (len + 63) & !63;
-                }
-                len += feature.len;
+        for (_, feature) in self.variable_features(xfem) {
+            if feature.align {
+                len = (len + 63) & !63;
             }
+            len += feature.len;
         }
         len
     }
@@ -550,6 +554,56 @@ pub fn max_physical_address_size_from_cpuid(mut cpuid: impl FnMut(u32, u32) -> [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn xsave_variable_features_preserve_order_and_layout() {
+        let mut caps = XsaveCapabilities {
+            features: 0,
+            supervisor_features: 0,
+            standard_len: 0,
+            compact_len: 0,
+            feature_info: [XsaveFeature::default(); 63],
+        };
+        caps.feature_info[2] = XsaveFeature {
+            offset: 1024,
+            len: 16,
+            align: false,
+        };
+        caps.feature_info[5] = XsaveFeature {
+            offset: 2048,
+            len: 32,
+            align: true,
+        };
+        caps.feature_info[62] = XsaveFeature {
+            offset: 4096,
+            len: 8,
+            align: false,
+        };
+
+        let base_len = XSAVE_VARIABLE_OFFSET as u32;
+        for (mask, indices, standard_len, compact_len) in [
+            (0, &[][..], base_len, base_len),
+            (3 | XCOMP_COMPRESSED, &[][..], base_len, base_len),
+            (1 << 2, &[2][..], 1040, base_len + 16),
+            (1 << 62, &[62][..], 4104, base_len + 8),
+            (
+                3 | (1 << 2) | (1 << 5) | (1 << 62) | XCOMP_COMPRESSED,
+                &[2, 5, 62][..],
+                4104,
+                680,
+            ),
+        ] {
+            assert_eq!(
+                caps.variable_features(mask)
+                    .map(|(i, _)| i)
+                    .collect::<Vec<_>>(),
+                indices
+            );
+            assert_eq!(caps.standard_len_for(mask), standard_len);
+            assert_eq!(caps.compact_len_for(mask), compact_len);
+        }
+    }
 
     #[test]
     fn snp_c_bit_requires_snp_cpuid_support() {

@@ -26,9 +26,8 @@ This is controlled by two environment variables:
   `%LOCALAPPDATA%\petri\cache` on Windows).
 
 ```admonish note
-VHDX artifacts (e.g. `WINDOWS_11_ENTERPRISE_AARCH64`) do **not** support lazy
-fetching and must be downloaded locally. The Hyper-V backend also requires all
-artifacts to be local.
+VHDX artifacts do **not** support lazy fetching and must be downloaded locally.
+The Hyper-V backend also requires all artifacts to be local.
 ```
 
 ## Downloading VHDs

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 #[test]
 fn default_resource_limits_are_pinned() {
     let params = ConsommeParams::new().unwrap();
-    assert_eq!(params.udp_timeout, Duration::from_secs(300));
+    assert_eq!(params.udp_timeout, Duration::from_mins(5));
     assert_eq!(
         params.tcp_rx_buffer,
         TcpBufferBounds {

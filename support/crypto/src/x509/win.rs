@@ -506,12 +506,7 @@ impl X509CertificateInner {
         // 2. Build the SubjectPublicKeyInfo.
         let (public_key_info, signature_oid, mut signature_params) = match key {
             super::X509KeyPair::Rsa(key) => {
-                let components = key
-                    .to_components()
-                    .context("exporting the RSA public key components")?;
-                let public_key =
-                    encode_pkcs1_rsa_pubkey(&components.modulus, &components.public_exponent)
-                        .context("encoding the RSA public key")?;
+                let public_key = key.to_pkcs1_der().context("encoding the RSA public key")?;
                 (
                     PublicKeyInfo::new(szOID_RSA_RSA, vec![0x05, 0x00], public_key),
                     szOID_RSA_SHA256RSA,
@@ -748,48 +743,4 @@ fn encode_x500_name(
     drop(attrs);
     drop(rdn_entries);
     Ok(out)
-}
-
-/// Encode a PKCS#1 RSAPublicKey (`SEQUENCE { INTEGER n, INTEGER e }`) by
-/// asking CryptoAPI to encode a `BCRYPT_RSAKEY_BLOB` via the
-/// `CNG_RSA_PUBLIC_KEY_BLOB` struct type.
-#[cfg(any(test, feature = "test_helpers"))]
-fn encode_pkcs1_rsa_pubkey(n: &[u8], e: &[u8]) -> Result<Vec<u8>, windows_result::Error> {
-    use windows::Win32::Security::Cryptography::BCRYPT_RSAKEY_BLOB;
-    use windows::Win32::Security::Cryptography::BCRYPT_RSAPUBLIC_MAGIC;
-    use windows::Win32::Security::Cryptography::CNG_RSA_PUBLIC_KEY_BLOB;
-
-    // Compute bit length of the modulus (big-endian, ignoring leading zeros).
-    let bit_length = {
-        let mut bits = 0u32;
-        for (i, &b) in n.iter().enumerate() {
-            if b != 0 {
-                bits = ((n.len() - i) as u32) * 8 - b.leading_zeros();
-                break;
-            }
-        }
-        bits
-    };
-
-    let header = BCRYPT_RSAKEY_BLOB {
-        Magic: BCRYPT_RSAPUBLIC_MAGIC,
-        BitLength: bit_length,
-        cbPublicExp: e.len() as u32,
-        cbModulus: n.len() as u32,
-        cbPrime1: 0,
-        cbPrime2: 0,
-    };
-
-    let mut blob = Vec::with_capacity(size_of::<BCRYPT_RSAKEY_BLOB>() + e.len() + n.len());
-    // SAFETY: BCRYPT_RSAKEY_BLOB is #[repr(C)] with all-integer fields, so
-    // any byte pattern is a valid representation.
-    blob.extend_from_slice(unsafe {
-        std::slice::from_raw_parts(
-            std::ptr::from_ref(&header).cast::<u8>(),
-            size_of::<BCRYPT_RSAKEY_BLOB>(),
-        )
-    });
-    blob.extend_from_slice(e);
-    blob.extend_from_slice(n);
-    encode_object(CNG_RSA_PUBLIC_KEY_BLOB, blob.as_slice())
 }

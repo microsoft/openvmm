@@ -16,6 +16,7 @@ pub mod burn_in;
 pub mod cca_tests;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
+pub mod incubator;
 pub mod openvmm_source_release;
 pub mod restore_packages;
 pub mod unit_test_coverage;
@@ -24,7 +25,6 @@ pub mod vmm_tests_run;
 pub mod vmm_tests_run_target;
 
 #[derive(clap::Subcommand)]
-#[expect(clippy::large_enum_variant)]
 pub enum OpenvmmPipelines {
     /// Alias for root-level `regen` command.
     // DEVNOTE: this enables the useful `cargo xflowey regen` alias
@@ -54,6 +54,9 @@ pub enum OpenvmmPipelines {
 
     /// Build and run VMM.Perf without Petri/nextest
     VmmPerf(VmmPerfCli),
+
+    /// Provision and run a standalone x64 mshv development VM.
+    Incubator(incubator::IncubatorCli),
 
     /// Run VMM tests on a target system with artifacts built by `VmmTestsRun`.
     VmmTestsRunTarget(VmmTestsRunTargetCli),
@@ -104,6 +107,7 @@ impl IntoPipeline for OpenvmmPipelines {
             OpenvmmPipelines::UnitTestCoverage(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmPerf(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::Incubator(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRunTarget(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::CcaTests(cmd) => cmd.into_pipeline(pipeline_hint),
         }
