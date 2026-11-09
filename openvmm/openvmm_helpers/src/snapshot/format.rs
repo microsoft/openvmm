@@ -8,6 +8,8 @@
 use super::MANIFEST_VERSION;
 use super::SnapshotManifest;
 use super::microvm;
+use anyhow::Context;
+use mesh::payload::Protobuf;
 use mesh::payload::Timestamp;
 use sha2::Digest;
 use virt::time_abi::TimeAbiCode;
@@ -102,27 +104,80 @@ pub(super) fn verify_digest(
     Ok(())
 }
 
-/// Validates the manifest's format identity: [`MANIFEST_VERSION`], the
-/// matching magic, and the saved-state schema. Any other version or magic is
+/// The version of a manifest, which every manifest format, upstream's
+/// included, keeps in field 1.
+#[derive(Protobuf)]
+#[mesh(package = "openvmm.snapshot")]
+struct ManifestVersion {
+    #[mesh(1)]
+    version: u32,
+}
+
+/// The format magic of a manifest of [`MANIFEST_VERSION`], which it keeps in
+/// field 10.
+#[derive(Protobuf)]
+#[mesh(package = "openvmm.snapshot")]
+struct ManifestFormatMagic {
+    #[mesh(10)]
+    format_magic: Vec<u8>,
+}
+
+/// Decodes a manifest of this format, one that [`validate_manifest_header`]
+/// accepts.
+///
+/// Earlier formats give some field numbers other types, so decoding one of
+/// their manifests whole fails as if it were malformed. This decodes the
+/// version alone, which every format keeps in field 1, then the magic alone,
+/// and refuses any other version or magic with `E_SNAPSHOT_VERSION` before it
+/// decodes the rest. The magic comes second, since only the formats of this
+/// version agree on the type of field 10.
+pub(super) fn decode_manifest(bytes: &[u8]) -> anyhow::Result<SnapshotManifest> {
+    let ManifestVersion { version } =
+        mesh::payload::decode(bytes).context("failed to decode snapshot manifest")?;
+    validate_manifest_version(version)?;
+    let ManifestFormatMagic { format_magic } =
+        mesh::payload::decode(bytes).context("failed to decode snapshot manifest")?;
+    validate_format_magic(&format_magic)?;
+    let manifest: SnapshotManifest =
+        mesh::payload::decode(bytes).context("failed to decode snapshot manifest")?;
+    validate_manifest_header(&manifest)?;
+    Ok(manifest)
+}
+
+/// Refuses any other manifest version than [`MANIFEST_VERSION`] with
 /// `E_SNAPSHOT_VERSION`, which asks for a recapture.
-pub(super) fn validate_manifest_header(manifest: &SnapshotManifest) -> anyhow::Result<()> {
-    if manifest.version != MANIFEST_VERSION {
+fn validate_manifest_version(version: u32) -> anyhow::Result<()> {
+    if version != MANIFEST_VERSION {
         return Err(TimeAbiError::new(
             TimeAbiCode::SnapshotVersion,
             format!(
-                "snapshot manifest version {} is not supported (expected {MANIFEST_VERSION}); recapture the snapshot",
-                manifest.version
+                "snapshot manifest version {version} is not supported (expected {MANIFEST_VERSION}); recapture the snapshot"
             ),
         )
         .into());
     }
-    if manifest.format_magic != SNAPSHOT_FORMAT_MAGIC {
+    Ok(())
+}
+
+/// Refuses any other format magic than [`SNAPSHOT_FORMAT_MAGIC`] with
+/// `E_SNAPSHOT_VERSION`, which asks for a recapture.
+fn validate_format_magic(format_magic: &[u8]) -> anyhow::Result<()> {
+    if format_magic != SNAPSHOT_FORMAT_MAGIC {
         return Err(TimeAbiError::new(
             TimeAbiCode::SnapshotVersion,
             "snapshot format magic is invalid; recapture the snapshot",
         )
         .into());
     }
+    Ok(())
+}
+
+/// Validates the manifest's format identity: [`MANIFEST_VERSION`], the
+/// matching magic, and the saved-state schema. Any other version or magic is
+/// `E_SNAPSHOT_VERSION`, which asks for a recapture.
+pub(super) fn validate_manifest_header(manifest: &SnapshotManifest) -> anyhow::Result<()> {
+    validate_manifest_version(manifest.version)?;
+    validate_format_magic(&manifest.format_magic)?;
     anyhow::ensure!(
         manifest.saved_state_schema_version == SAVED_STATE_SCHEMA_VERSION,
         "snapshot saved-state schema version {} is unsupported",

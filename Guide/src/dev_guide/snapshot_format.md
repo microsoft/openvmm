@@ -25,11 +25,15 @@ crate's protobuf encoding.
 
 Every snapshot uses manifest version 2 with format magic
 `OPENVMM_SNAPSHOT_V2\0`. Restore rejects any other version or magic with
-`E_SNAPSHOT_VERSION`, which asks for a recapture. A microVM snapshot's machine
-contract carries the NVX time ABI records (the time contract and the CPU
-profile record), and a host-driven standard-machine snapshot has no machine
-contract. Tiered microVM snapshots record capture tier, clone/resume policy,
-and consumed configuration sections.
+`E_SNAPSHOT_VERSION`, which asks for a recapture. It decodes the version,
+field 1, and then the magic, field 10, each alone before the rest of the
+manifest, since earlier formats give some fields other types: version 6, the
+manifest of earlier releases, keeps its machine contract in field 11, and the
+first version 2, which has no magic, keeps artifact digests in fields 9 and 10.
+A microVM snapshot's machine contract carries the NVX time ABI records (the
+time contract and the CPU profile record), and a host-driven standard-machine
+snapshot has no machine contract. Tiered microVM snapshots record capture
+tier, clone/resume policy, and consumed configuration sections.
 
 The format is a local machine-state contract, not an authenticated container.
 Every snapshot receives the same regular-file, no-follow/no-reparse, bounded

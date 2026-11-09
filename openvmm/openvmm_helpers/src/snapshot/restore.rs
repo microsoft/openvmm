@@ -14,6 +14,7 @@ use super::format::RESUME_CLAIM_FILE_NAME;
 use super::format::SCRATCH_FILE_NAME;
 use super::format::SNAPSHOT_RESTORE_POLICY_RESUME;
 use super::format::STATE_FILE_NAME;
+use super::format::decode_manifest;
 use super::format::validate_manifest_contents;
 use super::format::validate_manifest_header;
 use super::fs::OpenedFileGeneration;
@@ -193,9 +194,7 @@ fn read_snapshot_manifest_from_directory(
 fn decode_snapshot_manifest(manifest_file: &std::fs::File) -> anyhow::Result<SnapshotManifest> {
     let manifest_bytes =
         read_bounded_open_file(manifest_file, MAX_MANIFEST_SIZE_BYTES, "snapshot manifest")?;
-    let manifest: SnapshotManifest =
-        mesh::payload::decode(&manifest_bytes).context("failed to decode snapshot manifest")?;
-    validate_manifest_header(&manifest)?;
+    let manifest = decode_manifest(&manifest_bytes)?;
     validate_manifest_contents(&manifest)?;
     if let Some(contract) = &manifest.machine_contract {
         microvm::validate_machine_contract_shape(
@@ -413,8 +412,11 @@ mod tests {
     use super::super::publish::write_snapshot_from_owned_memory_and_scratch_files;
     use super::super::tests::test_manifest;
     use super::*;
+    use mesh::payload::Protobuf;
+    use mesh::payload::Timestamp;
     use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
     use openvmm_defs::microvm::check_microvm_command_line;
+    use sha2::Digest;
     use std::io::Read;
     #[cfg(any(target_os = "linux", windows))]
     use std::io::Seek;
@@ -610,6 +612,151 @@ mod tests {
         let error = format!("{:#}", read_snapshot(&snap_dir, 1024).err().unwrap());
         assert!(error.contains("[E_SNAPSHOT_VERSION]"), "{error}");
         assert!(error.contains("recapture the snapshot"), "{error}");
+    }
+
+    /// Returns the errors of reading a snapshot whole and its manifest alone,
+    /// once `manifest` replaces the manifest of a snapshot of this format.
+    fn read_errors_with_manifest(manifest: &[u8]) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let mem_path = dir.path().join("memory.bin");
+        std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
+        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
+        std::fs::write(snap_dir.join(MANIFEST_FILE_NAME), manifest).unwrap();
+        [
+            read_snapshot(&snap_dir, 1024).err().unwrap(),
+            read_snapshot_manifest(&snap_dir).err().unwrap(),
+        ]
+        .iter()
+        .map(|error| format!("{error:#}"))
+        .collect()
+    }
+
+    #[test]
+    fn read_snapshot_refuses_a_version_6_manifest_by_its_version() {
+        // The manifest of earlier OpenVMM releases, version 6, gives fields 11
+        // and 13 other types than this format does: its machine contract, a
+        // message, is where this format keeps the saved-state schema version,
+        // a varint, and its schema version where this format keeps the capture
+        // tier, a string.
+        #[derive(Protobuf)]
+        #[mesh(package = "openvmm.snapshot")]
+        struct ManifestV6 {
+            #[mesh(1)]
+            version: u32,
+            #[mesh(2)]
+            created_at: Timestamp,
+            #[mesh(3)]
+            openvmm_version: String,
+            #[mesh(4)]
+            memory_size_bytes: u64,
+            #[mesh(5)]
+            vp_count: u32,
+            #[mesh(6)]
+            page_size: u32,
+            #[mesh(7)]
+            architecture: String,
+            #[mesh(8)]
+            state_size_bytes: u64,
+            #[mesh(11)]
+            machine_contract: Option<microvm::SnapshotMachineContract>,
+            #[mesh(12)]
+            format_magic: Vec<u8>,
+            #[mesh(13)]
+            saved_state_schema_version: u32,
+            #[mesh(14)]
+            saved_state_root_type: String,
+            #[mesh(15)]
+            snapshot_tier: String,
+            #[mesh(16)]
+            restore_policy: String,
+            #[mesh(17)]
+            consumed_config_sections: u32,
+        }
+
+        let manifest = mesh::payload::encode(ManifestV6 {
+            version: 6,
+            created_at: Timestamp {
+                seconds: 1234567890,
+                nanos: 0,
+            },
+            openvmm_version: "test-0.1.0".to_owned(),
+            memory_size_bytes: 1024,
+            vp_count: 2,
+            page_size: 4096,
+            architecture: "x86_64".to_owned(),
+            state_size_bytes: 5,
+            machine_contract: Some(test_machine_contract()),
+            format_magic: b"OPENVMM_SNAPSHOT_V6\0".to_vec(),
+            saved_state_schema_version: 1,
+            saved_state_root_type: "openvmm.SavedState".to_owned(),
+            snapshot_tier: "platform".to_owned(),
+            restore_policy: "clone".to_owned(),
+            consumed_config_sections: 1,
+        });
+        for error in read_errors_with_manifest(&manifest) {
+            assert!(error.contains("[E_SNAPSHOT_VERSION]"), "{error}");
+            assert!(
+                error.contains("snapshot manifest version 6 is not supported"),
+                "{error}"
+            );
+            assert!(error.contains("recapture the snapshot"), "{error}");
+        }
+    }
+
+    #[test]
+    fn read_snapshot_refuses_an_early_version_2_manifest_by_its_magic() {
+        // The first manifest version 2, which predates the format magic, kept
+        // the SHA-256 digests of `state.bin` and `memory.bin` in fields 9 and
+        // 10, where this format keeps its machine contract and its magic.
+        #[derive(Protobuf)]
+        #[mesh(package = "openvmm.snapshot")]
+        struct ManifestV2WithDigests {
+            #[mesh(1)]
+            version: u32,
+            #[mesh(2)]
+            created_at: Timestamp,
+            #[mesh(3)]
+            openvmm_version: String,
+            #[mesh(4)]
+            memory_size_bytes: u64,
+            #[mesh(5)]
+            vp_count: u32,
+            #[mesh(6)]
+            page_size: u32,
+            #[mesh(7)]
+            architecture: String,
+            #[mesh(8)]
+            state_size_bytes: u64,
+            #[mesh(9)]
+            state_sha256: Vec<u8>,
+            #[mesh(10)]
+            memory_sha256: Vec<u8>,
+        }
+
+        let manifest = mesh::payload::encode(ManifestV2WithDigests {
+            version: 2,
+            created_at: Timestamp {
+                seconds: 1234567890,
+                nanos: 0,
+            },
+            openvmm_version: "test-0.1.0".to_owned(),
+            memory_size_bytes: 1024,
+            vp_count: 2,
+            page_size: 4096,
+            architecture: "x86_64".to_owned(),
+            state_size_bytes: 5,
+            state_sha256: sha2::Sha256::digest(b"state").to_vec(),
+            memory_sha256: sha2::Sha256::digest([0_u8; 1024]).to_vec(),
+        });
+        for error in read_errors_with_manifest(&manifest) {
+            assert!(error.contains("[E_SNAPSHOT_VERSION]"), "{error}");
+            assert!(
+                error.contains("snapshot format magic is invalid"),
+                "{error}"
+            );
+            assert!(error.contains("recapture the snapshot"), "{error}");
+        }
     }
 
     #[test]
