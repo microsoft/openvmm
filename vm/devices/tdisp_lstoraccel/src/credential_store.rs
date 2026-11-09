@@ -8,9 +8,10 @@ use thiserror::Error;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
 use zerocopy::FromBytes;
-use zerocopy::Immutable;
 use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
+
+use self::persisted::CredentialRecord;
+use self::persisted::CredentialStoreHeader;
 
 const STORE_VERSION: u32 = 1;
 const MAX_CREDENTIALS: usize = 32;
@@ -31,7 +32,7 @@ pub struct NamespaceCredentialKey {
 
 /// An error accessing or updating namespace credentials.
 #[derive(Debug, Error)]
-pub enum LstoraccelCredentialStoreError {
+pub enum CredentialStoreError {
     /// The backing store could not be read or written.
     #[error("could not access credential storage")]
     Storage(#[from] NonVolatileStoreError),
@@ -63,28 +64,46 @@ pub struct LstoraccelCredentialStore {
     state: BTreeMap<NamespaceCredentialKey, [u8; CREDENTIAL_LEN]>,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-struct CredentialStoreHeader {
-    version: u32,
-}
+mod persisted {
+    //! Credential-store on-disk format.
+    //!
+    //! Version 1 consists of a header followed by zero or more fixed-size
+    //! credential records, extending to the end of the blob.
+    //! Integer fields currently use native byte order.
 
-#[repr(C)]
-#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-struct CredentialRecord {
-    vsn: [u8; 20],
-    nsid: u32,
-    credential: [u8; CREDENTIAL_LEN],
-}
+    use super::CREDENTIAL_LEN;
+    use zerocopy::FromBytes;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
-static_assertions::const_assert_eq!(size_of::<CredentialStoreHeader>(), 4);
-static_assertions::const_assert_eq!(size_of::<CredentialRecord>(), 56);
+    /// Version 1 store header.
+    #[repr(C)]
+    #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
+    pub(super) struct CredentialStoreHeader {
+        /// Format version. Only version 1 is currently supported.
+        pub(super) version: u32,
+    }
+
+    /// A namespace credential record in format version 1.
+    #[repr(C)]
+    #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
+    pub(super) struct CredentialRecord {
+        /// Controller virtual serial number.
+        pub(super) vsn: [u8; 20],
+        /// Namespace ID within that controller.
+        pub(super) nsid: u32,
+        /// The namespace's 32-byte authorization credential.
+        pub(super) credential: [u8; CREDENTIAL_LEN],
+    }
+
+    static_assertions::const_assert_eq!(size_of::<CredentialStoreHeader>(), 4);
+    static_assertions::const_assert_eq!(size_of::<CredentialRecord>(), 56);
+}
 
 impl LstoraccelCredentialStore {
     /// Restore persisted credentials, or initialize an empty store if absent.
-    pub async fn open(
-        mut store: Box<dyn NonVolatileStore>,
-    ) -> Result<Self, LstoraccelCredentialStoreError> {
+    pub async fn open(mut store: Box<dyn NonVolatileStore>) -> Result<Self, CredentialStoreError> {
         let state = match store.restore().await? {
             Some(bytes) => deserialize_credential_store(&bytes)?,
             None => BTreeMap::new(),
@@ -102,12 +121,12 @@ impl LstoraccelCredentialStore {
         &mut self,
         key: &NamespaceCredentialKey,
         credential: &[u8; CREDENTIAL_LEN],
-    ) -> Result<(), LstoraccelCredentialStoreError> {
+    ) -> Result<(), CredentialStoreError> {
         if self.state.contains_key(key) {
-            return Err(LstoraccelCredentialStoreError::CredentialAlreadyExists);
+            return Err(CredentialStoreError::CredentialAlreadyExists);
         }
         if self.state.len() >= MAX_CREDENTIALS {
-            return Err(LstoraccelCredentialStoreError::OutOfSpace);
+            return Err(CredentialStoreError::OutOfSpace);
         }
         let mut temp_state = self.state.clone();
         temp_state.insert(*key, *credential);
@@ -120,7 +139,7 @@ impl LstoraccelCredentialStore {
     pub async fn remove(
         &mut self,
         key: &NamespaceCredentialKey,
-    ) -> Result<(), LstoraccelCredentialStoreError> {
+    ) -> Result<(), CredentialStoreError> {
         if !self.state.contains_key(key) {
             return Ok(());
         }
@@ -132,7 +151,7 @@ impl LstoraccelCredentialStore {
     async fn flush(
         &mut self,
         temp_state: BTreeMap<NamespaceCredentialKey, [u8; CREDENTIAL_LEN]>,
-    ) -> Result<(), LstoraccelCredentialStoreError> {
+    ) -> Result<(), CredentialStoreError> {
         self.store
             .persist(serialize_credential_store(&temp_state))
             .await?;
@@ -143,9 +162,8 @@ impl LstoraccelCredentialStore {
 
 fn deserialize_credential_store(
     bytes: &[u8],
-) -> Result<BTreeMap<NamespaceCredentialKey, [u8; CREDENTIAL_LEN]>, LstoraccelCredentialStoreError>
-{
-    use LstoraccelCredentialStoreError as Error;
+) -> Result<BTreeMap<NamespaceCredentialKey, [u8; CREDENTIAL_LEN]>, CredentialStoreError> {
+    use CredentialStoreError as Error;
 
     if bytes.len() > MAX_STORE_SIZE {
         return Err(Error::InvalidData("credential store exceeds maximum size"));
@@ -199,9 +217,15 @@ fn serialize_credential_store(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use test_with_tracing::test;
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
+    use vmgs::EncryptionAlgorithm;
+    use vmgs::FileId;
+    use vmgs::Vmgs;
+    use vmgs_broker::non_volatile_store::VmgsNonVolatileStore;
+    use vmgs_broker::spawn_vmgs_broker;
 
     async fn new_store() -> LstoraccelCredentialStore {
         LstoraccelCredentialStore::open(EphemeralNonVolatileStore::new_boxed())
@@ -215,7 +239,7 @@ mod tests {
 
     async fn open_store_with_persisted_bytes(
         bytes: Vec<u8>,
-    ) -> Result<LstoraccelCredentialStore, LstoraccelCredentialStoreError> {
+    ) -> Result<LstoraccelCredentialStore, CredentialStoreError> {
         let mut store = EphemeralNonVolatileStore::new_boxed();
         store.persist(bytes).await.unwrap();
         LstoraccelCredentialStore::open(store).await
@@ -269,7 +293,7 @@ mod tests {
         for value in [&credential, &replacement] {
             assert!(matches!(
                 store.put(&key, value).await,
-                Err(LstoraccelCredentialStoreError::CredentialAlreadyExists)
+                Err(CredentialStoreError::CredentialAlreadyExists)
             ));
         }
         assert_eq!(store.get(&key), Some(&credential));
@@ -291,13 +315,13 @@ mod tests {
         let before = store.store.restore().await.unwrap();
         assert!(matches!(
             store.put(&key(1), &[0; CREDENTIAL_LEN]).await,
-            Err(LstoraccelCredentialStoreError::CredentialAlreadyExists)
+            Err(CredentialStoreError::CredentialAlreadyExists)
         ));
         let new_key = key(MAX_CREDENTIALS as u32 + 1);
         let new_credential = [99; CREDENTIAL_LEN];
         assert!(matches!(
             store.put(&new_key, &new_credential).await,
-            Err(LstoraccelCredentialStoreError::OutOfSpace)
+            Err(CredentialStoreError::OutOfSpace)
         ));
         assert_eq!(store.store.restore().await.unwrap(), before);
         assert!(store.get(&new_key).is_none());
@@ -316,7 +340,7 @@ mod tests {
 
     #[async_test]
     async fn malformed_data_is_not_an_empty_store() {
-        use LstoraccelCredentialStoreError as Error;
+        use CredentialStoreError as Error;
 
         for len in 0..size_of::<CredentialStoreHeader>() {
             assert!(matches!(
@@ -359,19 +383,6 @@ mod tests {
         let store = open_store_with_persisted_bytes(header).await.unwrap();
         assert!(store.state.is_empty());
     }
-}
-
-#[cfg(all(test, any(target_os = "linux", windows)))]
-mod vmgs_tests {
-    use super::*;
-    use pal_async::DefaultDriver;
-    use pal_async::async_test;
-    use test_with_tracing::test;
-    use vmgs::EncryptionAlgorithm;
-    use vmgs::FileId;
-    use vmgs::Vmgs;
-    use vmgs_broker::non_volatile_store::VmgsNonVolatileStore;
-    use vmgs_broker::spawn_vmgs_broker;
 
     #[async_test]
     async fn credentials_survive_encrypted_vmgs_reopen(driver: DefaultDriver) {

@@ -6,7 +6,7 @@ name = "tdisp_lstoraccel"
 edition.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 anyhow.workspace = true
 nvme_spec.workspace = true
 static_assertions.workspace = true
@@ -14,13 +14,11 @@ thiserror.workspace = true
 vmcore.workspace = true
 zerocopy.workspace = true
 
-[dev-dependencies]
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+disklayer_ram.workspace = true
 pal_async.workspace = true
 tdisp.workspace = true
 test_with_tracing.workspace = true
-
-[target.'cfg(any(target_os = "linux", windows))'.dev-dependencies]
-disklayer_ram.workspace = true
 vmgs = { workspace = true, features = ["encryption"] }
 vmgs_broker = { workspace = true, features = ["encryption"] }
 

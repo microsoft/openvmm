@@ -36,6 +36,15 @@
 //! DEVICE_INTERFACE_REPORT Reporting Structure). Both sections are parsed;
 //! the key confirmation digest and NVMe queue hash are not verified.
 
+// This implementation currently targets OpenHCL on Linux. Gate dependencies
+// alongside the crate: encrypted VMGS tests need crypto support that is not
+// available on every native OS backend.
+//
+// Depending on the integration point, cross-platform callers must gate their
+// device-specific code or extend the required VMGS/crypto platform support.
+// If a cross-platform API is needed without that support, use explicit
+// unsupported-platform errors rather than no-op or panicking stubs.
+#![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
 /// Persistent namespace credentials backed by a non-volatile store.
