@@ -400,7 +400,9 @@ fn validate_snapshot_directory(
 
 #[cfg(test)]
 mod tests {
+    use super::super::format::SNAPSHOT_RESTORE_POLICY_CLONE;
     use super::super::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
+    use super::super::format::SNAPSHOT_TIER_WORKLOAD_START;
     #[cfg(target_os = "linux")]
     use super::super::fs::initialize_snapshot_memory_backing_file;
     use super::super::microvm::paired_scratch_manifest;
@@ -833,6 +835,65 @@ mod tests {
 
         let err = read_snapshot(&snap_dir, 1024).err().unwrap();
         assert!(err.to_string().contains("decode snapshot manifest"));
+    }
+
+    /// A paired scratch restore mode that this OpenVMM does not know, which a
+    /// corrupted or crafted manifest, or one from a newer OpenVMM, can record,
+    /// fails the open of a clone or resume snapshot with the shape check's
+    /// error. The capture-tier check, which matches the restore mode, runs
+    /// before the shape check on this path. A claim refuses it the same way
+    /// and leaves the snapshot unclaimed.
+    #[test]
+    fn unknown_paired_scratch_restore_mode_is_refused() {
+        let scratch = vec![0x5a; 512];
+        let state = b"state";
+        let expected = "snapshot scratch restore mode 'a-future-restore-mode' is unsupported";
+        for (tier, policy) in [
+            (SNAPSHOT_TIER_WORKLOAD_START, SNAPSHOT_RESTORE_POLICY_CLONE),
+            (
+                SNAPSHOT_TIER_INSTANCE_CHECKPOINT,
+                SNAPSHOT_RESTORE_POLICY_RESUME,
+            ),
+        ] {
+            let mut manifest = paired_scratch_manifest(&scratch);
+            manifest.state_size_bytes = state.len() as u64;
+            manifest.snapshot_tier = tier.to_owned();
+            manifest.restore_policy = policy.to_owned();
+            let contract = manifest.machine_contract.as_mut().unwrap();
+            contract.set_effective_command_line(format!("console=hvc0 nvx_snapshot_tier={tier}"));
+            let dir = tempfile::tempdir().unwrap();
+            let manifest_path = dir.path().join(MANIFEST_FILE_NAME);
+            std::fs::write(&manifest_path, mesh::payload::encode(manifest.clone())).unwrap();
+            std::fs::write(dir.path().join(STATE_FILE_NAME), state).unwrap();
+            std::fs::write(
+                dir.path().join(MEMORY_FILE_NAME),
+                vec![0_u8; manifest.memory_size_bytes as usize],
+            )
+            .unwrap();
+            std::fs::write(dir.path().join(SCRATCH_FILE_NAME), &scratch).unwrap();
+            // The snapshot opens with the restore mode that it recorded.
+            drop(OpenedSnapshot::open(dir.path()).unwrap());
+
+            let contract = manifest.machine_contract.as_mut().unwrap();
+            contract
+                .microvm_sandbox_blocks
+                .last_mut()
+                .unwrap()
+                .restore_mode = "a-future-restore-mode".to_owned();
+            std::fs::write(&manifest_path, mesh::payload::encode(manifest.clone())).unwrap();
+            let error = OpenedSnapshot::open(dir.path()).err().unwrap();
+            assert_eq!(error.to_string(), expected, "{tier}");
+            let shape_error = microvm::validate_machine_contract_shape(
+                manifest.machine_contract.as_ref().unwrap(),
+                manifest.memory_size_bytes,
+                manifest.vp_count,
+            )
+            .unwrap_err();
+            assert_eq!(shape_error.to_string(), expected, "{tier}");
+            let claim_error = claim_snapshot_for_restore(dir.path(), &manifest).unwrap_err();
+            assert_eq!(claim_error.to_string(), expected, "{tier}");
+            assert!(!dir.path().join(RESUME_CLAIM_FILE_NAME).exists(), "{tier}");
+        }
     }
 
     #[test]
