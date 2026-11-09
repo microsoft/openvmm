@@ -417,6 +417,7 @@ fn fs_required(source: io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::ToSocketAddrs;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixDatagram;
     use std::os::unix::process::ExitStatusExt;
@@ -762,6 +763,283 @@ mod tests {
                     ));
                 }
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user namespaces and UID/GID mapping permitted by host policy"]
+    fn worker_profiles_preserve_host_resources() {
+        for scenario in [
+            "resolver",
+            "resolver-chain",
+            "resolver-parent",
+            "resolver-relative",
+            "resolver-tmp",
+            "resolver-local",
+            "resolver-missing",
+            "devices",
+            "invalid-device",
+            "pci",
+            "etc",
+            "etc-missing",
+            "tpm-etc",
+            "tpm-etc-missing",
+        ] {
+            let output = Command::new("unshare")
+                .args(["--user", "--map-root-user", "--mount"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "linux::tests::helper_worker_profile_resources",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("SANDBOX_RESOURCE_SCENARIO", scenario)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{scenario} helper failed:\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_worker_profile_resources() {
+        let scenario = std::env::var("SANDBOX_RESOURCE_SCENARIO").unwrap();
+        let null = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        // UNSAFETY: an ioctl probe is needed to verify Landlock device rights.
+        #[expect(unsafe_code)]
+        let ioctl_error = |file: &std::fs::File| {
+            // SAFETY: this argument-free probe targets only our /dev/null
+            // fixture, whose driver rejects unsupported commands.
+            assert_eq!(unsafe { libc::ioctl(file.as_raw_fd(), 0x5800, 0) }, -1);
+            io::Error::last_os_error().raw_os_error()
+        };
+        let baseline_ioctl = ioctl_error(&null);
+        mount_namespace::make_root_private().unwrap();
+        for path in ["/etc", "/run", "/sys", "/dev"] {
+            mount_namespace::mount_tmpfs(Path::new(path)).unwrap();
+        }
+        fs_err::create_dir_all("/run/resolve").unwrap();
+        fs_err::write("/run/resolve/resolv.conf", "nameserver 192.0.2.1\n").unwrap();
+        fs_err::write("/run/resolve/unrelated", "not granted").unwrap();
+        std::os::unix::fs::symlink("/run/resolve/resolv.conf", "/etc/resolv.conf").unwrap();
+        match scenario.as_str() {
+            "resolver-chain" => {
+                fs_err::rename("/run/resolve/resolv.conf", "/run/resolve/actual.conf").unwrap();
+                std::os::unix::fs::symlink("actual.conf", "/run/resolve/resolv.conf").unwrap();
+            }
+            "resolver-parent" => {
+                fs_err::remove_file("/etc/resolv.conf").unwrap();
+                std::os::unix::fs::symlink("/run/resolve", "/etc/resolve").unwrap();
+                std::os::unix::fs::symlink("resolve/resolv.conf", "/etc/resolv.conf").unwrap();
+            }
+            "resolver-relative" => {
+                fs_err::remove_file("/etc/resolv.conf").unwrap();
+                std::os::unix::fs::symlink("../../run/resolve/resolv.conf", "/etc/resolv.conf")
+                    .unwrap();
+            }
+            "resolver-tmp" => {
+                fs_err::create_dir("/run/resolver-tmp").unwrap();
+                mount_namespace::mount_tmpfs(Path::new("/run/resolver-tmp")).unwrap();
+                mount_namespace::bind_mount(Path::new("/run/resolver-tmp"), Path::new("/tmp"), 0)
+                    .unwrap();
+                fs_err::write("/tmp/resolv.conf", "nameserver 192.0.2.1\n").unwrap();
+                fs_err::remove_file("/etc/resolv.conf").unwrap();
+                std::os::unix::fs::symlink("/tmp/resolv.conf", "/etc/resolv.conf").unwrap();
+            }
+            "resolver-missing" => {
+                fs_err::remove_file("/run/resolve/resolv.conf").unwrap();
+            }
+            "resolver-local" => {
+                fs_err::remove_file("/etc/resolv.conf").unwrap();
+                fs_err::write("/etc/resolv.conf", "nameserver 192.0.2.1\n").unwrap();
+            }
+            _ => {}
+        }
+
+        let configuration_files = [
+            ("/etc/ld.so.cache", "cache fixture\n"),
+            ("/etc/hosts", "192.0.2.2 sandbox.invalid\n"),
+            ("/etc/host.conf", "multi on\n"),
+            ("/etc/gai.conf", "# configuration fixture\n"),
+            ("/etc/nsswitch.conf", "hosts: files dns\n"),
+            ("/etc/ssl/openssl.cnf", "# OpenSSL fixture\n"),
+            ("/etc/pki/tls/openssl.cnf", "# OpenSSL fixture\n"),
+        ];
+        let private_files = [
+            "/etc/shadow",
+            "/etc/ssh/ssh_host_ed25519_key",
+            "/etc/ssl/private/key.pem",
+            "/etc/pki/tls/private/key.pem",
+        ];
+        if scenario.contains("etc") {
+            if !scenario.ends_with("-missing") {
+                for (path, contents) in configuration_files {
+                    fs_err::create_dir_all(Path::new(path).parent().unwrap()).unwrap();
+                    fs_err::write(path, contents).unwrap();
+                }
+            }
+            for path in private_files {
+                fs_err::create_dir_all(Path::new(path).parent().unwrap()).unwrap();
+                fs_err::write(path, "private fixture\n").unwrap();
+                fs_err::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                assert_eq!(fs_err::read_to_string(path).unwrap(), "private fixture\n");
+            }
+        }
+        let local_ssl_alias = scenario.contains("etc") && Path::new("/usr/local").is_dir();
+        if local_ssl_alias {
+            mount_namespace::mount_tmpfs(Path::new("/usr/local")).unwrap();
+            std::os::unix::fs::symlink("/etc/ssl", "/usr/local/ssl").unwrap();
+        }
+
+        fs_err::create_dir_all("/sys/devices/system/cpu").unwrap();
+        fs_err::write("/sys/devices/system/cpu/online", "0").unwrap();
+        fs_err::create_dir_all("/sys/devices/pci0000:00/0000:00:01.0").unwrap();
+        fs_err::write(
+            "/sys/devices/pci0000:00/0000:00:01.0/resource",
+            "0x1000 0x1fff 0x200\n",
+        )
+        .unwrap();
+        fs_err::create_dir_all("/sys/bus/pci/devices").unwrap();
+        std::os::unix::fs::symlink(
+            "../../../devices/pci0000:00/0000:00:01.0",
+            "/sys/bus/pci/devices/0000:00:01.0",
+        )
+        .unwrap();
+
+        let mut profile = if scenario.starts_with("tpm-") {
+            crate::profiles::tpm_worker()
+        } else {
+            crate::profiles::vm_worker()
+        };
+        if scenario == "devices" {
+            let source = PathBuf::from(format!("/proc/self/fd/{}", null.as_raw_fd()));
+            for path in [
+                "/dev/sev",
+                "/dev/vfio/vfio",
+                "/dev/vfio/1",
+                "/run/ordinary-device",
+            ] {
+                mount_namespace::bind_mount(&source, Path::new(path), 0).unwrap();
+            }
+            profile = crate::profiles::vm_worker()
+                .read("/dev/sev")
+                .read_write("/run/ordinary-device");
+        }
+        if scenario == "invalid-device" {
+            profile = profile.device("/run/resolve");
+        }
+        let profile = profile.build();
+        hardening::set_no_new_privs().unwrap();
+        if scenario == "invalid-device" {
+            assert!(matches!(
+                apply_filesystem(&profile.inner.fs),
+                Err(Error::ApplyFailed { source, .. })
+                    if source.kind() == io::ErrorKind::InvalidInput
+            ));
+            return;
+        }
+        apply_filesystem(&profile.inner.fs).unwrap();
+        apply_landlock(&profile.inner.fs).unwrap();
+        drop_all_capabilities().unwrap();
+
+        match scenario.as_str() {
+            "etc" | "etc-missing" | "tpm-etc" | "tpm-etc-missing" => {
+                if local_ssl_alias {
+                    assert!(
+                        fs_err::read("/usr/local/ssl/private/key.pem").is_err(),
+                        "private keys should not be exposed through /usr/local/ssl",
+                    );
+                    let config = fs_err::read_to_string("/usr/local/ssl/openssl.cnf");
+                    if scenario == "tpm-etc" {
+                        assert_eq!(config.unwrap(), "# OpenSSL fixture\n");
+                        assert!(fs_err::write("/usr/local/ssl/openssl.cnf", "modified").is_err());
+                    } else {
+                        assert!(config.is_err());
+                    }
+                }
+                for (path, contents) in configuration_files {
+                    let tpm_configuration = path.ends_with("/openssl.cnf");
+                    let allowed = !scenario.ends_with("-missing")
+                        && (path == "/etc/ld.so.cache"
+                            || tpm_configuration == scenario.starts_with("tpm-"));
+                    if allowed {
+                        assert_eq!(fs_err::read_to_string(path).unwrap(), contents);
+                        assert!(fs_err::write(path, "modified").is_err());
+                    } else {
+                        assert!(fs_err::read(path).is_err(), "{path} should not be exposed");
+                    }
+                }
+                for path in private_files {
+                    assert!(fs_err::read(path).is_err(), "{path} should not be exposed");
+                }
+                if scenario.starts_with("tpm-") {
+                    assert!(fs_err::read("/etc/resolv.conf").is_err());
+                } else {
+                    assert_eq!(
+                        fs_err::read_to_string("/etc/resolv.conf").unwrap(),
+                        "nameserver 192.0.2.1\n",
+                    );
+                    if scenario == "etc" {
+                        assert!(
+                            ("sandbox.invalid", 0)
+                                .to_socket_addrs()
+                                .unwrap()
+                                .any(|address| address.ip()
+                                    == std::net::IpAddr::from([192, 0, 2, 2]))
+                        );
+                    }
+                }
+            }
+            "resolver-missing" => {
+                assert!(!Path::new("/etc/resolv.conf").exists());
+            }
+            scenario if scenario.starts_with("resolver") => {
+                assert_eq!(
+                    fs_err::read_to_string("/etc/resolv.conf").unwrap(),
+                    "nameserver 192.0.2.1\n",
+                );
+                assert!(fs_err::write("/etc/resolv.conf", "modified").is_err());
+                assert!(!Path::new("/run/resolve/resolv.conf").exists());
+                assert!(!Path::new("/run/resolve/unrelated").exists());
+            }
+            "devices" => {
+                for path in ["/dev/sev", "/dev/vfio/vfio"] {
+                    let mut device = std::fs::File::options()
+                        .read(true)
+                        .write(true)
+                        .open(path)
+                        .unwrap();
+                    io::Write::write_all(&mut device, b"probe").unwrap();
+                    assert_eq!(ioctl_error(&device), baseline_ioctl);
+                }
+                assert!(!Path::new("/dev/vfio/1").exists());
+                assert!(
+                    std::fs::File::options()
+                        .read(true)
+                        .write(true)
+                        .open("/run/ordinary-device")
+                        .is_err(),
+                );
+            }
+            "pci" => {
+                let path = "/sys/bus/pci/devices/0000:00:01.0/resource";
+                assert_eq!(
+                    fs_err::read_to_string(path).unwrap(),
+                    "0x1000 0x1fff 0x200\n"
+                );
+                assert!(fs_err::write(path, "modified").is_err());
+            }
+            _ => panic!("unknown resource scenario"),
         }
     }
 }

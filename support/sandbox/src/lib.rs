@@ -10,10 +10,10 @@
 //!
 //! # Integration status and limits
 //!
-//! Worker-side Linux confinement is implemented. Process-launch integration
-//! and concrete worker policies are separate layers. Existing OpenVMM workers
-//! are not yet enabled: they still use ordinary launches and do not call the
-//! required early worker-side [`apply`].
+//! Worker-side Linux confinement is implemented, with concrete policies in
+//! [`profiles`]. Process-launch integration is a separate layer. Existing
+//! OpenVMM workers are not yet enabled: they still use ordinary launches and
+//! do not call the required early worker-side [`apply`].
 //!
 //! On Linux, self-mapped workers retain their host UID/GID and PID visibility.
 //! Cross-process signaling is not yet restricted, so this is not a complete
@@ -64,6 +64,8 @@
 mod prepare;
 mod profile;
 mod syscall_denylist;
+
+pub mod profiles;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -156,8 +158,7 @@ pub enum Error {
 /// In a worker entry point launched with the matching [`prepare`] configuration:
 ///
 /// ```no_run
-/// let profile = sandbox::Profile::deny_all().build();
-/// if let Err(error) = sandbox::apply(&profile) {
+/// if let Err(error) = sandbox::apply(&sandbox::profiles::tpm_worker().build()) {
 ///     eprintln!("sandbox failed: {error}");
 ///     std::process::exit(sandbox::EXIT_SANDBOX_FAILED);
 /// }

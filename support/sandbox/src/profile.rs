@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 //! The sandbox policy vocabulary: [`Profile`] and its [`Builder`],
-//! plus the additive-only [`Restrictions`] ratchet for worker-side tightening.
+//! plus the additive-only [`Restrictions`] ratchet consumed by
+//! [`tighten`](crate::tighten).
 //!
 //! # Default-deny by construction
 //!
@@ -30,8 +31,8 @@ use std::path::PathBuf;
 
 /// An opaque, immutable sandbox policy.
 ///
-/// Sandbox policies build a `Profile` from [`Profile::deny_all`] by adding
-/// additional permissions,
+/// Sandbox policies, such as those in [`profiles`](crate::profiles), build
+/// a `Profile` from [`Profile::deny_all`] by adding additional permissions,
 /// and are compiled into the program (the worker on Linux; the control
 /// process *and* the worker on Windows).
 #[derive(Debug, Clone)]
@@ -59,8 +60,8 @@ impl Profile {
     /// denials can only be added, and the scalar dimensions (`name` and
     /// `network`) are replaced by a later call.
     ///
-    /// Prefer exposing a reusable base as a `fn() -> Builder`, and reach for
-    /// `edit` only when you
+    /// Prefer exposing a reusable base as a `fn() -> Builder` — see
+    /// [`profiles`](crate::profiles) — and reach for `edit` only when you
     /// already hold a built [`Profile`], e.g. one handed to you by another
     /// crate.
     ///
@@ -115,7 +116,7 @@ impl Profile {
 /// Duplicate grants and lexically nested paths combine independently of
 /// declaration order, retaining permissions already granted by an ancestor.
 /// Combinations requiring both write and execute access are rejected during
-/// worker-side application.
+/// [`apply`](crate::apply).
 ///
 /// The backend also provides writable scratch storage at `/tmp` and attempts
 /// to mount `/proc`. These are implicit backend facilities, not explicit grants
@@ -311,7 +312,7 @@ pub(crate) enum CapabilityKind {
     RegistryRead,
 }
 
-/// A narrow, additive-only ratchet for worker-side tightening.
+/// A narrow, additive-only ratchet consumed by [`tighten`](crate::tighten).
 ///
 /// It can express only the primitives that are safe to stack onto an
 /// already-applied sandbox: additional syscall denials and a further-restricted
@@ -361,7 +362,7 @@ impl RestrictionsBuilder {
     /// Enforce an additional restriction that *removes* access to a path the
     /// applied profile previously permitted. It can never add access.
     ///
-    /// Not implemented: worker-side tightening rejects path revocation on
+    /// Not implemented: [`tighten`](crate::tighten) rejects path revocation on
     /// Linux with [`Error::RequiredPrimitiveUnavailable`](crate::Error::RequiredPrimitiveUnavailable).
     pub fn revoke_path(mut self, path: impl AsRef<Path>) -> Self {
         self.inner.revoke_paths.push(path.as_ref().to_path_buf());
