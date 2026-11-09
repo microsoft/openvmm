@@ -32,6 +32,7 @@ use slab::Slab;
 use std::task::Poll;
 use task_control::TaskControl;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::device_state::InputGateWait;
 use vmcore::save_restore::AsyncProtobufSaveRestore;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -282,18 +283,23 @@ impl ChangeDeviceState for ChipsetDeviceProxy {
         Ok(())
     }
 
-    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
-        self.req_send
-            .call_failable(DeviceRequest::QuiesceInput, ())
-            .await?;
-        Ok(())
+    // The request is sent now, on the channel that carries the guest's
+    // forwarded accesses, so the remote device takes the gate in their order;
+    // the wait for its answer does not borrow the proxy.
+    fn quiesce_input(&mut self) -> InputGateWait {
+        let answer = self.req_send.call_failable(DeviceRequest::QuiesceInput, ());
+        InputGateWait::new(async move {
+            answer.await?;
+            Ok(())
+        })
     }
 
-    async fn resume_input(&mut self) -> anyhow::Result<()> {
-        self.req_send
-            .call_failable(DeviceRequest::ResumeInput, ())
-            .await?;
-        Ok(())
+    fn resume_input(&mut self) -> InputGateWait {
+        let answer = self.req_send.call_failable(DeviceRequest::ResumeInput, ());
+        InputGateWait::new(async move {
+            answer.await?;
+            Ok(())
+        })
     }
 
     async fn stop(&mut self) {
@@ -364,6 +370,7 @@ mod tests {
     use vm_resource::ResourceResolver;
     use vm_resource::kind::ChipsetDeviceHandleKind;
     use vmcore::device_state::ChangeDeviceState;
+    use vmcore::device_state::InputGateWait;
     use vmcore::save_restore::AsyncProtobufSaveRestore;
     use vmcore::save_restore::AsyncSaveRestore;
     use vmcore::save_restore::RestoreError;
@@ -407,11 +414,31 @@ mod tests {
 
     impl ChipsetDevice for TestDevice {}
 
+    /// The value for which [`TestDevice`]'s input gate fails.
+    const GATE_FAILS: u32 = 0x9a7e;
+
+    impl TestDevice {
+        fn change_gate(&self) -> InputGateWait {
+            let result = if self.value == GATE_FAILS {
+                Err(anyhow::anyhow!("the gate failed"))
+            } else {
+                Ok(())
+            };
+            InputGateWait::new(async move { result })
+        }
+    }
+
     impl ChangeDeviceState for TestDevice {
         fn start(&mut self) {}
         async fn confirm_start(&mut self) -> anyhow::Result<()> {
             anyhow::ensure!(self.value != 0xbad, "the device did not start");
             Ok(())
+        }
+        fn quiesce_input(&mut self) -> InputGateWait {
+            self.change_gate()
+        }
+        fn resume_input(&mut self) -> InputGateWait {
+            self.change_gate()
         }
         async fn stop(&mut self) {
             self.access_memory();
@@ -613,6 +640,31 @@ mod tests {
                 .value,
             42
         );
+        stop_worker(&mut proxy).await;
+    }
+
+    /// A gate change's request reaches the remote device when the change is
+    /// made, before the requests that the proxy sends during its wait: the
+    /// gate fails for the value that the device holds before the restore
+    /// that follows it.
+    #[async_test]
+    async fn remote_input_gate_changes_keep_the_order_of_requests(driver: DefaultDriver) {
+        let vmtime = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut proxy = new_proxy(&vmtime, &driver).await;
+        for change in [
+            ChipsetDeviceProxy::quiesce_input,
+            ChipsetDeviceProxy::resume_input,
+        ] {
+            proxy.restore(state(GATE_FAILS)).await.unwrap();
+            let wait = change(&mut proxy);
+            proxy.restore(state(0)).await.unwrap();
+            let error = wait.await.unwrap_err();
+            assert!(
+                format!("{error:#}").contains("the gate failed"),
+                "{error:#}"
+            );
+            change(&mut proxy).await.unwrap();
+        }
         stop_worker(&mut proxy).await;
     }
 
