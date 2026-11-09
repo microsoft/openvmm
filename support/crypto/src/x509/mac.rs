@@ -106,13 +106,8 @@ impl X509CertificateInner {
         let data = CfHandle(data);
         // SAFETY: data.0 is a valid CFDataRef.
         let pkcs1_der = unsafe { cf_data_to_vec(data.0) };
-        let pk = pkcs1::RsaPublicKey::from_der(&pkcs1_der)
-            .map_err(|e| der_err(e, "parsing the PKCS#1 RSA public key"))?;
-        let rsa = crate::rsa::RsaPublicKey::from_components(
-            pk.modulus.as_bytes(),
-            pk.public_exponent.as_bytes(),
-        )
-        .map_err(|crate::rsa::RsaError(e)| X509Error(e))?;
+        let rsa = crate::rsa::RsaPublicKey::from_pkcs1_der(&pkcs1_der)
+            .map_err(|crate::rsa::RsaError(e)| X509Error(e))?;
         Ok(X509PublicKey::Rsa(rsa))
     }
 

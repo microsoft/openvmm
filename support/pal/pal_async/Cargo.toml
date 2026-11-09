@@ -31,7 +31,6 @@ io-uring.workspace = true
 once_cell.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-cfg-if.workspace = true
 libc = { workspace = true, features = ["extra_traits"] }
 
 [target.'cfg(windows)'.dependencies]

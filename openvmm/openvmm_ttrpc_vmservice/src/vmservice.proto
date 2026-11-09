@@ -47,7 +47,7 @@ service VM {
 
     // ModifyResource is a generic call to modify (add/remove/update) resources for a VM.
     // This includes things such as block devices, network adapters, and pci devices.
-    rpc ModifyResource(ModifyResourceRequest) returns (google.protobuf.Empty);
+    rpc ModifyResource(ModifyResourceRequest) returns (ModifyResourceResponse);
 
     // AddPcieDevice hot-adds a PCIe device behind a named port (a root port or
     // switch downstream port declared in the topology).
@@ -69,11 +69,11 @@ service VM {
 
 // Note: VTL assignment is not modeled yet; all devices are assumed to be VTL0.
 
-// Request cooperative guest power-off through Hyper-V shutdown IC. Requires a
-// running VM with Hyper-V and VMBus enabled and guest shutdown IC support.
-// ACPI power-button shutdown is unsupported.
+// Request cooperative guest power-off in a running VM through the selected
+// mechanism. No fallback to another mechanism or hard power-off is performed.
 //
-// Success means acknowledgement, not halt. With the default shutdown HALT
+// Success means IC acknowledgement or ACPI event injection, not halt.
+// With the default shutdown HALT
 // policy, use WaitVM to await halt, PropertiesVM to check for PowerOff, then
 // TeardownVM to release resources. TeardownVM and Quit do not request shutdown.
 message ShutdownVMRequest {
@@ -81,14 +81,18 @@ message ShutdownVMRequest {
         // Invalid; a mechanism must be explicitly specified.
         MECHANISM_UNSPECIFIED = 0;
         // Explicitly request the Hyper-V shutdown integration component.
-        // It must be available for this VM; no other facility is selected.
+        // Requires Hyper-V enlightenments, VMBus and guest shutdown IC support.
         MECHANISM_HYPERV_IC = 1;
+        // Inject an ACPI power-button event. Not supported for IGVM boot.
+        // Requires guest ACPI power-button support and a guest power policy
+        // that shuts down on a button press.
+        MECHANISM_ACPI = 2;
     }
 
     // Required. Unspecified (including omitted) and unknown values return
     // INVALID_ARGUMENT without issuing a shutdown request.
     Mechanism mechanism = 1;
-    // Set the force bit in the shutdown protocol. Interpretation is guest-specific.
+    // Set the Hyper-V IC force bit. Interpretation is guest-specific.
     // This is not a host-side hard power-off. Omitted means false.
     bool force = 2;
 }
@@ -281,7 +285,32 @@ message VirtioDevice {
         VirtioFs       fs        = 7;
         // virtio-rtc real-time clock device.
         VirtioRtc      rtc       = 8;
+        // File-backed virtio-pmem device.
+        VirtioPmem     pmem      = 9;
     }
+}
+
+// virtio-pmem device configuration.
+message VirtioPmem {
+    // Backing store mapped into the guest.
+    PmemBackend backend = 1;
+    // Expose the device read-only to the guest.
+    bool read_only = 2;
+}
+
+// Backing store for a virtio-pmem device. Additional backing types can be
+// added as new oneof arms.
+message PmemBackend {
+    oneof kind {
+        // A host file.
+        PmemFile file = 1;
+    }
+}
+
+// A virtio-pmem backing file on the host.
+message PmemFile {
+    // Path to the backing file.
+    string path = 1;
 }
 
 // virtio-console serial device configuration.
@@ -668,6 +697,11 @@ message SmmuConfig {
     // freezes the advertised value; later hot-add must be compatible.
     // A fixed value cannot exceed the physical SMMU's OAS with acceleration.
     optional uint32 oas_bits = 2;
+    // Fixed SubstreamID width in bits (0..=20). Zero disables substreams.
+    // Absent => CLI ssidsize=auto: zero in software mode; with acceleration,
+    // adopt the host SMMU's width before device start freezes capabilities.
+    // A fixed width must not exceed the host's width with acceleration.
+    optional uint32 ssid_bits = 3;
 }
 
 // A PCIe port: a root-complex root port or a switch downstream port. Hosts at
@@ -788,6 +822,9 @@ message VMConfig {
     // Guest state storage, including UEFI variables. If absent, guest state
     // remains in memory and is lost when the VM is torn down.
     VmgsConfig vmgs = 21;
+    // Enable the guest watchdog device. Timeout behavior is configured
+    // separately by guest_power_actions.watchdog.
+    bool guest_watchdog = 22;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
@@ -955,6 +992,11 @@ message VPMEMDisk {
     bool read_only = 3;
 }
 
+enum NicFrontend {
+    NIC_FRONTEND_VMBUS = 0;
+    NIC_FRONTEND_VIRTIO = 1;
+}
+
 message NICConfig {
     string nic_id = 1; // GUID
     string mac_address = 3; // 12-34-56-78-9A-BC
@@ -967,6 +1009,10 @@ message NICConfig {
         TapBackend tap = 7;
         ConsommeBackend consomme = 8;
     }
+    // Guest-visible NIC frontend. Defaults to the VMBus synthetic NIC.
+    // Virtio uses VPCI on Windows/macOS with VMBus enabled, MMIO otherwise.
+    // Virtio NICs must be configured at VM creation, not added via ModifyResource.
+    NicFrontend frontend = 9;
 }
 
 message DioBackend {
@@ -1006,6 +1052,51 @@ message ConsommeBackend {
     // Ports to forward from the host into the guest.
     // Used during initial creation and for dynamic add/remove via ModifyResource.
     repeated PortConfig ports = 2;
+    // If true or unset, the guest resolves names through consomme's built-in
+    // DNS resolver on the gateway address. If false, the guest uses the host's
+    // DNS servers instead. Only honored when the NIC is created.
+    optional bool internal_dns = 3;
+    // Optional guest IPv4 address, gateway IPv4 address and network mask.
+    // Each overrides the value derived from cidr. Only honored when the NIC
+    // is created.
+    string client_ip = 4;
+    string gateway_ip = 5;
+    string net_mask = 6;
+    // Optional guest IPv6 address, used before consomme learns it from the
+    // guest. Only honored when the NIC is created.
+    string client_ip_ipv6 = 7;
+    // If true, guest traffic to host-local addresses (loopback, unspecified,
+    // link-local) is forwarded to the host. Only honored when the NIC is
+    // created.
+    bool allow_host_local_access = 8;
+    // Runtime operations for ModifyResource UPDATE requests targeting this NIC.
+    // Do not combine an operation with ports. Not valid at VM creation or for
+    // REMOVE requests.
+    oneof operation {
+        AddDnsRecordRequest add_dns_record = 9;
+        CreateVirtualAddressRequest create_virtual_address = 10;
+    }
+}
+
+message CreateVirtualAddressRequest {
+    // The host address (IPv4 or IPv6) that guest traffic to the virtual
+    // address is routed to, e.g. "127.0.0.1". Allocates a guest-visible alias
+    // in the NIC's subnet and returns it in ModifyResourceResponse. Repeating
+    // the operation for the same destination returns the same virtual address.
+    string destination = 1;
+}
+
+message CreateVirtualAddressResponse {
+    // The allocated guest-visible address, in the same family as the destination.
+    string virtual_address = 1;
+}
+
+message AddDnsRecordRequest {
+    // The name the guest resolves, e.g. "host.wsl.internal".
+    string name = 1;
+    // The IPv4 address returned for the name (A record). Answered directly
+    // without forwarding the query to the host resolver.
+    string address = 2;
 }
 
 message WindowsPCIDevice {
@@ -1053,6 +1144,22 @@ message ModifyProcessorConfigRequest {
     uint32 processor_limit = 2;
 }
 
+message HVSocketListener {
+    // Unix socket path to bind on ADD. ADD fails if the path already exists;
+    // it does not replace an existing socket or file. The caller owns the
+    // socket file and removes it after REMOVE (or a failed ADD that bound it).
+    // Ignored on REMOVE, which stops listening but preserves established
+    // connections.
+    string path = 1;
+    // Required on ADD and REMOVE. Only one listener per service is supported.
+    oneof service {
+        // Guest hvsocket service ID (GUID).
+        string service_id = 2;
+        // Guest vsock port, mapped to the equivalent hvsocket service ID.
+        uint32 vsock_port = 3;
+    }
+}
+
 message ModifyResourceRequest {
     ModifyType type = 1;
     oneof resource {
@@ -1063,6 +1170,14 @@ message ModifyResourceRequest {
         VPMEMDisk vpmem_disk = 6;
         NICConfig nic_config = 7;
         WindowsPCIDevice windows_device = 8;
+        HVSocketListener hvsocket_listener = 9;
+    }
+}
+
+message ModifyResourceResponse {
+    // Unset for operations without a result, including DNS and port changes.
+    oneof result {
+        CreateVirtualAddressResponse virtual_address = 1;
     }
 }
 

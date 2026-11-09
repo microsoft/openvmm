@@ -164,7 +164,6 @@ vmsocket.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 blocking.workspace = true
-cfg-if.workspace = true
 fs-err.workspace = true
 futures-concurrency.workspace = true
 futures.workspace = true

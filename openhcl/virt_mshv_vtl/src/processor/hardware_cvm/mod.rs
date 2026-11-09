@@ -2061,7 +2061,7 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
         gpn: u64,
         check_perms: HvMapGpaFlags,
         new_perms: Option<HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
         self.protector.register_overlay_page(
             self.vtl,
             gpn,
@@ -2071,7 +2071,7 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
             self.tlb_access,
         )?;
         // TODO: underhill_mem should really be responsible for constructing the
-        // LockedPages, but that requires some refactoring. For now, we just use
+        // UserLockedPages, but that requires some refactoring. For now, we just use
         // guest memory to lock the pages. When this is cleaned up, don't forget
         // to also cleanup how underhill_mem handles locking overlay pages.
         //
@@ -2086,7 +2086,7 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
         // violation.
         Ok(self
             .guest_memory
-            .lock_gpns(guestmem::AccessType::Read, false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Read, &[gpn])
             .unwrap())
     }
 
@@ -3343,16 +3343,14 @@ impl VmTimeGuestTimer {
         ref_time_now: u64,
         ref_time_next: u64,
     ) -> VmTime {
-        /// Convert reference time in 100ns units to Duration.
-        fn duration_from_100ns(n: u64) -> std::time::Duration {
-            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
-        }
-
         // Convert from reference timer basis to [`VmTime`] basis via
         // difference of programmed timer and current reference time.
         let ref_diff = ref_time_next.saturating_sub(ref_time_now);
-        vmtime.now().wrapping_add(duration_from_100ns(ref_diff))
+        vmtime
+            .now()
+            .wrapping_add(std::time::Duration::from_nanos_u128(
+                u128::from(ref_diff) * 100,
+            ))
     }
 }
 

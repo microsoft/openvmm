@@ -264,7 +264,10 @@ fn canonical_hms(status_b: StatusRegB, mut hour: u8, mut min: u8, mut sec: u8) -
         if status_b.h24_mode() {
             hour = from_bcd(hour);
         } else {
-            let hour_ampm = from_bcd(hour & 0x7F);
+            let mut hour_ampm = from_bcd(hour & 0x7F);
+            if hour_ampm == 12 {
+                hour_ampm = 0;
+            }
             if hour & 0x80 != 0 {
                 hour = hour_ampm + 12;
             } else {
@@ -273,9 +276,11 @@ fn canonical_hms(status_b: StatusRegB, mut hour: u8, mut min: u8, mut sec: u8) -
         }
     } else {
         if !status_b.h24_mode() {
-            if hour & 0x80 != 0 {
-                hour = (hour & 0x7F) + 12;
+            let mut hour_ampm = hour & 0x7F;
+            if hour_ampm == 12 {
+                hour_ampm = 0;
             }
+            hour = hour_ampm + if hour & 0x80 != 0 { 12 } else { 0 };
         }
     }
 
@@ -329,41 +334,17 @@ impl Rtc {
         &mut self.state.cmos.0
     }
 
-    /// Calculate the duration between the current time and the alarm time.
-    ///
-    /// (this logic was ported over from Hyper-V, instructive comment and all)
-    ///
-    /// * * *
-    ///
-    /// What an ugly mess.
-    ///
-    /// The alarm works like an alarm clock. So if you set it for 5:02:03, it
-    /// will go off every day at 5:02:03. But if any of the time elements are
-    /// 0xFF, that acts as a wildcard. So 5:FF:03 would go off at 5:00:03 and
-    /// 5:01:03 and 5:02:03, etc. An alarm set for FF:FF:FF goes off every
-    /// second.
-    ///
-    /// The problem is, what happens if, when we compute when the timer should
-    /// go off, that it should go off NOW?
-    ///
-    /// Suppose, for instance, that they ask for 5:02:03, and at 5:02:03 we
-    /// dutifully fire off the interrupt. The next thing we have to do is figure
-    /// out when the alarm goes off next. It's supposed to go off next at
-    /// 5:02:03, but if we've serviced the thing in reasonable time, it's
-    /// *still* 5:02:03. We don't want to keep interrupting continuously for the
-    /// next second, until it's 5:02:04. We want to wait a full day, and go off
-    /// *tomorrow* at 5:02:03. Ahhh, but what if we're supposed to go off at
-    /// 5:FF:03? In this case, we need to go off again in a minute. For 5:02:FF,
-    /// it has to be in a second.
-    ///
-    /// Handling all of this is what the `go_around_again` variable is for.
-    ///
-    /// It will be set to the appropriate amount of time we need to wait if, by
-    /// calculation, the alarm time would be immediate, as just described (which
-    /// is the amount for the smallest unit of time which has a wildcard (24
-    /// hours if none)).
+    /// Calculate the duration to the next strictly future matching alarm time.
+    /// Raw alarm fields in 0xC0..=0xFF are wildcards; all other fields must
+    /// match. Invalid decoded alarm fields are retried after one day.
     fn calculate_alarm_duration(&self) -> Duration {
         use self::spec::ALARM_WILDCARD;
+
+        const SECONDS_PER_MINUTE: u32 = 60;
+        const MINUTES_PER_HOUR: u32 = 60;
+        const HOURS_PER_DAY: u32 = 24;
+        const SECONDS_PER_HOUR: u32 = SECONDS_PER_MINUTE * MINUTES_PER_HOUR;
+        const SECONDS_PER_DAY: u32 = SECONDS_PER_HOUR * HOURS_PER_DAY;
 
         let status_b = StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]);
         let (now_hour, now_min, now_sec) = canonical_hms(
@@ -372,79 +353,69 @@ impl Rtc {
             self.state.cmos[CmosReg::MINUTE],
             self.state.cmos[CmosReg::SECOND],
         );
-        let (alarm_hour, alarm_min, alarm_sec) = canonical_hms(
-            status_b,
+        let [
+            (hour_wildcard, hour),
+            (min_wildcard, min),
+            (sec_wildcard, sec),
+        ] = [
             self.state.cmos[CmosReg::HOUR_ALARM],
             self.state.cmos[CmosReg::MINUTE_ALARM],
             self.state.cmos[CmosReg::SECOND_ALARM],
+        ]
+        .map(|value| {
+            if value & 0xC0 == 0xC0 {
+                (true, 0)
+            } else {
+                (false, value)
+            }
+        });
+        let (hour, min, sec) = canonical_hms(status_b, hour, min, sec);
+        let (alarm_hour, alarm_min, alarm_sec) = (
+            if hour_wildcard { ALARM_WILDCARD } else { hour },
+            if min_wildcard { ALARM_WILDCARD } else { min },
+            if sec_wildcard { ALARM_WILDCARD } else { sec },
         );
 
-        let mut delta_hour: u8 = 0;
-        let mut delta_min: u8 = 0;
-        let mut delta_sec: u8 = 0;
-
-        if alarm_sec == ALARM_WILDCARD {
-            delta_sec = 0;
-        } else {
-            delta_sec = delta_sec.wrapping_add(alarm_sec.wrapping_sub(now_sec));
-            if alarm_sec < now_sec {
-                delta_sec = delta_sec.wrapping_add(60);
-                delta_min = delta_min.wrapping_sub(1);
-            }
+        let fields = [
+            (alarm_sec, 1, SECONDS_PER_MINUTE),
+            (alarm_min, SECONDS_PER_MINUTE, MINUTES_PER_HOUR),
+            (alarm_hour, SECONDS_PER_HOUR, HOURS_PER_DAY),
+        ];
+        if fields
+            .iter()
+            .any(|&(value, _, radix)| value != ALARM_WILDCARD && u32::from(value) >= radix)
+        {
+            return Duration::from_secs(u64::from(SECONDS_PER_DAY));
         }
 
-        if alarm_min == ALARM_WILDCARD {
-            delta_min = 0;
-        } else {
-            delta_min = delta_min.wrapping_add(alarm_min.wrapping_sub(now_min));
-            if alarm_min < now_min {
-                delta_min = delta_min.wrapping_add(60);
-                delta_hour = delta_hour.wrapping_sub(1);
+        let now_seconds = (u32::from(now_hour) * SECONDS_PER_HOUR
+            + u32::from(now_min) * SECONDS_PER_MINUTE
+            + u32::from(now_sec))
+            % SECONDS_PER_DAY;
+        let mut next_seconds = now_seconds + 1;
+        let mut lower_fields = 0;
+        for (value, unit, radix) in fields {
+            if value == ALARM_WILDCARD {
+                continue;
             }
-        }
-
-        if alarm_hour == ALARM_WILDCARD {
-            delta_hour = 0;
-        } else {
-            delta_hour = delta_hour.wrapping_add(alarm_hour.wrapping_sub(now_hour));
-            if alarm_hour < now_hour {
-                delta_hour = delta_hour.wrapping_add(24);
+            let value = u32::from(value);
+            let current = (next_seconds / unit) % radix;
+            let advance = (value + radix - current) % radix;
+            if advance != 0 {
+                next_seconds = (next_seconds / unit + advance) * unit + lower_fields;
             }
+            lower_fields += value * unit;
         }
-
-        const DURATION_SEC: Duration = Duration::from_secs(1);
-        const DURATION_MIN: Duration = Duration::from_secs(60);
-        const DURATION_HOUR: Duration = Duration::from_secs(60 * 60);
-        const DURATION_DAY: Duration = Duration::from_secs(60 * 60 * 24);
-
-        let go_around_again = match (alarm_sec, alarm_min, alarm_hour) {
-            (ALARM_WILDCARD, _, _) => DURATION_SEC,
-            (_, ALARM_WILDCARD, _) => DURATION_MIN,
-            (_, _, ALARM_WILDCARD) => DURATION_HOUR,
-            // if no wildcards were specified, then the alarm is set to fire in a day
-            _ => DURATION_DAY,
-        };
-
-        let alarm_duration = {
-            DURATION_HOUR * delta_hour as u32
-                + DURATION_MIN * delta_min as u32
-                + DURATION_SEC * delta_sec as u32
-        };
+        let alarm_duration = Duration::from_secs(u64::from(next_seconds - now_seconds));
 
         tracing::debug!(
             now = ?(now_hour, now_min, now_sec),
             alarm = ?(alarm_hour, alarm_min, alarm_sec),
-            delta = ?(delta_hour, delta_min, delta_sec),
-            ?go_around_again,
             ?alarm_duration,
             "setting alarm"
         );
 
-        if alarm_duration.is_zero() {
-            go_around_again
-        } else {
-            alarm_duration
-        }
+        alarm_duration
     }
 
     fn set_alarm_timer(&mut self, now: VmTime) {
@@ -799,11 +770,8 @@ impl Rtc {
             if status_b.h24_mode() {
                 hour
             } else {
-                if clock_time.hour() > 12 {
-                    hour - 12
-                } else {
-                    hour
-                }
+                let hour_ampm = hour % 12;
+                if hour_ampm == 0 { 12 } else { hour_ampm }
             }
         };
         self.state.cmos[CmosReg::DAY_OF_WEEK] =
@@ -831,7 +799,7 @@ impl Rtc {
         }
 
         if !status_b.h24_mode() {
-            if clock_time.hour() > 12 {
+            if clock_time.hour() >= 12 {
                 self.state.cmos[CmosReg::HOUR] |= 0x80;
             }
         }
@@ -1065,6 +1033,9 @@ mod tests {
             if bcd {
                 data = from_bcd(data)
             };
+            if !hour24 && data == 12 {
+                data = 0;
+            }
             if pm {
                 data += 12;
             }
@@ -1083,14 +1054,18 @@ mod tests {
         rtc.io_write(RtcIoPort::ADDR.0, &temp).unwrap();
         let mut new_data = data;
         if addr == CmosReg::HOUR {
-            let pm = if hour24 { false } else { new_data > 12 };
-            if bcd {
-                new_data =
-                    to_bcd(if pm { new_data - 12 } else { new_data }) | if pm { 0x80 } else { 0 };
-            } else {
-                if pm {
-                    new_data = (new_data - 12) | 0x80;
+            let pm = !hour24 && new_data >= 12;
+            if !hour24 {
+                new_data %= 12;
+                if new_data == 0 {
+                    new_data = 12;
                 }
+            }
+            if bcd {
+                new_data = to_bcd(new_data);
+            }
+            if pm {
+                new_data |= 0x80;
             }
         } else {
             if bcd {
@@ -1373,6 +1348,148 @@ mod tests {
     }
 
     #[test]
+    fn test_hour_encodings() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+        let hours = [
+            (0, 0x12, 0x0C),
+            (1, 0x01, 0x01),
+            (2, 0x02, 0x02),
+            (3, 0x03, 0x03),
+            (4, 0x04, 0x04),
+            (5, 0x05, 0x05),
+            (6, 0x06, 0x06),
+            (7, 0x07, 0x07),
+            (8, 0x08, 0x08),
+            (9, 0x09, 0x09),
+            (10, 0x10, 0x0A),
+            (11, 0x11, 0x0B),
+            (12, 0x92, 0x8C),
+            (13, 0x81, 0x81),
+            (14, 0x82, 0x82),
+            (15, 0x83, 0x83),
+            (16, 0x84, 0x84),
+            (17, 0x85, 0x85),
+            (18, 0x86, 0x86),
+            (19, 0x87, 0x87),
+            (20, 0x88, 0x88),
+            (21, 0x89, 0x89),
+            (22, 0x90, 0x8A),
+            (23, 0x91, 0x8B),
+        ];
+
+        for status in [0x00, 0x02, 0x04, 0x06] {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            for (hour, bcd_hour, binary_hour) in hours {
+                let timestamp: jiff::Timestamp =
+                    format!("2026-01-01T{hour:02}:00:00Z").parse().unwrap();
+                rtc.real_time_source.set_time(timestamp.into());
+                let expected = match status {
+                    0x00 => bcd_hour,
+                    0x02 => to_bcd(hour),
+                    0x04 => binary_hour,
+                    0x06 => hour,
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    get_cmos_data(&mut rtc, CmosReg::HOUR),
+                    expected,
+                    "hour {hour}, status B {status:#04x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_hour_encoding_transitions() {
+        let (_, _, time, mut rtc) = new_test_rtc();
+
+        for (mode, status) in [0x00, 0x02, 0x04, 0x06].into_iter().enumerate() {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            for (start_hour, expected_hours, expected_day) in [
+                (11, [0x92, 0x12, 0x8C, 0x0C], 1),
+                (23, [0x12, 0x00, 0x0C, 0x00], 2),
+            ] {
+                let timestamp: jiff::Timestamp = format!("2026-01-01T{start_hour:02}:59:59Z")
+                    .parse()
+                    .unwrap();
+                rtc.real_time_source.set_time(timestamp.into());
+                time.tick(Duration::from_secs(2));
+
+                assert_eq!(
+                    get_cmos_data(&mut rtc, CmosReg::HOUR),
+                    expected_hours[mode],
+                    "start hour {start_hour}, status B {status:#04x}"
+                );
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::DAY_OF_MONTH), expected_day);
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::MINUTE), 0);
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::SECOND), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_hour_inputs() {
+        let (_, _, time, mut rtc) = new_test_rtc();
+
+        for (status, midnight_hour) in [(0x00, 0x12), (0x04, 0x0C)] {
+            for (pm_bit, expected_hour) in [(0x00, 0), (0x80, 12)] {
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+                let timestamp: jiff::Timestamp = "2026-01-01T06:00:00Z".parse().unwrap();
+                rtc.real_time_source.set_time(timestamp.into());
+                rtc.sync_clock_to_cmos();
+                set_cmos_data(&mut rtc, CmosReg::STATUS_A, 0x06);
+                let encoded_hour = midnight_hour | pm_bit;
+                set_cmos_data(&mut rtc, CmosReg::HOUR, encoded_hour);
+
+                let timestamp: jiff::Timestamp = time.get_time().try_into().unwrap();
+                assert_eq!(
+                    timestamp.to_zoned(jiff::tz::TimeZone::UTC).hour(),
+                    expected_hour,
+                    "hour {encoded_hour:#04x}, status B {status:#04x}"
+                );
+
+                set_cmos_data(&mut rtc, CmosReg::STATUS_A, 0x26);
+                time.tick(Duration::from_secs(2));
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::HOUR), encoded_hour);
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::SECOND), 2);
+                time.tick(Duration::from_secs(3600));
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::HOUR), 0x01 | pm_bit);
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::DAY_OF_MONTH), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_hour_alarms() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+
+        for (mode, status) in [0x00, 0x02, 0x04, 0x06].into_iter().enumerate() {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            for (start_hour, alarm_hours) in [
+                (11, [0x92, 0x12, 0x8C, 0x0C]),
+                (23, [0x12, 0x00, 0x0C, 0x00]),
+                (12, [0x81, 0x13, 0x81, 0x0D]),
+                (0, [0x01, 0x01, 0x01, 0x01]),
+            ] {
+                let timestamp: jiff::Timestamp = format!("2026-01-01T{start_hour:02}:59:59Z")
+                    .parse()
+                    .unwrap();
+                rtc.real_time_source.set_time(timestamp.into());
+                rtc.sync_clock_to_cmos();
+                set_cmos_data(&mut rtc, CmosReg::HOUR_ALARM, alarm_hours[mode]);
+                set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, 0);
+                set_cmos_data(&mut rtc, CmosReg::SECOND_ALARM, 0);
+
+                assert_eq!(
+                    rtc.calculate_alarm_duration(),
+                    Duration::from_secs(1),
+                    "start hour {start_hour}, status B {status:#04x}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_hour_mode() {
         println!("----Testing Binary + 12 hour mode...");
         test_count(false, false);
@@ -1521,6 +1638,143 @@ mod tests {
         test_day_of_week(false, true);
         println!("----Testing BCD mode...");
         test_day_of_week(true, true);
+    }
+
+    #[test]
+    fn test_alarm_next_match() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+
+        for status in [0x00, 0x02, 0x04, 0x06] {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            for (time, alarm, delays) in [
+                ("12:30:59", [12, 30, 0], [86341, 86400]),
+                ("12:30:58", [12, 30, 0xFF], [1, 86341]),
+                ("12:30:59", [12, 30, 0xFF], [86341, 1]),
+                ("12:31:00", [12, 30, 0xFF], [86340, 1]),
+                ("12:59:00", [12, 0xFF, 0], [82860, 60]),
+                ("12:30:59", [0xFF, 30, 0], [3541, 3600]),
+                ("12:30:59", [0xFF, 30, 0xFF], [3541, 1]),
+                ("12:30:59", [0xFF, 0xFF, 0], [1, 60]),
+                ("12:30:59", [0xFF, 0xFF, 0xFF], [1, 1]),
+                ("12:59:59", [12, 0xFF, 0xFF], [82801, 1]),
+                ("12:30:00", [12, 30, 0], [86400, 86400]),
+                ("23:59:59", [0, 0, 0], [1, 86400]),
+                ("11:59:59", [12, 0, 0], [1, 86400]),
+                ("12:59:59", [13, 0, 0], [1, 86400]),
+                ("12:30:59", [0xFF, 31, 59], [60, 3600]),
+                ("12:22:33", [14, 0xFF, 0xFF], [5847, 1]),
+                ("12:22:33", [0xFF, 23, 0xFF], [27, 1]),
+                ("23:59:59", [23, 59, 59], [86400, 86400]),
+            ] {
+                let encode = |value: u8| {
+                    if value == 0xFF || status & 4 != 0 {
+                        value
+                    } else {
+                        (value / 10) * 16 + value % 10
+                    }
+                };
+                let hour = if alarm[0] == 0xFF || status & 2 != 0 {
+                    encode(alarm[0])
+                } else {
+                    let magnitude = match alarm[0] % 12 {
+                        0 => 12,
+                        magnitude => magnitude,
+                    };
+                    encode(magnitude) | if alarm[0] >= 12 { 0x80 } else { 0 }
+                };
+                set_cmos_data(&mut rtc, CmosReg::HOUR_ALARM, hour);
+                set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, encode(alarm[1]));
+                set_cmos_data(&mut rtc, CmosReg::SECOND_ALARM, encode(alarm[2]));
+
+                let mut timestamp: jiff::Timestamp = format!("2026-01-01T{time}Z").parse().unwrap();
+                for expected_seconds in delays {
+                    rtc.real_time_source.set_time(timestamp.into());
+                    rtc.sync_clock_to_cmos();
+                    assert_eq!(
+                        rtc.calculate_alarm_duration(),
+                        Duration::from_secs(expected_seconds),
+                        "status B {status:#04x}, now {timestamp}, alarm {alarm:?}"
+                    );
+                    timestamp = timestamp
+                        .checked_add(Duration::from_secs(expected_seconds))
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_alarm_invalid_fields() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+        for status in [0x00, 0x02, 0x04, 0x06] {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            let timestamp: jiff::Timestamp = "2026-01-01T12:00:00Z".parse().unwrap();
+            rtc.real_time_source.set_time(timestamp.into());
+            rtc.sync_clock_to_cmos();
+            for invalid_field in 0..3 {
+                for (field, register) in [
+                    CmosReg::HOUR_ALARM,
+                    CmosReg::MINUTE_ALARM,
+                    CmosReg::SECOND_ALARM,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    set_cmos_data(
+                        &mut rtc,
+                        register,
+                        if field == invalid_field { 0x7F } else { 0xFF },
+                    );
+                }
+                assert_eq!(rtc.calculate_alarm_duration(), Duration::from_hours(24));
+            }
+        }
+    }
+
+    #[test]
+    fn test_alarm_wildcards() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+
+        for (status, hour, minute, second) in [
+            (0x00, 0x82, 0x01, 0x01),
+            (0x02, 0x14, 0x01, 0x01),
+            (0x04, 0x82, 1, 1),
+            (0x06, 14, 1, 1),
+        ] {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            let timestamp: jiff::Timestamp = "2026-01-01T13:00:00Z".parse().unwrap();
+            rtc.real_time_source.set_time(timestamp.into());
+            rtc.sync_clock_to_cmos();
+
+            for wildcard in 0xC0..=0xFF {
+                for (mask, expected_seconds) in [
+                    (0, 3661),
+                    (1, 3660),
+                    (2, 3601),
+                    (3, 3600),
+                    (4, 61),
+                    (5, 60),
+                    (6, 1),
+                    (7, 1),
+                ] {
+                    let alarm_hour = if mask & 4 != 0 { wildcard } else { hour };
+                    let alarm_minute = if mask & 2 != 0 { wildcard } else { minute };
+                    let alarm_second = if mask & 1 != 0 { wildcard } else { second };
+                    set_cmos_data(&mut rtc, CmosReg::HOUR_ALARM, alarm_hour);
+                    set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, alarm_minute);
+                    set_cmos_data(&mut rtc, CmosReg::SECOND_ALARM, alarm_second);
+
+                    assert_eq!(
+                        rtc.calculate_alarm_duration(),
+                        Duration::from_secs(expected_seconds),
+                        "status B {status:#04x}, wildcard {wildcard:#04x}, mask {mask:#05b}"
+                    );
+                    assert_eq!(get_cmos_data(&mut rtc, CmosReg::HOUR_ALARM), alarm_hour);
+                    assert_eq!(get_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM), alarm_minute);
+                    assert_eq!(get_cmos_data(&mut rtc, CmosReg::SECOND_ALARM), alarm_second);
+                }
+            }
+        }
     }
 
     #[test]

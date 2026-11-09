@@ -80,7 +80,7 @@ impl<T: ?Sized> LoanCell<T> {
             }
         }
 
-        let old = self.0.replace(Some(value.into()));
+        let old = self.0.replace(Some(NonNull::from_ref(value)));
         let _guard = RestoreOnDrop(self, old);
         f()
     }

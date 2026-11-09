@@ -113,8 +113,7 @@ impl VmTime {
 }
 
 fn duration_from_100ns(n: u64) -> Duration {
-    const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-    Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
+    Duration::from_nanos_u128(u128::from(n) * 100)
 }
 
 #[derive(Inspect)]
@@ -320,7 +319,7 @@ impl TimerState {
                 }
                 None => {
                     // Set the timer far out in the future.
-                    let deadline = Instant::now() + Duration::from_secs(86400);
+                    let deadline = Instant::now() + Duration::from_hours(24);
                     tracing::trace!(?deadline, "polling with long timeout");
                     Some(deadline)
                 }
@@ -973,6 +972,15 @@ mod tests {
     use pal_async::timer::PolledTimer;
     use std::future::poll_fn;
     use std::time::Duration;
+    use test_with_tracing::test;
+
+    #[test]
+    fn test_duration_from_100ns() {
+        for n in [0, 1, 9_999_999, 10_000_000, u64::MAX] {
+            let duration = super::duration_from_100ns(n);
+            assert_eq!(duration.as_nanos(), u128::from(n) * 100);
+        }
+    }
 
     #[async_test]
     async fn test_vmtime(driver: DefaultDriver) {

@@ -268,7 +268,7 @@ pub fn inspect_proc(req: Request<'_>) {
 pub async fn periodic_telemetry_task(driver: VmTaskDriver) {
     let mut timer = PolledTimer::new(&driver);
     // Wait 15 minutes before initial logging to give the guest time to boot and begin doing work
-    timer.sleep(Duration::from_secs(60 * 15)).await;
+    timer.sleep(Duration::from_mins(15)).await;
 
     loop {
         let mut inspection = inspect::inspect(
@@ -285,6 +285,6 @@ pub async fn periodic_telemetry_task(driver: VmTaskDriver) {
         // The below message needs to be valid JSON for ease of processing
         tracing::info!(CVM_ALLOWED, "{{\"periodic_memory_status\":{}}}", json);
         // Wait a day before logging again
-        timer.sleep(Duration::from_secs(60 * 60 * 24)).await;
+        timer.sleep(Duration::from_hours(24)).await;
     }
 }

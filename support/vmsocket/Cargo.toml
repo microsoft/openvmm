@@ -10,7 +10,6 @@ rust-version.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 
-cfg-if.workspace = true
 socket2 = { workspace = true, features = [ "all" ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

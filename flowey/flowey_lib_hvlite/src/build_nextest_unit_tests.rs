@@ -99,63 +99,72 @@ impl FlowNode for Node {
         // additional deps
         let ambient_deps = vec![ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
 
-        let test_packages = ctx.emit_rust_stepv("determine unit test exclusions", |ctx| {
-            let xtask = xtask.clone().claim(ctx);
-            let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
-            move |rt| {
-                let xtask = rt.read(xtask);
-                let openvmm_repo_path = rt.read(openvmm_repo_path);
-
-                let mut exclude = [
-                    // Skip VMM tests, they get run in a different step.
-                    "vmm_tests",
-                    // Skip CCA tests, they aren't setup to run in CI yet
-                    "cca_tests",
-                    // Skip guest_test_uefi, as it's a no_std UEFI crate
-                    "guest_test_uefi",
-                    // Exclude various proc_macro crates, since they don't compile successfully
-                    // under --test with panic=abort targets.
-                    // https://github.com/rust-lang/cargo/issues/4336 is tracking this.
-                    //
-                    // In any case though, it's not like these crates should have unit tests
-                    // anyway.
-                    "inspect_derive",
-                    "mesh_derive",
-                    "save_restore_derive",
-                    "test_with_tracing_macro",
-                    "pal_async_test",
-                    "vmm_test_macros",
-                ]
-                .map(|x| x.to_string())
-                .to_vec();
-
-                // Exclude fuzz crates, since there libfuzzer-sys doesn't play
-                // nice with unit tests
-                {
-                    let xtask_bin = match xtask {
-                        crate::build_xtask::XtaskOutput::LinuxBin { bin, dbg: _ } => bin,
-                        crate::build_xtask::XtaskOutput::WindowsBin { exe, pdb: _ } => exe,
-                    };
-
-                    rt.sh.change_dir(openvmm_repo_path);
-                    let output =
-                        flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates").output()?;
-                    let output = String::from_utf8(output.stdout)?;
-
-                    let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());
-                    exclude.extend(fuzz_crates);
-                }
-
-                Ok(TestPackages::Workspace { exclude })
-            }
-        });
-
         for Request {
             target,
             profile,
             build_mode,
         } in requests
         {
+            let test_packages = ctx.emit_rust_stepv("determine unit test exclusions", |ctx| {
+                let xtask = xtask.clone().claim(ctx);
+                let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
+                move |rt| {
+                    let xtask = rt.read(xtask);
+                    let openvmm_repo_path = rt.read(openvmm_repo_path);
+
+                    let mut exclude = [
+                        // Skip VMM tests, they get run in a different step.
+                        "vmm_tests",
+                        // Skip CCA tests, they aren't setup to run in CI yet
+                        "cca_tests",
+                        // Skip guest_test_uefi, as it's a no_std UEFI crate
+                        "guest_test_uefi",
+                        // Exclude various proc_macro crates, since they don't compile successfully
+                        // under --test with panic=abort targets.
+                        // https://github.com/rust-lang/cargo/issues/4336 is tracking this.
+                        //
+                        // In any case though, it's not like these crates should have unit tests
+                        // anyway.
+                        "inspect_derive",
+                        "mesh_derive",
+                        "save_restore_derive",
+                        "test_with_tracing_macro",
+                        "pal_async_test",
+                        "vmm_test_macros",
+                    ]
+                    .map(|x| x.to_string())
+                    .to_vec();
+
+                    // Exclude fuzz crates, since there libfuzzer-sys doesn't play
+                    // nice with unit tests
+                    {
+                        let xtask_bin = match xtask {
+                            crate::build_xtask::XtaskOutput::LinuxBin { bin, dbg: _ } => bin,
+                            crate::build_xtask::XtaskOutput::WindowsBin { exe, pdb: _ } => exe,
+                        };
+
+                        rt.sh.change_dir(openvmm_repo_path);
+                        let output =
+                            flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates").output()?;
+                        let output = String::from_utf8(output.stdout)?;
+
+                        let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());
+                        exclude.extend(fuzz_crates);
+                    }
+
+                    // vtpm_util unconditionally enables the TPM's OpenSSL backend.
+                    if matches!(
+                        target.operating_system,
+                        target_lexicon::OperatingSystem::Windows
+                            | target_lexicon::OperatingSystem::Darwin(_)
+                    ) {
+                        exclude.push("vtpm_util".into());
+                    }
+
+                    Ok(TestPackages::Workspace { exclude })
+                }
+            });
+
             let mut pre_run_deps = ambient_deps.clone();
 
             let packages = if let BuildNextestUnitTestMode::Coverage { packages, .. } = &build_mode

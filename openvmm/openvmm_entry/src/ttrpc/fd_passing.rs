@@ -217,15 +217,14 @@ async fn serve_requests(
                     conn.write_response(Some("deregister does not accept an attached descriptor"))
                         .await?
                 }
-                Some(name) => {
-                    if let Some(pos) = owned_names.names.iter().position(|n| *n == name) {
-                        owned_names.names.swap_remove(pos);
-                        owned_names.registry.deregister(&name);
-                        conn.write_response(None).await?;
-                    } else {
-                        conn.write_response(Some("name not registered by this connection"))
-                            .await?;
-                    }
+                Some(name) if let Some(pos) = owned_names.names.iter().position(|n| *n == name) => {
+                    owned_names.names.swap_remove(pos);
+                    owned_names.registry.deregister(&name);
+                    conn.write_response(None).await?;
+                }
+                Some(_) => {
+                    conn.write_response(Some("name not registered by this connection"))
+                        .await?;
                 }
                 None => conn.write_response(Some("invalid name")).await?,
             },

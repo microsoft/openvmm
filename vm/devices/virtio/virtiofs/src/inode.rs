@@ -200,25 +200,15 @@ impl VirtioFsInode {
 
     /// Decrements the lookup count, and returns the new count.
     pub fn forget(&self, node_id: u64, lookup_count: u64) -> u64 {
-        let mut old_count = self.lookup_count.load(Ordering::Acquire);
-        loop {
-            let new_count = if lookup_count > old_count {
-                tracing::warn!(node_id, "Too many forgets for inode");
-                0
-            } else {
-                old_count - lookup_count
-            };
-
-            match self.lookup_count.compare_exchange_weak(
-                old_count,
-                new_count,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break new_count,
-                Err(value) => old_count = value,
-            }
-        }
+        let old_count =
+            self.lookup_count
+                .update(Ordering::AcqRel, Ordering::Acquire, |old_count| {
+                    if lookup_count > old_count {
+                        tracing::warn!(node_id, "Too many forgets for inode");
+                    }
+                    old_count.saturating_sub(lookup_count)
+                });
+        old_count.saturating_sub(lookup_count)
     }
 
     /// Performs a lookup for a child of this inode.
@@ -485,6 +475,32 @@ mod tests {
     use super::*;
     use crate::InodeMap;
     use test_with_tracing::test;
+
+    #[test]
+    fn forget_saturates_and_returns_updated_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let volume = Arc::new(VirtioFsVolume::new(
+            LxVolume::new(tmp.path()).unwrap(),
+            0,
+            false,
+        ));
+        let (inode, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
+
+        for (initial, forgotten, expected) in [
+            (0, 0, 0),
+            (0, 1, 0),
+            (1, 0, 1),
+            (1, 1, 0),
+            (1, 2, 0),
+            (5, 2, 3),
+            (u64::MAX, 1, u64::MAX - 1),
+            (u64::MAX, u64::MAX, 0),
+        ] {
+            inode.lookup_count.store(initial, Ordering::Release);
+            assert_eq!(inode.forget(42, forgotten), expected);
+            assert_eq!(inode.lookup_count.load(Ordering::Acquire), expected);
+        }
+    }
 
     #[test]
     fn directory_handle_checks_fail_closed_without_stable_ids() {
