@@ -110,7 +110,7 @@ async fn a_slow_stop_is_awaited_and_names_its_unit(driver: DefaultDriver) {
     units.start().await.unwrap();
     assert!(log.unanswered().is_empty());
 
-    units.stop().await;
+    units.stop().await.unwrap();
 
     assert!(stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());

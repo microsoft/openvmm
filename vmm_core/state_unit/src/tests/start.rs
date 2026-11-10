@@ -409,7 +409,7 @@ async fn test_uncertain_start_blocks_dependency_rollback(driver: DefaultDriver) 
     assert_eq!(unit_state(&units, "unanswered"), State::StartUncertain);
 
     // A later stop stops both, the dependency last, and both stay terminal.
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(unanswered_stopped.load(Ordering::Relaxed));
     assert!(dependency_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
@@ -480,7 +480,7 @@ async fn test_started_unit_exit_during_rollback_returns_error(driver: DefaultDri
 
     // Once the exited unit is removed, a stop stops the others.
     exited.remove().await;
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(dependency_stopped.load(Ordering::Relaxed));
     assert!(unanswered_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
@@ -544,7 +544,7 @@ async fn test_failed_hot_add_does_not_stop_dependency_of_running_unit(driver: De
     assert_eq!(unit_state(&units, "new-dependency"), State::StartUncertain);
     assert_eq!(unit_state(&units, "unanswered"), State::StartUncertain);
 
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(dependency_stopped.load(Ordering::Relaxed));
     assert!(running_dependent_stopped.load(Ordering::Relaxed));
     assert!(unanswered_stopped.load(Ordering::Relaxed));
@@ -603,7 +603,7 @@ async fn test_unanswered_rollback_stop_can_be_retried(driver: DefaultDriver) {
     assert_eq!(stop_requests.load(Ordering::Relaxed), 1);
     assert!(units.is_running());
 
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(stopped.load(Ordering::Relaxed));
     assert_eq!(stop_requests.load(Ordering::Relaxed), 2);
     assert!(unanswered_stopped.load(Ordering::Relaxed));
