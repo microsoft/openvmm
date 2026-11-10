@@ -3,6 +3,8 @@
 
 //! OpenVMM-specific microVM construction and runtime support.
 
+use super::PetriVmConfigOpenVmm;
+use super::PetriVmResourcesOpenVmm;
 use super::construct::SerialData;
 use super::runtime::PetriVmInner;
 use crate::Firmware;
@@ -11,15 +13,21 @@ use anyhow::Context;
 use chipset_resources::microvm::MicrovmPortbHandle;
 use chipset_resources::microvm::MicrovmPortbTimeAbi;
 use chipset_resources::microvm::MicrovmShutdownHandle;
+use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
+use chipset_resources::microvm::MicrovmSnapshotScratchPolicy;
 use chipset_resources::pit::PitDeviceHandle;
 use cpu_profile::HostCpuSignature;
+use mesh::rpc::RpcSend;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::LinuxDirectBootMode;
 use openvmm_defs::config::LinuxIsolationConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::microvm::MicrovmConfig;
+use openvmm_defs::rpc::SnapshotQuiesceError;
+use openvmm_defs::rpc::SnapshotSaveResponse;
+use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::time_abi::TimeAbiParameters;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
@@ -39,6 +47,65 @@ pub(super) struct RuntimeResources {
     output: mesh::Receiver<Vec<u8>>,
     /// The output that followed the marker of the latest wait.
     unread: Vec<u8>,
+    /// The guest-requested snapshot boundaries that the VM worker reports,
+    /// when the test is the VM's snapshot controller.
+    snapshot_boundaries: Option<mesh::Receiver<MicrovmSnapshotScratchPolicy>>,
+    /// The VM worker's ends of the snapshot boundary channels, until the
+    /// worker launches.
+    worker_snapshot_channels: Option<SnapshotBoundaryChannels>,
+}
+
+/// The VM worker's ends of the channels of guest-requested snapshot
+/// boundaries.
+pub(crate) struct SnapshotBoundaryChannels {
+    /// The guest's snapshot requests, from the snapshot-request port.
+    pub(crate) requests: mesh::Receiver<MicrovmSnapshotBoundaryRequest>,
+    /// Reports each boundary that the worker establishes to the snapshot
+    /// controller.
+    pub(crate) ready: mesh::Sender<MicrovmSnapshotScratchPolicy>,
+}
+
+impl PetriVmConfigOpenVmm {
+    /// Makes the test the snapshot controller of a microVM: the VM worker
+    /// holds each guest snapshot request at a snapshot boundary, with the
+    /// vCPUs stopped, and reports it, which
+    /// [`PetriVmOpenVmm::wait_for_microvm_snapshot_boundary`](super::PetriVmOpenVmm::wait_for_microvm_snapshot_boundary)
+    /// waits for. The test then sends the snapshot requests that a controller
+    /// sends, such as
+    /// [`PetriVmOpenVmm::release_microvm_snapshot_boundary`](super::PetriVmOpenVmm::release_microvm_snapshot_boundary).
+    /// Otherwise the snapshot-request port lets each guest request continue at
+    /// once, as it does when the VM has no snapshot destination.
+    pub fn with_microvm_snapshot_boundary(mut self) -> Self {
+        let resources = self
+            .resources
+            .microvm
+            .as_mut()
+            .expect("snapshot boundaries require a microVM with its portb console");
+        let port = self
+            .config
+            .chipset_devices
+            .iter_mut()
+            .find(|device| device.name == MicrovmSnapshotRequestHandle::ID)
+            .expect("a microVM has a snapshot-request port");
+        let (notify, requests) = mesh::channel();
+        let (ready, boundaries) = mesh::channel();
+        port.resource = MicrovmSnapshotRequestHandle {
+            notify: Some(notify),
+        }
+        .into_resource();
+        resources.snapshot_boundaries = Some(boundaries);
+        resources.worker_snapshot_channels = Some(SnapshotBoundaryChannels { requests, ready });
+        self
+    }
+}
+
+/// Takes the VM worker's ends of the snapshot boundary channels of
+/// [`PetriVmConfigOpenVmm::with_microvm_snapshot_boundary`], for the worker's
+/// launch.
+pub(super) fn take_worker_snapshot_channels(
+    resources: &mut PetriVmResourcesOpenVmm,
+) -> Option<SnapshotBoundaryChannels> {
+    resources.microvm.as_mut()?.worker_snapshot_channels.take()
 }
 
 pub(super) struct PortbSerial {
@@ -369,6 +436,8 @@ pub(super) fn configure_serial(
             runtime: RuntimeResources {
                 output,
                 unread: Vec::new(),
+                snapshot_boundaries: None,
+                worker_snapshot_channels: None,
             },
         }),
     })
@@ -474,7 +543,7 @@ impl PetriVmInner {
         marker: &[u8],
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!marker.is_empty(), "microVM portb marker cannot be empty");
-        let RuntimeResources { output, unread } = self
+        let RuntimeResources { output, unread, .. } = self
             .resources
             .microvm
             .as_mut()
@@ -502,6 +571,55 @@ impl PetriVmInner {
             .pulse_save_restore()
             .await
             .map_err(anyhow::Error::from)
+    }
+
+    /// Waits for the VM worker to hold a guest snapshot request at its
+    /// snapshot boundary, and returns the request's scratch policy.
+    pub(super) async fn wait_for_microvm_snapshot_boundary(
+        &mut self,
+    ) -> anyhow::Result<MicrovmSnapshotScratchPolicy> {
+        let boundaries = self
+            .resources
+            .microvm
+            .as_mut()
+            .and_then(|resources| resources.snapshot_boundaries.as_mut())
+            .context("the test is not the microVM's snapshot controller")?;
+        boundaries
+            .recv()
+            .await
+            .context("the VM worker closed its snapshot boundary channel")
+    }
+
+    /// Quiesces the VM for the snapshot of its boundary, as a snapshot
+    /// controller does, and returns the VM worker's response.
+    pub(super) async fn quiesce_microvm_for_snapshot(
+        &self,
+    ) -> anyhow::Result<Result<SnapshotSaveResponse, SnapshotQuiesceError>> {
+        Ok(self
+            .worker
+            .rpc()
+            .call(VmRpc::QuiesceForSnapshot, ())
+            .await?)
+    }
+
+    /// Releases the VM's snapshot boundary, as a snapshot controller does when
+    /// it takes no snapshot.
+    pub(super) async fn release_microvm_snapshot_boundary(&self) -> anyhow::Result<()> {
+        Ok(self
+            .worker
+            .rpc()
+            .call_failable(VmRpc::ReleaseSnapshotBoundary, ())
+            .await?)
+    }
+
+    /// Rolls the VM's snapshot back, as a snapshot controller does when a
+    /// snapshot fails after its quiesce: the VM runs again from its boundary.
+    pub(super) async fn resume_microvm_after_failed_snapshot(&self) -> anyhow::Result<()> {
+        Ok(self
+            .worker
+            .rpc()
+            .call_failable(VmRpc::ResumeAfterFailedSnapshot, ())
+            .await?)
     }
 }
 

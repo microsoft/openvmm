@@ -25,6 +25,7 @@ impl Worker {
         host: &WorkerHost,
         cfg: Config,
         shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
+        microvm_snapshot_boundary: Option<crate::openvmm::microvm::SnapshotBoundaryChannels>,
     ) -> anyhow::Result<(Self, mesh::Receiver<HaltReason>)> {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
@@ -34,6 +35,9 @@ impl Worker {
             openvmm_helpers::hypervisor::choose_hypervisor,
             openvmm_helpers::hypervisor::microvm::choose_microvm_hypervisor,
         )?;
+        let (snapshot_boundary_requests, snapshot_ready) = microvm_snapshot_boundary
+            .map(|channels| (channels.requests, channels.ready))
+            .unzip();
         let params = VmWorkerParameters {
             hypervisor,
             cfg,
@@ -41,8 +45,8 @@ impl Worker {
             shared_memory,
             shared_memory_copy_on_write: false,
             snapshot_restore_guards: None,
-            snapshot_boundary_requests: None,
-            snapshot_ready: None,
+            snapshot_boundary_requests,
+            snapshot_ready,
             restore_time: None,
             restore_ready_sink: None,
             restore_gate_timeout: None,
@@ -63,6 +67,11 @@ impl Worker {
 
     pub(crate) async fn pause(&self) -> Result<bool, RpcError> {
         self.rpc.call(VmRpc::Pause, ()).await
+    }
+
+    /// The VM worker's management RPC channel.
+    pub(crate) fn rpc(&self) -> &mesh::Sender<VmRpc> {
+        &self.rpc
     }
 
     pub(crate) async fn resume(&self) -> anyhow::Result<bool> {

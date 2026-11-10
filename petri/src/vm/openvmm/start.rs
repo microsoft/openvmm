@@ -177,9 +177,12 @@ impl PetriVmConfigOpenVmm {
             );
         }
 
-        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory)
-            .await
-            .context("failed to launch vm worker")?;
+        let microvm_snapshot_boundary =
+            super::microvm::take_worker_snapshot_channels(&mut resources);
+        let (worker, halt_notif) =
+            Worker::launch(&host, config, shared_memory, microvm_snapshot_boundary)
+                .await
+                .context("failed to launch vm worker")?;
 
         let worker = Arc::new(worker);
 
