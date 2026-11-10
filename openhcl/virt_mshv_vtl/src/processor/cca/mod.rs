@@ -994,6 +994,17 @@ impl UhProcessor<'_, CcaBacked> {
 
         let vp = self.vp_index();
 
+        // Release pending-only SPI reservations before rebuilding, so disabled
+        // or rerouted entries do not leave stale ownership behind. Reconciliation
+        // above preserved their pending requests in the software GIC. Active
+        // entries, including active-and-pending entries, retain their ownership.
+        for &lr in &logical_lrs {
+            let lr = IchLrEl2::from(lr);
+            if lr.vintid() >= 32 && lr.state() == IchLrState::PENDING {
+                self.shared.cvm.gic.cancel_spi_reservation(vp, lr.vintid());
+            }
+        }
+
         // Returned pending state is now durable in the software GIC. Retain
         // active entries here and rebuild pending entries from the model below.
         // Pending LR entries may be masked: the virtual CPU interface applies
