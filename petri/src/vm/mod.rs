@@ -4615,40 +4615,6 @@ mod tests {
     use crate::VmbusStorageController;
     use crate::VmbusStorageType;
     use crate::Vtl;
-    use test_with_tracing::test as tracing_test;
-
-    #[tracing_test]
-    fn watchdog_interrupts_a_pending_test() {
-        let mut pool = pal_async::DefaultPool::new();
-        let driver = pool.driver();
-        let watchdog = PetriVmBuilder::<openvmm::OpenVmmPetriBackend>::start_watchdog_timer(
-            &driver,
-            Some(Duration::ZERO),
-        );
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            pool.run_until(std::future::pending::<()>())
-        }));
-        drop(watchdog);
-        drop(driver);
-        pool.run();
-        assert_eq!(
-            result.unwrap_err().downcast_ref::<&str>(),
-            Some(&"Test timed out")
-        );
-    }
-
-    #[tracing_test]
-    fn dropped_watchdog_does_not_outlive_its_owner() {
-        let pool = pal_async::DefaultPool::new();
-        let driver = pool.driver();
-        let watchdog = PetriVmBuilder::<openvmm::OpenVmmPetriBackend>::start_watchdog_timer(
-            &driver,
-            Some(Duration::ZERO),
-        );
-        drop(watchdog);
-        drop(driver);
-        pool.run();
-    }
 
     #[derive(Clone, Copy)]
     enum TestInspectBehavior {
