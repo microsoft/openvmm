@@ -4081,12 +4081,14 @@ dependencies = [
  "corim",
  "crypto",
  "der",
+ "flate2",
  "fs-err",
  "hex",
  "hvdef",
  "igvm",
  "igvm_defs",
  "igvmfilegen_config",
+ "initrd_cpio",
  "loader",
  "loader_defs",
  "memory_range",
@@ -4621,7 +4623,6 @@ dependencies = [
  "object 0.37.3",
  "open_enum",
  "page_table",
- "product_policy",
  "static_assertions",
  "test_with_tracing",
  "thiserror 2.0.16",
@@ -6212,7 +6213,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crypto",
  "embed-resource",
@@ -6236,6 +6237,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test_with_tracing",
  "tracing",
  "tracing-subscriber",
  "vhdx",
@@ -6244,7 +6246,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm_build_info"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "test_with_tracing",
 ]
@@ -6538,6 +6540,7 @@ dependencies = [
  "disklayer_vhdx",
  "fs-err",
  "get_resources",
+ "guid",
  "hypervisor_resources",
  "libc",
  "mesh",
@@ -9848,6 +9851,7 @@ dependencies = [
  "storvsp_resources",
  "string_page_buf",
  "tee_call",
+ "tempfile",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tpm_protocol",
@@ -10269,6 +10273,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "windows 0.62.0",
@@ -10764,18 +10769,13 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "blocking",
- "chipset_device",
  "fs-err",
  "futures",
  "guestmem",
  "inspect",
  "pal_async",
- "parking_lot",
- "pci_core",
  "sparse_mmap",
  "task_control",
- "tempfile",
- "test_with_tracing",
  "tracing",
  "virtio",
  "virtio_resources",
@@ -11874,6 +11874,7 @@ dependencies = [
  "anyhow",
  "chipset_device",
  "closeable_mutex",
+ "cvm_tracing",
  "fs-err",
  "futures",
  "guestmem",
@@ -11904,6 +11905,7 @@ dependencies = [
  "vmotherboard",
  "vpci",
  "vpci_client",
+ "vpci_protocol",
 ]
 
 [[package]]

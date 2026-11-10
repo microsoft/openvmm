@@ -250,6 +250,7 @@ Examples:
 
     /// Restore VM from a snapshot directory (implies file-backed memory from
     /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
+    /// The same boot and device flags used at save time must also be supplied.
     #[clap(
         long,
         value_name = "DIR",

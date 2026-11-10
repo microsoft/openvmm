@@ -18,7 +18,6 @@ mod inspect_internal;
 mod inspect_proc;
 mod livedump;
 mod loader;
-#[cfg(feature = "product_policy")]
 mod measured_product_policy;
 mod nvme_manager;
 mod options;

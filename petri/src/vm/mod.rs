@@ -275,7 +275,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
 }
 
 /// Petri VM configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PetriVmConfig {
     /// The name of the VM
     pub name: String,
@@ -321,7 +321,7 @@ pub struct GuestShare {
 }
 
 /// PCIe NVMe drive configuration.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PcieNvmeDrive {
     /// PCIe root port name (e.g. "s0rc0rp0").
     pub port_name: String,
@@ -332,7 +332,7 @@ pub struct PcieNvmeDrive {
 }
 
 /// PCIe virtio-blk drive configuration.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PcieVirtioBlkDrive {
     /// PCIe root port name (e.g. "s0rc0rp0").
     pub port_name: String,
@@ -2916,7 +2916,7 @@ impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
 }
 
 /// Common processor topology information for the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessorTopology {
     /// The number of virtual processors.
     pub vp_count: u32,
@@ -2971,7 +2971,7 @@ pub enum ApicMode {
 }
 
 /// Common memory configuration information for the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MemoryConfig {
     /// Specifies the amount of memory, in bytes, to assign to the
     /// virtual machine.
@@ -3029,7 +3029,7 @@ impl Default for MemoryConfig {
 }
 
 /// UEFI firmware configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UefiConfig {
     /// Enable secure boot
     pub secure_boot_enabled: bool,
@@ -3106,7 +3106,7 @@ pub enum OpenvmmLogConfig {
 }
 
 /// OpenHCL configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OpenHclConfig {
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
@@ -3185,7 +3185,7 @@ impl Default for OpenHclConfig {
 }
 
 /// TPM configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TpmConfig {
     /// Use ephemeral TPM state (do not persist to VMGS)
     pub no_persistent_secrets: bool,
@@ -3249,7 +3249,7 @@ pub enum PetriHardwareSealingPolicy {
 }
 
 /// Source for the IGVM firmware used to load OpenHCL.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IgvmFirmwareSource {
     /// Load the IGVM from the specified file.
     File(ResolvedArtifact),
@@ -3260,7 +3260,7 @@ pub enum IgvmFirmwareSource {
 /// Firmware to load into the test VM.
 // TODO: remove the guests from the firmware enum so that we don't pass them
 // to the VMM backend after we have already used them generically.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Firmware {
     /// Boot Linux directly, without any firmware.
     LinuxDirect {
@@ -3836,7 +3836,7 @@ impl Firmware {
 
 /// The guest the VM will boot into. A boot drive with the chosen setup
 /// will be automatically configured.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PcatGuest {
     /// Mount a VHD as the boot drive.
     Vhd(BootImageConfig<boot_image_type::Vhd>),
@@ -3859,7 +3859,7 @@ impl PcatGuest {
 
 /// The guest the VM will boot into. A boot drive with the chosen setup
 /// will be automatically configured.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UefiGuest {
     /// Compose an mshv root-partition boot disk from resolved artifacts and a
     /// prepared initrd. Requires x86-64 UEFI without OpenHCL.
@@ -3906,11 +3906,11 @@ pub mod boot_image_type {
     pub trait BootImageType: private::Sealed {}
 
     /// BootImageConfig for a VHD file
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum Vhd {}
 
     /// BootImageConfig for an ISO file
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum Iso {}
 
     impl BootImageType for Vhd {}
@@ -3918,7 +3918,7 @@ pub mod boot_image_type {
 }
 
 /// Configuration information for the boot drive of the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BootImageConfig<T: boot_image_type::BootImageType> {
     /// Artifact source corresponding to the boot media (local or remote).
     artifact: ResolvedArtifactSource,
@@ -4022,6 +4022,15 @@ pub enum Disk {
     Memory(u64),
     /// Memory differencing disk backed by a VHD (local or remote)
     Differencing(DiskPath),
+    /// Differencing disk backed by a VHD (local or remote) that stores writes
+    /// in a SQLite file, so they persist across VM worker processes. The file
+    /// is created on first use.
+    SqliteDifferencing {
+        /// The base disk.
+        base: DiskPath,
+        /// The SQLite file that stores the writes.
+        dbhd_path: PathBuf,
+    },
     /// Persistent VHD
     Persistent(PathBuf),
     /// Disk backed by a temporary VHD

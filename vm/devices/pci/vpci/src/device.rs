@@ -694,7 +694,11 @@ impl<T: RingMem> VpciChannelState<T> {
                             | protocol::ProtocolVersion::FE
                             | protocol::ProtocolVersion::GE
                             | protocol::ProtocolVersion::DT
-                            | protocol::ProtocolVersion::RB => protocol::Status::SUCCESS,
+                            | protocol::ProtocolVersion::RB
+                                if version <= dev.max_protocol_version =>
+                            {
+                                protocol::Status::SUCCESS
+                            }
                             _ => protocol::Status::REVISION_MISMATCH,
                         };
 
@@ -1469,6 +1473,9 @@ pub struct VpciChannel {
     bar_masks: [u32; 6],
     /// NUMA node affinity reported to the guest in `DeviceDescription2`.
     vnode: Option<u16>,
+    /// The newest protocol version the guest may negotiate.
+    #[inspect(debug)]
+    max_protocol_version: protocol::ProtocolVersion,
 
     // The underlying device.
     #[inspect(skip)]
@@ -1603,6 +1610,7 @@ impl VpciChannel {
             hardware_ids,
             bar_masks,
             vnode,
+            max_protocol_version: protocol::ProtocolVersion::RB,
             device: device.clone(),
             bars_set: false,
             interrupts: Vec::new(),
@@ -1612,6 +1620,15 @@ impl VpciChannel {
 
     pub(crate) fn eject_control(&self) -> VpciBusEject {
         self.eject.clone()
+    }
+
+    /// Limits the protocol versions the guest may negotiate so the bus can
+    /// present as an older host. A guest that asks for a newer version is
+    /// told the version is not supported.
+    ///
+    /// * `version` - The newest protocol version to accept.
+    pub fn set_max_protocol_version(&mut self, version: protocol::ProtocolVersion) {
+        self.max_protocol_version = version;
     }
 }
 
@@ -1809,6 +1826,7 @@ mod tests {
             hardware_ids,
             bar_masks,
             vnode: None,
+            max_protocol_version: protocol::ProtocolVersion::RB,
             device,
             bars_set: false,
             interrupts: Vec::new(),

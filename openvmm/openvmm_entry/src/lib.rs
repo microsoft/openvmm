@@ -261,9 +261,6 @@ fn base_chipset_type(opt: &Options) -> BaseChipsetType {
 }
 
 /// Whether the VM gets an ACPI power button.
-///
-/// This reads the boot flags rather than the load mode, which is
-/// `LoadMode::None` when restoring a snapshot.
 fn acpi_power_button_enabled(opt: &Options) -> bool {
     if opt.igvm.is_some() {
         false
@@ -1362,12 +1359,7 @@ async fn vm_config_from_command_line(
         TpmVersionCli::V185 => TpmVersion::V185,
     });
 
-    if opt.restore_snapshot.is_some() {
-        // Snapshot restore: skip firmware loading entirely. Device state and
-        // memory come from the snapshot directory.
-        load_mode = LoadMode::None;
-        with_hv = true;
-    } else if let Some(igvm) = &opt.igvm {
+    if let Some(igvm) = &opt.igvm {
         let cli_args::UefiCli {
             firmware,
             debug: _,
