@@ -289,13 +289,25 @@ enum State {
     AdvancingTime,
     StartUncertain,
     StopUncertain,
+    ResetUncertain,
+    SaveUncertain,
+    RestoreUncertain,
+    AdvanceTimeUncertain,
 }
 
 impl State {
     /// Whether a unit in this state never changes state again: a request to
     /// it was not answered, so its state is unknown.
     fn is_terminal(self) -> bool {
-        matches!(self, State::StartUncertain | State::StopUncertain)
+        matches!(
+            self,
+            State::StartUncertain
+                | State::StopUncertain
+                | State::ResetUncertain
+                | State::SaveUncertain
+                | State::RestoreUncertain
+                | State::AdvanceTimeUncertain
+        )
     }
 }
 
@@ -618,7 +630,9 @@ impl StateUnits {
     /// Resets all the state units.
     ///
     /// Fails without sending a request while a unit is in a terminal state,
-    /// whether or not the units run. Otherwise panics if running.
+    /// whether or not the units run. Otherwise panics if running. A unit whose
+    /// task does not answer its reset request fails the reset, and is left in
+    /// a terminal state.
     pub async fn reset(&mut self) -> Result<(), StateTransitionError> {
         self.check_no_terminal_units("reset")?;
         assert!(!self.running);
@@ -632,6 +646,7 @@ impl StateUnits {
                 State::Stopped,
                 State::Resetting,
                 State::Stopped,
+                State::ResetUncertain,
                 StateRequest::Reset,
                 |_, _| Some(()),
                 |unit| Some(&unit.dependencies),
@@ -646,7 +661,9 @@ impl StateUnits {
     /// Saves all the state units.
     ///
     /// Fails without sending a request while a unit is in a terminal state,
-    /// whether or not the units run. Otherwise panics if running.
+    /// whether or not the units run. Otherwise panics if running. A unit whose
+    /// task does not answer its save request fails the save, and is left in a
+    /// terminal state.
     pub async fn save(&mut self) -> Result<Vec<SavedStateUnit>, StateTransitionError> {
         self.check_no_terminal_units("save")?;
         assert!(!self.running);
@@ -659,6 +676,7 @@ impl StateUnits {
                 State::Stopped,
                 State::Saving,
                 State::Stopped,
+                State::SaveUncertain,
                 StateRequest::Save,
                 |_, _| Some(()),
                 |_| None,
@@ -683,7 +701,9 @@ impl StateUnits {
     /// consume eligibility, and saving restored state before start is supported.
     ///
     /// Fails without sending a request while a unit is in a terminal state,
-    /// whether or not the units run. Otherwise panics if running.
+    /// whether or not the units run. Otherwise panics if running. A unit whose
+    /// task does not answer its restore request fails the restore, and is left
+    /// in a terminal state.
     pub async fn restore(
         &mut self,
         states: Vec<SavedStateUnit>,
@@ -736,6 +756,7 @@ impl StateUnits {
                 State::Stopped,
                 State::Restoring,
                 State::Stopped,
+                State::RestoreUncertain,
                 StateRequest::Restore,
                 |id, _| states_by_id.remove(&id).map(|(_, blob)| blob),
                 |unit| Some(&unit.dependencies),
@@ -778,17 +799,23 @@ impl StateUnits {
     /// then communication with the unit is skipped, but the unit still
     /// transitions through the interim and into the new state, and its
     /// dependencies are still waited on by its dependents.
-    async fn run_op<I: 'static, R: 'static + Send>(
+    ///
+    /// A unit whose task does not answer its request, as when the task has
+    /// exited, fails the operation and is left in `uncertain_state`, a terminal
+    /// state, since its state is unknown. A unit that is removed during the
+    /// operation does not fail it.
+    async fn run_op<I: 'static, T: 'static + Send>(
         &self,
         op: &str,
         unit_ids: Option<&[u64]>,
         old_state: State,
         interim_state: State,
         new_state: State,
-        request: impl Copy + FnOnce(Rpc<I, R>) -> StateRequest,
+        uncertain_state: State,
+        request: impl Copy + FnOnce(FailableRpc<I, T>) -> StateRequest,
         mut input: impl FnMut(u64, &Unit) -> Option<I>,
         mut deps: impl FnMut(&Unit) -> Option<&BTreeSet<u64>>,
-    ) -> Vec<(Arc<str>, R)> {
+    ) -> Vec<(Arc<str>, anyhow::Result<T>)> {
         let mut done = Vec::new();
         let ready_set;
         {
@@ -838,25 +865,20 @@ impl StateUnits {
         .await;
 
         let mut inner = self.inner.lock();
-        let r = results
-            .into_iter()
-            .filter_map(|(name, id, r)| {
-                match r {
-                    Ok(Some(r)) => Some((name, r)),
-                    Ok(None) => None,
-                    Err(err) => {
-                        // If the unit was removed during the operation, then
-                        // ignore the failure. Otherwise, panic because unit
-                        // failure is not recoverable. FUTURE: reconsider this
-                        // position.
-                        if inner.units.contains_key(&id) {
-                            panic!("{:?}", err);
-                        }
-                        None
+        let mut r = Vec::new();
+        for (name, id, result) in results {
+            match result {
+                Ok(Some(result)) => r.push((name, result.map_err(anyhow::Error::from))),
+                Ok(None) => {}
+                Err(err) => {
+                    // A unit removed during the operation does not fail it.
+                    if let Some(unit) = inner.units.get_mut(&id) {
+                        unit.state = uncertain_state;
+                        r.push((name, Err(err.into())));
                     }
                 }
-            })
-            .collect();
+            }
+        }
         for (_, unit) in inner
             .units
             .iter_mut()
@@ -865,10 +887,13 @@ impl StateUnits {
             if unit.state == interim_state {
                 unit.state = new_state;
             } else {
-                assert_eq!(
-                    unit.state, new_state,
+                assert!(
+                    unit.state == new_state || unit.state == uncertain_state,
                     "unit {} in {:?} state, should be {:?} or {:?}",
-                    unit.name, unit.state, interim_state, new_state
+                    unit.name,
+                    unit.state,
+                    interim_state,
+                    new_state
                 );
             }
         }
@@ -1174,6 +1199,7 @@ impl Ready {
 #[cfg(test)]
 mod tests {
     mod inventory;
+    mod lost;
     mod quiesce;
     mod slow;
     mod start;
