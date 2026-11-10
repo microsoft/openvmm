@@ -773,31 +773,25 @@ fn prepare_snapshot_restore(
         expected_memory_size,
         expected_vp_count,
         crate::system_page_size(),
-    )
-    .with_code(Code::FailedPrecondition)?;
+    )?;
 
     let memory_file = fs_err::OpenOptions::new()
         .read(true)
         .write(true)
         .open(source_dir.join("memory.bin"))
-        .context("failed to open snapshot memory.bin")
-        .with_code(Code::FailedPrecondition)?;
+        .context("failed to open snapshot memory.bin")?;
     let file_size = memory_file.metadata()?.len();
     if file_size != manifest.memory_size_bytes {
-        return Err(code_error(
-            Code::FailedPrecondition,
-            format!(
-                "memory.bin size ({file_size} bytes) doesn't match manifest ({} bytes)",
-                manifest.memory_size_bytes,
-            ),
-        ));
+        return Err(anyhow!(Code::FailedPrecondition).context(format!(
+            "memory.bin size ({file_size} bytes) doesn't match manifest ({} bytes)",
+            manifest.memory_size_bytes,
+        )));
     }
 
     let shared_memory =
         openvmm_helpers::shared_memory::file_to_shared_memory_fd(memory_file.into())?;
-    let saved_state = mesh::payload::decode(state_bytes)
-        .context("failed to decode saved state from snapshot")
-        .with_code(Code::FailedPrecondition)?;
+    let saved_state =
+        mesh::payload::decode(state_bytes).context("failed to decode saved state from snapshot")?;
     Ok(PreparedRestore {
         shared_memory,
         saved_state,
@@ -837,12 +831,7 @@ struct VmService {
 
 fn grpc_error(err: anyhow::Error) -> Status {
     let root_cause = err.root_cause();
-    // A code may be attached anywhere in the context chain (see `WithCode`)
-    // or be the root cause.
-    let code = if let Some(code) = err
-        .downcast_ref::<Code>()
-        .or_else(|| root_cause.downcast_ref::<Code>())
-    {
+    let code = if let Some(code) = root_cause.downcast_ref::<Code>() {
         *code
     } else if let Some(reason) = root_cause.downcast_ref::<CancelReason>() {
         match reason {
@@ -857,26 +846,6 @@ fn grpc_error(err: anyhow::Error) -> Status {
         code: code.into(),
         message: format!("{:#}", err),
         details: vec![],
-    }
-}
-
-/// Returns a new error with the given gRPC status code.
-fn code_error(
-    code: Code,
-    message: impl std::fmt::Display + Send + Sync + 'static,
-) -> anyhow::Error {
-    anyhow!("{message}").context(code)
-}
-
-/// Attaches a gRPC status code to an error, which `grpc_error` reports
-/// instead of `UNKNOWN`.
-trait WithCode<T> {
-    fn with_code(self, code: Code) -> anyhow::Result<T>;
-}
-
-impl<T> WithCode<T> for anyhow::Result<T> {
-    fn with_code(self, code: Code) -> anyhow::Result<T> {
-        self.map_err(|err| err.context(code))
     }
 }
 
@@ -1070,40 +1039,38 @@ impl VmService {
     ) -> anyhow::Result<vmservice::RestoreVmResponse> {
         let source_dir = PathBuf::from(request.source_dir);
         if source_dir.as_os_str().is_empty() {
-            return Err(code_error(
-                Code::InvalidArgument,
-                "missing snapshot source directory",
-            ));
+            return Err(anyhow!(Code::InvalidArgument).context("missing snapshot source directory"));
         }
         // An empty expected ID is treated as not provided, so the snapshot ID
         // check is skipped.
         let expected_snapshot_id = request
             .expected_snapshot_id
             .filter(|id| !id.is_empty())
-            .map(|id| id.parse::<Guid>())
-            .transpose()
-            .context("invalid expected_snapshot_id")
-            .with_code(Code::InvalidArgument)?;
+            .map(|id| {
+                id.parse::<Guid>().map_err(|err| {
+                    anyhow!(Code::InvalidArgument)
+                        .context(format!("invalid expected_snapshot_id: {err}"))
+                })
+            })
+            .transpose()?;
         let config = request
             .config
-            .context("missing configuration")
-            .with_code(Code::InvalidArgument)?;
+            .ok_or_else(|| anyhow!(Code::InvalidArgument).context("missing configuration"))?;
         if self.vm.is_some() {
-            return Err(code_error(Code::FailedPrecondition, "VM already created"));
+            return Err(anyhow!(Code::FailedPrecondition).context("VM already created"));
         }
 
         // Read the manifest and check the snapshot ID before doing any
         // expensive VM construction, so a wrong snapshot fails fast. The rest
         // of the manifest is validated against the VM configuration later.
-        let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(&source_dir)
-            .with_code(Code::FailedPrecondition)?;
+        let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(&source_dir)?;
         openvmm_helpers::snapshot::validate_expectations(
             &manifest,
             &openvmm_helpers::snapshot::SnapshotExpectations {
                 snapshot_id: expected_snapshot_id,
             },
         )
-        .with_code(Code::FailedPrecondition)?;
+        .map_err(|err| anyhow!(Code::FailedPrecondition).context(format!("{err:#}")))?;
 
         let snapshot_id = self
             .create_vm_inner(
@@ -1368,10 +1335,8 @@ impl VmService {
             .filter(|path| !path.is_empty())
             .map(PathBuf::from);
         if restore.is_some() && memory_backing_file.is_some() {
-            return Err(code_error(
-                Code::InvalidArgument,
-                "memory backing file cannot be specified when restoring a snapshot",
-            ));
+            return Err(anyhow!(Code::InvalidArgument)
+                .context("memory backing file cannot be specified when restoring a snapshot"));
         }
 
         let (numa, config_mem_size) = if let Some(numa_config) = req_config.numa_config.take() {
@@ -1886,40 +1851,33 @@ impl VmService {
         request: vmservice::SaveVmRequest,
     ) -> anyhow::Result<vmservice::SaveVmResponse> {
         if request.destination_dir.is_empty() {
-            return Err(code_error(
-                Code::InvalidArgument,
-                "missing snapshot destination directory",
-            ));
+            return Err(
+                anyhow!(Code::InvalidArgument).context("missing snapshot destination directory")
+            );
         }
         if !matches!(self.lifecycle, VmLifecycle::Running | VmLifecycle::Paused) {
-            return Err(code_error(
-                Code::FailedPrecondition,
-                "SaveVM requires a running or paused VM",
-            ));
+            return Err(
+                anyhow!(Code::FailedPrecondition).context("SaveVM requires a running or paused VM")
+            );
         }
         // The snapshot shares the VM's memory backing file, so only one
         // snapshot per VM is allowed.
         if self.snapshot_saved {
-            return Err(code_error(
-                Code::FailedPrecondition,
-                "VM already saved; tear down the VM or restore the snapshot",
-            ));
+            return Err(anyhow!(Code::FailedPrecondition)
+                .context("VM already saved; tear down the VM or restore the snapshot"));
         }
         let controller = self
             .vm_controller
             .clone()
-            .context("VM not created yet")
-            .with_code(Code::FailedPrecondition)?;
+            .ok_or_else(|| anyhow!(Code::FailedPrecondition).context("VM not created yet"))?;
         if self.memory_backing_file.is_none() {
-            return Err(code_error(
-                Code::FailedPrecondition,
-                "SaveVM requires MemoryConfig.backing_file_path",
-            ));
+            return Err(anyhow!(Code::FailedPrecondition)
+                .context("SaveVM requires MemoryConfig.backing_file_path"));
         }
         // Check the destination before the controller pauses the VM, so a
         // rejected destination leaves the VM untouched.
         openvmm_helpers::snapshot::check_snapshot_destination(Path::new(&request.destination_dir))
-            .with_code(Code::FailedPrecondition)?;
+            .map_err(|err| anyhow!(Code::FailedPrecondition).context(format!("{err:#}")))?;
 
         // The controller pauses the VM and then writes the snapshot, which
         // hard-links the guest memory backing file. Record that before
@@ -1944,9 +1902,7 @@ impl VmService {
                 // resumed. The prechecks above ensure the controller paused
                 // the VM before failing, so the VM stays paused.
                 self.snapshot_saved = false;
-                Err(err)
-                    .context("snapshot failed")
-                    .with_code(Code::Internal)
+                Err(err).context("snapshot failed")
             }
         }
     }
