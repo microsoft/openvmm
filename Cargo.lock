@@ -6540,6 +6540,7 @@ dependencies = [
  "disklayer_vhdx",
  "fs-err",
  "get_resources",
+ "guid",
  "hypervisor_resources",
  "libc",
  "mesh",
