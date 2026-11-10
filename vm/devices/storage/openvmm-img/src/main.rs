@@ -5,7 +5,7 @@
 //! VHDX virtual disk images.
 //!
 //! `openvmm-img` is a cross-platform frontend for the [`vhdx`] crate. It supports
-//! dynamic, fixed, and differencing VHDX images through seven commands:
+//! dynamic, fixed, and differencing VHDX images through eight commands:
 //!
 //! - `create` creates a new image and records parent locator metadata for
 //!   differencing disks.
@@ -17,6 +17,7 @@
 //! - `check` validates VHDX metadata and follows the complete differencing
 //!   parent chain.
 //! - `replay` replays a dirty VHDX write-ahead log and leaves the image clean.
+//! - `set-parent` updates the locator paths of an existing differencing image.
 //! - `format-options` displays the format-specific options accepted by `create`
 //!   and `convert`.
 //!
@@ -171,6 +172,14 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Update the parent paths of an existing differencing VHDX.
+    SetParent {
+        /// Differencing VHDX image to update. The image must be offline.
+        file: PathBuf,
+        /// New location of the same parent image. Its data-write GUID must match.
+        #[arg(long)]
+        parent: PathBuf,
+    },
     /// Display the options accepted by an image format.
     FormatOptions {
         /// Image format whose options will be displayed. Lists formats when omitted.
@@ -283,6 +292,7 @@ async fn run(command: Command, driver: &impl pal_async::task::Spawn) -> Result<(
         }
         Command::Check { file } => vhdx::check(&file).await,
         Command::Replay { file, dry_run } => vhdx::replay(&file, dry_run, driver).await,
+        Command::SetParent { file, parent } => vhdx::set_parent(&file, &parent, driver).await,
         Command::FormatOptions { format } => print_format_options(format),
     }
 }
@@ -532,6 +542,7 @@ mod tests {
     use ::vhdx::CreateParams;
     use ::vhdx::DiskType as VhdxDiskType;
     use ::vhdx::VhdxParent;
+    use test_with_tracing::test;
 
     #[cfg(unix)]
     #[test]
@@ -750,6 +761,183 @@ mod tests {
                 .absolute_win32_path()
                 .is_some_and(|path| path.starts_with(r"\\?\"))
         );
+    }
+
+    #[pal_async::async_test]
+    async fn set_parent_relocates_parent_and_preserves_descendants(
+        driver: pal_async::DefaultDriver,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        let grandchild_path = directory.path().join("grandchild.vhdx");
+        let moved_directory = directory.path().join("relocated parent");
+        std::fs::create_dir(&moved_directory).unwrap();
+        let moved_path = moved_directory.join("parent-\u{03bb}.vhdx");
+        let size = 4 * 1024 * 1024;
+        create_image(options(parent_path.clone(), size))
+            .await
+            .unwrap();
+        create_image(CreateOptions {
+            disk_type: DiskType::Differencing,
+            parent: Some(parent_path.clone()),
+            ..options(child_path.clone(), size)
+        })
+        .await
+        .unwrap();
+        let payload = BlockingFile::open(&child_path, false).unwrap();
+        let child = VhdxFile::open(payload.clone())
+            .writable(&driver)
+            .await
+            .unwrap();
+        write_vhdx_chunk(&child, &payload, 0, &[0x5a; 4096])
+            .await
+            .unwrap();
+        let child_guid = child.data_write_guid();
+        let child_map = collect_map(&child).await.unwrap();
+        child.close().await.unwrap();
+        create_image(CreateOptions {
+            disk_type: DiskType::Differencing,
+            parent: Some(child_path.clone()),
+            ..options(grandchild_path.clone(), size)
+        })
+        .await
+        .unwrap();
+        let parent_bytes = std::fs::read(&parent_path).unwrap();
+        std::fs::rename(&parent_path, &moved_path).unwrap();
+        assert!(test_check(&child_path).await.is_err());
+        let args = CliArgs::try_parse_from([
+            std::ffi::OsStr::new("openvmm-img"),
+            std::ffi::OsStr::new("set-parent"),
+            child_path.as_os_str(),
+            std::ffi::OsStr::new("--parent"),
+            moved_path.as_os_str(),
+        ])
+        .unwrap();
+        run(args.command, &driver).await.unwrap();
+
+        test_check(&child_path).await.unwrap();
+        test_check(&grandchild_path).await.unwrap();
+        let child = VhdxFile::open(payload.clone()).read_only().await.unwrap();
+        assert_eq!(child.data_write_guid(), child_guid);
+        assert_eq!(collect_map(&child).await.unwrap(), child_map);
+        assert_eq!(
+            read_vhdx_chunk(&child, &payload, 0, 4096).await.unwrap(),
+            [0x5a; 4096]
+        );
+        let locator = child
+            .parent_locator()
+            .await
+            .unwrap()
+            .unwrap()
+            .vhdx_parent()
+            .unwrap();
+        assert_eq!(
+            vhdx::resolve_parent_path(&child_path, &locator),
+            Some(moved_path.clone())
+        );
+        assert_eq!(std::fs::read(moved_path).unwrap(), parent_bytes);
+    }
+
+    #[pal_async::async_test]
+    async fn set_parent_rejects_bad_targets_without_modifying_child(
+        driver: pal_async::DefaultDriver,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        let unrelated_path = directory.path().join("unrelated.vhdx");
+        let missing_path = directory.path().join("missing.vhdx");
+        let size = 4 * 1024 * 1024;
+        create_image(options(parent_path.clone(), size))
+            .await
+            .unwrap();
+        create_image(options(unrelated_path.clone(), size))
+            .await
+            .unwrap();
+        create_image(CreateOptions {
+            disk_type: DiskType::Differencing,
+            parent: Some(parent_path.clone()),
+            ..options(child_path.clone(), size)
+        })
+        .await
+        .unwrap();
+        let before = std::fs::read(&child_path).unwrap();
+        for (target, message) in [
+            (&unrelated_path, "parent linkage mismatch"),
+            (&missing_path, "failed to resolve parent"),
+            (&child_path, "cannot be its own parent"),
+        ] {
+            let error = vhdx::set_parent(&child_path, target, &driver)
+                .await
+                .unwrap_err();
+            assert!(format!("{error:#}").contains(message), "{error:#}");
+            assert_eq!(std::fs::read(&child_path).unwrap(), before);
+        }
+        let before = std::fs::read(&unrelated_path).unwrap();
+        let error = vhdx::set_parent(&unrelated_path, &parent_path, &driver)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("not a differencing VHDX"));
+        assert_eq!(std::fs::read(&unrelated_path).unwrap(), before);
+    }
+
+    #[pal_async::async_test]
+    async fn set_parent_rejects_sector_mismatch_and_dirty_logs(driver: pal_async::DefaultDriver) {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        let incompatible_path = directory.path().join("incompatible.vhdx");
+        let size = 4 * 1024 * 1024;
+        create_image(options(parent_path.clone(), size))
+            .await
+            .unwrap();
+        create_image(CreateOptions {
+            disk_type: DiskType::Differencing,
+            parent: Some(parent_path.clone()),
+            ..options(child_path.clone(), size)
+        })
+        .await
+        .unwrap();
+        let parent = VhdxFile::open(BlockingFile::open(&parent_path, true).unwrap())
+            .read_only()
+            .await
+            .unwrap();
+        ::vhdx::create(
+            &BlockingFile::create(&incompatible_path, false).unwrap(),
+            &mut CreateParams {
+                disk_size: size,
+                logical_sector_size: 4096,
+                data_write_guid: parent.data_write_guid(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let before = std::fs::read(&child_path).unwrap();
+        let error = vhdx::set_parent(&child_path, &incompatible_path, &driver)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("logical sector size"));
+        assert_eq!(std::fs::read(&child_path).unwrap(), before);
+
+        VhdxFile::open(BlockingFile::open(&child_path, false).unwrap())
+            .writable(&driver)
+            .await
+            .unwrap()
+            .abort()
+            .await;
+        let before = std::fs::read(&child_path).unwrap();
+        let error = vhdx::set_parent(&child_path, &parent_path, &driver)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("replay a dirty log"));
+        assert_eq!(std::fs::read(&child_path).unwrap(), before);
+        test_replay(&child_path, false, &driver).await.unwrap();
+        vhdx::set_parent(&child_path, &parent_path, &driver)
+            .await
+            .unwrap();
+        test_check(&child_path).await.unwrap();
     }
 
     #[pal_async::async_test]

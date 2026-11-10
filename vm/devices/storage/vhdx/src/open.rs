@@ -186,6 +186,7 @@ pub struct VhdxFile<F: AsyncFile> {
 
     // Metadata table (kept for on-demand metadata reads).
     metadata_table: MetadataTable,
+    metadata_length: u32,
 
     // Header and write-mode state (async mutex for serialization,
     // AtomicU8 for lock-free hot-path write-mode checks).
@@ -407,6 +408,7 @@ impl<F: 'static + AsyncFile> VhdxFile<F> {
             is_fully_allocated: known.leave_blocks_allocated,
             page_83_data: known.page_83_data,
             metadata_table,
+            metadata_length: regions.metadata_length,
             header_state: HeaderState::new(&header),
             allocation_lock: futures::lock::Mutex::new(eof_state),
             allocation_event: event_listener::Event::new(),
@@ -680,6 +682,50 @@ impl<F: AsyncFile> VhdxFile<F> {
         Ok(Some(crate::locator::ParentLocator::parse(&locator_data)?))
     }
 
+    /// Replace the locator paths of an existing differencing VHDX.
+    ///
+    /// The parent linkage must match the existing locator. This changes only
+    /// file metadata, preserving the data-write GUID and any descendants.
+    /// The update is made durable through the write-ahead log before returning.
+    /// Call [`close()`](Self::close) afterward, including after an error.
+    ///
+    /// Returns an error for read-only or base images, invalid locators,
+    /// mismatched linkage, insufficient metadata space, or I/O failures.
+    pub async fn set_parent(&mut self, parent: &crate::VhdxParent) -> Result<(), VhdxIoError> {
+        if self.read_only {
+            return Err(VhdxIoErrorInner::ReadOnly.into());
+        }
+        let current = self
+            .parent_locator()
+            .await
+            .map_err(VhdxIoErrorInner::ReadParentLocator)?
+            .ok_or(VhdxIoErrorInner::NoParent)?
+            .vhdx_parent()
+            .map_err(VhdxIoErrorInner::InvalidParentLocator)?;
+        if current.linkage() != parent.linkage() {
+            return Err(VhdxIoErrorInner::ParentLinkageMismatch.into());
+        }
+        let data = parent
+            .encode()
+            .map_err(VhdxIoErrorInner::ParentParameters)?;
+
+        // Exclusive access and an empty batch keep the locator (at most
+        // 16 pages) and its table entry in the same WAL transaction.
+        self.flush().await?;
+        self.enable_write_mode(WriteMode::FileWritable)
+            .await
+            .map_err(VhdxIoErrorInner::WriteHeader)?;
+        self.metadata_table
+            .replace_item(
+                &self.cache,
+                &format::PARENT_LOCATOR_ITEM_GUID,
+                &data,
+                self.metadata_length,
+            )
+            .await?;
+        self.flush().await
+    }
+
     /// Whether the disk was created with all blocks pre-allocated (fixed VHD).
     pub fn is_fully_allocated(&self) -> bool {
         self.is_fully_allocated
@@ -783,6 +829,7 @@ mod tests {
     use crate::space::AllocateFlags;
     use crate::tests::support::InMemoryFile;
     use pal_async::async_test;
+    use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
     #[async_test]
@@ -1162,6 +1209,162 @@ mod tests {
             loc.find("absolute_win32_path"),
             Some("C:\\VMs\\parent.vhdx")
         );
+    }
+
+    #[async_test]
+    async fn set_parent_grows_and_shrinks_locator(driver: pal_async::DefaultDriver) {
+        let file = InMemoryFile::new(0);
+        let linkage = Guid::new_random();
+        let mut params = CreateParams {
+            disk_size: format::GB1,
+            disk_type: crate::DiskType::Differencing(crate::VhdxParent::new(linkage)),
+            ..Default::default()
+        };
+        create::create(&file, &mut params).await.unwrap();
+        let mut image = VhdxFile::open(file).writable(&driver).await.unwrap();
+        let data_write_guid = image.data_write_guid();
+        let page83 = image.page_83_data();
+        for path in [
+            "x".repeat(20_000),
+            "parent.vhdx".to_owned(),
+            "y".repeat(10_000),
+        ] {
+            let parent = crate::VhdxParent::new(linkage)
+                .with_relative_path(&path)
+                .unwrap();
+            image.set_parent(&parent).await.unwrap();
+            let locator = image.parent_locator().await.unwrap().unwrap();
+            assert_eq!(
+                locator.vhdx_parent().unwrap().relative_path(),
+                Some(path.as_str())
+            );
+            assert_eq!(image.data_write_guid(), data_write_guid);
+        }
+        let file = image.file.clone();
+        image.close().await.unwrap();
+        let image = VhdxFile::open(InMemoryFile::from_snapshot(file.snapshot()))
+            .read_only()
+            .await
+            .unwrap();
+        assert_eq!(image.data_write_guid(), data_write_guid);
+        assert_eq!(image.page_83_data(), page83);
+        let parent = image
+            .parent_locator()
+            .await
+            .unwrap()
+            .unwrap()
+            .vhdx_parent()
+            .unwrap();
+        assert_eq!(parent.linkage(), linkage);
+        assert_eq!(parent.relative_path(), Some("y".repeat(10_000).as_str()));
+    }
+
+    #[async_test]
+    async fn set_parent_rejects_invalid_updates(driver: pal_async::DefaultDriver) {
+        let file = InMemoryFile::new(0);
+        let linkage = Guid::new_random();
+        create::create(
+            &file,
+            &mut CreateParams {
+                disk_size: format::GB1,
+                disk_type: crate::DiskType::Differencing(crate::VhdxParent::new(linkage)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let original = file.snapshot();
+        let mut read_only = VhdxFile::open(file).read_only().await.unwrap();
+        assert!(matches!(
+            read_only.set_parent(&crate::VhdxParent::new(linkage)).await,
+            Err(VhdxIoError(VhdxIoErrorInner::ReadOnly))
+        ));
+        assert_eq!(read_only.file.snapshot(), original);
+        drop(read_only);
+
+        let mut image = VhdxFile::open(InMemoryFile::from_snapshot(original))
+            .writable(&driver)
+            .await
+            .unwrap();
+        let before = image.file.snapshot();
+        for parent in [
+            crate::VhdxParent::unlinked(),
+            crate::VhdxParent::new(linkage)
+                .with_relative_path("x".repeat(40_000))
+                .unwrap(),
+        ] {
+            assert!(image.set_parent(&parent).await.is_err());
+            assert_eq!(image.file.snapshot(), before);
+        }
+        image.close().await.unwrap();
+
+        let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
+        let mut image = VhdxFile::open(file).writable(&driver).await.unwrap();
+        assert!(matches!(
+            image.set_parent(&crate::VhdxParent::new(linkage)).await,
+            Err(VhdxIoError(VhdxIoErrorInner::NoParent))
+        ));
+        image.close().await.unwrap();
+    }
+
+    #[async_test]
+    async fn set_parent_recovers_after_interrupted_update(driver: pal_async::DefaultDriver) {
+        use crate::tests::support::CrashAfterFlushFile;
+
+        let file = InMemoryFile::new(0);
+        let linkage = Guid::new_random();
+        create::create(
+            &file,
+            &mut CreateParams {
+                disk_size: format::GB1,
+                disk_type: crate::DiskType::Differencing(
+                    crate::VhdxParent::new(linkage)
+                        .with_relative_path("old.vhdx")
+                        .unwrap(),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let original = file.snapshot();
+        let new_path = "new".repeat(8_000);
+        let parent = crate::VhdxParent::new(linkage)
+            .with_relative_path(&new_path)
+            .unwrap();
+        for flushes in 0..=6 {
+            let mut image = VhdxFile::open(CrashAfterFlushFile::new(original.clone()))
+                .writable(&driver)
+                .await
+                .unwrap();
+            let data_write_guid = image.data_write_guid();
+            image.file.arm(flushes);
+            let result = image.set_parent(&parent).await;
+            let snapshot = image.file.durable_snapshot();
+            image.abort().await;
+            let recovered = VhdxFile::open(InMemoryFile::from_snapshot(snapshot))
+                .writable(&driver)
+                .await
+                .unwrap();
+            let locator = recovered
+                .parent_locator()
+                .await
+                .unwrap()
+                .unwrap()
+                .vhdx_parent()
+                .unwrap();
+            let path = locator.relative_path().unwrap();
+            assert!(
+                path == "old.vhdx" || path == new_path,
+                "flush point {flushes}"
+            );
+            if result.is_ok() {
+                assert_eq!(path, new_path);
+            }
+            assert_eq!(locator.linkage(), linkage);
+            assert_eq!(recovered.data_write_guid(), data_write_guid);
+            recovered.close().await.unwrap();
+        }
     }
 
     #[async_test]

@@ -189,49 +189,11 @@ pub(crate) async fn create_image(options: CreateOptions) -> Result<()> {
             );
         }
         params.logical_sector_size = parent_logical_sector_size;
-        let child_directory = options
-            .file
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let absolute_parent = fs_err::canonicalize(&parent_path)
-            .with_context(|| format!("failed to resolve parent {}", parent_path.display()))?;
-        let relative_path =
-            util::relative_path(child_directory, &absolute_parent).and_then(|path| {
-                let path = path
-                    .to_str()
-                    .context("relative parent path is not valid Unicode")?;
-                #[cfg(unix)]
-                anyhow::ensure!(
-                    !path.contains('\\'),
-                    "relative parent path contains a backslash"
-                );
-                Ok(path.replace(std::path::MAIN_SEPARATOR, "\\"))
-            });
-        // On Windows the parent may be on another drive, leaving no relative
-        // path; the absolute path below is then the only locator. Elsewhere
-        // there is no absolute locator, so a relative path is required.
-        #[cfg(windows)]
-        let relative_path = relative_path.ok();
-        #[cfg(not(windows))]
-        let relative_path = Some(relative_path?);
-        let mut vhdx_parent = VhdxParent::new(parent.data_write_guid());
-        if let Some(relative_path) = relative_path {
-            vhdx_parent = vhdx_parent.with_relative_path(relative_path)?;
-        }
-        #[cfg(windows)]
-        let vhdx_parent = {
-            let absolute_path = absolute_parent
-                .to_str()
-                .context("absolute parent path is not valid Unicode")?;
-            let absolute_path = if absolute_path.starts_with(r"\\?\") {
-                absolute_path.to_owned()
-            } else {
-                format!(r"\\?\{}", absolute_path)
-            };
-            vhdx_parent.with_absolute_win32_path(absolute_path)?
-        };
-        params.disk_type = VhdxDiskType::Differencing(vhdx_parent);
+        params.disk_type = VhdxDiskType::Differencing(parent_locator_for_path(
+            &options.file,
+            &parent_path,
+            parent.data_write_guid(),
+        )?);
     }
 
     let file = BlockingFile::create(&options.file, options.force)
@@ -244,6 +206,105 @@ pub(crate) async fn create_image(options: CreateOptions) -> Result<()> {
         options.file.display(),
         util::format_size(options.size)
     );
+    Ok(())
+}
+
+fn parent_locator_for_path(
+    child_path: &Path,
+    parent_path: &Path,
+    linkage: Guid,
+) -> Result<VhdxParent> {
+    let child_directory = child_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let absolute_parent = fs_err::canonicalize(parent_path)
+        .with_context(|| format!("failed to resolve parent {}", parent_path.display()))?;
+    let relative_path = util::relative_path(child_directory, &absolute_parent).and_then(|path| {
+        let path = path
+            .to_str()
+            .context("relative parent path is not valid Unicode")?;
+        #[cfg(unix)]
+        anyhow::ensure!(
+            !path.contains('\\'),
+            "relative parent path contains a backslash"
+        );
+        Ok(path.replace(std::path::MAIN_SEPARATOR, "\\"))
+    });
+    // Windows can use an absolute locator when the parent is on another drive.
+    // Other platforms require a relative locator.
+    #[cfg(windows)]
+    let relative_path = relative_path.ok();
+    #[cfg(not(windows))]
+    let relative_path = Some(relative_path?);
+    let mut parent = VhdxParent::new(linkage);
+    if let Some(relative_path) = relative_path {
+        parent = parent.with_relative_path(relative_path)?;
+    }
+    #[cfg(windows)]
+    {
+        let absolute_path = absolute_parent
+            .to_str()
+            .context("absolute parent path is not valid Unicode")?;
+        let absolute_path = if absolute_path.starts_with(r"\\?\") {
+            absolute_path.to_owned()
+        } else {
+            format!(r"\\?\{}", absolute_path)
+        };
+        parent = parent.with_absolute_win32_path(absolute_path)?;
+    }
+    Ok(parent)
+}
+
+pub(crate) async fn set_parent(
+    path: &Path,
+    parent_path: &Path,
+    driver: &impl pal_async::task::Spawn,
+) -> Result<()> {
+    let child_path = fs_err::canonicalize(path)
+        .with_context(|| format!("failed to resolve {}", path.display()))?;
+    let parent_path = fs_err::canonicalize(parent_path)
+        .with_context(|| format!("failed to resolve parent {}", parent_path.display()))?;
+    anyhow::ensure!(
+        child_path != parent_path,
+        "an image cannot be its own parent"
+    );
+
+    // Validate before a writable open, which can replay the log and modifies
+    // the headers. A missing or unrelated parent must not change the child.
+    let child = VhdxFile::open(BlockingFile::open(&child_path, true)?)
+        .read_only()
+        .await
+        .context("failed to open child VHDX; replay a dirty log before updating its parent")?;
+    let current = child
+        .parent_locator()
+        .await?
+        .context("image is not a differencing VHDX")?
+        .vhdx_parent()?;
+    let parent = VhdxFile::open(BlockingFile::open(&parent_path, true)?)
+        .read_only()
+        .await
+        .context("failed to read parent VHDX")?;
+    anyhow::ensure!(
+        current.linkage() == parent.data_write_guid(),
+        "parent linkage mismatch; only relocation of the same parent is supported"
+    );
+    anyhow::ensure!(
+        child.logical_sector_size() == parent.logical_sector_size(),
+        "child logical sector size must match parent logical sector size"
+    );
+    let locator = parent_locator_for_path(&child_path, &parent_path, parent.data_write_guid())?;
+    drop(child);
+
+    let mut child = VhdxFile::open(BlockingFile::open(&child_path, false)?)
+        .writable(driver)
+        .await
+        .context("failed to open child VHDX for update")?;
+    let result = child.set_parent(&locator).await;
+    let close_result = child.close().await;
+    result.context("failed to update parent locator")?;
+    close_result.context("failed to close child VHDX")?;
+    println!("Updated parent: {}", path.display());
     Ok(())
 }
 
