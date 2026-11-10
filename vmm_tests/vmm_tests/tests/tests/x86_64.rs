@@ -218,6 +218,23 @@ async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(
         .with_openhcl_command_line("OPENHCL_SIDECAR=log")
         .run()
         .await?;
+
+    let vps = vm.inspect_openhcl("vm/partition/vp", Some(3), None).await?;
+    let vps: serde_json::Value = serde_json::from_str(&format!("{}", vps.json()))?;
+    let vps = vps.as_object().unwrap();
+    // A VP retains its sidecar exit reason after migrating into Linux.
+    anyhow::ensure!(
+        vps.values().any(|vp| {
+            vp.get("sidecar").and_then(serde_json::Value::as_bool) == Some(true)
+                || vp
+                    .get("sidecar_exit_reason")
+                    .and_then(|reason| reason.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+        }),
+        "no VP ran in sidecar: {vps:?}"
+    );
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
