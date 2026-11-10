@@ -13,25 +13,7 @@ use core::cell::UnsafeCell;
 use core::ops::Deref;
 use core::ops::DerefMut;
 
-/// A wrapper around a value that implements `Sync` even if `T` does not
-/// implement `Sync`.
-///
-/// This is only safe to use in a single-threaded environment. Do not compile
-/// this type into a multi-threaded environment.
-pub struct SingleThreaded<T>(pub T);
-
-// SAFETY: we must mark this as Sync so that it can be `static`. It is
-// not actually necessarily Sync, so this can only be used in a
-// single-threaded environment.
-unsafe impl<T> Sync for SingleThreaded<T> {}
-
-impl<T> Deref for SingleThreaded<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
+pub use minimal_rt::single_threaded::SingleThreaded;
 
 /// A reference returned by [`off_stack`].
 pub struct OffStackRef<'a, T>(&'a mut T, BorrowRef<'a>);

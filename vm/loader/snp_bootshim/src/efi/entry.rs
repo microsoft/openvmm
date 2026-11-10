@@ -34,13 +34,14 @@ use crate::memory_map::AllocateType;
 use crate::memory_map::Error;
 use crate::memory_map::MemoryMap;
 use crate::terminate;
-use core::cell::Cell;
-use core::cell::UnsafeCell;
+use core::cell::RefCell;
+use core::cell::RefMut;
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use core::ptr::with_exposed_provenance;
 use core::ptr::with_exposed_provenance_mut;
 use guid::Guid;
+use minimal_rt::single_threaded::SingleThreaded;
 use uefi_specs::uefi::boot::EFI_BOOT_SERVICES_COUNT;
 use uefi_specs::uefi::boot::EFI_MEMORY_DESCRIPTOR_VERSION;
 use uefi_specs::uefi::boot::EfiMemoryDescriptor;
@@ -53,69 +54,46 @@ use zerocopy::IntoBytes;
 
 const DESCRIPTOR_SIZE: usize = size_of::<EfiMemoryDescriptor>();
 
-/// Data that only the boot processor uses.
-///
-/// The shim and the EFI stub run on one processor with interrupts disabled,
-/// so there is no concurrent access. [`BootCell::with`] gives out one mutable
-/// reference at a time, and stops the guest if a borrow is reentered. The stub
-/// reads the tables only through raw pointers, between service calls.
-struct BootCell<T> {
-    value: UnsafeCell<T>,
-    borrowed: Cell<bool>,
-}
-
-// SAFETY: Only the boot processor uses the shim's statics, with interrupts
-// disabled.
-unsafe impl<T> Sync for BootCell<T> {}
-
-impl<T> BootCell<T> {
-    const fn new(value: T) -> Self {
-        Self {
-            value: UnsafeCell::new(value),
-            borrowed: Cell::new(false),
-        }
-    }
-
-    /// Returns the address of the value, for the stub to use.
-    fn address(&self) -> u64 {
-        self.value.get().expose_provenance() as u64
-    }
-
-    fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        if self.borrowed.replace(true) {
-            terminate(Failure::EfiReentry);
-        }
-        // SAFETY: The borrow flag makes this the only reference, and no other
-        // processor or interrupt handler uses the value.
-        let result = f(unsafe { &mut *self.value.get() });
-        self.borrowed.set(false);
-        result
-    }
-}
+// The shim and the EFI stub run on one processor with interrupts disabled,
+// so `SingleThreaded` is sound. The stub reads the tables only through raw
+// pointers, between service calls.
 
 /// The tables start zeroed. `Efi` is `FromZeros`, so that is a valid value.
-static EFI: BootCell<MaybeUninit<Efi>> = BootCell::new(MaybeUninit::zeroed());
-static STATE: BootCell<Option<State>> = BootCell::new(None);
+static EFI: SingleThreaded<RefCell<MaybeUninit<Efi>>> =
+    SingleThreaded(RefCell::new(MaybeUninit::zeroed()));
+static STATE: SingleThreaded<RefCell<Option<State>>> = SingleThreaded(RefCell::new(None));
+
+/// Borrows a static. A nested borrow stops the guest instead of panicking.
+fn borrow<T>(cell: &RefCell<T>) -> RefMut<'_, T> {
+    cell.try_borrow_mut()
+        .unwrap_or_else(|_| terminate(Failure::EfiReentry))
+}
+
+/// Returns the address of the tables, for the stub to use.
+fn efi_address() -> u64 {
+    EFI.as_ptr().expose_provenance() as u64
+}
 
 fn with_efi<R>(f: impl FnOnce(&mut Efi) -> R) -> R {
+    let mut efi = borrow(&EFI);
     // SAFETY: `EFI` starts zeroed, and `Efi` derives `FromZeros`.
-    EFI.with(|efi| f(unsafe { efi.assume_init_mut() }))
+    f(unsafe { efi.assume_init_mut() })
 }
 
 /// Runs `f` with the boot-services state, which `enter_linux` sets.
 fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
-    STATE.with(|state| match state {
+    match &mut *borrow(&STATE) {
         Some(state) => f(state),
         None => terminate(Failure::EfiStub),
-    })
+    }
 }
 
 /// Each handle is the address of the protocol that it carries, so a handle is
 /// unique and needs no handle table.
 fn handles() -> Handles {
     Handles {
-        image: field_address!(EFI.address(), loaded_image),
-        initrd: field_address!(EFI.address(), initrd_path),
+        image: field_address!(efi_address(), loaded_image),
+        initrd: field_address!(efi_address(), initrd_path),
     }
 }
 
@@ -329,7 +307,7 @@ extern "efiapi" fn handle_protocol(
     // SAFETY: The caller passes a valid pointer.
     let protocol = unsafe { protocol.read_unaligned() };
     let has_initrd = with_state(|state| state.has_initrd());
-    let base = EFI.address();
+    let base = efi_address();
     let found = match services::find_interface(&handles(), has_initrd, handle as u64, protocol) {
         Some(Interface::LoadedImage) => field_address!(base, loaded_image),
         Some(Interface::LoadFile2) => field_address!(base, load_file2),
@@ -574,8 +552,8 @@ fn handlers() -> Handlers {
 
 /// Sets the boot-services state and builds the tables.
 fn install(map: MemoryMap, boot: &Boot) {
-    STATE.with(|state| *state = Some(State::new(map, boot.initrd, boot.initrd_size)));
-    let base = EFI.address();
+    *borrow(&STATE) = Some(State::new(map, boot.initrd, boot.initrd_size));
+    let base = efi_address();
     with_efi(|efi| efi.build(base, boot, &handlers()));
 }
 
@@ -585,7 +563,7 @@ fn install(map: MemoryMap, boot: &Boot) {
 pub fn enter_linux(map: MemoryMap, boot: &Boot) -> ! {
     install(map, boot);
     let image_handle = handles().image;
-    let system_table = field_address!(EFI.address(), system_table);
+    let system_table = field_address!(efi_address(), system_table);
     // SAFETY: The kernel image is measured and accepted, its entry point
     // follows the UEFI image-entry ABI, and the stack is accepted memory that
     // nothing else uses. The previous RSP is saved on the new stack and
@@ -663,9 +641,6 @@ mod tests {
         fn new() -> Self {
             static LOCK: Mutex<()> = Mutex::new(());
             let lock = LOCK.lock();
-            // A test that stopped the guest can leave a borrow behind.
-            EFI.borrowed.set(false);
-            STATE.borrowed.set(false);
 
             let mut ram = vec![Page([0; EFI_PAGE_SIZE as usize]); PAGES].into_boxed_slice();
             ram[0].0[..INITRD.len()].copy_from_slice(INITRD);
@@ -860,7 +835,7 @@ mod tests {
         );
         assert_eq!(
             load_file2.addr() as u64,
-            field_address!(EFI.address(), load_file2)
+            field_address!(efi_address(), load_file2)
         );
 
         let mut size = 0;
@@ -980,7 +955,7 @@ mod tests {
         let allocate = with_efi(|efi| {
             assert_eq!(
                 efi.system_table.boot_services,
-                field_address!(EFI.address(), boot_services)
+                field_address!(efi_address(), boot_services)
             );
             efi.boot_services.functions[boot_service_index::ALLOCATE_PAGES]
         });
