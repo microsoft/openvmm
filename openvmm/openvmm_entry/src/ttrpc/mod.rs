@@ -2408,6 +2408,7 @@ async fn build_pcie_topology(
             node,
             root_ports,
             iommu,
+            legacy_pci_config_io,
         } = rc;
         let mut ports = Vec::new();
         for root_port in root_ports {
@@ -2439,7 +2440,7 @@ async fn build_pcie_topology(
         let legacy_pci_config_io = enable_legacy_pci_config_io
             && segment == 0
             && start_bus == 0
-            && end_bus == u32::from(u8::MAX);
+            && legacy_pci_config_io.unwrap_or(end_bus == u32::from(u8::MAX));
         legacy_pci_config_io_for_pcie |= legacy_pci_config_io;
         root_complexes.push(PcieRootComplexConfig {
             index: index as u32,

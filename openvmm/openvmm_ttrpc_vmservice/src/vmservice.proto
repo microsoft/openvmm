@@ -673,6 +673,8 @@ message PcieRootComplex {
     repeated PciePort root_ports = 11;
     // Guest-visible IOMMU covering this root complex. Absent => none.
     PcieIommuConfig iommu = 12;
+    // Claim legacy x86 PCI config ports CF8/CFC. Absent => only if buses 0-255.
+    optional bool legacy_pci_config_io = 13;
 }
 
 // Guest-visible IOMMU selection for a PCIe root complex.
