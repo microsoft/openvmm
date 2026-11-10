@@ -27,7 +27,8 @@ pub(crate) const METADATA_TAG: u8 = 1;
 
 /// In-memory representation of the validated metadata table.
 pub(crate) struct MetadataTable {
-    /// The validated entries in on-disk table order.
+    /// The validated entries, used for lookup and free-space scanning.
+    /// Kept in on-disk table order so updates target the original table slot.
     entries: Vec<MetadataTableEntry>,
 }
 

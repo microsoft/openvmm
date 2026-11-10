@@ -46,7 +46,7 @@ pub enum VhdxParentError {
     /// The required parent linkage entry is absent.
     #[error("VHDX parent locator has no parent linkage GUID")]
     MissingParentLinkage,
-    /// A nonempty or invalid alternative linkage entry is present.
+    /// A nonzero or malformed alternative linkage GUID is present.
     #[error("VHDX parent locator contains unsupported parent_linkage2")]
     AlternativeParentLinkage,
     /// The parent linkage entry is not a GUID.
