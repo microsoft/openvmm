@@ -285,8 +285,8 @@ pub enum InvalidFormatReason {
     #[error("parent locator strings cannot contain NUL characters")]
     ParentLocatorContainsNull,
 
-    /// Parent locator metadata exceeded the VHDX hosting-sector limit.
-    #[error("parent locator metadata exceeds the 64 KiB hosting-sector limit")]
+    /// Parent locator metadata exceeded supported size or encoding limits.
+    #[error("parent locator metadata exceeds supported size limits")]
     ParentLocatorTooLarge,
 
     /// The block size / logical sector size combination is invalid (chunk ratio is zero).

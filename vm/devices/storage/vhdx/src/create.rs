@@ -1122,23 +1122,31 @@ mod tests {
     #[async_test]
     async fn create_rejects_oversized_parent_locator() {
         let original = vec![0xa5; 4096];
-        let file = InMemoryFile::from_snapshot(original.clone());
-        let parent = VhdxParent::unlinked()
-            .with_relative_path("a".repeat(format::MAX_HOSTING_SECTOR_SIZE as usize))
-            .unwrap();
-        let mut params = CreateParams {
-            disk_size: format::GB1,
-            disk_type: DiskType::Differencing(parent),
-            ..Default::default()
-        };
+        for parent in [
+            VhdxParent::unlinked()
+                .with_relative_path("a".repeat(format::MAX_HOSTING_SECTOR_SIZE as usize))
+                .unwrap(),
+            VhdxParent::unlinked()
+                .with_relative_path("r".repeat(32_000))
+                .unwrap()
+                .with_absolute_win32_path("a".repeat(32_000))
+                .unwrap(),
+        ] {
+            let file = InMemoryFile::from_snapshot(original.clone());
+            let mut params = CreateParams {
+                disk_size: format::GB1,
+                disk_type: DiskType::Differencing(parent),
+                ..Default::default()
+            };
 
-        assert!(matches!(
-            create(&file, &mut params).await,
-            Err(CreateError::InvalidFormat(
-                InvalidFormatReason::ParentLocatorTooLarge
-            ))
-        ));
-        assert_eq!(file.snapshot(), original);
+            assert!(matches!(
+                create(&file, &mut params).await,
+                Err(CreateError::InvalidFormat(
+                    InvalidFormatReason::ParentLocatorTooLarge
+                ))
+            ));
+            assert_eq!(file.snapshot(), original);
+        }
     }
 
     #[async_test]
