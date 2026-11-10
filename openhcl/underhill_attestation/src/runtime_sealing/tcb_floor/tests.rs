@@ -149,8 +149,8 @@ impl TeeCallGetDerivedKey for MutableTee {
             }
         }
         context.push(u8::from(policy.mix_measurement));
-        // Deliberately permit old SVNs: the floor, not this mock's key service,
-        // must prevent rollback and reject stale candidate headers.
+        // Deliberately permit old SVNs: SNP's floor and both TEEs' candidate
+        // checks, not this mock's key service, must enforce their policies.
         Ok(
             crypto::hmac::hmac(&state.secret, &context, crypto::HashAlgorithm::Sha256)
                 .unwrap()
@@ -392,7 +392,7 @@ fn restore_checks_policy_and_capabilities_without_io() {
 }
 
 #[test]
-fn restored_floor_preserves_ratchet_after_failures_and_rejects_older_restore() {
+fn restored_snapshot_preserves_snp_ratchet_but_allows_lower_tdx() {
     for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
         let config = config();
         let initial = RuntimeTcbFloor::new(&tee, &config).unwrap();
@@ -432,10 +432,14 @@ fn restored_floor_preserves_ratchet_after_failures_and_rejects_older_restore() {
         ));
         assert_eq!(floor.save(), saved_high);
         initial.check_restored_successor(&floor).unwrap();
-        assert!(matches!(
-            floor.check_restored_successor(&initial),
-            Err(Error(ErrorInner::TcbLowered))
-        ));
+        if tee.is_tdx {
+            floor.check_restored_successor(&initial).unwrap();
+        } else {
+            assert!(matches!(
+                floor.check_restored_successor(&initial),
+                Err(Error(ErrorInner::TcbLowered))
+            ));
+        }
         assert_eq!(floor.save(), saved_high);
         tee.state.lock().fail_report = true;
         assert!(matches!(
@@ -445,14 +449,28 @@ fn restored_floor_preserves_ratchet_after_failures_and_rejects_older_restore() {
         tee.state.lock().fail_report = false;
         tee.state.lock().fail_derivation = false;
         tee.set_svn(low);
-        assert!(matches!(
-            floor.create_protector(&tee, &config, &DEK),
-            Err(Error(ErrorInner::TcbLowered))
-        ));
+        if tee.is_tdx {
+            let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
+            assert!(svn_equal(header_svn(&protector), low));
+            assert!(
+                floor
+                    .verify_protector(&tee, &config, &protector, &DEK)
+                    .unwrap()
+            );
+            assert_floor(&floor, low);
+        } else {
+            assert!(matches!(
+                floor.create_protector(&tee, &config, &DEK),
+                Err(Error(ErrorInner::TcbLowered))
+            ));
+        }
         tee.set_svn(high);
         assert!(!floor.verify_protector(&tee, &config, &[], &DEK).unwrap());
         assert_eq!(floor.save(), saved_high);
-        assert_eq!(tee.state.lock().derivations.len(), 1);
+        assert_eq!(
+            tee.state.lock().derivations.len(),
+            if tee.is_tdx { 3 } else { 1 }
+        );
     }
 }
 
@@ -482,7 +500,7 @@ fn restored_unknown_snp_domains_remain_equality_only() {
 }
 
 #[test]
-fn restored_floor_rejects_changed_comparison_domains() {
+fn restored_snapshot_rejects_changed_snp_domains_but_allows_tdx_module_changes() {
     let tees = [
         MutableTee::snp(2, 0x19, 0, BASE_TCB),
         MutableTee::snp(3, 0x19, 0, BASE_TCB),
@@ -518,21 +536,29 @@ fn restored_floor_rejects_changed_comparison_domains() {
         }
         let changed =
             RuntimeTcbFloor::restore(protobuf_roundtrip(changed), &tee, &config()).unwrap();
-        assert!(matches!(
-            floor.check_restored_successor(&changed),
-            Err(Error(ErrorInner::TcbIncompatible))
-        ));
-        assert!(matches!(
-            floor.create_protector(&tee, &config(), &DEK),
-            Err(Error(ErrorInner::TcbIncompatible))
-        ));
-        assert_eq!(floor.save(), saved);
-        assert!(tee.state.lock().derivations.is_empty());
+        if tee.is_tdx {
+            floor.check_restored_successor(&changed).unwrap();
+            let protector = floor.create_protector(&tee, &config(), &DEK).unwrap();
+            assert!(svn_equal(header_svn(&protector), changed.snapshot.svn));
+            assert_eq!(floor.save(), changed.save());
+            assert_eq!(tee.state.lock().derivations.len(), 1);
+        } else {
+            assert!(matches!(
+                floor.check_restored_successor(&changed),
+                Err(Error(ErrorInner::TcbIncompatible))
+            ));
+            assert!(matches!(
+                floor.create_protector(&tee, &config(), &DEK),
+                Err(Error(ErrorInner::TcbIncompatible))
+            ));
+            assert_eq!(floor.save(), saved);
+            assert!(tee.state.lock().derivations.is_empty());
+        }
     }
 }
 
 #[test]
-fn restored_floor_keeps_reserved_bytes_in_comparisons() {
+fn restored_snapshot_compares_reserved_bytes_only_for_snp() {
     for tee in [
         MutableTee::snp(3, 0x19, 0, [2; 8]),
         MutableTee::snp(5, 0x1a, 0xc0, [2; 8]),
@@ -554,17 +580,25 @@ fn restored_floor_keeps_reserved_bytes_in_comparisons() {
         }
         let changed =
             RuntimeTcbFloor::restore(protobuf_roundtrip(changed), &tee, &config()).unwrap();
-        assert!(matches!(
-            floor.check_restored_successor(&changed),
-            Err(Error(ErrorInner::TcbIncompatible))
-        ));
         tee.set_svn(changed.snapshot.svn);
-        assert!(matches!(
-            floor.create_protector(&tee, &config(), &DEK),
-            Err(Error(ErrorInner::TcbIncompatible))
-        ));
-        assert_eq!(floor.save(), saved);
-        assert!(tee.state.lock().derivations.is_empty());
+        if tee.is_tdx {
+            floor.check_restored_successor(&changed).unwrap();
+            let protector = floor.create_protector(&tee, &config(), &DEK).unwrap();
+            assert!(svn_equal(header_svn(&protector), changed.snapshot.svn));
+            assert_eq!(floor.save(), changed.save());
+            assert_eq!(tee.state.lock().derivations.len(), 1);
+        } else {
+            assert!(matches!(
+                floor.check_restored_successor(&changed),
+                Err(Error(ErrorInner::TcbIncompatible))
+            ));
+            assert!(matches!(
+                floor.create_protector(&tee, &config(), &DEK),
+                Err(Error(ErrorInner::TcbIncompatible))
+            ));
+            assert_eq!(floor.save(), saved);
+            assert!(tee.state.lock().derivations.is_empty());
+        }
     }
 }
 
@@ -612,6 +646,45 @@ fn boot_collection_ratchets_across_attempts_and_equal_reports() {
         assert_floor(&floor, state.svn.unwrap());
         assert_eq!(state.report_calls, 4);
         assert!(state.derivations.is_empty());
+    }
+}
+
+#[test]
+fn tdx_boot_collection_accepts_lower_svn_and_changed_module() {
+    let tee = MutableTee::tdx();
+    let mut collector = BootTcbFloor::new(Some(&tee), &config());
+    for svn in [
+        TDX_SVN,
+        KeyDerivationSvn::Tdx {
+            tee_tcb_svn: [0; 16],
+            cpu_svn: [1; 16],
+        },
+        TDX_SVN,
+    ] {
+        tee.set_svn(svn);
+        let report = tee.get_attestation_report(&[0; REPORT_DATA_SIZE]).unwrap();
+        collector.observe(&tee, &report);
+        assert!(!collector.invalid);
+        assert_floor(collector.floor.as_ref().unwrap(), svn);
+    }
+    assert_floor(&collector.finish().unwrap(), TDX_SVN);
+    assert!(tee.state.lock().derivations.is_empty());
+}
+
+#[test]
+fn tdx_boot_collection_still_rejects_missing_or_wrong_tee_svn() {
+    for svn in [None, Some(snp_svn(BASE_TCB))] {
+        let tee = MutableTee::tdx();
+        let good = tee.get_attestation_report(&[0; REPORT_DATA_SIZE]).unwrap();
+        let mut collector = BootTcbFloor::new(Some(&tee), &config());
+        collector.observe(&tee, &good);
+        let mut bad = tee.get_attestation_report(&[0; REPORT_DATA_SIZE]).unwrap();
+        bad.key_derivation_svn = svn;
+        collector.observe(&tee, &bad);
+        assert!(collector.invalid);
+        collector.observe(&tee, &good);
+        assert!(collector.finish().is_none());
+        assert!(tee.state.lock().derivations.is_empty());
     }
 }
 
@@ -1085,15 +1158,10 @@ fn tdx_equal_svns_are_accepted_for_both_module_modes() {
 }
 
 #[test]
-fn tdx_each_component_upgrade_ratchets_and_subsequent_downgrade_is_rejected() {
+fn tdx_each_svn_byte_can_increase_and_decrease() {
     for module_id in [0, 1] {
         for change_cpu in [false, true] {
             for index in 0..16 {
-                // TEE bytes 0 and 2 are ordered; byte 1 is the module identity
-                // and bytes 3..16 are reserved. CPU SVN orders all 16 bytes.
-                if !change_cpu && !matches!(index, 0 | 2) {
-                    continue;
-                }
                 let mut tee_tcb_svn = [3; 16];
                 tee_tcb_svn[1] = module_id;
                 let mut cpu_svn = [5; 16];
@@ -1125,19 +1193,23 @@ fn tdx_each_component_upgrade_ratchets_and_subsequent_downgrade_is_rejected() {
                         .unwrap()
                 );
                 tee.set_svn(base);
-                assert!(matches!(
-                    floor.create_protector(&tee, &config, &DEK),
-                    Err(Error(ErrorInner::TcbLowered))
-                ));
-                assert!(matches!(
-                    floor.verify_protector(&tee, &config, &protector, &DEK),
-                    Err(Error(ErrorInner::TcbLowered))
-                ));
-                assert_floor(&floor, next);
+                assert!(
+                    !floor
+                        .verify_protector(&tee, &config, &protector, &DEK)
+                        .unwrap()
+                );
+                let replacement = floor.create_protector(&tee, &config, &DEK).unwrap();
+                assert!(svn_equal(header_svn(&replacement), base));
+                assert!(
+                    floor
+                        .verify_protector(&tee, &config, &replacement, &DEK)
+                        .unwrap()
+                );
+                assert_floor(&floor, base);
                 let state = tee.state.lock();
-                assert_eq!(state.derivations.len(), 2);
-                for policy in &state.derivations {
-                    assert!(svn_equal(policy.svn, next));
+                assert_eq!(state.derivations.len(), 4);
+                for (policy, expected) in state.derivations.iter().zip([next, next, base, base]) {
+                    assert!(svn_equal(policy.svn, expected));
                 }
             }
         }
@@ -1145,11 +1217,11 @@ fn tdx_each_component_upgrade_ratchets_and_subsequent_downgrade_is_rejected() {
 }
 
 #[test]
-fn tdx_reserved_changes_are_incompatible_without_ratcheting_or_derivation() {
+fn tdx_reserved_changes_use_the_new_report_without_historical_comparison() {
     for module_id in [0, 1] {
         for index in 3..16 {
-            // Explicit wire offsets independently check the typed ABI parser.
-            // Reject changes in either direction, including zero -> nonzero.
+            // Preserve raw report metadata in either direction, including
+            // zero -> nonzero, rather than imposing a cross-platform ordering.
             for (reserved, changed) in [(0, 1), (3, 4), (3, 2)] {
                 for upgrade_components in [false, true] {
                     let mut tee_tcb_svn = [reserved; 16];
@@ -1171,23 +1243,26 @@ fn tdx_reserved_changes_are_incompatible_without_ratcheting_or_derivation() {
                         tee_tcb_svn[0] += 1;
                         tee_tcb_svn[2] += 1;
                     }
-                    tee.set_svn(KeyDerivationSvn::Tdx {
+                    let next = KeyDerivationSvn::Tdx {
                         tee_tcb_svn,
                         cpu_svn: [if upgrade_components { 6 } else { 5 }; 16],
-                    });
-                    assert!(matches!(
-                        floor.create_protector(&tee, &config, &DEK),
-                        Err(Error(ErrorInner::TcbIncompatible))
-                    ));
-                    assert!(matches!(
-                        floor.verify_protector(&tee, &config, &candidate, &DEK),
-                        Err(Error(ErrorInner::TcbIncompatible))
-                    ));
-                    assert_floor(&floor, base);
-                    assert_eq!(tee.state.lock().derivations.len(), 1);
+                    };
+                    tee.set_svn(next);
+                    let replacement = floor.create_protector(&tee, &config, &DEK).unwrap();
+                    assert!(svn_equal(header_svn(&replacement), next));
+                    assert!(
+                        !floor
+                            .verify_protector(&tee, &config, &candidate, &DEK)
+                            .unwrap()
+                    );
+                    assert!(
+                        floor
+                            .verify_protector(&tee, &config, &replacement, &DEK)
+                            .unwrap()
+                    );
+                    assert_floor(&floor, next);
+                    assert_eq!(tee.state.lock().derivations.len(), 3);
 
-                    // Rejection must not poison the floor or prevent recovery
-                    // once the original compatible observation is restored.
                     tee.set_svn(base);
                     assert!(
                         floor
@@ -1195,7 +1270,7 @@ fn tdx_reserved_changes_are_incompatible_without_ratcheting_or_derivation() {
                             .unwrap()
                     );
                     assert_floor(&floor, base);
-                    assert_eq!(tee.state.lock().derivations.len(), 2);
+                    assert_eq!(tee.state.lock().derivations.len(), 4);
                 }
             }
         }
@@ -1203,7 +1278,7 @@ fn tdx_reserved_changes_are_incompatible_without_ratcheting_or_derivation() {
 }
 
 #[test]
-fn tdx_incomparable_components_rejected_despite_lexicographically_greater_svn() {
+fn tdx_incomparable_components_are_accepted() {
     for module_id in [0, 1] {
         for change_cpu in [false, true] {
             for lowered_index in 1..16 {
@@ -1231,27 +1306,27 @@ fn tdx_incomparable_components_rejected_despite_lexicographically_greater_svn() 
                 // establishes a component-wise successor.
                 bytes[0] += 1;
                 bytes[lowered_index] -= 1;
-                tee.set_svn(KeyDerivationSvn::Tdx {
+                let next = KeyDerivationSvn::Tdx {
                     tee_tcb_svn,
                     cpu_svn,
-                });
-                assert!(matches!(
-                    floor.create_protector(&tee, &config, &DEK),
-                    Err(Error(ErrorInner::TcbLowered))
-                ));
-                assert!(matches!(
-                    floor.verify_protector(&tee, &config, &[], &DEK),
-                    Err(Error(ErrorInner::TcbLowered))
-                ));
-                assert_floor(&floor, base);
-                assert!(tee.state.lock().derivations.is_empty());
+                };
+                tee.set_svn(next);
+                let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
+                assert!(svn_equal(header_svn(&protector), next));
+                assert!(
+                    floor
+                        .verify_protector(&tee, &config, &protector, &DEK)
+                        .unwrap()
+                );
+                assert_floor(&floor, next);
+                assert_eq!(tee.state.lock().derivations.len(), 2);
             }
         }
     }
 }
 
 #[test]
-fn tdx_module_identity_changes_rejected_even_with_higher_components() {
+fn tdx_module_identity_changes_are_accepted() {
     for (source_id, destination_id) in [(0, 1), (1, 0), (1, 2)] {
         let mut tee_tcb_svn = [3; 16];
         tee_tcb_svn[1] = source_id;
@@ -1266,25 +1341,25 @@ fn tdx_module_identity_changes_rejected_even_with_higher_components() {
         tee_tcb_svn[0] = 4;
         tee_tcb_svn[2] = 4;
         tee_tcb_svn[1] = destination_id;
-        tee.set_svn(KeyDerivationSvn::Tdx {
+        let next = KeyDerivationSvn::Tdx {
             tee_tcb_svn,
             cpu_svn: [6; 16],
-        });
-        assert!(matches!(
-            floor.create_protector(&tee, &config, &DEK),
-            Err(Error(ErrorInner::TcbIncompatible))
-        ));
-        assert!(matches!(
-            floor.verify_protector(&tee, &config, &[], &DEK),
-            Err(Error(ErrorInner::TcbIncompatible))
-        ));
-        assert_floor(&floor, base);
-        assert!(tee.state.lock().derivations.is_empty());
+        };
+        tee.set_svn(next);
+        let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
+        assert!(svn_equal(header_svn(&protector), next));
+        assert!(
+            floor
+                .verify_protector(&tee, &config, &protector, &DEK)
+                .unwrap()
+        );
+        assert_floor(&floor, next);
+        assert_eq!(tee.state.lock().derivations.len(), 2);
     }
 }
 
 #[test]
-fn tdx_lower_module_isvsvn_rejected_even_with_higher_platform_and_cpu_svns() {
+fn tdx_lower_module_isvsvn_is_accepted() {
     for module_id in [0, 1] {
         let mut tee_tcb_svn = [3; 16];
         tee_tcb_svn[1] = module_id;
@@ -1298,25 +1373,25 @@ fn tdx_lower_module_isvsvn_rejected_even_with_higher_platform_and_cpu_svns() {
         let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
         tee_tcb_svn[0] -= 1;
         tee_tcb_svn[2] = 4;
-        tee.set_svn(KeyDerivationSvn::Tdx {
+        let next = KeyDerivationSvn::Tdx {
             tee_tcb_svn,
             cpu_svn: [6; 16],
-        });
-        assert!(matches!(
-            floor.create_protector(&tee, &config, &DEK),
-            Err(Error(ErrorInner::TcbLowered))
-        ));
-        assert!(matches!(
-            floor.verify_protector(&tee, &config, &[], &DEK),
-            Err(Error(ErrorInner::TcbLowered))
-        ));
-        assert_floor(&floor, base);
-        assert!(tee.state.lock().derivations.is_empty());
+        };
+        tee.set_svn(next);
+        let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
+        assert!(svn_equal(header_svn(&protector), next));
+        assert!(
+            floor
+                .verify_protector(&tee, &config, &protector, &DEK)
+                .unwrap()
+        );
+        assert_floor(&floor, next);
+        assert_eq!(tee.state.lock().derivations.len(), 2);
     }
 }
 
 #[test]
-fn tdx_derivation_failure_retains_ratchet_and_old_reports_cannot_reset_it() {
+fn tdx_derivation_failure_does_not_prevent_retry_at_lower_svn() {
     for module_id in [0, 1] {
         for verify in [false, true] {
             let mut tee_tcb_svn = [3; 16];
@@ -1335,7 +1410,7 @@ fn tdx_derivation_failure_retains_ratchet_and_old_reports_cannot_reset_it() {
                 cpu_svn: [6; 16],
             };
             tee.set_svn(next);
-            // Create independently so verification itself must ratchet.
+            // Create independently so verification itself must observe the change.
             let candidate = super::super::create_protector(&tee, &config, &DEK).unwrap();
             assert_floor(&floor, base);
             tee.state.lock().fail_derivation = true;
@@ -1355,16 +1430,20 @@ fn tdx_derivation_failure_retains_ratchet_and_old_reports_cannot_reset_it() {
             }
             tee.state.lock().fail_derivation = false;
             tee.set_svn(base);
-            assert!(matches!(
-                floor.create_protector(&tee, &config, &DEK),
-                Err(Error(ErrorInner::TcbLowered))
-            ));
-            assert!(matches!(
-                floor.verify_protector(&tee, &config, &candidate, &DEK),
-                Err(Error(ErrorInner::TcbLowered))
-            ));
-            assert_floor(&floor, next);
-            assert_eq!(tee.state.lock().derivations.len(), 2);
+            let replacement = floor.create_protector(&tee, &config, &DEK).unwrap();
+            assert!(svn_equal(header_svn(&replacement), base));
+            assert!(
+                !floor
+                    .verify_protector(&tee, &config, &candidate, &DEK)
+                    .unwrap()
+            );
+            assert!(
+                floor
+                    .verify_protector(&tee, &config, &replacement, &DEK)
+                    .unwrap()
+            );
+            assert_floor(&floor, base);
+            assert_eq!(tee.state.lock().derivations.len(), 4);
             tee.set_svn(next);
             assert!(
                 floor
@@ -1372,13 +1451,13 @@ fn tdx_derivation_failure_retains_ratchet_and_old_reports_cannot_reset_it() {
                     .unwrap()
             );
             assert_floor(&floor, next);
-            assert_eq!(tee.state.lock().derivations.len(), 3);
+            assert_eq!(tee.state.lock().derivations.len(), 5);
         }
     }
 }
 
 #[test]
-fn tdx_candidate_requires_exact_svn_despite_compatible_newer_report() {
+fn tdx_candidate_requires_exact_svn_despite_available_old_key() {
     for module_id in [0, 1] {
         for change_cpu in [false, true] {
             for index in 0..16 {
@@ -1428,12 +1507,13 @@ fn tdx_candidate_requires_exact_svn_despite_compatible_newer_report() {
                     assert!(svn_equal(state.derivations[0].svn, base));
                 }
                 tee.set_svn(base);
-                assert!(matches!(
-                    floor.verify_protector(&tee, &config, &candidate, &DEK),
-                    Err(Error(ErrorInner::TcbLowered))
-                ));
-                assert_floor(&floor, next);
-                assert_eq!(tee.state.lock().derivations.len(), 1);
+                assert!(
+                    floor
+                        .verify_protector(&tee, &config, &candidate, &DEK)
+                        .unwrap()
+                );
+                assert_floor(&floor, base);
+                assert_eq!(tee.state.lock().derivations.len(), 2);
                 tee.set_svn(next);
                 let replacement = floor.create_protector(&tee, &config, &DEK).unwrap();
                 assert!(svn_equal(header_svn(&replacement), next));
@@ -1443,7 +1523,7 @@ fn tdx_candidate_requires_exact_svn_despite_compatible_newer_report() {
                         .unwrap()
                 );
                 assert_floor(&floor, next);
-                assert_eq!(tee.state.lock().derivations.len(), 3);
+                assert_eq!(tee.state.lock().derivations.len(), 4);
             }
         }
     }

@@ -1,15 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Conservative comparison of trusted local report snapshots, never VMGS data.
+//! SNP TCB floors and TDX observations from trusted local reports, never VMGS data.
 //!
 //! # Reading the flow
 //!
 //! An **observation** is the SVN and comparison domain extracted from one trusted
-//! local report. A **floor** is the last accepted observation: later runtime
-//! operations must meet or exceed every ordered component of that floor.
+//! local report. For SNP, a **floor** is the last accepted observation: later
+//! runtime operations must meet or exceed every ordered component of that floor.
 //! **Ratchet** means replacing the floor with an accepted observation, never
 //! rolling it back if subsequent sealing or persistence fails.
+//! TDX retains the latest observation without comparing it to earlier SVNs;
+//! migration admission is responsible for destination TCB policy.
 //!
 //! There are three entry paths:
 //! - **Boot:** `BootTcbFloor::observe` consumes an already acquired report (no
@@ -25,9 +27,10 @@
 //!   by an authenticated, VM-bound, fresh servicing channel, without hardware I/O.
 //!   Replacing a resident floor additionally requires `check_restored_successor`.
 //!
-//! `check_successor` is a pure compatibility/minimum check: it neither fetches a
-//! report nor changes state. "Successor" includes an equal TCB, not only an
-//! upgrade. It does not authenticate a protector or appraise vendor TCB status.
+//! `check_successor` is a pure TEE compatibility and SNP minimum check: it neither
+//! fetches a report nor changes state. For SNP, "successor" includes an equal
+//! TCB, not only an upgrade. It does not authenticate a protector or appraise
+//! vendor TCB status.
 //!
 //! SNP layouts follow `TCB_VERSION` and `ATTESTATION_REPORT` in the
 //! [SEV-SNP Firmware ABI specification (AMD 56860)](https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP).
@@ -60,7 +63,6 @@ use x86defs::snp::SNP_CPUID_MODELS_TURIN_C0_CF;
 use x86defs::snp::SnpReport;
 use x86defs::snp::SnpTcbVersionLegacy;
 use x86defs::snp::SnpTcbVersionTurin;
-use x86defs::tdx::TeeTcbSvn;
 use zerocopy::FromBytes;
 
 // OpenHCL policy, not an AMD CPU-generation mapping: only report versions
@@ -69,7 +71,7 @@ use zerocopy::FromBytes;
 // remain equality-only, even when the CPU model has a known TCB layout.
 const SNP_REPORT_VERSIONS_WITH_COMPONENT_ORDERING: core::ops::RangeInclusive<u32> = 3..=5;
 
-/// A resident TCB floor originating exclusively from trusted local hardware.
+/// A resident SNP TCB floor or latest TDX observation from trusted local hardware.
 ///
 /// Obtain once from platform initialization (reusing boot reports), or use
 /// [`Self::new`] **before accepting worker events**, then
@@ -90,12 +92,11 @@ const SNP_REPORT_VERSIONS_WITH_COMPONENT_ORDERING: core::ops::RangeInclusive<u32
 /// use distinct layouts;
 /// reserved TCB bytes must remain equal. All other SNP domains require exact
 /// SVN equality. Version 2 has no trusted CPUID and is also equality-only.
-/// TDX uses a structural minimum-TCB policy: CPU SVN bytes must individually
-/// meet the floor. TEE SVN byte 1 must match, including legacy identity 0.
-/// For TD-preserving modules byte 0 is module ISVSVN and bytes 2..16 are platform
-/// components; these bytes must individually meet the floor in both layouts.
-/// This is not quote appraisal
-/// or an Intel TCB status decision, which requires authenticated TCB Info.
+/// TDX observations may change in either direction, including module identity
+/// and reserved bytes. Migration admission owns destination TCB policy; this
+/// type neither compares TDX platforms nor appraises Intel TCB status.
+/// Candidate verification still requires exact agreement with a fresh report
+/// and independently derives hardware keys to authenticate and unseal.
 #[derive(Debug)]
 pub struct RuntimeTcbFloor {
     snapshot: Snapshot,
@@ -104,9 +105,11 @@ pub struct RuntimeTcbFloor {
 /// Collect a runtime floor from reports already obtained during boot. No I/O.
 ///
 /// Keep one collector across all unlock retries, including failed SKR attempts.
-/// Only comparable, nondecreasing observations ratchet the accepted floor.
-/// ANY malformed, incompatible, or lowered observation permanently disables
-/// export for this boot, even if a later report is good. This is deliberately
+/// Only comparable, nondecreasing SNP observations ratchet the accepted floor;
+/// TDX retains the latest observation without historical comparison.
+/// ANY malformed, incompatible, or lowered SNP observation permanently disables
+/// export for this boot, as does a missing or wrong-TEE SVN for either TEE,
+/// even if a later report is good. This is deliberately
 /// stricter than runtime retry handling: boot must never export an ambiguous
 /// initial floor or silently bootstrap later after a worker event.
 ///
@@ -326,10 +329,12 @@ impl RuntimeTcbFloor {
         })
     }
 
-    /// Pure check that replacing this resident floor cannot decrease it or
-    /// change its comparison domain. Equal floors are allowed. Neither instance
-    /// is modified, including on failure. The caller must hold its shared state
-    /// lock across this check and replacement; no hardware calls are made.
+    /// Pure check that replacing this resident snapshot preserves its TEE and,
+    /// for SNP, cannot decrease the floor or change its comparison domain.
+    /// TDX snapshots may replace one another without SVN comparison. Neither
+    /// instance is modified, including on failure. The caller must hold its
+    /// shared state lock across this check and replacement; no hardware calls
+    /// are made.
     pub fn check_restored_successor(&self, restored: &Self) -> Result<(), Error> {
         self.snapshot.check_successor(&restored.snapshot)
     }
@@ -344,9 +349,10 @@ impl RuntimeTcbFloor {
         })
     }
 
-    /// Validate and ratchet from a fresh report, then seal the active DEK using
-    /// that same report's SVN. Derivation/sealing errors cannot undo the ratchet.
-    /// The caller performs candidate pre-write verification separately.
+    /// Validate a fresh report and ratchet the SNP floor or update the TDX
+    /// observation, then seal the active DEK using that same report's SVN.
+    /// Derivation/sealing errors cannot undo the SNP ratchet. The caller
+    /// performs candidate pre-write verification separately.
     pub fn create_protector(
         &mut self,
         tee: &dyn TeeCall,
@@ -358,11 +364,12 @@ impl RuntimeTcbFloor {
         create_protector_with_svn(hardware, config, svn, mix_measurement, dek)
     }
 
-    /// Validate and ratchet from a fresh report before inspecting the candidate.
+    /// Validate a fresh report and update the snapshot before inspecting the
+    /// candidate, enforcing the SNP floor but no historical TDX comparison.
     /// Return `Ok(false)` if its header SVN differs from the observed SVN, even
     /// if hardware could still derive a key for that older candidate. Otherwise
     /// freshly derive hardware keys and authenticate/unseal via the existing
-    /// stateless verifier. Neither mismatches nor errors undo a ratchet.
+    /// stateless verifier. Neither mismatches nor errors undo the SNP ratchet.
     ///
     /// This does not make the report and derivation atomic with migration; the
     /// caller still needs pre-write and post-flush verification and retry logic.
@@ -392,11 +399,12 @@ impl RuntimeTcbFloor {
     /// Report acquisition/parsing or `check_successor` failure leaves the floor
     /// unchanged. On success, return the SVN of the newly accepted floor. The
     /// update intentionally precedes derivation, protector verification, and
-    /// disk I/O: none of those later failures may undo a trusted TCB increase.
+    /// disk I/O: none of those later failures may undo a trusted SNP TCB increase.
     ///
     /// For example, accepting components (2, 4) after (2, 3) retains (2, 4)
     /// even if the ensuing write fails; a retry at (2, 3) must then be rejected.
-    /// These are component vectors, not packed integers or lexicographic values.
+    /// These are SNP component vectors, not packed integers or lexicographic
+    /// values. TDX simply retains the latest observation.
     fn observe_and_ratchet(&mut self, tee: &dyn TeeCall) -> Result<KeyDerivationSvn, Error> {
         let observed = Snapshot::observe(tee)?;
         self.snapshot.check_successor(&observed)?;
@@ -453,8 +461,8 @@ impl Snapshot {
         Ok(Self { svn, snp_domain })
     }
 
-    /// Can `observed` replace `self` as the minimum accepted runtime TCB?
-    /// `self` is the existing floor; `observed` is a candidate local observation.
+    /// Can `observed` replace `self` as the accepted runtime snapshot?
+    /// `self` is the existing snapshot; `observed` is a local observation.
     /// Neither argument is modified, and this method performs no hardware I/O.
     ///
     /// - Require the same SNP comparison domain (report version/family/model).
@@ -462,15 +470,14 @@ impl Snapshot {
     ///   when there is no supported component-ordering rule.
     /// - For changed SNP SVNs, require a supported layout, equal reserved bytes,
     ///   and non-decreasing named components.
-    /// - For TDX, require the same module identity and reserved bytes, with
-    ///   non-decreasing minor SVN, SE_SVN, and CPU SVN components. Different
-    ///   TEE types are incompatible.
+    /// - For TDX, accept any TDX SVN without comparing historical values.
+    ///   Different TEE types are incompatible.
     ///
-    /// A higher component cannot compensate for a lower one. Known component
-    /// regressions fail with `TcbLowered`; incompatible domains, identities,
+    /// For SNP, a higher component cannot compensate for a lower one. Known
+    /// component regressions fail with `TcbLowered`; incompatible domains,
     /// reserved bytes, or unsupported ordering fail with `TcbIncompatible`.
-    /// Acceptance is only a minimum-TCB decision, not proof that a candidate
-    /// protector can be unsealed or that the TCB has a particular vendor status.
+    /// Acceptance does not prove that a candidate protector can be unsealed or
+    /// that the TCB has a particular vendor status.
     fn check_successor(&self, observed: &Self) -> Result<(), Error> {
         if self.snp_domain != observed.snp_domain {
             return Err(Error(ErrorInner::TcbIncompatible));
@@ -526,72 +533,11 @@ impl Snapshot {
                 }
                 Ok(())
             }
-            (
-                KeyDerivationSvn::Tdx {
-                    tee_tcb_svn: floor_tee,
-                    cpu_svn: floor_cpu,
-                },
-                KeyDerivationSvn::Tdx {
-                    tee_tcb_svn: next_tee,
-                    cpu_svn: next_cpu,
-                },
-                None,
-            ) => {
-                // Parse the ABI layout without changing the raw derivation SVN.
-                let floor_tee = TeeTcbSvn::read_from_bytes(&floor_tee)
-                    .map_err(|_| Error(ErrorInner::MalformedReport))?;
-                let next_tee = TeeTcbSvn::read_from_bytes(&next_tee)
-                    .map_err(|_| Error(ErrorInner::MalformedReport))?;
-                // Major SVN selects the module identity, not an ordered SVN.
-                // This rejects both legacy/TD-preserving transitions and
-                // transitions between distinct TD-preserving identities. A
-                // change in reserved metadata has no supported ordering.
-                if next_tee.tdx_module_svn_major != floor_tee.tdx_module_svn_major
-                    || next_tee._reserved != floor_tee._reserved
-                {
-                    return Err(Error(ErrorInner::TcbIncompatible));
-                }
-                // CPU SVN is kept as 16 bytes: apply the local per-position
-                // floor rule documented on components_meet, not Rust array Ord
-                // (lexicographic) or a packed-integer comparison. TEE SVN has
-                // its own named-field rules and must not use that helper.
-                if !components_meet(&next_cpu, &floor_cpu)
-                    || next_tee.tdx_module_svn_minor < floor_tee.tdx_module_svn_minor
-                    || next_tee.seam_last_patch_svn < floor_tee.seam_last_patch_svn
-                {
-                    return Err(Error(ErrorInner::TcbLowered));
-                }
-                Ok(())
-            }
+            (KeyDerivationSvn::Tdx { .. }, KeyDerivationSvn::Tdx { .. }, None) => Ok(()),
             // Mixed TEE snapshots have no ordering contract.
             _ => Err(Error(ErrorInner::TcbIncompatible)),
         }
     }
-}
-
-/// Inclusive component-wise minimum: every unsigned byte must meet the same
-/// position in the floor. For CPU SVN, N is 16; there is no endian conversion,
-/// sorting, or carry between components. With other bytes equal, (2, 4) meets
-/// (2, 3), but (3, 2) does not: growth cannot compensate for a regression.
-///
-/// Official context: Intel PCS [Get TDX TCB Info V4], step 3.a, requires all
-/// 16 PCK certificate TCB component SVNs to meet their corresponding TCB Info
-/// values; [Appendix A] describes the 16 components and `tcbType` comparison
-/// metadata. This motivates component-wise rather than scalar ordering.
-///
-/// This function applies OpenHCL's local no-decrease policy to two raw CPU SVN
-/// observations. It does NOT implement PCS appraisal, map raw bytes to PCK
-/// component identities, or establish equivalence across platform families.
-/// Do not infer `UpToDate`/revocation status from it: that requires authenticated
-/// platform-specific collateral, including FMSPC and TCB Info.
-///
-/// [Get TDX TCB Info V4]: https://api.portal.trustedservices.intel.com/content/documentation.html#pcs-tcb-info-tdx-v4
-/// [Appendix A]: https://api.portal.trustedservices.intel.com/content/documentation.html#pcs-tcb-info-model-v3
-fn components_meet<const N: usize>(actual: &[u8; N], minimum: &[u8; N]) -> bool {
-    actual
-        .iter()
-        .zip(minimum)
-        .all(|(actual, minimum)| actual >= minimum)
 }
 
 // Keep equality local rather than imposing a public ordering/equality contract

@@ -10,8 +10,10 @@
 //!
 //! Runtime recovery must use a resident [`RuntimeTcbFloor`], initialized from
 //! trusted local hardware or restored through authenticated, VM-bound, fresh
-//! servicing state before worker events are accepted. The stateless helpers
-//! below do not enforce a runtime TCB floor.
+//! servicing state before worker events are accepted. It enforces historical
+//! TCB checks for SNP only; TDX destination policy belongs to migration admission.
+//! Both TEEs require fresh candidate verification. The stateless helpers below
+//! do not enforce a runtime TCB floor.
 
 mod tcb_floor;
 
