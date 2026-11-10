@@ -228,8 +228,12 @@ fn validate_platform(
 ///
 /// The shim sends this code in the GHCB termination request, so the host can
 /// log it.
-#[cfg(minimal_rt)]
-#[derive(Copy, Clone)]
+#[cfg(any(minimal_rt, test))]
+#[cfg_attr(
+    not(minimal_rt),
+    expect(dead_code, reason = "tests use only some codes")
+)]
+#[derive(Copy, Clone, Debug)]
 #[repr(u8)]
 enum Failure {
     Params = 0x01,
@@ -291,6 +295,18 @@ fn terminate(failure: Failure) -> ! {
         core::arch::asm!("rep vmmcall", options(nostack));
     }
     minimal_rt::arch::fault()
+}
+
+/// Host tests stand in for the guest: a failure panics.
+#[cfg(all(test, not(minimal_rt)))]
+fn terminate(failure: Failure) -> ! {
+    panic!("terminate: {failure:?}")
+}
+
+/// Host tests treat all memory as accepted.
+#[cfg(all(test, not(minimal_rt)))]
+fn accept(_range: MemoryRange) -> bool {
+    true
 }
 
 /// The heap for building the ACPI tables. Allocations outside

@@ -16,6 +16,7 @@
 use x86defs::cpuid::CpuidFunction;
 use x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX;
 use x86defs::snp::HvPspCpuidPage;
+use x86defs::snp::SevExitCode;
 
 /// Returns `true` if the CPUID leaf has subleaves selected by ECX.
 ///
@@ -60,6 +61,61 @@ pub(crate) fn cpuid(page: &HvPspCpuidPage, leaf: u32, subleaf: u32) -> [u32; 4] 
         })
 }
 
+/// The registers that `vc_entry` saves, followed by the CPU's exception
+/// frame.
+#[repr(C)]
+#[derive(zerocopy::FromZeros)]
+pub(crate) struct VcFrame {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    r11: u64,
+    r10: u64,
+    r9: u64,
+    r8: u64,
+    rbp: u64,
+    rdi: u64,
+    rsi: u64,
+    rdx: u64,
+    rcx: u64,
+    rbx: u64,
+    rax: u64,
+    error_code: u64,
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
+/// The `CPUID` instruction.
+const CPUID_OPCODE: [u8; 2] = [0x0f, 0xa2];
+
+/// Handles a `#VC` exception, if it is for a `CPUID` instruction. Returns
+/// `false`, without changing the frame, for anything else.
+///
+/// The host can inject a `#VC` with any error code, so this checks the
+/// instruction at RIP before it trusts the CPUID error code. `instruction`
+/// reads the two bytes at an address.
+#[cfg_attr(not(any(minimal_rt, test)), expect(dead_code))]
+fn handle_vc(
+    frame: &mut VcFrame,
+    page: &HvPspCpuidPage,
+    instruction: impl FnOnce(u64) -> [u8; 2],
+) -> bool {
+    if frame.error_code != SevExitCode::CPUID.0 || instruction(frame.rip) != CPUID_OPCODE {
+        return false;
+    }
+    let [eax, ebx, ecx, edx] = cpuid(page, frame.rax as u32, frame.rcx as u32);
+    frame.rax = eax.into();
+    frame.rbx = ebx.into();
+    frame.rcx = ecx.into();
+    frame.rdx = edx.into();
+    frame.rip += CPUID_OPCODE.len() as u64;
+    true
+}
+
 #[cfg(minimal_rt)]
 pub(crate) use guest::install;
 
@@ -72,15 +128,10 @@ mod guest {
     use x86defs::IdtEntry64;
     use x86defs::X64_IDT_GATE_TYPE_INTERRUPT;
     use x86defs::snp::HvPspCpuidPage;
-    use x86defs::snp::SevExitCode;
 
     /// The number of vectors that x86 reserves for exceptions (Intel SDM
     /// Vol. 3A 6.2; AMD APM Vol. 2 8.2).
     const EXCEPTION_COUNT: usize = 32;
-    /// The `CPUID` instruction.
-    const CPUID_OPCODE: [u8; 2] = [0x0f, 0xa2];
-    /// The length of the `CPUID` instruction.
-    const CPUID_LENGTH: u64 = CPUID_OPCODE.len() as u64;
 
     #[repr(C, align(16))]
     struct Idt([IdtEntry64; EXCEPTION_COUNT]);
@@ -96,33 +147,6 @@ mod guest {
 
     /// The measured CPUID page. `install` sets it before any `#VC` can occur.
     static mut CPUID_PAGE: u64 = 0;
-
-    /// The registers that `vc_entry` saves, followed by the CPU's exception
-    /// frame.
-    #[repr(C)]
-    struct VcFrame {
-        r15: u64,
-        r14: u64,
-        r13: u64,
-        r12: u64,
-        r11: u64,
-        r10: u64,
-        r9: u64,
-        r8: u64,
-        rbp: u64,
-        rdi: u64,
-        rsi: u64,
-        rdx: u64,
-        rcx: u64,
-        rbx: u64,
-        rax: u64,
-        error_code: u64,
-        rip: u64,
-        cs: u64,
-        rflags: u64,
-        rsp: u64,
-        ss: u64,
-    }
 
     core::arch::global_asm! {
         ".globl vc_entry",
@@ -182,29 +206,20 @@ mod guest {
         fn exception_entry();
     }
 
-    extern "C" fn vc_handler(frame: &mut VcFrame) {
-        if frame.error_code != SevExitCode::CPUID.0 {
-            terminate(Failure::UnhandledVc);
-        }
-        // The host can inject a `#VC` with any error code, so check that the
-        // interrupted instruction really is `CPUID` before changing the frame.
-        // SAFETY: RIP points to the code that was running, which is in
-        // accepted memory. The shim's identity map covers all guest RAM, so
-        // the second byte is mapped even at the end of a page.
-        let instruction = unsafe { (frame.rip as *const [u8; 2]).read_unaligned() };
-        if instruction != CPUID_OPCODE {
-            terminate(Failure::UnhandledVc);
-        }
+    extern "C" fn vc_handler(frame: &mut super::VcFrame) {
         // SAFETY: `install` set this to the measured, accepted CPUID page,
         // which nothing writes.
         let page =
             unsafe { &*(core::ptr::read_volatile(&raw const CPUID_PAGE) as *const HvPspCpuidPage) };
-        let [eax, ebx, ecx, edx] = super::cpuid(page, frame.rax as u32, frame.rcx as u32);
-        frame.rax = eax.into();
-        frame.rbx = ebx.into();
-        frame.rcx = ecx.into();
-        frame.rdx = edx.into();
-        frame.rip += CPUID_LENGTH;
+        let handled = super::handle_vc(frame, page, |rip| {
+            // SAFETY: RIP points to the code that was running, which is in
+            // accepted memory. The shim's identity map covers all guest RAM,
+            // so the second byte is mapped even at the end of a page.
+            unsafe { (rip as *const [u8; 2]).read_unaligned() }
+        });
+        if !handled {
+            terminate(Failure::UnhandledVc);
+        }
     }
 
     extern "C" fn exception_handler() -> ! {
@@ -302,6 +317,42 @@ mod tests {
         // Unlisted leaves and subleaves return zeros.
         assert_eq!(cpuid(&page, 7, 2), [0; 4]);
         assert_eq!(cpuid(&page, 0x21, 0), [0; 4]);
+    }
+
+    fn frame(error_code: u64, rax: u64) -> VcFrame {
+        VcFrame {
+            error_code,
+            rax,
+            rip: 0x1000,
+            ..FromZeros::new_zeroed()
+        }
+    }
+
+    #[test]
+    fn handles_only_real_cpuid_exceptions() {
+        let mut page = HvPspCpuidPage::new_zeroed();
+        page.cpuid_leaf_info[0] = leaf(1, 0, 0x10);
+        page.count = 1;
+
+        let mut vc = frame(SevExitCode::CPUID.0, 1);
+        assert!(handle_vc(&mut vc, &page, |rip| {
+            assert_eq!(rip, 0x1000);
+            CPUID_OPCODE
+        }));
+        assert_eq!([vc.rax, vc.rbx, vc.rcx, vc.rdx], [0x10, 0x11, 0x12, 0x13]);
+        assert_eq!(vc.rip, 0x1002);
+
+        // A CPUID error code for another instruction changes nothing.
+        let mut vc = frame(SevExitCode::CPUID.0, 1);
+        assert!(!handle_vc(&mut vc, &page, |_| [0x90, 0x90]));
+        assert_eq!((vc.rax, vc.rip), (1, 0x1000));
+
+        // Other exit codes do not read the instruction.
+        let mut vc = frame(SevExitCode::IOIO.0, 1);
+        assert!(!handle_vc(&mut vc, &page, |_| panic!(
+            "read the instruction"
+        )));
+        assert_eq!((vc.rax, vc.rip), (1, 0x1000));
     }
 
     #[test]

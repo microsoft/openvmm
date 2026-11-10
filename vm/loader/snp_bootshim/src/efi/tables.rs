@@ -150,7 +150,7 @@ macro_rules! field_address {
         $base + core::mem::offset_of!(Efi, $field) as u64
     };
 }
-#[cfg(minimal_rt)]
+#[cfg(any(minimal_rt, test))]
 pub(super) use field_address;
 
 /// What the stub needs to boot Linux.

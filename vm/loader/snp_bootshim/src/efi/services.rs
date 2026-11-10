@@ -116,7 +116,8 @@ pub(super) fn pool_header_address(buffer: u64) -> Option<u64> {
     address.is_multiple_of(EFI_PAGE_SIZE).then_some(address)
 }
 
-/// Returns `true` if `node` is the initrd's vendor media node.
+/// Returns `true` if `node` is the initrd's vendor media node. The node
+/// must match exactly, including its length and GUID.
 pub(super) fn is_initrd_node(node: &[u8; VENDOR_NODE_SIZE]) -> bool {
     *node == InitrdDevicePath::new().vendor
 }

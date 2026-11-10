@@ -25,7 +25,7 @@ mod layout;
 mod services;
 mod tables;
 
-#[cfg(minimal_rt)]
+#[cfg(any(minimal_rt, test))]
 mod entry;
 
 #[cfg(minimal_rt)]

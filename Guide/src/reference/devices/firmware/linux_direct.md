@@ -120,33 +120,11 @@ COM ports from that tree. Then it builds the DSDT, FADT, MADT, SRAT, XSDT, and
 RSDP. It adds an MCFG and a PCIe SSDT when the device tree describes host
 bridges.
 
-### EFI Stub Boot
-
-The bootshim does not enter the kernel directly. It gives the kernel's own
-EFI stub a minimal UEFI environment, and then calls the stub's PE/COFF entry
-point. The environment has:
-
-- the boot services that the x86 EFI stub uses, such as page allocation, the
-  memory map, and `ExitBootServices`;
-- the command line through `LOADED_IMAGE`, and the initrd through
-  `LoadFile2`;
-- configuration tables for ACPI, SMBIOS, and the SEV-SNP CC blob; and
-- a runtime-services table in which no service is supported.
-
-The stub then does the work that Linux expects from firmware. It decompresses
-the kernel, builds the E820 map, and calls `ExitBootServices`. OpenVMM does not
-copy this work, so a new kernel works without OpenVMM changes.
-
-Linux on SEV-SNP reads SMBIOS only after an EFI boot. The SMBIOS BIOS date lets
-Linux use a PCIe ECAM above 4 GiB.
-
-### Lazy Memory Acceptance
-
-The bootshim accepts only the memory that it and the EFI stub need. The UEFI
-memory map reports all other RAM as unaccepted. The stub gives that RAM to
-Linux, which accepts each part when it first uses it. This makes boot faster
-for guests with a lot of RAM. The kernel needs `CONFIG_UNACCEPTED_MEMORY` to
-use the unaccepted RAM.
+The bootshim boots the kernel through the kernel's own EFI stub, with a
+minimal UEFI environment. Because Linux sees an EFI boot, it reads the SMBIOS
+tables and can use a PCIe ECAM above 4 GiB. The bootshim accepts only the
+memory that it and the EFI stub need. Linux accepts the rest of the RAM when it
+first uses it, which needs `CONFIG_UNACCEPTED_MEMORY`.
 
 ### Launch Requirements
 
@@ -162,7 +140,6 @@ One image boots with any supported CPU count, RAM size, and NUMA layout:
 
 The image does not fix the ECAM or BAR-window addresses. Use the usual
 `--pcie-root-complex`, `--pcie-root-port`, and PCIe virtio device options.
-The ECAM can stay at its default address above 4 GiB.
 
 The bootshim supports up to eight generic ECAM host bridges in distinct
 segments. It puts every bridge on NUMA node 0, with identity MMIO windows and
