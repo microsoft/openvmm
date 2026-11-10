@@ -978,7 +978,9 @@ mod gicd {
                 }
                 GicdRegister::TYPER => {
                     let it_lines_number = ((self.max_spi_intid + 1).div_ceil(32) - 1) as u8;
-                    let id_bits = (32 - self.max_spi_intid.leading_zeros()) as u8;
+                    // IDbits encodes the supported INTID width minus one.
+                    let id_bits =
+                        (u32::BITS - self.max_spi_intid.leading_zeros()).saturating_sub(1) as u8;
                     GicdTyper::new()
                         .with_it_lines_number(it_lines_number)
                         .with_id_bits(id_bits)
@@ -1245,6 +1247,7 @@ mod gicd {
             let distributor = Distributor::new(0, MemoryRange::new(0..0), 1024).unwrap();
             let typer = GicdTyper::from(distributor.read32(GicdRegister::TYPER).unwrap());
             assert_eq!(typer.it_lines_number(), 31);
+            assert_eq!(typer.id_bits(), 9);
 
             // The highest ordinary SPI uses the final bit of the u32 summary.
             set_software_pending_spi(&distributor, 1019, true);
@@ -1282,6 +1285,13 @@ mod gicd {
         }
 
         #[test]
+        fn typer_id_bits_handles_zero_maximum_intid() {
+            let distributor = Distributor::new(0, MemoryRange::new(0..0), 1).unwrap();
+            let typer = GicdTyper::from(distributor.read32(GicdRegister::TYPER).unwrap());
+            assert_eq!(typer.id_bits(), 0);
+        }
+
+        #[test]
         fn typer_matches_the_implemented_interrupts_and_routing_model() {
             const INTERRUPT_COUNT: u32 = 256;
             let mut distributor = Distributor::new(
@@ -1299,7 +1309,7 @@ mod gicd {
 
             let typer = GicdTyper::from(distributor.read32(GicdRegister::TYPER).unwrap());
             assert_eq!(typer.it_lines_number(), 7);
-            assert_eq!(typer.id_bits(), 8);
+            assert_eq!(typer.id_bits(), 7);
             assert!(typer.a3v());
 
             // Registers describing INTIDs 256 and above are RAZ/WI because
