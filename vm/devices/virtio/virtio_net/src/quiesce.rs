@@ -5,11 +5,12 @@
 //!
 //! Quiescing input stops the coordinator and the workers, lets each endpoint
 //! queue finish the work it already accepted while it stops admitting new host
-//! RX, drains the resulting completions, and restarts the workers. The
-//! coordinator latches the input gate and re-establishes it whenever it
-//! restarts the endpoint queues; resuming input releases it. Only devices built
-//! with [`NicBuilder::save_restore`](crate::NicBuilder::save_restore) support
-//! input quiesce.
+//! RX, drains the resulting completions, and restarts the workers. The device
+//! latches the input gate, which a reset of the device keeps, and its
+//! coordinator re-establishes the gate whenever it starts or restarts the
+//! endpoint queues; resuming input releases it. Only devices built with
+//! [`NicBuilder::save_restore`](crate::NicBuilder::save_restore) support input
+//! quiesce.
 
 use crate::Coordinator;
 use crate::Device;

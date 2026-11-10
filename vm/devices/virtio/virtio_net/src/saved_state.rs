@@ -52,12 +52,11 @@ pub(crate) struct Lifecycle {
 
 impl Lifecycle {
     /// Clears the queue-pair state on device reset. The endpoint generation is
-    /// kept.
+    /// kept, and so is the input gate, which only resuming input releases.
     pub(crate) fn reset(&mut self) {
         self.stop_error = None;
         self.stopped_feature_banks = None;
         self.stopped_queue_count = 0;
-        self.input_quiesced = false;
     }
 }
 

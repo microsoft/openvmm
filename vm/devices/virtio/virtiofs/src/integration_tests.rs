@@ -375,6 +375,16 @@ impl TestHarness {
     fn tmpdir_path(&self) -> &std::path::Path {
         self._tmpdir.path()
     }
+
+    /// Resets the guest's ring and the harness's indices for another start
+    /// of the device, as a guest's driver does after it resets the device.
+    fn reset_ring(&mut self) {
+        init_avail_ring(&self.mem, AVAIL_ADDR);
+        init_used_ring(&self.mem, USED_ADDR);
+        self.avail_idx = 0;
+        self.used_idx = 0;
+        self.next_data_offset = DATA_BASE;
+    }
 }
 
 // --- Tests ---
@@ -423,6 +433,29 @@ async fn microvm_queue_stopped_while_input_is_quiesced_keeps_its_requests(driver
 
     harness.start_queue(Some(state)).await;
     harness.assert_no_request_completes().await;
+    harness.device.resume_input().await.unwrap();
+    harness.wait_for_init(unique, resp_gpa).await;
+}
+
+/// A guest that resets the microVM device while host input is quiesced, as a
+/// snapshot boundary or a gated restore quiesces it, and then starts its queue
+/// again leaves its requests on the virtqueue until input resumes.
+#[async_test]
+async fn microvm_guest_reset_keeps_input_quiesced(driver: DefaultDriver) {
+    let mut harness = TestHarness::new_microvm(&driver);
+    harness.enable().await;
+    harness.fuse_init(0).await;
+    harness.device.quiesce_input().await.unwrap();
+
+    // The guest's reset, as the transport makes it when the guest writes 0
+    // to the device status.
+    harness.device.stop_queue(0).await.unwrap();
+    harness.device.reset().await;
+    harness.reset_ring();
+    harness.enable().await;
+    let (unique, resp_gpa) = harness.post_fuse_init(0);
+    harness.assert_no_request_completes().await;
+
     harness.device.resume_input().await.unwrap();
     harness.wait_for_init(unique, resp_gpa).await;
 }

@@ -85,6 +85,10 @@ pub trait ChangeDeviceState {
 
     /// Stops accepting new host input before a snapshot vCPU boundary.
     ///
+    /// The gate holds until [`Self::resume_input`]. Neither the guest's reset
+    /// of the device nor [`Self::reset`] releases it, so the device's input
+    /// stays gated for as long as its caller holds the gate.
+    ///
     /// The vCPUs may run while the gate changes: the snapshot boundary gates
     /// host input before it stops them, and resumes a gate that failed before
     /// any of them stops. So a gate change has two parts. The caller makes
@@ -129,6 +133,8 @@ pub trait ChangeDeviceState {
     fn stop(&mut self) -> impl Send + Future<Output = ()>;
 
     /// Resets the device state to its initial state, for a fresh boot.
+    ///
+    /// A host-input gate that [`Self::quiesce_input`] closed stays closed.
     ///
     /// Callers must ensure that the device is in a stopped state before calling
     /// this method.

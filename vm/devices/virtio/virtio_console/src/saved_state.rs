@@ -44,14 +44,14 @@ pub(crate) const MAX_SAVED_STATE_BYTES: usize = 512 * 1024;
 pub(crate) const SAVED_STATE_VERSION: u32 = 1;
 
 impl VirtioConsoleDevice {
-    /// Resets the private state that persists across queue restarts.
+    /// Resets the private state that persists across queue restarts. The
+    /// host-input gate is kept: only resuming input releases it.
     pub(crate) fn reset_private_state(&mut self) {
         self.config = VirtioConsoleConfig::default();
         let (worker, mut state) = self.worker.get_mut();
         let state = state.as_mut().unwrap();
         state.partial_transmit = 0;
         state.staged_rx.clear();
-        state.input_gated = false;
         state.mem = GuestMemory::empty();
         if let ConsoleWorkerMode::Broker(mode) = &mut worker.mode {
             mode.reset_for_device();

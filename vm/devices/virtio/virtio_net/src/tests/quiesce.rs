@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 //! Input quiesce tests: a quiesce requested before the queues start is latched,
-//! and quiesce drains the TX work that the endpoint already accepted.
+//! the guest's reset of the device keeps it, and quiesce drains the TX work
+//! that the endpoint already accepted.
 
 use super::TestHarness;
 use net_backend::TxId;
@@ -16,6 +17,26 @@ async fn input_quiesce_latches_before_queue_start(driver: DefaultDriver) {
     let mut harness = TestHarness::new_save_restore(&driver);
     harness.device.quiesce_input().await.unwrap();
 
+    let mut handle = harness.enable_and_get_handle().await;
+    handle.wait_for_quiesce().await;
+
+    harness.device.resume_input().await.unwrap();
+}
+
+/// A guest that resets the device while input is quiesced, as a snapshot
+/// boundary or a gated restore quiesces it, and starts its queues again gets
+/// endpoint queues that are quiesced too, until input resumes.
+#[async_test]
+async fn input_quiesce_survives_guest_reset(driver: DefaultDriver) {
+    let mut harness = TestHarness::new_save_restore(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+    harness.device.quiesce_input().await.unwrap();
+    handle.wait_for_quiesce().await;
+
+    // The guest's reset, as the transport makes it when the guest writes 0
+    // to the device status.
+    harness.disable().await;
+    harness.reset_rings();
     let mut handle = harness.enable_and_get_handle().await;
     handle.wait_for_quiesce().await;
 

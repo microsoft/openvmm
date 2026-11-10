@@ -11,6 +11,7 @@ mod broker;
 mod direct;
 mod harness;
 mod saved_state;
+mod transport;
 
 use crate::VirtioConsoleDevice;
 use futures::AsyncRead;
