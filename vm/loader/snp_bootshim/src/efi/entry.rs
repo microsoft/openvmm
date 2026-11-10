@@ -9,6 +9,13 @@
 //! as the UEFI calling convention requires, and calls the `services` and
 //! `tables` modules for everything else.
 
+// The guest build allows unsafe code for the whole crate. Host tests build
+// this module too, so that Miri can check its pointer handling.
+#![cfg_attr(
+    not(minimal_rt),
+    expect(unsafe_code, reason = "the boot services follow the UEFI ABI")
+)]
+
 use super::services;
 use super::services::Handles;
 use super::services::Interface;
@@ -31,6 +38,8 @@ use core::cell::Cell;
 use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
+use core::ptr::with_exposed_provenance;
+use core::ptr::with_exposed_provenance_mut;
 use guid::Guid;
 use uefi_specs::uefi::boot::EFI_BOOT_SERVICES_COUNT;
 use uefi_specs::uefi::boot::EFI_MEMORY_DESCRIPTOR_VERSION;
@@ -69,7 +78,7 @@ impl<T> BootCell<T> {
 
     /// Returns the address of the value, for the stub to use.
     fn address(&self) -> u64 {
-        self.value.get() as u64
+        self.value.get().expose_provenance() as u64
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
@@ -101,6 +110,8 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     })
 }
 
+/// Each handle is the address of the protocol that it carries, so a handle is
+/// unique and needs no handle table.
 fn handles() -> Handles {
     Handles {
         image: field_address!(EFI.address(), loaded_image),
@@ -127,20 +138,29 @@ extern "efiapi" fn unsupported() -> usize {
     code(EfiStatus::UNSUPPORTED)
 }
 
+/// Used for services that have nothing to do in the shim, such as `Stall`,
+/// `SetWatchdogTimer`, and console output, which goes nowhere because the shim
+/// cannot do port I/O.
 extern "efiapi" fn success() -> usize {
     code(EfiStatus::SUCCESS)
 }
 
+/// `LocateHandle`. The shim has no handle database, so no handle matches a
+/// search, and the stub treats the searched-for device as absent.
 extern "efiapi" fn not_found() -> usize {
     code(EfiStatus::NOT_FOUND)
 }
 
+/// The shim has no events or timers, so the task priority level never
+/// changes. Return the level that an application runs at.
 extern "efiapi" fn raise_tpl(_new_tpl: usize) -> usize {
     TPL_APPLICATION
 }
 
 extern "efiapi" fn restore_tpl(_old_tpl: usize) {}
 
+/// `AllocatePages`. The allocator accepts unaccepted pages on demand, so the
+/// stub can allocate past the pre-accepted boot pool.
 extern "efiapi" fn allocate_pages(
     allocate_type: u32,
     memory_type: u32,
@@ -178,6 +198,7 @@ extern "efiapi" fn allocate_pages(
     }
 }
 
+/// `FreePages`. Freed pages stay accepted, and become conventional memory.
 extern "efiapi" fn free_pages(memory: u64, pages: usize) -> usize {
     if exited() {
         return code(EfiStatus::UNSUPPORTED);
@@ -188,6 +209,9 @@ extern "efiapi" fn free_pages(memory: u64, pages: usize) -> usize {
     }
 }
 
+/// `GetMemoryMap`. The stub first calls it with a small or null buffer to
+/// learn the size, so `descriptor_size` and `map_size` are written before the
+/// buffer check.
 extern "efiapi" fn get_memory_map(
     map_size: *mut usize,
     map: *mut u8,
@@ -231,6 +255,9 @@ extern "efiapi" fn get_memory_map(
     })
 }
 
+/// `AllocatePool`. Each allocation takes whole pages, with a header in front
+/// of the buffer, so that `FreePool` can find the page count. The stub makes
+/// only a few small pool allocations, so the wasted space does not matter.
 extern "efiapi" fn allocate_pool(memory_type: u32, size: usize, buffer: *mut *mut c_void) -> usize {
     if exited() {
         return code(EfiStatus::UNSUPPORTED);
@@ -253,8 +280,9 @@ extern "efiapi" fn allocate_pool(memory_type: u32, size: usize, buffer: *mut *mu
             // SAFETY: The allocator handed out these accepted, identity-mapped
             // pages. The caller passes a valid pointer.
             unsafe {
-                (address as *mut [u64; 2]).write(services::pool_header(pages));
-                buffer.write((address + POOL_HEADER_SIZE) as *mut c_void);
+                let header = with_exposed_provenance_mut::<[u64; 2]>(address as usize);
+                header.write(services::pool_header(pages));
+                buffer.write(header.byte_add(POOL_HEADER_SIZE as usize).cast());
             }
             code(EfiStatus::SUCCESS)
         }
@@ -262,6 +290,8 @@ extern "efiapi" fn allocate_pool(memory_type: u32, size: usize, buffer: *mut *mu
     }
 }
 
+/// `FreePool`. Checks the header magic, so a pointer that `AllocatePool` did
+/// not return cannot free pages.
 extern "efiapi" fn free_pool(buffer: *mut c_void) -> usize {
     if exited() {
         return code(EfiStatus::UNSUPPORTED);
@@ -269,7 +299,7 @@ extern "efiapi" fn free_pool(buffer: *mut c_void) -> usize {
     let Some(address) = services::pool_header_address(buffer as u64) else {
         return code(EfiStatus::INVALID_PARAMETER);
     };
-    let header = address as *mut [u64; 2];
+    let header = with_exposed_provenance_mut::<[u64; 2]>(address as usize);
     // SAFETY: A pool buffer starts one header after its first page, which is
     // mapped. The magic check rejects other pointers before the map frees
     // anything.
@@ -286,6 +316,8 @@ extern "efiapi" fn free_pool(buffer: *mut c_void) -> usize {
     }
 }
 
+/// `HandleProtocol`. Only the image handle (`LOADED_IMAGE`) and the initrd
+/// handle (`LoadFile2` and its device path) have protocols.
 extern "efiapi" fn handle_protocol(
     handle: usize,
     protocol: *const Guid,
@@ -305,10 +337,14 @@ extern "efiapi" fn handle_protocol(
         None => return code(EfiStatus::UNSUPPORTED),
     };
     // SAFETY: The caller passes a valid pointer.
-    unsafe { interface.write(found as *mut c_void) };
+    unsafe { interface.write(with_exposed_provenance_mut(found as usize)) };
     code(EfiStatus::SUCCESS)
 }
 
+/// `LocateDevicePath`. The stub calls this with
+/// `LINUX_EFI_INITRD_MEDIA_GUID`'s vendor media path to find the handle that
+/// provides its initrd. That is the only path that the shim knows. On success,
+/// `device_path` moves past the matched node, as the spec requires.
 extern "efiapi" fn locate_device_path(
     protocol: *const Guid,
     device_path: *mut *const u8,
@@ -345,6 +381,14 @@ extern "efiapi" fn locate_device_path(
     code(EfiStatus::SUCCESS)
 }
 
+/// `LoadFile2.LoadFile` on the initrd handle.
+///
+/// This is how the Linux EFI stub loads its initrd: the initrd handle stands
+/// for one fixed file, so `this` and `file_path` (the rest of the device path,
+/// which is only an end node) carry no information. GRUB and systemd-boot
+/// implement it the same way. The stub calls it once without a buffer to learn
+/// the size, then again to copy the initrd. `boot_policy` is for boot-option
+/// loading, which `LoadFile2` does not support.
 extern "efiapi" fn load_file(
     _this: *mut c_void,
     _file_path: *const c_void,
@@ -371,7 +415,11 @@ extern "efiapi" fn load_file(
             // SAFETY: The caller passes a buffer of at least `size` bytes. The
             // initrd is measured, accepted memory.
             unsafe {
-                core::ptr::copy_nonoverlapping(source as *const u8, buffer, size);
+                core::ptr::copy_nonoverlapping(
+                    with_exposed_provenance(source as usize),
+                    buffer,
+                    size,
+                );
                 buffer_size.write(size);
             }
             code(EfiStatus::SUCCESS)
@@ -379,6 +427,9 @@ extern "efiapi" fn load_file(
     }
 }
 
+/// `InstallConfigurationTable`. The stub installs tables such as the
+/// unaccepted-memory bitmap here. This does not change the memory-map key,
+/// because the stub calls it between `GetMemoryMap` and `ExitBootServices`.
 extern "efiapi" fn install_configuration_table(guid: *const Guid, table: *mut c_void) -> usize {
     if guid.is_null() {
         return code(EfiStatus::INVALID_PARAMETER);
@@ -390,6 +441,8 @@ extern "efiapi" fn install_configuration_table(guid: *const Guid, table: *mut c_
     }))
 }
 
+/// `Exit`. The stub calls this only when it fails, and there is nothing to
+/// return to, so the guest stops.
 extern "efiapi" fn exit(
     _image_handle: usize,
     _exit_status: usize,
@@ -399,6 +452,8 @@ extern "efiapi" fn exit(
     terminate(Failure::EfiExit)
 }
 
+/// `ExitBootServices`. Fails if the memory map changed since the caller read
+/// it. After this, the allocation services fail, but the tables stay valid.
 extern "efiapi" fn exit_boot_services(_image_handle: usize, map_key: usize) -> usize {
     code(with_state(|state| state.exit_boot_services(map_key as u64)))
 }
@@ -413,6 +468,8 @@ extern "efiapi" fn get_next_monotonic_count(count: *mut u64) -> usize {
     code(EfiStatus::SUCCESS)
 }
 
+/// `LocateProtocol`. The shim installs no global protocols, so every optional
+/// feature that the stub looks for (for example RNG, TCG, or GOP) is absent.
 extern "efiapi" fn locate_protocol(
     _protocol: *const Guid,
     _registration: *mut c_void,
@@ -425,6 +482,8 @@ extern "efiapi" fn locate_protocol(
     code(EfiStatus::NOT_FOUND)
 }
 
+/// `LocateHandleBuffer`. As for `LocateHandle`, no handle matches. The stub
+/// uses this to look for optional devices, such as a GOP framebuffer.
 extern "efiapi" fn locate_handle_buffer(
     _search_type: u32,
     _protocol: *const Guid,
@@ -463,12 +522,15 @@ extern "efiapi" fn set_mem(buffer: *mut u8, size: usize, value: u8) {
     unsafe { core::ptr::write_bytes(buffer, value, size) };
 }
 
+/// `ConIn.ReadKeyStroke`. There is no keyboard, so no key is ever ready.
 extern "efiapi" fn read_key_stroke(_this: *mut c_void, _key: *mut c_void) -> usize {
     code(EfiStatus::NOT_READY)
 }
 
+/// Returns the addresses of the service functions. Every boot service that the
+/// shim does not implement returns `EFI_UNSUPPORTED`.
 fn handlers() -> Handlers {
-    let address = |f: *const ()| f as u64;
+    let address = |f: *const ()| f.expose_provenance() as u64;
     let mut functions = [address(unsupported as *const ()); EFI_BOOT_SERVICES_COUNT];
     for (index, function) in [
         (bs::RAISE_TPL, raise_tpl as *const ()),
@@ -510,15 +572,20 @@ fn handlers() -> Handlers {
     }
 }
 
-/// Builds the UEFI environment and calls the Linux EFI stub. Does not
-/// return.
-pub fn enter_linux(map: MemoryMap, boot: &Boot) -> ! {
+/// Sets the boot-services state and builds the tables.
+fn install(map: MemoryMap, boot: &Boot) {
     STATE.with(|state| *state = Some(State::new(map, boot.initrd, boot.initrd_size)));
     let base = EFI.address();
     with_efi(|efi| efi.build(base, boot, &handlers()));
+}
 
+/// Builds the UEFI environment and calls the Linux EFI stub. Does not
+/// return.
+#[cfg(minimal_rt)]
+pub fn enter_linux(map: MemoryMap, boot: &Boot) -> ! {
+    install(map, boot);
     let image_handle = handles().image;
-    let system_table = field_address!(base, system_table);
+    let system_table = field_address!(EFI.address(), system_table);
     // SAFETY: The kernel image is measured and accepted, its entry point
     // follows the UEFI image-entry ABI, and the stack is accepted memory that
     // nothing else uses. The previous RSP is saved on the new stack and
@@ -543,4 +610,414 @@ pub fn enter_linux(map: MemoryMap, boot: &Boot) -> ! {
         );
     }
     terminate(Failure::EfiStub)
+}
+
+/// These tests call the boot services as the EFI stub does, through raw
+/// pointers into a host buffer that stands in for guest RAM. Run them under
+/// Miri to check the services' unsafe code:
+///
+/// ```bash
+/// cargo +nightly miri test -p snp_bootshim efi::entry
+/// ```
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memory_range::MemoryRange;
+    use parking_lot::Mutex;
+    use parking_lot::MutexGuard;
+    use test_with_tracing::test;
+    use uefi_specs::uefi::boot::ACPI_20_TABLE_GUID;
+    use uefi_specs::uefi::boot::EFI_PAGE_SIZE;
+    use uefi_specs::uefi::boot::EfiDevicePathProtocol;
+    use uefi_specs::uefi::boot::LOADED_IMAGE_PROTOCOL_GUID;
+    use uefi_specs::uefi::boot::boot_service_index;
+
+    const PAGES: usize = 32;
+    const INITRD: &[u8] = b"initrd contents";
+
+    #[repr(C, align(4096))]
+    #[derive(Clone)]
+    struct Page([u8; EFI_PAGE_SIZE as usize]);
+
+    /// Guest RAM for one test. The services use the global tables and state,
+    /// so tests run one at a time.
+    struct Guest {
+        /// A raw allocation, like guest RAM: the services reach it only
+        /// through addresses, so no reference may own it.
+        ram: *mut [Page],
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Guest {
+        fn drop(&mut self) {
+            // SAFETY: `ram` came from `Box::into_raw`, and nothing uses it
+            // after the test.
+            drop(unsafe { Box::from_raw(self.ram) });
+        }
+    }
+
+    impl Guest {
+        /// Installs the services over `PAGES` pages of host memory: the first
+        /// page holds the initrd, the next 15 are free, and the rest are
+        /// unaccepted.
+        fn new() -> Self {
+            static LOCK: Mutex<()> = Mutex::new(());
+            let lock = LOCK.lock();
+            // A test that stopped the guest can leave a borrow behind.
+            EFI.borrowed.set(false);
+            STATE.borrowed.set(false);
+
+            let mut ram = vec![Page([0; EFI_PAGE_SIZE as usize]); PAGES].into_boxed_slice();
+            ram[0].0[..INITRD.len()].copy_from_slice(INITRD);
+            let ram = Box::into_raw(ram);
+            let base = ram.cast::<Page>().expose_provenance() as u64;
+            let page = |index: u64| base + index * EFI_PAGE_SIZE;
+            let mut map = MemoryMap::default();
+            for (range, ty) in [
+                (page(0)..page(1), EfiMemoryType::EFI_LOADER_DATA),
+                (page(1)..page(16), EfiMemoryType::EFI_CONVENTIONAL_MEMORY),
+                (
+                    page(16)..page(PAGES as u64),
+                    EfiMemoryType::EFI_UNACCEPTED_MEMORY_TYPE,
+                ),
+            ] {
+                map.set(MemoryRange::new(range), ty).unwrap();
+            }
+            install(
+                map,
+                &Boot {
+                    kernel: MemoryRange::new(page(0)..page(1)),
+                    kernel_entry: page(0),
+                    initrd: Some(MemoryRange::new(page(0)..page(1))),
+                    initrd_size: INITRD.len() as u64,
+                    cmdline_gpa: 0,
+                    cmdline_size: 0,
+                    rsdp_gpa: 0x1000,
+                    smbios_gpa: 0x2000,
+                    cc_blob_gpa: 0x3000,
+                    stack_top: 0,
+                },
+            );
+            Self { ram, _lock: lock }
+        }
+
+        fn page(&self, index: usize) -> u64 {
+            self.ram.cast::<Page>().addr() as u64 + (index * size_of::<Page>()) as u64
+        }
+
+        fn contains(&self, address: u64, len: usize) -> bool {
+            address >= self.page(0) && address + len as u64 <= self.page(PAGES)
+        }
+    }
+
+    fn status(status: EfiStatus) -> usize {
+        code(status)
+    }
+
+    /// Returns the memory map, as the stub reads it: first the size, then the
+    /// descriptors.
+    fn memory_map() -> (Vec<EfiMemoryDescriptor>, usize) {
+        let mut size = 0;
+        let mut key = 0;
+        let mut descriptor_size = 0;
+        let mut version = 0;
+        assert_eq!(
+            get_memory_map(
+                &mut size,
+                core::ptr::null_mut(),
+                &mut key,
+                &mut descriptor_size,
+                &mut version,
+            ),
+            status(EfiStatus::BUFFER_TOO_SMALL)
+        );
+        assert_eq!(descriptor_size, DESCRIPTOR_SIZE);
+        assert_eq!(version, EFI_MEMORY_DESCRIPTOR_VERSION);
+        let mut buffer = vec![0u8; size + DESCRIPTOR_SIZE];
+        size = buffer.len();
+        assert_eq!(
+            get_memory_map(
+                &mut size,
+                buffer.as_mut_ptr(),
+                &mut key,
+                &mut descriptor_size,
+                &mut version,
+            ),
+            status(EfiStatus::SUCCESS)
+        );
+        let descriptors = buffer[..size]
+            .chunks_exact(DESCRIPTOR_SIZE)
+            // SAFETY: Each chunk is one descriptor that `get_memory_map` wrote.
+            .map(|chunk| unsafe {
+                chunk
+                    .as_ptr()
+                    .cast::<EfiMemoryDescriptor>()
+                    .read_unaligned()
+            })
+            .collect();
+        (descriptors, key)
+    }
+
+    #[test]
+    fn allocates_and_frees_pages() {
+        let guest = Guest::new();
+        // `AllocateAnyPages` must not read the uninitialized address.
+        let mut address = MaybeUninit::<u64>::uninit();
+        assert_eq!(
+            allocate_pages(
+                0,
+                EfiMemoryType::EFI_LOADER_DATA.0,
+                20,
+                address.as_mut_ptr()
+            ),
+            status(EfiStatus::SUCCESS)
+        );
+        // SAFETY: `allocate_pages` succeeded, so it wrote the address.
+        let address = unsafe { address.assume_init() };
+        assert!(guest.contains(address, 20 * EFI_PAGE_SIZE as usize));
+        assert_eq!(free_pages(address, 20), status(EfiStatus::SUCCESS));
+        assert_eq!(free_pages(address, 20), status(EfiStatus::NOT_FOUND));
+
+        let mut address = 0;
+        assert_eq!(
+            allocate_pages(3, EfiMemoryType::EFI_LOADER_DATA.0, 1, &mut address),
+            status(EfiStatus::INVALID_PARAMETER)
+        );
+        assert_eq!(
+            allocate_pages(0, 0, 1, core::ptr::null_mut()),
+            status(EfiStatus::INVALID_PARAMETER)
+        );
+    }
+
+    #[test]
+    fn allocates_and_frees_pool() {
+        let guest = Guest::new();
+        let mut buffer = core::ptr::null_mut();
+        assert_eq!(
+            allocate_pool(EfiMemoryType::EFI_LOADER_DATA.0, 100, &mut buffer),
+            status(EfiStatus::SUCCESS)
+        );
+        assert!(guest.contains(buffer.addr() as u64, 100));
+        // SAFETY: The pool buffer has 100 writable bytes.
+        unsafe { buffer.cast::<u8>().write_bytes(0xaa, 100) };
+        assert_eq!(free_pool(buffer), status(EfiStatus::SUCCESS));
+        // The header is cleared, so a second free fails.
+        assert_eq!(free_pool(buffer), status(EfiStatus::INVALID_PARAMETER));
+
+        // A page that `AllocatePool` did not return has no header.
+        let not_pool = with_exposed_provenance_mut::<c_void>(guest.page(2) as usize + 16);
+        assert_eq!(free_pool(not_pool), status(EfiStatus::INVALID_PARAMETER));
+        assert_eq!(
+            free_pool(core::ptr::null_mut()),
+            status(EfiStatus::INVALID_PARAMETER)
+        );
+    }
+
+    #[test]
+    fn reads_the_memory_map_and_exits_boot_services() {
+        let _guest = Guest::new();
+        let (descriptors, key) = memory_map();
+        assert_eq!(descriptors.len(), 3);
+        assert_eq!(
+            descriptors[2].typ,
+            EfiMemoryType::EFI_UNACCEPTED_MEMORY_TYPE
+        );
+
+        // A stale key fails.
+        assert_eq!(
+            exit_boot_services(0, key + 1),
+            status(EfiStatus::INVALID_PARAMETER)
+        );
+        assert_eq!(exit_boot_services(0, key), status(EfiStatus::SUCCESS));
+        // Allocation stops after ExitBootServices.
+        let mut buffer = core::ptr::null_mut();
+        assert_eq!(
+            allocate_pool(EfiMemoryType::EFI_LOADER_DATA.0, 1, &mut buffer),
+            status(EfiStatus::UNSUPPORTED)
+        );
+    }
+
+    #[test]
+    fn loads_the_initrd_as_the_stub_does() {
+        let _guest = Guest::new();
+        let path = with_efi(|efi| efi.initrd_path);
+        let mut remaining = path.as_bytes().as_ptr();
+        let mut device = 0;
+        assert_eq!(
+            locate_device_path(&LOAD_FILE2_PROTOCOL_GUID, &mut remaining, &mut device),
+            status(EfiStatus::SUCCESS)
+        );
+        assert_eq!(device as u64, handles().initrd);
+        // The rest of the path is the end node.
+        // SAFETY: `remaining` points into `path`, at its end node.
+        let end = unsafe { remaining.cast::<EfiDevicePathProtocol>().read_unaligned() };
+        assert_eq!(end.device_type, uefi_specs::uefi::boot::EfiDeviceType::END);
+
+        let mut load_file2 = core::ptr::null_mut();
+        assert_eq!(
+            handle_protocol(device, &LOAD_FILE2_PROTOCOL_GUID, &mut load_file2),
+            status(EfiStatus::SUCCESS)
+        );
+        assert_eq!(
+            load_file2.addr() as u64,
+            field_address!(EFI.address(), load_file2)
+        );
+
+        let mut size = 0;
+        assert_eq!(
+            load_file(
+                load_file2,
+                remaining.cast(),
+                0,
+                &mut size,
+                core::ptr::null_mut()
+            ),
+            status(EfiStatus::BUFFER_TOO_SMALL)
+        );
+        assert_eq!(size, INITRD.len());
+        let mut buffer = vec![0; size];
+        assert_eq!(
+            load_file(
+                load_file2,
+                remaining.cast(),
+                0,
+                &mut size,
+                buffer.as_mut_ptr()
+            ),
+            status(EfiStatus::SUCCESS)
+        );
+        assert_eq!(buffer, INITRD);
+    }
+
+    #[test]
+    fn rejects_other_device_paths_and_protocols() {
+        let _guest = Guest::new();
+        let mut path = with_efi(|efi| efi.initrd_path);
+        path.vendor[VENDOR_NODE_SIZE - 1] ^= 1;
+        let mut remaining = path.as_bytes().as_ptr();
+        let mut device = 0;
+        assert_eq!(
+            locate_device_path(&LOAD_FILE2_PROTOCOL_GUID, &mut remaining, &mut device),
+            status(EfiStatus::NOT_FOUND)
+        );
+        // A short first node is not read past its end.
+        let end_only = [0x7f_u8, 0xff, 4, 0];
+        let mut remaining = end_only.as_ptr();
+        assert_eq!(
+            locate_device_path(&LOAD_FILE2_PROTOCOL_GUID, &mut remaining, &mut device),
+            status(EfiStatus::NOT_FOUND)
+        );
+
+        let mut interface = core::ptr::null_mut();
+        assert_eq!(
+            handle_protocol(
+                handles().image as usize,
+                &LOADED_IMAGE_PROTOCOL_GUID,
+                &mut interface
+            ),
+            status(EfiStatus::SUCCESS)
+        );
+        assert_eq!(interface.addr() as u64, handles().image);
+        assert_eq!(
+            handle_protocol(
+                handles().image as usize,
+                &LOAD_FILE2_PROTOCOL_GUID,
+                &mut interface
+            ),
+            status(EfiStatus::UNSUPPORTED)
+        );
+    }
+
+    #[test]
+    fn installs_configuration_tables_and_runs_the_helpers() {
+        let _guest = Guest::new();
+        assert_eq!(
+            install_configuration_table(&ACPI_20_TABLE_GUID, core::ptr::null_mut()),
+            status(EfiStatus::SUCCESS)
+        );
+        assert_eq!(with_efi(|efi| efi.system_table.number_of_table_entries), 3);
+
+        let data = *b"123456789";
+        let mut crc = 0;
+        assert_eq!(
+            calculate_crc32(data.as_ptr(), data.len(), &mut crc),
+            status(EfiStatus::SUCCESS)
+        );
+        assert_eq!(crc, 0xcbf4_3926);
+
+        let mut buffer = *b"abcdef";
+        // CopyMem allows overlapping buffers.
+        copy_mem(buffer.as_mut_ptr().wrapping_add(1), buffer.as_ptr(), 4);
+        assert_eq!(&buffer, b"aabcdf");
+        set_mem(buffer.as_mut_ptr(), 2, b'z');
+        assert_eq!(&buffer, b"zzbcdf");
+
+        let mut count = 0;
+        assert_eq!(
+            get_next_monotonic_count(&mut count),
+            status(EfiStatus::SUCCESS)
+        );
+        assert_eq!(count, 1);
+        let mut handles = 5;
+        let mut list = core::ptr::dangling_mut();
+        assert_eq!(
+            locate_handle_buffer(
+                0,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                &mut handles,
+                &mut list
+            ),
+            status(EfiStatus::NOT_FOUND)
+        );
+        assert_eq!((handles, list), (0, core::ptr::null_mut()));
+    }
+
+    #[test]
+    fn calls_services_through_the_boot_services_table() {
+        let guest = Guest::new();
+        // The stub finds each service through the system table.
+        let allocate = with_efi(|efi| {
+            assert_eq!(
+                efi.system_table.boot_services,
+                field_address!(EFI.address(), boot_services)
+            );
+            efi.boot_services.functions[boot_service_index::ALLOCATE_PAGES]
+        });
+        // SAFETY: The table holds the address of `allocate_pages`, whose type
+        // this is.
+        let allocate: extern "efiapi" fn(u32, u32, usize, *mut u64) -> usize =
+            unsafe { core::mem::transmute(with_exposed_provenance::<()>(allocate as usize)) };
+        let mut address = 0;
+        assert_eq!(
+            allocate(0, EfiMemoryType::EFI_LOADER_DATA.0, 1, &mut address),
+            status(EfiStatus::SUCCESS)
+        );
+        assert!(guest.contains(address, EFI_PAGE_SIZE as usize));
+    }
+
+    #[test]
+    fn allocates_from_unaccepted_memory() {
+        let guest = Guest::new();
+        // More than the 15 free pages, so the allocation spans unaccepted
+        // memory.
+        let mut address = 0;
+        assert_eq!(
+            allocate_pages(0, EfiMemoryType::EFI_LOADER_DATA.0, 20, &mut address),
+            status(EfiStatus::SUCCESS)
+        );
+        assert!(guest.contains(address, 20 * EFI_PAGE_SIZE as usize));
+        // SAFETY: The allocation is 20 pages of the test's RAM.
+        unsafe {
+            with_exposed_provenance_mut::<u8>(address as usize)
+                .write_bytes(0x55, 20 * EFI_PAGE_SIZE as usize)
+        };
+    }
+
+    #[test]
+    #[should_panic(expected = "EfiReentry")]
+    fn reentry_stops_the_guest() {
+        let _guest = Guest::new();
+        with_state(|_| with_state(|_| ()));
+    }
 }

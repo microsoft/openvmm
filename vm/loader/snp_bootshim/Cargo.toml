@@ -21,6 +21,7 @@ x86defs.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+parking_lot.workspace = true
 test_with_tracing.workspace = true
 
 [build-dependencies]
