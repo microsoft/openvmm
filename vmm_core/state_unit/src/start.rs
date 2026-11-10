@@ -22,8 +22,10 @@ impl StateUnits {
     /// not start or did not confirm its start. If a unit fails to confirm its
     /// start, or its task does not answer its start or confirmation request,
     /// the units that did start, the failed unit among them, are stopped
-    /// again. A unit whose task does not answer is left in a terminal state
-    /// that fails later starts; a unit that failed to confirm its start can
+    /// again. A unit whose task does not answer is left in a terminal state:
+    /// while it is in that state, later starts, resets, saves, restores, and
+    /// time advances fail, and a stop stops it, since it may be running, but
+    /// leaves it in that state. A unit that failed to confirm its start can
     /// start again.
     ///
     /// [`StateUnit::confirm_start`]: crate::StateUnit::confirm_start
