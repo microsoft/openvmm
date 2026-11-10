@@ -893,7 +893,7 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
             CfgAccessTarget::Rciep(dev) => dev
                 .pci_cfg_write_with_routing(PciConfigAccessType::Type0, addr, value)
                 .unwrap_or(IoResult::Ok),
-            CfgAccessTarget::RootPort(port) => port.port.cfg_space.write(addr, value),
+            CfgAccessTarget::RootPort(port) => port.port.cfg_write(addr, value),
             CfgAccessTarget::DownstreamDevice(port) => port.forward_cfg_write(addr, value),
         }
     }
@@ -2806,5 +2806,79 @@ mod tests {
         let ports =
             build_with_devfns(vec![("a", Some(5 << 3)), ("b", Some((5 << 3) | 1))], 0).unwrap();
         assert_eq!(ports, vec![("a".into(), 40), ("b".into(), 41)]);
+    }
+
+    fn ecam_read_u32(rc: &mut GenericPcieRootComplex, offset: u64) -> u32 {
+        let mut value = [0; 4];
+        rc.mmio_read(offset, &mut value).unwrap();
+        u32::from_le_bytes(value)
+    }
+
+    /// Offset of the first capability with `id` in the config space at ECAM offset 0.
+    fn ecam_find_cap(rc: &mut GenericPcieRootComplex, id: u32) -> u64 {
+        let mut offset = u64::from(ecam_read_u32(rc, 0x34) & 0xfc);
+        while offset != 0 && ecam_read_u32(rc, offset) & 0xff != id {
+            offset = u64::from((ecam_read_u32(rc, offset) >> 8) & 0xfc);
+        }
+        assert_ne!(offset, 0, "capability {id:#x} not found");
+        offset
+    }
+
+    /// Guest writes to a root port must reach `PcieDownstreamPort::cfg_write`. Through ECAM,
+    /// as a guest does: an add while Hot-Plug Interrupt Enable is off must be signalled when
+    /// the guest's Slot Control write turns it on.
+    #[test]
+    fn test_ecam_slot_control_write_signals_a_pending_hot_add() {
+        let controller = pci_core::test_helpers::TestPciInterruptController::new();
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        msi_conn.connect(controller.signal_msi());
+        let rc_bus_range = AssignedBusRange::new();
+        rc_bus_range.set_bus_range(0, 1);
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let mut register_pio = TestPciePioRegistration;
+        let mut rc = GenericPcieRootComplex::builder(
+            &mut register_mmio,
+            &mut register_pio,
+            0..=1,
+            MemoryRange::new(0..ecam_size_from_bus_numbers(0, 1)),
+        )
+        .root_ports(
+            vec![GenericPciePortDefinition {
+                name: "hp-port".into(),
+                devfn: None,
+                hotplug: true,
+                settings: PciePortSettings::default(),
+            }],
+            &msi_conn.msi_target(rc_bus_range, 0),
+        )
+        .build()
+        .unwrap();
+
+        // Enable the root port's MSI the way a guest driver does, through ECAM.
+        let msi = ecam_find_cap(&mut rc, 0x05);
+        rc.mmio_write(msi + 4, &0xfee0_0000u32.to_le_bytes())
+            .unwrap();
+        rc.mmio_write(msi + 8, &0u32.to_le_bytes()).unwrap();
+        rc.mmio_write(msi + 12, &0x41u32.to_le_bytes()).unwrap();
+        rc.mmio_write(msi, &(1u32 << 16).to_le_bytes()).unwrap();
+        // Slot Control sits at 0x18 in the PCI Express capability.
+        let slot_control = ecam_find_cap(&mut rc, 0x10) + 0x18;
+
+        rc.hotplug_add_device("hp-port", "dev", Box::new(TestPciDevice))
+            .unwrap();
+        assert!(
+            controller.get_next_interrupt().is_none(),
+            "no MSI while Hot-Plug Interrupt Enable is off"
+        );
+
+        // Hot-Plug Interrupt Enable and Presence Detect Changed Enable.
+        let hpie_pdce: u32 = (1 << 5) | (1 << 3);
+        rc.mmio_write(slot_control, &hpie_pdce.to_le_bytes())
+            .unwrap();
+        assert!(
+            controller.get_next_interrupt().is_some(),
+            "the guest's Slot Control write must send the pending add's MSI"
+        );
+        assert!(controller.get_next_interrupt().is_none());
     }
 }

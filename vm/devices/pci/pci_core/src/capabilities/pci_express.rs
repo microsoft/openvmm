@@ -26,10 +26,30 @@ pub trait FlrHandler: Send + Sync + Inspect {
     fn initiate_flr(&self);
 }
 
+/// Why the hot-plug interrupt condition is being re-evaluated.
+///
+/// Only selects which Inspect counter a sent interrupt is charged to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotplugNotifyCause {
+    /// A hot-plug event changed Slot Status (a device was added or removed).
+    Event,
+    /// The guest wrote the port's configuration space, possibly Slot Control or Slot Status.
+    GuestWrite,
+}
+
 #[derive(Debug, Inspect)]
 struct PciExpressState {
     registers: PciExpressRegisters,
     presence_detect_state: bool,
+    /// The hot-plug interrupt condition as last evaluated (PCIe Base 6.7.3.4): Hot-Plug
+    /// Interrupt Enable set and at least one pending hot-plug event whose own enable bit is
+    /// set. An MSI is due when it goes from false to true.
+    hotplug_notify_level: bool,
+    /// Hot-plug interrupts sent because an event raised the condition.
+    hotplug_msi_on_event: u64,
+    /// Hot-plug interrupts sent because a guest write raised the condition, i.e. for an event
+    /// that arrived while the guest had the interrupt (or that event's enable) off.
+    hotplug_msi_on_guest_write: u64,
 }
 
 #[derive(Debug, Inspect)]
@@ -48,6 +68,9 @@ impl PciExpressState {
         Self {
             registers: PciExpressRegisters::new(),
             presence_detect_state: false,
+            hotplug_notify_level: false,
+            hotplug_msi_on_event: 0,
+            hotplug_msi_on_guest_write: 0,
         }
     }
 
@@ -55,8 +78,32 @@ impl PciExpressState {
         let Self {
             registers,
             presence_detect_state: _,
+            hotplug_notify_level,
+            // Lifetime counters, kept across reset.
+            hotplug_msi_on_event: _,
+            hotplug_msi_on_guest_write: _,
         } = self;
         *registers = PciExpressRegisters::new();
+        // The reset cleared Slot Control and Slot Status, so the condition is false.
+        *hotplug_notify_level = false;
+    }
+
+    /// The hot-plug interrupt condition of PCIe Base 6.7.3.4 for the current registers.
+    ///
+    /// Each event status bit counts only while its own enable bit is set. Bits 0-4 of Slot
+    /// Status and Slot Control pair up one to one; Data Link Layer State Changed pairs status
+    /// bit 8 with control bit 12.
+    fn hotplug_condition(registers: &PciExpressRegisters) -> bool {
+        let ctl = registers.slot_control;
+        let sta = registers.slot_status_events;
+        ctl.hot_plug_interrupt_enable()
+            && ((sta.attention_button_pressed() && ctl.attention_button_pressed_enable())
+                || (sta.power_fault_detected() && ctl.power_fault_detected_enable())
+                || (sta.mrl_sensor_changed() && ctl.mrl_sensor_changed_enable())
+                || (sta.presence_detect_changed() && ctl.presence_detect_changed_enable())
+                || (sta.command_completed() && ctl.command_completed_interrupt_enable())
+                || (sta.data_link_layer_state_changed()
+                    && ctl.data_link_layer_state_changed_enable()))
     }
 
     fn slot_status(
@@ -521,6 +568,29 @@ impl PciExpressCapability {
             .hot_plug_interrupt_enable()
     }
 
+    /// Re-evaluate the hot-plug interrupt condition and report whether a hot-plug MSI is due.
+    ///
+    /// Returns true only when the condition goes from false to true (PCIe Base 6.7.3.4), so an
+    /// event that arrives while an earlier one is still pending raises no second interrupt.
+    /// The caller sends the MSI.
+    ///
+    /// Call this after every hot-plug event and after every guest configuration write: an
+    /// event that arrived while the guest had the interrupt off is due as soon as the guest
+    /// enables it. Writes that do not touch the slot registers leave the condition unchanged.
+    pub fn update_hotplug_notify(&self, cause: HotplugNotifyCause) -> bool {
+        let mut state = self.state.lock();
+        let now = PciExpressState::hotplug_condition(&state.registers);
+        let rose = now && !state.hotplug_notify_level;
+        state.hotplug_notify_level = now;
+        if rose {
+            match cause {
+                HotplugNotifyCause::Event => state.hotplug_msi_on_event += 1,
+                HotplugNotifyCause::GuestWrite => state.hotplug_msi_on_guest_write += 1,
+            }
+        }
+        rose
+    }
+
     /// Returns whether ARI Forwarding is enabled in Device Control 2.
     ///
     /// When set on a downstream-facing port, the port no longer enforces the
@@ -820,6 +890,10 @@ mod save_restore {
             let PciExpressState {
                 registers,
                 presence_detect_state: _,
+                // Not saved: restore recomputes the level from the saved registers.
+                hotplug_notify_level: _,
+                hotplug_msi_on_event: _,
+                hotplug_msi_on_guest_write: _,
             } = &*state;
             let PciExpressRegisters {
                 device_control,
@@ -855,6 +929,9 @@ mod save_restore {
             let PciExpressState {
                 registers,
                 presence_detect_state: _,
+                hotplug_notify_level,
+                hotplug_msi_on_event: _,
+                hotplug_msi_on_guest_write: _,
             } = &mut *state;
             *registers = PciExpressRegisters {
                 device_control: pci_express::DeviceControl::from_bits(
@@ -879,6 +956,9 @@ mod save_restore {
                     link_control_2 & Self::link_control_2_writable_mask(),
                 ),
             };
+            // Take the restored level as already notified: an interrupt raised before the save
+            // reached the guest then, so sending it again would be a spurious second one.
+            *hotplug_notify_level = PciExpressState::hotplug_condition(registers);
             Ok(())
         }
     }

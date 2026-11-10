@@ -25,6 +25,7 @@ use pci_core::bus_range::AssignedBusRange;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::capabilities::extended::acs::AcsExtendedCapability;
 use pci_core::capabilities::msi_cap::MsiCapability;
+use pci_core::capabilities::pci_express::HotplugNotifyCause;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
@@ -653,20 +654,20 @@ impl PcieDownstreamPort {
         self.cfg_space.bus_range()
     }
 
-    /// Notify the guest of a hotplug event via MSI.
+    /// Send the hot-plug MSI if the hot-plug interrupt condition just became true.
     ///
-    /// Fires MSI if the guest has enabled hot_plug_interrupt_enable in
-    /// Slot Control. The caller must have already set the appropriate
-    /// status bits (via set_hotplug_state) before calling this.
-    fn fire_hotplug_msi(&self) {
-        let hotplug_enabled = self
+    /// See [`PciExpressCapability::update_hotplug_notify`]. Runs after hot-plug events and
+    /// after guest writes, so an event that arrived while the interrupt was off is signalled
+    /// when the guest enables it.
+    fn notify_hotplug(&self, cause: HotplugNotifyCause) {
+        let due = self
             .cfg_space
             .capabilities()
             .iter()
             .find_map(|cap| cap.as_pci_express())
-            .is_some_and(|pcie| pcie.hot_plug_interrupt_enabled());
+            .is_some_and(|pcie| pcie.update_hotplug_notify(cause));
 
-        if hotplug_enabled {
+        if due {
             if let Some(interrupt) = self
                 .cfg_space
                 .capabilities()
@@ -677,6 +678,16 @@ impl PcieDownstreamPort {
                 interrupt.deliver();
             }
         }
+    }
+
+    /// Write this port's own configuration space on behalf of the guest.
+    ///
+    /// Guest writes must come through here rather than go straight to `cfg_space`, so that a
+    /// write enabling the hot-plug interrupt while an event is pending sends that event's MSI.
+    pub fn cfg_write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult {
+        let result = self.cfg_space.write(addr, value);
+        self.notify_hotplug(HotplugNotifyCause::GuestWrite);
+        result
     }
 
     /// Forward a configuration space read to the connected device.
@@ -891,7 +902,7 @@ impl PcieDownstreamPort {
                 pcie.set_hotplug_state(true);
             }
         }
-        self.fire_hotplug_msi();
+        self.notify_hotplug(HotplugNotifyCause::Event);
         Ok(())
     }
 
@@ -919,7 +930,7 @@ impl PcieDownstreamPort {
                 pcie.set_hotplug_state(false);
             }
         }
-        self.fire_hotplug_msi();
+        self.notify_hotplug(HotplugNotifyCause::Event);
         Ok(())
     }
 }
@@ -1614,5 +1625,167 @@ mod tests {
             port.bar_mmio_write(0, 0, &write2),
             IoResult::Err(IoError::InvalidAccessSize)
         ));
+    }
+
+    /// Slot Control/Status dword of the root port: the PCIe capability starts at 0x40.
+    const SLOT_CTL_STS: u16 = 0x58;
+    /// Slot Control: Presence Detect Changed Enable, Hot-Plug Interrupt Enable, Data Link Layer
+    /// State Changed Enable.
+    const PDCE: u32 = 1 << 3;
+    const HPIE: u32 = 1 << 5;
+    const DLLSCE: u32 = 1 << 12;
+    /// Slot Status (high half): Presence Detect Changed and Data Link Layer State Changed, RW1C.
+    const PDC: u32 = 1 << (16 + 3);
+    const DLLSC: u32 = 1 << (16 + 8);
+
+    /// A hot-plug capable root port whose MSI is enabled and lands in the returned controller.
+    fn hotplug_port_with_msi() -> (
+        PcieDownstreamPort,
+        pci_core::test_helpers::TestPciInterruptController,
+    ) {
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+        let controller = pci_core::test_helpers::TestPciInterruptController::new();
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        msi_conn.connect(controller.signal_msi());
+        let mut port = PcieDownstreamPort::new(
+            "test-port",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            Some(1),
+            &msi_conn.target(),
+            PciePortSettings::default(),
+            None,
+            None,
+        );
+        // Walk the capability list for MSI (id 5) and enable it, as a guest driver would.
+        let mut offset = (port.cfg_space.read_u32(0x34) & 0xfc) as u16;
+        while offset != 0 && port.cfg_space.read_u32(offset) & 0xff != 0x05 {
+            offset = ((port.cfg_space.read_u32(offset) >> 8) & 0xfc) as u16;
+        }
+        assert_ne!(offset, 0, "the root port must carry an MSI capability");
+        port.cfg_space.write_u32(offset + 4, 0xfee0_0000);
+        port.cfg_space.write_u32(offset + 8, 0);
+        port.cfg_space.write_u32(offset + 12, 0x41);
+        port.cfg_space.write_u32(offset, 1 << 16);
+        (port, controller)
+    }
+
+    /// A guest write of the Slot Control/Status dword, through the guest path.
+    fn guest_slot_write(port: &mut PcieDownstreamPort, value: u32) {
+        let addr = PciConfigAddress::new(0, 0, SLOT_CTL_STS / 4).unwrap();
+        let result = port.cfg_write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(value));
+        assert!(matches!(result, IoResult::Ok));
+    }
+
+    fn msi_count(controller: &pci_core::test_helpers::TestPciInterruptController) -> usize {
+        std::iter::from_fn(|| controller.get_next_interrupt()).count()
+    }
+
+    #[test]
+    fn hot_add_while_the_interrupt_is_off_is_signalled_when_the_guest_turns_it_on() {
+        let (mut port, controller) = hotplug_port_with_msi();
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        assert_eq!(
+            msi_count(&controller),
+            0,
+            "no MSI while Hot-Plug Interrupt Enable is off"
+        );
+
+        guest_slot_write(&mut port, HPIE | PDCE | DLLSCE);
+        assert_eq!(
+            msi_count(&controller),
+            1,
+            "enabling the interrupt with the add still pending must send its MSI"
+        );
+
+        guest_slot_write(&mut port, HPIE | PDCE | DLLSCE);
+        assert_eq!(
+            msi_count(&controller),
+            0,
+            "a repeated write sends no second MSI"
+        );
+    }
+
+    #[test]
+    fn an_event_counts_only_while_its_own_enable_bit_is_set() {
+        let (mut port, controller) = hotplug_port_with_msi();
+        guest_slot_write(&mut port, HPIE);
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        assert_eq!(
+            msi_count(&controller),
+            0,
+            "Presence Detect Changed with its enable off raises no interrupt"
+        );
+
+        guest_slot_write(&mut port, HPIE | PDCE);
+        assert_eq!(msi_count(&controller), 1);
+    }
+
+    #[test]
+    fn one_msi_per_rise_of_the_condition() {
+        let (mut port, controller) = hotplug_port_with_msi();
+        guest_slot_write(&mut port, HPIE | PDCE | DLLSCE);
+        assert_eq!(
+            msi_count(&controller),
+            0,
+            "enabling with nothing pending sends nothing"
+        );
+
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        assert_eq!(msi_count(&controller), 1);
+
+        // The guest has not acknowledged the add yet, so the remove finds the condition high.
+        port.hotplug_remove_device().unwrap();
+        assert_eq!(
+            msi_count(&controller),
+            0,
+            "no new rise while the add is still pending"
+        );
+
+        // Acknowledge both changed bits (RW1C): the condition falls without an interrupt.
+        guest_slot_write(&mut port, HPIE | PDCE | DLLSCE | PDC | DLLSC);
+        assert_eq!(msi_count(&controller), 0);
+
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        assert_eq!(
+            msi_count(&controller),
+            1,
+            "the next event after an acknowledge rises again"
+        );
+    }
+
+    #[test]
+    fn restore_does_not_resend_a_pending_hotplug_interrupt() {
+        let (mut port, controller) = hotplug_port_with_msi();
+        guest_slot_write(&mut port, HPIE | PDCE | DLLSCE);
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        assert_eq!(msi_count(&controller), 1);
+
+        let saved = port.cfg_space.save().expect("save should succeed");
+        port.cfg_space
+            .restore(saved)
+            .expect("restore should succeed");
+        guest_slot_write(&mut port, HPIE | PDCE | DLLSCE);
+        assert_eq!(
+            msi_count(&controller),
+            0,
+            "the interrupt for the pending add already went out before the save"
+        );
     }
 }
