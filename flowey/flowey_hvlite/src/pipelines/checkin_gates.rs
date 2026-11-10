@@ -72,14 +72,6 @@ pub struct CheckinGatesCli {
     local_run_args: Option<crate::pipelines_shared::cfg_common_params::LocalRunArgs>,
 }
 
-fn filter_mshv_root(filter: String, provisioned: bool) -> String {
-    if provisioned {
-        filter
-    } else {
-        format!("({filter}) & !test(_uefi_x64_mshv_)")
-    }
-}
-
 impl IntoPipeline for CheckinGatesCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
         let Self {
@@ -1925,7 +1917,11 @@ impl IntoPipeline for CheckinGatesCli {
                 },
             },
         ] {
-            let nextest_filter_expr = filter_mshv_root(nextest_filter_expr, mshv_root);
+            let nextest_filter_expr = if mshv_root {
+                nextest_filter_expr
+            } else {
+                format!("({nextest_filter_expr}) & !test(_uefi_x64_mshv_)")
+            };
             // Skip unsupported jobs on ADO backend
             if matches!(backend_hint, PipelineBackendHint::Ado) && ado_pool.is_none() {
                 continue;
@@ -2196,21 +2192,5 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         Ok(pipeline)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use test_with_tracing::test;
-
-    #[test]
-    fn unprovisioned_jobs_exclude_only_the_mshv_root_variant() {
-        let filter = "test(boot) | test(mshv)";
-        assert_eq!(filter_mshv_root(filter.into(), true), filter);
-        assert_eq!(
-            filter_mshv_root(filter.into(), false),
-            "(test(boot) | test(mshv)) & !test(_uefi_x64_mshv_)"
-        );
     }
 }

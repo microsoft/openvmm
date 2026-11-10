@@ -117,10 +117,11 @@ flowey_config! {
     pub struct Config {
         /// Specify version of the github release to pull from
         pub version: Option<String>,
-        /// Override the mshv-test release independently of other test kernels.
-        pub mshv_version: Option<String>,
-        /// Use an explicit mshv root bzImage instead of the published kernel.
-        pub local_mshv_kernel: Option<ConfigVar<PathBuf>>,
+        /// Override individual files without replacing other published kernels.
+        pub local_files: BTreeMap<
+            (OpenvmmTestKernelFile, CommonArch, LinuxTestKernelVersion),
+            ConfigVar<PathBuf>,
+        >,
         /// Use locally downloaded openvmm-test-linux contents, keyed by
         /// (architecture, kernel version)
         pub local_paths: BTreeMap<(CommonArch, LinuxTestKernelVersion), ConfigVar<PathBuf>>,
@@ -157,21 +158,19 @@ impl FlowNodeWithConfig for Node {
     ) -> anyhow::Result<()> {
         let Config {
             version,
-            mshv_version,
             local_paths,
-            local_mshv_kernel,
+            local_files,
         } = config;
         let mut deps: BTreeMap<
             (OpenvmmTestKernelFile, CommonArch, LinuxTestKernelVersion),
             Vec<WriteVar<PathBuf>>,
         > = BTreeMap::new();
-        let mut mshv_outputs = Vec::new();
-        anyhow::ensure!(
-            local_mshv_kernel.is_none()
-                || !local_paths
-                    .contains_key(&(CommonArch::X86_64, LinuxTestKernelVersion::MshvTest)),
-            "specify only one local mshv kernel override"
-        );
+        for (file, arch, kver) in local_files.keys() {
+            anyhow::ensure!(
+                !local_paths.contains_key(&(*arch, *kver)),
+                "cannot override both the file and archive directory for {file:?} {arch:?} {kver:?}"
+            );
+        }
 
         for req in requests {
             match req {
@@ -187,30 +186,23 @@ impl FlowNodeWithConfig for Node {
                             "{file:?} is not available in the openvmm-test-linux archive for {arch:?}"
                         );
                     }
-                    if kver == LinuxTestKernelVersion::MshvTest && local_mshv_kernel.is_some() {
-                        anyhow::ensure!(
-                            file == OpenvmmTestKernelFile::BzImage,
-                            "the local mshv root override must be a bzImage"
-                        );
-                        mshv_outputs.push(var);
-                        continue;
-                    }
                     deps.entry((file, arch, kver)).or_default().push(var);
                 }
             }
         }
 
-        if !mshv_outputs.is_empty() {
-            let ConfigVar(kernel) =
-                local_mshv_kernel.context("missing local mshv root kernel override")?;
-            ctx.emit_rust_step("use explicit mshv root kernel", |ctx| {
+        for (key, ConfigVar(kernel)) in local_files {
+            let Some(outputs) = deps.remove(&key) else {
+                continue;
+            };
+            ctx.emit_rust_step("use local openvmm-test-linux file", |ctx| {
                 let kernel = kernel.claim(ctx);
-                let outputs = mshv_outputs.claim(ctx);
+                let outputs = outputs.claim(ctx);
                 move |rt| {
                     let kernel = rt.read(kernel);
                     anyhow::ensure!(
                         kernel.is_file(),
-                        "mshv root kernel is not a file: {}",
+                        "local test kernel file for {key:?} is not a file: {}",
                         kernel.display()
                     );
                     rt.write_all(outputs, &kernel);
@@ -226,8 +218,8 @@ impl FlowNodeWithConfig for Node {
             anyhow::bail!("Cannot specify both Version and LocalPath requests");
         }
 
-        if version.is_none() && mshv_version.is_none() && local_paths.is_empty() {
-            anyhow::bail!("Must specify a Version or LocalPath request");
+        if version.is_none() && local_paths.is_empty() {
+            anyhow::bail!("Must specify a release version or local path");
         }
 
         // -- end of req processing -- //
@@ -265,6 +257,8 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
+        let version = version.context("missing openvmm-test-linux version")?;
+
         // The same per-(arch, kver) archive can satisfy multiple file
         // requests (e.g. `Kernel` and `BzImage` for the same x86_64 6.1
         // archive), so dedupe download + extract on `(arch, kver)`.
@@ -272,13 +266,6 @@ impl FlowNodeWithConfig for Node {
             deps.keys().map(|(_, arch, kver)| (*arch, *kver)).collect();
         let mut archives = BTreeMap::new();
         for (arch, kver) in needed_archives {
-            let version = if kver == LinuxTestKernelVersion::MshvTest {
-                mshv_version.as_ref().or(version.as_ref())
-            } else {
-                version.as_ref()
-            }
-            .with_context(|| format!("missing openvmm-test-linux version for {kver:?}"))?
-            .clone();
             let arch_str = match arch {
                 CommonArch::X86_64 => "x86_64",
                 CommonArch::Aarch64 => "aarch64",
@@ -292,7 +279,7 @@ impl FlowNodeWithConfig for Node {
                 file_name: format!("openvmm-test-linux-{kver_str}.{arch_str}.{version}.tar.gz"),
                 path: v,
             });
-            archives.insert((arch, kver), (archive, version));
+            archives.insert((arch, kver), (archive, version.clone()));
         }
 
         let persistent_dir = ctx.persistent_dir();
