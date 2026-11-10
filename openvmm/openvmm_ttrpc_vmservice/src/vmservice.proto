@@ -194,6 +194,7 @@ message ProcessorConfig {
     uint32 processor_count = 1;
     uint32 processor_weight = 2;
     uint32 processor_limit = 3;
+    uint32 processor_reservation = 6;
 
     // Optional arch specific topology overrides.
     oneof arch_config {
@@ -959,8 +960,18 @@ message CapabilitiesVMResponse {
         Windows = 0;
         Linux = 1;
     }
+
+    // Processor limit/weight/reservation the host can enforce. Unsupported
+    // controls are rejected by CreateVM and ModifyResource.
+    message ProcessorQosSupport {
+        bool limit = 1;
+        bool weight = 2;
+        bool reservation = 3;
+    }
+
     repeated SupportedResource supported_resources = 1;
     repeated SupportedGuestOS supported_guest_os = 2;
+    ProcessorQosSupport processor_qos = 3;
 }
 
 //
@@ -1131,6 +1142,8 @@ message ModifyProcessorRequest {
 message ModifyProcessorConfigRequest {
     uint32 processor_weight = 1;
     uint32 processor_limit = 2;
+    // Set to 0 to clear the reservation; unset keeps it.
+    optional uint32 processor_reservation = 3;
 }
 
 message HVSocketListener {

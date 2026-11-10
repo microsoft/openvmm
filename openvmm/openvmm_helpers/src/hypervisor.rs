@@ -20,6 +20,13 @@ pub fn choose_hypervisor() -> anyhow::Result<Resource<HypervisorKind>> {
     anyhow::bail!("no hypervisor available");
 }
 
+/// Returns the name of the backend [`choose_hypervisor`] would pick, if any.
+pub fn chosen_hypervisor_name() -> Option<&'static str> {
+    hypervisor_resources::probes()
+        .find(|probe| matches!(probe.try_new_resource(), Ok(Some(_))))
+        .map(|probe| probe.name())
+}
+
 /// Parses a hypervisor specifier of the form `name` or `name:key=val,key,...`.
 ///
 /// Returns `(name, params)` where `params` is a list of `(key, value)` pairs.
