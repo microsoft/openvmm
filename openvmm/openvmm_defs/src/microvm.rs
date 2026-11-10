@@ -1096,6 +1096,11 @@ pub enum InvalidMicrovmNetworkConfig {
     GatewayCollision(std::net::Ipv4Addr),
 }
 
+/// IPv4 prefix lengths of a microVM network identity: those that
+/// [`MicrovmNetworkConfig`]'s `FromStr` accepts, and those that
+/// [`validate_machine_config`] accepts in an identity that no parser checked.
+const MICROVM_NETWORK_PREFIX_LENGTHS: std::ops::RangeInclusive<u8> = 1..=30;
+
 impl std::str::FromStr for MicrovmNetworkConfig {
     type Err = InvalidMicrovmNetworkConfig;
 
@@ -1110,7 +1115,7 @@ impl std::str::FromStr for MicrovmNetworkConfig {
         let prefix_length = prefix
             .parse::<u8>()
             .map_err(|_| InvalidMicrovmNetworkConfig::InvalidPrefix(prefix.to_owned()))?;
-        if !(1..=30).contains(&prefix_length) {
+        if !MICROVM_NETWORK_PREFIX_LENGTHS.contains(&prefix_length) {
             return Err(InvalidMicrovmNetworkConfig::PrefixOutOfRange(prefix_length));
         }
 
@@ -1431,6 +1436,19 @@ fn microvm_command_line_ingress(
         }
         _ => anyhow::bail!("microVM command line has an invalid number of virtnet_ingress= tokens"),
     }
+}
+
+/// Checks that a network identity's IPv4 prefix is one that the CLI parser
+/// accepts, /1 to /30. An identity decoded from a mesh message is not checked
+/// by [`MicrovmNetworkConfig`]'s `FromStr`, and the command-line check derives
+/// its netmask, which overflows for a prefix of 0 or above 32.
+fn validate_microvm_network_prefix(network: &MicrovmNetworkConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        MICROVM_NETWORK_PREFIX_LENGTHS.contains(&network.prefix_length),
+        "microVM static network prefix /{} is outside the supported range /1 through /30",
+        network.prefix_length
+    );
+    Ok(())
 }
 
 fn validate_microvm_command_line(config: &Config) -> anyhow::Result<()> {
@@ -1929,6 +1947,9 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
     };
 
     validate_microvm_virtio_reservations()?;
+    if let Some(network) = &config.microvm.network {
+        validate_microvm_network_prefix(network)?;
+    }
     validate_microvm_command_line(config)?;
     validate_machine_load_mode(config.machine_profile, &config.load_mode)?;
     anyhow::ensure!(
@@ -2405,6 +2426,152 @@ mod tests {
         let network: MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
         assert_eq!(network.profile, MicrovmNetworkProfile::Portable);
         assert_eq!(network.profile.as_str(), "portable");
+    }
+
+    /// Devices of configurations that are validated but never built.
+    #[derive(MeshPayload)]
+    struct TestVirtioNet;
+    #[derive(MeshPayload)]
+    struct TestVirtioFs;
+
+    impl vm_resource::ResourceId<vm_resource::kind::VirtioDeviceHandle> for TestVirtioNet {
+        const ID: &'static str = "virtio-net";
+    }
+
+    impl vm_resource::ResourceId<vm_resource::kind::VirtioDeviceHandle> for TestVirtioFs {
+        const ID: &'static str = "virtiofs";
+    }
+
+    /// Returns a microVM configuration with `network`, its virtio-net device,
+    /// the filesystem slot's virtio-fs device, and the command line that the
+    /// controller builds for them.
+    fn microvm_config_with_network(network: &MicrovmNetworkConfig) -> Config {
+        let mut load_mode = linux_load_mode(
+            LinuxDirectBootMode::MpTable,
+            LinuxIsolationConfig::None,
+            false,
+            SmbiosConfig::default(),
+        );
+        let LoadMode::Linux { cmdline, .. } = &mut load_mode else {
+            unreachable!("linux_load_mode returns a Linux load mode");
+        };
+        append_microvm_virtio_discovery(
+            cmdline,
+            Some((network, None, None)),
+            &[],
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+        Config {
+            load_mode,
+            floppy_disks: Vec::new(),
+            ide_disks: Vec::new(),
+            pcie_root_complexes: Vec::new(),
+            pcie_ecam_below_4gb: false,
+            pcie_devices: Vec::new(),
+            pcie_switches: Vec::new(),
+            pcie_generic_initiators: Vec::new(),
+            vpci_devices: Vec::new(),
+            numa: crate::config::NumaTopology {
+                nodes: Vec::new(),
+                distances: Vec::new(),
+            },
+            processor_topology: crate::config::ProcessorTopologyConfig {
+                proc_count: 1,
+                vps_per_socket: None,
+                enable_smt: None,
+                arch: None,
+            },
+            hypervisor: Default::default(),
+            chipset: BaseChipsetManifest::empty(),
+            vmbus: None,
+            vtl2_vmbus: None,
+            #[cfg(windows)]
+            kernel_vmnics: Vec::new(),
+            input: mesh::Receiver::new(),
+            framebuffer: None,
+            vga_firmware: None,
+            vtl2_gfx: false,
+            virtio_devices: vec![
+                (VirtioBus::Mmio, vm_resource::Resource::new(TestVirtioNet)),
+                (VirtioBus::Mmio, vm_resource::Resource::new(TestVirtioFs)),
+            ],
+            #[cfg(windows)]
+            vpci_resources: Vec::new(),
+            vmgs: None,
+            firmware_event_send: None,
+            debugger_rpc: None,
+            vmbus_devices: Vec::new(),
+            chipset_devices: Vec::new(),
+            pci_chipset_devices: Vec::new(),
+            isa_dma_controller: None,
+            chipset_capabilities: vmotherboard::options::VmChipsetCapabilities {
+                with_ioapic: false,
+                with_pic: false,
+                with_pit: false,
+                with_generic_isa_dma: false,
+                with_psp: false,
+                with_guest_watchdog: false,
+                acpi_power_button_gsi: None,
+                with_i440bx_host_pci_bridge: false,
+                dt_com_ports: [false; 4],
+                dt_pl011_uarts: false,
+            },
+            layout: vmm_core_defs::LayoutConfig {
+                chipset_low_mmio_size: 0,
+                chipset_high_mmio_size: 0,
+                vtl2_chipset_mmio_size: 0,
+            },
+            rtc_delta_milliseconds: 0,
+            machine_profile: MachineProfile::Microvm,
+            microvm: MicrovmConfig {
+                network: Some(network.clone()),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn a_network_prefix_outside_1_to_30_is_rejected_before_the_command_line() {
+        // A launch message that no parser checked can carry any prefix.
+        let parsed: MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let with_prefix = |prefix_length| MicrovmNetworkConfig {
+            prefix_length,
+            ..parsed.clone()
+        };
+        let mut configs = Vec::new();
+        // A /31 or /32 identity has a netmask, so the command line built for
+        // it passes the command-line check.
+        for prefix_length in [31, 32] {
+            let config = microvm_config_with_network(&with_prefix(prefix_length));
+            validate_microvm_command_line(&config).unwrap();
+            configs.push((prefix_length, config));
+        }
+        // Deriving the netmask of a /0 or of a prefix above 32 overflows,
+        // which panics in a debug build, so these keep the /24 command line.
+        for prefix_length in [0, 33, 255] {
+            let mut config = microvm_config_with_network(&parsed);
+            config.microvm.network = Some(with_prefix(prefix_length));
+            configs.push((prefix_length, config));
+        }
+        for (prefix_length, config) in configs {
+            assert_eq!(
+                validate_machine_config(&config, None)
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "microVM static network prefix /{prefix_length} is outside the supported range /1 through /30"
+                ),
+            );
+        }
+        for prefix_length in 1..=30 {
+            let network: MicrovmNetworkConfig =
+                format!("10.0.0.2/{prefix_length}").parse().unwrap();
+            validate_microvm_network_prefix(&network).unwrap();
+            validate_microvm_command_line(&microvm_config_with_network(&network)).unwrap();
+        }
     }
 
     #[test]
