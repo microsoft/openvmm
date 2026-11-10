@@ -5,15 +5,15 @@
 //!
 //! Operations that mutate the VM are admitted through this gate. Topology
 //! operations (hot add/remove of devices and resources) are independent of one
-//! another and share the gate; pause, resume, and teardown are exclusive and
-//! exclude everything else. The gate never queues: a conflicting caller is
-//! rejected immediately with `ABORTED`. Teardown and quit are terminal: the
-//! service cancels in-flight topology operations before acquiring the gate, so
-//! they are never rejected by them.
+//! another and share the gate; pause and resume are exclusive and exclude
+//! everything else. The gate never queues: a conflicting caller is rejected
+//! immediately with `ABORTED`. Teardown and quit are terminal and don't use
+//! the gate: the service cancels in-flight topology operations instead.
 //!
 //! The gate must be acquired before any side effect of the operation, and is
 //! released when its guard drops, so completion, error, and cancellation all
-//! release it.
+//! release it. The state is behind `Arc<Mutex<_>>` because guards move into
+//! spawned operation futures, which must be `Send`.
 
 use anyhow::Context;
 use mesh_rpc::service::Code;
@@ -30,8 +30,6 @@ pub(crate) enum VmOperation {
     /// Hot add or remove of a device or resource. Shared with other topology
     /// operations.
     Topology,
-    /// Teardown of the VM. Exclusive.
-    Teardown,
 }
 
 impl VmOperation {
@@ -40,7 +38,6 @@ impl VmOperation {
             VmOperation::Pause => "pause",
             VmOperation::Resume => "resume",
             VmOperation::Topology => "device or resource modification",
-            VmOperation::Teardown => "teardown",
         }
     }
 
@@ -57,7 +54,6 @@ enum State {
     Exclusive(VmOperation),
 }
 
-#[derive(Clone)]
 pub(crate) struct VmOperationGate {
     state: Arc<Mutex<State>>,
 }
@@ -138,26 +134,18 @@ mod tests {
             VmOperation::Pause,
             VmOperation::Resume,
             VmOperation::Topology,
-            VmOperation::Teardown,
         ] {
             let status = grpc_error(gate.try_acquire(op).err().unwrap());
             assert_eq!(status.code, i32::from(Code::Aborted));
-            assert!(status.message.contains("VM busy"), "{}", status.message);
+            assert!(
+                status.message.contains(&format!(
+                    "VM busy: pause in progress, cannot start {}",
+                    op.name()
+                )),
+                "{}",
+                status.message
+            );
         }
-    }
-
-    #[test]
-    fn rejection_names_both_operations() {
-        let gate = VmOperationGate::default();
-        let _guard = gate.try_acquire(VmOperation::Pause).unwrap();
-        let status = grpc_error(gate.try_acquire(VmOperation::Resume).err().unwrap());
-        assert!(
-            status
-                .message
-                .contains("pause in progress, cannot start resume"),
-            "{}",
-            status.message
-        );
     }
 
     #[test]
@@ -166,18 +154,11 @@ mod tests {
         let a = gate.try_acquire(VmOperation::Topology).unwrap();
         let b = gate.try_acquire(VmOperation::Topology).unwrap();
         assert!(gate.try_acquire(VmOperation::Pause).is_err());
-        assert!(gate.try_acquire(VmOperation::Teardown).is_err());
         drop(a);
-        assert!(gate.try_acquire(VmOperation::Teardown).is_err());
+        assert!(gate.try_acquire(VmOperation::Resume).is_err());
         drop(b);
-        assert!(gate.try_acquire(VmOperation::Teardown).is_ok());
-    }
-
-    #[test]
-    fn releases_on_drop() {
-        let gate = VmOperationGate::default();
-        drop(gate.try_acquire(VmOperation::Pause).unwrap());
-        drop(gate.try_acquire(VmOperation::Teardown).unwrap());
+        drop(gate.try_acquire(VmOperation::Resume).unwrap());
+        drop(gate.try_acquire(VmOperation::Topology).unwrap());
     }
 
     #[test]
@@ -190,8 +171,8 @@ mod tests {
             let _guard = guard;
             std::future::pending::<()>().await;
         };
-        assert!(gate.try_acquire(VmOperation::Teardown).is_err());
+        assert!(gate.try_acquire(VmOperation::Pause).is_err());
         drop(fut);
-        assert!(gate.try_acquire(VmOperation::Teardown).is_ok());
+        assert!(gate.try_acquire(VmOperation::Pause).is_ok());
     }
 }

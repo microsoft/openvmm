@@ -387,7 +387,7 @@ impl Worker for TtrpcWorker {
 
     fn run(self, recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
         DefaultPool::run_with(async |driver| {
-            let (topology_cancel_ctx, topology_cancel) = mesh::CancelContext::new().with_cancel();
+            let (gated_cancel_ctx, gated_cancel) = mesh::CancelContext::new().with_cancel();
             let mut service = VmService {
                 driver,
                 vm: None,
@@ -399,8 +399,8 @@ impl Worker for TtrpcWorker {
                 rpc_tasks: Vec::new(),
                 operation_gate: VmOperationGate::default(),
                 gated_tasks: Vec::new(),
-                gated_cancel_ctx: topology_cancel_ctx,
-                gated_cancel: topology_cancel,
+                gated_cancel_ctx,
+                gated_cancel,
                 transport: self.transport,
                 registry: FdRegistry::default(),
             };
@@ -1551,9 +1551,15 @@ impl VmService {
     }
 
     /// Consomme NIC changes (port, DNS record, and virtual-address requests)
-    /// are serviced from the NIC's queue processing, which is stopped while
-    /// the VM is not running, so a request made then would never complete.
-    /// Reject it up front.
+    /// are serviced only from the NIC's queue processing, which is stopped
+    /// while the VM is not running. Such a request would never complete, and
+    /// while waiting it would hold the gate, so `ResumeVM` would be rejected
+    /// and the VM could not run again until teardown. Reject it up front.
+    ///
+    /// This is best effort: a running guest that stops processing traffic can
+    /// still stall the request (teardown cancels it). The root fix is to
+    /// service these requests outside queue processing (see the TODO in
+    /// `net_consomme`'s `poll_ready`).
     fn require_running_for_consomme_changes(&self) -> anyhow::Result<()> {
         if !matches!(self.lifecycle, VmLifecycle::Running) {
             return Err(anyhow::Error::new(Code::FailedPrecondition))
@@ -1565,9 +1571,8 @@ impl VmService {
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
         // Teardown is terminal: it cancels in-flight device and resource
         // changes rather than being rejected by them. Pause and resume run
-        // inline, so none is in flight here and the gate is now free.
+        // inline, so neither can be in flight here.
         self.cancel_gated_tasks().await;
-        let _gate = self.operation_gate.try_acquire(VmOperation::Teardown)?;
         let controller = self.vm_controller.take().context("vm not created")?;
         // Drop the VM's device RPC channels before waiting on the controller.
         // A live `ScsiControllerRequest` sender keeps the detached storvsp task
@@ -3323,12 +3328,12 @@ mod tests {
             let ScsiControllerRequest::AddDevice(pending) = scsi_recv.next().await.unwrap() else {
                 panic!("expected a SCSI AddDevice request");
             };
-            assert!(
-                service
-                    .operation_gate
-                    .try_acquire(VmOperation::Pause)
-                    .is_err(),
-                "the gate is held while the change is in flight"
+            let status = grpc_error(service.pause_vm().await.unwrap_err());
+            assert_eq!(
+                status.code,
+                i32::from(Code::Aborted),
+                "PauseVM is rejected while the change is in flight: {}",
+                status.message
             );
 
             service.cancel_gated_tasks().await;
