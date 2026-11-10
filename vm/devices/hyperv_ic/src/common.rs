@@ -218,12 +218,12 @@ impl<M: RingMem> IcPipe<M> {
             .get(..header.message_size as usize)
             .context("missing message body")?;
 
-        let valid_versions = if header.message_type == MessageType::VERSION_NEGOTIATION {
-            header.framework_version == Version::new(0, 0)
-                && header.message_version == Version::new(0, 0)
-        } else if let Some(versions) = versions {
+        let valid_versions = if let Some(versions) = versions {
             header.framework_version == versions.framework_version
                 && header.message_version == versions.message_version
+        } else if header.message_type == MessageType::VERSION_NEGOTIATION {
+            header.framework_version == Version::new(0, 0)
+                && header.message_version == Version::new(0, 0)
         } else {
             true
         };
@@ -317,10 +317,8 @@ mod tests {
         let (mut pipe, mut guest) = new_pipes();
         let mut state = NegotiateState::default();
         send_version_request(&mut pipe, &mut state, &mut guest).await;
-        guest
-            .send(&version_response(FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION))
-            .await
-            .unwrap();
+        let negotiation_response = version_response(FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION);
+        guest.send(&negotiation_response).await.unwrap();
         let versions = pipe
             .negotiate(&mut state, TEST_MESSAGE_VERSIONS)
             .await
@@ -339,6 +337,11 @@ mod tests {
             let size = guest.recv(&mut buffer).await.unwrap();
             let (mut header, _) = Header::read_from_prefix(&buffer[..size]).unwrap();
             assert_eq!(header.transaction_id, expected_id as u8);
+            if header.transaction_id == 0 {
+                guest.send(&negotiation_response).await.unwrap();
+                assert!(pipe.read_response(&versions).await.unwrap().is_none());
+                assert_eq!(pipe.transaction_id, header.transaction_id);
+            }
             header.flags = HeaderFlags::new()
                 .with_transaction(true)
                 .with_response(true);
@@ -377,6 +380,18 @@ mod tests {
                 response.flags = HeaderFlags::new()
                     .with_transaction(true)
                     .with_response(true);
+
+                for status in [Status::SUCCESS, Status::FAIL] {
+                    let mut negotiation_response =
+                        version_response(FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION);
+                    let (header, _) =
+                        Header::mut_from_prefix(negotiation_response.as_mut_slice()).unwrap();
+                    header.transaction_id = expected_id;
+                    header.status = status;
+                    guest.send(&negotiation_response).await.unwrap();
+                    assert!(pipe.read_response(&versions).await.unwrap().is_none());
+                    assert_eq!(pipe.transaction_id, expected_id);
+                }
 
                 if expected_id == 1 {
                     for (transaction_id, framework_version, message_version) in [
