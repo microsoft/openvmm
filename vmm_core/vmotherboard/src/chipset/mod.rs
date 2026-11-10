@@ -211,6 +211,84 @@ impl Chipset {
         .await
     }
 
+    /// Compare and exchange a memory-like MMIO location, or perform the legacy
+    /// unconditional write when the device does not implement this operation.
+    pub async fn mmio_compare_exchange(
+        &self,
+        vp: u32,
+        address: u64,
+        current: &[u8],
+        new: &[u8],
+    ) -> std::io::Result<bool> {
+        if current.is_empty() || current.len() != new.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "compare-and-exchange operands must be nonempty and the same size",
+            ));
+        }
+        let lookup = self.mmio_ranges.lookup(address, false);
+        let operation = lookup.dev.lock_if_open().and_then(|mut dev| {
+            dev.supports_mmio()
+                .expect("objects on the mmio bus support mmio")
+                .supports_compare_exchange()
+                .map(|atomic| atomic.compare_exchange(address, current, new))
+        });
+        if let Some(operation) = operation {
+            let result = operation.await;
+            if !matches!(result, Ok(None)) {
+                if lookup.debug_break {
+                    tracing::warn!(
+                        device = &*lookup.dev_name,
+                        address,
+                        len = new.len(),
+                        "debug break due to io"
+                    );
+                    self.debug_event_handler.on_debug_break(Some(vp));
+                }
+                if let Some(range_name) = &lookup.trace {
+                    tracing::info!(
+                        device = &*lookup.dev_name,
+                        range_name = range_name.as_ref(),
+                        address,
+                        direction = "compare_exchange",
+                        ?result,
+                        "device io"
+                    );
+                }
+            }
+            match result {
+                Ok(Some(exchanged)) => {
+                    return Ok(exchanged);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    return Err(std::io::Error::other(format!(
+                        "MMIO compare-and-exchange at {address:#x} failed: {err:?}"
+                    )));
+                }
+            }
+        }
+        let result = lookup.dev.lock_if_open().map_or_else(
+            || IoResult::Err(IoError::NoResponse),
+            |mut dev| {
+                dev.supports_mmio()
+                    .expect("objects on the mmio bus support mmio")
+                    .mmio_write(address, new)
+            },
+        );
+        self.handle_io_result(
+            lookup,
+            vp,
+            IoKind::Mmio,
+            address,
+            new.len(),
+            IoType::Write(new),
+            result,
+        )
+        .await;
+        Ok(true)
+    }
+
     /// Check if a MMIO device exists at the given address
     pub fn is_mmio(&self, addr: u64) -> bool {
         self.mmio_ranges.is_occupied(addr)
@@ -373,5 +451,196 @@ impl std::fmt::Display for PcieConflict {
                 )
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chipset_device::mmio::MmioCompareExchange;
+    use chipset_device::mmio::MmioCompareExchangeFuture;
+    use chipset_device::mmio::MmioIntercept;
+    use pal_async::async_test;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+
+    struct DebugHandler;
+
+    impl DebugEventHandler for DebugHandler {
+        fn on_debug_break(&self, _: Option<u32>) {
+            panic!("unexpected debug break");
+        }
+    }
+
+    struct TestDevice {
+        value: Arc<AtomicU32>,
+    }
+
+    impl ChipsetDevice for TestDevice {
+        fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+            Some(self)
+        }
+    }
+
+    impl MmioIntercept for TestDevice {
+        fn mmio_read(&mut self, _: u64, data: &mut [u8]) -> IoResult {
+            data.copy_from_slice(&self.value.load(Ordering::SeqCst).to_ne_bytes());
+            IoResult::Ok
+        }
+
+        fn mmio_write(&mut self, _: u64, data: &[u8]) -> IoResult {
+            let Ok(bytes) = data.try_into() else {
+                return IoResult::Err(IoError::InvalidAccessSize);
+            };
+            self.value
+                .store(u32::from_ne_bytes(bytes), Ordering::SeqCst);
+            IoResult::Ok
+        }
+
+        fn supports_compare_exchange(&mut self) -> Option<&mut dyn MmioCompareExchange> {
+            Some(self)
+        }
+    }
+
+    struct LegacyDevice(Arc<AtomicU32>);
+
+    impl ChipsetDevice for LegacyDevice {
+        fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+            Some(self)
+        }
+    }
+
+    impl MmioIntercept for LegacyDevice {
+        fn mmio_read(&mut self, _: u64, data: &mut [u8]) -> IoResult {
+            data.copy_from_slice(&self.0.load(Ordering::SeqCst).to_ne_bytes());
+            IoResult::Ok
+        }
+
+        fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
+            let Ok(bytes) = data.try_into() else {
+                return IoResult::Err(IoError::InvalidAccessSize);
+            };
+            self.0.store(u32::from_ne_bytes(bytes), Ordering::SeqCst);
+            if address == 0x10c {
+                let (write, token) = chipset_device::io::deferred::defer_write();
+                write.complete();
+                IoResult::Defer(token)
+            } else {
+                IoResult::Ok
+            }
+        }
+    }
+
+    impl MmioCompareExchange for TestDevice {
+        fn compare_exchange(
+            &mut self,
+            address: u64,
+            current: &[u8],
+            new: &[u8],
+        ) -> MmioCompareExchangeFuture {
+            let value = self.value.clone();
+            let current = <[u8; 4]>::try_from(current);
+            let new = <[u8; 4]>::try_from(new);
+            Box::pin(async move {
+                if address == 0x104 {
+                    return Ok(None);
+                }
+                if address == 0x108 {
+                    return Err(IoError::NoResponse);
+                }
+                let (Ok(current), Ok(new)) = (current, new) else {
+                    return Err(IoError::InvalidAccessSize);
+                };
+                Ok(Some(
+                    value
+                        .compare_exchange(
+                            u32::from_ne_bytes(current),
+                            u32::from_ne_bytes(new),
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok(),
+                ))
+            })
+        }
+    }
+
+    fn test_chipset(atomic: bool) -> (Chipset, Arc<AtomicU32>) {
+        let value = Arc::new(AtomicU32::new(1));
+        let device: Arc<CloseableMutex<dyn ChipsetDevice>> = if atomic {
+            Arc::new(CloseableMutex::new(TestDevice {
+                value: value.clone(),
+            }))
+        } else {
+            Arc::new(CloseableMutex::new(LegacyDevice(value.clone())))
+        };
+        (
+            Chipset {
+                mmio_ranges: IoRanges::new(false, Some(device)),
+                pio_ranges: IoRanges::new(false, None),
+                pic: None,
+                eoi_handler: None,
+                debug_event_handler: Arc::new(DebugHandler),
+            },
+            value,
+        )
+    }
+
+    #[async_test]
+    async fn atomic_mmio_dispatch_preserves_comparison_and_errors() {
+        let (chipset, value) = test_chipset(true);
+        assert!(
+            chipset
+                .mmio_compare_exchange(0, 0x100, &1u32.to_ne_bytes(), &2u32.to_ne_bytes())
+                .await
+                .unwrap()
+        );
+        assert!(
+            !chipset
+                .mmio_compare_exchange(0, 0x100, &1u32.to_ne_bytes(), &3u32.to_ne_bytes())
+                .await
+                .unwrap()
+        );
+        assert_eq!(value.load(Ordering::SeqCst), 2);
+        assert!(
+            chipset
+                .mmio_compare_exchange(0, 0x100, &[1, 2], &[3])
+                .await
+                .is_err()
+        );
+        assert_eq!(value.load(Ordering::SeqCst), 2);
+        assert!(
+            chipset
+                .mmio_compare_exchange(0, 0x108, &2u32.to_ne_bytes(), &3u32.to_ne_bytes())
+                .await
+                .is_err()
+        );
+        assert_eq!(value.load(Ordering::SeqCst), 2);
+        assert!(
+            chipset
+                .mmio_compare_exchange(0, 0x104, &0u32.to_ne_bytes(), &4u32.to_ne_bytes())
+                .await
+                .unwrap()
+        );
+        assert_eq!(value.load(Ordering::SeqCst), 4);
+    }
+
+    #[async_test]
+    async fn legacy_mmio_compare_exchange_still_writes_unconditionally() {
+        let (chipset, value) = test_chipset(false);
+        assert!(
+            chipset
+                .mmio_compare_exchange(0, 0x100, &0u32.to_ne_bytes(), &7u32.to_ne_bytes())
+                .await
+                .unwrap()
+        );
+        assert_eq!(value.load(Ordering::SeqCst), 7);
+        assert!(
+            chipset
+                .mmio_compare_exchange(0, 0x10c, &0u32.to_ne_bytes(), &8u32.to_ne_bytes())
+                .await
+                .unwrap()
+        );
+        assert_eq!(value.load(Ordering::SeqCst), 8);
     }
 }

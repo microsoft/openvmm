@@ -28,6 +28,23 @@ pub trait CpuIo {
     #[must_use]
     fn write_mmio(&self, vp: VpIndex, address: u64, data: &[u8]) -> impl Future<Output = ()>;
 
+    /// Atomically compare and exchange MMIO when supported by the device.
+    ///
+    /// The default preserves legacy device-MMIO behavior: write `new` without
+    /// comparing and report success.
+    fn compare_exchange_mmio(
+        &self,
+        vp: VpIndex,
+        address: u64,
+        _current: &[u8],
+        new: &[u8],
+    ) -> impl Future<Output = std::io::Result<bool>> {
+        async move {
+            self.write_mmio(vp, address, new).await;
+            Ok(true)
+        }
+    }
+
     /// Programmed IO read.
     #[must_use]
     fn read_io(&self, vp: VpIndex, port: u16, data: &mut [u8]) -> impl Future<Output = ()>;

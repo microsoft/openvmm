@@ -60,6 +60,17 @@ impl CpuIo for AdaptedChipset {
         self.chipset.mmio_write(vp.index(), address, data)
     }
 
+    fn compare_exchange_mmio(
+        &self,
+        vp: VpIndex,
+        address: u64,
+        current: &[u8],
+        new: &[u8],
+    ) -> impl Future<Output = std::io::Result<bool>> {
+        self.chipset
+            .mmio_compare_exchange(vp.index(), address, current, new)
+    }
+
     fn read_io(&self, vp: VpIndex, port: u16, data: &mut [u8]) -> impl Future<Output = ()> {
         self.chipset.io_read(vp.index(), port, data)
     }

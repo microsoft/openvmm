@@ -5,7 +5,11 @@ use crate::tests::common::*;
 use guestmem::GuestMemory;
 use iced_x86::code_asm::CodeAssembler;
 use pal_async::async_test;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use virt::VpIndex;
+use virt::io::CpuIo;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
@@ -19,6 +23,7 @@ struct MockSupport {
     state: CpuState,
     instruction_bytes: Vec<u8>,
     interruption_pending: bool,
+    mmio: bool,
 }
 
 impl EmulatorSupport for MockSupport {
@@ -91,7 +96,7 @@ impl EmulatorSupport for MockSupport {
     }
 
     fn physical_address(&self) -> Option<u64> {
-        todo!()
+        Some(0x100)
     }
 
     /// The gva translation included in the intercept message header, if valid.
@@ -111,7 +116,7 @@ impl EmulatorSupport for MockSupport {
     }
 
     fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
-        true
+        !self.mmio
     }
 
     fn lapic_base_address(&self) -> Option<u64> {
@@ -154,6 +159,7 @@ async fn basic_mov() {
         state: long_protected_mode(false),
         instruction_bytes,
         interruption_pending: false,
+        mmio: false,
     };
 
     emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
@@ -189,6 +195,7 @@ async fn not_enough_bytes() {
         state: long_protected_mode(false),
         instruction_bytes: instruction_bytes[..2].into(),
         interruption_pending: false,
+        mmio: false,
     };
 
     gm.write_at(support.state.rip, &instruction_bytes).unwrap();
@@ -226,6 +233,7 @@ async fn trap_from_interrupt() {
         state: long_protected_mode(false),
         instruction_bytes,
         interruption_pending: true,
+        mmio: false,
     };
 
     emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
@@ -262,7 +270,199 @@ async fn trap_from_debug() {
         state,
         instruction_bytes,
         interruption_pending: false,
+        mmio: false,
     };
 
     emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
+}
+
+struct AtomicMmio {
+    value: AtomicU32,
+    race: AtomicBool,
+    fail: bool,
+}
+
+struct LegacyMmio(AtomicU32);
+
+impl CpuIo for LegacyMmio {
+    fn is_mmio(&self, _: u64) -> bool {
+        true
+    }
+
+    fn acknowledge_pic_interrupt(&self) -> Option<u8> {
+        None
+    }
+
+    fn handle_eoi(&self, _: u32) {}
+
+    async fn read_mmio(&self, _: VpIndex, _: u64, data: &mut [u8]) {
+        data.copy_from_slice(&self.0.load(Ordering::SeqCst).to_ne_bytes());
+    }
+
+    async fn write_mmio(&self, _: VpIndex, _: u64, data: &[u8]) {
+        self.0.store(
+            u32::from_ne_bytes(data.try_into().unwrap()),
+            Ordering::SeqCst,
+        );
+    }
+
+    async fn read_io(&self, _: VpIndex, _: u16, _: &mut [u8]) {
+        unreachable!()
+    }
+
+    async fn write_io(&self, _: VpIndex, _: u16, _: &[u8]) {
+        unreachable!()
+    }
+
+    fn fatal_error(&self, _: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
+        virt::VpHaltReason::SingleStep
+    }
+}
+
+#[async_test]
+async fn default_mmio_compare_exchange_remains_unconditional() {
+    let device = LegacyMmio(AtomicU32::new(1));
+    assert!(
+        device
+            .compare_exchange_mmio(
+                VpIndex::BSP,
+                0x100,
+                &0u32.to_ne_bytes(),
+                &2u32.to_ne_bytes()
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(device.0.load(Ordering::SeqCst), 2);
+}
+
+impl CpuIo for AtomicMmio {
+    fn is_mmio(&self, _: u64) -> bool {
+        true
+    }
+
+    fn acknowledge_pic_interrupt(&self) -> Option<u8> {
+        None
+    }
+
+    fn handle_eoi(&self, _: u32) {}
+
+    async fn read_mmio(&self, _: VpIndex, _: u64, data: &mut [u8]) {
+        data.copy_from_slice(&self.value.load(Ordering::SeqCst).to_ne_bytes());
+        if self.race.swap(false, Ordering::SeqCst) {
+            self.value.store(2, Ordering::SeqCst);
+        }
+    }
+
+    async fn write_mmio(&self, _: VpIndex, _: u64, _: &[u8]) {
+        panic!("atomic access must not be sent as an unconditional write");
+    }
+
+    async fn compare_exchange_mmio(
+        &self,
+        _: VpIndex,
+        _: u64,
+        current: &[u8],
+        new: &[u8],
+    ) -> std::io::Result<bool> {
+        if self.fail {
+            return Err(std::io::Error::other("atomic MMIO failed"));
+        }
+        let current = u32::from_ne_bytes(current.try_into().unwrap());
+        let new = u32::from_ne_bytes(new.try_into().unwrap());
+        Ok(self
+            .value
+            .compare_exchange(current, new, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok())
+    }
+
+    async fn read_io(&self, _: VpIndex, _: u16, _: &mut [u8]) {
+        unreachable!()
+    }
+
+    async fn write_io(&self, _: VpIndex, _: u16, _: &[u8]) {
+        unreachable!()
+    }
+
+    fn fatal_error(&self, _: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
+        virt::VpHaltReason::SingleStep
+    }
+}
+
+#[async_test]
+async fn locked_mmio_compare_exchange_retries_on_race() {
+    use iced_x86::code_asm::*;
+
+    let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
+    let mut asm = CodeAssembler::new(64).unwrap();
+    asm.lock().cmpxchg(dword_ptr(0x100), ecx).unwrap();
+    let bytes = asm.assemble(0).unwrap();
+
+    for race in [false, true] {
+        let device = AtomicMmio {
+            value: AtomicU32::new(1),
+            race: AtomicBool::new(race),
+            fail: false,
+        };
+        let mut support = MockSupport {
+            state: long_protected_mode(false),
+            instruction_bytes: bytes.clone(),
+            interruption_pending: false,
+            mmio: true,
+        };
+        support.state.gps[Gp::RAX as usize] = 1;
+        support.state.gps[Gp::RCX as usize] = 3;
+        emulate(&mut support, &emu_mem, &device).await.unwrap();
+        assert_eq!(
+            device.value.load(Ordering::SeqCst),
+            if race { 2 } else { 3 }
+        );
+        if race {
+            assert_eq!(support.state.rip, 0);
+            emulate(&mut support, &emu_mem, &device).await.unwrap();
+        }
+
+        assert_eq!(support.state.rflags.zero(), !race);
+        if race {
+            assert_eq!(support.gp(Gp::RAX), 2);
+        }
+    }
+}
+
+#[async_test]
+async fn locked_mmio_compare_exchange_failure_does_not_write() {
+    use iced_x86::code_asm::*;
+
+    let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
+    let mut asm = CodeAssembler::new(64).unwrap();
+    asm.lock().cmpxchg(dword_ptr(0x100), ecx).unwrap();
+    let device = AtomicMmio {
+        value: AtomicU32::new(1),
+        race: AtomicBool::new(false),
+        fail: true,
+    };
+    let mut support = MockSupport {
+        state: long_protected_mode(false),
+        instruction_bytes: asm.assemble(0).unwrap(),
+        interruption_pending: false,
+        mmio: true,
+    };
+    support.state.gps[Gp::RAX as usize] = 1;
+    support.state.gps[Gp::RCX as usize] = 3;
+    assert!(matches!(
+        emulate(&mut support, &emu_mem, &device).await,
+        Err(virt::VpHaltReason::SingleStep)
+    ));
+    assert_eq!(device.value.load(Ordering::SeqCst), 1);
+    assert_eq!(support.state.rip, 0);
 }

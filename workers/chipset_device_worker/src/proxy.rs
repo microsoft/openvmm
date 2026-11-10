@@ -16,6 +16,8 @@ use chipset_device::io::deferred::DeferredRead;
 use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
+use chipset_device::mmio::MmioCompareExchange;
+use chipset_device::mmio::MmioCompareExchangeFuture;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
@@ -66,6 +68,7 @@ pub(crate) struct ChipsetDeviceProxy {
 struct MmioProxy {
     #[inspect(iter_by_index)]
     static_regions: Vec<Box<dyn chipset_device::mmio::ControlMmioIntercept>>,
+    compare_exchange: bool,
 }
 
 #[derive(Inspect)]
@@ -94,16 +97,22 @@ impl ChipsetDeviceProxy {
             .await
             .context("failed receiving device capabilities")?;
 
-        let mmio = mmio.map(|MmioInit { static_regions }| MmioProxy {
-            static_regions: static_regions
-                .into_iter()
-                .map(|(name, start, end)| {
-                    let mut region = input.register_mmio.new_io_region(&name, end - start + 1);
-                    region.map(start);
-                    region
-                })
-                .collect(),
-        });
+        let mmio = mmio.map(
+            |MmioInit {
+                 static_regions,
+                 compare_exchange,
+             }| MmioProxy {
+                static_regions: static_regions
+                    .into_iter()
+                    .map(|(name, start, end)| {
+                        let mut region = input.register_mmio.new_io_region(&name, end - start + 1);
+                        region.map(start);
+                        region
+                    })
+                    .collect(),
+                compare_exchange,
+            },
+        );
 
         let pio = pio.map(|PioInit { static_regions }| PioProxy {
             static_regions: static_regions
@@ -171,6 +180,31 @@ impl MmioIntercept for ChipsetDeviceProxy {
             data: data.to_vec(),
         }));
         IoResult::Defer(token)
+    }
+
+    fn supports_compare_exchange(&mut self) -> Option<&mut dyn MmioCompareExchange> {
+        self.mmio
+            .as_ref()
+            .is_some_and(|mmio| mmio.compare_exchange)
+            .then_some(self)
+    }
+}
+
+impl MmioCompareExchange for ChipsetDeviceProxy {
+    fn compare_exchange(
+        &mut self,
+        address: u64,
+        current: &[u8],
+        new: &[u8],
+    ) -> MmioCompareExchangeFuture {
+        let rpc = self.req_send.call(
+            DeviceRequest::MmioCompareExchange,
+            (address, current.to_vec(), new.to_vec()),
+        );
+        Box::pin(async move {
+            rpc.await
+                .map_err(|_| chipset_device::io::IoError::NoResponse)?
+        })
     }
 }
 
@@ -317,6 +351,7 @@ impl AsyncProtobufSaveRestore for ChipsetDeviceProxy {
 #[cfg(test)]
 mod tests {
     use super::ChipsetDeviceProxy;
+    use super::MmioProxy;
     use crate::RemoteDynamicResolvers;
     use crate::guestmem::GuestMemoryTask;
     use crate::protocol::DeviceInit;
@@ -324,6 +359,11 @@ mod tests {
     use crate::worker::RemoteChipsetDeviceWorker;
     use crate::worker::RemoteChipsetDeviceWorkerParameters;
     use chipset_device::ChipsetDevice;
+    use chipset_device::io::IoError;
+    use chipset_device::io::IoResult;
+    use chipset_device::mmio::MmioCompareExchange;
+    use chipset_device::mmio::MmioCompareExchangeFuture;
+    use chipset_device::mmio::MmioIntercept;
     use chipset_device_resources::ResolveChipsetDeviceHandleParams;
     use chipset_device_resources::ResolvedChipsetDevice;
     use guestmem::GuestMemory;
@@ -384,7 +424,55 @@ mod tests {
         }
     }
 
-    impl ChipsetDevice for TestDevice {}
+    impl ChipsetDevice for TestDevice {
+        fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+            Some(self)
+        }
+    }
+
+    impl MmioIntercept for TestDevice {
+        fn mmio_read(&mut self, _: u64, data: &mut [u8]) -> IoResult {
+            data.fill(0);
+            IoResult::Ok
+        }
+
+        fn mmio_write(&mut self, _: u64, _: &[u8]) -> IoResult {
+            IoResult::Ok
+        }
+
+        fn supports_compare_exchange(&mut self) -> Option<&mut dyn MmioCompareExchange> {
+            (self.value != u32::MAX - 1).then_some(self)
+        }
+    }
+
+    impl MmioCompareExchange for TestDevice {
+        fn compare_exchange(
+            &mut self,
+            address: u64,
+            current: &[u8],
+            new: &[u8],
+        ) -> MmioCompareExchangeFuture {
+            let result = if address == 0x200 {
+                Ok(None)
+            } else if address == 0x300 {
+                Err(IoError::NoResponse)
+            } else if let (Ok(current), Ok(new)) = (current.try_into(), new.try_into()) {
+                let current = u32::from_ne_bytes(current);
+                let new = u32::from_ne_bytes(new);
+                let exchanged = self.value == current;
+                if exchanged {
+                    self.value = new;
+                }
+                Ok(Some(exchanged))
+            } else {
+                Err(IoError::InvalidAccessSize)
+            };
+            Box::pin(async move {
+                yield_once().await;
+                result
+            })
+        }
+    }
 
     impl ChangeDeviceState for TestDevice {
         fn start(&mut self) {}
@@ -506,7 +594,8 @@ mod tests {
         .unwrap();
 
         let DeviceInit { mmio, pio, pci } = cap_recv.await.unwrap();
-        assert!(mmio.is_none() && pio.is_none() && pci.is_none());
+        let mmio = mmio.expect("test device supports MMIO");
+        assert!(mmio.compare_exchange && pio.is_none() && pci.is_none());
         ChipsetDeviceProxy {
             req_send,
             resp_recv,
@@ -514,7 +603,10 @@ mod tests {
             in_flight_reads: Slab::new(),
             in_flight_writes: Slab::new(),
             _guest_memory: guest_memory,
-            mmio: None,
+            mmio: Some(MmioProxy {
+                static_regions: Vec::new(),
+                compare_exchange: mmio.compare_exchange,
+            }),
             pio: None,
             pci: None,
         }
@@ -541,6 +633,48 @@ mod tests {
             assert_eq!(saved.parse::<TestSavedState>().unwrap().value, value);
         }
 
+        stop_worker(&mut proxy).await;
+    }
+
+    #[async_test]
+    async fn mmio_compare_exchange_round_trip_through_worker(driver: DefaultDriver) {
+        let vmtime = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut proxy = new_proxy(&vmtime, &driver).await;
+        let atomic = proxy.supports_compare_exchange().unwrap();
+        let result = atomic
+            .compare_exchange(0x100, &0u32.to_ne_bytes(), &7u32.to_ne_bytes())
+            .await
+            .unwrap();
+        assert_eq!(result, Some(true));
+        let result = atomic
+            .compare_exchange(0x100, &0u32.to_ne_bytes(), &9u32.to_ne_bytes())
+            .await
+            .unwrap();
+        assert_eq!(result, Some(false));
+        assert_eq!(
+            atomic.compare_exchange(0x200, &[], &[]).await.unwrap(),
+            None
+        );
+        assert!(matches!(
+            atomic.compare_exchange(0x300, &[], &[]).await,
+            Err(IoError::NoResponse)
+        ));
+        assert_eq!(
+            proxy
+                .save()
+                .await
+                .unwrap()
+                .parse::<TestSavedState>()
+                .unwrap()
+                .value,
+            7
+        );
+        proxy.restore(state(u32::MAX - 1)).await.unwrap();
+        let atomic = proxy.supports_compare_exchange().unwrap();
+        assert!(matches!(
+            atomic.compare_exchange(0x100, &[], &[]).await,
+            Err(IoError::NoResponse)
+        ));
         stop_worker(&mut proxy).await;
     }
 

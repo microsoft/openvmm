@@ -4,8 +4,37 @@
 //! MMIO intercepts
 
 use crate::ChipsetDevice;
+use crate::io::IoError;
 use crate::io::IoResult;
+use std::future::Future;
 use std::ops::RangeInclusive;
+use std::pin::Pin;
+
+/// Completion of an optional MMIO compare-and-exchange operation.
+///
+/// `Ok(Some(true))` indicates that the exchange occurred; `Ok(Some(false))`
+/// indicates that the comparison failed. `Ok(None)` means the device did not
+/// perform a write and requests the legacy unconditional write behavior.
+/// A device must return an error, not `Ok(None)`, when an access requires
+/// atomic semantics but cannot be performed.
+pub type MmioCompareExchangeFuture =
+    Pin<Box<dyn Future<Output = Result<Option<bool>, IoError>> + Send + 'static>>;
+
+/// Memory-like atomic operations for an MMIO device.
+pub trait MmioCompareExchange {
+    /// Attempt an atomic compare-and-exchange at `addr`.
+    ///
+    /// The future must own any data it needs, since it is polled after the
+    /// device lock is released. Implementations must make the comparison and
+    /// write atomic with respect to all accesses to the same backing memory and
+    /// provide sequentially consistent ordering, as for guest memory atomics.
+    fn compare_exchange(
+        &mut self,
+        addr: u64,
+        current: &[u8],
+        new: &[u8],
+    ) -> MmioCompareExchangeFuture;
+}
 
 /// Implemented by devices which use MMIO intercepts.
 ///
@@ -18,6 +47,16 @@ pub trait MmioIntercept: ChipsetDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult;
     /// Dispatch an MMIO write to the device with the given address.
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult;
+
+    /// Returns memory-like atomic operations, if supported.
+    ///
+    /// Support must remain stable for the device's lifetime, including across
+    /// reset. For devices with mixed register and memory ranges, use
+    /// `Ok(None)` from [`MmioCompareExchange::compare_exchange`] for addresses
+    /// that require legacy device-MMIO behavior.
+    fn supports_compare_exchange(&mut self) -> Option<&mut dyn MmioCompareExchange> {
+        None
+    }
 
     /// Report a set of static static mmio regions (region_name, gpa_range) that
     /// cannot be remapped at runtime and are always registered.

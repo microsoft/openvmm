@@ -18,12 +18,14 @@ use anyhow::Context;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredToken;
+use chipset_device::mmio::MmioCompareExchangeFuture;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device_resources::ErasedChipsetDevice;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
+use mesh::rpc::Rpc;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
@@ -74,6 +76,7 @@ pub struct RemoteChipsetDeviceWorker<T> {
     resp_send: mesh::Sender<DeviceResponse>,
     deferred_reads: Vec<DeferredRead>,
     deferred_writes: Vec<DeferredWrite>,
+    deferred_compares: Vec<DeferredCompareExchange>,
 
     _phantom_resolvers: std::marker::PhantomData<T>,
 }
@@ -87,6 +90,11 @@ struct DeferredRead {
 struct DeferredWrite {
     id: usize,
     token: DeferredToken,
+}
+
+struct DeferredCompareExchange {
+    operation: MmioCompareExchangeFuture,
+    rpc: Option<Rpc<(), Result<Option<bool>, chipset_device::io::IoError>>>,
 }
 
 impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
@@ -153,12 +161,16 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
         }
 
         cap_send.send(DeviceInit {
-            mmio: device.supports_mmio().map(|m| MmioInit {
-                static_regions: m
+            mmio: device.supports_mmio().map(|m| {
+                let static_regions = m
                     .get_static_regions()
                     .iter()
                     .map(|(name, range)| ((*name).into(), *range.start(), *range.end()))
-                    .collect(),
+                    .collect();
+                MmioInit {
+                    static_regions,
+                    compare_exchange: m.supports_compare_exchange().is_some(),
+                }
             }),
             pio: device.supports_pio().map(|p| PioInit {
                 static_regions: p
@@ -180,6 +192,7 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
             resp_send,
             deferred_reads: Vec::new(),
             deferred_writes: Vec::new(),
+            deferred_compares: Vec::new(),
             _phantom_resolvers: std::marker::PhantomData,
         })
     }
@@ -232,6 +245,17 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                         })
                         .for_each(|_| ());
 
+                    self.deferred_compares
+                        .extract_if(.., |compare| {
+                            if let Poll::Ready(result) = compare.operation.as_mut().poll(cx) {
+                                compare.rpc.take().unwrap().complete(result);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .for_each(|_| ());
+
                     // If either of these channels fail, we fail the worker too.
                     if let Poll::Ready(r) = rpc_recv.poll_recv(cx) {
                         return Poll::Ready(r.map(WorkerEvent::Rpc));
@@ -273,6 +297,7 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                             self.device.teardown().await;
                             drop(self.deferred_reads);
                             drop(self.deferred_writes);
+                            drop(self.deferred_compares);
                             rpc.complete(());
                             return Ok(());
                         }
@@ -284,6 +309,7 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                         DeviceRequest::Reset(rpc) => {
                             self.deferred_reads.clear();
                             self.deferred_writes.clear();
+                            self.deferred_compares.clear();
                             rpc.handle(async |()| self.device.reset().await).await
                         }
                         DeviceRequest::MmioRead(ReadRequest { id, address, size }) => {
@@ -302,6 +328,23 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                                 .unwrap()
                                 .mmio_write(address, &data);
                             self.handle_write_result(id, result);
+                        }
+                        DeviceRequest::MmioCompareExchange(rpc) => {
+                            let ((address, current, new), rpc) = rpc.split();
+                            let operation = self
+                                .device
+                                .supports_mmio()
+                                .unwrap()
+                                .supports_compare_exchange()
+                                .map(|atomic| atomic.compare_exchange(address, &current, &new));
+                            if let Some(operation) = operation {
+                                self.deferred_compares.push(DeferredCompareExchange {
+                                    operation,
+                                    rpc: Some(rpc),
+                                });
+                            } else {
+                                rpc.complete(Err(chipset_device::io::IoError::NoResponse));
+                            }
                         }
                         DeviceRequest::PioRead(ReadRequest { id, address, size }) => {
                             let mut data = vec![0; size];

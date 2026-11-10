@@ -605,6 +605,8 @@ enum Error {
     },
     #[error("failed to access mapped memory")]
     Memory(#[source] GuestMemoryError),
+    #[error("MMIO compare-and-exchange failed")]
+    MmioCompareExchange(#[source] std::io::Error),
 }
 
 /// Result of a gva translation in [`EmulatorCpu`]
@@ -929,9 +931,10 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             }
             .map_err(Error::Memory)?
         } else {
-            // Ignore the comparison aspect for device MMIO.
-            self.dev.write_mmio(self.support.vp_index(), gpa, new).await;
-            true
+            self.dev
+                .compare_exchange_mmio(self.support.vp_index(), gpa, current, new)
+                .await
+                .map_err(Error::MmioCompareExchange)?
         };
         Ok(success)
     }
@@ -1076,7 +1079,7 @@ fn inject_memory_access_fault<T: EmulatorSupport>(
             support.inject_pending_event(event);
             true
         }
-        Error::Memory(_) => false,
+        Error::Memory(_) | Error::MmioCompareExchange(_) => false,
     }
 }
 
