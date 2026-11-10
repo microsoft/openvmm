@@ -482,6 +482,116 @@ async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
+/// Verify that a device hot-plugged onto a PCIe port survives a save/restore
+/// cycle.
+///
+/// The device's state unit records a dynamic contract for its port, which the
+/// restore checks against the VM's units before it applies the saved state of
+/// the device and of the port. The restored device keeps producing entropy, and
+/// can still be hot-removed.
+#[vmm_test_with(
+    openvmm,
+    unstable(
+        reason = "PCIe save/restore is flaky on linux-direct in CI, as for pcie_save_restore"
+    ),
+    configs(linux_direct_x64)
+)]
+async fn pcie_hotplug_save_restore(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    use virtio_resources::VirtioPciDeviceHandle;
+    use virtio_resources::rng::VirtioRngHandle;
+    use vm_resource::IntoResource;
+
+    let is_rng = |d: &ParsedPciDevice| d.vendor_id == 0x1af4 && d.device_id == 0x1044;
+    let os_flavor = config.os_flavor();
+    let (mut vm, agent) = config
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 2))
+        .run()
+        .await?;
+
+    // Hot-add a virtio-rng device, which saves its state, to the first root
+    // port, and wait for the guest to enumerate it.
+    vm.add_pcie_device(
+        "s0rc0rp0".into(),
+        VirtioPciDeviceHandle(VirtioRngHandle.into_resource()).into_resource(),
+    )
+    .await?;
+    let mut timer = PolledTimer::new(&driver);
+    let mut found = false;
+    for attempt in 0..30 {
+        let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+        if devices.iter().any(is_rng) {
+            tracing::info!(?devices, attempt, "virtio-rng appeared after hotplug");
+            found = true;
+            break;
+        }
+        timer.sleep(Duration::from_millis(500)).await;
+    }
+    assert!(found, "expected virtio-rng to appear after hot-add");
+
+    // Pulse save/restore — drop agent first (vsock won't survive)
+    drop(agent);
+    vm.backend().verify_save_restore().await?;
+    let agent = vm.backend().wait_for_agent(false).await?;
+
+    let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    tracing::info!(?devices, "PCI devices after save/restore");
+    assert_eq!(
+        devices.iter().filter(|d| is_rng(d)).count(),
+        1,
+        "expected the hot-plugged virtio-rng after save/restore"
+    );
+
+    // The restored device still produces entropy.
+    let sh = agent.unix_shell();
+    let read_entropy = async {
+        cmd!(
+            sh,
+            "sh -c 'dd if=/dev/hwrng bs=16 count=1 2>/dev/null | od -A n -t x1 | tr -d \" \\n\"'"
+        )
+        .read()
+        .await
+    };
+    let hex = mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(read_entropy)
+        .await
+        .context("timed out reading from the restored /dev/hwrng")?
+        .context("failed to read from the restored /dev/hwrng")?;
+    assert_eq!(
+        hex.trim().len(),
+        32,
+        "expected 16 bytes of entropy, got {hex:?}"
+    );
+
+    // The restored device can still be hot-removed. The guest releases it
+    // first, as an orderly removal does: Linux's virtio-pci driver resets a
+    // device when it unbinds, and waits for the status of a surprise-removed
+    // device to read 0, which it never does. A rescan then finds no device.
+    cmd!(
+        sh,
+        "sh -c 'for d in /sys/bus/pci/devices/*; do if [ \"$(cat $d/vendor) $(cat $d/device)\" = \"0x1af4 0x1044\" ]; then echo 1 > $d/remove; fi; done'"
+    )
+    .run()
+    .await?;
+    vm.remove_pcie_device("s0rc0rp0".into()).await?;
+    cmd!(sh, "sh -c 'echo 1 > /sys/bus/pci/rescan'")
+        .run()
+        .await?;
+    let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    assert!(
+        !devices.iter().any(is_rng),
+        "expected virtio-rng to stay removed after a rescan"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot a guest through UEFI from an NVMe device in an asymmetric multi-segment
 /// PCIe topology. Validates that UEFI's driver stack correctly enumerates
 /// multiple root complexes spread across multiple segments and boots from an
