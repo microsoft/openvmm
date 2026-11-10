@@ -3,7 +3,7 @@
 
 //! Saved-state tests: stopping the queues rewinds unused RX descriptors,
 //! partial queue lifecycles are saved and validated, and an inactive transport
-//! defers the device-private state until the device is activated.
+//! restores the device-private state before any queue starts.
 
 use super::QUEUE_SIZE;
 use super::RX_AVAIL_ADDR;
