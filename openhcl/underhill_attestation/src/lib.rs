@@ -1826,11 +1826,11 @@ fn get_derived_keys_by_id(
     })
 }
 
-// / Verify the InitData hash in the attestation report
+/// Verify the InitData hash in the attestation report
 /// against the asserted InitData hash.
-///   For SNP, this is the host data.
-///   For TDX, this is MRCONFIGID.
-///   For other attestation types, this is not supported.
+/// For SNP, this is the host data.
+/// For TDX, this is MRCONFIGID.
+/// For other attestation types, this is not supported.
 /// Takes the asserted InitData hash and the appropriate
 /// TEE call interface as arguments.
 /// Returns Ok(()) if the hashes match, or an error if they do not.
@@ -1851,7 +1851,7 @@ fn verify_init_data_inner(
     };
     match attestation_type {
         AttestationType::Snp => {
-            // compare hash of the encoded settings with the host data
+            // Compare hash of the encoded settings with the host data.
             let snpreport = x86defs::snp::SnpReport::mut_from_bytes(&mut report.report[..])
                 .map_err(|_e| InitDataError::InvalidAttestationReport)?;
             let host_data = snpreport.host_data;
@@ -1889,8 +1889,8 @@ fn verify_init_data_inner(
             }
         }
         _ => {
-            // Unsupported attestation type
-            // Do not fail as this is not fatal
+            // Unsupported attestation type.
+            // Do not fail as this is not fatal.
             tracing::info!(
                 CVM_ALLOWED,
                 "Unsupported attestation type: {:?}",
@@ -1906,7 +1906,7 @@ fn tdx_init_data_matches(mr_config_id: &[u8; 48], asserted_init_data: &[u8; 32])
     init_data == asserted_init_data && padding.iter().all(|&byte| byte == 0)
 }
 
-// Public function to verify the InitData hash
+/// Public function to verify the InitData hash
 /// against the asserted InitData hash.
 /// Takes the asserted InitData hash and the attestation type as arguments.
 /// Passes the asserted InitData hash to the appropriate
@@ -1926,8 +1926,8 @@ pub fn verify_init_data(
             verify_init_data_inner(asserted_init_data, tee_call.as_ref())
         }
         _ => {
-            // Unsupported attestation type
-            // Do not fail as this is not fatal
+            // Unsupported attestation type.
+            // Do not fail as this is not fatal.
             tracing::info!(CVM_ALLOWED, "Unsupported attestation type: {:?}", tee_type);
             return Ok(());
         }
