@@ -5,12 +5,16 @@
 
 pub mod backing;
 mod builder;
+mod contract;
 mod io_ranges;
 mod line_sets;
 
 pub use self::builder::ChipsetBuilder;
 pub use self::builder::ChipsetDevices;
 pub use self::builder::DynamicDeviceUnit;
+pub use self::contract::DynamicDeviceContract;
+pub use self::contract::pcie_port_of_stable_id;
+pub use self::contract::pcie_port_stable_id;
 
 use self::io_ranges::IoRanges;
 use self::io_ranges::LookupResult;

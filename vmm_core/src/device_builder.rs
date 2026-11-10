@@ -21,7 +21,9 @@ use vmcore::vpci_msi::VpciInterruptMapper;
 use vmotherboard::ArcMutexChipsetDeviceBuilder;
 use vmotherboard::ChipsetBuilder;
 use vmotherboard::ChipsetDevices;
+use vmotherboard::DynamicDeviceContract;
 use vmotherboard::DynamicDeviceUnit;
+use vmotherboard::pcie_port_stable_id;
 
 pub use vpci::bus::VpciBusConfig;
 
@@ -73,7 +75,8 @@ pub async fn build_dynamic_vpci_device(
     new_virtual_device: impl FnOnce(u64) -> anyhow::Result<(Arc<dyn SignalMsi>, VpciInterruptMapper)>,
 ) -> anyhow::Result<DynamicVpciDevice> {
     let instance_id = bus_config.instance_id;
-    let device_name = format!("{}:vpci-{instance_id}", ctx.resource.id());
+    let resource_kind = ctx.resource.id().to_owned();
+    let device_name = format!("{resource_kind}:vpci-{instance_id}");
     let driver_source = ctx.driver_source;
     let msi_conn = MsiConnection::new();
     let dma_target = DmaTarget::new(
@@ -88,6 +91,10 @@ pub async fn build_dynamic_vpci_device(
             driver_source,
             state_units,
             device_name,
+            DynamicDeviceContract {
+                stable_id: None,
+                kind: resource_kind,
+            },
             async |register_mmio| {
                 ctx.resolver
                     .resolve(
@@ -114,6 +121,10 @@ pub async fn build_dynamic_vpci_device(
             driver_source,
             state_units,
             format!("vpci:{instance_id}"),
+            DynamicDeviceContract {
+                stable_id: None,
+                kind: "vpci-bus".to_owned(),
+            },
             async |register_mmio| {
                 let (msi_controller, interrupt_mapper) =
                     new_virtual_device(device_id).context(format!(
@@ -183,11 +194,13 @@ pub async fn build_vpci_device(
     new_virtual_device: impl FnOnce(u64) -> anyhow::Result<(Arc<dyn SignalMsi>, VpciInterruptMapper)>,
 ) -> anyhow::Result<()> {
     let instance_id = bus_config.instance_id;
-    let device_name = format!("{}:vpci-{instance_id}", ctx.resource.id());
+    let resource_kind = ctx.resource.id().to_owned();
+    let device_name = format!("{resource_kind}:vpci-{instance_id}");
     let driver_source = ctx.driver_source;
 
     let device_builder = chipset_builder
         .arc_mutex_device(device_name)
+        .kind(resource_kind)
         .with_external_pci();
 
     let msi_conn = MsiConnection::new();
@@ -205,6 +218,7 @@ pub async fn build_vpci_device(
         let vpci_bus_name = format!("vpci:{instance_id}");
         chipset_builder
             .arc_mutex_device(vpci_bus_name)
+            .kind("vpci-bus")
             .try_add_async(async |services| {
                 let (msi_controller, interrupt_mapper) =
                     new_virtual_device(device_id).context(format!(
@@ -235,15 +249,21 @@ pub async fn build_vpci_device(
 
 /// Resolves a PCI device resource, builds the corresponding device, and attaches
 /// the device at the specified PCIe port.
+///
+/// The device's state unit records the port as its stable identity, which a
+/// device hot-plugged on that port records too.
 pub async fn build_pcie_device(
     ctx: PciDeviceResolveContext<'_>,
     chipset_builder: &ChipsetBuilder<'_>,
     port_name: Arc<str>,
     dma_target: &DmaTarget,
 ) -> anyhow::Result<()> {
-    let dev_name = format!("pcie:{}-{}", port_name, ctx.resource.id());
+    let resource_kind = ctx.resource.id().to_owned();
+    let dev_name = format!("pcie:{port_name}-{resource_kind}");
     let device_builder = chipset_builder
         .arc_mutex_device(dev_name)
+        .stable_id(pcie_port_stable_id(&port_name))
+        .kind(resource_kind)
         .on_pcie_port(vmotherboard::BusId::new(&port_name));
 
     resolve_and_add_pci_device(device_builder, ctx, dma_target).await?;

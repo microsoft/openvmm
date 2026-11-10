@@ -155,13 +155,17 @@ fn assert_terminal_unit_error(error: StateTransitionError, op: &str, name: &str)
     );
 }
 
-/// Checks that a reset, save, restore, and time advance of `units` each fail
-/// because of the unit named `name`, which is in a terminal state, without
-/// sending a unit a request.
+/// Checks that a reset, save, save with inventory, restore, and time advance
+/// of `units` each fail because of the unit named `name`, which is in a
+/// terminal state, without sending a unit a request.
 async fn assert_requests_fail(units: &mut StateUnits, name: &str, log: &Log) {
     assert_terminal_unit_error(units.reset().await.unwrap_err(), "reset", name);
     let Err(error) = units.save().await else {
         panic!("save succeeded");
+    };
+    assert_terminal_unit_error(error, "save", name);
+    let Err(error) = units.save_with_inventory().await else {
+        panic!("save with inventory succeeded");
     };
     assert_terminal_unit_error(error, "save", name);
     assert_terminal_unit_error(

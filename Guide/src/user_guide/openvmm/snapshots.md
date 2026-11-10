@@ -519,11 +519,17 @@ guest-visible overrides are rejected. Restore reuses the saved command line
 verbatim, and rejects one longer than the microVM limit of 2047 bytes plus the
 terminating NUL instead of rewriting it.
 
-Every snapshot records a complete state-unit inventory. Each emulated device
-saves state under a unique name (for example `"pit"`, `"vmbus"`, or `"ide"`),
-and restore requires the saved and current inventories to match exactly. A
-microVM manifest additionally records and validates the exact device inventory
-and order.
+Every snapshot records the contract of every state unit, including the units
+that have no saved state. Each emulated device saves state under a unique name
+(for example `"pit"`, `"vmbus"`, or `"ide"`), and its contract adds what the
+guest sees of it: a stable identity, such as the PCIe port of its device; its
+kind, such as its device's resource kind; whether the VM's configuration created
+it (static), it was added while the VM ran (dynamic), or it is VMM
+infrastructure such as VM time (derived); and descriptors, such as the address
+ranges and interrupt lines that it decodes and the PCI IDs that it reports.
+Restore requires the restored VM's state units to match the recorded contracts
+exactly, whatever order either VM registered them in. A microVM manifest
+additionally records and validates the exact device inventory and order.
 
 For a phase-3 virtio console, the manifest also records its stable attachment
 ID, canonical endpoint identity, reconnect policy, requiredness, and timeout.
@@ -581,8 +587,9 @@ The rules are:
 |---|---|
 | Device set matches exactly | Restore succeeds |
 | Dormant microVM virtio-fs slot becomes attached | **Restore succeeds** — the only additive transition |
-| Snapshot contains a device not in current config | **Restore fails** — unknown unit name |
-| Current config has a device not in snapshot | **Restore fails** — inventory mismatch |
+| Snapshot contains a device not in current config | **Restore fails** — inventory mismatch, missing |
+| Current config has a device not in snapshot | **Restore fails** — inventory mismatch, unexpected |
+| A device's contract changed, such as its addresses or PCI IDs | **Restore fails** — inventory mismatch, changed |
 
 In practice this means:
 
@@ -593,9 +600,9 @@ In practice this means:
   validation rather than starting an unenumerated device in its default state.
 
 ```admonish warning
-Inventory errors identify the saved and current state-unit lists. Compare the
-restore configuration with the capture configuration when restoring a standard
-machine.
+Inventory errors list the missing, unexpected, and changed state units, each
+with its contract. Compare the restore configuration with the capture
+configuration when restoring a standard machine.
 ```
 
 ## Device save/restore support

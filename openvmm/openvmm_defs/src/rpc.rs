@@ -70,7 +70,8 @@ pub enum VmRpc {
 pub struct SnapshotSaveResponse {
     /// Encoded VM saved state.
     pub saved_state: ProtobufMessage,
-    /// Complete state-unit inventory in stable registration order.
+    /// The names of the state units whose contracts the saved state records,
+    /// ordered by name.
     pub state_unit_names: Vec<String>,
     /// Effective Linux direct command line loaded into the guest.
     pub effective_command_line: String,

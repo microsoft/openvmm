@@ -632,6 +632,67 @@ mod tests {
     }
 
     #[pal_async::async_test]
+    async fn static_device_contract_records_its_registrations(driver: DefaultDriver) {
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let units = StateUnits::new();
+        let (time_send, _time_recv) = mesh::channel();
+        let time_unit = units.add("vmtime").build(time_send).unwrap();
+        let keeper =
+            vmcore::vmtime::VmTimeKeeper::new(&driver, vmcore::vmtime::VmTime::from_100ns(0));
+        let time = keeper.builder().build(&driver).await.unwrap();
+        let builder = crate::ChipsetBuilder::new(
+            &source,
+            &units,
+            Arc::new(TestDebugEventHandler),
+            &time,
+            &time_unit,
+            false,
+            false,
+            None,
+        );
+        let (entered, _entered_recv) = mesh::channel();
+        let (release, release_recv) = mesh::channel();
+        let (finished, _finished_recv) = mesh::channel();
+        let _device = builder
+            .arc_mutex_device("test")
+            .stable_id("slot:7")
+            .kind("removing")
+            .add(|_| RemovingDevice {
+                stopped: true,
+                stop_count: Arc::new(AtomicUsize::new(0)),
+                accesses: Arc::new(AtomicUsize::new(0)),
+                entered,
+                release: release_recv,
+                finished,
+                io: None,
+            })
+            .unwrap();
+
+        let inventory = units.inventory();
+        let chipset = inventory.iter().find(|c| c.name == "chipset").unwrap();
+        assert_eq!(chipset.lifetime, state_unit::UnitLifetime::Derived);
+        let device = inventory.iter().find(|c| c.name == "test").unwrap();
+        assert_eq!(
+            device,
+            &state_unit::UnitContract {
+                name: "test".to_owned(),
+                stable_id: "slot:7".to_owned(),
+                kind: "removing".to_owned(),
+                lifetime: state_unit::UnitLifetime::Static,
+                descriptors: vec![
+                    state_unit::UnitDescriptor::new("mmio", "mmio@0x1000+0x1000"),
+                    state_unit::UnitDescriptor::new("pio", "pio@0x100+0x4"),
+                ],
+            }
+        );
+
+        let unit = builder.inner.lock().arc_mutex_device_units.pop().unwrap();
+        drop(builder);
+        release.send(());
+        unit.remove().await;
+    }
+
+    #[pal_async::async_test]
     async fn static_regions_live_until_unit_removal(driver: DefaultDriver) {
         let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let units = StateUnits::new();

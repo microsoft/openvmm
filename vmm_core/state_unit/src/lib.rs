@@ -35,12 +35,19 @@ mod inventory;
 mod quiesce;
 mod start;
 
+pub use inventory::InventoryMismatch;
+pub use inventory::InventoryPlan;
+pub use inventory::UnitContract;
+pub use inventory::UnitDescriptor;
+pub use inventory::UnitLifetime;
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
 use inspect::InspectMut;
+use inventory::UnitIdentity;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::Receiver;
@@ -305,6 +312,7 @@ struct Unit {
     state: State,
     inspect_sensitivity: inspect::SensitivityLevel,
     advances_time: bool,
+    identity: Arc<UnitIdentity>,
 }
 
 /// An error returned when a state unit name is already in use.
@@ -423,6 +431,14 @@ impl Inspect for Inner {
                             .join(",")
                     });
                 }
+                let identity = &unit.identity;
+                if let Some(stable_id) = &identity.stable_id {
+                    resp.field("stable_id", stable_id.as_str());
+                }
+                if !identity.kind.is_empty() {
+                    resp.field("kind", identity.kind.as_str());
+                }
+                resp.field("lifetime", identity.lifetime.as_str());
                 resp.field("unit_state", unit.state)
                     .merge(&inspect::send(&unit.send, StateRequest::Inspect));
             });
@@ -534,6 +550,11 @@ impl StateUnits {
     /// Save and restore will use `name` as the save ID, so this forms part of
     /// the saved state.
     ///
+    /// The unit's [contract](UnitContract), which a snapshot records, defaults
+    /// to a static unit whose stable identity is `name`; the builder's
+    /// [`UnitBuilder::stable_id`], [`UnitBuilder::kind`],
+    /// [`UnitBuilder::lifetime`], and [`UnitBuilder::descriptor`] declare more.
+    ///
     /// Note that the added unit will not be running after it is built/spawned,
     /// even if the other units are running. Call
     /// [`StateUnits::start_stopped_units`] when finished adding units.
@@ -545,6 +566,7 @@ impl StateUnits {
             dependents: BTreeSet::new(),
             inspect_sensitivity: inspect::SensitivityLevel::Unspecified,
             advances_time: false,
+            identity: UnitIdentity::default(),
         }
     }
 
@@ -806,9 +828,42 @@ impl StateUnits {
         interim_state: State,
         new_state: State,
         request: impl Copy + FnOnce(Rpc<I, R>) -> StateRequest,
+        input: impl FnMut(u64, &Unit) -> Option<I>,
+        deps: impl FnMut(&Unit) -> Option<&BTreeSet<u64>>,
+    ) -> Vec<(Arc<str>, R)> {
+        let (results, _) = self
+            .run_op_tracked(
+                op,
+                unit_ids,
+                old_state,
+                interim_state,
+                new_state,
+                request,
+                input,
+                deps,
+            )
+            .await;
+        results
+            .into_iter()
+            .map(|(_, name, result)| (name, result))
+            .collect()
+    }
+
+    /// Runs a state change operation as [`Self::run_op`] does, and also
+    /// returns the ID of each unit that answered, and the snapshot of the unit
+    /// set that the operation ran on, which still describes the units that
+    /// were removed while it ran.
+    async fn run_op_tracked<I: 'static, R: 'static + Send>(
+        &self,
+        op: &str,
+        unit_ids: Option<&[u64]>,
+        old_state: State,
+        interim_state: State,
+        new_state: State,
+        request: impl Copy + FnOnce(Rpc<I, R>) -> StateRequest,
         mut input: impl FnMut(u64, &Unit) -> Option<I>,
         mut deps: impl FnMut(&Unit) -> Option<&BTreeSet<u64>>,
-    ) -> Vec<(Arc<str>, R)> {
+    ) -> (Vec<(u64, Arc<str>, R)>, ReadySet) {
         let mut done = Vec::new();
         let ready_set;
         {
@@ -862,7 +917,7 @@ impl StateUnits {
             .into_iter()
             .filter_map(|(name, id, r)| {
                 match r {
-                    Ok(Some(r)) => Some((name, r)),
+                    Ok(Some(r)) => Some((id, name, r)),
                     Ok(None) => None,
                     Err(err) => {
                         // If the unit was removed during the operation, then
@@ -892,7 +947,7 @@ impl StateUnits {
                 );
             }
         }
-        r
+        (r, ready_set)
     }
 }
 
@@ -904,6 +959,7 @@ impl Inner {
                 ReadyState {
                     name: unit.name.clone(),
                     ready: Arc::new(Ready::default()),
+                    identity: unit.identity.clone(),
                 },
             )
         };
@@ -926,6 +982,9 @@ struct ReadySet(Arc<BTreeMap<u64, ReadyState>>);
 struct ReadyState {
     name: Arc<str>,
     ready: Arc<Ready>,
+    /// The unit's declared contract, which outlives the unit's removal during
+    /// the operation.
+    identity: Arc<UnitIdentity>,
 }
 
 impl ReadySet {
@@ -1019,6 +1078,7 @@ pub struct UnitBuilder<'a> {
     dependents: BTreeSet<u64>,
     inspect_sensitivity: inspect::SensitivityLevel,
     advances_time: bool,
+    identity: UnitIdentity,
 }
 
 impl UnitBuilder<'_> {
@@ -1027,6 +1087,46 @@ impl UnitBuilder<'_> {
     /// Other units derive their deadlines from VM time and are not contacted.
     pub fn advances_time(mut self) -> Self {
         self.advances_time = true;
+        self
+    }
+
+    /// Sets the guest-visible identity of what this new unit implements, such
+    /// as the PCIe port that its device occupies, which its
+    /// [contract](UnitContract) records. Defaults to the unit's name.
+    pub fn stable_id(mut self, stable_id: impl Into<String>) -> Self {
+        self.identity.stable_id = Some(stable_id.into());
+        self
+    }
+
+    /// Sets what this new unit implements, such as its device's resource
+    /// kind, which its [contract](UnitContract) records. Defaults to empty.
+    pub fn kind(mut self, kind: impl Into<String>) -> Self {
+        self.identity.kind = kind.into();
+        self
+    }
+
+    /// Sets how this new unit became part of the VM. Defaults to
+    /// [`UnitLifetime::Static`].
+    pub fn lifetime(mut self, lifetime: UnitLifetime) -> Self {
+        self.identity.lifetime = lifetime;
+        self
+    }
+
+    /// Adds a guest-visible property of this new unit, such as an address
+    /// range, to its [contract](UnitContract). The contract keeps its
+    /// descriptors in canonical order, without duplicates.
+    pub fn descriptor(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.identity
+            .add_descriptor(UnitDescriptor::new(key, value));
+        self
+    }
+
+    /// Adds guest-visible properties of this new unit to its
+    /// [contract](UnitContract), as [`Self::descriptor`] does.
+    pub fn descriptors(mut self, descriptors: impl IntoIterator<Item = UnitDescriptor>) -> Self {
+        for descriptor in descriptors {
+            self.identity.add_descriptor(descriptor);
+        }
         self
     }
 
@@ -1091,6 +1191,7 @@ impl UnitBuilder<'_> {
                     state: State::Stopped,
                     inspect_sensitivity: self.inspect_sensitivity,
                     advances_time: self.advances_time,
+                    identity: Arc::new(self.identity),
                 },
             );
             let unit_id = UnitId {

@@ -60,6 +60,7 @@ use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmotherboard::ChipsetDevices;
+use vmotherboard::DynamicDeviceContract;
 use vmotherboard::DynamicDeviceUnit;
 use vpci_client::MemoryAccess;
 use vpci_client::VpciClient;
@@ -449,15 +450,24 @@ impl VpciRelay {
 
         let device_name = format!("assigned_device:vpci-{instance_id}");
         let (device_unit, device) = chipset
-            .add_dyn_device(&self.driver_source, state_units, device_name, async |_| {
-                Ok(RelayedVpciDevice {
-                    device: vpci_device.clone(),
-                    pending: None,
-                    queued: VecDeque::new(),
-                    waker: Waker::noop().clone(),
-                    tdisp_capable,
-                })
-            })
+            .add_dyn_device(
+                &self.driver_source,
+                state_units,
+                device_name,
+                DynamicDeviceContract {
+                    stable_id: None,
+                    kind: "assigned_device".to_owned(),
+                },
+                async |_| {
+                    Ok(RelayedVpciDevice {
+                        device: vpci_device.clone(),
+                        pending: None,
+                        queued: VecDeque::new(),
+                        waker: Waker::noop().clone(),
+                        tdisp_capable,
+                    })
+                },
+            )
             .await?;
 
         let interrupt_mapper = VpciInterruptMapper::new(vpci_device.clone());
@@ -469,6 +479,10 @@ impl VpciRelay {
                     &self.driver_source,
                     state_units,
                     vpci_bus_name,
+                    DynamicDeviceContract {
+                        stable_id: None,
+                        kind: "vpci-bus".to_owned(),
+                    },
                     async |mmio| {
                         let bus = vpci::bus::VpciBus::new(
                             &self.driver_source,

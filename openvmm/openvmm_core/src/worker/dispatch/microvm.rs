@@ -393,7 +393,7 @@ impl LoadedVm {
             }
         };
         Ok(openvmm_defs::rpc::SnapshotSaveResponse {
-            state_unit_names: saved_state.inventory.clone(),
+            state_unit_names: saved_state.state_unit_names(),
             saved_state: ProtobufMessage::new(saved_state),
             effective_command_line,
             time,

@@ -18,7 +18,10 @@ use virt::time_abi::TimeAbiError;
 /// Magic identifying the OpenVMM snapshot manifest format.
 pub const SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V2\0";
 /// Saved-state schema version used by the VM worker envelope.
-pub const SAVED_STATE_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 records the contract of every state unit, which a restore
+/// checks, instead of version 1's names of the state units.
+pub const SAVED_STATE_SCHEMA_VERSION: u32 = 2;
 /// Protobuf root type stored in `state.bin`.
 pub const SAVED_STATE_ROOT_TYPE: &str = "openvmm.SavedState";
 /// Fleet-wide snapshot captured before image and sandbox configuration is consumed.

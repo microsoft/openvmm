@@ -61,10 +61,18 @@ it.
 
 ## Device state (`state.bin`)
 
-The device state contains every device's saved state, collected via the
-`SaveRestore` trait and encoded as a `mesh` protobuf message. The
-[Save State](contrib/save-state.md) compatibility rules (mesh tag stability,
-default values, forward/backward compatibility) apply.
+The device state is a `mesh` protobuf message, `openvmm.SavedState`, of
+version 2 of the saved-state schema, which the manifest records:
+
+- `units` (field 1) — the saved state of each state unit that has any,
+  collected via the `SaveRestore` trait;
+- `inventory` (field 3) — the contract of every state unit, ordered by name,
+  including the units that have no saved state.
+
+Field 2 held the names of the state units in version 1 of the schema, whose
+snapshots restore refuses. The [Save State](contrib/save-state.md)
+compatibility rules (mesh tag stability, default values, forward/backward
+compatibility) apply.
 
 ## Memory (`memory.bin`)
 
@@ -151,25 +159,53 @@ Each VM component that participates in save/restore is registered as a
 "state unit" with a unique string name via `StateUnits::add("name")`.
 During save, every state unit receives a `StateRequest::Save`. Units that
 have state return `Ok(Some(blob))`; units with no persistent state (e.g.
-the input distributor) return `Ok(None)` and are omitted from `state.bin`.
+the input distributor) return `Ok(None)` and are omitted from `units`.
 
-The resulting `state.bin` contains a `Vec<SavedStateUnit>`, where each
-entry pairs a unit name with its opaque protobuf-encoded state blob.
+`units` is a `Vec<SavedStateUnit>`, where each entry pairs a unit name with its
+opaque protobuf-encoded state blob. `inventory` is a `Vec<UnitContract>`,
+which `StateUnits::save_with_inventory` captures from the same snapshot of the
+unit set as the blobs, so a unit removed while the save runs appears in both if
+it answered the save, and in neither if it did not.
+
+### Unit contracts
+
+A unit's contract is the part of the VM's contract that it contributes, which
+the unit declares when it is added, through `UnitBuilder`:
+
+| Field | Meaning |
+|---|---|
+| `name` | The unit's name, which keys its saved state |
+| `stable_id` | The guest-visible identity of what the unit implements, such as `pcie-port:<port>` for a PCIe device; the name unless declared |
+| `kind` | What the unit implements, such as its device's resource kind |
+| `lifetime` | `Static` (created from the configuration), `Dynamic` (added while the VM ran, such as a hot-plugged device), or `Derived` (VMM infrastructure, such as `vmtime`, `chipset`, or `lines/*`) |
+| `descriptors` | Guest-visible properties, as sorted `key=value` pairs |
+
+`vmotherboard` derives a chipset device's descriptors from its registrations
+and its configuration space, without device-specific code: `mmio` and `pio` for
+each static region (`<label>@<base>+<length>`), `line` and `line.target` for its
+interrupt lines and targets, `pci.bdf`, `pcie.port`, or `pcie.rciep` for its PCI
+placement, and `pci.id`, `pci.class`, `pci.revision`, and `pci.subsystem` for
+the identity that a PCI function reports.
 
 ### Restore matching rules
 
-During restore, `StateUnits::restore()` matches saved-state entries to
-currently registered units **by name**:
+Before applying saved state, the VM worker checks the saved inventory with
+`StateUnits::check_inventory`, matching units by name, whatever order either
+VM registered them in:
 
 | Scenario | Result |
 |---|---|
-| Names match exactly | State is dispatched to the unit |
-| Saved entry has no matching unit | **Error** — `unknown unit name` |
-| Unit exists with no saved entry | Unit is skipped (keeps default state) |
-| Duplicate name in saved state | **Error** — `duplicate unit name` |
+| A unit's contract equals the recorded one | The unit matches |
+| A recorded static or derived unit is missing | **Error** — missing |
+| A unit that the inventory does not record | **Error** — unexpected |
+| A unit's contract differs from the recorded one | **Error** — changed |
+| The inventory records a name more than once | **Error** — recorded more than once |
+| Saved state of a unit that the inventory does not record | **Error** — saved state without a record |
+| A recorded dynamic unit is missing | Planned for re-creation |
 
-This means removing a device between save and restore will fail, but
-adding a new device is allowed (it initialises to its power-on defaults).
+`StateUnits::restore()` then dispatches each entry of `units` to the unit of
+the same name. The VM worker refuses saved state whose check plans to re-create
+units.
 
 ### Unit naming conventions
 

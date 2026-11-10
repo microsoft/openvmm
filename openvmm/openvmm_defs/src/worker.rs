@@ -11,6 +11,7 @@ use mesh::payload::Protobuf;
 use mesh::payload::message::ProtobufMessage;
 use mesh_worker::WorkerId;
 use state_unit::SavedStateUnit;
+use state_unit::UnitContract;
 use vm_resource::Resource;
 use vmcore::save_restore::SavedStateRoot;
 use vmm_core_defs::HaltReason;
@@ -46,9 +47,23 @@ pub struct SnapshotRestoreGuards {
 pub struct SavedState {
     #[mesh(1)]
     pub units: Vec<SavedStateUnit>,
-    /// Complete state-unit inventory, including units with no mutable state.
-    #[mesh(2)]
-    pub inventory: Vec<String>,
+    // Field 2 held the names of the state units, which the contracts of
+    // field 3 replace; version 1 of the saved-state schema wrote it.
+    /// The contract of every state unit, including units with no saved state,
+    /// ordered by name.
+    #[mesh(3)]
+    pub inventory: Vec<UnitContract>,
+}
+
+impl SavedState {
+    /// Returns the names of the state units that the inventory records, in
+    /// its order.
+    pub fn state_unit_names(&self) -> Vec<String> {
+        self.inventory
+            .iter()
+            .map(|contract| contract.name.clone())
+            .collect()
+    }
 }
 
 /// Launch parameters for the VM worker.

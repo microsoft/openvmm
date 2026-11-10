@@ -91,7 +91,7 @@ pub(crate) fn prepare_snapshot_restore_for_config(
             .parse()
             .context("failed to parse saved state inventory from snapshot")?;
         anyhow::ensure!(
-            saved_state.inventory == contract.state_unit_names,
+            saved_state.state_unit_names() == contract.state_unit_names,
             "snapshot manifest state-unit inventory does not match state.bin"
         );
     }

@@ -3008,6 +3008,17 @@ mod tests {
         assert!(vm_time_cut_to_anchor_ns(2_000_000_000, 3_000_000_000).is_err());
     }
 
+    /// The inventory of a saved state that holds only VM time.
+    fn vmtime_inventory() -> Vec<state_unit::UnitContract> {
+        vec![state_unit::UnitContract {
+            name: crate::worker::dispatch::VMTIME_UNIT_NAME.to_string(),
+            stable_id: crate::worker::dispatch::VMTIME_UNIT_NAME.to_string(),
+            kind: String::new(),
+            lifetime: state_unit::UnitLifetime::Derived,
+            descriptors: Vec::new(),
+        }]
+    }
+
     #[test]
     fn missing_vm_time_stop_sample_fails_the_capture() {
         let mut contract = test_time_contract();
@@ -3017,7 +3028,7 @@ mod tests {
                 name: crate::worker::dispatch::VMTIME_UNIT_NAME.to_string(),
                 state: SavedStateBlob::new(vmtime),
             }],
-            inventory: vec![crate::worker::dispatch::VMTIME_UNIT_NAME.to_string()],
+            inventory: vmtime_inventory(),
         };
         contract.vm_time_cut_to_anchor_ns = 1;
         record_vm_time_cut(&mut contract, &saved_state).unwrap_err();
@@ -3038,7 +3049,7 @@ mod tests {
                 name: crate::worker::dispatch::VMTIME_UNIT_NAME.to_string(),
                 state: SavedStateBlob::new(keeper.save()),
             }],
-            inventory: vec![crate::worker::dispatch::VMTIME_UNIT_NAME.to_string()],
+            inventory: vmtime_inventory(),
         };
         let mut contract = test_time_contract();
         // A host wall-clock step between the cut and the anchor moves UTC by

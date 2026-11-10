@@ -1980,6 +1980,7 @@ impl InitializedVm {
 
         let vmtime = state_units
             .add(VMTIME_UNIT_NAME)
+            .lifetime(state_unit::UnitLifetime::Derived)
             .advances_time()
             .spawn(driver_source.simple(), {
                 |recv| {
@@ -2091,6 +2092,7 @@ impl InitializedVm {
 
         let input_distributor = state_units
             .add("input")
+            .lifetime(state_unit::UnitLifetime::Derived)
             .spawn(driver_source.simple(), async |mut recv| {
                 input_distributor.run(&mut recv).await;
                 input_distributor
@@ -4408,10 +4410,15 @@ impl LoadedVm {
                             );
 
                             let mapper = self.inner.memory_manager.device_memory_mapper();
+                            let contract = vmotherboard::DynamicDeviceContract {
+                                stable_id: Some(vmotherboard::pcie_port_stable_id(&port_name)),
+                                kind: resource.id().to_owned(),
+                            };
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
                                 &self.state_units,
                                 format!("pcie-hotplug:{}", port_name),
+                                contract,
                                 async |register_mmio| {
                                     self.inner.resolver
                                         .resolve(
@@ -4745,19 +4752,19 @@ impl LoadedVm {
         }
     }
 
-    /// Saves the VM's processor, partition, and device state.
+    /// Saves the VM's processor, partition, and device state, with the
+    /// contract of every state unit from the same snapshot of the units.
     ///
     /// TODO: virtio & vmbus unsupported.
     async fn save(&mut self) -> anyhow::Result<SavedState> {
-        Ok(SavedState {
-            units: self.state_units.save().await?,
-            inventory: self.state_units.inventory(),
-        })
+        let (units, inventory) = self.state_units.save_with_inventory().await?;
+        Ok(SavedState { units, inventory })
     }
 
-    /// Restore state on the VM.
+    /// Restore state on the VM, once its state units satisfy the saved
+    /// inventory.
     async fn restore(&mut self, state: SavedState) -> anyhow::Result<()> {
-        restore::validate_inventory(&self.state_units, &state)?;
+        restore::check_inventory(&self.state_units, &state)?;
         self.state_units.restore(state.units).await?;
         Ok(())
     }

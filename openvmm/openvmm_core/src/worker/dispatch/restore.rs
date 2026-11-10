@@ -256,15 +256,24 @@ fn validate_snapshot_restore_partition_presence(
     Ok(())
 }
 
-/// Validates the state-unit inventory of a saved-state envelope. Saved state
-/// without an inventory is restored without the check.
-pub(super) fn validate_inventory(
-    state_units: &StateUnits,
-    state: &SavedState,
-) -> anyhow::Result<()> {
-    if !state.inventory.is_empty() {
-        state_units.validate_inventory(&state.inventory)?;
-    }
+/// Checks that the state units satisfy the inventory of a saved-state
+/// envelope, and that it records every unit whose state the envelope holds.
+///
+/// A recorded hot-plugged unit that the VM lacks fails the check here; the
+/// restore of such a snapshot re-creates it first.
+pub(super) fn check_inventory(state_units: &StateUnits, state: &SavedState) -> anyhow::Result<()> {
+    let plan = state_units
+        .check_inventory(&state.inventory, &state.units)
+        .context("saved state does not match the VM's state units")?;
+    anyhow::ensure!(
+        plan.recreate.is_empty(),
+        "saved state records hot-plugged state units that the VM lacks: {}",
+        plan.recreate
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     Ok(())
 }
 
@@ -415,7 +424,13 @@ mod tests {
 
         // The payload must hold the unit; the inventory alone does not.
         let mut inventory_only = saved_state(&[]);
-        inventory_only.inventory.push("partition".to_owned());
+        inventory_only.inventory.push(state_unit::UnitContract {
+            name: "partition".to_owned(),
+            stable_id: "partition".to_owned(),
+            kind: String::new(),
+            lifetime: state_unit::UnitLifetime::Static,
+            descriptors: Vec::new(),
+        });
         validate_snapshot_restore_partition_presence(&inventory_only, true).unwrap_err();
     }
 
