@@ -270,6 +270,9 @@ impl SimpleFlowNode for Node {
         let openhcl_linux_direct_x64 = build
             .openhcl_linux_direct_x64
             .then(|| build_openhcl(OpenhclIgvmRecipe::X64TestLinuxDirect));
+        let openhcl_sivm_x64 = build
+            .openhcl_sivm_x64
+            .then(|| build_openhcl(OpenhclIgvmRecipe::X64TestSivm));
         let snp_linux_direct_igvm_x64 = build.snp_linux_direct_igvm_x64.then(|| {
             ctx.reqv(|v| crate::build_snp_linux_direct_igvm::Request {
                 snp_linux_direct_igvm: v,
@@ -702,6 +705,7 @@ impl SimpleFlowNode for Node {
             openhcl_cvm_x64,
             vmfirmwareigvm_cvm_x64,
             openhcl_linux_direct_x64,
+            openhcl_sivm_x64,
             snp_linux_direct_igvm_x64,
             tmks_x64,
             tmks_aarch64,

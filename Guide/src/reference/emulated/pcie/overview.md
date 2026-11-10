@@ -137,9 +137,15 @@ a GICv3 ITS or a GICv2m MSI frame, depending on the platform:
   per-root-complex ID mappings; the device tree includes an `its`
   child node under the GIC with `msi-controller`.
 
-- **GICv2m**: MSI writes map to a fixed pool of 64 SPIs via
+- **GICv2m**: MSI writes map to a fixed pool of SPIs (64 by default) via
   a v2m doorbell register. The MADT includes a GICv2m MSI
   frame entry.
+
+The v2m pool is shared by endpoints and PCIe root ports. Windows drivers can
+reserve every advertised MSI-X entry: a 64-entry endpoint plus one root-port
+MSI needs at least 65 SPIs, or Windows reports Code 12 (insufficient resources).
+When constructing a VM programmatically, size `GicMsiConfig::V2m.spi_count`
+for the complete topology rather than only the endpoint's active queues.
 
 The MSI controller can be overridden with the `--gic-msi`
 CLI option (`auto`, `its`, or `v2m`).
