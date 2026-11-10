@@ -301,6 +301,39 @@ async fn broker_quiesce_stops_new_host_input(driver: DefaultDriver) {
     );
 }
 
+/// A guest that resets the control console while host input is gated, and
+/// then starts it again, receives no host input, the host's attachment among
+/// it, until the gate is released.
+#[async_test]
+async fn broker_guest_reset_keeps_host_input_gated(driver: DefaultDriver) {
+    let mut harness = TestHarness::new_broker(&driver, BROKER_INSTANCE, BROKER_CAPABILITY);
+    harness.enable().await;
+    harness.device.quiesce_input().await.unwrap();
+
+    // The guest's reset, as the transport makes it when the guest writes 0
+    // to the device status. It detaches a host that the broker attached.
+    harness.disable().await;
+    harness.reset_rings();
+    harness.enable().await;
+    harness.handle.reconnect();
+
+    let host_attach = encode(&Record::bootstrap(
+        RecordType::HostAttach,
+        BROKER_CAPABILITY.to_vec(),
+    ));
+    harness.handle.inject_rx_data(&host_attach);
+    for _ in 0..20 {
+        yield_now().await;
+    }
+    assert_eq!(harness.handle.pending_rx_len(), host_attach.len());
+    assert!(harness.handle.tx_data().is_empty());
+
+    harness.device.resume_input().await.unwrap();
+    yield_until(|| harness.handle.tx_data().len() >= control_session_protocol::HEADER_LEN).await;
+    let wait = decode(&harness.handle.take_tx_data());
+    assert_eq!(wait.record_type, RecordType::Wait);
+}
+
 #[async_test]
 async fn broker_host_lifecycle_error_does_not_stop_guest_worker(driver: DefaultDriver) {
     let mut harness = TestHarness::new_broker(&driver, BROKER_INSTANCE, BROKER_CAPABILITY);

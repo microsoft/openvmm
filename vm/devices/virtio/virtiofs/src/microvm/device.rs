@@ -160,7 +160,7 @@ pub(crate) fn validate_queue_features(
 }
 
 pub(crate) fn reset(device: &mut VirtioFsDevice) {
-    device.admission.resume();
+    // Request admission stays as it is: only resuming input reopens it.
     device.save_error = None;
 }
 
@@ -296,6 +296,8 @@ mod tests {
     use super::*;
     use crate::profile::MICROVM_ATTACHMENT_ID;
     use crate::profile::microvm_root_identity;
+    use chipset_device::io::IoResult;
+    use chipset_device::mmio::MmioIntercept;
     use guestmem::GuestMemory;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
@@ -642,5 +644,70 @@ mod tests {
         )
         .unwrap();
         assert!(invalid_destination.restore(restored).await.is_err());
+    }
+
+    /// Returns the microVM HostFs device of the host directory `root` behind
+    /// the virtio-mmio transport, which is not DRIVER_OK.
+    fn microvm_transport(driver: &DefaultDriver, root: &Path) -> VirtioMmioDevice {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let device = VirtioFsDevice::new_microvm_hostfs(
+            &driver_source,
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(root).unwrap(),
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            MicroVmOwnerMode::Vmm,
+            root,
+            None,
+        )
+        .unwrap();
+        VirtioMmioDevice::new(
+            Box::new(device),
+            driver,
+            GuestMemory::empty(),
+            LineInterrupt::detached(),
+            None,
+            0,
+            0x1000,
+        )
+        .unwrap()
+    }
+
+    /// A guest that writes 0 to the status of the device while host input is
+    /// quiesced, as a vCPU can between a snapshot boundary's input gate and
+    /// the vCPU stop, resets the device but leaves its input quiesced, so the
+    /// capture's save succeeds.
+    #[async_test]
+    async fn guest_status_reset_keeps_input_quiesced_for_save(driver: DefaultDriver) {
+        let root = tempfile::tempdir().unwrap();
+        let mut transport = microvm_transport(&driver, root.path());
+        transport.quiesce_input().await.unwrap();
+
+        // The status register of the virtio-mmio transport (virtio 1.2,
+        // section 4.2.2).
+        assert!(matches!(
+            transport.mmio_write(0x70, &0u32.to_le_bytes()),
+            IoResult::Ok
+        ));
+        transport.stop().await;
+        transport.save().await.unwrap();
+    }
+
+    /// A reset of the VM while host input is quiesced, as during a gated
+    /// restore, leaves its input quiesced too: only resuming input releases
+    /// the gate.
+    #[async_test]
+    async fn vm_reset_keeps_input_quiesced_for_save(driver: DefaultDriver) {
+        let root = tempfile::tempdir().unwrap();
+        let mut transport = microvm_transport(&driver, root.path());
+        transport.quiesce_input().await.unwrap();
+        transport.stop().await;
+        transport.reset().await;
+
+        transport.start();
+        transport.stop().await;
+        transport.save().await.unwrap();
     }
 }

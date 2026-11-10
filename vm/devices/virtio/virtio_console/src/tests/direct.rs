@@ -39,6 +39,38 @@ async fn input_gate_cancels_rx_but_keeps_tx_running(driver: DefaultDriver) {
     assert_eq!(received, b"gated-input");
 }
 
+/// A guest that resets the console while host input is gated, as a snapshot
+/// boundary or a gated restore gates it, and then starts it again receives no
+/// host input until the gate is released.
+#[async_test]
+async fn guest_reset_keeps_host_input_gated(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+    harness.device.quiesce_input().await.unwrap();
+
+    // The guest's reset, as the transport makes it when the guest writes 0
+    // to the device status.
+    harness.disable().await;
+    harness.reset_rings();
+    harness.enable().await;
+
+    harness.handle.inject_rx_data(b"gated-input");
+    let gpa = harness.post_rx_buffer_and_signal(0, 64);
+    // The worker runs: it forwards the guest's output.
+    harness.post_tx_and_signal(0, b"tx-while-gated");
+    assert_eq!(harness.wait_for_tx_used().await, (0, 0));
+    for _ in 0..10 {
+        yield_now().await;
+    }
+    assert_eq!(harness.handle.pending_rx_len(), b"gated-input".len());
+
+    harness.device.resume_input().await.unwrap();
+    let (_, used_len) = harness.wait_for_rx_used().await;
+    let mut received = vec![0; used_len as usize];
+    harness.mem.read_at(gpa, &mut received).unwrap();
+    assert_eq!(received, b"gated-input");
+}
+
 #[async_test]
 async fn read_error_drives_disconnect_before_reconnect(driver: DefaultDriver) {
     let mut harness = TestHarness::new_with_policy(&driver, VirtioConsoleDisconnectPolicy::Discard);
