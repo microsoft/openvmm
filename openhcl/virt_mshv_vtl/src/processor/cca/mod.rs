@@ -120,7 +120,8 @@ struct CcaVtl {
     /// Virtual interrupts that did not fit in the implemented LRs.
     ///
     /// These are the tail of the logical active/pending list. They remain
-    /// durable here until EOIcount or a trapped ICC_DIR_EL1 deactivates them.
+    /// durable here until EOIcount, a trapped ICC_DIR_EL1, or an ICACTIVER
+    /// MMIO write deactivates them.
     #[inspect(iter_by_index)]
     gic_lr_overflow: Vec<u64>,
     /// Most recently returned ICH_VMCR_EL2 value for this plane.
@@ -912,16 +913,33 @@ impl UhProcessor<'_, CcaBacked> {
 
     /// Folds the returned LR cache into the durable software GIC state.
     fn reconcile_gic_lrs(&mut self, vtl: GuestVtl) {
-        if self.backing.vtls[vtl].gic_lrs_reconciled {
-            return;
-        }
-
         let gic_num_lrs = self.shared.gic_num_lrs;
+        let reconciled = self.backing.vtls[vtl].gic_lrs_reconciled;
         let gicv3_hcr = self.runner.cca_rsi_plane_entry().gicv3_hcr;
-        if !IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr).veoim() {
+        if !reconciled && !IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr).veoim() {
             consume_eoi_count(
                 &mut self.backing.vtls[vtl].gic_lr_overflow,
                 gic_eoi_count(gicv3_hcr),
+            );
+        }
+
+        // MMIO deactivation can occur after the returned cache was folded.
+        // Update both LR locations and fold again to release removed SPIs'
+        // ownership before rebuilding pending entries. Consume EOIcount only
+        // on the first fold of this returned cache.
+        let deactivated = self
+            .shared
+            .cvm
+            .gic
+            .take_deactivated_interrupts(self.vp_index());
+        if reconciled && deactivated.is_empty() {
+            return;
+        }
+        for intid in deactivated {
+            deactivate_virtual_interrupt(
+                &mut self.runner.cca_rsi_plane_entry().gicv3_lrs[..gic_num_lrs],
+                &mut self.backing.vtls[vtl].gic_lr_overflow,
+                intid,
             );
         }
 
@@ -960,7 +978,8 @@ impl UhProcessor<'_, CcaBacked> {
     ///
     /// Pure-pending interrupts are placed before active entries. Active entries
     /// that no longer fit remain in a software tail and are deactivated through
-    /// EOIcount (EOImode 0) or trapped DIR writes (EOImode 1).
+    /// EOIcount (EOImode 0), trapped DIR writes (EOImode 1), or ICACTIVER MMIO
+    /// writes.
     fn poll_gic(&mut self, vtl: GuestVtl) {
         self.reconcile_gic_lrs(vtl);
 

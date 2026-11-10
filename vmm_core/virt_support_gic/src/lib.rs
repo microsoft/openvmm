@@ -141,6 +141,14 @@ impl GicV3Model {
         self.distributor.fold_list_registers(vp, lrs);
     }
 
+    /// Takes MMIO deactivations that must also be applied to this VP's LRs.
+    ///
+    /// Apply these to resident and overflow entries before folding them again,
+    /// so stale LR state cannot undo a guest's ICACTIVER write.
+    pub fn take_deactivated_interrupts(&self, vp: VpIndex) -> Vec<u32> {
+        self.distributor.take_deactivated_interrupts(vp)
+    }
+
     pub fn write_sysreg(
         &self,
         vp: VpIndex,
@@ -256,6 +264,9 @@ mod gicd {
         in_flight_by_vp: Vec<Vec<u32>>,
         #[inspect(iter_by_index)]
         active: Vec<u32>,
+        /// MMIO deactivations awaiting application to their owning VP's LRs.
+        #[inspect(iter_by_index)]
+        lr_deactivated: Vec<u32>,
         #[inspect(iter_by_index)]
         group_status: Vec<u32>,
         #[inspect(iter_by_index)]
@@ -291,6 +302,7 @@ mod gicd {
                     in_flight: vec![None; n * 32],
                     in_flight_by_vp: Vec::new(),
                     active: vec![0; n],
+                    lr_deactivated: vec![0; n],
                     group_status: vec![0; n],
                     enable: vec![0; n],
                     cfg: vec![0; n * 2],
@@ -398,11 +410,32 @@ mod gicd {
                     Self::set_pending_locked(&mut state, intid, true);
                 }
                 Self::set_bit(&mut state.lr_pending, intid, false);
+                Self::set_bit(&mut state.lr_deactivated, intid, false);
                 state.in_flight[intid as usize] = None;
                 if let Some(owned) = state.in_flight_by_vp.get_mut(vp.index() as usize) {
                     owned.retain(|owned_intid| *owned_intid != intid);
                 }
             }
+        }
+
+        pub fn take_deactivated_interrupts(&self, vp: VpIndex) -> Vec<u32> {
+            let mut deactivated = Vec::new();
+            {
+                let mut state = self.state.lock();
+                let vp_index = vp.index() as usize;
+                if let Some(owned) = state.in_flight_by_vp.get(vp_index) {
+                    deactivated.extend(owned.iter().copied().filter(|&intid| {
+                        state.lr_deactivated[intid as usize / 32] & (1 << (intid & 31)) != 0
+                    }));
+                }
+                for &intid in &deactivated {
+                    Self::set_bit(&mut state.lr_deactivated, intid, false);
+                }
+            }
+            if let Some(gicr) = self.gicr.get(vp.index() as usize) {
+                deactivated.extend(gicr.take_deactivated_interrupts());
+            }
+            deactivated
         }
 
         pub fn fold_list_registers(&self, vp: VpIndex, lrs: &[ListRegisterInterrupt]) {
@@ -425,7 +458,11 @@ mod gicd {
                     returned.is_some_and(|lr| lr.pending),
                 );
                 if let Some(lr) = returned {
-                    Self::set_bit(&mut state.active, intid, lr.active);
+                    // An MMIO clear takes precedence until the owner has
+                    // applied it to its resident and overflow LR copies.
+                    let deactivated =
+                        state.lr_deactivated[intid as usize / 32] & (1 << (intid & 31)) != 0;
+                    Self::set_bit(&mut state.active, intid, lr.active && !deactivated);
                     // A pending LR may come solely from a live level input.
                     // Restore a latch only if one backed the reservation;
                     // independently raised pending requests remain untouched.
@@ -434,6 +471,7 @@ mod gicd {
                     }
                 } else {
                     Self::set_bit(&mut state.active, intid, false);
+                    Self::set_bit(&mut state.lr_deactivated, intid, false);
                     state.in_flight[intid as usize] = None;
                 }
                 if !keep {
@@ -948,16 +986,28 @@ mod gicd {
                 r if GicdRegister::ISACTIVER.contains(&r.0) => {
                     let n = (r.0 & 0x7f) / 4;
                     if n != 0 {
-                        if let Some(active) = self.state.lock().active.get_mut(n as usize) {
-                            *active |= value;
+                        let mut state = self.state.lock();
+                        if (n as usize) < state.active.len() {
+                            state.active[n as usize] |= value;
+                            state.lr_deactivated[n as usize] &= !value;
                         }
                     }
                 }
                 r if GicdRegister::ICACTIVER.contains(&r.0) => {
                     let n = (r.0 & 0x7f) / 4;
                     if n != 0 {
-                        if let Some(active) = self.state.lock().active.get_mut(n as usize) {
-                            *active &= !value;
+                        let mut state = self.state.lock();
+                        if (n as usize) < state.active.len() {
+                            state.active[n as usize] &= !value;
+                            let mut bits = value;
+                            while bits != 0 {
+                                let bit = bits.trailing_zeros();
+                                bits &= bits - 1;
+                                let intid = u32::from(n) * 32 + bit;
+                                if state.in_flight[intid as usize].is_some() {
+                                    Self::set_bit(&mut state.lr_deactivated, intid, true);
+                                }
+                            }
                         }
                     }
                 }
@@ -2527,6 +2577,9 @@ mod gicr {
         lr_pending_latch: u32,
         #[inspect(hex)]
         active: u32,
+        /// MMIO deactivations awaiting application to resident or overflow LRs.
+        #[inspect(hex)]
+        lr_deactivated: u32,
         #[inspect(hex)]
         group_status: u32,
         #[inspect(hex)]
@@ -2654,6 +2707,18 @@ mod gicr {
             self.in_flight.fetch_or(mask, Ordering::Relaxed);
         }
 
+        pub fn take_deactivated_interrupts(&self) -> Vec<u32> {
+            let mut state = self.mutable.lock();
+            let mut bits = std::mem::take(&mut state.lr_deactivated);
+            let mut deactivated = Vec::new();
+            while bits != 0 {
+                let intid = bits.trailing_zeros();
+                bits &= bits - 1;
+                deactivated.push(intid);
+            }
+            deactivated
+        }
+
         pub fn fold_list_registers(&self, lrs: &[ListRegisterInterrupt]) {
             let mut state = self.mutable.lock();
             let mut in_flight = self.in_flight.load(Ordering::Relaxed);
@@ -2665,7 +2730,7 @@ mod gicr {
                 state.lr_pending_latch &= !mask;
 
                 if let Some(lr) = lrs.iter().find(|lr| lr.intid == intid) {
-                    if lr.active {
+                    if lr.active && state.lr_deactivated & mask == 0 {
                         state.active |= mask;
                     } else {
                         state.active &= !mask;
@@ -2675,6 +2740,7 @@ mod gicr {
                     }
                 } else {
                     state.active &= !mask;
+                    state.lr_deactivated &= !mask;
                     self.in_flight.fetch_and(!mask, Ordering::Relaxed);
                 }
             }
@@ -2902,8 +2968,16 @@ mod gicr {
         fn sgi_write32(&self, address: GicrSgiRegister, data: u32) -> bool {
             match address {
                 GicrSgiRegister::IGROUPR0 => self.mutable.lock().group_status = data,
-                GicrSgiRegister::ISACTIVER0 => self.mutable.lock().active |= data,
-                GicrSgiRegister::ICACTIVER0 => self.mutable.lock().active &= !data,
+                GicrSgiRegister::ISACTIVER0 => {
+                    let mut state = self.mutable.lock();
+                    state.active |= data;
+                    state.lr_deactivated &= !data;
+                }
+                GicrSgiRegister::ICACTIVER0 => {
+                    let mut state = self.mutable.lock();
+                    state.active &= !data;
+                    state.lr_deactivated |= data & self.in_flight.load(Ordering::Relaxed);
+                }
                 GicrSgiRegister::ISENABLER0 => self.mutable.lock().enable |= data,
                 GicrSgiRegister::ICENABLER0 => self.mutable.lock().enable &= !data,
                 GicrSgiRegister::ICPENDR0 => self.clear_pending_bits(data),
@@ -2952,6 +3026,7 @@ mod gicr {
                     ppi_level_line: 0,
                     lr_pending_latch: 0,
                     active: 0,
+                    lr_deactivated: 0,
                     group_status: 0,
                     enable: 0,
                     priority: [0; 8],
