@@ -423,7 +423,8 @@ impl LoadedVm {
     /// that runs a quiesced VM again.
     ///
     /// A unit whose task does not answer leaves the units that did start
-    /// stopped again, and fails the rollback.
+    /// stopped again, and fails the rollback. A unit that such a unit depends
+    /// on, or that does not answer its stop, stays running instead.
     pub(super) async fn resume_after_failed_snapshot(&mut self) -> anyhow::Result<()> {
         self.state_units.start().await?;
         self.running = true;
