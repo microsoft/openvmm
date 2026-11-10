@@ -359,6 +359,28 @@ async fn mmio_restore_rejects_missing_active_queue_progress(driver: DefaultDrive
 }
 
 #[async_test]
+async fn pci_restore_rejects_missing_active_queue_progress(driver: DefaultDriver) {
+    use vmcore::save_restore::AsyncSaveRestore;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut saved = save_active_private_pci(&driver, &test_mem).await;
+    assert!(saved.queues[0].common.enable);
+    assert!(saved.queues[0].common.queue_state.take().is_some());
+    let (device, probe) = PrivateStateTestDevice::new(0, 1, false);
+    let mut destination =
+        VirtioPciTestDevice::new_with_device(&driver, &test_mem, Box::new(device));
+
+    let error = destination.pci_device.restore(saved).await.unwrap_err();
+    assert!(
+        error_chain(&error).contains("missing progress state"),
+        "{error:?}"
+    );
+    // Validation rejects the state before the device sees it.
+    assert_eq!(probe.restore_count.load(Ordering::Relaxed), 0);
+    assert_eq!(probe.start_count.load(Ordering::Relaxed), 0);
+}
+
+#[async_test]
 async fn mmio_private_state_round_trip(driver: DefaultDriver) {
     use crate::spec::mmio::VirtioMmioRegister;
     use vmcore::device_state::ChangeDeviceState;
@@ -553,6 +575,30 @@ async fn mmio_resave_before_first_start_keeps_restored_state(driver: DefaultDriv
     destination.restore(saved).await.unwrap();
     destination.stop().await;
     let resaved = destination.save().await.unwrap();
+    assert_eq!(probe.start_count.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        resaved.queues[0].common.queue_state,
+        Some(QueueState {
+            avail_index: 3,
+            used_index: 1,
+        })
+    );
+    assert_eq!(saved_value(resaved.device_state), 42);
+}
+
+#[async_test]
+async fn pci_resave_before_first_start_keeps_restored_state(driver: DefaultDriver) {
+    use vmcore::save_restore::AsyncSaveRestore;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let saved = save_active_private_pci(&driver, &test_mem).await;
+    let (device, probe) = PrivateStateTestDevice::new(0, 1, false);
+    let mut destination =
+        VirtioPciTestDevice::new_with_device(&driver, &test_mem, Box::new(device));
+
+    destination.pci_device.restore(saved).await.unwrap();
+    destination.pci_device.stop().await;
+    let resaved = destination.pci_device.save().await.unwrap();
     assert_eq!(probe.start_count.load(Ordering::Relaxed), 0);
     assert_eq!(
         resaved.queues[0].common.queue_state,
