@@ -4185,7 +4185,12 @@ impl LoadedVm {
                                         rpc.complete(Err(RemoteError::new(start_error.context(
                                             "worker restart failed and the VM could not resume",
                                         ))));
-                                        continue;
+                                        // The VM cannot resume, but it is
+                                        // still marked running while its
+                                        // state units are stopped, so a later
+                                        // pause would stop them again. Tear
+                                        // the VM down instead.
+                                        break;
                                     }
                                 }
                                 rpc.complete(Err(RemoteError::new(err)));
@@ -4624,7 +4629,13 @@ impl LoadedVm {
         }
 
         device_removal.drain().await;
-        self.pause().await;
+        // Stop the state units whenever they run, not only when the VM does:
+        // after a failed state change, such as a restart that could not resume
+        // the VM, the two can disagree.
+        if self.state_units.is_running() {
+            self.state_units.stop().await;
+        }
+        self.running = false;
         self.teardown_chipset_devices().await;
         self.inner.partition_unit.teardown().await;
         if let Some(vmbus) = self.inner.vmbus_server {
