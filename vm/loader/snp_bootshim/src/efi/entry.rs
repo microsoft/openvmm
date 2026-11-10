@@ -38,10 +38,10 @@ use core::cell::RefCell;
 use core::cell::RefMut;
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
+use core::ops::Deref;
 use core::ptr::with_exposed_provenance;
 use core::ptr::with_exposed_provenance_mut;
 use guid::Guid;
-use minimal_rt::single_threaded::SingleThreaded;
 use uefi_specs::uefi::boot::EFI_BOOT_SERVICES_COUNT;
 use uefi_specs::uefi::boot::EFI_MEMORY_DESCRIPTOR_VERSION;
 use uefi_specs::uefi::boot::EfiMemoryDescriptor;
@@ -54,9 +54,27 @@ use zerocopy::IntoBytes;
 
 const DESCRIPTOR_SIZE: usize = size_of::<EfiMemoryDescriptor>();
 
-// The shim and the EFI stub run on one processor with interrupts disabled,
-// so `SingleThreaded` is sound. The stub reads the tables only through raw
-// pointers, between service calls.
+/// A wrapper that makes a value `Sync`, so that it can be a `static`.
+///
+/// This is a copy of `SingleThreaded` in `openhcl_boot`. It is not shared
+/// through `minimal_rt`, because a public safe type cannot promise that its
+/// users have only one thread. Each copy is private to a program that has
+/// only one thread.
+struct SingleThreaded<T>(T);
+
+// SAFETY: The shim and the EFI stub run on one processor with interrupts
+// disabled, so no two threads use the value. The stub reads the tables only
+// through raw pointers, between service calls. Host tests serialize their
+// access with a lock.
+unsafe impl<T> Sync for SingleThreaded<T> {}
+
+impl<T> Deref for SingleThreaded<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
 
 /// The tables start zeroed. `Efi` is `FromZeros`, so that is a valid value.
 static EFI: SingleThreaded<RefCell<MaybeUninit<Efi>>> =
