@@ -52,10 +52,11 @@ pub(super) fn filter(message: VmRpc, boundary_active: bool) -> Option<VmRpc> {
         VmRpc::AddVpciDevice(rpc) => rpc.fail(SnapshotBoundaryActive),
         VmRpc::RemoveVpciDevice(rpc) => rpc.fail(SnapshotBoundaryActive),
         VmRpc::DumpState(rpc) => rpc.fail(SnapshotBoundaryActive),
+        VmRpc::Pause(rpc) => rpc.fail(SnapshotBoundaryActive),
         VmRpc::PulseSaveRestore(rpc) => rpc.complete(Err(PulseSaveRestoreError::Other(
             RemoteError::new(SnapshotBoundaryActive),
         ))),
-        VmRpc::Pause(rpc) | VmRpc::ClearHalt(rpc) => drop(rpc),
+        VmRpc::ClearHalt(rpc) => drop(rpc),
         VmRpc::Nmi(rpc) => drop(rpc),
     }
     tracelimit::warn_ratelimited!(
@@ -190,9 +191,10 @@ mod tests {
         let write = send.call(VmRpc::WriteMemory, (0, vec![1]));
         let reset = send.call(VmRpc::Reset, ());
         let resume = send.call(VmRpc::Resume, ());
+        let pause = send.call(VmRpc::Pause, ());
         let remove = send.call(VmRpc::RemovePcieDevice, "port".to_owned());
 
-        for _ in 0..4 {
+        for _ in 0..5 {
             assert!(filter(recv.try_recv().unwrap(), true).is_none());
         }
         for result in [block_on(write), block_on(reset), block_on(remove)] {
@@ -200,6 +202,7 @@ mod tests {
             assert!(error.to_string().contains("snapshot boundary is active"));
         }
         assert!(block_on(resume).unwrap().is_err());
+        assert!(block_on(pause).unwrap().is_err());
 
         let release = send.call(VmRpc::ReleaseSnapshotBoundary, ());
         let Some(VmRpc::ReleaseSnapshotBoundary(rpc)) = filter(recv.try_recv().unwrap(), true)
@@ -213,13 +216,11 @@ mod tests {
     #[test]
     fn infallible_mutations_report_channel_error() {
         let (send, mut recv) = mesh::channel();
-        let pause = send.call(VmRpc::Pause, ());
         let clear_halt = send.call(VmRpc::ClearHalt, ());
         let nmi = send.call(VmRpc::Nmi, 0);
-        for _ in 0..3 {
+        for _ in 0..2 {
             assert!(filter(recv.try_recv().unwrap(), true).is_none());
         }
-        assert!(block_on(pause).is_err());
         assert!(block_on(clear_halt).is_err());
         assert!(block_on(nmi).is_err());
     }
