@@ -709,19 +709,24 @@ impl<F: AsyncFile> VhdxFile<F> {
             .encode()
             .map_err(VhdxIoErrorInner::ParentParameters)?;
 
-        // Exclusive access and an empty batch keep the locator (at most
-        // 16 pages) and its table entry in the same WAL transaction.
         self.flush().await?;
         self.enable_write_mode(WriteMode::FileWritable)
             .await
             .map_err(VhdxIoErrorInner::WriteHeader)?;
-        self.metadata_table
-            .replace_item(
+        let replacement = self
+            .metadata_table
+            .stage_replacement(
                 &self.cache,
                 &format::PARENT_LOCATOR_ITEM_GUID,
                 &data,
                 self.metadata_length,
             )
+            .await?;
+        // Apply writes can persist before their WAL entry. Make the new
+        // locator recoverable before any table page can point to it.
+        self.flush().await?;
+        self.metadata_table
+            .publish_replacement(&self.cache, replacement)
             .await?;
         self.flush().await
     }
@@ -1365,6 +1370,130 @@ mod tests {
             assert_eq!(recovered.data_write_guid(), data_write_guid);
             recovered.close().await.unwrap();
         }
+    }
+
+    #[async_test]
+    async fn set_parent_recovers_when_table_page_persists_first(driver: pal_async::DefaultDriver) {
+        use crate::tests::support::CrashTestFile;
+        use std::borrow::Borrow;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        struct PartialPersistenceFile {
+            inner: CrashTestFile,
+            table_offset: u64,
+            publishing: AtomicBool,
+            table_written: event_listener::Event,
+            crash_snapshot: Mutex<Option<Vec<u8>>>,
+        }
+
+        impl AsyncFile for PartialPersistenceFile {
+            type Buffer = Vec<u8>;
+
+            fn alloc_buffer(&self, len: usize) -> Vec<u8> {
+                self.inner.alloc_buffer(len)
+            }
+
+            async fn read_into(&self, offset: u64, buf: Vec<u8>) -> std::io::Result<Vec<u8>> {
+                if offset == self.table_offset && buf.len() == crate::cache::PAGE_SIZE {
+                    self.publishing.store(true, Ordering::SeqCst);
+                }
+                self.inner.read_into(offset, buf).await
+            }
+
+            async fn write_from(
+                &self,
+                offset: u64,
+                buf: impl Borrow<Vec<u8>> + Send + 'static,
+            ) -> std::io::Result<()> {
+                if offset == self.table_offset {
+                    // Power loss may persist this page without any other
+                    // writes issued since the last completed flush.
+                    let mut snapshot = self.inner.durable_snapshot();
+                    let data = buf.borrow();
+                    let start = offset as usize;
+                    snapshot[start..start + data.len()].copy_from_slice(data);
+                    *self.crash_snapshot.lock() = Some(snapshot);
+                    self.table_written.notify(usize::MAX);
+                }
+                self.inner.write_from(offset, buf).await
+            }
+
+            async fn flush(&self) -> std::io::Result<()> {
+                // Force the apply task to publish the table page before the
+                // flush covering that publication can complete.
+                if self.publishing.load(Ordering::SeqCst) {
+                    let listener = self.table_written.listen();
+                    let written = self.crash_snapshot.lock().is_some();
+                    if !written {
+                        listener.await;
+                    }
+                }
+                self.inner.flush().await
+            }
+
+            async fn file_size(&self) -> std::io::Result<u64> {
+                self.inner.file_size().await
+            }
+
+            async fn set_file_size(&self, size: u64) -> std::io::Result<()> {
+                self.inner.set_file_size(size).await
+            }
+        }
+
+        let file = InMemoryFile::new(0);
+        let linkage = Guid::new_random();
+        create::create(
+            &file,
+            &mut CreateParams {
+                disk_size: format::GB1,
+                disk_type: crate::DiskType::Differencing(
+                    crate::VhdxParent::new(linkage)
+                        .with_relative_path("old.vhdx")
+                        .unwrap(),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let regions = parse_region_tables(&file).await.unwrap();
+        let file = PartialPersistenceFile {
+            inner: CrashTestFile::from_durable(file.snapshot()),
+            table_offset: regions.metadata_offset,
+            publishing: AtomicBool::new(false),
+            table_written: event_listener::Event::new(),
+            crash_snapshot: Mutex::new(None),
+        };
+        let mut image = VhdxFile::open(file).writable(&driver).await.unwrap();
+        let data_write_guid = image.data_write_guid();
+        let new_path = "new".repeat(8_000);
+        image
+            .set_parent(
+                &crate::VhdxParent::new(linkage)
+                    .with_relative_path(&new_path)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let snapshot = image.file.crash_snapshot.lock().clone().unwrap();
+        image.close().await.unwrap();
+
+        let recovered = VhdxFile::open(InMemoryFile::from_snapshot(snapshot))
+            .writable(&driver)
+            .await
+            .unwrap();
+        let parent = recovered
+            .parent_locator()
+            .await
+            .unwrap()
+            .unwrap()
+            .vhdx_parent()
+            .unwrap();
+        assert_eq!(parent.relative_path(), Some(new_path.as_str()));
+        assert_eq!(parent.linkage(), linkage);
+        assert_eq!(recovered.data_write_guid(), data_write_guid);
+        recovered.close().await.unwrap();
     }
 
     #[async_test]

@@ -238,16 +238,15 @@ impl MetadataTable {
         &self.entries
     }
 
-    /// Replace an existing item using a free hosting sector. The caller must
-    /// empty the dirty cache batch first and serialize metadata changes so the
-    /// replacement data and table entry fit in one WAL transaction.
-    pub async fn replace_item<F: AsyncFile>(
-        &mut self,
+    /// Stage replacement data in a free hosting sector. The caller must make
+    /// these writes durable before publishing the replacement table entry.
+    pub async fn stage_replacement<F: AsyncFile>(
+        &self,
         cache: &PageCache<F>,
         item_id: &Guid,
         data: &[u8],
         region_length: u32,
-    ) -> Result<(), VhdxIoError> {
+    ) -> Result<(usize, MetadataTableEntry), VhdxIoError> {
         let index = self
             .entries
             .iter()
@@ -302,6 +301,16 @@ impl MetadataTable {
         let mut entry = self.entries[index].clone();
         entry.offset = offset;
         entry.length = length;
+        Ok((index, entry))
+    }
+
+    /// Publish an entry after its replacement data has become durable.
+    pub async fn publish_replacement<F: AsyncFile>(
+        &mut self,
+        cache: &PageCache<F>,
+        replacement: (usize, MetadataTableEntry),
+    ) -> Result<(), VhdxIoError> {
+        let (index, entry) = replacement;
         let table_offset =
             size_of::<MetadataTableHeader>() + index * size_of::<MetadataTableEntry>();
         let mut page = cache
