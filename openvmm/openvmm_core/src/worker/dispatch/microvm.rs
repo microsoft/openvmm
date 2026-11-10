@@ -268,11 +268,23 @@ impl LoadedVm {
         }
     }
 
+    /// Releases the guest-requested snapshot boundary of a running VM: resumes
+    /// host input, completes the guest's snapshot transaction, and lets the
+    /// vCPUs run.
+    ///
+    /// The boundary of a quiesced VM, whose snapshot the controller holds, is
+    /// released only by [`Self::resume_after_failed_snapshot`], which starts
+    /// the VM's state units first: the boundary keeps refusing an ordinary
+    /// resume until then.
     pub(super) async fn release_snapshot_boundary(&mut self) -> anyhow::Result<()> {
         // Resume host input only while a boundary holds it.
         anyhow::ensure!(
             self.snapshot_boundary.transaction_complete.is_some(),
             "no active microVM snapshot boundary"
+        );
+        anyhow::ensure!(
+            self.running,
+            "the snapshot boundary of a quiesced microVM is released only by its rollback"
         );
         self.state_units.resume_input_after_save().await?;
         let transaction_complete = self
@@ -300,6 +312,11 @@ impl LoadedVm {
     /// Quiesces the VM for a guest-requested snapshot and saves its state,
     /// leaving it stopped.
     ///
+    /// The VM must be running at a snapshot boundary that its guest requested,
+    /// which holds the stopped VM until the snapshot's rollback: outside one,
+    /// the request is rejected and changes nothing, since an ordinary resume
+    /// would run the VM again after its state was saved.
+    ///
     /// The quiesce stops every state unit and has no deadline: a unit that
     /// never stops stalls the capture until the process that drives the VM
     /// ends it, with nothing published and the source never resumed. Each
@@ -321,6 +338,13 @@ impl LoadedVm {
         if !self.running {
             return Err(openvmm_defs::rpc::SnapshotQuiesceError::Rejected(
                 RemoteError::new(anyhow::anyhow!("VM is already stopped")),
+            ));
+        }
+        if self.snapshot_boundary.stop_guard.is_none() {
+            return Err(openvmm_defs::rpc::SnapshotQuiesceError::Rejected(
+                RemoteError::new(anyhow::anyhow!(
+                    "guest-requested snapshot quiesce requires an active snapshot boundary"
+                )),
             ));
         }
 
@@ -395,7 +419,8 @@ impl LoadedVm {
     }
 
     /// Resumes the VM after a snapshot failure that followed a complete
-    /// quiesce, and releases the snapshot boundary.
+    /// quiesce, and releases the snapshot boundary. This is the only request
+    /// that runs a quiesced VM again.
     ///
     /// A unit whose task does not answer leaves the units that did start
     /// stopped again, and fails the rollback.
