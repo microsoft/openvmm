@@ -4729,6 +4729,33 @@ mod tests {
     }
 
     #[test]
+    fn pcie_topology_legacy_pci_config_io_override() {
+        let build = |enable, start_bus, end_bus, legacy_pci_config_io| {
+            futures::executor::block_on(build_pcie_topology(
+                vmservice::PcieTopologyConfig {
+                    root_complexes: vec![vmservice::PcieRootComplex {
+                        start_bus,
+                        end_bus,
+                        legacy_pci_config_io,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                &FdRegistry::default(),
+                &IommufdContexts::default(),
+                enable,
+            ))
+            .unwrap()
+            .legacy_pci_config_io_for_pcie
+        };
+
+        assert!(build(true, 0, 7, Some(true)));
+        assert!(!build(true, 0, u8::MAX.into(), Some(false)));
+        assert!(!build(true, 1, 7, Some(true)));
+        assert!(!build(false, 0, 7, Some(true)));
+    }
+
+    #[test]
     fn pcie_topology_pasid() {
         for pasid in [None, Some(false), Some(true)] {
             let mut attached = None;
