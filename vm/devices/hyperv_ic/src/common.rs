@@ -95,7 +95,7 @@ impl<M: RingMem> IcPipe<M> {
                 Ok(None)
             }
             NegotiateState::WaitVersion => {
-                let (message_type, _status, buf) = self.read_message().await?;
+                let (message_type, status, buf) = self.read_message().await?;
                 // A response to a request issued before the channel was
                 // reset (e.g. across save/restore) may still be in flight.
                 // There is no one left to receive it, so drop it.
@@ -105,6 +105,9 @@ impl<M: RingMem> IcPipe<M> {
                         "dropping unexpected message while negotiating versions"
                     );
                     return Ok(None);
+                }
+                if status != Status::SUCCESS {
+                    anyhow::bail!("version negotiation failed: {status:?}");
                 }
                 let (message, rest) = hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf)
                     .ok()
@@ -116,6 +119,13 @@ impl<M: RingMem> IcPipe<M> {
                     <[Version; 2]>::read_from_prefix(rest)
                         .ok()
                         .context("missing version table")?;
+
+                if !FRAMEWORK_VERSIONS.contains(&framework_version) {
+                    anyhow::bail!("unsupported framework version: {framework_version}");
+                }
+                if !message_versions.contains(&message_version) {
+                    anyhow::bail!("unsupported message version: {message_version}");
+                }
 
                 let versions = Versions {
                     framework_version,
@@ -209,13 +219,13 @@ mod tests {
         }
     }
 
-    fn version_response() -> Vec<u8> {
+    fn version_response(framework_version: Version, message_version: Version) -> Vec<u8> {
         let message = NegotiateMessage {
             framework_version_count: 1,
             message_version_count: 1,
             reserved: 0,
         };
-        let versions = [FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION];
+        let versions = [framework_version, message_version];
         let header = response_header(
             MessageType::VERSION_NEGOTIATION,
             size_of_val(&message) + size_of_val(&versions),
@@ -225,7 +235,9 @@ mod tests {
 
     /// A transaction completion for some earlier, unrelated request.
     fn stale_response(message_type: MessageType) -> Vec<u8> {
-        response_header(message_type, 0).as_bytes().to_vec()
+        let mut header = response_header(message_type, 0);
+        header.status = Status::FAIL;
+        header.as_bytes().to_vec()
     }
 
     fn new_pipes() -> (IcPipe<FlatRingMem>, MessagePipe<FlatRingMem>) {
@@ -255,17 +267,62 @@ mod tests {
 
     #[async_test]
     async fn negotiate() {
-        let (mut pipe, mut guest) = new_pipes();
-        let mut state = NegotiateState::default();
-        send_version_request(&mut pipe, &mut state, &mut guest).await;
-        guest.send(&version_response()).await.unwrap();
-        let versions = pipe
-            .negotiate(&mut state, TEST_MESSAGE_VERSIONS)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(versions.framework_version, FRAMEWORK_VERSION_3);
-        assert_eq!(versions.message_version, TEST_MESSAGE_VERSION);
+        for &framework_version in FRAMEWORK_VERSIONS {
+            let (mut pipe, mut guest) = new_pipes();
+            let mut state = NegotiateState::default();
+            send_version_request(&mut pipe, &mut state, &mut guest).await;
+            guest
+                .send(&version_response(framework_version, TEST_MESSAGE_VERSION))
+                .await
+                .unwrap();
+            let versions = pipe
+                .negotiate(&mut state, TEST_MESSAGE_VERSIONS)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(versions.framework_version, framework_version);
+            assert_eq!(versions.message_version, TEST_MESSAGE_VERSION);
+        }
+    }
+
+    #[async_test]
+    async fn negotiate_rejects_failed_response() {
+        for status in [Status::FAIL, Status::NOT_SUPPORTED] {
+            let (mut pipe, mut guest) = new_pipes();
+            let mut state = NegotiateState::default();
+            send_version_request(&mut pipe, &mut state, &mut guest).await;
+            let mut response = version_response(FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION);
+            let (header, _) = Header::mut_from_prefix(response.as_mut_slice()).unwrap();
+            header.status = status;
+            guest.send(&response).await.unwrap();
+            pipe.negotiate(&mut state, TEST_MESSAGE_VERSIONS)
+                .await
+                .unwrap_err();
+            assert!(matches!(state, NegotiateState::WaitVersion));
+        }
+    }
+
+    #[async_test]
+    async fn negotiate_rejects_unadvertised_versions() {
+        for (framework_version, message_version) in [
+            (Version::new(2, 0), TEST_MESSAGE_VERSION),
+            (Version::new(3, 1), TEST_MESSAGE_VERSION),
+            (FRAMEWORK_VERSION_3, Version::new(4, 0)),
+            (FRAMEWORK_VERSION_3, Version::new(5, 1)),
+            (FRAMEWORK_VERSION_3, Version::new(6, 0)),
+        ] {
+            let (mut pipe, mut guest) = new_pipes();
+            let mut state = NegotiateState::default();
+            send_version_request(&mut pipe, &mut state, &mut guest).await;
+            guest
+                .send(&version_response(framework_version, message_version))
+                .await
+                .unwrap();
+            pipe.negotiate(&mut state, TEST_MESSAGE_VERSIONS)
+                .await
+                .unwrap_err();
+            assert!(matches!(state, NegotiateState::WaitVersion));
+        }
     }
 
     #[async_test]
@@ -281,7 +338,10 @@ mod tests {
             .send(&stale_response(MessageType::TIME_SYNC))
             .await
             .unwrap();
-        guest.send(&version_response()).await.unwrap();
+        guest
+            .send(&version_response(FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION))
+            .await
+            .unwrap();
         for _ in 0..2 {
             assert!(
                 pipe.negotiate(&mut state, TEST_MESSAGE_VERSIONS)
@@ -305,7 +365,7 @@ mod tests {
         let (mut pipe, mut guest) = new_pipes();
         let mut state = NegotiateState::default();
         send_version_request(&mut pipe, &mut state, &mut guest).await;
-        let mut response = version_response();
+        let mut response = version_response(FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION);
         let (header, _) = Header::mut_from_prefix(response.as_mut_slice()).unwrap();
         header.flags = HeaderFlags::new().with_request(true);
         guest.send(&response).await.unwrap();
