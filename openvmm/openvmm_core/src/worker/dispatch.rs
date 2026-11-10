@@ -4018,13 +4018,24 @@ impl LoadedVm {
         self.state_units.start().await
     }
 
-    async fn pause(&mut self) -> bool {
+    /// Pauses the VM, returning true if it was running.
+    ///
+    /// Fails if a state unit does not stop. The VM no longer runs then, but
+    /// state units still may, which [`Self::units_left_running`] reports.
+    async fn pause(&mut self) -> anyhow::Result<bool> {
         if !self.running {
-            return false;
+            return Ok(false);
         }
-        self.state_units.stop().await;
         self.running = false;
-        true
+        self.state_units.stop().await?;
+        Ok(true)
+    }
+
+    /// Returns true if state units run while the VM does not, as a failed
+    /// stop, or a start whose rollback did not stop every unit, leaves them.
+    /// They can never start again, so the VM must be torn down.
+    fn units_left_running(&self) -> bool {
+        self.state_units.is_running() && !self.running
     }
 
     /// Assign PCI bus numbers and BAR addresses for all boot modes.
@@ -4067,10 +4078,16 @@ impl LoadedVm {
         .context("PCI resource assignment failed");
 
         // Stop state units again; the caller will resume normally.
-        self.state_units.stop().await;
+        let stopped = self
+            .state_units
+            .stop()
+            .await
+            .context("failed to stop devices after PCI resource assignment");
         drop(stop_guard);
 
-        result
+        // Devices that did not stop can never start again, which outweighs a
+        // failed assignment.
+        stopped.and(result)
     }
 
     pub async fn run(
@@ -4111,6 +4128,13 @@ impl LoadedVm {
         let mut deferred = VecDeque::new();
 
         loop {
+            // A failed stop, or a start whose rollback did not stop every
+            // unit, leaves state units running while the VM is paused. They
+            // can never start again, so tear the VM down.
+            if self.units_left_running() {
+                tracing::error!("state units failed to stop; tearing down the VM");
+                break;
+            }
             let queued = if !device_removal.is_pending() {
                 deferred.pop_front()
             } else {
@@ -4157,6 +4181,7 @@ impl LoadedVm {
                     WorkerRpc::Stop => break,
                     WorkerRpc::Restart(rpc) => {
                         let mut stopped = false;
+                        let mut stop_failed = false;
                         // First run the non-destructive operations.
                         let r = async {
                             let shared_memory = self.inner.memory_manager.shared_memory_backing();
@@ -4164,7 +4189,10 @@ impl LoadedVm {
                                 anyhow::bail!("restart is not supported with --private-memory");
                             }
                             if self.running {
-                                self.state_units.stop().await;
+                                if let Err(error) = self.state_units.stop().await {
+                                    stop_failed = true;
+                                    return Err(error);
+                                }
                                 stopped = true;
                             }
                             let saved_state = self.save().await?;
@@ -4180,6 +4208,14 @@ impl LoadedVm {
                                 return;
                             }
                             Err(err) => {
+                                if stop_failed {
+                                    // The state units that did not stop can
+                                    // never start again, so tear the VM down.
+                                    rpc.complete(Err(RemoteError::new(err.context(
+                                        "worker restart failed and the VM could not stop",
+                                    ))));
+                                    break;
+                                }
                                 if stopped {
                                     if let Err(start_error) = self.start_units().await {
                                         rpc.complete(Err(RemoteError::new(start_error.context(
@@ -4220,7 +4256,9 @@ impl LoadedVm {
                     VmRpc::Resume(rpc) => {
                         rpc.handle_failable(async |()| self.resume().await).await
                     }
-                    VmRpc::Pause(rpc) => rpc.handle(async |()| self.pause().await).await,
+                    VmRpc::Pause(rpc) => {
+                        rpc.handle_failable(async |()| self.pause().await).await
+                    }
                     VmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| self.save().await.map(ProtobufMessage::new))
                             .await
@@ -4324,7 +4362,7 @@ impl LoadedVm {
                             if !self.inner.partition.supports_reset() {
                                 return Err(PulseSaveRestoreError::ResetNotSupported);
                             }
-                            let paused = self.pause().await;
+                            let paused = self.pause().await?;
                             self.save_reset_restore().await?;
 
                             if paused {
@@ -4630,9 +4668,16 @@ impl LoadedVm {
         device_removal.drain().await;
         // Stop the state units whenever they run, not only when the VM does:
         // after a failed state change, such as a restart that could not resume
-        // the VM, the two can disagree.
+        // the VM, or a stop that a unit did not answer, the two can disagree.
+        // The VM is torn down anyway, so a unit that does not stop only leaves
+        // its dependencies running.
         if self.state_units.is_running() {
-            self.state_units.stop().await;
+            if let Err(error) = self.state_units.stop().await {
+                tracing::error!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to stop the state units before teardown"
+                );
+            }
         }
         self.running = false;
         self.teardown_chipset_devices().await;
@@ -4840,7 +4885,7 @@ impl LoadedVm {
     }
 
     async fn reset(&mut self, reload_firmware: bool) -> anyhow::Result<()> {
-        let resume = self.pause().await;
+        let resume = self.pause().await?;
 
         self.state_units.reset().await?;
         // TODO: _vmnic

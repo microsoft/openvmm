@@ -187,7 +187,7 @@ async fn a_stop_stops_a_unit_whose_start_is_uncertain(driver: DefaultDriver) {
 
     // The unit whose start is uncertain may be running, so the stop stops it,
     // before the unit that it depends on.
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(!units.is_running());
     assert_eq!(log.take(), ["uncertain stop", "dependency stop"]);
 

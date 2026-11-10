@@ -34,6 +34,7 @@ mod advance_time;
 mod inventory;
 mod quiesce;
 mod start;
+mod stop;
 
 use futures::FutureExt;
 use futures::StreamExt;
@@ -287,6 +288,15 @@ enum State {
     Restoring,
     AdvancingTime,
     StartUncertain,
+    StopUncertain,
+}
+
+impl State {
+    /// Whether a unit in this state never changes state again: a request to
+    /// it was not answered, so its state is unknown.
+    fn is_terminal(self) -> bool {
+        matches!(self, State::StartUncertain | State::StopUncertain)
+    }
 }
 
 #[derive(Debug)]
@@ -562,7 +572,7 @@ impl StateUnits {
             inner
                 .units
                 .values()
-                .filter(|unit| matches!(unit.state, State::StartUncertain))
+                .filter(|unit| unit.state.is_terminal())
                 .map(|unit| {
                     (
                         unit.name.clone(),
@@ -594,45 +604,15 @@ impl StateUnits {
 
     /// Stops all the state units.
     ///
-    /// This also stops the units whose start is uncertain, since they may be
-    /// running, and leaves them in that terminal state.
-    pub async fn stop(&mut self) {
+    /// Stops the units in reverse dependency order. A unit in a terminal state
+    /// may be running, so it is sent a stop request too, and keeps its terminal
+    /// marker. If a unit's task does not answer its stop request, the stop
+    /// fails, the unit is left in a terminal state, and the units that it
+    /// depends on keep running, since it may still use them. The units then
+    /// stay running, so that a later stop can stop them.
+    pub async fn stop(&mut self) -> anyhow::Result<()> {
         assert!(self.running);
-        // Make the units whose start is uncertain receive the stop, then
-        // restore their terminal state after the ordered operation.
-        let uncertain_ids = {
-            let mut inner = self.inner.lock();
-            inner
-                .units
-                .iter_mut()
-                .filter(|(_, unit)| unit.state == State::StartUncertain)
-                .map(|(&id, unit)| {
-                    unit.state = State::Running;
-                    id
-                })
-                .collect::<Vec<_>>()
-        };
-        // Stop units in reverse dependency order so that a dependency is not
-        // stopped before its dependant.
-        self.run_op(
-            "stop",
-            None,
-            State::Running,
-            State::Stopping,
-            State::Stopped,
-            StateRequest::Stop,
-            |_, _| Some(()),
-            |unit| Some(&unit.dependents),
-        )
-        .await;
-        let mut inner = self.inner.lock();
-        for id in uncertain_ids {
-            if let Some(unit) = inner.units.get_mut(&id) {
-                assert_eq!(unit.state, State::Stopped);
-                unit.state = State::StartUncertain;
-            }
-        }
-        self.running = false;
+        self.stop_in_order().await
     }
 
     /// Resets all the state units.
@@ -1197,6 +1177,7 @@ mod tests {
     mod quiesce;
     mod slow;
     mod start;
+    mod stop;
     mod terminal;
 
     use super::StateTransitionErrorKind;
@@ -1372,7 +1353,7 @@ mod tests {
         units.restore(state).await.unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 2);
         units.start().await.unwrap();
-        units.stop().await;
+        units.stop().await.unwrap();
         let state = units.save().await.unwrap();
         assert!(units.restore(state).await.is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 2);
@@ -1476,7 +1457,7 @@ mod tests {
 
         // Both units are stopped again and can start.
         units.start().await.unwrap();
-        units.stop().await;
+        units.stop().await.unwrap();
     }
 
     #[async_test]
@@ -1507,10 +1488,10 @@ mod tests {
         let _c = units
             .add("c")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv));
-        units.stop().await;
+        units.stop().await.unwrap();
         units.start().await.unwrap();
 
-        units.stop().await;
+        units.stop().await.unwrap();
 
         let state = units.save().await.unwrap();
 
@@ -1557,7 +1538,7 @@ mod tests {
             })
             .unwrap();
         units.start().await.unwrap();
-        units.stop().await;
+        units.stop().await.unwrap();
 
         let state = units.save().await.unwrap();
 
@@ -1667,7 +1648,7 @@ mod tests {
         }
 
         units.start().await.unwrap();
-        units.stop().await;
+        units.stop().await.unwrap();
 
         a.remove().await;
         {
@@ -1677,7 +1658,7 @@ mod tests {
         }
 
         units.start().await.unwrap();
-        units.stop().await;
+        units.stop().await.unwrap();
 
         // Removing the remaining unit leaves the set empty.
         c.remove().await;

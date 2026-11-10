@@ -31,7 +31,11 @@ pub enum VmRpc {
     /// Release a post-OUT boundary without starting a snapshot transaction.
     ReleaseSnapshotBoundary(FailableRpc<(), ()>),
     Resume(FailableRpc<(), bool>),
-    Pause(Rpc<(), bool>),
+    /// Pause the VM, returning whether it was running.
+    ///
+    /// Fails if a state unit does not stop; the worker then tears the VM
+    /// down, since that unit can never start again.
+    Pause(FailableRpc<(), bool>),
     ClearHalt(Rpc<(), bool>),
     Reset(FailableRpc<(), ()>),
     Nmi(Rpc<u32, ()>),
@@ -87,6 +91,10 @@ pub enum SnapshotQuiesceError {
     /// The VM quiesced completely; the controller may request rollback.
     #[error("snapshot failed after the VM quiesced")]
     RollbackSafe(#[source] RemoteError),
+    /// A state unit did not stop, so the VM can neither roll back nor run
+    /// again; the controller terminates the source.
+    #[error("snapshot quiesce left the VM unable to run again")]
+    Unrecoverable(#[source] RemoteError),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]

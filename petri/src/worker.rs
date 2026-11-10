@@ -65,8 +65,8 @@ impl Worker {
         ))
     }
 
-    pub(crate) async fn pause(&self) -> Result<bool, RpcError> {
-        self.rpc.call(VmRpc::Pause, ()).await
+    pub(crate) async fn pause(&self) -> anyhow::Result<bool> {
+        Ok(self.rpc.call_failable(VmRpc::Pause, ()).await?)
     }
 
     /// The VM worker's management RPC channel.

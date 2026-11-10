@@ -1701,7 +1701,7 @@ impl VmService {
     async fn pause_vm(&mut self) -> anyhow::Result<()> {
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
-            .call(VmRpc::Pause, ())
+            .call_failable(VmRpc::Pause, ())
             .await
             .map(drop)
             .context("pause failed")?;
