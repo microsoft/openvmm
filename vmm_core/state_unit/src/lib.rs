@@ -553,6 +553,28 @@ impl StateUnits {
         self.running
     }
 
+    /// Fails `op`, naming each unit in a terminal state, if any unit is in
+    /// one.
+    fn check_no_terminal_units(&self, op: &'static str) -> Result<(), StateTransitionError> {
+        let inner = self.inner.lock();
+        check(
+            op,
+            inner
+                .units
+                .values()
+                .filter(|unit| matches!(unit.state, State::StartUncertain))
+                .map(|unit| {
+                    (
+                        unit.name.clone(),
+                        Err::<(), _>(anyhow::anyhow!(
+                            "unit is in terminal state {:?}",
+                            unit.state
+                        )),
+                    )
+                }),
+        )
+    }
+
     /// Starts any units that are individually stopped, because they were added
     /// via [`StateUnits::add`] while the VM was running.
     ///
@@ -571,8 +593,25 @@ impl StateUnits {
     }
 
     /// Stops all the state units.
+    ///
+    /// This also stops the units whose start is uncertain, since they may be
+    /// running, and leaves them in that terminal state.
     pub async fn stop(&mut self) {
         assert!(self.running);
+        // Make the units whose start is uncertain receive the stop, then
+        // restore their terminal state after the ordered operation.
+        let uncertain_ids = {
+            let mut inner = self.inner.lock();
+            inner
+                .units
+                .iter_mut()
+                .filter(|(_, unit)| unit.state == State::StartUncertain)
+                .map(|(&id, unit)| {
+                    unit.state = State::Running;
+                    id
+                })
+                .collect::<Vec<_>>()
+        };
         // Stop units in reverse dependency order so that a dependency is not
         // stopped before its dependant.
         self.run_op(
@@ -586,13 +625,22 @@ impl StateUnits {
             |unit| Some(&unit.dependents),
         )
         .await;
+        let mut inner = self.inner.lock();
+        for id in uncertain_ids {
+            if let Some(unit) = inner.units.get_mut(&id) {
+                assert_eq!(unit.state, State::Stopped);
+                unit.state = State::StartUncertain;
+            }
+        }
         self.running = false;
     }
 
     /// Resets all the state units.
     ///
-    /// Panics if running.
+    /// Fails without sending a request while a unit is in a terminal state,
+    /// whether or not the units run. Otherwise panics if running.
     pub async fn reset(&mut self) -> Result<(), StateTransitionError> {
+        self.check_no_terminal_units("reset")?;
         assert!(!self.running);
         self.restore_allowed = false;
         // Reset in dependency order so that dependants observe their
@@ -617,8 +665,10 @@ impl StateUnits {
 
     /// Saves all the state units.
     ///
-    /// Panics if running.
+    /// Fails without sending a request while a unit is in a terminal state,
+    /// whether or not the units run. Otherwise panics if running.
     pub async fn save(&mut self) -> Result<Vec<SavedStateUnit>, StateTransitionError> {
+        self.check_no_terminal_units("save")?;
         assert!(!self.running);
         // Save can occur in any order since it will not observably mutate
         // state.
@@ -652,11 +702,13 @@ impl StateUnits {
     /// unit-name validation errors leave eligibility unchanged. Saving does not
     /// consume eligibility, and saving restored state before start is supported.
     ///
-    /// Panics if running.
+    /// Fails without sending a request while a unit is in a terminal state,
+    /// whether or not the units run. Otherwise panics if running.
     pub async fn restore(
         &mut self,
         states: Vec<SavedStateUnit>,
     ) -> Result<(), StateTransitionError> {
+        self.check_no_terminal_units("restore")?;
         assert!(!self.running);
         if !self.restore_allowed {
             return Err(StateTransitionError {
@@ -1145,6 +1197,7 @@ mod tests {
     mod quiesce;
     mod slow;
     mod start;
+    mod terminal;
 
     use super::StateTransitionErrorKind;
     use super::StateUnit;

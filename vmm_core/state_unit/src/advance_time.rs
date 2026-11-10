@@ -15,7 +15,11 @@ impl StateUnits {
     /// Only units added with [`UnitBuilder::advances_time`](crate::UnitBuilder::advances_time)
     /// receive the request; the others pass through the operation without a
     /// round trip.
+    ///
+    /// Fails without sending a request while a unit is in a terminal state,
+    /// whether or not the units run. Otherwise panics if running.
     pub async fn advance_time(&mut self, duration: Duration) -> Result<(), StateTransitionError> {
+        self.check_no_terminal_units("advance_time")?;
         assert!(!self.running);
         let results = self
             .run_op(
