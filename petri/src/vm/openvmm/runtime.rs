@@ -17,6 +17,7 @@ use crate::worker::Worker;
 use anyhow::Context;
 use async_trait::async_trait;
 use chipset_resources::acpi_power_button::PowerButtonRpc;
+use chipset_resources::microvm::MicrovmSnapshotScratchPolicy;
 use framebuffer::View;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -30,6 +31,8 @@ use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
 use openvmm_defs::rpc::PulseSaveRestoreError;
+use openvmm_defs::rpc::SnapshotQuiesceError;
+use openvmm_defs::rpc::SnapshotSaveResponse;
 use pal_async::socket::PolledSocket;
 use petri_artifacts_core::ResolvedArtifact;
 #[cfg(target_os = "linux")]
@@ -394,6 +397,32 @@ impl PetriVmOpenVmm {
     petri_vm_fn!(
         /// Perform one pulse save/restore operation.
         pub async fn pulse_save_restore(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Wait for the VM worker to hold a guest snapshot request of a microVM
+        /// at its snapshot boundary, with the vCPUs stopped, and return the
+        /// request's scratch policy. The test must be the VM's snapshot
+        /// controller, as
+        /// [`PetriVmConfigOpenVmm::with_microvm_snapshot_boundary`](super::PetriVmConfigOpenVmm::with_microvm_snapshot_boundary)
+        /// makes it.
+        pub async fn wait_for_microvm_snapshot_boundary(&mut self) -> anyhow::Result<MicrovmSnapshotScratchPolicy>
+    );
+    petri_vm_fn!(
+        /// Quiesce a microVM for the snapshot of its boundary, as a snapshot
+        /// controller does, and return the VM worker's response: the saved
+        /// state, or why the worker did not save it.
+        pub async fn quiesce_microvm_for_snapshot(&mut self) -> anyhow::Result<Result<SnapshotSaveResponse, SnapshotQuiesceError>>
+    );
+    petri_vm_fn!(
+        /// Release a microVM's snapshot boundary, as a snapshot controller does
+        /// when it takes no snapshot.
+        pub async fn release_microvm_snapshot_boundary(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Roll a microVM's snapshot back, as a snapshot controller does when a
+        /// snapshot fails after its quiesce: the VM runs again from its
+        /// boundary.
+        pub async fn resume_microvm_after_failed_snapshot(&mut self) -> anyhow::Result<()>
     );
 
     /// Wrap the provided future in a race with the worker process's halt
