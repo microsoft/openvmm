@@ -46,10 +46,20 @@ async fn boot_with_vps(
         format!("smp: Brought up 1 node, {vp_count} CPU"),
         // The shim's UEFI environment booted the kernel's EFI stub.
         "by OpenVMM".to_string(),
-        "PCI: ECAM [mem ".to_string(),
     ] {
         anyhow::ensure!(dmesg.contains(&marker), "guest dmesg missing {marker}");
     }
+    // Linux logs "PCI: ECAM [mem 0x<start>-0x<end>] ...".
+    let ecam_start = dmesg
+        .lines()
+        .find_map(|line| line.split_once("PCI: ECAM [mem 0x"))
+        .and_then(|(_, rest)| rest.split_once('-'))
+        .and_then(|(start, _)| u64::from_str_radix(start, 16).ok())
+        .ok_or_else(|| anyhow::anyhow!("guest dmesg has no PCIe ECAM range"))?;
+    anyhow::ensure!(
+        ecam_start >= 4 * petri::SIZE_1_GB,
+        "the PCIe ECAM starts below 4 GiB, at {ecam_start:#x}"
+    );
     anyhow::ensure!(
         !dmesg.contains("above 4GB, ignored"),
         "guest ignored the PCIe ECAM above 4 GiB"

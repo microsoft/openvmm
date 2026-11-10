@@ -183,8 +183,9 @@ limits or puts two bridges in one segment. The x86 device tree does not
 describe an IOMMU or CXL, so the guest does not see them.
 
 The image reserves 64 KiB for the device tree, 64 KiB for generated ACPI, a
-temporary 1-MiB heap, a 256-KiB stack for the EFI stub, and a boot pool of the
-bzImage `init_size` plus 8 MiB, between 16 MiB and 512 MiB. The heap, the
+temporary 1-MiB heap, a 256-KiB stack for the EFI stub, and a boot pool. The
+boot pool holds the bzImage `init_size` rounded up to 2 MiB, a copy of the
+initrd rounded up to 4 KiB, and 8 MiB more. The heap, the
 stack, and the boot pool are omitted from page data, and the shim accepts them
 before use. ACPI output, RSDP, DT, the shim, measured handoff pages, and SNP
 special pages are imported, not accepted again. No final table points into the
