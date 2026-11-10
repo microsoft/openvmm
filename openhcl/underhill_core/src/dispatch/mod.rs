@@ -79,7 +79,7 @@ use vtl2_settings_worker::handle_vtl2_config_rpc;
 
 #[derive(MeshPayload)]
 pub enum UhVmRpc {
-    Pause(Rpc<(), bool>),
+    Pause(FailableRpc<(), bool>),
     Resume(Rpc<(), bool>),
     Save(FailableRpc<(), Vec<u8>>),
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
@@ -325,7 +325,15 @@ impl LoadedVm {
                     WorkerRpc::Stop => break None,
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
-                            let running = self.stop().await;
+                            let running = match self.stop().await {
+                                Ok(running) => running,
+                                Err(err) => {
+                                    rpc.complete(Err(RemoteError::new(
+                                        err.context("failed to stop VM for worker restart"),
+                                    )));
+                                    return None;
+                                }
+                            };
                             match self
                                 .save(
                                     SaveReason::WorkerRestart,
@@ -416,10 +424,10 @@ impl LoadedVm {
                         })
                         .await
                     }
-                    UhVmRpc::Pause(rpc) => rpc.handle(async |()| self.stop().await).await,
+                    UhVmRpc::Pause(rpc) => rpc.handle_failable(async |()| self.stop().await).await,
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
-                            let running = self.stop().await;
+                            let running = self.stop().await?;
                             let r = self
                                 .save(
                                     SaveReason::Diagnostic,
@@ -725,7 +733,7 @@ impl LoadedVm {
 
         // Do everything before the log flush under a span.
         let r = async {
-            if !self.stop().await {
+            if !self.stop().await? {
                 // This should only occur if you tried to initiate a
                 // servicing operation after manually pausing underhill
                 // via `ohcldiag-dev`.
@@ -921,14 +929,17 @@ impl LoadedVm {
     }
 
     /// Returns true if the VM was previously running.
-    async fn stop(&mut self) -> bool {
+    ///
+    /// Fails if a state unit does not stop. The state units then stay
+    /// running, and can never start again.
+    async fn stop(&mut self) -> anyhow::Result<bool> {
         if self.state_units.is_running() {
             self.last_state_unit_stop = Some(ReferenceTime::new(self.partition.reference_time()));
             tracing::info!(CVM_ALLOWED, "stopping VM");
-            self.state_units.stop().await;
-            true
+            self.state_units.stop().await?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 

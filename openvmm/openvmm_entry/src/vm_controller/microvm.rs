@@ -247,6 +247,13 @@ impl VmController {
             Ok(Err(SnapshotQuiesceError::RollbackSafe(error))) => {
                 return self.rollback_failed_guest_snapshot(error.into()).await;
             }
+            Ok(Err(SnapshotQuiesceError::Unrecoverable(error))) => {
+                tracing::error!(
+                    error = &error as &dyn std::error::Error,
+                    "microVM snapshot quiesce left the VM unable to run again; terminating source"
+                );
+                return GuestSnapshotAction::Terminate { exit_code: 1 };
+            }
             Err(error) => {
                 tracing::error!(
                     error = &error as &dyn std::error::Error,

@@ -636,7 +636,13 @@ async fn run_control(
                         // FUTURE: consider supporting cancellation
                         driver
                             .spawn("diag-pause", async move {
-                                let was_paused = req.await.expect("failed to pause VM");
+                                let was_paused = match req.await.expect("failed to pause VM") {
+                                    Ok(was_paused) => was_paused,
+                                    Err(error) => {
+                                        rpc.complete(Err(error));
+                                        return;
+                                    }
+                                };
                                 rpc.handle_failable_sync(|_| {
                                     if !was_paused {
                                         Err(anyhow::anyhow!("VM is already paused"))
