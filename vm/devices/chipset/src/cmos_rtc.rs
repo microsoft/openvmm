@@ -547,7 +547,7 @@ impl Rtc {
         } else {
             let old_data = self.state.cmos[addr];
 
-            if data != old_data {
+            if data != old_data || addr.depends_on_rtc(self.century_reg) {
                 // make sure the cmos time is up-to-date
                 if addr.depends_on_rtc(self.century_reg) {
                     self.sync_clock_to_cmos();
@@ -1394,6 +1394,47 @@ mod tests {
             assert_eq!(get_cmos_data(&mut rtc, i), 0xFF);
             set_cmos_data(&mut rtc, i, 0);
             assert_eq!(get_cmos_data(&mut rtc, i), 0);
+        }
+    }
+
+    #[test]
+    fn test_same_value_time_write_refreshes_stale_cmos() {
+        let (_, _, time, mut rtc) = new_test_rtc();
+
+        for (status, second, minute) in [(0x02, 0x10, 0x59), (0x06, 10, 59)] {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            for (register, value, initial, current, expected) in [
+                (
+                    CmosReg::SECOND,
+                    second,
+                    "2026-01-01T12:34:10Z",
+                    "2026-01-01T12:34:20Z",
+                    "2026-01-01T12:34:10Z",
+                ),
+                (
+                    CmosReg::MINUTE,
+                    minute,
+                    "2026-01-01T23:59:50Z",
+                    "2026-01-02T00:00:20Z",
+                    "2026-01-02T00:59:20Z",
+                ),
+            ] {
+                let initial: jiff::Timestamp = initial.parse().unwrap();
+                let current: jiff::Timestamp = current.parse().unwrap();
+                let expected: jiff::Timestamp = expected.parse().unwrap();
+                rtc.real_time_source.set_time(initial.into());
+                assert_eq!(get_cmos_data(&mut rtc, register), value);
+
+                rtc.real_time_source.set_time(current.into());
+                set_cmos_data(&mut rtc, register, value);
+
+                let actual: jiff::Timestamp = time.get_time().try_into().unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "status B {status:#04x}, register {register:?}"
+                );
+                assert_eq!(get_cmos_data(&mut rtc, register), value);
+            }
         }
     }
 
