@@ -1513,6 +1513,7 @@ impl VmService {
                 restore_ready_sink: None,
                 restore_gate_timeout: None,
                 restore_vp_count: None,
+                restore_pcie_devices: Vec::new(),
                 rpc,
                 notify: notify_send,
             },

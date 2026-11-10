@@ -8,6 +8,7 @@ mod ecam_config_access;
 mod intel_vtd_wiring;
 mod ioapic_iommu_wiring;
 mod microvm;
+mod pcie_hotplug;
 mod pcie_topology;
 mod pcie_wiring;
 mod restore;
@@ -4370,81 +4371,13 @@ impl LoadedVm {
                     }
                     VmRpc::AddPcieDevice(rpc) => {
                         rpc.handle_failable(async |(port_name, resource)| {
-                            // Find the root complex and its index for the named port.
-                            let (rc_idx, rc) = self.inner.pcie_root_complexes.iter()
-                                .enumerate()
-                                .find(|(_, rc)| {
-                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
-                                })
-                                .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
-
-                            // Get the bus_range from the port's config space emulator.
-                            let bus_range = rc.lock()
-                                .downstream_ports()
-                                .into_iter()
-                                .find(|p| p.name.as_ref() == port_name.as_str())
-                                .expect("port was just found above")
-                                .bus_range;
-
-                            let segment = self.inner.pcie_host_bridges[rc_idx].segment;
-                            let msi_conn = pci_core::msi::MsiConnection::new();
-
-                            let pcie_ctx = pcie_wiring::build_device_wiring(
-                                pcie_wiring::PcieDeviceWiringParams {
-                                    msi_platform: pcie_wiring::PcieMsiPlatform {
-                                        partition: self.inner.partition.as_ref(),
-                                        segment,
-                                        processor_topology: &self.inner.processor_topology,
-                                        #[cfg(guest_arch = "x86_64")]
-                                        iommu: x86_iommu_for_rc(
-                                            &self.inner.iommu_devices,
-                                            rc_idx,
-                                        ),
-                                    },
-                                    guest_memory: &self.inner.gm,
-                                    bus_range: &bus_range,
-                                    msi: &msi_conn,
-                                    #[cfg(guest_arch = "aarch64")]
-                                    smmu: smmu_for_rc(&self.inner.iommu_devices, rc_idx),
-                                },
-                            );
-
-                            let mapper = self.inner.memory_manager.device_memory_mapper();
-                            let contract = vmotherboard::DynamicDeviceContract {
-                                stable_id: Some(vmotherboard::pcie_port_stable_id(&port_name)),
-                                kind: resource.id().to_owned(),
-                            };
-                            let (unit, device) = self.inner.chipset_devices.add_dyn_device(
-                                &self.inner.driver_source,
-                                &self.state_units,
-                                format!("pcie-hotplug:{}", port_name),
-                                contract,
-                                async |register_mmio| {
-                                    self.inner.resolver
-                                        .resolve(
-                                            resource,
-                                            pci_resources::ResolvePciDeviceHandleParams {
-                                                dma_target: &pcie_ctx.dma_target,
-                                                register_mmio,
-                                                driver_source: &self.inner.driver_source,
-                                                doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                                                shared_mem_mapper: Some(&mapper),
-                                            },
-                                        )
-                                        .await
-                                        .map(|r| r.0)
-                                        .map_err(|e| anyhow::anyhow!(e))
-                                },
-                            ).await?;
-
-                            // Connect the signal_msi and irqfd (possibly
-                            // ITS-wrapped and/or SMMU-wrapped).
-                            pcie_ctx.connect_to(&msi_conn);
-
-                            // Wrap the device as a GenericPciBusDevice for the port.
-                            // Keep a strong Arc to the device so the Weak stays valid.
-                            let weak_dev: std::sync::Weak<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>> = Arc::downgrade(&(device.clone() as Arc<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>>));
-                            let bus_device = Box::new(WeakMutexPciBusDevice(weak_dev));
+                            let pcie_hotplug::PcieHotplugDevice {
+                                root_complex,
+                                devfn: _,
+                                unit,
+                                device,
+                                bus_device,
+                            } = self.build_pcie_hotplug_device(&port_name, resource).await?;
 
                             self.inner.pcie_hotplug_devices.push((port_name.clone(), unit, device));
 
@@ -4455,7 +4388,7 @@ impl LoadedVm {
                             self.state_units.start_stopped_units().await?;
 
                             // Now attach the device and notify the guest.
-                            if let Err(e) = rc.lock().hotplug_add_device(
+                            if let Err(e) = root_complex.lock().hotplug_add_device(
                                 &port_name,
                                 "hotplug-device",
                                 bus_device,
@@ -4762,8 +4695,10 @@ impl LoadedVm {
     }
 
     /// Restore state on the VM, once its state units satisfy the saved
-    /// inventory.
+    /// inventory: first re-creates the hot-plugged PCIe devices that the
+    /// inventory records and that the VM lacks.
     async fn restore(&mut self, state: SavedState) -> anyhow::Result<()> {
+        self.recreate_hotplugged_pcie_devices(&state).await?;
         restore::check_inventory(&self.state_units, &state)?;
         self.state_units.restore(state.units).await?;
         Ok(())

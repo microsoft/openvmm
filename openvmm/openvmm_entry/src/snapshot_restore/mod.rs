@@ -29,6 +29,7 @@ use crate::Options;
 use crate::microvm::MicrovmLaunch;
 use anyhow::Context;
 use mesh::payload::message::ProtobufMessage;
+use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::profile::ProfileSpan;
 use openvmm_defs::worker::SharedMemoryFd;
 use openvmm_defs::worker::SnapshotRestoreGuards;
@@ -135,4 +136,78 @@ impl SnapshotRestore {
 /// has launched.
 pub(crate) fn worker_launched(worker_launch: ProfileSpan) {
     worker_launch.complete_milestone("startup", "worker_launch", Default::default());
+}
+
+/// Moves the devices on the PCIe ports that the saved state `state` records
+/// as hot-plugged out of `pcie_devices`, the devices that the VM's
+/// configuration places on PCIe ports, and returns them, for the VM worker to
+/// re-create on their ports as it restores their saved state.
+///
+/// A restore takes the device options of the VM that was saved, including
+/// those of the devices that were hot-plugged into it.
+pub(crate) fn take_hotplugged_pcie_devices(
+    state: &ProtobufMessage,
+    pcie_devices: &mut Vec<PcieDeviceConfig>,
+) -> anyhow::Result<Vec<PcieDeviceConfig>> {
+    let state: openvmm_defs::worker::SavedState = state
+        .parse()
+        .context("failed to parse saved state from snapshot")?;
+    let ports = state.hotplugged_pcie_ports();
+    let (hotplugged, configured) = std::mem::take(pcie_devices)
+        .into_iter()
+        .partition(|device| ports.contains(device.port_name.as_str()));
+    *pcie_devices = configured;
+    Ok(hotplugged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_hotplugged_pcie_devices;
+    use mesh::payload::message::ProtobufMessage;
+    use openvmm_defs::config::PcieDeviceConfig;
+    use openvmm_defs::worker::SavedState;
+    use state_unit::UnitContract;
+    use state_unit::UnitLifetime;
+    use test_with_tracing::test;
+    use vm_resource::IntoResource;
+
+    fn rng_on(port_name: &str) -> PcieDeviceConfig {
+        PcieDeviceConfig {
+            port_name: port_name.to_owned(),
+            resource: virtio_resources::VirtioPciDeviceHandle(
+                virtio_resources::rng::VirtioRngHandle.into_resource(),
+            )
+            .into_resource(),
+        }
+    }
+
+    #[test]
+    fn hotplugged_pcie_devices_leave_the_configuration() {
+        let state = ProtobufMessage::new(SavedState {
+            units: Vec::new(),
+            inventory: vec![UnitContract {
+                name: "pcie-hotplug:rp1".to_owned(),
+                stable_id: vmotherboard::pcie_port_stable_id("rp1"),
+                kind: "virtio".to_owned(),
+                lifetime: UnitLifetime::Dynamic,
+                descriptors: Vec::new(),
+            }],
+        });
+        let mut pcie_devices = vec![rng_on("rp0"), rng_on("rp1")];
+        let hotplugged = take_hotplugged_pcie_devices(&state, &mut pcie_devices).unwrap();
+        assert_eq!(
+            hotplugged
+                .iter()
+                .map(|d| d.port_name.as_str())
+                .collect::<Vec<_>>(),
+            ["rp1"]
+        );
+        assert_eq!(
+            pcie_devices
+                .iter()
+                .map(|d| d.port_name.as_str())
+                .collect::<Vec<_>>(),
+            ["rp0"]
+        );
+    }
 }

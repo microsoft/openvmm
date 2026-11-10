@@ -133,6 +133,7 @@ features = [
 build_rs_guest_arch.workspace = true
 
 [dev-dependencies]
+state_unit.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

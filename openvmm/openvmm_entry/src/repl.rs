@@ -169,6 +169,29 @@ enum InteractiveCommand {
         lun: u8,
     },
 
+    /// Hot add a device to a hot-pluggable PCIe port.
+    ///
+    /// A snapshot records the device as hot-plugged on the port. Restoring
+    /// the snapshot requires the same device on that port, such as
+    /// `--virtio-rng --virtio-rng-pcie-port <PORT>`.
+    AddPcieDevice {
+        /// The port, such as a root port that `--pcie-root-port` created with
+        /// `hotplug`.
+        port: String,
+        /// The device to add.
+        #[clap(value_enum)]
+        device: PcieHotplugDeviceArg,
+    },
+
+    /// Hot remove the device that was hot added to a PCIe port.
+    ///
+    /// The guest sees a surprise removal, so release the device in the guest
+    /// first, such as through its `remove` attribute in a Linux guest's sysfs.
+    RmPcieDevice {
+        /// The port.
+        port: String,
+    },
+
     /// Manage VTL2 settings (storage controllers, NICs exposed to VTL0).
     #[clap(subcommand)]
     Vtl2Settings(Vtl2SettingsCommand),
@@ -406,6 +429,24 @@ impl PortProtocolArg {
         match self {
             PortProtocolArg::Tcp => HostPortProtocol::Tcp,
             PortProtocolArg::Udp => HostPortProtocol::Udp,
+        }
+    }
+}
+
+/// A device that `add-pcie-device` hot adds.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PcieHotplugDeviceArg {
+    /// A virtio entropy source.
+    VirtioRng,
+}
+
+impl PcieHotplugDeviceArg {
+    fn resource(self) -> Resource<vm_resource::kind::PciDeviceHandleKind> {
+        match self {
+            PcieHotplugDeviceArg::VirtioRng => virtio_resources::VirtioPciDeviceHandle(
+                virtio_resources::rng::VirtioRngHandle.into_resource(),
+            )
+            .into_resource(),
         }
     }
 }
@@ -1123,6 +1164,34 @@ pub(crate) async fn run_repl(
 
                 if let Err(error) = action.await {
                     tracing::error!(error = error.as_error(), "error removing disk")
+                }
+            }
+            InteractiveCommand::AddPcieDevice { port, device } => {
+                let result = vm_rpc
+                    .call_failable(VmRpc::AddPcieDevice, (port.clone(), device.resource()))
+                    .await;
+                match result {
+                    Ok(()) => tracing::info!(port, "hot added PCIe device"),
+                    Err(error) => {
+                        eprintln!(
+                            "error: add-pcie-device failed: {:#}",
+                            anyhow::Error::from(error)
+                        )
+                    }
+                }
+            }
+            InteractiveCommand::RmPcieDevice { port } => {
+                let result = vm_rpc
+                    .call_failable(VmRpc::RemovePcieDevice, port.clone())
+                    .await;
+                match result {
+                    Ok(()) => tracing::info!(port, "hot removed PCIe device"),
+                    Err(error) => {
+                        eprintln!(
+                            "error: rm-pcie-device failed: {:#}",
+                            anyhow::Error::from(error)
+                        )
+                    }
                 }
             }
             InteractiveCommand::Vtl2Settings(cmd) => {

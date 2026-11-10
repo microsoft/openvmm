@@ -903,6 +903,8 @@ pub(super) async fn create(
             restore_ready_sink,
             restore_gate_timeout,
             restore_vp_count: opt.microvm.restore_processors,
+            // A microVM has no PCIe ports.
+            restore_pcie_devices: Vec::new(),
             rpc,
             notify: notify_send,
         },

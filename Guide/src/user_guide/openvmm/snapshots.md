@@ -587,15 +587,17 @@ The rules are:
 |---|---|
 | Device set matches exactly | Restore succeeds |
 | Dormant microVM virtio-fs slot becomes attached | **Restore succeeds** — the only additive transition |
+| A device was hot-plugged onto a PCIe port, and the restore supplies the same device on that port | **Restore succeeds** — the device is re-created on its port |
 | Snapshot contains a device not in current config | **Restore fails** — inventory mismatch, missing |
 | Current config has a device not in snapshot | **Restore fails** — inventory mismatch, unexpected |
 | A device's contract changed, such as its addresses or PCI IDs | **Restore fails** — inventory mismatch, changed |
 
 In practice this means:
 
-- You must pass the **same device flags** on restore as you did on save.
-  Removing a device that was present at save time will cause restore to
-  fail.
+- You must pass the **same device flags** on restore as you did on save,
+  including a flag for each device that was hot-plugged onto a PCIe port, on
+  that port. Removing a device that was present at save time will cause
+  restore to fail.
 - Adding a new device that was not present at save time fails inventory
   validation rather than starting an unenumerated device in its default state.
 

@@ -56,6 +56,7 @@ impl RestoreParameters {
             "received restore-time VP activation target"
         );
         let time_abi = parameters.restore_time.take();
+        let pcie_devices = std::mem::take(&mut parameters.restore_pcie_devices);
         let file_mapping_mode = if parameters.shared_memory_copy_on_write {
             FileMappingMode::CopyOnWrite
         } else {
@@ -67,6 +68,7 @@ impl RestoreParameters {
                 vp_prefix,
                 ready_sink,
                 gate_timeout,
+                pcie_devices,
                 ..Default::default()
             },
             file_mapping_mode,
@@ -150,6 +152,9 @@ pub(super) struct SnapshotRestore {
     /// Profile span from the guest's first selection of the restore packet to
     /// its acknowledgement of a gated restore.
     repair_profile: Option<ProfileSpan>,
+    /// The devices of the PCIe ports that the saved state records as
+    /// hot-plugged, which the restore re-creates.
+    pub(super) pcie_devices: Vec<openvmm_defs::config::PcieDeviceConfig>,
 }
 
 /// A post-restore event handled by the VM worker's run loop.

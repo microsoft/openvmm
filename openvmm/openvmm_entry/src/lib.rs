@@ -3067,11 +3067,15 @@ async fn run_control_inner(
     let vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
-        let (shared_memory, saved_state) = if opt.restore_snapshot.is_some() {
+        let (shared_memory, saved_state, restore_pcie_devices) = if opt.restore_snapshot.is_some() {
             let (fd, state_msg) = restore.prepare(&opt, &mut microvm, &source_hypervisor)?;
-            (Some(fd), Some(state_msg))
+            let restore_pcie_devices = snapshot_restore::take_hotplugged_pcie_devices(
+                &state_msg,
+                &mut vm_config.pcie_devices,
+            )?;
+            (Some(fd), Some(state_msg), restore_pcie_devices)
         } else if let Some(shared_memory) = microvm.capture_shared_memory()? {
-            (Some(shared_memory), None)
+            (Some(shared_memory), None, Vec::new())
         } else {
             let shared_memory = opt
                 .memory_backing_file()
@@ -3082,7 +3086,7 @@ async fn run_control_inner(
                     )
                 })
                 .transpose()?;
-            (shared_memory, None)
+            (shared_memory, None, Vec::new())
         };
         let restore = restore.into_worker();
         let restore_ready_sink = snapshot_restore::restore_ready_sink(&opt)?;
@@ -3100,6 +3104,7 @@ async fn run_control_inner(
             restore_ready_sink,
             restore_gate_timeout: microvm.restore_gate_timeout(&opt),
             restore_vp_count: opt.microvm.restore_processors,
+            restore_pcie_devices,
             rpc: rpc_recv,
             notify: notify_send,
         };

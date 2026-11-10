@@ -59,10 +59,35 @@ everything via config space registers and MSI.
 ### Runtime API
 
 Hot-add and hot-remove are triggered via
-`VmRpc::AddPcieDevice` and `VmRpc::RemovePcieDevice` messages.
+`VmRpc::AddPcieDevice` and `VmRpc::RemovePcieDevice` messages, which the
+interactive console's `add-pcie-device` and `rm-pcie-device` commands send.
 These resolve a device resource, create the device with MMIO
 registration, attach it to the named port, and fire the hotplug
 notification.
+
+The guest sees a hot-remove as a surprise removal, so it should release the
+device first, as a Linux guest does through the device's `remove` attribute in
+sysfs. Otherwise, Linux's virtio-pci driver, which resets a device when it
+unbinds, waits indefinitely for the removed device's reset to complete.
+
+### Save and restore
+
+A hot-added device's state unit records a dynamic contract whose stable
+identity is its port, `pcie-port:<PORT>`, as the device of a port that the VM's
+configuration fills records too. A snapshot therefore records which ports the
+guest saw hot-plugged, and with which device.
+
+Restoring such a snapshot into a new process requires the same device on the
+same port, such as `--virtio-rng --virtio-rng-pcie-port <PORT>`. Before the
+restore applies saved state, the controller hands the devices on the ports that
+the snapshot records as hot-plugged to the VM worker instead of placing them at
+construction, and the worker re-creates each on its port from its recorded
+contract, without a hotplug notification: the root complex's saved state
+restores what the guest saw of the port. The restore then requires each
+re-created device's contract, its PCI identity included, to equal the recorded
+one, and fails if a recorded device has no supplied device or if a supplied
+device's port records none. A re-created device can be hot-removed like any
+other.
 
 Removal waits for the device's teardown hook and payload destruction.
 Before teardown, guest access is permanently revoked so late accesses
