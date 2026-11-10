@@ -667,7 +667,7 @@ pub(crate) async fn run_repl(
     let mut snapshot_saved = false;
 
     enum StateChange {
-        Pause(bool),
+        Pause(Result<bool, RemoteError>),
         Resume(Result<bool, RemoteError>),
         Reset(Result<(), RemoteError>),
         PulseSaveRestore(Result<(), PulseSaveRestoreError>),
@@ -767,13 +767,14 @@ pub(crate) async fn run_repl(
             Event::StateChange(r) => {
                 match r {
                     Ok(sc) => match sc {
-                        StateChange::Pause(success) => {
-                            if success {
-                                tracing::info!("pause complete");
-                            } else {
-                                tracing::warn!("already paused");
-                            }
-                        }
+                        StateChange::Pause(r) => match r {
+                            Ok(true) => tracing::info!("pause complete"),
+                            Ok(false) => tracing::warn!("already paused"),
+                            Err(err) => tracing::error!(
+                                error = &err as &dyn std::error::Error,
+                                "pause failed"
+                            ),
+                        },
                         StateChange::Resume(Ok(success)) => {
                             if success {
                                 launch.restore_ready_pending = false;
