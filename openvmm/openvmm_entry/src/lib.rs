@@ -2774,6 +2774,28 @@ fn prepare_snapshot_restore(
     Ok((shared_memory_fd, state_msg))
 }
 
+/// Moves the devices on the PCIe ports that the saved state `state` records
+/// as hot-plugged out of `pcie_devices`, the devices that the VM's
+/// configuration places on PCIe ports, and returns them, for the VM worker to
+/// re-create on their ports as it restores their saved state.
+///
+/// A restore takes the device options of the VM that was saved, including
+/// those of the devices that were hot-plugged into it.
+fn take_hotplugged_pcie_devices(
+    state: &mesh::payload::message::ProtobufMessage,
+    pcie_devices: &mut Vec<PcieDeviceConfig>,
+) -> anyhow::Result<Vec<PcieDeviceConfig>> {
+    let state: openvmm_defs::worker::SavedState = state
+        .parse()
+        .context("failed to parse saved state from snapshot")?;
+    let ports = state.hotplugged_pcie_ports();
+    let (hotplugged, configured) = std::mem::take(pcie_devices)
+        .into_iter()
+        .partition(|device| ports.contains(device.port_name.as_str()));
+    *pcie_devices = configured;
+    Ok(hotplugged)
+}
+
 fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
@@ -3010,21 +3032,24 @@ async fn run_control_inner(
     let vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
-        let (shared_memory, saved_state) = if let Some(snapshot_dir) = &opt.restore_snapshot {
-            let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
-            (Some(fd), Some(state_msg))
-        } else {
-            let shared_memory = opt
-                .memory_backing_file()
-                .map(|path| {
-                    openvmm_helpers::shared_memory::open_memory_backing_file(
-                        path,
-                        opt.memory_size(),
-                    )
-                })
-                .transpose()?;
-            (shared_memory, None)
-        };
+        let (shared_memory, saved_state, restore_pcie_devices) =
+            if let Some(snapshot_dir) = &opt.restore_snapshot {
+                let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
+                let restore_pcie_devices =
+                    take_hotplugged_pcie_devices(&state_msg, &mut vm_config.pcie_devices)?;
+                (Some(fd), Some(state_msg), restore_pcie_devices)
+            } else {
+                let shared_memory = opt
+                    .memory_backing_file()
+                    .map(|path| {
+                        openvmm_helpers::shared_memory::open_memory_backing_file(
+                            path,
+                            opt.memory_size(),
+                        )
+                    })
+                    .transpose()?;
+                (shared_memory, None, Vec::new())
+            };
 
         let params = VmWorkerParameters {
             hypervisor: match &opt.hypervisor {
@@ -3034,6 +3059,7 @@ async fn run_control_inner(
             cfg: vm_config,
             saved_state,
             shared_memory,
+            restore_pcie_devices,
             rpc: rpc_recv,
             notify: notify_send,
         };
@@ -3252,6 +3278,38 @@ mod tests {
     use std::fs::File;
     use test_with_tracing::test;
     use vm_resource::ResourceId;
+
+    /// The devices on the ports that a snapshot records as hot-plugged leave
+    /// the configuration, for the VM worker to re-create on their ports.
+    #[test]
+    fn hotplugged_pcie_devices_leave_the_configuration() {
+        let rng_on = |port_name: &str| PcieDeviceConfig {
+            port_name: port_name.to_owned(),
+            resource: VirtioPciDeviceHandle(virtio_resources::rng::VirtioRngHandle.into_resource())
+                .into_resource(),
+        };
+        let state =
+            mesh::payload::message::ProtobufMessage::new(openvmm_defs::worker::SavedState {
+                units: Vec::new(),
+                inventory: vec![state_unit::UnitContract {
+                    name: "pcie-hotplug:rp1".to_owned(),
+                    stable_id: vmotherboard::pcie_port_stable_id("rp1"),
+                    kind: "virtio".to_owned(),
+                    lifetime: state_unit::UnitLifetime::Dynamic,
+                    descriptors: Vec::new(),
+                }],
+            });
+        let mut pcie_devices = vec![rng_on("rp0"), rng_on("rp1")];
+        let hotplugged = take_hotplugged_pcie_devices(&state, &mut pcie_devices).unwrap();
+        let ports = |devices: &[PcieDeviceConfig]| {
+            devices
+                .iter()
+                .map(|d| d.port_name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ports(&hotplugged), ["rp1"]);
+        assert_eq!(ports(&pcie_devices), ["rp0"]);
+    }
 
     /// The same boot flags give the same ACPI power button with and without
     /// `--restore-snapshot`.

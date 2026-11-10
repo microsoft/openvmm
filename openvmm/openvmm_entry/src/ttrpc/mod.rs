@@ -1401,6 +1401,7 @@ impl VmService {
                     cfg: config,
                     saved_state: None,
                     shared_memory: None,
+                    restore_pcie_devices: Vec::new(),
                     rpc: recv,
                     notify: notify_send,
                 },

@@ -29,6 +29,13 @@ console for the commands supported by the running binary.
   ```
 * `D` / `rm-disk --target <INDEX> --path <INDEX> --lun <INDEX>`:
   hot remove a disk from the VTL0 guest.
+* `add-pcie-device <PORT> virtio-rng`: hot add a device to a
+  hot-pluggable PCIe port. A snapshot records the device as hot-plugged on
+  the port, and its restore requires the same device on the same port.
+* `rm-pcie-device <PORT>`: hot remove the device that was hot added to a
+  PCIe port. The guest sees a surprise removal, so release the device in the
+  guest first: Linux's virtio-pci driver, for one, resets a device when it
+  unbinds, and waits indefinitely for a removed device's reset to complete.
 * `x` / `inspect [-r] [-l <LIMIT>] [-v] [path] [-u <VALUE>]`:
   inspect runtime state using the `Inspect` trait infrastructure.
 * `V` / `restart-vnc`: restart the VNC worker.

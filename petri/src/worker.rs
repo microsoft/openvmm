@@ -35,6 +35,7 @@ impl Worker {
             cfg,
             saved_state,
             shared_memory,
+            restore_pcie_devices: Vec::new(),
             rpc: rpc_recv,
             notify: notify_send,
         };

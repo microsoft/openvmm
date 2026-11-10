@@ -113,8 +113,12 @@ VM registered them in:
 | A recorded dynamic unit is missing | Planned for re-creation |
 
 `StateUnits::restore()` then dispatches each entry of `units` to the unit of
-the same name. The VM worker refuses saved state whose check plans to re-create
-units. Saved state without an inventory skips the check, and restore matches its
+the same name. Before that, the VM worker re-creates the planned units that
+are devices hot-plugged onto PCIe ports, from the devices that the restore
+supplies for their ports, and then requires the inventory to match exactly; it
+refuses saved state that plans to re-create any other unit. See
+[PCIe save and restore](../reference/emulated/pcie/overview.md#save-and-restore).
+Saved state without an inventory skips the check, and restore matches its
 entries by name alone, as before.
 
 ### Unit naming conventions
