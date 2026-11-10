@@ -17,7 +17,9 @@ impl StateUnits {
     /// round trip.
     ///
     /// Fails without sending a request while a unit is in a terminal state,
-    /// whether or not the units run. Otherwise panics if running.
+    /// whether or not the units run. Otherwise panics if running. A unit whose
+    /// task does not answer its request fails the time advance, and is left in
+    /// a terminal state.
     pub async fn advance_time(&mut self, duration: Duration) -> Result<(), StateTransitionError> {
         self.check_no_terminal_units("advance_time")?;
         assert!(!self.running);
@@ -28,17 +30,13 @@ impl StateUnits {
                 State::Stopped,
                 State::AdvancingTime,
                 State::Stopped,
+                State::AdvanceTimeUncertain,
                 StateRequest::AdvanceTime,
                 |_, unit| unit.advances_time.then_some(duration),
                 |unit| Some(&unit.dependencies),
             )
             .await;
-        check(
-            "advance_time",
-            results
-                .into_iter()
-                .map(|(name, result)| (name, result.map_err(anyhow::Error::from))),
-        )?;
+        check("advance_time", results)?;
         Ok(())
     }
 }
