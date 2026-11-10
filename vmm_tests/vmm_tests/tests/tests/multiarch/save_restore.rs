@@ -8,6 +8,8 @@ use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmRuntime;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri::requirements::OpenVmmHypervisor;
+use petri::requirements::TestRequirement;
 use vmm_test_macros::openvmm_test;
 
 /// Verify that a UEFI snapshot restores in a new worker process.
@@ -19,7 +21,12 @@ async fn uefi_cross_process_restore(
 }
 
 /// Verify that a Linux direct boot snapshot restores in a new worker process.
-#[openvmm_test(linux_direct_x64)]
+// TODO: Fix the MSHV VP pause hang and remove the conditional unstable marker.
+#[openvmm_test(unstable(
+    reason = "MSHV VP pause can hang",
+    when = TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Mshv),
+    linux_direct_x64
+))]
 async fn linux_direct_cross_process_restore(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {

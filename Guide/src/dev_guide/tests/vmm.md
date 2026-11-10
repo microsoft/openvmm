@@ -137,6 +137,28 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 }
 ```
 
+To limit instability to matching hosts, add `when = <TestRequirement expression>`.
+For example, this variant is unstable on MSHV but stable on KVM and WHP:
+
+```rust,ignore
+use petri::requirements::{OpenVmmHypervisor, TestRequirement};
+
+#[vmm_test(unstable(
+    reason = "Intermittent failures on this backend",
+    when = TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Mshv),
+    openvmm_linux_direct_x64
+))]
+async fn my_test(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    // ...
+}
+```
+
+The test still runs on nonmatching hosts; only its failure policy changes.
+The condition uses the same host context as test eligibility. Combine requirements
+with `.and()`, `.or()`, and `.not()` to select CPU vendors or execution environments.
+The test-wide `unstable(...)` form also accepts `when`. A per-variant marker
+replaces the test-wide reason and condition.
+
 Unstable tests run in the same CI job as stable tests. In CI the
 `PETRI_IGNORE_UNSTABLE_FAILURES` environment variable is set, so when an unstable
 test fails the CI run passes with a warning. Outside of CI that variable is not
