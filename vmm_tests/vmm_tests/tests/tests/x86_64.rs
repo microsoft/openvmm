@@ -546,6 +546,90 @@ async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
+/// Boot with a writable virtio-pmem device on a PCIe root port and verify
+/// data flows in both directions between the host file and the guest.
+#[openvmm_test(linux_direct_x64)]
+async fn virtio_pmem_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    use openvmm_defs::config::PcieDeviceConfig;
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::Write;
+    use virtio_resources::pmem::VirtioPmemHandle;
+
+    const PMEM_SIZE: u64 = 4 * 1024 * 1024;
+    const HOST_DATA: &[u8] = b"host_pmem_data";
+    const GUEST_DATA: &str = "guest_pmem_data";
+    const GUEST_OFFSET: u64 = 4096;
+
+    let mut file = tempfile::NamedTempFile::new()?;
+    file.as_file().set_len(PMEM_SIZE)?;
+    file.write_all(HOST_DATA)?;
+    file.flush()?;
+    let path = file
+        .path()
+        .to_str()
+        .context("non-utf8 temp path")?
+        .to_owned();
+
+    let (vm, agent) = config
+        .modify_backend(move |b| {
+            b.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
+                c.pcie_devices.push(PcieDeviceConfig {
+                    port_name: "s0rc0rp0".to_string(),
+                    resource: VirtioPciDeviceHandle(
+                        VirtioPmemHandle {
+                            path,
+                            read_only: false,
+                        }
+                        .into_resource(),
+                    )
+                    .into_resource(),
+                });
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    let sectors = cmd!(sh, "cat /sys/block/pmem0/size")
+        .read()
+        .await
+        .context("/dev/pmem0 not found - guest kernel may lack CONFIG_VIRTIO_PMEM")?;
+    let sectors: u64 = sectors.trim().parse().context("parse pmem0 size")?;
+    assert_eq!(sectors * 512, PMEM_SIZE, "unexpected pmem0 size");
+
+    // Data written by the host before boot must be visible to the guest.
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/pmem0 bs=4096 count=1 2>/dev/null | head -c 14'"
+    )
+    .read()
+    .await
+    .context("read from /dev/pmem0")?;
+    assert_eq!(readback.as_bytes(), HOST_DATA, "guest read mismatch");
+
+    // Data written and flushed by the guest must land in the host file.
+    cmd!(
+        sh,
+        "sh -c 'echo -n guest_pmem_data | dd of=/dev/pmem0 bs=4096 seek=1 conv=notrunc,fsync 2>/dev/null'"
+    )
+    .run()
+    .await
+    .context("write to /dev/pmem0")?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    let mut buf = vec![0; GUEST_DATA.len()];
+    let f = file.as_file_mut();
+    f.seek(std::io::SeekFrom::Start(GUEST_OFFSET))?;
+    f.read_exact(&mut buf)?;
+    assert_eq!(buf, GUEST_DATA.as_bytes(), "host file mismatch");
+
+    Ok(())
+}
+
 /// Boot Linux with guest memory backed by a file instead of anonymous RAM.
 ///
 /// This validates that the file-backed memory plumbing through petri works

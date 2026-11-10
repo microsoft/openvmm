@@ -40,9 +40,11 @@ Start a VM with file-backed memory:
 ```bash
 cargo run -- \
   --uefi \
+  --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
-  --memory size=4096M,file=path/to/memory.bin
+  --memory size=4096M,file=path/to/memory.bin \
+  --processors 4
 ```
 
 Once the VM is running, open the interactive console and issue a save command,
@@ -68,6 +70,7 @@ To restore, pass the snapshot directory with `--restore-snapshot`:
 ```bash
 cargo run -- \
   --uefi \
+  --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M \
@@ -78,6 +81,11 @@ cargo run -- \
 `--restore-snapshot` automatically opens `memory.bin` from the snapshot
 directory, so `file=...` should not be specified in `--memory` (the two
 options are mutually exclusive).
+
+Pass the same boot flags and files that were used at save time (for example
+`--uefi` and `--uefi-firmware`, or `--kernel` and `--initrd`). Restore does
+not run the firmware or kernel loader, but they are used if the restored VM is
+later reset.
 
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
