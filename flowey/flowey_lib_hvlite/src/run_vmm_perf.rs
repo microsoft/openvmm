@@ -3,6 +3,7 @@
 
 //! Run the standalone VMM.Perf runner.
 
+use anyhow::Context as _;
 use flowey::node::prelude::*;
 
 pub fn all_profiles() -> Vec<String> {
@@ -125,22 +126,17 @@ impl SimpleFlowNode for Node {
                     args.push(parameters_json.clone());
                 }
 
-                let process = flowey::shell_cmd!(rt, "{runner} {args...}")
-                    .ignore_status()
-                    .output()?;
-                if !process.stdout.is_empty() {
-                    log::info!("{}", String::from_utf8_lossy(&process.stdout));
-                }
-                if !process.stderr.is_empty() {
-                    log::warn!("{}", String::from_utf8_lossy(&process.stderr));
-                }
+                let status = std::process::Command::new(&runner)
+                    .args(&args)
+                    .status()
+                    .context("failed to run VMM.Perf")?;
 
                 rt.write(
                     output,
                     &VmmPerfRunOutput {
                         results_dir: output_dir,
-                        success: process.status.success(),
-                        exit_code: process.status.code(),
+                        success: status.success(),
+                        exit_code: status.code(),
                     },
                 );
                 Ok(())
