@@ -1474,6 +1474,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             )
     }
 
+    fn start_watchdog_timer(
+        driver: &DefaultDriver,
+        watchdog_timeout: Option<Duration>,
+    ) -> Option<Task<()>> {
+        watchdog_timeout.map(|timeout| {
+            // Unwind out of the task pool so Petri records a test failure.
+            let timer_driver = driver.clone();
+            driver.spawn("timer-watchdog", async move {
+                PolledTimer::new(&timer_driver).sleep(timeout).await;
+                tracing::error!(?timeout, "Test timeout reached, aborting.");
+                panic!("Test timed out");
+            })
+        })
+    }
+
     fn start_watchdog_tasks(
         resources: &PetriVmResources,
         runtime: &mut T::VmRuntime,
@@ -1482,16 +1497,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     ) -> anyhow::Result<Vec<Task<()>>> {
         let mut tasks = Vec::new();
 
-        if let Some(timeout) = watchdog_timeout {
-            // The panic unwinds out of the task pool, which drops the VM and
-            // triggers the same inspect capture as any other failure.
-            let driver = resources.driver.clone();
-            tasks.push(resources.driver.spawn("timer-watchdog", async move {
-                PolledTimer::new(&driver).sleep(timeout).await;
-                tracing::error!(?timeout, "Test timeout reached, aborting.");
-                panic!("Test timed out");
-            }));
-        }
+        tasks.extend(Self::start_watchdog_timer(
+            &resources.driver,
+            watchdog_timeout,
+        ));
 
         if enable_screenshots {
             if let Some(mut framebuffer_access) = runtime.take_framebuffer_access() {
@@ -4606,6 +4615,40 @@ mod tests {
     use crate::VmbusStorageController;
     use crate::VmbusStorageType;
     use crate::Vtl;
+    use test_with_tracing::test as tracing_test;
+
+    #[tracing_test]
+    fn watchdog_interrupts_a_pending_test() {
+        let mut pool = pal_async::DefaultPool::new();
+        let driver = pool.driver();
+        let watchdog = PetriVmBuilder::<openvmm::OpenVmmPetriBackend>::start_watchdog_timer(
+            &driver,
+            Some(Duration::ZERO),
+        );
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            pool.run_until(std::future::pending::<()>())
+        }));
+        drop(watchdog);
+        drop(driver);
+        pool.run();
+        assert_eq!(
+            result.unwrap_err().downcast_ref::<&str>(),
+            Some(&"Test timed out")
+        );
+    }
+
+    #[tracing_test]
+    fn dropped_watchdog_does_not_outlive_its_owner() {
+        let pool = pal_async::DefaultPool::new();
+        let driver = pool.driver();
+        let watchdog = PetriVmBuilder::<openvmm::OpenVmmPetriBackend>::start_watchdog_timer(
+            &driver,
+            Some(Duration::ZERO),
+        );
+        drop(watchdog);
+        drop(driver);
+        pool.run();
+    }
 
     #[derive(Clone, Copy)]
     enum TestInspectBehavior {
