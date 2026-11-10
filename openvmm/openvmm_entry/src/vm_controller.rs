@@ -481,8 +481,10 @@ impl VmController {
         // Serialize the ProtobufMessage to bytes for writing to disk.
         let saved_state_bytes = mesh::payload::encode(saved_state_msg);
 
-        // Fsync the memory backing file.
-        let memory_file = fs_err::File::open(memory_file_path)?;
+        // Open for write: Windows FlushFileBuffers requires write access.
+        let memory_file = fs_err::OpenOptions::new()
+            .write(true)
+            .open(memory_file_path)?;
         memory_file
             .sync_all()
             .context("failed to fsync memory backing file")?;

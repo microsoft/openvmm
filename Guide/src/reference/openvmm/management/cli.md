@@ -59,6 +59,9 @@ describes the source definitions.
   --memory size=4G,file=path/to/memory.bin
   --memory size=4G,thp=off
   ```
+* `--restore-snapshot <DIR>`: Restore RAM and device state from a snapshot.
+  Pass the same boot and device flags used at save time. Uses
+  `<DIR>/memory.bin` and conflicts with explicit memory backing files.
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
   enlightenments.

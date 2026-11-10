@@ -334,41 +334,17 @@ impl Rtc {
         &mut self.state.cmos.0
     }
 
-    /// Calculate the duration between the current time and the alarm time.
-    ///
-    /// (this logic was ported over from Hyper-V, instructive comment and all)
-    ///
-    /// * * *
-    ///
-    /// What an ugly mess.
-    ///
-    /// The alarm works like an alarm clock. So if you set it for 5:02:03, it
-    /// will go off every day at 5:02:03. But if any of the time elements are
-    /// in 0xC0..=0xFF, that acts as a wildcard. So 5:FF:03 would go off at
-    /// 5:00:03 and 5:01:03 and 5:02:03, etc. An alarm set for FF:FF:FF goes
-    /// off every second.
-    ///
-    /// The problem is, what happens if, when we compute when the timer should
-    /// go off, that it should go off NOW?
-    ///
-    /// Suppose, for instance, that they ask for 5:02:03, and at 5:02:03 we
-    /// dutifully fire off the interrupt. The next thing we have to do is figure
-    /// out when the alarm goes off next. It's supposed to go off next at
-    /// 5:02:03, but if we've serviced the thing in reasonable time, it's
-    /// *still* 5:02:03. We don't want to keep interrupting continuously for the
-    /// next second, until it's 5:02:04. We want to wait a full day, and go off
-    /// *tomorrow* at 5:02:03. Ahhh, but what if we're supposed to go off at
-    /// 5:FF:03? In this case, we need to go off again in a minute. For 5:02:FF,
-    /// it has to be in a second.
-    ///
-    /// Handling all of this is what the `go_around_again` variable is for.
-    ///
-    /// It will be set to the appropriate amount of time we need to wait if, by
-    /// calculation, the alarm time would be immediate, as just described (which
-    /// is the amount for the smallest unit of time which has a wildcard (24
-    /// hours if none)).
+    /// Calculate the duration to the next strictly future matching alarm time.
+    /// Raw alarm fields in 0xC0..=0xFF are wildcards; all other fields must
+    /// match. Invalid decoded alarm fields are retried after one day.
     fn calculate_alarm_duration(&self) -> Duration {
         use self::spec::ALARM_WILDCARD;
+
+        const SECONDS_PER_MINUTE: u32 = 60;
+        const MINUTES_PER_HOUR: u32 = 60;
+        const HOURS_PER_DAY: u32 = 24;
+        const SECONDS_PER_HOUR: u32 = SECONDS_PER_MINUTE * MINUTES_PER_HOUR;
+        const SECONDS_PER_DAY: u32 = SECONDS_PER_HOUR * HOURS_PER_DAY;
 
         let status_b = StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]);
         let (now_hour, now_min, now_sec) = canonical_hms(
@@ -400,72 +376,46 @@ impl Rtc {
             if sec_wildcard { ALARM_WILDCARD } else { sec },
         );
 
-        let mut delta_hour: u8 = 0;
-        let mut delta_min: u8 = 0;
-        let mut delta_sec: u8 = 0;
-
-        if alarm_sec == ALARM_WILDCARD {
-            delta_sec = 0;
-        } else {
-            delta_sec = delta_sec.wrapping_add(alarm_sec.wrapping_sub(now_sec));
-            if alarm_sec < now_sec {
-                delta_sec = delta_sec.wrapping_add(60);
-                delta_min = delta_min.wrapping_sub(1);
-            }
+        let fields = [
+            (alarm_sec, 1, SECONDS_PER_MINUTE),
+            (alarm_min, SECONDS_PER_MINUTE, MINUTES_PER_HOUR),
+            (alarm_hour, SECONDS_PER_HOUR, HOURS_PER_DAY),
+        ];
+        if fields
+            .iter()
+            .any(|&(value, _, radix)| value != ALARM_WILDCARD && u32::from(value) >= radix)
+        {
+            return Duration::from_secs(u64::from(SECONDS_PER_DAY));
         }
 
-        if alarm_min == ALARM_WILDCARD {
-            delta_min = 0;
-        } else {
-            delta_min = delta_min.wrapping_add(alarm_min.wrapping_sub(now_min));
-            if alarm_min < now_min {
-                delta_min = delta_min.wrapping_add(60);
-                delta_hour = delta_hour.wrapping_sub(1);
+        let now_seconds = (u32::from(now_hour) * SECONDS_PER_HOUR
+            + u32::from(now_min) * SECONDS_PER_MINUTE
+            + u32::from(now_sec))
+            % SECONDS_PER_DAY;
+        let mut next_seconds = now_seconds + 1;
+        let mut lower_fields = 0;
+        for (value, unit, radix) in fields {
+            if value == ALARM_WILDCARD {
+                continue;
             }
-        }
-
-        if alarm_hour == ALARM_WILDCARD {
-            delta_hour = 0;
-        } else {
-            delta_hour = delta_hour.wrapping_add(alarm_hour.wrapping_sub(now_hour));
-            if alarm_hour < now_hour {
-                delta_hour = delta_hour.wrapping_add(24);
+            let value = u32::from(value);
+            let current = (next_seconds / unit) % radix;
+            let advance = (value + radix - current) % radix;
+            if advance != 0 {
+                next_seconds = (next_seconds / unit + advance) * unit + lower_fields;
             }
+            lower_fields += value * unit;
         }
-
-        const DURATION_SEC: Duration = Duration::from_secs(1);
-        const DURATION_MIN: Duration = Duration::from_mins(1);
-        const DURATION_HOUR: Duration = Duration::from_hours(1);
-        const DURATION_DAY: Duration = Duration::from_hours(24);
-
-        let go_around_again = match (alarm_sec, alarm_min, alarm_hour) {
-            (ALARM_WILDCARD, _, _) => DURATION_SEC,
-            (_, ALARM_WILDCARD, _) => DURATION_MIN,
-            (_, _, ALARM_WILDCARD) => DURATION_HOUR,
-            // if no wildcards were specified, then the alarm is set to fire in a day
-            _ => DURATION_DAY,
-        };
-
-        let alarm_duration = {
-            DURATION_HOUR * delta_hour as u32
-                + DURATION_MIN * delta_min as u32
-                + DURATION_SEC * delta_sec as u32
-        };
+        let alarm_duration = Duration::from_secs(u64::from(next_seconds - now_seconds));
 
         tracing::debug!(
             now = ?(now_hour, now_min, now_sec),
             alarm = ?(alarm_hour, alarm_min, alarm_sec),
-            delta = ?(delta_hour, delta_min, delta_sec),
-            ?go_around_again,
             ?alarm_duration,
             "setting alarm"
         );
 
-        if alarm_duration.is_zero() {
-            go_around_again
-        } else {
-            alarm_duration
-        }
+        alarm_duration
     }
 
     fn set_alarm_timer(&mut self, now: VmTime) {
@@ -478,8 +428,7 @@ impl Rtc {
 
     fn on_alarm_timer(&mut self, now: VmTime) {
         let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
-        self.state.cmos[CmosReg::STATUS_C] =
-            status_c.with_irq_alarm(true).with_irq_combined(true).into();
+        self.state.cmos[CmosReg::STATUS_C] = status_c.with_irq_alarm(true).into();
 
         self.signal_interrupt();
 
@@ -512,10 +461,7 @@ impl Rtc {
 
     fn on_periodic_timer(&mut self) {
         let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
-        self.state.cmos[CmosReg::STATUS_C] = status_c
-            .with_irq_periodic(true)
-            .with_irq_combined(true)
-            .into();
+        self.state.cmos[CmosReg::STATUS_C] = status_c.with_irq_periodic(true).into();
 
         self.signal_interrupt();
     }
@@ -526,34 +472,34 @@ impl Rtc {
 
     fn on_update_timer(&mut self) {
         let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
-        self.state.cmos[CmosReg::STATUS_C] = status_c
-            .with_irq_update(true)
-            .with_irq_combined(true)
-            .into();
+        self.state.cmos[CmosReg::STATUS_C] = status_c.with_irq_update(true).into();
 
         self.signal_interrupt();
     }
 
     /// Signals an interrupt event, forcing an edge for enlightened interrupts.
-    fn signal_interrupt(&self) {
-        let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
-        if self.enlightened_interrupts && status_c.irq_combined() {
+    fn signal_interrupt(&mut self) {
+        let irq_combined = self.update_irqf();
+        if self.enlightened_interrupts && irq_combined {
             self.interrupt.set_level(false);
         }
-        self.sync_interrupt_line_level();
+        self.interrupt.set_level(irq_combined);
     }
 
-    /// Reconstructs the output from status register C without forcing an edge.
-    fn sync_interrupt_line_level(&self) {
+    fn update_irqf(&mut self) -> bool {
+        let status_b = StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]);
         let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
+        let irq_combined = (status_c.irq_update() && status_b.irq_enable_update())
+            || (status_c.irq_periodic() && status_b.irq_enable_periodic())
+            || (status_c.irq_alarm() && status_b.irq_enable_alarm());
+        self.state.cmos[CmosReg::STATUS_C] = status_c.with_irq_combined(irq_combined).into();
+        irq_combined
+    }
 
-        if status_c.irq_update() || status_c.irq_periodic() || status_c.irq_alarm() {
-            assert!(status_c.irq_combined());
-            self.interrupt.set_level(true);
-        } else {
-            assert!(!status_c.irq_combined());
-            self.interrupt.set_level(false);
-        }
+    /// Recomputes interrupt status and publishes its level without forcing an edge.
+    fn sync_interrupt_line_level(&mut self) {
+        let irq_combined = self.update_irqf();
+        self.interrupt.set_level(irq_combined);
     }
 
     /// Synchronize vmtime-backed timers with current timer / alarm register
@@ -680,6 +626,7 @@ impl Rtc {
                 self.state.cmos[CmosReg::STATUS_B] = new_reg.into();
 
                 self.update_timers();
+                self.sync_interrupt_line_level();
             }
             // The AMI BIOS, in all its great wisdom, writes to these read-only registers.
             // We'll just silently allow that to happen...
@@ -993,26 +940,150 @@ mod tests {
     use super::*;
     use local_clock::MockLocalClock;
     use local_clock::MockLocalClockAccessor;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
     use test_with_tracing::test;
+    use vmcore::line_interrupt::LineSetTarget;
+
+    #[derive(Default)]
+    struct RecordingTarget(Mutex<Vec<bool>>);
+
+    impl LineSetTarget for RecordingTarget {
+        fn set_irq(&self, _: u32, high: bool) {
+            self.0.lock().push(high);
+        }
+    }
+
+    #[test]
+    fn test_interrupt_masking() {
+        for enlightened in [false, true] {
+            for (source, other_source) in [(0x10, 0x20), (0x20, 0x40), (0x40, 0x10)] {
+                let (_, _, _, mut rtc) = new_test_rtc();
+                rtc.enlightened_interrupts = enlightened;
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | source);
+                let target = Arc::new(RecordingTarget::default());
+                rtc.interrupt = LineInterrupt::new_with_target("rtc", target.clone(), 0);
+                target.0.lock().clear();
+
+                let fire = |rtc: &mut Rtc| match source {
+                    0x10 => rtc.on_update_timer(),
+                    0x20 => rtc.on_alarm_timer(VmTime::from_100ns(0)),
+                    0x40 => rtc.on_periodic_timer(),
+                    _ => unreachable!(),
+                };
+                fire(&mut rtc);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source | 0x80);
+                assert_eq!(target.0.lock().last(), Some(&true));
+
+                target.0.lock().clear();
+                fire(&mut rtc);
+                if enlightened {
+                    assert_eq!(*target.0.lock(), [false, true]);
+                } else {
+                    assert!(!target.0.lock().contains(&false));
+                }
+
+                target.0.lock().clear();
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source);
+                assert_eq!(*target.0.lock(), [false]);
+
+                target.0.lock().clear();
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | other_source);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source);
+                assert!(!target.0.lock().contains(&true));
+
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | source);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source | 0x80);
+                assert_eq!(target.0.lock().last(), Some(&true));
+
+                target.0.lock().clear();
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | source);
+                assert!(!target.0.lock().contains(&false));
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), source | 0x80);
+                assert_eq!(target.0.lock().last(), Some(&false));
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0);
+
+                target.0.lock().clear();
+                set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06 | other_source);
+                fire(&mut rtc);
+                assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], source);
+                assert!(!target.0.lock().contains(&true));
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), source);
+                assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_interrupt_mixed_sources() {
+        for enlightened in [false, true] {
+            let (_, _, _, mut rtc) = new_test_rtc();
+            rtc.enlightened_interrupts = enlightened;
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x76);
+            let target = Arc::new(RecordingTarget::default());
+            rtc.interrupt = LineInterrupt::new_with_target("rtc", target.clone(), 0);
+            rtc.on_periodic_timer();
+            rtc.on_update_timer();
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0xD0);
+
+            target.0.lock().clear();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x26);
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0x50);
+            assert_eq!(*target.0.lock(), [false]);
+
+            target.0.lock().clear();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x16);
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0xD0);
+            assert_eq!(*target.0.lock(), [true]);
+
+            target.0.lock().clear();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x46);
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0xD0);
+            assert!(!target.0.lock().contains(&false));
+            assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0xD0);
+            assert_eq!(target.0.lock().last(), Some(&false));
+            assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0);
+        }
+    }
+
+    #[test]
+    fn restore_masked_pending_flag_clears_stale_irqf() {
+        use vmcore::save_restore::SaveRestore;
+
+        for enlightened in [false, true] {
+            let (mut pool, _, _, mut rtc) = new_test_rtc();
+            rtc.enlightened_interrupts = enlightened;
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x46);
+            rtc.on_periodic_timer();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06);
+            let mut state = SaveRestore::save(&mut rtc).unwrap();
+            state.cmos[usize::from(CmosReg::STATUS_C.0)] = 0xC0;
+            pool.run_until(rtc.reset());
+
+            let target = Arc::new(RecordingTarget::default());
+            rtc.interrupt = LineInterrupt::new_with_target("rtc", target.clone(), 0);
+            rtc.interrupt.set_level(true);
+            target.0.lock().clear();
+            SaveRestore::restore(&mut rtc, state).unwrap();
+            assert_eq!(rtc.state.cmos[CmosReg::STATUS_C], 0x40);
+            assert_eq!(*target.0.lock(), [false]);
+
+            target.0.lock().clear();
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x46);
+            assert_eq!(*target.0.lock(), [true]);
+            assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0xC0);
+            assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_C), 0);
+        }
+    }
 
     #[test]
     fn restore_enlightened_rtc_publishes_level_without_a_pulse() {
-        use parking_lot::Mutex;
-        use std::sync::Arc;
-        use vmcore::line_interrupt::LineSetTarget;
         use vmcore::save_restore::SaveRestore;
-
-        #[derive(Default)]
-        struct RecordingTarget(Mutex<Vec<bool>>);
-
-        impl LineSetTarget for RecordingTarget {
-            fn set_irq(&self, _: u32, high: bool) {
-                self.0.lock().push(high);
-            }
-        }
 
         let (mut pool, _, _, mut rtc) = new_test_rtc();
         rtc.enlightened_interrupts = true;
+        set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x46);
         rtc.on_periodic_timer();
         let state = SaveRestore::save(&mut rtc).unwrap();
         pool.run_until(rtc.reset());
@@ -1688,6 +1759,97 @@ mod tests {
         test_day_of_week(false, true);
         println!("----Testing BCD mode...");
         test_day_of_week(true, true);
+    }
+
+    #[test]
+    fn test_alarm_next_match() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+
+        for status in [0x00, 0x02, 0x04, 0x06] {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            for (time, alarm, delays) in [
+                ("12:30:59", [12, 30, 0], [86341, 86400]),
+                ("12:30:58", [12, 30, 0xFF], [1, 86341]),
+                ("12:30:59", [12, 30, 0xFF], [86341, 1]),
+                ("12:31:00", [12, 30, 0xFF], [86340, 1]),
+                ("12:59:00", [12, 0xFF, 0], [82860, 60]),
+                ("12:30:59", [0xFF, 30, 0], [3541, 3600]),
+                ("12:30:59", [0xFF, 30, 0xFF], [3541, 1]),
+                ("12:30:59", [0xFF, 0xFF, 0], [1, 60]),
+                ("12:30:59", [0xFF, 0xFF, 0xFF], [1, 1]),
+                ("12:59:59", [12, 0xFF, 0xFF], [82801, 1]),
+                ("12:30:00", [12, 30, 0], [86400, 86400]),
+                ("23:59:59", [0, 0, 0], [1, 86400]),
+                ("11:59:59", [12, 0, 0], [1, 86400]),
+                ("12:59:59", [13, 0, 0], [1, 86400]),
+                ("12:30:59", [0xFF, 31, 59], [60, 3600]),
+                ("12:22:33", [14, 0xFF, 0xFF], [5847, 1]),
+                ("12:22:33", [0xFF, 23, 0xFF], [27, 1]),
+                ("23:59:59", [23, 59, 59], [86400, 86400]),
+            ] {
+                let encode = |value: u8| {
+                    if value == 0xFF || status & 4 != 0 {
+                        value
+                    } else {
+                        (value / 10) * 16 + value % 10
+                    }
+                };
+                let hour = if alarm[0] == 0xFF || status & 2 != 0 {
+                    encode(alarm[0])
+                } else {
+                    let magnitude = match alarm[0] % 12 {
+                        0 => 12,
+                        magnitude => magnitude,
+                    };
+                    encode(magnitude) | if alarm[0] >= 12 { 0x80 } else { 0 }
+                };
+                set_cmos_data(&mut rtc, CmosReg::HOUR_ALARM, hour);
+                set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, encode(alarm[1]));
+                set_cmos_data(&mut rtc, CmosReg::SECOND_ALARM, encode(alarm[2]));
+
+                let mut timestamp: jiff::Timestamp = format!("2026-01-01T{time}Z").parse().unwrap();
+                for expected_seconds in delays {
+                    rtc.real_time_source.set_time(timestamp.into());
+                    rtc.sync_clock_to_cmos();
+                    assert_eq!(
+                        rtc.calculate_alarm_duration(),
+                        Duration::from_secs(expected_seconds),
+                        "status B {status:#04x}, now {timestamp}, alarm {alarm:?}"
+                    );
+                    timestamp = timestamp
+                        .checked_add(Duration::from_secs(expected_seconds))
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_alarm_invalid_fields() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+        for status in [0x00, 0x02, 0x04, 0x06] {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            let timestamp: jiff::Timestamp = "2026-01-01T12:00:00Z".parse().unwrap();
+            rtc.real_time_source.set_time(timestamp.into());
+            rtc.sync_clock_to_cmos();
+            for invalid_field in 0..3 {
+                for (field, register) in [
+                    CmosReg::HOUR_ALARM,
+                    CmosReg::MINUTE_ALARM,
+                    CmosReg::SECOND_ALARM,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    set_cmos_data(
+                        &mut rtc,
+                        register,
+                        if field == invalid_field { 0x7F } else { 0xFF },
+                    );
+                }
+                assert_eq!(rtc.calculate_alarm_duration(), Duration::from_hours(24));
+            }
+        }
     }
 
     #[test]

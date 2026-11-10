@@ -34,6 +34,10 @@ use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 
 const VIRTIO_BLK_SERIAL: &str = "ttrpc-blk";
+const PMEM_SIZE: u64 = 4 * 1024 * 1024;
+const PMEM_HOST_MARKER: &str = "ttrpc-pmem-host";
+const PMEM_GUEST_MARKER: &str = "ttrpc-pmem-guest";
+const PMEM_GUEST_OFFSET: usize = 4096;
 
 petri::test!(test_ttrpc_interface, |resolver| {
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
@@ -740,6 +744,15 @@ async fn test_ttrpc_interface(
     for path in [&nvme_disk_path, &blk_disk_path, &scsi_disk_path] {
         std::fs::File::create(path)?.set_len(1024 * 1024)?;
     }
+    // Backing files for the boot-time and hot-added virtio-pmem devices.
+    let pmem_path = tempdir.path().join("pmem.img");
+    let hotplug_pmem_path = tempdir.path().join("pmem-hotplug.img");
+    {
+        let mut file = std::fs::File::create(&pmem_path)?;
+        file.set_len(PMEM_SIZE)?;
+        file.write_all(PMEM_HOST_MARKER.as_bytes())?;
+    }
+    std::fs::File::create(&hotplug_pmem_path)?.set_len(PMEM_SIZE)?;
 
     let console_markers = ["ttrpc-console-0-marker", "ttrpc-console-1-marker"];
     for i in 0..3 {
@@ -914,6 +927,12 @@ async fn test_ttrpc_interface(
                         Some(attachment_device(virtio_device(
                             vmservice::virtio_device::Kind::Rtc(vmservice::VirtioRtc {}),
                         ))),
+                    ),
+                    // Writable file-backed virtio-pmem behind a root port.
+                    pcie_root_port(
+                        "rp5",
+                        false,
+                        Some(attachment_device(virtio_device(file_pmem(&pmem_path)))),
                     ),
                 ],
                 ..Default::default()
@@ -1293,6 +1312,51 @@ async fn test_ttrpc_interface(
                 .await
                 .unwrap();
 
+            let err = client
+                .call()
+                .start(
+                    vmservice::Vm::AddPcieDevice,
+                    vmservice::AddPcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                        device: Some(virtio_device(vmservice::virtio_device::Kind::Pmem(
+                            vmservice::VirtioPmem {
+                                backend: None,
+                                read_only: false,
+                            },
+                        ))),
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                err.message.contains("missing pmem backend"),
+                "unexpected error: {}",
+                err.message
+            );
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::AddPcieDevice,
+                    vmservice::AddPcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                        device: Some(virtio_device(file_pmem(&hotplug_pmem_path))),
+                    },
+                )
+                .await
+                .unwrap();
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::RemovePcieDevice,
+                    vmservice::RemovePcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+
             client
                 .call()
                 .start(
@@ -1432,8 +1496,12 @@ async fn test_ttrpc_interface(
                             cmd!(sh, "sh -c {command}").run().await?;
                         }
                         validate_pcie_config(&agent).await?;
+                        if i == 0 {
+                            validate_pmem(&agent, &pmem_path, "pmem0").await?;
+                        }
                         #[cfg(windows)]
                         {
+                            validate_vpci_pmem_hotplug(&client, &agent, tempdir.path()).await?;
                             mount_virtio_fs(&agent, "testfs", "/mnt/testfs").await?;
                             validate_virtio_fs_access(&agent, "/mnt/testfs", &virtiofs_root, true)
                                 .await?;
@@ -2347,6 +2415,135 @@ async fn validate_smbios(agent: &pipette_client::PipetteClient) -> anyhow::Resul
         bios_release.trim()
     );
 
+    Ok(())
+}
+
+/// Builds a virtio-pmem device backed by the host file at `path`.
+fn file_pmem(path: &Path) -> vmservice::virtio_device::Kind {
+    vmservice::virtio_device::Kind::Pmem(vmservice::VirtioPmem {
+        backend: Some(vmservice::PmemBackend {
+            kind: Some(vmservice::pmem_backend::Kind::File(vmservice::PmemFile {
+                path: path.to_string_lossy().into(),
+            })),
+        }),
+        read_only: false,
+    })
+}
+
+/// Verifies a virtio-pmem device is visible to the guest and that
+/// data flows between the guest and the host backing file in both directions.
+async fn validate_pmem(
+    agent: &pipette_client::PipetteClient,
+    host_path: &Path,
+    name: &str,
+) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    let size_path = format!("/sys/block/{name}/size");
+    let device_path = format!("/dev/{name}");
+    let sectors = cmd!(sh, "cat {size_path}")
+        .read()
+        .await
+        .with_context(|| format!("{device_path} not found"))?;
+    let sectors: u64 = sectors
+        .trim()
+        .parse()
+        .with_context(|| format!("parse {name} size"))?;
+    anyhow::ensure!(
+        sectors * 512 == PMEM_SIZE,
+        "unexpected {name} size: {sectors} sectors"
+    );
+
+    let host_marker_len = PMEM_HOST_MARKER.len().to_string();
+    let readback = cmd!(sh, "head -c {host_marker_len} {device_path}")
+        .read()
+        .await?;
+    anyhow::ensure!(
+        readback == PMEM_HOST_MARKER,
+        "guest read {readback:?} from {name}, expected {PMEM_HOST_MARKER:?}"
+    );
+
+    let seek = (PMEM_GUEST_OFFSET / 4096).to_string();
+    let command = format!(
+        "printf {PMEM_GUEST_MARKER} | dd of={device_path} bs=4096 seek={seek} conv=notrunc,fsync 2>/dev/null"
+    );
+    cmd!(sh, "sh -c {command}").run().await?;
+
+    let contents = std::fs::read(host_path)?;
+    let written = contents
+        .get(PMEM_GUEST_OFFSET..PMEM_GUEST_OFFSET + PMEM_GUEST_MARKER.len())
+        .context("pmem backing file too small")?;
+    anyhow::ensure!(
+        written == PMEM_GUEST_MARKER.as_bytes(),
+        "host backing file has {:?} at offset {PMEM_GUEST_OFFSET:#x}, expected {PMEM_GUEST_MARKER:?}",
+        String::from_utf8_lossy(written)
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn validate_vpci_pmem_hotplug(
+    client: &mesh_rpc::Client,
+    agent: &pipette_client::PipetteClient,
+    root: &Path,
+) -> anyhow::Result<()> {
+    let first_path = root.join("vpci-pmem-1.img");
+    let second_path = root.join("vpci-pmem-2.img");
+    let first_instance_id = Guid::new_random();
+    let second_instance_id = Guid::new_random();
+    let sh = agent.unix_shell();
+    for (instance_id, path, name) in [
+        (first_instance_id, &first_path, "pmem1"),
+        (second_instance_id, &second_path, "pmem2"),
+    ] {
+        {
+            let mut file = std::fs::File::create(path)?;
+            file.set_len(PMEM_SIZE)?;
+            file.write_all(PMEM_HOST_MARKER.as_bytes())?;
+        }
+        client
+            .call()
+            .start(
+                vmservice::Vm::AddVpciDevice,
+                vmservice::AddVpciDeviceRequest {
+                    instance_id: instance_id.to_string(),
+                    device: Some(virtio_device(file_pmem(path))),
+                },
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!(err.message))?;
+
+        let script = format!(
+            "i=0; while [ $i -lt 200 ]; do \
+             test -b /dev/{name} && exit 0; \
+             i=$((i + 1)); sleep 0.1; done; exit 1"
+        );
+        cmd!(sh, "sh -c {script}")
+            .run()
+            .await
+            .with_context(|| format!("waiting for hot-added {name}"))?;
+        validate_pmem(agent, path, name).await?;
+    }
+
+    client
+        .call()
+        .start(
+            vmservice::Vm::RemoveVpciDevice,
+            vmservice::RemoveVpciDeviceRequest {
+                instance_id: second_instance_id.to_string(),
+            },
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.message))?;
+    let script = "i=0; while [ $i -lt 200 ]; do \
+                  if [ ! -e /sys/block/pmem2 ] && [ ! -b /dev/pmem2 ]; then exit 0; fi; \
+                  i=$((i + 1)); sleep 0.1; done; exit 1";
+    cmd!(sh, "sh -c {script}")
+        .run()
+        .await
+        .context("waiting for hot-removed pmem2 to disappear")?;
+
+    // Keep the first device attached through guest shutdown and TeardownVm.
+    validate_pmem(agent, &first_path, "pmem1").await?;
     Ok(())
 }
 
