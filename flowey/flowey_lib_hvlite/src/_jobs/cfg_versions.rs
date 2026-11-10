@@ -33,7 +33,6 @@ pub const NODEJS: &str = "24.x";
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.7";
 pub const OPENVMM_DEPS: &str = "0.3.0-185";
-pub const OPENVMM_MSHV_TEST_KERNEL: &str = "0.3.0-185";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
@@ -229,14 +228,25 @@ impl FlowNode for Node {
                 ..Default::default()
             });
         }
-        // The test Linux kernel and shared test initrd are always pulled
+        // By default, test Linux kernels and the shared test initrd are pulled
         // from the openvmm-deps GitHub release; `LocalOpenvmmDeps` only
         // overrides the (non-kernel/initrd) openvmm-deps tarball, since the
         // 0.3.0 split moved the kernel and initrd into their own artifacts.
         ctx.config(crate::resolve_openvmm_test_linux_kernel::Config {
             version: Some(OPENVMM_DEPS.into()),
-            mshv_version: Some(OPENVMM_MSHV_TEST_KERNEL.into()),
-            local_mshv_kernel: local_mshv_kernel.map(ConfigVar),
+            local_files: local_mshv_kernel
+                .map(|path| {
+                    (
+                        (
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage,
+                            CommonArch::X86_64,
+                            crate::resolve_openvmm_test_linux_kernel::LinuxTestKernelVersion::MshvTest,
+                        ),
+                        ConfigVar(path),
+                    )
+                })
+                .into_iter()
+                .collect(),
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_initrd::Config {
