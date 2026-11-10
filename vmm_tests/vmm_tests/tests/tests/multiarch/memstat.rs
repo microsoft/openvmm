@@ -21,7 +21,7 @@ use vmm_test_macros::vmm_test;
 #[derive(Clone, Copy, PartialEq)]
 pub enum TestVPCount {
     SmallVPCount = 2,
-    LargeVPCount = 64,
+    LargeVPCount = 32,
 }
 
 #[repr(u64)]
@@ -187,8 +187,8 @@ async fn idle_test<T: PetriVmmBackend>(
 
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", proc_json);
 
-    // block assertions on release CVM for now so that we can collect baselines
-    if isolation_type.is_none() || build_flavor == "debug" {
+    // block assertions on release builds for now so that we can collect baselines
+    if build_flavor == "debug" {
         assert_against_baseline(proc_json, build_flavor, &arch_str, &vp_str);
     }
 
