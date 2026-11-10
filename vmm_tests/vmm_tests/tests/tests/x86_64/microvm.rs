@@ -5,6 +5,7 @@
 
 use anyhow::Context;
 use mesh::CancelContext;
+use openvmm_defs::rpc::SnapshotQuiesceError;
 use petri::PetriHaltReason;
 use petri::PetriVm;
 use petri::PetriVmBuilder;
@@ -201,6 +202,18 @@ async fn wait_for_power_off(
     Ok(())
 }
 
+/// Returns the state of the VM worker's partition state unit, which runs the
+/// vCPUs: `running`, or `stopped` once the VM quiesced.
+async fn partition_unit_state(vm: &PetriVm<OpenVmmPetriBackend>) -> anyhow::Result<String> {
+    let node = vm.inspect_vmm("partition/unit_state").await?;
+    let state: serde_json::Value = serde_json::from_str(&node.json().to_string())
+        .context("failed to parse the partition's unit state")?;
+    state
+        .as_str()
+        .map(str::to_owned)
+        .context("the partition's unit state is not a string")
+}
+
 /// The test, as the microVM's snapshot controller, takes each of the
 /// controller's ways out of a guest-requested snapshot boundary: it releases
 /// the first boundary without a snapshot, and quiesces the VM for the second
@@ -258,5 +271,90 @@ async fn snapshot_boundary_release_and_rollback(
     .await?;
 
     wait_for_power_off(&mut vm, GUEST_STATUS).await?;
+    vm.teardown().await
+}
+
+/// Once the VM worker has quiesced a microVM for the snapshot of its
+/// snapshot boundary, only the snapshot's rollback runs the VM again: the
+/// boundary's release, which a snapshot controller sends only when it takes
+/// no snapshot, is refused, and so is an ordinary resume, so the VM stays
+/// stopped until the rollback.
+#[openvmm_test_no_agent(linux_direct_x64)]
+async fn snapshot_quiesce_resumes_only_on_rollback(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const CONTINUED: &[u8] = b"SNAPSHOT-CONTINUED\n";
+    /// How long the quiesced VM is watched for running again.
+    const STOPPED_WINDOW: Duration = Duration::from_secs(5);
+
+    let mut vm = run_snapshot_controller_guest(
+        config,
+        &format!(
+            "{SNAPSHOT_REQUEST}{}{}",
+            portb_output(CONTINUED)?,
+            power_off(GUEST_STATUS),
+        ),
+    )
+    .await?;
+
+    wait_for_snapshot_boundary(&mut vm).await?;
+    let snapshot = vm
+        .backend()
+        .quiesce_microvm_for_snapshot()
+        .await?
+        .context("the snapshot quiesce failed")?;
+    assert!(!snapshot.state_unit_names.is_empty());
+
+    let release = vm.backend().release_microvm_snapshot_boundary().await;
+    let resume = vm.backend().resume().await;
+    let output = CancelContext::new()
+        .with_timeout(STOPPED_WINDOW)
+        .until_cancelled(vm.backend().wait_for_microvm_portb_bytes(CONTINUED))
+        .await;
+    let state = partition_unit_state(&vm).await?;
+    assert!(
+        release.is_err() && resume.is_err() && output.is_err() && state == "stopped",
+        "the quiesced VM ran again without the snapshot's rollback: the boundary's \
+         release returned {release:?}, the ordinary resume returned {resume:?}, the \
+         guest's continuation within {STOPPED_WINDOW:?} was {output:?}, and the \
+         partition is {state}"
+    );
+
+    vm.backend().resume_microvm_after_failed_snapshot().await?;
+    wait_for_guest_output(
+        &mut vm,
+        CONTINUED,
+        "the guest did not continue after its snapshot's rollback",
+    )
+    .await?;
+    wait_for_power_off(&mut vm, GUEST_STATUS).await?;
+    vm.teardown().await
+}
+
+/// The VM worker quiesces a microVM for a snapshot only at a snapshot
+/// boundary that its guest requested: outside one, the quiesce is rejected
+/// and leaves the VM running, since no boundary would then keep an ordinary
+/// resume from running the VM again after its state was saved.
+#[openvmm_test_no_agent(linux_direct_x64)]
+async fn snapshot_quiesce_requires_a_boundary(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const READY: &[u8] = b"SNAPSHOT-GUEST-READY\n";
+
+    let mut vm = run_snapshot_controller_guest(config, &portb_output(READY)?).await?;
+
+    CancelContext::new()
+        .with_timeout(BOOT_TIMEOUT)
+        .until_cancelled(vm.backend().wait_for_microvm_portb_bytes(READY))
+        .await
+        .context("timed out waiting for the microVM guest to boot")??;
+    let quiesce = vm.backend().quiesce_microvm_for_snapshot().await?;
+    let state = partition_unit_state(&vm).await?;
+    assert!(
+        matches!(quiesce, Err(SnapshotQuiesceError::Rejected(_))) && state == "running",
+        "a snapshot quiesce outside a snapshot boundary returned {:?}, and left the \
+         partition {state}",
+        quiesce.map(|snapshot| snapshot.state_unit_names)
+    );
     vm.teardown().await
 }

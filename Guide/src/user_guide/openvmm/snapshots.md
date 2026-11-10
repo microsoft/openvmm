@@ -136,6 +136,11 @@ requests report a reply-channel error because their result types cannot carry
 an application error. Retry a rejected operation after the boundary is
 released; ordinary paused VMs are not subject to this restriction.
 
+The snapshot lifecycle RPCs must follow the capture's order. The worker
+rejects a snapshot quiesce outside a guest-requested boundary, without
+stopping the VM, and refuses to release the boundary of a VM that it has
+quiesced, which only the rollback of a failed capture runs again.
+
 ## Restoring a snapshot
 
 To restore, pass the snapshot directory with `--restore-snapshot`:
