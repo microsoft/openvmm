@@ -20,6 +20,5 @@ pub mod bump_alloc;
 pub mod enlightened_panic;
 pub mod reftime;
 pub mod rt;
-pub mod single_threaded;
 
 pub use minimal_rt_reloc as reloc;
