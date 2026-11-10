@@ -1467,18 +1467,42 @@ async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
 ///
 /// This validates that our virtio-net emulation works with the upstream
 /// virtio-win NetKVM driver on Windows.
-#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64))[VIRTIO_WINDOWS_DRIVERS])]
+#[openvmm_test(
+    uefi_x64(vhd(windows_datacenter_core_2022_x64))[VIRTIO_WINDOWS_DRIVERS],
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VIRTIO_WINDOWS_DRIVERS]
+)]
 async fn virtio_net_windows(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (virtio_win,): (petri::ResolvedArtifact<VIRTIO_WINDOWS_DRIVERS>,),
     driver: DefaultDriver,
 ) -> anyhow::Result<()> {
-    let driver_dir = virtio_win.get().join("NetKVM/2k22/amd64");
+    use openvmm_defs::config::{Aarch64TopologyConfig, ArchTopologyConfig, GicMsiConfig};
+    use petri_artifacts_common::tags::MachineArch;
+
+    let arm64 = config.arch() == MachineArch::Aarch64;
+    let (driver_subdir, segment, port) = if arm64 {
+        ("NetKVM/w11/ARM64", 1, "s1rc0rp0")
+    } else {
+        ("NetKVM/2k22/amd64", 0, "s0rc0rp0")
+    };
+    let driver_dir = virtio_win.get().join(driver_subdir);
 
     let (vm, agent) = config
-        .modify_backend(|b| {
-            b.with_pcie_root_topology(1, 1, 1)
-                .with_virtio_nic("s0rc0rp0", PCIE_NIC_MAC_ADDRESSES[0])
+        .modify_backend(move |b| {
+            b.with_pcie_root_topology_at(segment, 1, 1, 1)
+                .with_virtio_nic(port, PCIE_NIC_MAC_ADDRESSES[0])
+                .with_custom_config(move |c| {
+                    if arm64 {
+                        // Windows reserves all 64 NIC MSI-X entries; the root port needs one more SPI.
+                        c.processor_topology.arch =
+                            Some(ArchTopologyConfig::Aarch64(Aarch64TopologyConfig {
+                                gic_msi: GicMsiConfig::V2m {
+                                    spi_count: Some(65),
+                                },
+                                ..Default::default()
+                            }));
+                    }
+                })
         })
         .run()
         .await?;
