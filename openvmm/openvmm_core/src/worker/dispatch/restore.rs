@@ -348,7 +348,14 @@ impl LoadedVm {
                 }
             });
             if let Err(error) = signal_result {
-                self.state_units.stop().await;
+                // A unit that does not stop stays running while the VM is
+                // paused, and the worker then tears the VM down.
+                if let Err(stop_error) = self.state_units.stop().await {
+                    tracing::error!(
+                        error = stop_error.as_ref() as &dyn std::error::Error,
+                        "failed to stop the state units after the restore readiness event failed"
+                    );
+                }
                 return Err(error).context("failed to publish restore readiness event");
             }
         }
@@ -367,9 +374,11 @@ impl LoadedVm {
     /// input gate in time.
     pub(super) async fn handle_restore_gate_timeout(&mut self) {
         tracing::error!("post-restore input gate acknowledgement timed out");
-        if self.running {
-            self.state_units.stop().await;
-            self.running = false;
+        if let Err(error) = self.pause().await {
+            tracing::error!(
+                error = error.as_ref() as &dyn std::error::Error,
+                "failed to stop the VM after the post-restore input gate timed out"
+            );
         }
     }
 }

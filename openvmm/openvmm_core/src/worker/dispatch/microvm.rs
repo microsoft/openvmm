@@ -319,9 +319,11 @@ impl LoadedVm {
     ///
     /// The quiesce stops every state unit and has no deadline: a unit that
     /// never stops stalls the capture until the process that drives the VM
-    /// ends it, with nothing published and the source never resumed. Each
-    /// error after the quiesce leaves every unit stopped, so the VM can roll
-    /// back with [`Self::resume_after_failed_snapshot`].
+    /// ends it, with nothing published and the source never resumed. A unit
+    /// whose task does not answer fails the quiesce instead: it can never
+    /// start again, so the VM can neither roll back nor run, and the worker
+    /// tears it down. Each error after the quiesce leaves every unit stopped,
+    /// so the VM can roll back with [`Self::resume_after_failed_snapshot`].
     pub(super) async fn quiesce_for_snapshot(
         &mut self,
     ) -> Result<openvmm_defs::rpc::SnapshotSaveResponse, openvmm_defs::rpc::SnapshotQuiesceError>
@@ -349,9 +351,13 @@ impl LoadedVm {
         }
 
         let quiesce = openvmm_defs::profile::ProfileSpan::start();
-        self.state_units.stop().await;
-        quiesce.complete("capture", "quiesce", Default::default());
+        // The VM no longer runs even if a unit does not stop, which leaves
+        // the units running for the worker to tear down.
         self.running = false;
+        self.state_units.stop().await.map_err(|error| {
+            openvmm_defs::rpc::SnapshotQuiesceError::Unrecoverable(RemoteError::new(error))
+        })?;
+        quiesce.complete("capture", "quiesce", Default::default());
 
         // The time ABI's capture checks and records: the LAPIC timers, then
         // the capture anchor and records. The PIT checks itself when saved.
@@ -424,7 +430,8 @@ impl LoadedVm {
     ///
     /// A unit whose task does not answer leaves the units that did start
     /// stopped again, and fails the rollback. A unit that such a unit depends
-    /// on, or that does not answer its stop, stays running instead.
+    /// on, or that does not answer its stop, stays running instead, and the
+    /// worker then tears the VM down.
     pub(super) async fn resume_after_failed_snapshot(&mut self) -> anyhow::Result<()> {
         self.state_units.start().await?;
         self.running = true;
@@ -438,9 +445,11 @@ impl LoadedVm {
         match event {
             Ok(request) => {
                 if !self.establish_snapshot_boundary(request).await {
-                    if self.running {
-                        self.state_units.stop().await;
-                        self.running = false;
+                    if let Err(error) = self.pause().await {
+                        tracing::error!(
+                            error = error.as_ref() as &dyn std::error::Error,
+                            "failed to stop the VM after its snapshot boundary failed"
+                        );
                     }
                     return false;
                 }

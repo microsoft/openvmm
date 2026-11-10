@@ -526,7 +526,7 @@ impl VmController {
 
         // Pause the VM.
         self.vm_rpc
-            .call(VmRpc::Pause, ())
+            .call_failable(VmRpc::Pause, ())
             .await
             .context("failed to pause VM")?;
 
