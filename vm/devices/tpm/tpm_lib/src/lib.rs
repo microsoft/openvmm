@@ -55,11 +55,10 @@ use tpm_protocol::tpm20proto::protocol::common::CmdAuth;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
-// The size of command and response buffers.
-// DEVNOTE: The specification only requires the size to be large
-// enough for the command and response fit into the buffer. We
-// would need to scale this value up in case it is not sufficient.
-const TPM_PAGE_SIZE: usize = 4096;
+/// Size of each command and response buffer for the TPM v1.38 implementation.
+pub const TPM_V138_BUFFER_SIZE: usize = 4096;
+/// Size of each command and response buffer for the TPM v1.85 implementation.
+pub const TPM_V185_BUFFER_SIZE: usize = 2 * TPM_V138_BUFFER_SIZE;
 const MAX_NV_BUFFER_SIZE: usize = MAX_DIGEST_BUFFER_SIZE;
 /// Maximum NV index size supported by the TPM v1.38 reference implementation.
 pub const TPM_V138_MAX_NV_INDEX_SIZE: u16 = 4096;
@@ -151,6 +150,9 @@ pub trait TpmEngine: Send {
         command: &mut [u8],
         response: &mut [u8],
     ) -> Result<(), TpmEngineError>;
+
+    /// Size, in bytes, of each command and response buffer for this engine.
+    fn command_response_buffer_size(&self) -> usize;
 
     /// Maximum size, in bytes, of an NV index this engine can define. This is a
     /// property of the underlying reference implementation, not the protocol.
@@ -250,7 +252,7 @@ pub struct TpmEngineHelper<E> {
     #[inspect(skip)]
     pub tpm_engine: E,
     /// Buffer used to hold the command response.
-    pub reply_buffer: [u8; TPM_PAGE_SIZE],
+    pub reply_buffer: Box<[u8]>,
 }
 
 /// Action of the `evict_or_persist`.
@@ -296,9 +298,10 @@ pub struct AllocateNvIndicesParams {
 impl<E: TpmEngine> TpmEngineHelper<E> {
     /// Creates a new helper backed by the provided TPM engine implementation.
     pub fn new(tpm_engine: E) -> Self {
+        let reply_buffer = vec![0; tpm_engine.command_response_buffer_size()].into_boxed_slice();
         Self {
             tpm_engine,
-            reply_buffer: [0u8; TPM_PAGE_SIZE],
+            reply_buffer,
         }
     }
 
