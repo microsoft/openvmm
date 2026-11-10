@@ -10764,6 +10764,7 @@ name = "virtio_pmem"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "blocking",
  "fs-err",
  "futures",
  "guestmem",

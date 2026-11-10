@@ -60,6 +60,8 @@ mod pcie;
 /// Filesystem operations through the virtio-9p Linux client.
 #[cfg(target_os = "linux")]
 mod plan9;
+/// Cross-process snapshot save/restore tests.
+mod save_restore;
 /// Tests involving UEFI Secure Boot functionality.
 mod secureboot;
 /// Tests involving TPM functionality

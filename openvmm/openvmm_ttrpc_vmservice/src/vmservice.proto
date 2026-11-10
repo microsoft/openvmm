@@ -302,7 +302,32 @@ message VirtioDevice {
         VirtioFs       fs        = 7;
         // virtio-rtc real-time clock device.
         VirtioRtc      rtc       = 8;
+        // File-backed virtio-pmem device.
+        VirtioPmem     pmem      = 9;
     }
+}
+
+// virtio-pmem device configuration.
+message VirtioPmem {
+    // Backing store mapped into the guest.
+    PmemBackend backend = 1;
+    // Expose the device read-only to the guest.
+    bool read_only = 2;
+}
+
+// Backing store for a virtio-pmem device. Additional backing types can be
+// added as new oneof arms.
+message PmemBackend {
+    oneof kind {
+        // A host file.
+        PmemFile file = 1;
+    }
+}
+
+// A virtio-pmem backing file on the host.
+message PmemFile {
+    // Path to the backing file.
+    string path = 1;
 }
 
 // virtio-console serial device configuration.
