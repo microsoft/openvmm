@@ -177,7 +177,7 @@ enum Command {
         /// Differencing VHDX image to update. The image must be offline.
         file: PathBuf,
         /// New location of the same parent image. Its data-write GUID must match.
-        #[arg(long)]
+        #[arg(short, long)]
         parent: PathBuf,
     },
     /// Display the options accepted by an image format.
@@ -806,15 +806,17 @@ mod tests {
         let parent_bytes = std::fs::read(&parent_path).unwrap();
         std::fs::rename(&parent_path, &moved_path).unwrap();
         assert!(test_check(&child_path).await.is_err());
-        let args = CliArgs::try_parse_from([
-            std::ffi::OsStr::new("openvmm-img"),
-            std::ffi::OsStr::new("set-parent"),
-            child_path.as_os_str(),
-            std::ffi::OsStr::new("--parent"),
-            moved_path.as_os_str(),
-        ])
-        .unwrap();
-        run(args.command, &driver).await.unwrap();
+        for parent_option in ["--parent", "-p"] {
+            let args = CliArgs::try_parse_from([
+                std::ffi::OsStr::new("openvmm-img"),
+                std::ffi::OsStr::new("set-parent"),
+                child_path.as_os_str(),
+                std::ffi::OsStr::new(parent_option),
+                moved_path.as_os_str(),
+            ])
+            .unwrap();
+            run(args.command, &driver).await.unwrap();
+        }
 
         test_check(&child_path).await.unwrap();
         test_check(&grandchild_path).await.unwrap();

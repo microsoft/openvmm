@@ -82,6 +82,8 @@ cargo run -p openvmm-img -- set-parent path/to/child.vhdx \
 cargo run -p openvmm-img -- check path/to/child.vhdx
 ```
 
+The `--parent` option also accepts the short form `-p`.
+
 The child must be offline. The parent at the new location must have the same
 data-write GUID recorded in the child and a matching logical sector size;
 this command does not allow switching to an unrelated or modified parent.

@@ -233,27 +233,24 @@ fn parent_locator_for_path(
     });
     // Windows can use an absolute locator when the parent is on another drive.
     // Other platforms require a relative locator.
-    #[cfg(windows)]
-    let relative_path = relative_path.ok();
-    #[cfg(not(windows))]
-    let relative_path = Some(relative_path?);
-    let mut parent = VhdxParent::new(linkage);
-    if let Some(relative_path) = relative_path {
-        parent = parent.with_relative_path(relative_path)?;
+    cfg_select! {
+        windows => {
+            let mut parent = VhdxParent::new(linkage);
+            if let Ok(relative_path) = relative_path {
+                parent = parent.with_relative_path(relative_path)?;
+            }
+            let absolute_path = absolute_parent
+                .to_str()
+                .context("absolute parent path is not valid Unicode")?;
+            let absolute_path = if absolute_path.starts_with(r"\\?\") {
+                absolute_path.to_owned()
+            } else {
+                format!(r"\\?\{}", absolute_path)
+            };
+            Ok(parent.with_absolute_win32_path(absolute_path)?)
+        }
+        _ => Ok(VhdxParent::new(linkage).with_relative_path(relative_path?)?),
     }
-    #[cfg(windows)]
-    {
-        let absolute_path = absolute_parent
-            .to_str()
-            .context("absolute parent path is not valid Unicode")?;
-        let absolute_path = if absolute_path.starts_with(r"\\?\") {
-            absolute_path.to_owned()
-        } else {
-            format!(r"\\?\{}", absolute_path)
-        };
-        parent = parent.with_absolute_win32_path(absolute_path)?;
-    }
-    Ok(parent)
 }
 
 pub(crate) async fn set_parent(
@@ -270,8 +267,9 @@ pub(crate) async fn set_parent(
         "an image cannot be its own parent"
     );
 
-    // Validate before a writable open, which can replay the log and modifies
-    // the headers. A missing or unrelated parent must not change the child.
+    // Validate before a writable open can replay the log or modify the headers.
+    // The crate rechecks linkage when updating, but does not open the parent
+    // file or validate its geometry. Invalid targets must not change the child.
     let child = VhdxFile::open(BlockingFile::open(&child_path, true)?)
         .read_only()
         .await
