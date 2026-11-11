@@ -87,8 +87,9 @@ pub trait TimeAbiBackend: Send + Sync {
     ///
     /// Guest time runs from the anchor: a backend that stops partition time
     /// for the set resumes it right after a successful read-back, before
-    /// returning, never at the first VP run. A failed set may leave it
-    /// stopped; the restore then fails.
+    /// returning, never at the first VP run, and reports a host sample of
+    /// the instant from which the TSCs run ([`TscSetReport::resumed`]). A
+    /// failed set may leave it stopped; the restore then fails.
     ///
     /// Core calls it once per restore, after every instantiated VP is bound
     /// (which creates it on MSHV) and its saved state is restored, and before
@@ -162,6 +163,38 @@ pub struct TscAnchor {
     pub pairing_ns: u64,
 }
 
+/// Returns a host sample of the instant at which TSCs that a frozen write
+/// set to `target` run again: the hypervisor restarts them somewhere inside
+/// the call that resumes partition time, which the host samples `earliest`
+/// and `latest` bracket, and `read`, VP 0's TSC paired with host time after
+/// that call, at `tsc_hz`, places the restart within its pairing, which the
+/// call's bracket then bounds.
+pub fn tsc_restart(
+    target: u64,
+    tsc_hz: u64,
+    earliest: &HostTimeSample,
+    latest: &HostTimeSample,
+    read: &TscAnchor,
+) -> HostTimeSample {
+    // The TSC can wrap from a target near the top of its 64 bits.
+    let ran_ns =
+        u128::from(read.tsc.wrapping_sub(target)) * 1_000_000_000 / u128::from(tsc_hz.max(1));
+    let monotonic_ns = read
+        .sample
+        .monotonic_ns
+        .saturating_sub(u64::try_from(ran_ns).unwrap_or(u64::MAX))
+        .clamp(
+            earliest.monotonic_ns,
+            latest.monotonic_ns.max(earliest.monotonic_ns),
+        );
+    // UTC follows the monotonic clock across the call, as an anchor's does
+    // across its bracket.
+    HostTimeSample {
+        utc_ns: earliest.utc_ns + (monotonic_ns - earliest.monotonic_ns),
+        monotonic_ns,
+    }
+}
+
 /// The result of [`TimeAbiBackend::set_synchronized_tsc`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TscSetReport {
@@ -169,6 +202,13 @@ pub struct TscSetReport {
     pub target: u64,
     /// The host sample of the restore anchor.
     pub sample: HostTimeSample,
+    /// A host sample of the instant from which every VP's TSC runs from the
+    /// target: the anchor itself for [`TscSyncMethod::CommonOffset`], and,
+    /// for [`TscSyncMethod::FrozenWrite`], which holds the TSCs at the target
+    /// until partition time resumes, the instant inside the call that resumes
+    /// it at which the hypervisor restarted them ([`tsc_restart`]). The
+    /// clocks that the VMM keeps itself can then resume with the TSCs.
+    pub resumed: HostTimeSample,
     /// The read-back evidence, one entry per instantiated VP: the TSC value,
     /// or the offset for [`TscSyncMethod::CommonOffset`].
     pub readback: Vec<(VpIndex, u64)>,
@@ -430,5 +470,62 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rates.declared.tsc_hz, 2_000_000_000);
+    }
+
+    #[test]
+    fn a_tsc_restart_is_where_the_read_places_it_inside_the_resume() {
+        let sample = |monotonic_ns| HostTimeSample {
+            utc_ns: monotonic_ns + 1_000_000,
+            monotonic_ns,
+        };
+        let read = |tsc, monotonic_ns| TscAnchor {
+            tsc,
+            sample: sample(monotonic_ns),
+            pairing_ns: 5,
+        };
+        let (earliest, latest) = (sample(10_000), sample(10_100));
+        // At 2 GHz, a TSC 120 cycles past the target ran for 60 ns.
+        assert_eq!(
+            tsc_restart(
+                1_000,
+                2_000_000_000,
+                &earliest,
+                &latest,
+                &read(1_120, 10_140)
+            ),
+            sample(10_080)
+        );
+        // It ran as long after wrapping from a target near the top.
+        assert_eq!(
+            tsc_restart(
+                u64::MAX - 59,
+                2_000_000_000,
+                &earliest,
+                &latest,
+                &read(60, 10_140)
+            ),
+            sample(10_080)
+        );
+        // The restart lies inside the call that resumes partition time.
+        assert_eq!(
+            tsc_restart(
+                1_000,
+                2_000_000_000,
+                &earliest,
+                &latest,
+                &read(1_400, 10_140)
+            ),
+            earliest
+        );
+        assert_eq!(
+            tsc_restart(
+                1_000,
+                2_000_000_000,
+                &earliest,
+                &latest,
+                &read(1_020, 10_140)
+            ),
+            latest
+        );
     }
 }
