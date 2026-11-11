@@ -3,12 +3,9 @@
 
 //! Add a single tag to the pipeline running in an ADO environment.
 //!
-//! `az` is resolved via [`install_azure_cli`](crate::install_azure_cli), which
-//! on ADO only locates an existing install, and the `azure-devops` extension
-//! via [`install_azure_cli_extension`](crate::install_azure_cli_extension).
-//! The job fails if either is unavailable.
+//! Requires the Azure CLI and the `azure-devops` extension to be installed.
 //!
-//! Once both are available, tagging is best-effort: failures are reported as
+//! Once both are available, tagging is best-effort: tagging failures are reported as
 //! ADO warnings, and the step still succeeds.
 
 use flowey::node::prelude::*;
