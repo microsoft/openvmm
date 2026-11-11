@@ -59,6 +59,7 @@ use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend_resources::mac_address::MacAddress;
 use slab::Slab;
+use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
@@ -417,6 +418,7 @@ impl BasicNic {
                                     rq_cq_id,
                                     tx_segment_buffer: Vec::new(),
                                     rx_buf_count: 0,
+                                    pending_tx: VecDeque::new(),
                                 },
                             );
                             vport.task.start();
@@ -492,6 +494,17 @@ pub struct TxRxTask {
     rq_cq_id: u32,
     tx_segment_buffer: Vec<TxSegment>,
     rx_buf_count: u32,
+    /// Sends not yet completed to the guest, oldest first.
+    pending_tx: VecDeque<PendingTx>,
+}
+
+/// A send whose completion has not been posted yet.
+#[derive(Debug, Clone, Copy)]
+enum PendingTx {
+    /// The backend still has it.
+    InBackend,
+    /// Finished with this completion type, behind a send the backend still has.
+    Done(u8),
 }
 
 impl InspectTaskMut<TxRxTask> for TxRxState {
@@ -604,7 +617,7 @@ impl TxRxTask {
                             error = &err as &dyn std::error::Error,
                             "dropping a checksum send the device cannot offload"
                         );
-                        self.post_tx_completion_invalid_oob();
+                        self.complete_tx(CQE_TX_INVALID_OOB);
                         return Ok(());
                     }
                 }
@@ -642,7 +655,7 @@ impl TxRxTask {
                     sgl_count = sqe.sgl().len(),
                     "LSO enabled, but only one SGE"
                 );
-                self.post_tx_completion_error();
+                self.complete_tx(CQE_TX_GDMA_ERR);
                 return Ok(());
             }
             if sge0.size > 256 {
@@ -650,7 +663,7 @@ impl TxRxTask {
                     sge0_size = sge0.size,
                     "LSO enabled and SGE[0] size > 256 bytes"
                 );
-                self.post_tx_completion_error();
+                self.complete_tx(CQE_TX_GDMA_ERR);
                 return Ok(());
             }
         }
@@ -672,45 +685,41 @@ impl TxRxTask {
         let (sync, count) = self.epqueue.tx_avail(&mut self.pool, tx_segments)?;
         if sync || count == 0 {
             tracing::trace!("tx sync complete");
-            self.post_tx_completion();
+            self.complete_tx(CQE_TX_OKAY);
+        } else {
+            self.pending_tx.push_back(PendingTx::InBackend);
         }
         Ok(())
     }
 
-    // Possible test improvement: provide proper OOB data for the GDMA error.
-    fn post_tx_completion_error(&mut self) {
-        let tx_oob = ManaTxCompOob {
-            cqe_hdr: ManaCqeHeader::new()
-                .with_client_type(MANA_CQE_COMPLETION)
-                .with_cqe_type(CQE_TX_GDMA_ERR),
-            tx_data_offset: 0,
-            offsets: ManaTxCompOobOffsets::new(),
-            reserved: [0; 12],
-        };
-        self.queues
-            .post_cq(self.sq_cq_id, tx_oob.as_bytes(), self.sq_id, true);
+    /// Completes a send. A TX completion does not say which send it is for: the driver
+    /// matches it to its oldest outstanding send, so it waits behind any earlier send the
+    /// backend still has.
+    fn complete_tx(&mut self, cqe_type: u8) {
+        if self.pending_tx.is_empty() {
+            self.post_tx_completion(cqe_type);
+        } else {
+            self.pending_tx.push_back(PendingTx::Done(cqe_type));
+        }
     }
 
-    /// Completes a send the device refused for its headers, as the NIC does: the error
-    /// covers that packet only and the queue keeps running.
-    fn post_tx_completion_invalid_oob(&mut self) {
-        let tx_oob = ManaTxCompOob {
-            cqe_hdr: ManaCqeHeader::new()
-                .with_client_type(MANA_CQE_COMPLETION)
-                .with_cqe_type(CQE_TX_INVALID_OOB),
-            tx_data_offset: 0,
-            offsets: ManaTxCompOobOffsets::new(),
-            reserved: [0; 12],
-        };
-        self.queues
-            .post_cq(self.sq_cq_id, tx_oob.as_bytes(), self.sq_id, true);
+    /// Completes the oldest send the backend had, then the finished sends behind it.
+    fn complete_backend_tx(&mut self) {
+        let oldest = self.pending_tx.pop_front();
+        debug_assert!(matches!(oldest, Some(PendingTx::InBackend)));
+        self.post_tx_completion(CQE_TX_OKAY);
+        while let Some(&PendingTx::Done(cqe_type)) = self.pending_tx.front() {
+            self.pending_tx.pop_front();
+            self.post_tx_completion(cqe_type);
+        }
     }
 
-    fn post_tx_completion(&mut self) {
+    // Possible test improvement: provide proper OOB data for a GDMA error.
+    fn post_tx_completion(&mut self, cqe_type: u8) {
         let tx_oob = ManaTxCompOob {
             cqe_hdr: ManaCqeHeader::new()
                 .with_client_type(MANA_CQE_COMPLETION)
-                .with_cqe_type(CQE_TX_OKAY),
+                .with_cqe_type(cqe_type),
             tx_data_offset: 0,
             offsets: ManaTxCompOobOffsets::new(),
             reserved: [0; 12],
@@ -761,7 +770,7 @@ impl TxRxTask {
         let mut packets = [TxId(0)];
         if self.epqueue.tx_poll(&mut self.pool, &mut packets)? > 0 {
             tracing::trace!("tx async complete");
-            self.post_tx_completion();
+            self.complete_backend_tx();
         }
 
         Ok(())
@@ -797,15 +806,17 @@ const VLAN_TAG_LEN: u16 = 4;
 /// In-band tags a checksum send may carry: a single tag or a QinQ pair.
 const MAX_IN_BAND_TAGS: u16 = 2;
 const TCP_HEADER_MIN_LEN: u16 = 20;
+const TCP_HEADER_MAX_LEN: u16 = 60;
 const UDP_HEADER_LEN: u16 = 8;
 /// IPv4 flags and fragment offset: the MF flag or a nonzero offset marks a fragment.
 const IPV4_MORE_FRAGMENTS_AND_OFFSET: u16 = 0x3fff;
 /// The most header bytes a checksum send can need: Ethernet, two in-band tags, an IPv4
-/// header with every option, and a TCP header. A frame is never read past this.
+/// header with every option, and a TCP header with every option. A frame is never read
+/// past this.
 const MAX_CHECKSUM_HEADER_LEN: usize = net_backend::ETHERNET_HEADER_LEN as usize
     + (MAX_IN_BAND_TAGS * VLAN_TAG_LEN) as usize
     + 60
-    + TCP_HEADER_MIN_LEN as usize;
+    + TCP_HEADER_MAX_LEN as usize;
 
 /// The header layout of a checksum send, as read from its frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -833,6 +844,8 @@ enum ChecksumSendError {
     NotIp(u16),
     #[error("the IP header is malformed")]
     MalformedIpHeader,
+    #[error("the TCP data offset is below the minimum header length")]
+    MalformedTcpHeader,
     #[error("the OOB names a different IP version than the frame carries")]
     IpVersionMismatch,
     #[error("the frame is an IP fragment")]
@@ -911,9 +924,9 @@ fn checksum_send_headers(
     frame: &[u8],
     s_oob: &ManaTxShortOob,
 ) -> Result<ChecksumHeaders, ChecksumSendError> {
-    let (requested, l4_min_len) = match (s_oob.comp_tcp_csum(), s_oob.comp_udp_csum()) {
-        (true, false) => (IP_PROTOCOL_TCP, TCP_HEADER_MIN_LEN),
-        (false, true) => (IP_PROTOCOL_UDP, UDP_HEADER_LEN),
+    let requested = match (s_oob.comp_tcp_csum(), s_oob.comp_udp_csum()) {
+        (true, false) => IP_PROTOCOL_TCP,
+        (false, true) => IP_PROTOCOL_UDP,
         _ => return Err(ChecksumSendError::BothProtocols),
     };
 
@@ -962,8 +975,18 @@ fn checksum_send_headers(
     }
 
     let layout = ChecksumHeaders { l2_len, l3_len };
+    let l4_len = if requested == IP_PROTOCOL_TCP {
+        // The data offset, the high nibble of byte 12, counts the header in 32-bit words.
+        let l4_len = u16::from(byte_at(frame, layout.transport_offset() + 12)? >> 4) * 4;
+        if l4_len < TCP_HEADER_MIN_LEN {
+            return Err(ChecksumSendError::MalformedTcpHeader);
+        }
+        l4_len
+    } else {
+        UDP_HEADER_LEN
+    };
     // The whole transport header must be in the frame, not just its checksum field.
-    byte_at(frame, layout.transport_offset() + l4_min_len - 1)?;
+    byte_at(frame, layout.transport_offset() + l4_len - 1)?;
     let stated = s_oob.trans_off();
     if stated != 0 && stated != layout.transport_offset() {
         return Err(ChecksumSendError::OffsetMismatch {
@@ -1110,6 +1133,7 @@ mod tests {
             rq_cq_id: cq_id,
             tx_segment_buffer: Vec::new(),
             rx_buf_count: 0,
+            pending_tx: VecDeque::new(),
         }
     }
 
@@ -1166,10 +1190,32 @@ mod tests {
 
     /// A TCP header with no options, ports 1234 -> 80.
     fn tcp() -> Vec<u8> {
+        tcp_with_options(0)
+    }
+
+    /// A TCP header with `option_words` 32-bit option words, ports 1234 -> 80.
+    fn tcp_with_options(option_words: u8) -> Vec<u8> {
         let mut bytes = vec![
-            0x04, 0xd2, 0, 80, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x18, 0xff, 0xff,
+            0x04,
+            0xd2,
+            0,
+            80,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            (5 + option_words) << 4,
+            0x18,
+            0xff,
+            0xff,
         ];
         bytes.extend_from_slice(&[0; 4]);
+        // Options: a run of NOPs.
+        bytes.extend(std::iter::repeat_n(1, usize::from(option_words) * 4));
         bytes
     }
 
@@ -1217,12 +1263,42 @@ mod tests {
             queues.clone(),
             Box::new(RecordingQueue { sent: sent.clone() }),
         );
+        let sqe = send_wqe(&queues, s_oob, l_oob, frame, split, 0x6000);
+        task.process_sqe(sqe).unwrap();
+
+        let cqe = completion(&queues, 0);
+        assert_eq!(cqe.params.owner_count(), 1, "one completion per send");
+        let sent = sent.lock().pop();
+        SendOutcome {
+            sent,
+            cqe_type: cqe_type(&cqe),
+        }
+    }
+
+    fn cqe_type(cqe: &Cqe) -> u8 {
+        ManaTxCompOob::read_from_prefix(&cqe.data)
+            .unwrap()
+            .0
+            .cqe_hdr
+            .cqe_type()
+    }
+
+    /// Writes `frame` to guest memory at `gpa` in two SGEs, the first `split` bytes long, and
+    /// returns a send WQE for it.
+    fn send_wqe(
+        queues: &Queues,
+        s_oob: ManaTxShortOob,
+        l_oob: bnic_defs::ManaTxLongOob,
+        frame: &[u8],
+        split: usize,
+        gpa: u64,
+    ) -> Wqe {
         let (head, tail) = frame.split_at(split);
-        queues.gm.write_at(0x6000, head).unwrap();
-        queues.gm.write_at(0x8000, tail).unwrap();
+        queues.gm.write_at(gpa, head).unwrap();
+        queues.gm.write_at(gpa + 0x2000, tail).unwrap();
         let sgl = [
-            frame_sge(0x6000, head.len() as u32),
-            frame_sge(0x8000, tail.len() as u32),
+            frame_sge(gpa, head.len() as u32),
+            frame_sge(gpa + 0x2000, tail.len() as u32),
         ];
 
         let mut sqe = Wqe::new_zeroed();
@@ -1238,19 +1314,33 @@ mod tests {
         oob.write_to_prefix(&mut sqe.data[..]).unwrap();
         let sgl_offset = sqe.header.sgl_offset();
         sgl.write_to_prefix(&mut sqe.data[sgl_offset..]).unwrap();
-        task.process_sqe(sqe).unwrap();
+        sqe
+    }
 
-        let cqe = completion(&queues, 0);
-        assert_eq!(cqe.params.owner_count(), 1, "one completion per send");
-        let sent = sent.lock().pop();
-        SendOutcome {
-            sent,
-            cqe_type: ManaTxCompOob::read_from_prefix(&cqe.data)
-                .unwrap()
-                .0
-                .cqe_hdr
-                .cqe_type(),
+    /// A refused send's completion waits behind an earlier send the backend still has: the
+    /// driver frees its oldest outstanding send for each completion it reads.
+    #[test]
+    fn a_refused_send_completes_after_an_earlier_send_in_flight() {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let mut epqueue = backend();
+        epqueue.synchronous_tx = false;
+        let mut task = task(queues.clone(), epqueue);
+        let accepted = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        let refused = [eth(&[], 0x0800), ipv4(0, 6, 0), tcp()].concat();
+        for (frame, gpa) in [(&accepted, 0x6000), (&refused, 0xa000)] {
+            let sqe = send_wqe(&queues, udp_csum(), FromZeros::new_zeroed(), frame, 14, gpa);
+            task.process_sqe(sqe).unwrap();
         }
+        assert_eq!(
+            completion(&queues, 0).params.owner_count(),
+            0,
+            "nothing completes ahead of the send in flight"
+        );
+
+        task.process_backend().unwrap();
+        assert_eq!(cqe_type(&completion(&queues, 0)), CQE_TX_OKAY);
+        assert_eq!(cqe_type(&completion(&queues, 1)), CQE_TX_INVALID_OOB);
     }
 
     /// Linux's UDP checksum send: `trans_off` left at 0, the IP header split from the
@@ -1444,6 +1534,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A TCP header is as long as its data offset says, so a frame must hold all of it, and a
+    /// data offset below the minimum header is refused.
+    #[test]
+    fn a_tcp_header_is_as_long_as_its_data_offset() {
+        let frame = [eth(&[], 0x0800), ipv4(0, 6, 0), tcp_with_options(10)].concat();
+        assert_eq!(layout(tcp_csum(), &frame), Ok((14, 34)));
+        for len in [54, frame.len() - 1] {
+            assert_eq!(
+                layout(tcp_csum(), &frame[..len]),
+                Err(ChecksumSendError::Truncated),
+                "length {len}"
+            );
+        }
+        for data_offset in 0..5 {
+            let mut short = frame.clone();
+            short[34 + 12] = data_offset << 4;
+            assert_eq!(
+                layout(tcp_csum(), &short),
+                Err(ChecksumSendError::MalformedTcpHeader)
+            );
+        }
+    }
+
+    /// The largest layout the device accepts, two in-band tags, an IPv4 header and a TCP header
+    /// both with every option, fits in the bytes it reads from the frame.
+    #[test]
+    fn the_largest_checksum_layout_fits_the_frame_prefix() {
+        let frame = [
+            eth(&[0x88a8, 0x8100], 0x0800),
+            ipv4(10, 6, 0),
+            tcp_with_options(10),
+            vec![0xee; 100],
+        ]
+        .concat();
+        let outcome = send_frame(tcp_csum(), &frame, 14);
+        assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+        assert_eq!(outcome.sent.unwrap().transport_header_offset, 82);
     }
 
     /// The device never reads past what the largest layout needs, and stops at the frame's end
