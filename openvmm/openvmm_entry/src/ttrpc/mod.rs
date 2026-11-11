@@ -1158,7 +1158,6 @@ impl VmService {
         let config = request
             .config
             .ok_or_else(|| anyhow!(Code::InvalidArgument).context("missing configuration"))?;
-        let _gate = self.operation_gate.try_acquire(VmOperation::Restore)?;
         if self.vm.is_some() {
             return Err(anyhow!(Code::FailedPrecondition).context("VM already created"));
         }
@@ -1778,9 +1777,9 @@ impl VmService {
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
         // Teardown is terminal: it cancels in-flight device and resource
-        // changes rather than being rejected by them. Pause, resume, save,
-        // and restore run inline, so none can be in flight here, but a save
-        // whose client cancelled may still hold the gate (`save_guard`).
+        // changes rather than being rejected by them. Pause, resume, and save
+        // run inline, so none can be in flight here, but a save whose client
+        // cancelled may still hold the gate (`save_guard`).
         self.cancel_gated_tasks().await;
         let controller = self.vm_controller.take().context("vm not created")?;
         // Drop the VM's device RPC channels before waiting on the controller.
@@ -1984,7 +1983,6 @@ impl VmService {
                 anyhow!(Code::InvalidArgument).context("missing snapshot destination directory")
             );
         }
-        let gate = self.operation_gate.try_acquire(VmOperation::Save)?;
         if !matches!(self.lifecycle, VmLifecycle::Running | VmLifecycle::Paused) {
             return Err(
                 anyhow!(Code::FailedPrecondition).context("SaveVM requires a running or paused VM")
@@ -2004,6 +2002,9 @@ impl VmService {
             return Err(anyhow!(Code::FailedPrecondition)
                 .context("SaveVM requires MemoryConfig.backing_file_path"));
         }
+        // After the checks above, which a retry can't change, so a conflict is
+        // the only reason to report `ABORTED`.
+        let gate = self.operation_gate.try_acquire(VmOperation::Save)?;
         // Check the destination before the controller pauses the VM, so a
         // rejected destination leaves the VM untouched.
         openvmm_helpers::snapshot::check_snapshot_destination(Path::new(&request.destination_dir))
@@ -3619,6 +3620,9 @@ mod tests {
                 "PauseVM is rejected while the change is in flight: {}",
                 status.message
             );
+            let (controller, _controller_recv) = mesh::channel();
+            service.vm_controller = Some(controller);
+            service.memory_backing_file = Some(dir.path().join("memory.bin"));
             let status = grpc_error(
                 service
                     .save_vm(vmservice::SaveVmRequest {
@@ -3725,6 +3729,15 @@ mod tests {
             assert_eq!(status.code, i32::from(Code::Aborted));
             assert!(
                 status.message.contains("save in progress"),
+                "{}",
+                status.message
+            );
+            // A second save fails on its precondition, not the gate, so the
+            // client doesn't retry it.
+            let status = grpc_error(svc.save_vm(request("again")).await.unwrap_err());
+            assert_eq!(
+                status.code,
+                i32::from(Code::FailedPrecondition),
                 "{}",
                 status.message
             );

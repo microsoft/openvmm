@@ -1775,8 +1775,9 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap_err();
 
-                // A port change after pausing fails fast instead of waiting on
-                // the stopped NIC, so it can't block the teardown below.
+                // The VM is paused after the save, so a port change fails fast
+                // instead of waiting on the stopped NIC, and can't block the
+                // teardown below.
                 let err = client
                     .call()
                     .start(
@@ -1792,7 +1793,7 @@ async fn test_ttrpc_interface(
                 assert_eq!(
                     err.code,
                     mesh_rpc::service::Code::FailedPrecondition as i32,
-                    "consomme port change after PauseVm: {}",
+                    "consomme port change while paused after SaveVm: {}",
                     err.message
                 );
 
