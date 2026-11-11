@@ -462,7 +462,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         self.kvm()
             .set_msrs(&[(x86defs::X86X_MSR_APIC_BASE, value.apic_base)])?;
 
-        self.kvm().set_lapic(&value.registers().as_page())?;
+        self.kvm().set_lapic(&kvm_lapic_page(value.registers()))?;
         Ok(())
     }
 
@@ -706,5 +706,353 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
 
     fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
         Err(KvmError::NotSupported)
+    }
+}
+
+/// Returns the page that `KVM_SET_LAPIC` takes for `registers`.
+///
+/// KVM starts a counting timer from the page's current count, so it fires an
+/// expired one-shot timer, whose current count is 0 and initial count is not,
+/// once more: at once from Linux 6.3, a full period later before. That
+/// interrupt is owed when KVM had not injected the expiry before it saved the
+/// page, which the page cannot show, but it duplicates an expiry whose vector
+/// is pending in IRR, as after a time ABI restore that expires the timer. Such
+/// a timer gets an initial count of 0, which KVM does not start, so the guest
+/// reads 0 from the initial count register.
+fn kvm_lapic_page(registers: &vp::ApicRegisters) -> [u8; 1024] {
+    let mut registers = *registers;
+    let lvt = x86defs::apic::Lvt::from(registers.lvt_timer);
+    let vector = lvt.vector();
+    if registers.timer_icr != 0
+        && registers.timer_ccr == 0
+        && !lvt.masked()
+        && lvt.timer_mode() == x86defs::apic::TimerMode::ONE_SHOT.0
+        && lvt.delivery_mode() == x86defs::apic::DeliveryMode::FIXED.0
+        && vector >= 16
+        && registers.irr[usize::from(vector / 32)] & (1 << (vector % 32)) != 0
+    {
+        registers.timer_icr = 0;
+    }
+    registers.as_page()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kvm_lapic_page;
+    use virt::x86::vp::ApicRegisters;
+    use zerocopy::FromZeros;
+
+    const VECTOR: u32 = 0x40;
+    const MASKED: u32 = 1 << 16;
+
+    /// Returns the initial count of the page that KVM gets for a timer with
+    /// the LVT entry `lvt_timer` and the counts `(initial, current)`, whose
+    /// vector is pending in IRR if `pending`.
+    fn kvm_initial_count(lvt_timer: u32, (initial, current): (u32, u32), pending: bool) -> u32 {
+        let mut registers = ApicRegisters {
+            lvt_timer,
+            timer_icr: initial,
+            timer_ccr: current,
+            ..FromZeros::new_zeroed()
+        };
+        if pending {
+            let vector = lvt_timer & 0xff;
+            registers.irr[vector as usize / 32] |= 1 << (vector % 32);
+        }
+        let page = ApicRegisters::from_page(&kvm_lapic_page(&registers));
+        // Nothing else changes.
+        assert_eq!(
+            ApicRegisters {
+                timer_icr: initial,
+                ..page
+            }
+            .as_page(),
+            registers.as_page()
+        );
+        page.timer_icr
+    }
+
+    #[test]
+    fn an_expired_timer_whose_interrupt_is_pending_is_not_started_again() {
+        assert_eq!(kvm_initial_count(VECTOR, (1_000, 0), true), 0);
+        // Otherwise the saved counts reach KVM unchanged: a counting timer, an
+        // expired timer whose interrupt KVM may not have injected when it
+        // saved the page, and timers whose expiry delivers nothing to IRR.
+        for (lvt, counts, pending) in [
+            (VECTOR, (1_000, 1), true),
+            (VECTOR, (1_000, 0), false),
+            (VECTOR | MASKED, (1_000, 0), true),
+            (VECTOR | 1 << 17, (1_000, 0), true),
+            (VECTOR | 4 << 8, (1_000, 0), true),
+            (0x0f, (1_000, 0), true),
+        ] {
+            assert_eq!(
+                kvm_initial_count(lvt, counts, pending),
+                counts.0,
+                "LVT {lvt:#x}, counts {counts:?}, pending {pending}"
+            );
+        }
+        assert_eq!(kvm_initial_count(VECTOR, (0, 0), true), 0);
+    }
+}
+
+/// Restores of one-shot LAPIC timers through `KVM_SET_LAPIC`, with a real-mode
+/// guest that counts its timer interrupts.
+#[cfg(test)]
+mod kvm_tests {
+    use super::kvm_lapic_page;
+    use crate::arch::x86_64::test_guest::GuestRam;
+    use kvm::Exit;
+    use kvm::Kvm;
+    use kvm::Partition;
+    use kvm::Processor;
+    use kvm::VmType;
+    use kvm::VpRunner;
+    use kvm::kvm_cpuid_entry2;
+    use kvm::kvm_regs;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use test_with_tracing::test;
+    use virt::time_abi::tsc::HostTscBracket;
+    use virt::x86::vp::Apic;
+    use virt::x86::vp::ApicRegisters;
+
+    const TIMER_VECTOR: u8 = 0x40;
+    const CODE_GPA: u64 = 0x1000;
+    const HANDLER_GPA: u64 = 0x2000;
+    const COUNT_GPA: u64 = 0x3000;
+    const ARMED_PORT: u8 = 0x80;
+    const TIMER_PORT: u8 = 0x81;
+    const RFLAGS_IF: u64 = 1 << 9;
+    /// KVM's LAPIC timer rate.
+    const APIC_HZ: u64 = 1_000_000_000;
+    const MS: u64 = 1_000_000;
+
+    fn partition() -> Partition {
+        kvm::init();
+        let kvm = Kvm::new().unwrap();
+        let mut partition = kvm.new_vm(VmType::Default).unwrap();
+        partition.enable_split_irqchip(24).unwrap();
+        partition.add_vp(0).unwrap();
+        partition
+    }
+
+    /// Loads a real-mode guest into `ram` that arms its one-shot x2APIC timer
+    /// for `count` ticks, writes to `ARMED_PORT`, and then spins with
+    /// interrupts enabled. Its timer interrupt handler writes to `TIMER_PORT`
+    /// and ends the interrupt.
+    fn load_guest(partition: &Partition, ram: &GuestRam<'_>, count: u32) {
+        ram.write(
+            u64::from(TIMER_VECTOR) * 4,
+            &[HANDLER_GPA as u8, (HANDLER_GPA >> 8) as u8, 0, 0],
+        );
+        ram.write(
+            CODE_GPA,
+            &[
+                0x66, 0xb9, 0x38, 0x08, 0x00, 0x00, // mov ecx, TMICT
+                0x66, 0xa1, 0x00, 0x30, // mov eax, [COUNT_GPA]
+                0x66, 0x31, 0xd2, // xor edx, edx
+                0x0f, 0x30, // wrmsr
+                0xe6, ARMED_PORT, // out ARMED_PORT, al
+                0xeb, 0xfe, // jmp $
+            ],
+        );
+        ram.write(
+            HANDLER_GPA,
+            &[
+                0xe6, TIMER_PORT, // out TIMER_PORT, al
+                0x66, 0xb9, 0x0b, 0x08, 0x00, 0x00, // mov ecx, EOI
+                0x66, 0x31, 0xc0, // xor eax, eax
+                0x66, 0x31, 0xd2, // xor edx, edx
+                0x0f, 0x30, // wrmsr
+                0xcf, // iret
+            ],
+        );
+        ram.write(COUNT_GPA, &count.to_le_bytes());
+
+        let vp = partition.vp(0);
+        vp.set_cpuid(&[kvm_cpuid_entry2 {
+            function: 1,
+            ecx: 1 << 21, // x2APIC
+            ..Default::default()
+        }])
+        .unwrap();
+        let mut sregs = vp.get_sregs().unwrap();
+        sregs.cs.selector = 0;
+        sregs.cs.base = 0;
+        vp.set_sregs(&sregs).unwrap();
+        vp.set_regs(&kvm_regs {
+            rip: CODE_GPA,
+            rsp: 0x8000,
+            rflags: RFLAGS_IF | 2,
+            ..Default::default()
+        })
+        .unwrap();
+        // Enabled, in x2APIC mode, of the BSP.
+        vp.set_msrs(&[(x86defs::X86X_MSR_APIC_BASE, 0xfee0_0d00)])
+            .unwrap();
+        let mut page = [0; 1024];
+        vp.get_lapic(&mut page).unwrap();
+        let mut registers = ApicRegisters::from_page(&page);
+        registers.svr = 0x1ff;
+        registers.lvt_timer = TIMER_VECTOR.into();
+        registers.timer_dcr = 0xb;
+        vp.set_lapic(&registers.as_page()).unwrap();
+    }
+
+    /// Runs the VP until it writes to `until`, or for `limit`, and returns the
+    /// timer interrupts that the guest took and whether it wrote to `until`.
+    /// Completes the last exit, so that the VP's state can be read.
+    fn run(
+        partition: &Partition,
+        runner: &mut VpRunner<'_>,
+        until: Option<u8>,
+        limit: Duration,
+    ) -> (u32, bool) {
+        std::thread::scope(|s| {
+            let (done, wait_done) = mpsc::channel::<()>();
+            s.spawn(move || {
+                if let Err(mpsc::RecvTimeoutError::Timeout) = wait_done.recv_timeout(limit) {
+                    partition.vp(0).force_exit();
+                }
+            });
+            let mut interrupts = 0;
+            let reached = loop {
+                match runner.run().unwrap() {
+                    Exit::IoOut { port, .. } => {
+                        if port == u16::from(TIMER_PORT) {
+                            interrupts += 1;
+                        }
+                        if until.is_some_and(|until| port == u16::from(until)) {
+                            assert!(matches!(runner.complete_exit().unwrap(), Exit::Interrupted));
+                            break true;
+                        }
+                    }
+                    Exit::Interrupted => break false,
+                    exit => panic!("unexpected exit: {exit:?}"),
+                }
+            };
+            drop(done);
+            (interrupts, reached)
+        })
+    }
+
+    fn guest_tsc(vp: &Processor<'_>) -> u64 {
+        let mut tsc = [0];
+        vp.get_msrs(&[x86defs::X86X_MSR_TSC], &mut tsc).unwrap();
+        tsc[0]
+    }
+
+    fn get_apic(vp: &Processor<'_>) -> Apic {
+        let mut apic_base = [0];
+        vp.get_msrs(&[x86defs::X86X_MSR_APIC_BASE], &mut apic_base)
+            .unwrap();
+        let mut page = [0; 1024];
+        vp.get_lapic(&mut page).unwrap();
+        Apic::new(apic_base[0].into(), ApicRegisters::from_page(&page), [0; 8])
+    }
+
+    fn timer_pending(apic: &Apic) -> bool {
+        let vector = usize::from(TIMER_VECTOR);
+        apic.registers().irr[vector / 32] & (1 << (vector % 32)) != 0
+    }
+
+    /// A capture: the guest TSC at its anchor, and the VP's saved APIC state.
+    struct Capture {
+        capture_tsc: u64,
+        apic: Apic,
+    }
+
+    impl Capture {
+        fn take(vp: &Processor<'_>) -> Self {
+            Self {
+                capture_tsc: guest_tsc(vp),
+                apic: get_apic(vp),
+            }
+        }
+    }
+
+    /// Restores `capture` into the VP as a time ABI restore does, after a
+    /// downtime of `downtime_ns`.
+    fn restore(vp: &Processor<'_>, capture: &Capture, downtime_ns: u64) {
+        let tsc_hz = vp.tsc_frequency_hz().unwrap();
+        // The processor restore.
+        vp.set_lapic(&kvm_lapic_page(capture.apic.registers()))
+            .unwrap();
+        // The synchronized TSC set, at the restore anchor.
+        let restore_tsc =
+            virt::time_abi::downtime::tsc_target(capture.capture_tsc, downtime_ns, tsc_hz).unwrap();
+        let (bracket, ()) = HostTscBracket::around(|| ());
+        vp.set_tsc_offset(restore_tsc.wrapping_sub(bracket.end))
+            .unwrap();
+        // The LAPIC advance.
+        let mut apic = get_apic(vp);
+        apic.advance_one_shot_timer(downtime_ns, APIC_HZ).unwrap();
+        vp.set_lapic(&kvm_lapic_page(apic.registers())).unwrap();
+    }
+
+    /// A guest, with its VP stopped just after it armed its timer.
+    struct ArmedGuest<'a> {
+        partition: &'a Partition,
+        runner: VpRunner<'a>,
+    }
+
+    impl<'a> ArmedGuest<'a> {
+        fn new(partition: &'a Partition, ram: &GuestRam<'_>, count: u32) -> Self {
+            load_guest(partition, ram, count);
+            let mut runner = partition.vp(0).runner();
+            assert_eq!(
+                run(
+                    partition,
+                    &mut runner,
+                    Some(ARMED_PORT),
+                    Duration::from_secs(5)
+                ),
+                (0, true)
+            );
+            Self { partition, runner }
+        }
+
+        fn run(&mut self, until: Option<u8>, limit: Duration) -> (u32, bool) {
+            run(self.partition, &mut self.runner, until, limit)
+        }
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn a_timer_that_expires_in_the_downtime_fires_once() {
+        let partition = partition();
+        let ram = GuestRam::new(&partition, 0x10000);
+        let mut guest = ArmedGuest::new(&partition, &ram, 1_000 * MS as u32);
+        let vp = partition.vp(0);
+        let capture = Capture::take(&vp);
+        assert_ne!(capture.apic.registers().timer_ccr, 0);
+        // The downtime expires the timer, which queues its interrupt, and
+        // KVM must not fire the timer again for a VP that runs with
+        // interrupts enabled.
+        restore(&vp, &capture, 2_000 * MS);
+        assert!(timer_pending(&get_apic(&vp)));
+        assert_eq!(guest.run(None, Duration::from_millis(100)), (1, false));
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn a_timer_whose_expiry_kvm_had_not_delivered_fires_once() {
+        let partition = partition();
+        let ram = GuestRam::new(&partition, 0x10000);
+        let mut guest = ArmedGuest::new(&partition, &ram, 2 * MS as u32);
+        let vp = partition.vp(0);
+        // The timer expires while the VP is stopped, so KVM saves it as one
+        // whose interrupt the guest took: expired, its vector neither pending
+        // nor in service. Its interrupt must not be lost.
+        std::thread::sleep(Duration::from_millis(20));
+        let capture = Capture::take(&vp);
+        let saved = capture.apic.registers();
+        let vector = usize::from(TIMER_VECTOR);
+        assert_eq!((saved.timer_icr, saved.timer_ccr), (2 * MS as u32, 0));
+        assert!(!timer_pending(&capture.apic));
+        assert_eq!(saved.isr[vector / 32] & (1 << (vector % 32)), 0);
+        restore(&vp, &capture, 10 * MS);
+        assert_eq!(guest.run(None, Duration::from_millis(100)), (1, false));
     }
 }
