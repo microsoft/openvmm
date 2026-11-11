@@ -139,6 +139,20 @@ pub fn lapic_ticks(downtime_ns: u64, apic_hz: u64, divide: u32) -> Option<u64> {
     u64::try_from(ticks).ok()
 }
 
+/// Returns the LAPIC ticks of a counting-mode one-shot timer over `cycles`
+/// of a TSC at `tsc_hz`: `floor(cycles * L / tsc_hz / divide)`.
+///
+/// `divide` is checked as in [`lapic_ticks`]; a zero `tsc_hz` also returns
+/// `None`.
+pub fn lapic_ticks_in_tsc(cycles: u64, tsc_hz: u64, apic_hz: u64, divide: u32) -> Option<u64> {
+    if !divide.is_power_of_two() || divide > MAX_LAPIC_DIVIDE || tsc_hz == 0 {
+        return None;
+    }
+    let ticks =
+        u128::from(cycles) * u128::from(apic_hz) / (u128::from(tsc_hz) * u128::from(divide));
+    u64::try_from(ticks).ok()
+}
+
 /// Divides with rounding to nearest, ties away from zero. `den` must be
 /// positive.
 fn div_round_nearest(num: i128, den: i128) -> i128 {
@@ -281,5 +295,36 @@ mod tests {
         assert_eq!(lapic_ticks(1, LAPIC_HZ_KVM, 3), None);
         assert_eq!(lapic_ticks(1, LAPIC_HZ_KVM, 256), None);
         assert_eq!(lapic_ticks(1, LAPIC_HZ_KVM, 0), None);
+    }
+
+    #[test]
+    fn lapic_ticks_in_tsc_cycles() {
+        // One second of a 2 GHz TSC at 200 MHz with divide 1 and 16.
+        assert_eq!(
+            lapic_ticks_in_tsc(2_000_000_000, 2_000_000_000, LAPIC_HZ_HYPERV, 1),
+            Some(200_000_000)
+        );
+        assert_eq!(
+            lapic_ticks_in_tsc(2_000_000_000, 2_000_000_000, LAPIC_HZ_HYPERV, 16),
+            Some(12_500_000)
+        );
+        // Floors partial ticks: 9 cycles of a 2 GHz TSC are 4.5 ns.
+        assert_eq!(
+            lapic_ticks_in_tsc(9, 2_000_000_000, LAPIC_HZ_KVM, 1),
+            Some(4)
+        );
+        // Thirty days of a 10 GHz TSC at 1 GHz.
+        let thirty_days_s = 30 * 24 * 60 * 60;
+        assert_eq!(
+            lapic_ticks_in_tsc(
+                thirty_days_s * 10_000_000_000,
+                10_000_000_000,
+                LAPIC_HZ_KVM,
+                1
+            ),
+            Some(thirty_days_s * 1_000_000_000)
+        );
+        assert_eq!(lapic_ticks_in_tsc(1, 2_000_000_000, LAPIC_HZ_KVM, 3), None);
+        assert_eq!(lapic_ticks_in_tsc(1, 0, LAPIC_HZ_KVM, 1), None);
     }
 }

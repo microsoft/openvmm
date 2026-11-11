@@ -349,9 +349,10 @@ operation before any VP runs: each TSC continues from the capture anchor,
 advanced by the host downtime at the declared rate. KVM sets one common TSC
 offset; MSHV and WHP freeze partition time, write the same TSC to every VP,
 and resume partition time. Every backend reads each VP's TSC back and rejects
-a restore whose values differ (`E_TSC_SYNC_READBACK`), and one-shot LAPIC
-timers advance by the same downtime. The guest TSC is never scaled, and
-RDTSC is never trapped or emulated.
+a restore whose values differ (`E_TSC_SYNC_READBACK`), and each one-shot LAPIC
+timer, which the restore holds until then, continues from its count at the
+capture anchor, advanced by the same downtime, and runs with the TSC. The guest
+TSC is never scaled, and RDTSC is never trapped or emulated.
 VM time and the RTC stop with the state units shortly before the public
 capture anchor. Every snapshot records that cut-to-anchor interval, measured
 on the host monotonic clock that the anchor samples, and a restore adds it to

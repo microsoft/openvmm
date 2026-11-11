@@ -5,6 +5,9 @@
 
 mod snapshot;
 
+pub use snapshot::LapicRestoreClock;
+pub use snapshot::SavedOneShotTimer;
+
 use super::SegmentRegister;
 use super::TableRegister;
 use super::X86PartitionCapabilities;
@@ -1998,6 +2001,8 @@ state_trait! {
     (8, "pat", pat, set_pat, Pat),
     (9, "msrs", virtual_msrs, set_virtual_msrs, VirtualMsrs),
     (10, "drs", debug_regs, set_debug_regs, DebugRegisters),
+    // Saved after the APIC state, whose LAPIC timer count a time ABI restore
+    // dates with the saved TSC.
     (11, "tsc", tsc, set_tsc, Tsc),
     (12, "cet", cet, set_cet, Cet),
     (13, "cet_ss", cet_ss, set_cet_ss, CetSs),
@@ -2042,6 +2047,17 @@ impl VpSavedState {
     /// the NVX time ABI's synchronized TSC set.
     pub fn clear_tsc(&mut self) {
         self.tsc = None;
+    }
+
+    /// Takes the LAPIC timer out of the saved APIC state, with the saved TSC
+    /// that dates its count, so restoring this state runs no timer until
+    /// [`Apic::restore_one_shot_timer`] sets it. Returns `None` if the state
+    /// holds no APIC state.
+    pub fn take_one_shot_timer(&mut self) -> Option<SavedOneShotTimer> {
+        let saved_tsc = self.tsc.as_ref().map(|tsc| tsc.value);
+        self.apic
+            .as_mut()
+            .map(|apic| apic.take_one_shot_timer(saved_tsc))
     }
 }
 
@@ -2098,5 +2114,42 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn take_one_shot_timer_dates_the_count_with_the_saved_tsc() {
+        let registers = ApicRegisters {
+            lvt_timer: 0x40,
+            timer_icr: 1_000,
+            timer_ccr: 400,
+            ..FromZeros::new_zeroed()
+        };
+        let mut state = VpSavedState {
+            apic: Some(Apic::new(ApicBase::new(), registers, [0; 8])),
+            tsc: Some(Tsc { value: 7 }),
+            ..Default::default()
+        };
+        assert_eq!(
+            state.take_one_shot_timer(),
+            Some(SavedOneShotTimer {
+                initial_count: 1_000,
+                current_count: 400,
+                saved_tsc: Some(7),
+            })
+        );
+        let apic = state.apic.as_ref().unwrap().registers();
+        assert_eq!(
+            (apic.timer_icr, apic.timer_ccr, apic.lvt_timer),
+            (0, 0, 0x40)
+        );
+        // The TSC stays for the caller to clear.
+        assert_eq!(state.tsc, Some(Tsc { value: 7 }));
+
+        let mut without_tsc = VpSavedState {
+            apic: Some(Apic::new(ApicBase::new(), registers, [0; 8])),
+            ..Default::default()
+        };
+        assert_eq!(without_tsc.take_one_shot_timer().unwrap().saved_tsc, None);
+        assert_eq!(VpSavedState::default().take_one_shot_timer(), None);
     }
 }
