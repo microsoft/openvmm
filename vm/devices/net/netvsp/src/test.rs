@@ -8002,7 +8002,7 @@ async fn rndis_config_parameter_is_answered_by_name(driver: DefaultDriver) {
         // A keyword with no handler is ignored, even if its value is not a digit.
         (22, "*Unhandled", "Enabled", rndisprot::STATUS_SUCCESS),
         (23, "*Unhandled", "1", rndisprot::STATUS_SUCCESS),
-        // A keyword with a handler still needs a digit.
+        // A keyword with a handler still needs a value it defines.
         (24, "*LsoV2IPv4", "yes", rndisprot::STATUS_INVALID_DATA),
         (25, "*LsoV2IPv4", "1", rndisprot::STATUS_SUCCESS),
         (
@@ -8017,6 +8017,16 @@ async fn rndis_config_parameter_is_answered_by_name(driver: DefaultDriver) {
             "3",
             rndisprot::STATUS_SUCCESS,
         ),
+        // The whole number counts, not its first digit.
+        (28, "*LsoV2IPv4", "10", rndisprot::STATUS_INVALID_DATA),
+        (
+            29,
+            "*UDPChecksumOffloadIPv4",
+            "4",
+            rndisprot::STATUS_INVALID_DATA,
+        ),
+        // A terminating NUL does not make a valid value invalid.
+        (30, "*LsoV2IPv4", "0\0", rndisprot::STATUS_SUCCESS),
     ] {
         assert_eq!(
             set_config_parameter(&mut channel, request_id, name, value).await,

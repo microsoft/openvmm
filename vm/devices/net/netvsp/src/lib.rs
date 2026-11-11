@@ -3953,44 +3953,39 @@ impl Adapter {
                 let value = value.read_n::<u16>(info.value_length as usize / 2)?;
                 let value =
                     String::from_utf16(&value).map_err(|_| OidError::InvalidInput("value"))?;
-                let as_num = value
-                    .as_bytes()
-                    .first()
-                    .map(|c| c.wrapping_sub(b'0'))
-                    .filter(|&c| c <= 9)
-                    .ok_or(OidError::InvalidInput("value as num"));
+                let keyword = |max| keyword_value(&value, max);
 
                 tracing::debug!(name, value, "rndis config");
                 match name.as_str() {
                     "NetworkAddress" => return Err(OidError::NotSupported("NetworkAddress")),
                     "*IPChecksumOffloadIPv4" => {
-                        let (tx, rx) = checksum_directions(as_num?);
+                        let (tx, rx) = checksum_directions(keyword(3)?);
                         primary.offload_config.checksum_tx.ipv4_header = tx;
                         primary.offload_config.checksum_rx.ipv4_header = rx;
                     }
                     "*LsoV2IPv4" => {
-                        primary.offload_config.lso4 = as_num? != 0;
+                        primary.offload_config.lso4 = keyword(1)? != 0;
                     }
                     "*LsoV2IPv6" => {
-                        primary.offload_config.lso6 = as_num? != 0;
+                        primary.offload_config.lso6 = keyword(1)? != 0;
                     }
                     "*TCPChecksumOffloadIPv4" => {
-                        let (tx, rx) = checksum_directions(as_num?);
+                        let (tx, rx) = checksum_directions(keyword(3)?);
                         primary.offload_config.checksum_tx.tcp4 = tx;
                         primary.offload_config.checksum_rx.tcp4 = rx;
                     }
                     "*TCPChecksumOffloadIPv6" => {
-                        let (tx, rx) = checksum_directions(as_num?);
+                        let (tx, rx) = checksum_directions(keyword(3)?);
                         primary.offload_config.checksum_tx.tcp6 = tx;
                         primary.offload_config.checksum_rx.tcp6 = rx;
                     }
                     "*UDPChecksumOffloadIPv4" => {
-                        let (tx, rx) = checksum_directions(as_num?);
+                        let (tx, rx) = checksum_directions(keyword(3)?);
                         primary.offload_config.checksum_tx.udp4 = tx;
                         primary.offload_config.checksum_rx.udp4 = rx;
                     }
                     "*UDPChecksumOffloadIPv6" => {
-                        let (tx, rx) = checksum_directions(as_num?);
+                        let (tx, rx) = checksum_directions(keyword(3)?);
                         primary.offload_config.checksum_tx.udp6 = tx;
                         primary.offload_config.checksum_rx.udp6 = rx;
                     }
@@ -4017,6 +4012,21 @@ impl Adapter {
 /// Splits the value of a checksum keyword into its transmit and receive enables.
 fn checksum_directions(value: u8) -> (bool, bool) {
     (value & 1 != 0, value & 2 != 0)
+}
+
+/// Parses a standardized keyword's value, which must be a number from 0 to
+/// `max`. The checksum keywords define 0 to 3 and the LSO keywords 0 and 1.
+/// Anything after the digits, such as a terminating NUL, ends the number.
+fn keyword_value(value: &str, max: u8) -> Result<u8, OidError> {
+    let value = value.trim_start();
+    let digits = value
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(value.len());
+    value[..digits]
+        .parse::<u8>()
+        .ok()
+        .filter(|&v| v <= max)
+        .ok_or(OidError::InvalidInput("keyword value"))
 }
 
 fn read_ndis_object<T: IntoBytes + FromBytes + Debug + Immutable + KnownLayout>(
