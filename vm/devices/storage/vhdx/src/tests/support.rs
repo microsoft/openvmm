@@ -223,18 +223,14 @@ impl AsyncFile for InMemoryFile {
     }
 }
 
-/// A file implementation that separates volatile and durable state,
-/// with a write log for verifying operation ordering.
+/// A file implementation that separates volatile and durable state.
 ///
-/// - `write_at()` → writes to volatile only (reads see it, but it won't
-///   survive a crash).
+/// - `write_at()` → writes to volatile only (reads see it).
+/// - `persist_range()` → makes selected unflushed bytes durable, modeling
+///   independent writeback.
 /// - `flush()` → copies volatile to durable (survives crash).
-/// - `crash()` → returns durable state; volatile-only writes are lost.
+/// - `durable_snapshot()` → returns crash state; volatile-only writes are lost.
 /// - `from_durable(data)` → creates a new file from a crash snapshot.
-///
-/// The write log records every `write_at`, `flush`, and `set_file_size`
-/// call, enabling ordering tests that verify flush barriers exist between
-/// data writes and WAL writes.
 pub struct CrashTestFile {
     inner: Mutex<CrashTestFileInner>,
 }
@@ -274,6 +270,18 @@ impl CrashTestFile {
     /// Snapshot durable state without consuming the file.
     pub fn durable_snapshot(&self) -> Vec<u8> {
         self.inner.lock().durable.clone()
+    }
+
+    /// Persist only this range, modeling writeback before an explicit flush.
+    pub fn persist_range(&self, range: std::ops::Range<usize>) {
+        let mut inner = self.inner.lock();
+        let CrashTestFileInner {
+            durable, volatile, ..
+        } = &mut *inner;
+        if durable.len() < range.end {
+            durable.resize(range.end, 0);
+        }
+        durable[range.clone()].copy_from_slice(&volatile[range]);
     }
 
     /// How many flushes have occurred.

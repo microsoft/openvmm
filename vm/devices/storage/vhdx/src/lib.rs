@@ -61,7 +61,8 @@
 //! - The **cache** accumulates dirty 4 KiB metadata pages (BAT entries,
 //!   sector bitmap bits). On commit, pages are sent to the log task.
 //! - The **log task** writes WAL entries to the circular log region and
-//!   publishes `logged_lsn`.
+//!   publishes `logged_lsn`. It queues batches until their WAL is durable
+//!   before dispatching them to the apply task.
 //! - The **apply task** writes logged pages to their final file offsets
 //!   and publishes `applied_lsn`.
 //! - A permit semaphore limits in-flight pages for backpressure. A flush
