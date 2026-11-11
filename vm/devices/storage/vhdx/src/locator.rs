@@ -293,7 +293,7 @@ pub(crate) fn build_locator(locator_type: Guid, kvs: &[(&str, &str)]) -> Option<
         size.checked_add(key.len())?.checked_add(value.len())
     })?;
     let total = entries_end.checked_add(strings_size)?;
-    if total > format::MAX_HOSTING_SECTOR_SIZE as usize {
+    if total > format::MAXIMUM_METADATA_ITEM_SIZE as usize {
         return None;
     }
     let mut buf = vec![0u8; total];
