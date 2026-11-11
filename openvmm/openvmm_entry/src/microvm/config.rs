@@ -384,8 +384,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
         Ok(virtio_console_backend)
     }
 
-    /// Adds the fixed-role sandbox block devices, with a platform restore's
-    /// absent fresh scratch.
+    /// Adds the fixed-role sandbox block devices, with a direct-claimed
+    /// restore's paired scratch and a platform restore's absent fresh scratch.
     pub(crate) async fn add_sandbox_blocks(
         &self,
         storage: &mut StorageBuilder,
@@ -415,6 +415,12 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         .filter(|_| block.role == MicrovmSandboxBlockRole::Distro),
                 )
                 .await?;
+        }
+        if let Some((file, path)) = &self.restore.claimed_scratch {
+            let file = file
+                .try_clone()
+                .context("failed to duplicate the claimed scratch handle")?;
+            storage.add_microvm_claimed_scratch(file, path)?;
         }
         if let Some(geometry) = self.restore.absent_scratch {
             storage.add_microvm_absent_scratch(geometry);
