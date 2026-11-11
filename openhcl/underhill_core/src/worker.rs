@@ -1540,6 +1540,8 @@ async fn new_underhill_vm(
     let (runtime_params, measured_vtl2_info) =
         crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
 
+    let measured_product_policy = crate::measured_product_policy::load()?;
+
     // Log information about VTL2 memory
     let memory_allocation_mode = runtime_params.parsed_openhcl_boot().memory_allocation_mode;
     tracing::info!(
@@ -4093,8 +4095,7 @@ async fn new_underhill_vm(
         get_client: get_client.clone(),
         device_platform_settings: dps,
         runtime_params,
-        #[cfg(feature = "product_policy")]
-        measured_product_policy: measured_vtl2_info.measured_product_policy().clone(),
+        measured_product_policy,
 
         _input_distributor: input_distributor,
         hardware_reseal,
@@ -4114,7 +4115,6 @@ async fn new_underhill_vm(
         profiler: mem_profile_tracing::HeapProfiler::new(),
     };
 
-    #[cfg(feature = "product_policy")]
     crate::measured_product_policy::validate(&loaded_vm)?;
 
     Ok(loaded_vm)

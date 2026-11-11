@@ -218,6 +218,23 @@ async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(
         .with_openhcl_command_line("OPENHCL_SIDECAR=log")
         .run()
         .await?;
+
+    let vps = vm.inspect_openhcl("vm/partition/vp", Some(3), None).await?;
+    let vps: serde_json::Value = serde_json::from_str(&format!("{}", vps.json()))?;
+    let vps = vps.as_object().unwrap();
+    // A VP retains its sidecar exit reason after migrating into Linux.
+    anyhow::ensure!(
+        vps.values().any(|vp| {
+            vp.get("sidecar").and_then(serde_json::Value::as_bool) == Some(true)
+                || vp
+                    .get("sidecar_exit_reason")
+                    .and_then(|reason| reason.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+        }),
+        "no VP ran in sidecar: {vps:?}"
+    );
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -699,6 +716,7 @@ async fn snapshot_save_to_disk(
         vp_count: 2,
         page_size: 4096,
         architecture: "x86_64".to_string(),
+        snapshot_id: Guid::new_random(),
     };
     openvmm_helpers::snapshot::write_snapshot(&snap_dir, &manifest, &saved_state_bytes, &mem_path)?;
 

@@ -32,7 +32,7 @@ pub struct CwcowPolicy {
     pub require_bcd_integrity: bool,
 
     /// Custom UEFI JSON bytes (base64 in manifest JSON). Required in
-    /// manifests and asserted non-empty at build time when secure boot
+    /// manifests and checked non-empty at build time when secure boot
     /// plus secure-boot-vars or BCD-integrity are set;
     #[mesh(5)]
     #[cfg_attr(
