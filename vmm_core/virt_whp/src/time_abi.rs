@@ -93,6 +93,7 @@ use virt::time_abi::identity::IDENTITY_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_MAX_LEAF;
 use virt::time_abi::msr::amd_config_msr_read;
 use virt::time_abi::msr::amd_config_msr_write;
+use virt::time_abi::phase_us;
 use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::tsc::GuestTscOffset;
@@ -1196,8 +1197,8 @@ impl TimeAbiBackend for WhpPartitionInner {
             target,
             readback_equal = result.is_ok(),
             suspend_us = suspended.as_micros() as u64,
-            write_us = (written - suspended).as_micros() as u64,
-            readback_us = (read - written).as_micros() as u64,
+            write_us = phase_us(suspended, written),
+            readback_us = phase_us(written, read),
             total_us = started.elapsed().as_micros() as u64,
             "time ABI: synchronized TSC set with partition time suspended"
         );
