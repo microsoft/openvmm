@@ -139,6 +139,20 @@ pub trait HypervisorProbe: Send + Sync + 'static {
         )
     }
 
+    /// Returns the architecture-typed CPU surface and native time capabilities
+    /// for profile admission. Like [`cpu_fingerprint`](Self::cpu_fingerprint),
+    /// this needs no guest and must leave no probe state behind.
+    ///
+    /// Existing providers keep implementing the legacy fingerprint method;
+    /// its result is wrapped unchanged. Providers with another ISA payload
+    /// override this method without changing legacy fingerprint behavior.
+    fn probe_cpu(
+        &self,
+        params: &[(&str, &str)],
+    ) -> anyhow::Result<cpu_profile::fingerprint::BackendCpuFingerprint> {
+        Ok(self.cpu_fingerprint(params)?.into())
+    }
+
     /// Returns what VP 0 of a transient probe partition configured from
     /// `profile`, as a time ABI cold boot configures its partition, reads at
     /// every entry of the host's CPUID outside the profile's tables

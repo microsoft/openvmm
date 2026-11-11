@@ -10,7 +10,21 @@
 //! snapshot restore needs. A host, backend, or snapshot that cannot meet the
 //! contract fails with a stable [`TimeAbiCode`], and nothing falls back to
 //! another behavior.
+//!
+//! ARM CPU and time configuration uses the same
+//! [`ProtoPartitionConfig::time_abi`](crate::ProtoPartitionConfig::time_abi)
+//! and [`Partition::time_abi`](crate::Partition::time_abi) contract path as
+//! x86, with an architecture-specific typed payload. ARM fields do not extend
+//! the x86 CPUID/MSR payload. Sampling reuses the host publisher and platform
+//! `TimeSampleSource`/v1 codec, but pairs UTC with the actual ARM counter,
+//! without a host-TSC offset.
+//!
+//! This integration decision does not select an ARM CPU profile, settle the
+//! effective guest ID/cache validation policy, or establish native product
+//! qualification. Partition-configuration readback alone is not that proof.
 
+#[cfg(guest_arch = "aarch64")]
+pub mod aarch64;
 #[cfg(guest_arch = "x86_64")]
 pub mod backend;
 #[cfg(guest_arch = "x86_64")]
@@ -21,12 +35,15 @@ pub mod host;
 pub mod identity;
 #[cfg(guest_arch = "x86_64")]
 pub mod msr;
-#[cfg(guest_arch = "x86_64")]
 pub mod publish;
 pub mod rate;
 pub mod surface;
 pub mod tsc;
 
+#[cfg(guest_arch = "aarch64")]
+pub use aarch64::TimeAbiBackend;
+#[cfg(guest_arch = "aarch64")]
+pub use aarch64::TimeAbiConfig;
 #[cfg(guest_arch = "x86_64")]
 pub use backend::BackendPreflight;
 #[cfg(guest_arch = "x86_64")]

@@ -283,6 +283,13 @@ pub fn pinned_profile_serves(host: &HostCpuSignature) -> bool {
     PINNED.iter().any(|pinned| covers(pinned.generation, host))
 }
 
+/// Whether `auto` may derive a native host profile instead of selecting a
+/// pinned profile. Overlapping pinned generations count as covered, not as
+/// an excuse to fall back and hide a catalog defect.
+pub fn auto_falls_back_to_host(pinned_serves: bool, host_policy_serves: bool) -> bool {
+    !pinned_serves && host_policy_serves
+}
+
 /// Selects the profile of the host CPU's generation: its latest pinned
 /// revision. Only the profiles whose generation covers the host are built,
 /// and only the selected one is verified ([`pinned`]).
@@ -314,6 +321,26 @@ fn covers(generation: &KnownGeneration, host: &HostCpuSignature) -> bool {
             })
 }
 
+/// Selects the latest revision of one matching generation/model class.
+/// Callers supply ISA-specific coverage and generation keys. No match is
+/// distinct from overlapping generations, which must not trigger fallback.
+pub(crate) fn latest_matching_profile<'a, T: 'a, K: Ord>(
+    candidates: impl IntoIterator<Item = &'a T>,
+    generation: impl Fn(&'a T) -> K,
+    id: impl Fn(&'a T) -> &'a str,
+) -> Result<Option<&'a T>, Vec<K>> {
+    let matches = candidates.into_iter().collect::<Vec<_>>();
+    let mut generations = matches.iter().copied().map(generation).collect::<Vec<_>>();
+    generations.sort_unstable();
+    generations.dedup();
+    if generations.len() > 1 {
+        return Err(generations);
+    }
+    Ok(matches
+        .into_iter()
+        .max_by_key(|&profile| revision(id(profile))))
+}
+
 /// Selects among `profiles`, as [`select_auto`] does; `ids` lists every
 /// pinned profile for the failure messages.
 fn select_auto_in<'a>(
@@ -321,31 +348,23 @@ fn select_auto_in<'a>(
     host: &HostCpuSignature,
     ids: impl Fn() -> String,
 ) -> Result<&'a CpuProfile, ProfileError> {
-    let matches = profiles
-        .iter()
-        .copied()
-        .filter(|profile| profile.generation().contains(profile.vendor(), host))
-        .collect::<Vec<_>>();
-    let mut generations = matches
-        .iter()
-        .map(|profile| profile.generation().name.as_str())
-        .collect::<Vec<_>>();
-    generations.sort_unstable();
-    generations.dedup();
-    if generations.len() > 1 {
-        return Err(ProfileError::new(
+    latest_matching_profile(
+        profiles.iter().copied()
+            .filter(|profile| profile.generation().contains(profile.vendor(), host)),
+        |profile| profile.generation().name.as_str(),
+        |profile| profile.id(),
+    )
+    .map_err(|generations| {
+        ProfileError::new(
             ProfileErrorCode::ProfileHostUnknown,
             format!(
                 "the host CPU, {host}, is in more than one CPU generation ({}); pinned profiles: {}",
                 generations.join(", "),
                 ids()
             ),
-        ));
-    }
-    matches
-        .into_iter()
-        .max_by_key(|profile| revision(profile.id()))
-        .ok_or_else(|| {
+        )
+    })?
+    .ok_or_else(|| {
             ProfileError::new(
                 ProfileErrorCode::ProfileHostUnknown,
                 format!(
@@ -353,7 +372,7 @@ fn select_auto_in<'a>(
                     ids()
                 ),
             )
-        })
+    })
 }
 
 /// Selects the pinned profile for `--cpu-profile spec`, [`AUTO`] or a pinned
