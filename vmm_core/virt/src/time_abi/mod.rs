@@ -380,23 +380,35 @@ pub const CLOCK_TOKENS: [&str; 2] = ["tsc_early_khz", "lapic_timer_hz"];
 /// Rejects a kernel command line that sets a [`CLOCK_TOKENS`] parameter
 /// (`E_CMDLINE_CLOCK_TOKEN`).
 ///
-/// It follows the kernel's parsing: parameters are separated by unquoted
-/// whitespace, `-` and `_` are equivalent in names, a parameter may be
-/// quoted as a whole, and parsing stops at the `--` delimiter, after which
-/// arguments belong to init.
+/// It follows the kernel's parsing of the line's bytes, by `parse_args` and
+/// `next_arg`: parameters are separated by unquoted whitespace, `-` and `_`
+/// are equivalent in names, a parameter may be quoted as a whole, and
+/// parsing stops at the `--` delimiter, after which arguments belong to
+/// init. Whitespace is every byte that the kernel's `isspace` accepts: the
+/// tab, newline, vertical tab, form feed, carriage return, space, and 0xa0,
+/// Latin-1's no-break space, which is also a byte of the UTF-8 encoding of
+/// many characters, such as the last of `à` (C3 A0), so the kernel can
+/// split the line inside a character.
 pub fn check_command_line_clock_tokens(cmdline: &str) -> Result<(), TimeAbiError> {
-    fn normalized(name: &str) -> impl Iterator<Item = u8> + '_ {
-        name.bytes().map(|b| if b == b'-' { b'_' } else { b })
+    /// Returns whether the kernel's `isspace` (`lib/ctype.c`) takes `byte`
+    /// for whitespace.
+    fn is_space(byte: u8) -> bool {
+        matches!(byte, b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' ' | 0xa0)
     }
 
+    fn normalized(name: &[u8]) -> impl Iterator<Item = u8> + '_ {
+        name.iter().map(|&b| if b == b'-' { b'_' } else { b })
+    }
+
+    let cmdline = cmdline.as_bytes();
     let mut tokens = Vec::new();
     let mut start = None;
     let mut in_quote = false;
-    for (offset, c) in cmdline.char_indices() {
-        if c == '"' {
+    for (offset, &byte) in cmdline.iter().enumerate() {
+        if byte == b'"' {
             in_quote = !in_quote;
         }
-        if c.is_ascii_whitespace() && !in_quote {
+        if is_space(byte) && !in_quote {
             if let Some(start) = start.take() {
                 tokens.push(&cmdline[start..offset]);
             }
@@ -410,19 +422,26 @@ pub fn check_command_line_clock_tokens(cmdline: &str) -> Result<(), TimeAbiError
 
     for token in tokens {
         let unquoted = token
-            .strip_prefix('"')
-            .map_or(token, |rest| rest.strip_suffix('"').unwrap_or(rest));
-        if unquoted == "--" {
+            .strip_prefix(b"\"")
+            .map_or(token, |rest| rest.strip_suffix(b"\"").unwrap_or(rest));
+        if unquoted == b"--" {
             break;
         }
-        let name = unquoted.split_once('=').map_or(unquoted, |(name, _)| name);
+        let name = unquoted
+            .iter()
+            .position(|&b| b == b'=')
+            .map_or(unquoted, |equals| &unquoted[..equals]);
         if CLOCK_TOKENS
             .iter()
-            .any(|clock| normalized(name).eq(normalized(clock)))
+            .any(|clock| normalized(name).eq(normalized(clock.as_bytes())))
         {
+            // A split at 0xa0 can end the token inside a character.
             return Err(TimeAbiError::new(
                 TimeAbiCode::CmdlineClockToken,
-                format!("kernel command line sets the clock parameter '{token}'"),
+                format!(
+                    "kernel command line sets the clock parameter '{}'",
+                    String::from_utf8_lossy(token)
+                ),
             ));
         }
     }
@@ -577,6 +596,245 @@ mod tests {
             "xtsc_early_khz=1 tsc_early_khzx=1",
         ] {
             check_command_line_clock_tokens(cmdline).unwrap();
+        }
+    }
+
+    /// The kernel's `isspace` (`lib/ctype.c`) also takes the vertical tab
+    /// and the byte 0xa0, which ends the UTF-8 encoding of characters such as
+    /// U+00A0 (C2 A0), U+00E0 (`à`, C3 A0), U+0120 (C4 A0), and U+2020 (`†`,
+    /// E2 80 A0), for whitespace, so the kernel finds a clock parameter after
+    /// either (microsoft/nvx#1145).
+    #[test]
+    fn clock_tokens_after_kernel_whitespace_are_rejected() {
+        for cmdline in [
+            "console=hvc0\u{b}tsc_early_khz=1000000",
+            "console=hvc0\u{a0}lapic_timer_hz=1",
+            "console=hvc0\u{e0}lapic_timer_hz=1",
+            "console=hvc0\u{120}tsc-early-khz",
+            "console=hvc0\u{2020}\"tsc_early_khz=1\"",
+        ] {
+            assert_eq!(
+                check_command_line_clock_tokens(cmdline).unwrap_err().code,
+                TimeAbiCode::CmdlineClockToken,
+                "{cmdline:?}"
+            );
+        }
+        // The kernel reads no clock parameter in quotes, after `--`, glued
+        // to the byte that follows 0xa0 inside a character, such as the 0x80
+        // of U+2800 (E2 A0 80), or after a character without 0xa0, such as
+        // U+00E9 (`é`, C3 A9).
+        for cmdline in [
+            "note=\"a\u{b}tsc_early_khz=1\"",
+            "console=hvc0\u{b}--\u{b}tsc_early_khz=1",
+            "console=hvc0\u{2800}tsc_early_khz=1",
+            "console=hvc0\u{e9}tsc_early_khz=1",
+        ] {
+            check_command_line_clock_tokens(cmdline).unwrap();
+        }
+        // The message quotes the parameter even where a split ends it inside
+        // a character.
+        assert_eq!(
+            check_command_line_clock_tokens("x\u{e0}tsc_early_khz=1\u{e0}x")
+                .unwrap_err()
+                .message,
+            "kernel command line sets the clock parameter 'tsc_early_khz=1\u{fffd}'"
+        );
+    }
+
+    /// A transcription of the C code with which Linux 6.18 finds the
+    /// parameters of its command line, for the tests: `isspace` of
+    /// `include/linux/ctype.h`, which reads the `_S` class of the `_ctype`
+    /// table of `lib/ctype.c`; `skip_spaces` of `lib/string_helpers.c`;
+    /// `next_arg` of `lib/cmdline.c`; the loop of `parse_args` and `parameq`
+    /// of `kernel/params.c`; and `do_early_param` of `init/main.c`, which
+    /// matches each parameter's name with those of the `early_param`
+    /// handlers, such as `tsc_early_khz`'s, as the time ABI matches it with
+    /// every clock token.
+    mod kernel {
+        use super::CLOCK_TOKENS;
+
+        /// Returns whether `c` is in the `_S` class: bytes 9 to 13, 32, and
+        /// 160.
+        fn isspace(c: u8) -> bool {
+            [9, 10, 11, 12, 13, 32, 160].contains(&c)
+        }
+
+        /// Returns where the first byte at or after `index` in `buffer`, a
+        /// NUL-terminated string, that is not whitespace is.
+        fn skip_spaces(buffer: &[u8], mut index: usize) -> usize {
+            while isspace(buffer[index]) {
+                index += 1;
+            }
+            index
+        }
+
+        /// Splits the parameter that starts at `args` off `buffer`, a
+        /// NUL-terminated command line, in place: returns where the next
+        /// parameter starts, where the parameter's NUL-terminated name
+        /// starts, and whether it has a value.
+        fn next_arg(buffer: &mut [u8], mut args: usize) -> (usize, usize, bool) {
+            let mut equals = 0;
+            let mut in_quote = false;
+            let mut quoted = false;
+
+            if buffer[args] == b'"' {
+                args += 1;
+                in_quote = true;
+                quoted = true;
+            }
+
+            let mut i = 0;
+            while buffer[args + i] != 0 {
+                if isspace(buffer[args + i]) && !in_quote {
+                    break;
+                }
+                if equals == 0 && buffer[args + i] == b'=' {
+                    equals = i;
+                }
+                if buffer[args + i] == b'"' {
+                    in_quote = !in_quote;
+                }
+                i += 1;
+            }
+
+            let has_value = equals != 0;
+            if has_value {
+                buffer[args + equals] = 0;
+                // Don't include quotes in value.
+                if buffer[args + equals + 1] == b'"' && buffer[args + i - 1] == b'"' {
+                    buffer[args + i - 1] = 0;
+                }
+            }
+            if quoted && i > 0 && buffer[args + i - 1] == b'"' {
+                buffer[args + i - 1] = 0;
+            }
+
+            let next = if buffer[args + i] != 0 {
+                buffer[args + i] = 0;
+                args + i + 1
+            } else {
+                args + i
+            };
+
+            // Chew up trailing spaces.
+            (skip_spaces(buffer, next), args, has_value)
+        }
+
+        /// Returns the names of the parameters that `parse_args` passes to
+        /// their handlers, in order: up to a `--` without a value.
+        fn parameter_names(cmdline: &str) -> Vec<Vec<u8>> {
+            let mut buffer = cmdline.as_bytes().to_vec();
+            buffer.push(0);
+            let mut names = Vec::new();
+            // Chew leading spaces
+            let mut args = skip_spaces(&buffer, 0);
+            while buffer[args] != 0 {
+                let (next, param, has_value) = next_arg(&mut buffer, args);
+                args = next;
+                let name: Vec<u8> = buffer[param..]
+                    .iter()
+                    .take_while(|&&c| c != 0)
+                    .copied()
+                    .collect();
+                // Stop at --
+                if !has_value && name == b"--" {
+                    break;
+                }
+                names.push(name);
+            }
+            names
+        }
+
+        /// Returns whether the names `a` and `b` match: byte for byte, with
+        /// dashes and underscores alike.
+        fn parameq(a: &[u8], b: &[u8]) -> bool {
+            let dash2underscore = |c: u8| if c == b'-' { b'_' } else { c };
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(&a, &b)| dash2underscore(a) == dash2underscore(b))
+        }
+
+        /// Returns whether the kernel passes a parameter named as a clock
+        /// token to its handlers.
+        pub(super) fn reads_clock_parameter(cmdline: &str) -> bool {
+            parameter_names(cmdline).iter().any(|name| {
+                CLOCK_TOKENS
+                    .iter()
+                    .any(|clock| parameq(name, clock.as_bytes()))
+            })
+        }
+    }
+
+    /// The check rejects a command line exactly when the kernel, as
+    /// [`kernel`] transcribes it, reads a clock parameter in it: on every
+    /// command line of up to four fragments of clock names, other text, `=`,
+    /// quotes, whitespace, `--`, and characters whose UTF-8 encoding ends
+    /// with 0xa0, holds it elsewhere, or lacks it; and on every line that
+    /// puts a character of the Basic Multilingual Plane, or one of three
+    /// beyond it, between other text and a clock parameter, or between a
+    /// clock name and its value. The microVM profile refuses a command line
+    /// with a NUL, which ends the kernel's reading, so none holds one.
+    #[test]
+    fn clock_token_check_reads_the_command_line_as_the_kernel_does() {
+        const FRAGMENTS: [&str; 13] = [
+            "tsc_early_khz",
+            "tsc-early-khz",
+            "lapic_timer_hz",
+            "x",
+            "=",
+            "=1",
+            "\"",
+            " ",
+            "\u{b}",
+            "--",
+            "\u{e0}",
+            "\u{2800}",
+            "\u{e9}",
+        ];
+        let check = |cmdline: &str| {
+            let rejected = match check_command_line_clock_tokens(cmdline) {
+                Ok(()) => false,
+                Err(error) => {
+                    assert_eq!(error.code, TimeAbiCode::CmdlineClockToken, "{cmdline:?}");
+                    true
+                }
+            };
+            assert_eq!(
+                rejected,
+                kernel::reads_clock_parameter(cmdline),
+                "{cmdline:?}"
+            );
+            rejected
+        };
+
+        let (mut accepted, mut rejected) = (0, 0);
+        let mut lines = vec![String::new()];
+        for _ in 0..4 {
+            lines = lines
+                .iter()
+                .flat_map(|line| {
+                    FRAGMENTS
+                        .iter()
+                        .map(move |fragment| format!("{line}{fragment}"))
+                })
+                .collect();
+            for line in &lines {
+                if check(line) {
+                    rejected += 1;
+                } else {
+                    accepted += 1;
+                }
+            }
+        }
+        assert!(accepted > 0 && rejected > 0, "{accepted} {rejected}");
+
+        let characters = (1..=0xffff)
+            .chain([0x1_0020, 0x1_0800, 0x10_ffff])
+            .filter_map(char::from_u32);
+        for c in characters {
+            check(&format!("x{c}tsc_early_khz=1"));
+            check(&format!("tsc_early_khz{c}=1"));
         }
     }
 
