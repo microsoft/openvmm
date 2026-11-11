@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-uefi_specs.workspace = true
+uefi_specs = { workspace = true, features = ["std"] }
 
 guid = { workspace = true, features = ["mesh"] }
 mesh_protobuf.workspace = true
