@@ -460,7 +460,10 @@ mod tests {
         )
         .await;
 
-        get.client.ipmi_sel(record_id, record);
+        let mut sink = crate::resolver::GetIpmiSelEventSink::new(get.client.clone());
+        assert!(chipset_resources::ipmi_kcs::SelEventSink::try_send(
+            &mut sink, record_id, record
+        ));
 
         let read_buf = get
             .client
@@ -469,6 +472,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(&read_buf[..expected.len()], expected.as_slice());
+        // The reservation is released once the notification is written.
+        assert_eq!(sink.pending(), 0);
     }
 
     #[async_test]
