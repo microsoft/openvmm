@@ -14,7 +14,6 @@ use crate::STATUS_IBF;
 use crate::STATUS_STATE_MASK;
 use crate::SelStats;
 use crate::sel::SEL_CAPACITY;
-use crate::sel::SEL_RECORD_TYPE_OEM_NON_TIMESTAMPED;
 use crate::sel::SelState;
 use ipmi_protocol::SEL_RECORD_SIZE;
 use mesh::payload::Protobuf;
@@ -248,17 +247,6 @@ fn validate_saved_state(state: SavedState) -> Result<RestoredState, SavedStateVa
     };
     transaction.request[..request.len()].copy_from_slice(&request);
     transaction.response[..response.len()].copy_from_slice(&response);
-
-    // State saved before the last-addition time was tracked separately only
-    // has it in the newest record's timestamp field.
-    let last_addition_timestamp = match records.last() {
-        Some(record)
-            if last_addition_timestamp == 0 && record[2] < SEL_RECORD_TYPE_OEM_NON_TIMESTAMPED =>
-        {
-            u32::from_le_bytes([record[3], record[4], record[5], record[6]])
-        }
-        _ => last_addition_timestamp,
-    };
 
     Ok(RestoredState {
         transaction,

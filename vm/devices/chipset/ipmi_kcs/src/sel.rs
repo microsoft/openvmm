@@ -46,7 +46,7 @@ use zerocopy::U32;
 pub(crate) const SEL_CAPACITY: usize = 128;
 const SEL_FORWARD_LIMIT: u32 = 256;
 /// First SEL record type whose bytes 3..16 are OEM payload with no timestamp.
-pub(crate) const SEL_RECORD_TYPE_OEM_NON_TIMESTAMPED: u8 = 0xe0;
+const SEL_RECORD_TYPE_OEM_NON_TIMESTAMPED: u8 = 0xe0;
 
 #[derive(Default)]
 pub(crate) struct SelState {
