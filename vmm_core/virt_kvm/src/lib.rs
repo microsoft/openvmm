@@ -150,6 +150,11 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     mce_cmci_supported: bool,
 
+    /// Whether KVM may run LAPIC timers on the VMX preemption timer, whose
+    /// expiry it does not record while a VP is outside guest mode.
+    #[cfg(guest_arch = "x86_64")]
+    lapic_preemption_timer: bool,
+
     /// The GIC device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]

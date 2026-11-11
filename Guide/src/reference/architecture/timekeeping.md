@@ -307,13 +307,25 @@ no `PartitionTimeControl`, and its x86 `can_freeze_time` is false.
 Rebasing reference time alone would not implement full counter and
 timer freeze semantics.
 
-`KVM_SET_LAPIC` fires an expired one-shot LAPIC timer again, because
-KVM's saved LAPIC state cannot show whether KVM delivered the timer's
-interrupt. A restored timer that the guest already took an interrupt
-from therefore fires once more. When the timer's unmasked LVT entry
+KVM holds the expiry of a one-shot LAPIC timer that expires while its VP
+is outside `KVM_RUN` until the VP next runs, and its LAPIC state shows
+such a timer like one whose interrupt the guest took. `KVM_SET_LAPIC`
+fires both again, which only the first needs. So when a VP stops, the
+backend reads its timer's count and then has KVM deliver the interrupts
+that it holds without running the VP. If the timer had already expired
+at that read, the backend has KVM deliver again until the vector is set
+in IRR, for up to 20 ms, since KVM records an expiry only once its host
+timer fires. The saved state then has the vector of a timer that expired
+after the read pending in IRR, and an initial count of 0 for a timer
+whose interrupt the guest took. When the timer's unmasked LVT entry
 delivers a fixed interrupt to a valid vector that is pending in IRR,
 which then holds the interrupt, the backend gives KVM an initial count
-of 0 instead, and the guest reads 0 from the initial count register.
+of 0, so that KVM does not fire the timer again, and the guest reads 0
+from the initial count register. An expiry that KVM records more than
+20 ms late is saved as taken. With the VMX preemption timer, KVM records
+no expiry while the VP is outside guest mode, so the backend saves a
+timer that had expired at the read as KVM reports it, and a restored
+timer that the guest already took an interrupt from fires once more.
 
 KVM's synthetic-timer snapshot path saves config/count MSRs, but cannot
 preserve timer adjustment or undelivered expiration-message state.
