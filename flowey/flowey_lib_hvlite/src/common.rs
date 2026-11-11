@@ -34,6 +34,9 @@ pub(crate) fn openssl_dev_packages(platform: FlowPlatform) -> anyhow::Result<Vec
                 vec!["openssl-devel".into(), "perl".into()]
             }
             FlowPlatformLinuxDistro::Arch => vec!["openssl".into(), "perl".into()],
+            FlowPlatformLinuxDistro::OpenSuse => {
+                vec!["libopenssl-devel".into(), "perl".into()]
+            }
             FlowPlatformLinuxDistro::Nix => Vec::new(),
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         },

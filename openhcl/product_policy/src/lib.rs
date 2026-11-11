@@ -25,6 +25,9 @@ use alloc::vec::Vec;
 #[doc(hidden)]
 pub use paste::paste as __paste;
 
+/// Absolute path of the measured product policy file in the OpenHCL initrd.
+pub const PRODUCT_POLICY_PATH: &str = "/openhcl-product-policy";
+
 /// Per-VM measured product policy.
 ///
 /// `None` means no policy was installed; any `Some(_)` carries the

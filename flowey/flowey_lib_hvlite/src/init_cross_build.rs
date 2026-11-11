@@ -92,6 +92,11 @@ impl FlowNode for Node {
                                             match_arch!(host_arch, FlowArch::X86_64, vec!["gcc"])
                                         }
                                         FlowPlatformLinuxDistro::Nix => Vec::new(),
+                                        FlowPlatformLinuxDistro::OpenSuse => {
+                                            anyhow::bail!(
+                                                "Linux cross compilation on openSUSE is not supported"
+                                            )
+                                        }
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }
@@ -122,6 +127,11 @@ impl FlowNode for Node {
                                             vec!["aarch64-linux-gnu-gcc"]
                                         ),
                                         FlowPlatformLinuxDistro::Nix => Vec::new(),
+                                        FlowPlatformLinuxDistro::OpenSuse => {
+                                            anyhow::bail!(
+                                                "Linux cross compilation on openSUSE is not supported"
+                                            )
+                                        }
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }

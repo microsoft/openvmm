@@ -859,16 +859,21 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         arch::uninitialize_serial_io(&p);
     }
 
-    cfg_if::cfg_if! {
-        if #[cfg(target_arch = "x86_64")] {
+    cfg_select! {
+        target_arch = "x86_64" => {
             // SAFETY: the parameter blob is trusted.
             let kernel_entry: extern "C" fn(u64, &loader_defs::linux::boot_params) -> ! =
                 unsafe { core::mem::transmute(p.kernel_entry_address) };
             kernel_entry(0, &boot_params.0)
-        } else if #[cfg(target_arch = "aarch64")] {
+        }
+        target_arch = "aarch64" => {
             // SAFETY: the parameter blob is trusted.
-            let kernel_entry: extern "C" fn(fdt_data: *const u8, mbz0: u64, mbz1: u64, mbz2: u64) -> ! =
-                unsafe { core::mem::transmute(p.kernel_entry_address) };
+            let kernel_entry: extern "C" fn(
+                fdt_data: *const u8,
+                mbz0: u64,
+                mbz1: u64,
+                mbz2: u64,
+            ) -> ! = unsafe { core::mem::transmute(p.kernel_entry_address) };
             // Disable MMU for kernel boot without EFI, as required by the boot protocol.
             // Flush (and invalidate) the caches, as that is required for disabling MMU.
             // SAFETY: Just changing a bit in the register and then jumping to the kernel.
@@ -885,7 +890,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
                 );
             }
             kernel_entry(fdt.data.as_ptr(), 0, 0, 0)
-        } else {
+        }
+        _ => {
             panic!("unsupported arch")
         }
     }

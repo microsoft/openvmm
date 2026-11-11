@@ -524,6 +524,8 @@ pub mod artifacts {
             LATEST_CVM_X64("openhcl-x64-cvm.bin", X64),
             /// OpenHCL IGVM (using a linux direct-boot test image instead of UEFI)
             LATEST_LINUX_DIRECT_TEST_X64("openhcl-x64-test-linux-direct.bin", X64),
+            /// OpenHCL IGVM with a measured SIVM policy requiring secure boot.
+            LATEST_SIVM_TEST_X64("openhcl-x64-test-sivm.bin", X64),
             /// OpenHCL IGVM last release (using a linux direct-boot test image instead of UEFI)
             LATEST_RELEASE_LINUX_DIRECT_X64("release-2511-x64-direct-openhcl.bin", X64),
             /// OpenHCL IGVM (standard AARCH64)
@@ -537,6 +539,11 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_X64 {}
+
+        impl IsLoadable for LATEST_SIVM_TEST_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+        impl IsOpenhclIgvm for LATEST_SIVM_TEST_X64 {}
 
         impl IsLoadable for LATEST_RELEASE_STANDARD_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
@@ -834,11 +841,10 @@ pub mod artifacts {
         declare_vmm_test_images! {
             /// Windows 11 Enterprise ARM64 24H2
             WINDOWS_11_ENTERPRISE_AARCH64(
-                "windows11preview-arm64-win11-24h2-ent-26100.3775.250406-1.vhdx",
-                24398266368,
+                "windows11preview-arm64-win11-24h2-ent-26100.9725.261024.vhd",
+                136367309312,
                 "Windows11EnterpriseAarch64Vhdx",
-                // blob disk does not support VHDX files
-                DOES_NOT_SUPPORT_BLOB_DISK,
+                SUPPORTS_BLOB_DISK,
             )
         }
 

@@ -9,9 +9,76 @@ use petri::MemoryConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
+use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_SIVM_TEST_X64;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test_with;
+
+/// Verify that the manifest policy reaches the running OpenHCL VM through its initrd.
+#[openvmm_test(
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_SIVM_TEST_X64]
+)]
+async fn sivm_product_policy_delivered(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm,): (ResolvedArtifact<LATEST_SIVM_TEST_X64>,),
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_custom_openhcl(igvm)
+        .with_secure_boot()
+        .run()
+        .await?;
+    let policy = vm
+        .inspect_openhcl("vm/measured_product_policy", None, None)
+        .await?;
+    let policy: serde_json::Value = serde_json::from_str(&policy.json().to_string())?;
+    assert_eq!(
+        policy,
+        serde_json::json!({
+            "sivm": {
+                "0": {
+                    "require_ephemeral_vmgs": true,
+                    "require_secure_boot": true,
+                    "require_secure_boot_vars": false,
+                    "require_bcd_integrity": false,
+                    "custom_uefi_json": 2,
+                }
+            }
+        })
+    );
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// A lost or ignored policy must not turn a forbidden configuration into a successful boot.
+#[vmm_test_with(
+    noagent,
+    configs(openvmm_openhcl_uefi_x64(none)[LATEST_SIVM_TEST_X64])
+)]
+async fn sivm_product_policy_rejects_disabled_secure_boot(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm,): (ResolvedArtifact<LATEST_SIVM_TEST_X64>,),
+) -> anyhow::Result<()> {
+    let mut vm = config
+        .with_custom_openhcl(igvm)
+        .with_expect_no_boot_event()
+        .run_without_agent()
+        .await?;
+    let error = vm
+        .backend()
+        .wait_for_vtl0_start()
+        .await?
+        .expect_err("OpenHCL accepted a VM with secure boot disabled despite the SIVM policy");
+    anyhow::ensure!(
+        error
+            .0
+            .contains("product policy requires secure boot to be enabled"),
+        "unexpected VTL0 start error: {error}"
+    );
+    vm.teardown().await?;
+    Ok(())
+}
 
 #[derive(Debug)]
 struct ExpectedNvmeDeviceProperties {

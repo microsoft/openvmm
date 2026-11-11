@@ -890,7 +890,7 @@ impl VpSet {
                     .call(|x| VpEvent::State(StateEvent::Save(x)), ())
                     .await
                     .map_err(|err| SaveError::Other(RunnerGoneError(err).into()))
-                    .and_then(|x| x)
+                    .flatten()
                     .map_err(|err| SaveError::ChildError(format!("vp{index}"), Box::new(err)))?;
                 Ok((VpIndex::new(index as u32), data))
             })
@@ -915,7 +915,7 @@ impl VpSet {
                         .call(|x| VpEvent::State(StateEvent::Restore(x)), data)
                         .await
                         .map_err(|err| RestoreError::Other(RunnerGoneError(err).into()))
-                        .and_then(|x| x)
+                        .flatten()
                         .map_err(|err| {
                             RestoreError::ChildError(
                                 format!("vp{}", vp_index.index()),

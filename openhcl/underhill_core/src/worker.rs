@@ -3,17 +3,19 @@
 
 //! The Underhill VM worker.
 
-cfg_if::cfg_if! {
-    if #[cfg(guest_arch = "x86_64")] {
-        pub use hvdef::HvX64RegisterName as HvArchRegisterName;
+cfg_select! {
+    guest_arch = "x86_64" => {
         use chipset_device_resources::BSP_LINT_LINE_SET;
         use chipset_resources::pm::DEFAULT_ACPI_IRQ;
         use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
+        pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
-    } else if #[cfg(guest_arch = "aarch64")] {
+    }
+    guest_arch = "aarch64" => {
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
         use virt::Aarch64Partition;
     }
+    _ => {}
 }
 
 use crate::ControlRequest;
@@ -1537,6 +1539,8 @@ async fn new_underhill_vm(
     // Read the initial configuration from the IGVM parameters.
     let (runtime_params, measured_vtl2_info) =
         crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
+
+    let measured_product_policy = crate::measured_product_policy::load()?;
 
     // Log information about VTL2 memory
     let memory_allocation_mode = runtime_params.parsed_openhcl_boot().memory_allocation_mode;
@@ -4091,8 +4095,7 @@ async fn new_underhill_vm(
         get_client: get_client.clone(),
         device_platform_settings: dps,
         runtime_params,
-        #[cfg(feature = "product_policy")]
-        measured_product_policy: measured_vtl2_info.measured_product_policy().clone(),
+        measured_product_policy,
 
         _input_distributor: input_distributor,
         hardware_reseal,
@@ -4112,7 +4115,6 @@ async fn new_underhill_vm(
         profiler: mem_profile_tracing::HeapProfiler::new(),
     };
 
-    #[cfg(feature = "product_policy")]
     crate::measured_product_policy::validate(&loaded_vm)?;
 
     Ok(loaded_vm)

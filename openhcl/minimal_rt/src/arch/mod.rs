@@ -6,19 +6,21 @@
 mod aarch64;
 mod x86_64;
 
-cfg_if::cfg_if!(
-    if #[cfg(target_arch = "x86_64")] {
+cfg_select! {
+    target_arch = "x86_64" => {
+        use x86_64 as arch;
         pub use x86_64::msr;
         pub use x86_64::serial::COM3;
         pub use x86_64::serial::com3;
-        use x86_64 as arch;
-    } else if #[cfg(target_arch = "aarch64")] {
-        pub use aarch64::serial::Serial;
+    }
+    target_arch = "aarch64" => {
         use aarch64 as arch;
-    } else {
+        pub use aarch64::serial::Serial;
+    }
+    _ => {
         compile_error!("target_arch is not supported");
     }
-);
+}
 
 pub(crate) use arch::enlightened_panic::write_crash_reg;
 pub use arch::hypercall;

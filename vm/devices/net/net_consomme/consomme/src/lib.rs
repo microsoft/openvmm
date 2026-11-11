@@ -192,6 +192,9 @@ pub struct ConsommeParams {
     /// If true, allow guest traffic destined for host-local addresses
     /// (loopback, unspecified, link-local).
     pub allow_host_local_access: bool,
+    /// If true, start the built-in DNS resolver. If false, the guest is given
+    /// the host's DNS servers instead. Static DNS records are still answered.
+    pub internal_dns: bool,
     /// Per-connection TCP receive ring buffer bounds (guest-to-host).
     pub tcp_rx_buffer: TcpBufferBounds,
     /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
@@ -258,11 +261,12 @@ impl ConsommeParams {
             client_ip_ipv6: None,
             client_ip_ipv6_routable: None,
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
-            udp_timeout: Duration::from_secs(300),
+            udp_timeout: Duration::from_mins(5),
             // Defaults to 2*MSL per RFC 9293 for the `TimeWait` case.
-            tcp_close_timeout: Duration::from_secs(60),
+            tcp_close_timeout: Duration::from_mins(1),
             skip_ipv6_checks: false,
             allow_host_local_access: false,
+            internal_dns: true,
             tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
             tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
             flow_limits: limits::FlowLimits::default(),
@@ -350,12 +354,7 @@ impl ConsommeParams {
         self.client_ip_ipv6 = Some(link_local);
     }
 
-    /// Returns the list of IPv6 nameservers suitable for advertisement to
-    /// guests via NDP RDNSS or DHCPv6.
-    ///
-    /// Filters out addresses that are not useful as DNS servers in a
-    /// guest-facing context: unspecified, loopback, multicast, unique-local
-    /// (fc00::/7), and deprecated site-local (fec0::/10) addresses.
+    /// Returns IPv6 DNS servers suitable for NDP RDNSS or DHCPv6 advertisement.
     pub fn filtered_ipv6_nameservers(&self) -> Vec<Ipv6Address> {
         self.nameservers
             .iter()
@@ -368,8 +367,8 @@ impl ConsommeParams {
                 !(addr.is_unspecified()
                     || addr.is_loopback()
                     || addr.is_multicast()
-                    || matches!(octets[0], 0xfc | 0xfd) // unique local address
-                    || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
+                    || matches!(octets[0], 0xfc | 0xfd)
+                    || octets.starts_with(&[0xfe, 0xc0]))
             })
             .collect()
     }
@@ -383,6 +382,21 @@ impl ConsommeParams {
             ns.push(self.gateway_link_local_ipv6.into());
         }
         ns
+    }
+
+    fn warn_unreachable_nameservers(&self) {
+        for nameserver in &self.nameservers {
+            let address = IpAddr::from(*nameserver);
+            if self.is_local_address(&SocketAddr::new(address, DNS_PORT))
+                || address == IpAddr::V4(self.gateway_ip)
+                || address == IpAddr::V6(self.gateway_link_local_ipv6)
+            {
+                tracelimit::warn_ratelimited!(
+                    %address,
+                    "host DNS server is not reachable from the guest without the internal resolver; enable internal DNS or configure a guest-reachable nameserver"
+                );
+            }
+        }
     }
 
     fn is_local_address(&self, addr: &SocketAddr) -> bool {
@@ -854,7 +868,11 @@ impl Consomme {
                 }
             }
         };
-        let dns =
+        let dns = if !params.internal_dns {
+            dns_resolver::DnsResolver::without_backend(
+                dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
+            )
+        } else {
             match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
                 Ok(dns) => {
                     // When the DNS resolver is available, use the default internal nameserver.
@@ -869,7 +887,11 @@ impl Consomme {
                         dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
                     )
                 }
-            };
+            }
+        };
+        if !dns.is_available() {
+            params.warn_unreachable_nameservers();
+        }
         let tcp_rx_buffer = params.tcp_rx_buffer;
         let tcp_tx_buffer = params.tcp_tx_buffer;
         let udp_timeout = params.udp_timeout;
@@ -1068,6 +1090,12 @@ impl<T: Client> Access<'_, T> {
         // Reject guest traffic to host-local-only destinations.
         if !self.inner.state.params.allow_host_local_access
             && is_blocked_host_local_ipv4(ipv4.dst_addr())
+            && self
+                .inner
+                .state
+                .local_addr_map
+                .resolve_virtual(&ipv4.dst_addr().into())
+                .is_none()
         {
             return Err(DropReason::DestinationNotAllowed);
         }
@@ -1117,6 +1145,12 @@ impl<T: Client> Access<'_, T> {
         // Reject guest traffic to host-local-only destinations.
         if !self.inner.state.params.allow_host_local_access
             && is_blocked_host_local_ipv6(ipv6.dst_addr())
+            && self
+                .inner
+                .state
+                .local_addr_map
+                .resolve_virtual(&ipv6.dst_addr().into())
+                .is_none()
         {
             return Err(DropReason::DestinationNotAllowed);
         }
@@ -1196,6 +1230,8 @@ impl<T: Client> Access<'_, T> {
                 .state
                 .params
                 .internal_nameservers(self.inner.host_has_ipv6);
+        } else {
+            self.inner.state.params.warn_unreachable_nameservers();
         }
     }
 }

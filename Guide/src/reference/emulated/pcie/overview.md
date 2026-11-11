@@ -64,6 +64,41 @@ These resolve a device resource, create the device with MMIO
 registration, attach it to the named port, and fire the hotplug
 notification.
 
+Removal waits for the device's teardown hook and payload destruction.
+Before teardown, guest access is permanently revoked so late accesses
+cannot reach the removed device. Background resources are released before
+removal completes only when the device implements the necessary cleanup;
+the default hook does not join background tasks or drain issued I/O.
+
+`stop()` is a save-consistent pause, not a requirement to drain disk I/O
+or a guarantee that DMA has ceased. Devices retaining issued requests
+across pause must account for them in saved state where save/restore is
+supported. Device-specific lifecycle changes are separate from this
+infrastructure.
+
+`ChangeDeviceState::teardown(self)` is a terminal operation with a default
+implementation that drops the stopped device. Removal permanently closes
+the shared wrapper,
+takes ownership of its payload, and stops it if running; paused and
+never-started units are already stopped. Async teardown owns the device
+until cleanup completes and its remaining fields are dropped, even if stale
+references still hold the inaccessible wrapper. Synchronous devices can use
+the default hook to release their resources through ordinary destruction.
+Devices with asynchronous cleanup must override it, retaining and finishing
+cancellation-unsafe I/O before releasing its resources.
+
+Chipset MMIO and PIO mapping controls unregister their active ranges when
+dropped. Devices own remappable controls; the device state unit retains
+fixed-region controls and releases them before acknowledging removal.
+
+Assigned hardware that cannot pause without losing state may quiesce
+during teardown instead. Ordinary stop must not destructively reset it.
+
+A slow backend can keep the removal RPC pending. Inspection, memory
+accesses, and NMI requests remain available; state transitions and further
+hotplug operations wait for removal to finish. Worker shutdown also waits
+for pending cleanup before destroying the partition.
+
 See the
 [`PetriVmRuntime`](https://openvmm.dev/rustdoc/linux/petri/vm/trait.PetriVmRuntime.html)
 trait for the test API (`add_pcie_device` / `remove_pcie_device`)
@@ -100,9 +135,15 @@ a GICv3 ITS or a GICv2m MSI frame, depending on the platform:
   per-root-complex ID mappings; the device tree includes an `its`
   child node under the GIC with `msi-controller`.
 
-- **GICv2m**: MSI writes map to a fixed pool of 64 SPIs via
+- **GICv2m**: MSI writes map to a fixed pool of SPIs (64 by default) via
   a v2m doorbell register. The MADT includes a GICv2m MSI
   frame entry.
+
+The v2m pool is shared by endpoints and PCIe root ports. Windows drivers can
+reserve every advertised MSI-X entry: a 64-entry endpoint plus one root-port
+MSI needs at least 65 SPIs, or Windows reports Code 12 (insufficient resources).
+When constructing a VM programmatically, size `GicMsiConfig::V2m.spi_count`
+for the complete topology rather than only the endpoint's active queues.
 
 The MSI controller can be overridden with the `--gic-msi`
 CLI option (`auto`, `its`, or `v2m`).

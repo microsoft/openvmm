@@ -2350,7 +2350,7 @@ mod tests {
             &driver,
             "",
             None,
-            Duration::from_secs(86400),
+            Duration::from_hours(24),
             adhoc(|req| {
                 drop(req.defer());
             }),

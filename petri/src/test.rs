@@ -442,7 +442,7 @@ where
             // before the failure is reported.
             drop(driver);
             pool.run();
-            match r.and_then(|r| r) {
+            match r.flatten() {
                 Ok(r) => r,
                 Err(panic) => std::panic::resume_unwind(panic),
             }

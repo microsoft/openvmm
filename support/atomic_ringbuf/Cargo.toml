@@ -7,7 +7,6 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-cfg-if.workspace = true
 inspect = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
 

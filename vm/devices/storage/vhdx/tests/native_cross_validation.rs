@@ -24,6 +24,7 @@ use std::borrow::Borrow;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use test_with_tracing::test;
 use vhdx::AsyncFile;
 use vhdx::ReadRange;
 use vhdx::TrimMode;
@@ -1065,6 +1066,68 @@ async fn trim_native_write_rust_trim_native_read(driver: DefaultDriver) {
 // =====================================================================
 // Differencing Disk Helpers
 // =====================================================================
+
+#[pal_async::async_test]
+async fn set_parent_native_reads_relocated_chain(driver: DefaultDriver) {
+    for native_child in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        let relocated = directory.path().join("relocated");
+        std::fs::create_dir(&relocated).unwrap();
+        let relocated_parent = relocated.join("parent.vhdx");
+        let disk_size = 4 * 1024 * 1024;
+        let block_size = 2 * 1024 * 1024;
+        let parent = RustVhdx::create(&parent_path, disk_size, block_size, &driver).await;
+        parent.write_data(0, &[0x11; 1024]).await;
+        let linkage = parent.vhdx.data_write_guid();
+        parent.close().await;
+        if native_child {
+            drop(NativeVhdx::create_differencing(&child_path, &parent_path));
+        } else {
+            vhdx::create(
+                &StdFile::create(&child_path).unwrap(),
+                &mut vhdx::CreateParams {
+                    disk_size,
+                    block_size,
+                    disk_type: vhdx::DiskType::Differencing(
+                        vhdx::VhdxParent::new(linkage)
+                            .with_relative_path("parent.vhdx")
+                            .unwrap(),
+                    ),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let child = RustVhdx::open(&child_path, false, Some(&driver)).await;
+        child.write_data(0, &[0xaa; 512]).await;
+        child.close().await;
+        std::fs::rename(&parent_path, &relocated_parent).unwrap();
+
+        let mut child = RustVhdx::open(&child_path, false, Some(&driver)).await;
+        let child_guid = child.vhdx.data_write_guid();
+        child
+            .vhdx
+            .set_parent(
+                &vhdx::VhdxParent::new(linkage)
+                    .with_relative_path(r"relocated\parent.vhdx")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(child.vhdx.data_write_guid(), child_guid);
+        child.close().await;
+
+        let mut native = NativeVhdx::open(&child_path, true);
+        let raw = native.attach_raw();
+        let mut data = [0; 1024];
+        assert_eq!(raw.read_at(0, &mut data).unwrap(), data.len());
+        assert_eq!(&data[..512], &[0xaa; 512]);
+        assert_eq!(&data[512..], &[0x11; 512]);
+    }
+}
 
 impl NativeVhdx {
     /// Create a differencing VHDX child (parent must already exist).

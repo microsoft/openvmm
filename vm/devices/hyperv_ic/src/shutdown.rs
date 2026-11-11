@@ -198,6 +198,19 @@ impl<M: RingMem + Unpin> ShutdownChannel<M> {
             } => match state {
                 ReadyState::Ready => std::future::pending().await,
                 ReadyState::SendShutdown(params) => {
+                    let supported = match params.shutdown_type {
+                        ShutdownType::PowerOff => true,
+                        ShutdownType::Reboot => versions.message_version >= SHUTDOWN_VERSION_3_1,
+                        ShutdownType::Hibernate => versions.message_version >= SHUTDOWN_VERSION_3_2,
+                    };
+                    if !supported {
+                        if let Some(send) = self.pending_shutdown.take() {
+                            send.complete(ShutdownResult::Failed(Status::NOT_SUPPORTED.0));
+                        }
+                        *state = ReadyState::Ready;
+                        return Ok(());
+                    }
+
                     let mut flags =
                         hyperv_ic_protocol::shutdown::ShutdownFlags::new().with_force(params.force);
                     match params.shutdown_type {
@@ -507,6 +520,103 @@ mod tests {
                 .with_transaction(true)
                 .with_response(true),
             ..FromZeros::new_zeroed()
+        }
+    }
+
+    #[async_test]
+    async fn shutdown_operations_require_supported_versions(driver: DefaultDriver) {
+        let (_thread, worker_driver) =
+            pal_async::DefaultPool::spawn_on_thread("ic-shutdown-version");
+        for (message_version, reboot_supported, hibernate_supported) in [
+            (SHUTDOWN_VERSION_1, false, false),
+            (SHUTDOWN_VERSION_3, false, false),
+            (SHUTDOWN_VERSION_3_1, true, false),
+            (SHUTDOWN_VERSION_3_2, true, true),
+        ] {
+            let versions = Versions {
+                framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_3,
+                message_version,
+            };
+            let (host, guest) = connected_async_channels(16384);
+            let mut guest = MessagePipe::new(guest).unwrap();
+            let (send, recv) = mesh::channel();
+            let mut task = TaskControl::new(Worker {
+                ic: ShutdownIc::new(recv),
+                channel: ShutdownChannel::new(
+                    host,
+                    Some(ChannelState::Ready {
+                        versions,
+                        state: ReadyState::Ready,
+                        clients: Vec::new(),
+                    }),
+                )
+                .unwrap(),
+            });
+            task.insert(&worker_driver, "shutdown", ());
+            assert!(task.start());
+
+            for force in [false, true] {
+                for (shutdown_type, supported) in [
+                    (ShutdownType::Reboot, reboot_supported),
+                    (ShutdownType::Hibernate, hibernate_supported),
+                    (ShutdownType::PowerOff, true),
+                ] {
+                    let restart = matches!(shutdown_type, ShutdownType::Reboot);
+                    let hibernate = matches!(shutdown_type, ShutdownType::Hibernate);
+                    let pending = send.call(
+                        ShutdownRpc::Shutdown,
+                        ShutdownParams {
+                            shutdown_type,
+                            force,
+                        },
+                    );
+                    let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
+                    if supported {
+                        let size = with_timeout(&driver, guest.recv(&mut buffer))
+                            .await
+                            .unwrap();
+                        let (header, body) = Header::read_from_prefix(&buffer[..size]).unwrap();
+                        assert_eq!(header.message_type, MessageType::SHUTDOWN);
+                        assert_eq!(header.framework_version, versions.framework_version);
+                        assert_eq!(header.message_version, message_version);
+                        assert_eq!(
+                            header.message_size as usize,
+                            size_of::<hyperv_ic_protocol::shutdown::ShutdownMessage>()
+                        );
+                        let message =
+                            hyperv_ic_protocol::shutdown::ShutdownMessage::read_from_bytes(body)
+                                .unwrap();
+                        assert_eq!(message.flags.force(), force);
+                        assert_eq!(message.flags.restart(), restart);
+                        assert_eq!(message.flags.hibernate(), hibernate);
+                        let mut ack = response();
+                        ack.framework_version = versions.framework_version;
+                        ack.message_version = message_version;
+                        guest.try_send(ack.as_bytes()).unwrap();
+                        assert_eq!(
+                            with_timeout(&driver, pending).await.unwrap(),
+                            ShutdownResult::Ok
+                        );
+                    } else {
+                        assert_eq!(
+                            with_timeout(&driver, pending).await.unwrap(),
+                            ShutdownResult::Failed(Status::NOT_SUPPORTED.0),
+                            "unexpected result for version {message_version}, restart={restart}, hibernate={hibernate}, force={force}"
+                        );
+                    }
+                    assert!(guest.recv(&mut buffer).now_or_never().is_none());
+                }
+            }
+
+            stop_with_timeout(&mut task, &driver).await;
+            assert!(task.task().channel.pending_shutdown.is_none());
+            assert!(matches!(
+                &task.task().channel.state,
+                ChannelState::Ready {
+                    state: ReadyState::Ready,
+                    ..
+                }
+            ));
         }
     }
 

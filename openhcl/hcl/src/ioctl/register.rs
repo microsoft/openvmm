@@ -125,25 +125,32 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     ) -> Result<(), GetRegError> {
         assert_eq!(names.len(), values.len());
 
-        if let Some(sidecar) = &mut self.sidecar {
-            return sidecar
-                .get_vp_registers(vtl.into(), zerocopy::transmute_ref!(names), values)
-                .map_err(GetRegError::Sidecar);
-        }
-
         const MAX_REGS_PER_HVCALL: usize = 32;
         let mut hv_names: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
         let mut hv_values: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
 
-        let do_hvcall =
-            |hv_names: &mut ArrayVec<_, _>, hv_values: &mut ArrayVec<&mut HvRegisterValue, _>| {
+        let do_get_regs =
+            |runner: &mut Self,
+             hv_names: &mut ArrayVec<_, _>,
+             hv_values: &mut ArrayVec<&mut HvRegisterValue, _>| {
                 let mut values: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::from_iter(
                     std::iter::repeat_n(FromZeros::new_zeroed(), hv_names.len()),
                 );
-                self.hcl
-                    .mshv_hvcall
-                    .get_vp_registers_hypercall(vtl, hv_names, &mut values)
-                    .map_err(GetRegError::Hypercall)?;
+                if let Some(sidecar) = &mut runner.sidecar {
+                    sidecar
+                        .get_vp_registers(
+                            vtl.into(),
+                            zerocopy::transmute_ref!(hv_names.as_slice()),
+                            &mut values,
+                        )
+                        .map_err(GetRegError::Sidecar)?;
+                } else {
+                    runner
+                        .hcl
+                        .mshv_hvcall
+                        .get_vp_registers_hypercall(vtl, hv_names, &mut values)
+                        .map_err(GetRegError::Hypercall)?;
+                }
 
                 for (dest, value) in hv_values.iter_mut().zip(values) {
                     **dest = value;
@@ -158,7 +165,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                 && let Some(v) = T::try_get_reg(self, vtl, name.into())
             {
                 *value = v;
-            } else if self.is_kernel_managed(name) {
+            } else if self.sidecar.is_none() && self.is_kernel_managed(name) {
                 // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
                 // currently has a bug where it only supports one register at a
                 // time. Once that's fixed, this code could get a group of
@@ -187,13 +194,13 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                 hv_values.push(value);
 
                 if hv_names.is_full() {
-                    do_hvcall(&mut hv_names, &mut hv_values)?;
+                    do_get_regs(self, &mut hv_names, &mut hv_values)?;
                 }
             }
         }
 
         if !hv_names.is_empty() {
-            do_hvcall(&mut hv_names, &mut hv_values)?;
+            do_get_regs(self, &mut hv_names, &mut hv_values)?;
         }
 
         Ok(())
@@ -216,22 +223,21 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         vtl: Vtl,
         regs: &mut dyn Iterator<Item = HvRegisterAssoc>,
     ) -> Result<(), SetRegError> {
-        if let Some(sidecar) = &mut self.sidecar {
-            // TODO: Optimize this call to not need the heap?
-            let regs: Vec<HvRegisterAssoc> = regs.collect();
-            return sidecar
-                .set_vp_registers(vtl.into(), &regs)
-                .map_err(SetRegError::Sidecar);
-        }
-
         const MAX_REGS_PER_HVCALL: usize = 32;
         let mut hv_regs: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
 
-        let do_hvcall = |hv_regs: &mut ArrayVec<_, _>| {
-            self.hcl
-                .mshv_hvcall
-                .set_vp_registers_hypercall(vtl, hv_regs)
-                .map_err(SetRegError::Hypercall)?;
+        let do_set_regs = |runner: &mut Self, hv_regs: &mut ArrayVec<_, _>| {
+            if let Some(sidecar) = &mut runner.sidecar {
+                sidecar
+                    .set_vp_registers(vtl.into(), hv_regs)
+                    .map_err(SetRegError::Sidecar)?;
+            } else {
+                runner
+                    .hcl
+                    .mshv_hvcall
+                    .set_vp_registers_hypercall(vtl, hv_regs)
+                    .map_err(SetRegError::Hypercall)?;
+            }
             hv_regs.clear();
             Ok(())
         };
@@ -244,7 +250,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                 && !in_order_update_required
                 && T::try_set_reg(self, vtl, reg.name, reg.value)
             {
-            } else if self.is_kernel_managed(reg.name.into()) {
+            } else if self.sidecar.is_none() && self.is_kernel_managed(reg.name.into()) {
                 // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
                 // currently has a bug where it only supports one register at a
                 // time. Once that's fixed, this code could set a group of
@@ -262,7 +268,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
             } else {
                 hv_regs.push(reg);
                 if hv_regs.is_full() {
-                    do_hvcall(&mut hv_regs)?;
+                    do_set_regs(self, &mut hv_regs)?;
                     pending_ordered_reg = false;
                 } else if in_order_update_required {
                     pending_ordered_reg = true;
@@ -282,7 +288,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         }
 
         if !hv_regs.is_empty() {
-            do_hvcall(&mut hv_regs)?;
+            do_set_regs(self, &mut hv_regs)?;
         }
 
         Ok(())

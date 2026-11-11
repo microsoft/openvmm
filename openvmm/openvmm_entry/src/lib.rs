@@ -27,6 +27,7 @@ use console_relay::ConsoleLaunchOptions;
 use crate::cli_args::SecureBootTemplateCli;
 use anyhow::Context;
 use anyhow::bail;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use chipset_resources::battery::HostBatteryUpdate;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
@@ -66,6 +67,8 @@ use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_IRQ_X64;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
@@ -93,6 +96,7 @@ use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::config::supports_acpi_power_button;
 use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
@@ -191,6 +195,7 @@ struct VmResources {
     serial_driver: Option<DefaultDriver>,
     framebuffer_access: Option<FramebufferAccess>,
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
+    acpi_power_button: Option<mesh::Sender<PowerButtonRpc>>,
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
@@ -1054,6 +1059,12 @@ async fn vm_config_from_command_line(
                             openvmm_defs::config::SmmuOas::Fixed(bits)
                         }
                     },
+                    ssidsize: match s.ssidsize {
+                        cli_args::SmmuSsidSizeCli::Auto => openvmm_defs::config::SmmuSsidSize::Auto,
+                        cli_args::SmmuSsidSizeCli::Fixed(bits) => {
+                            openvmm_defs::config::SmmuSsidSize::Fixed(bits)
+                        }
+                    },
                 }
             }),
             #[cfg(guest_arch = "x86_64")]
@@ -1333,28 +1344,12 @@ async fn vm_config_from_command_line(
     // it cannot honor, so it is delivered as the shared `SmbiosConfig`.
     let ged_smbios = (*smbios).clone();
 
-    let layout_config = chipset.layout_config();
-    let VmChipsetResult {
-        chipset,
-        mut chipset_devices,
-        pci_chipset_devices,
-        isa_dma_controller,
-        capabilities,
-    } = chipset
-        .build()
-        .context("failed to build chipset configuration")?;
-
     let tpm_version = opt.tpm.map(|cli_ver| match cli_ver {
         TpmVersionCli::V138 => TpmVersion::V138,
         TpmVersionCli::V185 => TpmVersion::V185,
     });
 
-    if opt.restore_snapshot.is_some() {
-        // Snapshot restore: skip firmware loading entirely. Device state and
-        // memory come from the snapshot directory.
-        load_mode = LoadMode::None;
-        with_hv = true;
-    } else if let Some(igvm) = &opt.igvm {
+    if let Some(igvm) = &opt.igvm {
         let cli_args::UefiCli {
             firmware,
             debug: _,
@@ -1534,6 +1529,27 @@ async fn vm_config_from_command_line(
             smbios,
         };
     }
+
+    if supports_acpi_power_button(&load_mode) {
+        let (send, recv) = mesh::channel();
+        let irq = match arch {
+            MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,
+            MachineArch::Aarch64 => DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64,
+        };
+        chipset = chipset.with_acpi_power_button(irq, recv);
+        resources.acpi_power_button = Some(send);
+    }
+
+    let layout_config = chipset.layout_config();
+    let VmChipsetResult {
+        chipset,
+        mut chipset_devices,
+        pci_chipset_devices,
+        isa_dma_controller,
+        capabilities,
+    } = chipset
+        .build()
+        .context("failed to build chipset configuration")?;
 
     let mut vmgs = Some(if let Some(vmgs) = &opt.vmgs {
         let encryption_policy = if opt.test_gsp_by_id {
@@ -1950,6 +1966,7 @@ async fn vm_config_from_command_line(
     if let Some(pmem_args) = &opt.virtio_pmem {
         let resource: Resource<VirtioDeviceHandle> = virtio_resources::pmem::VirtioPmemHandle {
             path: pmem_args.path.clone(),
+            read_only: false,
         }
         .into_resource();
         if let Some(pcie_port) = &pmem_args.pcie_port {
@@ -2369,7 +2386,9 @@ fn parse_endpoint(
             };
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
+                params: Default::default(),
                 ports,
+                internal_dns: true,
                 recv,
             }
             .into_resource()
@@ -3089,6 +3108,7 @@ async fn run_control_inner(
             nvme_vtl2_rpc: resources.nvme_vtl2_rpc,
             consomme_rpc: resources.consomme_rpc,
             shutdown_ic: resources.shutdown_ic,
+            acpi_power_button: resources.acpi_power_button,
             kvp_ic: resources.kvp_ic,
             console_in: resources.console_in,
             has_vtl2,
@@ -3222,6 +3242,52 @@ mod tests {
     use std::fs::File;
     use test_with_tracing::test;
     use vm_resource::ResourceId;
+
+    /// The same boot flags give the same ACPI power button with and without
+    /// `--restore-snapshot`.
+    #[test]
+    fn restore_builds_the_acpi_power_button_of_its_boot_command_line() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let file = |name: &str| {
+                let path = temp_dir.path().join(name);
+                File::create(&path).unwrap();
+                path.to_str().unwrap().to_owned()
+            };
+            let kernel = file("kernel");
+            let initrd = file("initrd");
+            let uefi = format!("--uefi=firmware={}", file("firmware"));
+            // The config build does not read the snapshot directory.
+            let snapshot = temp_dir.path().join("snapshot");
+            let linux = ["--kernel", kernel.as_str(), "--initrd", initrd.as_str()];
+
+            for (boot, has_button) in [
+                (linux.to_vec(), true),
+                ([&linux[..], &["--device-tree"]].concat(), false),
+                (vec![uefi.as_str()], true),
+            ] {
+                for restore in [false, true] {
+                    let mut args = vec!["openvmm", "--single-process"];
+                    args.extend(&boot);
+                    if restore {
+                        args.extend(["--restore-snapshot", snapshot.to_str().unwrap()]);
+                    }
+                    let opt = Options::try_parse_from(&args).unwrap();
+                    let mesh = VmmMesh::new(&driver, true).unwrap();
+                    let (config, _) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                        .await
+                        .unwrap();
+                    mesh.shutdown().await;
+
+                    let built = config
+                        .chipset_devices
+                        .iter()
+                        .any(|device| device.name == "acpi-power-button");
+                    assert_eq!(built, has_button, "{args:?}");
+                }
+            }
+        });
+    }
 
     #[test]
     fn selects_non_volatile_store_backing() {
@@ -3415,6 +3481,7 @@ mod tests {
                 assert!(config.vmbus.is_some());
                 assert!(config.vtl2_vmbus.is_some());
                 assert!(resources.ged_rpc.is_some());
+                assert!(resources.acpi_power_button.is_none());
                 for id in ["ged", "gel"] {
                     assert!(
                         config.vmbus_devices.iter().any(|(vtl, resource)| {

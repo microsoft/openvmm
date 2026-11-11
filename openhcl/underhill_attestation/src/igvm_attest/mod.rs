@@ -575,7 +575,7 @@ mod tests {
             let base_size = size_of::<IgvmAttestRequestBase>()
                 + size_of::<IgvmAttestRequestDataExt>()
                 + self.claims(Some(metadata.clone())).len();
-            metadata.subject = "s".repeat(size.checked_sub(base_size).unwrap());
+            metadata.subject = "s".repeat(size.strict_sub(base_size));
             metadata
         }
 

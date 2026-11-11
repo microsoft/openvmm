@@ -1227,11 +1227,11 @@ impl hv1_emulator::VtlProtectAccess for KvmNoVtlProtections<'_> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
         self.0
-            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
             .map_err(|_| HvError::OperationDenied)
     }
 
@@ -1854,8 +1854,8 @@ impl<'p> Processor for KvmProcessor<'p> {
                         dr6,
                         dr7,
                     } => {
-                        if dr6 & x86defs::DR6_BREAKPOINT_MASK != 0 {
-                            let i = dr6.trailing_zeros() as usize;
+                        if let Some(i) = (dr6 & x86defs::DR6_BREAKPOINT_MASK).lowest_one() {
+                            let i = i as usize;
                             let bp = HardwareBreakpoint::from_dr7(dr7, self.guest_debug_db[i], i);
                             return Err(VpHaltReason::HwBreak(bp));
                         } else if dr6 & x86defs::DR6_SINGLE_STEP != 0 {
