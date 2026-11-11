@@ -8,6 +8,7 @@
 //! existing platform device encodes the v1 sample. No guest-TSC offset,
 //! implicit profile, or host-counter substitute is used.
 
+use super::time_abi_report::TimeAbiReport;
 use crate::partition::HvlitePartition;
 use chipset_resources::microvm_time::ARM64_TIME_BINDING_LEN;
 use chipset_resources::microvm_time::HostTimeFields;
@@ -27,6 +28,7 @@ pub(super) type PartitionTimeAbi = virt::time_abi::TimeAbiConfig;
 
 pub(super) struct TimeAbiState {
     pub clock: Arc<TimeAbiClock>,
+    pub report: TimeAbiReport,
 }
 
 pub(super) fn prepare_contract(
@@ -73,13 +75,16 @@ pub(super) fn admit_partition(
     prepared: PartitionTimeAbi,
     context: super::TimeAbiAdmission<'_>,
 ) -> anyhow::Result<TimeAbiState> {
+    let (clock, report) = TimeAbiClock::new(
+        context.partition,
+        context.capacity,
+        context.hypervisor,
+        &prepared,
+        &context.parameters.hooks,
+    )?;
     Ok(TimeAbiState {
-        clock: Arc::new(TimeAbiClock::new(
-            context.partition,
-            context.capacity,
-            &prepared,
-            &context.parameters.hooks,
-        )?),
+        clock: Arc::new(clock),
+        report,
     })
 }
 
@@ -95,16 +100,18 @@ impl TimeAbiClock {
     pub(super) fn new(
         partition: &Arc<dyn HvlitePartition>,
         capacity: u32,
+        hypervisor: &str,
         expected: &virt::time_abi::TimeAbiConfig,
         hooks: &TimeAbiTestHooks,
-    ) -> Result<Self, TimeAbiError> {
+    ) -> Result<(Self, TimeAbiReport), TimeAbiError> {
         let backend = partition.time_abi().ok_or_else(|| TimeAbiError::new(
             TimeAbiCode::ProfileUnsupported,
             "no ARM CPU/time backend contract was selected; canonical profile and effective guest validation gates remain closed",
         ))?;
         let config = backend.configuration();
         config.validate()?;
-        virt::time_abi::aarch64::verify_cpu_id_requirements(backend)?;
+        let cpu_id_registers_verified =
+            virt::time_abi::aarch64::verify_cpu_id_requirements(backend)?;
         if config != expected {
             return Err(TimeAbiError::new(
                 TimeAbiCode::CpuSurface,
@@ -114,19 +121,44 @@ impl TimeAbiClock {
                 ),
             ));
         }
-        Ok(Self {
-            partition: Arc::downgrade(partition),
-            binding: config.binding(capacity)?,
-            rates: SampleRates {
-                declared_hz: config.counter_hz,
-                native_hz: config.counter_hz,
-                native_basis: NativeRateBasis::ArchitecturalCounter,
+        let observed = backend.preflight()?;
+        let report = TimeAbiReport {
+            hypervisor: hypervisor.to_owned(),
+            cpu_profile: config.cpu_profile.id.clone(),
+            cpu_profile_sha256: config
+                .cpu_profile
+                .sha256
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            counter_hz: observed.counter_hz,
+            backend_usable_gpa_bits: config.backend_usable_gpa_bits,
+            configured_gpa_bits: observed.physical_address_bits,
+            architectural_pa_bits: config.cpu_profile.physical_address_bits,
+            effective_parange: observed.effective_parange,
+            feature_bank_count: observed.feature_banks.len() as u32,
+            feature_bank0: observed.feature_banks[0],
+            feature_bank1: observed.feature_banks[1],
+            cpu_id_registers_verified,
+            backend_readback: true,
+            effective_cpu: true,
+        };
+        Ok((
+            Self {
+                partition: Arc::downgrade(partition),
+                binding: config.binding(capacity)?,
+                rates: SampleRates {
+                    declared_hz: config.counter_hz,
+                    native_hz: config.counter_hz,
+                    native_basis: NativeRateBasis::ArchitecturalCounter,
+                },
+                publisher: Mutex::new(HostClockPublisher::new(
+                    virt::time_abi::host::host_clock_kind(),
+                    hooks,
+                )),
             },
-            publisher: Mutex::new(HostClockPublisher::new(
-                virt::time_abi::host::host_clock_kind(),
-                hooks,
-            )),
-        })
+            report,
+        ))
     }
 
     fn try_sample(&self) -> Result<HostTimeFields, TimeAbiError> {

@@ -18,6 +18,7 @@ mod time_abi;
 #[cfg(guest_arch = "aarch64")]
 #[path = "dispatch/time_abi_aarch64.rs"]
 mod time_abi;
+mod time_abi_report;
 
 use self::device_removal::DeviceRemovalState;
 use self::device_removal::VPCI_EJECT_GRACE_PERIOD;
@@ -525,7 +526,6 @@ pub(crate) struct InitializedVm {
 struct TimeAbiAdmission<'a> {
     partition: &'a Arc<dyn HvlitePartition>,
     parameters: &'a openvmm_defs::time_abi::TimeAbiParameters,
-    #[cfg(guest_arch = "x86_64")]
     hypervisor: &'a str,
     #[cfg(guest_arch = "x86_64")]
     restore: Option<&'a openvmm_defs::time_abi::RestoreTimeInput>,
@@ -1054,7 +1054,6 @@ struct LoadedVmInner {
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
     /// The time ABI state, when the partition uses the time ABI.
-    #[cfg(guest_arch = "x86_64")]
     time_abi: Option<time_abi::TimeAbiState>,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
@@ -2116,7 +2115,6 @@ impl InitializedVm {
                     TimeAbiAdmission {
                         partition: &partition,
                         parameters,
-                        #[cfg(guest_arch = "x86_64")]
                         hypervisor: &cfg.microvm.hypervisor_id,
                         #[cfg(guest_arch = "x86_64")]
                         restore,
@@ -3531,7 +3529,6 @@ impl InitializedVm {
                 partition,
                 chipset_devices: devices,
                 _vmtime: vmtime,
-                #[cfg(guest_arch = "x86_64")]
                 time_abi: _time_abi_state,
                 memory_manager,
                 gm,
@@ -4325,6 +4322,10 @@ impl LoadedVm {
                             .field("memory_layout", &self.inner.mem_layout)
                             .field("resolver", &self.inner.resolver)
                             .field("vmgs", &self.inner.vmgs_client_inspect_handle);
+                        #[cfg(guest_arch = "aarch64")]
+                        if let Some(state) = &self.inner.time_abi {
+                            resp.field("time-abi", &state.report);
+                        }
                         #[cfg(target_os = "linux")]
                         resp.field("vfio", &self.inner.vfio_inspect)
                             .field("vfio_cdev", &self.inner.vfio_cdev_inspect);
