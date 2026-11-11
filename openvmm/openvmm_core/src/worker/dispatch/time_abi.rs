@@ -10,6 +10,7 @@
 #![cfg(guest_arch = "x86_64")]
 
 use super::LoadedVm;
+use super::time_abi_report::TimeAbiReport;
 use crate::partition::HvlitePartition;
 use anyhow::Context as _;
 use chipset_resources::microvm_time::HostTimeFields;
@@ -23,7 +24,6 @@ use cpu_profile::ProfileError;
 use cpu_profile::ProfileErrorCode;
 use cpu_profile::fingerprint::CpuFingerprint;
 use futures_concurrency::future::Join;
-use inspect::Inspect;
 use inspect::InspectMut;
 use openvmm_defs::time_abi::EffectiveCpuidEntry;
 use openvmm_defs::time_abi::RestoreTimeInput;
@@ -44,8 +44,6 @@ use virt::CpuidLeaf;
 use virt::CpuidLeafSet;
 use virt::time_abi::DeclaredRates;
 use virt::time_abi::DowntimeSource;
-use virt::time_abi::IdentityMsrRoute;
-use virt::time_abi::RateCheck;
 use virt::time_abi::TIME_ABI_VERSION;
 use virt::time_abi::TimeAbiBackend;
 use virt::time_abi::TimeAbiCode;
@@ -696,30 +694,6 @@ pub(super) fn guest_tsc_offset(
     hypervisor: &str,
 ) -> Result<GuestTscOffset, TimeAbiError> {
     backend(partition, hypervisor)?.guest_tsc_offset()
-}
-
-/// What the time ABI preflight established for a VM process, exposed through
-/// inspect at `time-abi` together with the declared rates.
-#[derive(Debug, Clone, Inspect)]
-pub(super) struct TimeAbiReport {
-    /// The backend.
-    pub hypervisor: String,
-    /// The CPU profile.
-    pub cpu_profile: String,
-    /// The identity MSR route.
-    #[inspect(debug)]
-    pub msr_route: IdentityMsrRoute,
-    /// The synchronized TSC set method.
-    #[inspect(debug)]
-    pub sync: TscSyncMethod,
-    /// What the backend reports as the native TSC rate.
-    #[inspect(debug)]
-    pub native_rate: NativeRateBasis,
-    /// The backend's native TSC rate `F_d`, after the rate test hook.
-    pub native_tsc_hz: u64,
-    /// On restore, the accepted rate check against the snapshot's rate.
-    #[inspect(debug)]
-    pub rate_check: Option<RateCheck>,
 }
 
 /// Runs the backend preflight and the rate policy, and declares the rates
@@ -1536,6 +1510,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use virt::time_abi::BackendPreflight;
     use virt::time_abi::HostTimeSample;
+    use virt::time_abi::IdentityMsrRoute;
     use virt::time_abi::TscAnchor;
     use virt::time_abi::cpuid::effective_cpuid;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;

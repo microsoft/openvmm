@@ -127,6 +127,21 @@ pub struct CounterUtcPair {
     pub pairing_ns: u64,
 }
 
+/// Native partition readbacks checked against its configured ARM contract.
+/// These do not replace the effective architectural ID checks or prove UTC
+/// synchronization.
+#[derive(Debug, Clone)]
+pub struct BackendPreflight {
+    /// The observed architectural counter frequency.
+    pub counter_hz: u64,
+    /// The observed backend guest-physical address width.
+    pub physical_address_bits: u32,
+    /// The observed effective MMFR0 PARange field.
+    pub effective_parange: u8,
+    /// The two observed processor feature banks.
+    pub feature_banks: [u64; 2],
+}
+
 /// Maximum accepted counter/UTC pairing uncertainty, in nanoseconds.
 pub const MAX_COUNTER_PAIRING_NS: u64 = 100_000;
 
@@ -173,6 +188,16 @@ pub trait TimeAbiBackend: Send + Sync {
     /// Backend configuration readback is not complete effective ID/cache proof.
     fn configuration(&self) -> &TimeAbiConfig;
 
+    /// Reuses native configuration readback and fails unless the observed
+    /// counter rate, address contract and feature banks match the configured
+    /// contract. Missing evidence is unsupported, not an expected-value echo.
+    fn preflight(&self) -> Result<BackendPreflight, TimeAbiError> {
+        Err(TimeAbiError::new(
+            TimeAbiCode::ProfileUnsupported,
+            "ARM backend does not provide CPU/time configuration readback",
+        ))
+    }
+
     /// Reads an effective partition-wide architectural ID register using the
     /// backend's native provider, without executing a product VP. This is
     /// separate from per-VP topology and feature-bank configuration readback.
@@ -200,7 +225,8 @@ pub trait TimeAbiBackend: Send + Sync {
 /// This is the effective-ID portion of admission, not canonical-profile,
 /// generation, topology, or complete cache/time validation. A missing native
 /// provider is a failure, never an expected-value or host-capability substitute.
-pub fn verify_cpu_id_requirements(backend: &dyn TimeAbiBackend) -> Result<(), TimeAbiError> {
+/// Returns the number of successfully checked requirements.
+pub fn verify_cpu_id_requirements(backend: &dyn TimeAbiBackend) -> Result<usize, TimeAbiError> {
     let config = backend.configuration();
     config.validate()?;
     if config.cpu_profile.id_registers.is_empty() {
@@ -229,7 +255,7 @@ pub fn verify_cpu_id_requirements(backend: &dyn TimeAbiBackend) -> Result<(), Ti
             ),
         ));
     }
-    Ok(())
+    Ok(config.cpu_profile.id_registers.len())
 }
 
 #[cfg(test)]
@@ -399,7 +425,11 @@ mod tests {
             mask: 0xf0,
             value: 0x20,
         });
-        verify_cpu_id_requirements(&backend).unwrap();
+        assert_eq!(verify_cpu_id_requirements(&backend).unwrap(), 1);
+        assert_eq!(
+            backend.preflight().unwrap_err().code,
+            TimeAbiCode::ProfileUnsupported
+        );
         backend.value = 0x30;
         backend.config.cpu_profile.id_registers.push(CpuIdRegister {
             register: aarch64defs::SystemReg::ID_AA64MMFR0_EL1,

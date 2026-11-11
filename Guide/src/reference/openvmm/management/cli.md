@@ -669,7 +669,13 @@ describes the source definitions.
   checks (CPU profile support, effective CPUID, rates) without starting the
   guest, print one `NVX-TIME-ABI-VERIFY:` line, and exit with status 0 or 1.
   Host qualification uses it; it cannot be combined with snapshot capture or
-  restore.
+  restore. On ARM64/WHP, this uses the normal cold-boot inputs and admission
+  gates, but exits before running the Linux guest. Its architecture-specific
+  report identifies the selected profile and digest, actual counter frequency,
+  backend address/feature-bank readbacks and completed effective CPU-register
+  checks; it does not report x86 TSC, LAPIC or MSR fields. Missing or failed
+  evidence fails verification. This is not a UTC synchronization or clock
+  authority check. ARM still rejects `--x-time-abi-test-hook`.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
   `platform`, `workload-start`, or `instance-checkpoint`. The first two are
   reusable clone policies; instance checkpoints use single-use resume policy.

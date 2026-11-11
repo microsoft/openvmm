@@ -859,8 +859,8 @@ impl Options {
                 "ARM microVM requires at most 63 GiB logical RAM"
             );
             anyhow::ensure!(
-                !self.microvm.x_time_abi_verify && self.microvm.x_time_abi_test_hook.is_empty(),
-                "ARM microVM does not support x86 time ABI verification/test-hook options"
+                self.microvm.x_time_abi_test_hook.is_empty(),
+                "ARM microVM does not support x86 time ABI test-hook options"
             );
         }
         let ramfs_overlay =
@@ -1597,13 +1597,21 @@ mod tests {
             vec!["--memory", "64G"],
             vec!["--uefi"],
             vec!["--device-tree"],
-            vec!["--x-time-abi-verify"],
+            vec![
+                "--x-time-abi-verify",
+                "--x-time-abi-test-hook",
+                "host-rate-offset-ppm=1",
+            ],
         ] {
             let mut args = vec!["openvmm", "--machine", "microvm"];
             args.extend(extra);
             let options = Options::try_parse_from(args).unwrap();
             assert!(options.validate_microvm_options().is_err());
         }
+        Options::try_parse_from(["openvmm", "--machine", "microvm", "--x-time-abi-verify"])
+            .unwrap()
+            .validate_microvm_options()
+            .unwrap();
     }
 
     #[cfg(guest_arch = "x86_64")]
