@@ -349,6 +349,7 @@ mod tests {
                     enable_vmbus_redirector: false,
                 },
                 enable_firmware_debugging: true,
+                enable_ipmi: true,
                 ..Default::default()
             },
             v2: get_protocol::dps_json::HclDevicePlatformSettingsV2 {
@@ -388,6 +389,7 @@ mod tests {
         assert_eq!(dps.general.tpm_enabled, false);
         assert_eq!(dps.general.com1_enabled, true);
         assert_eq!(dps.general.secure_boot_enabled, false);
+        assert!(dps.general.ipmi_enabled);
 
         assert_eq!(dps.general.legacy_memory_map, true);
         assert_eq!(dps.general.pxe_ip_v6, true);
@@ -426,6 +428,44 @@ mod tests {
             .unwrap();
 
         assert_eq!(read_buf[0], 5);
+    }
+
+    #[async_test]
+    async fn test_send_ipmi_sel_notification(driver: DefaultDriver) {
+        let record_id = 0x1234;
+        let record = [
+            0x34, 0x12, 0x02, 0x78, 0x56, 0x34, 0x12, 0x20, 0x00, 0x04, 0x01, 0x6f, 0xaa, 0xbb,
+            0xcc, 0xdd,
+        ];
+        let expected = get_protocol::IpmiSelNotification::new(record_id, record)
+            .as_bytes()
+            .to_vec();
+
+        let vmgs_read_response = TestGetResponses::new(Event::Response(
+            get_protocol::VmgsReadResponse::new(VmgsIoStatus::SUCCESS)
+                .as_bytes()
+                .to_vec(),
+        ));
+        let ged_responses = vec![TestGetResponses::default(), vmgs_read_response];
+
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        get.client.ipmi_sel(record_id, record);
+
+        let read_buf = get
+            .client
+            .vmgs_read(0, 1, TEST_VMGS_SECTOR_SIZE)
+            .await
+            .unwrap();
+
+        assert_eq!(&read_buf[..expected.len()], expected.as_slice());
     }
 
     #[async_test]

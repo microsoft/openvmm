@@ -196,6 +196,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     }
                 },
                 enable_battery: resource.enable_battery,
+                enable_ipmi: resource.enable_ipmi,
                 no_persistent_secrets: resource.no_persistent_secrets,
                 guest_state_lifetime,
                 guest_state_encryption_policy,
@@ -222,6 +223,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             },
             halt,
             resource.firmware_event_send,
+            resource.ipmi_sel_event_send,
             resource.guest_request_recv,
             framebuffer_control,
             vmgs_disk,

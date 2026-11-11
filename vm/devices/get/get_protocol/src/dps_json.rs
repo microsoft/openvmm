@@ -41,6 +41,7 @@ pub struct HclDevicePlatformSettings {
     pub enable_battery: bool,
     pub enable_processor_idle: bool,
     pub enable_tpm: bool,
+    pub enable_ipmi: bool,
     pub com1: HclUartSettings,
     pub com2: HclUartSettings,
     #[serde(with = "serde_helpers::as_string")]
