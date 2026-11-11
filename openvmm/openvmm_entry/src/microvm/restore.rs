@@ -36,6 +36,7 @@ use openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock;
 use openvmm_helpers::snapshot::restore::OpenedSnapshot;
 use std::io::Read;
 use std::path::Path;
+use std::path::PathBuf;
 use virt::time_abi::HostIdentity;
 use virt::time_abi::TimeAbiTestHooks;
 
@@ -119,6 +120,13 @@ pub(crate) struct MicrovmRestore {
     pub(crate) memory_ranges: Vec<SnapshotMemoryExpansionRange>,
     /// Private copy of a paired scratch image, kept alive for the VM lifetime.
     pub(crate) private_scratch_dir: Option<tempfile::TempDir>,
+    /// The paired scratch of a direct-claimed resume snapshot, which the
+    /// restore attaches in place: the opened generation's own `scratch.img`,
+    /// open for writing through the snapshot's directory handle, with no other
+    /// name, and its path. Only the VM writes it, and the VM worker starts
+    /// only after [`OpenedSnapshot::claim_for_restore`] has made the claim
+    /// durable.
+    pub(crate) claimed_scratch: Option<(std::fs::File, PathBuf)>,
     /// The captured geometry of a platform snapshot's `distro` block, which
     /// the restore presents over an image that may be shorter.
     pub(crate) distro_capacity: Option<MicrovmSandboxBlockGeometry>,
@@ -220,8 +228,12 @@ pub(crate) fn restore_packet_base(
 ///
 /// This may adjust `opt`: the snapshot selects the RAM size, a paired scratch
 /// image is replaced by a private copy, and restore gates require entropy. A
-/// platform snapshot's `distro` block keeps its captured capacity, whatever
-/// the length of the image that the restore attaches to it, and
+/// direct-claimed resume snapshot's paired scratch instead stays in place: the
+/// restore opens the opened generation's own `scratch.img` for the VM, and
+/// gives it no other name, so that a restore that fails, or loses the claim
+/// that precedes the VM worker, leaves nothing beside the snapshot that names
+/// it. A platform snapshot's `distro` block keeps its captured capacity,
+/// whatever the length of the image that the restore attaches to it, and
 /// `--restore-absent-scratch` attaches its fresh scratch with no file. Only a
 /// platform snapshot, or one without a tier, admits
 /// `--restore-network-policy`, and only a platform snapshot admits
@@ -236,6 +248,7 @@ pub(crate) fn prepare_restore(
     restore_snapshot: Option<&OpenedSnapshot>,
 ) -> anyhow::Result<MicrovmRestore> {
     let mut private_scratch_dir = None;
+    let mut claimed_scratch = None;
     let mut distro_capacity = None;
     let mut absent_scratch = None;
     let mut restore_gate_required = false;
@@ -346,96 +359,74 @@ pub(crate) fn prepare_restore(
         distro_capacity = blocks.distro_capacity;
         absent_scratch = blocks.absent_scratch;
         if let Some(scratch) = blocks.paired_scratch {
-            let source = snapshot
-                .open_paired_scratch_file()?
-                .context("paired snapshot is missing scratch.img")?;
             let restore_mode = if scratch.restore_mode.is_empty() {
                 openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY
             } else {
                 scratch.restore_mode.as_str()
             };
-            let (private_path, temp_dir) = match restore_mode {
-                openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED => {
-                    anyhow::ensure!(
-                        manifest.restore_policy
-                            == openvmm_helpers::snapshot::format::SNAPSHOT_RESTORE_POLICY_RESUME,
-                        "direct-claimed scratch requires a resume snapshot"
-                    );
-                    let parent = snapshot_dir
-                        .parent()
-                        .filter(|parent| !parent.as_os_str().is_empty())
-                        .unwrap_or(Path::new("."));
-                    let temp_dir = tempfile::Builder::new()
-                        .prefix(".openvmm-claimed-scratch-")
-                        .tempdir_in(parent)
-                        .context("failed to create claimed restore scratch directory")?;
-                    let private_path = temp_dir
-                        .path()
-                        .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
-                    openvmm_helpers::snapshot::restore::link_claimed_paired_scratch_file(
-                        &source,
-                        &private_path,
-                        scratch,
-                    )?;
-                    (private_path, Some(temp_dir))
+            if restore_mode
+                == openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED
+            {
+                claimed_scratch = Some((
+                    snapshot.open_direct_claimed_scratch_file()?,
+                    snapshot_dir.join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME),
+                ));
+            } else {
+                let source = snapshot
+                    .open_paired_scratch_file()?
+                    .context("paired snapshot is missing scratch.img")?;
+                let parent = snapshot_dir
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                let temp_dir = tempfile::Builder::new()
+                    .prefix(".openvmm-private-scratch-")
+                    .tempdir_in(parent)
+                    .context("failed to create private restore scratch directory")?;
+                let private_path = temp_dir
+                    .path()
+                    .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
+                match restore_mode {
+                    openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY => {
+                        openvmm_helpers::snapshot::restore::copy_paired_scratch_file(
+                            &source,
+                            &private_path,
+                            scratch,
+                        )?;
+                    }
+                    openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_COPY_ON_WRITE => {
+                        openvmm_helpers::snapshot::restore::clone_paired_scratch_file(
+                            &source,
+                            &private_path,
+                            scratch,
+                        )?;
+                    }
+                    mode => anyhow::bail!("snapshot scratch restore mode '{mode}' is unsupported"),
                 }
-                mode => {
-                    let parent = snapshot_dir
-                        .parent()
-                        .filter(|parent| !parent.as_os_str().is_empty())
-                        .unwrap_or(Path::new("."));
-                    let temp_dir = tempfile::Builder::new()
-                        .prefix(".openvmm-private-scratch-")
-                        .tempdir_in(parent)
-                        .context("failed to create private restore scratch directory")?;
-                    let private_path = temp_dir
-                        .path()
-                        .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
-                    match mode {
-                            openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY => {
-                                openvmm_helpers::snapshot::restore::copy_paired_scratch_file(
-                                    &source,
-                                    &private_path,
-                                    scratch,
-                                )?;
-                            }
-                            openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_COPY_ON_WRITE => {
-                                openvmm_helpers::snapshot::restore::clone_paired_scratch_file(
-                                    &source,
-                                    &private_path,
-                                    scratch,
-                                )?;
-                            }
-                            _ => anyhow::bail!(
-                                "snapshot scratch restore mode '{mode}' is unsupported"
-                            ),
-                        }
-                    (private_path, Some(temp_dir))
-                }
-            };
-            opt.microvm
-                .microvm_sandbox_block
-                .push(cli_args::microvm::MicrovmSandboxBlockCli {
-                    role: MicrovmSandboxBlockRole::Scratch,
-                    disk: cli_args::DiskCli {
-                        vtl: DeviceVtl::Vtl0,
-                        kind: DiskCliKind::File {
-                            path: private_path,
-                            create_with_len: None,
-                            direct: false,
+                opt.microvm
+                    .microvm_sandbox_block
+                    .push(cli_args::microvm::MicrovmSandboxBlockCli {
+                        role: MicrovmSandboxBlockRole::Scratch,
+                        disk: cli_args::DiskCli {
+                            vtl: DeviceVtl::Vtl0,
+                            kind: DiskCliKind::File {
+                                path: private_path,
+                                create_with_len: None,
+                                direct: false,
+                            },
+                            read_only: false,
+                            is_dvd: false,
+                            underhill: None,
+                            pcie_port: None,
+                            serial: None,
+                            controller: None,
+                            nsid: None,
+                            lun: None,
+                            relay: None,
                         },
-                        read_only: false,
-                        is_dvd: false,
-                        underhill: None,
-                        pcie_port: None,
-                        serial: None,
-                        controller: None,
-                        nsid: None,
-                        lun: None,
-                        relay: None,
-                    },
-                });
-            private_scratch_dir = temp_dir;
+                    });
+                private_scratch_dir = Some(temp_dir);
+            }
         }
         Some(contract.clone())
     } else {
@@ -449,6 +440,7 @@ pub(crate) fn prepare_restore(
         memory_target_requested: restore_memory_target_requested,
         memory_ranges: restore_memory_ranges,
         private_scratch_dir,
+        claimed_scratch,
         distro_capacity,
         absent_scratch,
     })
@@ -1297,6 +1289,7 @@ pub(crate) mod tests {
                 length: 0x4000_0000,
             }],
             private_scratch_dir: None,
+            claimed_scratch: None,
             distro_capacity: None,
             absent_scratch: None,
         }
@@ -1363,5 +1356,227 @@ pub(crate) mod tests {
                 .time_abi_restore_packet(None, None)
                 .is_err()
         );
+    }
+
+    /// The storage generation that the test instance checkpoint binds its
+    /// sandbox blocks to.
+    const CHECKPOINT_GENERATION: [u8; 16] = [0x42; 16];
+
+    /// Publishes `root/snapshot`, an instance checkpoint of a one-processor
+    /// microVM with a distro layer and the paired scratch `scratch`, which
+    /// records the direct-claimed restore mode, and returns its path.
+    fn publish_direct_claimed_checkpoint(root: &Path, scratch: &[u8]) -> PathBuf {
+        use openvmm_defs::microvm::MicrovmSandboxBlockConfig;
+        use openvmm_helpers::snapshot::format;
+        use openvmm_helpers::snapshot::microvm;
+
+        let roles = [
+            MicrovmSandboxBlockRole::Distro,
+            MicrovmSandboxBlockRole::Scratch,
+        ];
+        let mut command_line =
+            openvmm_defs::microvm::build_microvm_command_line(&[], false).unwrap();
+        openvmm_defs::microvm::append_microvm_virtio_discovery(
+            &mut command_line,
+            None,
+            &[],
+            false,
+            false,
+            &roles.map(|role| MicrovmSandboxBlockConfig {
+                role,
+                read_only: role.is_read_only(),
+            }),
+        )
+        .unwrap();
+        command_line.push_str(" nvx_snapshot_tier=");
+        command_line.push_str(format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT);
+        let blocks = roles.map(|role| {
+            let paired = role == MicrovmSandboxBlockRole::Scratch;
+            SnapshotMicrovmSandboxBlock {
+                role: role.as_str().to_owned(),
+                read_only: role.is_read_only(),
+                length: if paired {
+                    scratch.len() as u64
+                } else {
+                    1 << 20
+                },
+                identity_kind: microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION.to_owned(),
+                identity: CHECKPOINT_GENERATION.to_vec(),
+                artifact: if paired {
+                    format::SCRATCH_FILE_NAME
+                } else {
+                    ""
+                }
+                .to_owned(),
+                logical_block_size: 512,
+                physical_block_size: 4096,
+                restore_mode: if paired {
+                    microvm::SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED
+                } else {
+                    ""
+                }
+                .to_owned(),
+            }
+        });
+        let mut state_unit_names = [
+            "partition",
+            "vmtime",
+            "pic",
+            "ioapic",
+            "pit",
+            "rtc",
+            "microvm-portb",
+            "microvm-shutdown",
+            "microvm-snapshot-request",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        state_unit_names.push(format!(
+            "virtiofs-{}",
+            openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0].mmio_base
+        ));
+        state_unit_names.extend(roles.map(|role| format!("virtio-blk-{}", role.mmio_base())));
+        let contract = microvm::microvm_machine_contract(
+            "kvm",
+            microvm::MICROVM_BOOT_LAYOUT_VERSION,
+            command_line,
+            None,
+            None,
+            None,
+            None,
+            blocks.to_vec(),
+            1,
+            1024,
+            None,
+            state_unit_names,
+            test_time_contract(),
+            test_cpu_profile(),
+        )
+        .unwrap();
+        let manifest = SnapshotManifest {
+            memory_size_bytes: 1024,
+            vp_count: 1,
+            page_size: 4096,
+            architecture: "x86_64".to_owned(),
+            machine_contract: Some(contract),
+            snapshot_tier: format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT.to_owned(),
+            restore_policy: format::SNAPSHOT_RESTORE_POLICY_RESUME.to_owned(),
+            consumed_config_sections: format::SNAPSHOT_CONFIG_INVARIANTS
+                | format::SNAPSHOT_CONFIG_IMAGE_BINDING
+                | format::SNAPSHOT_CONFIG_SANDBOX,
+            ..Default::default()
+        };
+        let memory_source = root.join("memory-source");
+        let scratch_source = root.join("scratch-source");
+        std::fs::write(&memory_source, [0; 1024]).unwrap();
+        std::fs::write(&scratch_source, scratch).unwrap();
+        let snapshot_dir = root.join("snapshot");
+        openvmm_helpers::snapshot::publish::write_snapshot_from_memory_and_scratch_files(
+            &snapshot_dir,
+            &manifest,
+            b"state",
+            &std::fs::File::open(&memory_source).unwrap(),
+            Some(&std::fs::File::open(&scratch_source).unwrap()),
+        )
+        .unwrap();
+        std::fs::remove_file(memory_source).unwrap();
+        std::fs::remove_file(scratch_source).unwrap();
+        snapshot_dir
+    }
+
+    /// Returns the options of a restore of the checkpoint at `snapshot_dir`.
+    fn checkpoint_restore_options(snapshot_dir: &Path) -> Options {
+        use clap::Parser as _;
+
+        Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            snapshot_dir.to_str().unwrap(),
+            "--restore-generation-id",
+            &"42".repeat(16),
+        ])
+        .unwrap()
+    }
+
+    /// Returns the names in `directory`, sorted.
+    fn directory_names(directory: &Path) -> Vec<String> {
+        let mut names = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    /// A restore that opened an instance checkpoint before another restore
+    /// claimed it loses the claim, and never names the checkpoint's
+    /// direct-claimed scratch on its way: a name that it created and removed
+    /// as it failed would outlive a crash in between, as a writable name for
+    /// the live instance's scratch beside the checkpoint.
+    #[test]
+    fn a_restore_that_loses_the_claim_never_names_the_paired_scratch() {
+        let root = tempfile::tempdir().unwrap();
+        let snapshot_dir = publish_direct_claimed_checkpoint(root.path(), &[0x5a; 4096]);
+        let loser = OpenedSnapshot::open(&snapshot_dir).unwrap();
+        OpenedSnapshot::open(&snapshot_dir)
+            .unwrap()
+            .claim_for_restore()
+            .unwrap();
+
+        // The restore's inputs stay alive, as they would until it fails.
+        let _restore =
+            prepare_restore(&mut checkpoint_restore_options(&snapshot_dir), Some(&loser)).unwrap();
+        assert_eq!(
+            loser.claim_for_restore().unwrap_err().to_string(),
+            "resume snapshot has already been claimed"
+        );
+        assert_eq!(directory_names(root.path()), ["snapshot"]);
+        assert_eq!(
+            directory_names(&snapshot_dir),
+            [
+                "manifest.bin",
+                "memory.bin",
+                "resume.claim",
+                "scratch.img",
+                "state.bin"
+            ]
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let scratch = snapshot_dir.join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
+            assert_eq!(std::fs::metadata(scratch).unwrap().nlink(), 1);
+        }
+    }
+
+    /// A direct-claimed restore attaches the checkpoint's own scratch in place,
+    /// which only the VM writes, once the claim that precedes it is durable.
+    #[test]
+    fn a_direct_claimed_restore_attaches_the_paired_scratch_in_place() {
+        use std::io::Write;
+
+        let root = tempfile::tempdir().unwrap();
+        let snapshot_dir = publish_direct_claimed_checkpoint(root.path(), &[0x5a; 4096]);
+        let snapshot = OpenedSnapshot::open(&snapshot_dir).unwrap();
+        let mut options = checkpoint_restore_options(&snapshot_dir);
+
+        let restore = prepare_restore(&mut options, Some(&snapshot)).unwrap();
+        // The restore adds no scratch block of its own and copies nothing.
+        assert!(options.microvm.microvm_sandbox_block.is_empty());
+        assert!(restore.private_scratch_dir.is_none());
+        assert_eq!(directory_names(root.path()), ["snapshot"]);
+        let (mut scratch, path) = restore.claimed_scratch.unwrap();
+        assert_eq!(
+            path,
+            snapshot_dir.join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME)
+        );
+
+        snapshot.claim_for_restore().unwrap();
+        scratch.write_all(b"claimed").unwrap();
+        scratch.sync_all().unwrap();
+        drop(scratch);
+        assert_eq!(&std::fs::read(&path).unwrap()[..7], b"claimed");
     }
 }
