@@ -1474,6 +1474,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             )
     }
 
+    fn start_watchdog_timer(
+        driver: &DefaultDriver,
+        watchdog_timeout: Option<Duration>,
+    ) -> Option<Task<()>> {
+        watchdog_timeout.map(|timeout| {
+            // Unwind out of the task pool so Petri records a test failure.
+            let timer_driver = driver.clone();
+            driver.spawn("timer-watchdog", async move {
+                PolledTimer::new(&timer_driver).sleep(timeout).await;
+                tracing::error!(?timeout, "Test timeout reached, aborting.");
+                panic!("Test timed out");
+            })
+        })
+    }
+
     fn start_watchdog_tasks(
         resources: &PetriVmResources,
         runtime: &mut T::VmRuntime,
@@ -1482,16 +1497,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     ) -> anyhow::Result<Vec<Task<()>>> {
         let mut tasks = Vec::new();
 
-        if let Some(timeout) = watchdog_timeout {
-            // The panic unwinds out of the task pool, which drops the VM and
-            // triggers the same inspect capture as any other failure.
-            let driver = resources.driver.clone();
-            tasks.push(resources.driver.spawn("timer-watchdog", async move {
-                PolledTimer::new(&driver).sleep(timeout).await;
-                tracing::error!(?timeout, "Test timeout reached, aborting.");
-                panic!("Test timed out");
-            }));
-        }
+        tasks.extend(Self::start_watchdog_timer(
+            &resources.driver,
+            watchdog_timeout,
+        ));
 
         if enable_screenshots {
             if let Some(mut framebuffer_access) = runtime.take_framebuffer_access() {
