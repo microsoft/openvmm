@@ -45,6 +45,8 @@ pub use backend::TscSetReport;
 pub use backend::TscSyncMethod;
 #[cfg(guest_arch = "x86_64")]
 pub use backend::negotiate_rates;
+#[cfg(guest_arch = "x86_64")]
+pub use backend::tsc_restart;
 pub use downtime::CaptureTimeRecord;
 pub use downtime::Downtime;
 pub use downtime::DowntimeSource;
