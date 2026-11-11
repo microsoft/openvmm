@@ -94,6 +94,7 @@ futures-concurrency.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
 prost.workspace = true
+prost-types.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
 shell-words.workspace = true
 socket2 = { workspace = true, features = ["all"] }

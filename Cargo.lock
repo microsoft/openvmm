@@ -6435,6 +6435,7 @@ dependencies = [
  "parking_lot",
  "pcie_remote_resources",
  "prost",
+ "prost-types",
  "rustyline",
  "scsidisk_resources",
  "serial_16550_resources",

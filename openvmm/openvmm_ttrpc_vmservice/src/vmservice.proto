@@ -69,6 +69,22 @@ service VM {
 
 // Note: VTL assignment is not modeled yet; all devices are assumed to be VTL0.
 
+// Native host error attached to google.rpc.Status.details with type URL
+// type.googleapis.com/vmservice.NativeError.
+message NativeError {
+    enum Os {
+        UNKNOWN = 0;
+        // Includes both Win32 and Winsock error codes.
+        WINDOWS = 1;
+        // Linux errno values.
+        LINUX = 2;
+        // macOS errno values.
+        MACOS = 3;
+    }
+    Os os = 1;
+    int32 code = 2;
+}
+
 // Request cooperative guest power-off in a running VM through the selected
 // mechanism. No fallback to another mechanism or hard power-off is performed.
 //
