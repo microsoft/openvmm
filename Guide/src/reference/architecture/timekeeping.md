@@ -307,6 +307,14 @@ no `PartitionTimeControl`, and its x86 `can_freeze_time` is false.
 Rebasing reference time alone would not implement full counter and
 timer freeze semantics.
 
+`KVM_SET_LAPIC` fires an expired one-shot LAPIC timer again, because
+KVM's saved LAPIC state cannot show whether KVM delivered the timer's
+interrupt. A restored timer that the guest already took an interrupt
+from therefore fires once more. When the timer's unmasked LVT entry
+delivers a fixed interrupt to a valid vector that is pending in IRR,
+which then holds the interrupt, the backend gives KVM an initial count
+of 0 instead, and the guest reads 0 from the initial count register.
+
 KVM's synthetic-timer snapshot path saves config/count MSRs, but cannot
 preserve timer adjustment or undelivered expiration-message state.
 
