@@ -978,8 +978,6 @@ mod gicd {
                     if n >= 8 {
                         if let Some(priority) = self.state.lock().priority.get_mut(n as usize) {
                             *priority = value;
-                        if let Some(priority) = self.state.lock().priority.get_mut(n as usize) {
-                            *priority = value;
                         }
                     }
                 }
