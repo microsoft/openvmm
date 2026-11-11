@@ -492,8 +492,12 @@ Restore also requires:
 - a native TSC rate within 250 ppm of the snapshot's
   (`E_TSC_RATE_TOLERANCE`), and the identical LAPIC rate
   (`E_LAPIC_RATE_MISMATCH`); and
-- a downtime between 0 and 30 days (`E_DOWNTIME_NEGATIVE`,
-  `E_DOWNTIME_EXCESSIVE`).
+- a downtime between 0 and 365 days, both included, where 365 days is the
+  fixed duration of 31,536,000 seconds rather than a calendar year
+  (`E_DOWNTIME_NEGATIVE`, `E_DOWNTIME_EXCESSIVE`). The interval by which the
+  restore advances VM time and the RTC, the downtime plus the time by which
+  VM time stopped before the capture anchor, must not exceed 365 days either
+  (`E_DOWNTIME_EXCESSIVE`).
 
 The declared rates never change across a restore; the restore packet reports
 the rate deviation, and every time sample's correction includes it, so the
