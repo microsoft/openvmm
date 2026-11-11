@@ -33,7 +33,6 @@ pub const NODEJS: &str = "24.x";
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.7";
 pub const OPENVMM_DEPS: &str = "0.3.0-185";
-pub const OPENVMM_MSHV_TEST_KERNEL: &str = "0.3.0-161";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
@@ -52,6 +51,10 @@ flowey_request! {
         },
         /// Override UEFI mu_msvm with a local MSVM.fd path for this architecture
         LocalUefi(CommonArch, ReadVar<PathBuf>),
+        /// Temporary mshv root bzImage override, separate from child kernels.
+        LocalMshvKernel(ReadVar<PathBuf>),
+        /// Use extracted MSHV payloads instead of Linux RPM acquisition.
+        LocalMshvBootArtifacts(ReadVar<PathBuf>),
     }
 }
 
@@ -66,6 +69,7 @@ impl FlowNode for Node {
         ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
+        ctx.import::<crate::resolve_mshv_boot_artifacts::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::cfg_rustup_version::Node>();
@@ -90,6 +94,8 @@ impl FlowNode for Node {
         let mut local_protoc: Option<ReadVar<PathBuf>> = None;
         let mut local_kernel: BTreeMap<CommonArch, (ReadVar<PathBuf>, ReadVar<PathBuf>)> = BTreeMap::new();
         let mut local_uefi: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
+        let mut local_mshv_kernel = None;
+        let mut local_mshv_boot_artifacts = None;
 
         for req in requests {
             match req {
@@ -129,7 +135,17 @@ impl FlowNode for Node {
                     }
                     local_uefi.insert(arch, path);
                 }
+                Request::LocalMshvKernel(path) => {
+                    anyhow::ensure!(local_mshv_kernel.replace(path).is_none(), "mshv kernel override specified more than once");
+                }
+                Request::LocalMshvBootArtifacts(path) => {
+                    anyhow::ensure!(local_mshv_boot_artifacts.replace(path).is_none(), "MSHV boot artifact override specified more than once");
+                }
             }
+        }
+
+        if let Some(path) = local_mshv_boot_artifacts {
+            ctx.config(crate::resolve_mshv_boot_artifacts::Config { local_path: Some(ConfigVar(path)) });
         }
 
         // Track whether we have local paths for openvmm_deps and protoc
@@ -212,13 +228,25 @@ impl FlowNode for Node {
                 ..Default::default()
             });
         }
-        // The test Linux kernel and shared test initrd are always pulled
+        // By default, test Linux kernels and the shared test initrd are pulled
         // from the openvmm-deps GitHub release; `LocalOpenvmmDeps` only
         // overrides the (non-kernel/initrd) openvmm-deps tarball, since the
         // 0.3.0 split moved the kernel and initrd into their own artifacts.
         ctx.config(crate::resolve_openvmm_test_linux_kernel::Config {
             version: Some(OPENVMM_DEPS.into()),
-            mshv_version: Some(OPENVMM_MSHV_TEST_KERNEL.into()),
+            local_files: local_mshv_kernel
+                .map(|path| {
+                    (
+                        (
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage,
+                            CommonArch::X86_64,
+                            crate::resolve_openvmm_test_linux_kernel::LinuxTestKernelVersion::MshvTest,
+                        ),
+                        ConfigVar(path),
+                    )
+                })
+                .into_iter()
+                .collect(),
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_initrd::Config {
