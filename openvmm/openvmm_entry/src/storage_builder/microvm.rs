@@ -14,6 +14,7 @@ use openvmm_defs::config::VirtioBus;
 use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::microvm::MicrovmSandboxBlockConfig;
 use openvmm_defs::microvm::MicrovmSandboxBlockRole;
+use std::path::Path;
 use std::time::Duration;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
@@ -331,6 +332,39 @@ impl StorageBuilder {
             file.set_len(*length)
                 .with_context(|| format!("failed to size sandbox block {}", path.display()))?;
         }
+        self.add_snapshot_capable_block_file(role, file, path, read_only, capacity, delay_ms)
+    }
+
+    /// Adds the paired scratch of a direct-claimed restore: `file`, the
+    /// snapshot's own `scratch.img` at `path`, which the restore opened for
+    /// writing, so that the device writes the claimed scratch in place.
+    pub fn add_microvm_claimed_scratch(
+        &mut self,
+        file: std::fs::File,
+        path: &Path,
+    ) -> anyhow::Result<()> {
+        self.add_snapshot_capable_block_file(
+            MicrovmSandboxBlockRole::Scratch,
+            file,
+            path,
+            false,
+            None,
+            None,
+        )
+    }
+
+    /// Adds a snapshot-capable sandbox block device of `role` over `file`, which
+    /// was opened at `path`, as [`Self::add_microvm_sandbox_block`] describes,
+    /// with a delay of `delay_ms` milliseconds on each request if set.
+    fn add_snapshot_capable_block_file(
+        &mut self,
+        role: MicrovmSandboxBlockRole,
+        file: std::fs::File,
+        path: &Path,
+        read_only: bool,
+        capacity: Option<MicrovmSandboxBlockGeometry>,
+        delay_ms: Option<u64>,
+    ) -> anyhow::Result<()> {
         let metadata = file
             .metadata()
             .with_context(|| format!("failed to inspect sandbox block {}", path.display()))?;

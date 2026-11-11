@@ -21,12 +21,9 @@ use super::fs::OpenedFileGeneration;
 use super::fs::OpenedSnapshotDirectory;
 use super::fs::allocated_file_bytes;
 use super::fs::copy_exact;
-use super::fs::create_hard_link_from_handle;
-use super::fs::open_file_with_length;
 use super::fs::opened_file_generation;
 use super::fs::read_bounded_open_file;
 use super::fs::reflink_exact;
-use super::fs::verify_hard_link_identity;
 use super::microvm;
 use anyhow::Context;
 use std::collections::HashSet;
@@ -132,6 +129,28 @@ impl OpenedSnapshot {
     /// Opens the paired scratch artifact relative to this snapshot generation.
     pub fn open_paired_scratch_file(&self) -> anyhow::Result<Option<std::fs::File>> {
         open_paired_scratch_file_in_directory(&self.directory, &self.manifest)
+    }
+
+    /// Opens the paired scratch of this resume snapshot for a direct-claimed
+    /// restore, which attaches it in place: this generation's own
+    /// `scratch.img`, for reading and writing, through the retained directory
+    /// handle.
+    ///
+    /// The file gets no other name, so a restore that fails, its claim
+    /// included, leaves nothing behind that names it. Nothing may write the
+    /// handle until [`Self::claim_for_restore`] has made the claim durable.
+    pub fn open_direct_claimed_scratch_file(&self) -> anyhow::Result<std::fs::File> {
+        anyhow::ensure!(
+            self.manifest.restore_policy == SNAPSHOT_RESTORE_POLICY_RESUME,
+            "direct-claimed scratch requires a resume snapshot"
+        );
+        let scratch = microvm::paired_scratch_block(&self.manifest)
+            .context("paired snapshot is missing scratch.img")?;
+        self.directory.open_file_with_length_for_writing(
+            SCRATCH_FILE_NAME,
+            scratch.length,
+            SCRATCH_FILE_NAME,
+        )
     }
 
     /// Claims this exact opened generation for a single-use resume.
@@ -307,26 +326,6 @@ pub fn clone_paired_scratch_file(
     )
 }
 
-/// Creates a private path to the exact claimed paired-scratch generation.
-pub fn link_claimed_paired_scratch_file(
-    source: &std::fs::File,
-    destination: &Path,
-    block: &microvm::SnapshotMicrovmSandboxBlock,
-) -> anyhow::Result<()> {
-    let parent = destination
-        .parent()
-        .context("claimed scratch destination has no parent")?;
-    let name = destination
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("claimed scratch destination name is invalid")?;
-    let directory = OpenedSnapshotDirectory::open_for_publication(parent)?;
-    create_hard_link_from_handle(source, &directory.file, name)
-        .context("failed to link claimed scratch generation")?;
-    let linked = open_file_with_length(destination, block.length, "claimed scratch link")?;
-    verify_hard_link_identity(source, &linked, block.length)
-}
-
 /// Atomically consumes a single-use resume snapshot.
 ///
 /// Call this after artifact and configuration validation and before constructing
@@ -427,11 +426,6 @@ mod tests {
     use openvmm_defs::microvm::check_microvm_command_line;
     use sha2::Digest;
     use std::io::Read;
-    #[cfg(any(target_os = "linux", windows))]
-    use std::io::Seek;
-    #[cfg(any(target_os = "linux", windows))]
-    use std::io::SeekFrom;
-    #[cfg(any(target_os = "linux", windows))]
     use std::io::Write;
 
     #[test]
@@ -498,49 +492,78 @@ mod tests {
         assert_eq!(&std::fs::read(&destination_path).unwrap()[..5], b"clone");
     }
 
-    #[cfg(any(target_os = "linux", windows))]
+    /// A direct-claimed restore opens a resume snapshot's own `scratch.img` for
+    /// writing, through the snapshot's directory handle, and gives the file no
+    /// other name. A reusable clone snapshot's scratch never opens so.
     #[test]
-    fn direct_claimed_scratch_links_exact_claimed_generation() {
+    fn direct_claimed_scratch_opens_in_place_without_another_name() {
         let scratch = vec![0x5a; 512];
+        let state = b"state";
+        let dir = tempfile::tempdir().unwrap();
         let mut manifest = paired_scratch_manifest(&scratch);
+        manifest.state_size_bytes = state.len() as u64;
+        let write_manifest = |manifest: &SnapshotManifest| {
+            std::fs::write(
+                dir.path().join(MANIFEST_FILE_NAME),
+                mesh::payload::encode(manifest.clone()),
+            )
+            .unwrap();
+        };
+        write_manifest(&manifest);
+        std::fs::write(dir.path().join(STATE_FILE_NAME), state).unwrap();
+        std::fs::write(
+            dir.path().join(MEMORY_FILE_NAME),
+            vec![0_u8; manifest.memory_size_bytes as usize],
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(SCRATCH_FILE_NAME), &scratch).unwrap();
+        let error = OpenedSnapshot::open(dir.path())
+            .unwrap()
+            .open_direct_claimed_scratch_file()
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "direct-claimed scratch requires a resume snapshot"
+        );
+
         manifest.snapshot_tier = SNAPSHOT_TIER_INSTANCE_CHECKPOINT.to_owned();
         manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_RESUME.to_owned();
-        manifest
-            .machine_contract
-            .as_mut()
-            .unwrap()
-            .set_effective_command_line(
-                "console=hvc0 nvx_snapshot_tier=instance-checkpoint".to_owned(),
-            );
-        let block = microvm::paired_scratch_block(&manifest).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let snapshot_dir = dir.path().join("snapshot");
-        let claimed_dir = dir.path().join("claimed");
-        std::fs::create_dir(&snapshot_dir).unwrap();
-        std::fs::create_dir(&claimed_dir).unwrap();
-        let source_path = snapshot_dir.join(SCRATCH_FILE_NAME);
-        let destination_path = claimed_dir.join(SCRATCH_FILE_NAME);
-        std::fs::write(&source_path, &scratch).unwrap();
-        let source = std::fs::File::open(&source_path).unwrap();
-
-        claim_snapshot_for_restore(&snapshot_dir, &manifest).unwrap();
-        assert!(
-            claim_snapshot_for_restore(&snapshot_dir, &manifest)
-                .unwrap_err()
-                .to_string()
-                .contains("already been claimed")
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(
+            "console=hvc0 nvx_snapshot_tier=instance-checkpoint".to_owned(),
         );
-        link_claimed_paired_scratch_file(&source, &destination_path, block).unwrap();
+        contract
+            .microvm_sandbox_blocks
+            .last_mut()
+            .unwrap()
+            .restore_mode = microvm::SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED.to_owned();
+        write_manifest(&manifest);
+        let entries = || {
+            let mut names = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        let published = entries();
+        let snapshot = OpenedSnapshot::open(dir.path()).unwrap();
+        let mut claimed = snapshot.open_direct_claimed_scratch_file().unwrap();
+        assert_eq!(entries(), published);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(claimed.metadata().unwrap().nlink(), 1);
+        }
 
-        let mut claimed = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&destination_path)
-            .unwrap();
-        claimed.seek(SeekFrom::Start(0)).unwrap();
+        snapshot.claim_for_restore().unwrap();
         claimed.write_all(b"claim").unwrap();
         claimed.sync_all().unwrap();
-
-        assert_eq!(&std::fs::read(&source_path).unwrap()[..5], b"claim");
+        drop(claimed);
+        assert_eq!(
+            &std::fs::read(dir.path().join(SCRATCH_FILE_NAME)).unwrap()[..5],
+            b"claim"
+        );
     }
 
     #[test]
