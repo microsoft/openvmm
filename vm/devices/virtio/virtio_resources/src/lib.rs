@@ -61,7 +61,6 @@ pub mod fs {
         HostFs {
             root_path: String,
             mount_options: String,
-            read_only: bool,
             windows_options: Option<VirtioFsWindowsOptions>,
         },
         SectionFs {

@@ -55,7 +55,6 @@ impl ParsedVirtioFs {
             VirtioFsBackend::HostFs {
                 root_path,
                 mount_options,
-                read_only,
                 windows_options,
             } => {
                 anyhow::ensure!(
@@ -67,7 +66,7 @@ impl ParsedVirtioFs {
                     "virtio-fs root path must not contain NUL bytes"
                 );
 
-                return parse_host_fs(root_path, mount_options, read_only, windows_options)
+                return parse_host_fs(root_path, mount_options, windows_options)
                     .map(|backend| Self { tag, backend });
             }
             #[cfg(windows)]
@@ -89,27 +88,20 @@ impl ParsedVirtioFs {
 
 fn parse_host_fs(
     root_path: String,
-    mut mount_options: String,
-    read_only: bool,
+    mount_options: String,
     windows_options: Option<VirtioFsWindowsOptions>,
 ) -> anyhow::Result<ParsedVirtioFsBackend> {
     if windows_options.is_some_and(|options| options.shared_mem) {
         #[cfg(windows)]
         {
             anyhow::ensure!(
-                !read_only && mount_options.is_empty(),
-                "virtio-fs shared_mem does not support read_only or mount_options"
+                mount_options.is_empty(),
+                "virtio-fs shared_mem does not support mount_options"
             );
             return Ok(ParsedVirtioFsBackend::SectionFs { root_path });
         }
         #[cfg(not(windows))]
         anyhow::bail!("virtio-fs windows_options are only supported on Windows");
-    }
-    if read_only {
-        if !mount_options.is_empty() {
-            mount_options.push(';');
-        }
-        mount_options.push_str("ro");
     }
     Ok(ParsedVirtioFsBackend::HostFs {
         root_path,
@@ -185,13 +177,12 @@ mod tests {
     use virtio_resources::fs::VirtioFsHandle;
     use virtio_resources::fs::VirtioFsWindowsOptions;
 
-    fn host_fs(tag: &str, root_path: &str, read_only: bool, mount_options: &str) -> VirtioFsHandle {
+    fn host_fs(tag: &str, root_path: &str, mount_options: &str) -> VirtioFsHandle {
         VirtioFsHandle {
             tag: tag.to_owned(),
             fs: VirtioFsBackend::HostFs {
                 root_path: root_path.to_owned(),
                 mount_options: mount_options.to_owned(),
-                read_only,
                 windows_options: None,
             },
         }
@@ -199,24 +190,31 @@ mod tests {
 
     #[test]
     fn parse_rejects_invalid_tag_and_root_path() {
-        assert!(ParsedVirtioFs::parse(host_fs("", "root", false, "")).is_err());
-        assert!(ParsedVirtioFs::parse(host_fs("tag", "", false, "")).is_err());
-        assert!(ParsedVirtioFs::parse(host_fs("tag", "root\0path", false, "")).is_err());
+        assert!(ParsedVirtioFs::parse(host_fs("", "root", "")).is_err());
+        assert!(ParsedVirtioFs::parse(host_fs("tag", "", "")).is_err());
+        assert!(ParsedVirtioFs::parse(host_fs("tag", "root\0path", "")).is_err());
     }
 
     #[test]
     fn parse_applies_read_only_mount_option() {
-        let parsed = ParsedVirtioFs::parse(host_fs("tag", "root", true, "uid=1000"))
-            .expect("parse virtio-fs resource");
-        let ParsedVirtioFsBackend::HostFs { mount_options, .. } = parsed.backend else {
-            panic!("expected host filesystem backend");
-        };
-        assert!(mount_options.is_readonly());
+        for (options, readonly) in [
+            ("", false),
+            ("uid=1000", false),
+            ("ro", true),
+            ("uid=1000;ro", true),
+        ] {
+            let parsed = ParsedVirtioFs::parse(host_fs("tag", "root", options))
+                .expect("parse virtio-fs resource");
+            let ParsedVirtioFsBackend::HostFs { mount_options, .. } = parsed.backend else {
+                panic!("expected host filesystem backend");
+            };
+            assert_eq!(mount_options.is_readonly(), readonly);
+        }
     }
 
     #[test]
     fn parse_shared_memory_options() {
-        let mut resource = host_fs("tag", "root", false, "");
+        let mut resource = host_fs("tag", "root", "");
         let VirtioFsBackend::HostFs {
             windows_options, ..
         } = &mut resource.fs
@@ -237,8 +235,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn parse_rejects_host_options_for_shared_memory() {
-        for (read_only, mount_options) in [(true, ""), (false, "uid=1000")] {
-            let mut resource = host_fs("tag", "root", read_only, mount_options);
+        for mount_options in ["ro", "uid=1000"] {
+            let mut resource = host_fs("tag", "root", mount_options);
             let VirtioFsBackend::HostFs {
                 windows_options, ..
             } = &mut resource.fs
@@ -253,7 +251,7 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn parse_accepts_empty_windows_options_on_non_windows() {
-        let mut resource = host_fs("tag", "root", false, "");
+        let mut resource = host_fs("tag", "root", "");
         let VirtioFsBackend::HostFs {
             windows_options, ..
         } = &mut resource.fs

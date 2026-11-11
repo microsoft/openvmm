@@ -1123,9 +1123,9 @@ message WindowsPCIDevice {
 message VirtioFs {
     string tag = 1;
     string root_path = 2;
-    bool read_only = 3;
-    // Additional backend mount options, separated by ';'. When read_only is
-    // set, "ro" is appended.
+    reserved 3;
+    reserved "read_only";
+    // Backend mount options, separated by ';'. Include "ro" for read-only access.
     string mount_options = 4;
     // Host-specific virtio-fs options. Omitted on non-Windows hosts.
     WindowsOptions windows_options = 5;

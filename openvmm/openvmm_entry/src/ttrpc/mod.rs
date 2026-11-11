@@ -2845,7 +2845,6 @@ fn build_virtio_fs(config: vmservice::VirtioFs) -> virtio_resources::fs::VirtioF
     let vmservice::VirtioFs {
         tag,
         root_path,
-        read_only,
         mount_options,
         windows_options,
     } = config;
@@ -2854,7 +2853,6 @@ fn build_virtio_fs(config: vmservice::VirtioFs) -> virtio_resources::fs::VirtioF
         fs: virtio_resources::fs::VirtioFsBackend::HostFs {
             root_path,
             mount_options,
-            read_only,
             windows_options: windows_options.map(|options| {
                 virtio_resources::fs::VirtioFsWindowsOptions {
                     shared_mem: options.shared_mem,
