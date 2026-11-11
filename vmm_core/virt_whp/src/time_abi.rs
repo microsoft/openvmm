@@ -97,6 +97,7 @@ use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::tsc::GuestTscOffset;
 use virt::time_abi::tsc::OffsetSearch;
+use virt::time_abi::tsc_restart;
 use virt::x86::topology::per_vp_cpuid_bits;
 use whp::abi::WHV_CPUID_OUTPUT;
 use whp::abi::WHV_EXTENDED_VM_EXITS;
@@ -1134,6 +1135,7 @@ impl TimeAbiBackend for WhpPartitionInner {
     ) -> Result<TscSetReport, TimeAbiError> {
         let started = std::time::Instant::now();
         self.time_abi_state()?;
+        let tsc_hz = self.native_tsc_hz()?;
         let partition = &self.vtl0.whp;
 
         // While partition time is suspended, every VP's TSC holds its last
@@ -1179,6 +1181,7 @@ impl TimeAbiBackend for WhpPartitionInner {
         // Resume before any VP runs, so the guest TSC runs from the restore
         // anchor rather than from the first VP run. A failed set leaves time
         // suspended: the restore is rejected and no VP runs.
+        let resuming = sample_host_time();
         if result.is_ok() {
             partition.resume_time().map_err(|err| {
                 TimeAbiError::new(
@@ -1187,6 +1190,7 @@ impl TimeAbiBackend for WhpPartitionInner {
                 )
             })?;
         }
+        let resumed = sample_host_time();
         tracing::info!(
             vps = readback.len(),
             target,
@@ -1198,9 +1202,21 @@ impl TimeAbiBackend for WhpPartitionInner {
             "time ABI: synchronized TSC set with partition time suspended"
         );
         result?;
+        // The hypervisor restarts every VP's TSC from the target somewhere
+        // inside the call that resumes partition time, which can take a
+        // hundred microseconds to return. VP 0's TSC, read with host time
+        // after the call, places the restart.
+        let before = sample_host_time()?;
+        let tsc = partition
+            .vp(VpIndex::BSP.index())
+            .get_register(whp::Register64::Tsc)
+            .map_err(|err| failed(VpIndex::BSP, "read", err))?;
+        let after = sample_host_time()?;
+        let pair = AnchorCandidate { tsc, before, after }.anchor();
         Ok(TscSetReport {
             target,
             sample,
+            resumed: tsc_restart(target, tsc_hz, &resuming?, &resumed?, &pair),
             readback,
             method: TscSyncMethod::FrozenWrite,
         })
