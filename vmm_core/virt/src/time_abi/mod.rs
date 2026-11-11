@@ -59,6 +59,7 @@ pub use rate::RateCheck;
 
 use mesh_protobuf::Protobuf;
 use std::fmt;
+use std::time::Duration;
 
 /// The time ABI version this OpenVMM implements.
 pub const TIME_ABI_VERSION: u32 = 1;
@@ -479,6 +480,18 @@ pub struct TimeAbiConfig {
     pub cpu_profile: cpu_profile::PartitionProfile,
 }
 
+/// Returns the microseconds from `start` to `end`, two readings of the
+/// [`Instant::elapsed`](std::time::Instant::elapsed) of one instant, `end`
+/// read last, which a time ABI operation logs as the length of one of its
+/// phases.
+///
+/// A faulty host can step its monotonic clock back between the readings, far
+/// enough that `end` is the smaller one: the phase then lasts 0, rather than
+/// panic and abort the operation over its log.
+pub fn phase_us(start: Duration, end: Duration) -> u64 {
+    end.saturating_sub(start).as_micros() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,6 +562,17 @@ mod tests {
         assert_eq!(error.to_string(), "[E_TSC_RATE_TOLERANCE] rate too far");
         let wrapped = anyhow::Error::new(error).context("restore failed");
         assert!(format!("{wrapped:#}").contains("[E_TSC_RATE_TOLERANCE] rate too far"));
+    }
+
+    #[test]
+    fn a_phase_lasts_zero_when_the_host_clock_steps_back_past_its_start() {
+        let start = Duration::from_micros(1_500);
+        assert_eq!(phase_us(start, Duration::from_micros(4_000)), 2_500);
+        // The host's monotonic clock stepped back during the phase: to before
+        // the operation started, which `elapsed` reads as 0, or to before the
+        // phase started.
+        assert_eq!(phase_us(start, Duration::ZERO), 0);
+        assert_eq!(phase_us(start, Duration::from_micros(1_000)), 0);
     }
 
     #[test]
