@@ -18,6 +18,7 @@ use aarch64defs::SystemReg;
 use hvdef::Vtl;
 use inspect::Inspect;
 use virt::ProtoPartitionConfig;
+use virt::time_abi::BackendPreflight;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiConfig;
 use virt::time_abi::TimeAbiError;
@@ -521,7 +522,10 @@ impl WhpTimeAbi {
         })
     }
 
-    pub(crate) fn verify_configuration(&self, partition: &whp::Partition) -> Result<(), Error> {
+    pub(crate) fn verify_configuration(
+        &self,
+        partition: &whp::Partition,
+    ) -> Result<BackendPreflight, Error> {
         let expected_bits = profile_physical_address_bits(&self.config.cpu_profile)?;
         let observed_bits = partition
             .physical_address_width()
@@ -574,7 +578,12 @@ impl WhpTimeAbi {
             effective_parange = mmfr0 & 0xf,
             "verified ARM backend and architectural address metadata"
         );
-        Ok(())
+        Ok(BackendPreflight {
+            counter_hz: frequency,
+            physical_address_bits: observed_bits,
+            effective_parange: (mmfr0 & 0xf) as u8,
+            feature_banks: observed.Banks,
+        })
     }
 
     pub(crate) fn program_cpu_fields(&self, partition: &whp::Partition) -> Result<(), Error> {
@@ -622,6 +631,24 @@ impl virt::time_abi::TimeAbiBackend for WhpPartitionInner {
             .as_ref()
             .expect("time ABI interface requires configured state")
             .config
+    }
+
+    fn preflight(&self) -> Result<BackendPreflight, TimeAbiError> {
+        let state = self.time_abi.as_ref().ok_or_else(|| {
+            TimeAbiError::new(
+                TimeAbiCode::ProfileUnsupported,
+                "WHP ARM partition has no CPU/time contract",
+            )
+        })?;
+        state
+            .verify_configuration(&self.vtl0.whp)
+            .map_err(|error| match error {
+                Error::TimeAbi(error) => error,
+                error => TimeAbiError::new(
+                    TimeAbiCode::ProfileUnsupported,
+                    format!("WHP ARM configuration readback failed: {error:?}"),
+                ),
+            })
     }
 
     fn read_cpu_id_register(&self, register: SystemReg) -> Result<u64, TimeAbiError> {
@@ -977,7 +1004,11 @@ mod tests {
                     )
                     .unwrap();
                     let governed = governed.create().unwrap();
-                    contract.verify_configuration(&governed).unwrap();
+                    let readback = contract.verify_configuration(&governed).unwrap();
+                    assert_eq!(readback.counter_hz, counter_hz);
+                    assert_eq!(readback.physical_address_bits, 36);
+                    assert_eq!(readback.effective_parange, 1);
+                    assert_eq!(readback.feature_banks, expected);
                     let mut unsupported = WhpTimeAbi {
                         config: config.clone(),
                         features: expected,

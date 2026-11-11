@@ -41,6 +41,8 @@ pub mod surface;
 pub mod tsc;
 
 #[cfg(guest_arch = "aarch64")]
+pub use aarch64::BackendPreflight;
+#[cfg(guest_arch = "aarch64")]
 pub use aarch64::TimeAbiBackend;
 #[cfg(guest_arch = "aarch64")]
 pub use aarch64::TimeAbiConfig;
