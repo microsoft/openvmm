@@ -274,12 +274,21 @@ fn log_process_output(
             line.pop();
         }
         let line = String::from_utf8_lossy(&line).into_owned();
-        tracing::debug!(
-            configuration = config_name,
-            stream = stream_name,
-            line = %line,
-            "VirtualClient output"
-        );
+        if stream_name == "stderr" {
+            tracing::warn!(
+                configuration = config_name,
+                stream = stream_name,
+                line = %line,
+                "VirtualClient output"
+            );
+        } else {
+            tracing::info!(
+                configuration = config_name,
+                stream = stream_name,
+                line = %line,
+                "VirtualClient output"
+            );
+        }
         let mut log_file = log_file.lock();
         writeln!(log_file, "[{stream_name}] {line}")
             .with_context(|| format!("failed to write VMM.Perf {stream_name} console output"))?;

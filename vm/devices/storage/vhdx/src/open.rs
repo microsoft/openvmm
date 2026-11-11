@@ -1265,6 +1265,147 @@ mod tests {
     }
 
     #[async_test]
+    async fn set_parent_uses_fragmented_metadata_space(driver: pal_async::DefaultDriver) {
+        let file = InMemoryFile::new(0);
+        let linkage = Guid::new_random();
+        create::create(
+            &file,
+            &mut CreateParams {
+                disk_size: format::GB1,
+                disk_type: crate::DiskType::Differencing(
+                    crate::VhdxParent::new(linkage)
+                        .with_relative_path("old.vhdx")
+                        .unwrap(),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let regions = parse_region_tables(&file).await.unwrap();
+        let metadata_offset = regions.metadata_offset as usize;
+        let mut snapshot = file.snapshot();
+        let mut header =
+            format::MetadataTableHeader::read_from_prefix(&snapshot[metadata_offset..])
+                .unwrap()
+                .0
+                .clone();
+        let mut user_items = Vec::new();
+        // Occupy every remaining 64-KiB boundary with a small user item.
+        for offset in
+            (2 * format::KB64 as u32..regions.metadata_length).step_by(format::KB64 as usize)
+        {
+            let item_id = Guid::new_random();
+            let data = u64::from(offset).to_le_bytes();
+            let entry = format::MetadataTableEntry {
+                item_id,
+                offset,
+                length: data.len() as u32,
+                flags: format::MetadataTableEntryFlags::new().with_is_user(true),
+                reserved2: 0,
+            };
+            let table_offset = metadata_offset
+                + size_of::<format::MetadataTableHeader>()
+                + usize::from(header.entry_count) * size_of::<format::MetadataTableEntry>();
+            snapshot[table_offset..table_offset + size_of::<format::MetadataTableEntry>()]
+                .copy_from_slice(entry.as_bytes());
+            snapshot
+                [metadata_offset + offset as usize..metadata_offset + offset as usize + data.len()]
+                .copy_from_slice(&data);
+            header.entry_count += 1;
+            user_items.push((item_id, data));
+        }
+        snapshot[metadata_offset..metadata_offset + size_of::<format::MetadataTableHeader>()]
+            .copy_from_slice(header.as_bytes());
+
+        let file = InMemoryFile::from_snapshot(snapshot);
+        let mut image = VhdxFile::open(file).writable(&driver).await.unwrap();
+        let data_write_guid = image.data_write_guid();
+        image
+            .set_parent(
+                &crate::VhdxParent::new(linkage)
+                    .with_relative_path("relocated\\parent.vhdx")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let file = image.file.clone();
+        image.close().await.unwrap();
+
+        let image = VhdxFile::open(InMemoryFile::from_snapshot(file.snapshot()))
+            .read_only()
+            .await
+            .unwrap();
+        let parent = image
+            .parent_locator()
+            .await
+            .unwrap()
+            .unwrap()
+            .vhdx_parent()
+            .unwrap();
+        assert_eq!(parent.relative_path(), Some("relocated\\parent.vhdx"));
+        assert_eq!(parent.linkage(), linkage);
+        assert_eq!(image.data_write_guid(), data_write_guid);
+        for (item_id, data) in user_items {
+            assert_eq!(
+                image
+                    .metadata_table
+                    .read_item(&image.cache, true, &item_id)
+                    .await
+                    .unwrap(),
+                data
+            );
+        }
+    }
+
+    #[async_test]
+    async fn set_parent_supports_large_locator(driver: pal_async::DefaultDriver) {
+        let file = InMemoryFile::new(0);
+        let linkage = Guid::new_random();
+        create::create(
+            &file,
+            &mut CreateParams {
+                disk_size: format::GB1,
+                disk_type: crate::DiskType::Differencing(crate::VhdxParent::new(linkage)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let relative = "r".repeat(32_000);
+        let absolute = format!(r"\\?\C:\{}.vhdx", "a".repeat(32_000));
+        let volume = format!(
+            r"\\?\Volume{{{}}}\{}.vhdx",
+            Guid::new_random(),
+            "v".repeat(32_000)
+        );
+        let parent = crate::VhdxParent::new(linkage)
+            .with_relative_path(&relative)
+            .unwrap()
+            .with_absolute_win32_path(&absolute)
+            .unwrap()
+            .with_volume_path(&volume)
+            .unwrap();
+        let mut image = VhdxFile::open(file).writable(&driver).await.unwrap();
+        let data_write_guid = image.data_write_guid();
+        image.set_parent(&parent).await.unwrap();
+        let file = image.file.clone();
+        image.close().await.unwrap();
+
+        let image = VhdxFile::open(InMemoryFile::from_snapshot(file.snapshot()))
+            .read_only()
+            .await
+            .unwrap();
+        let locator = image.parent_locator().await.unwrap().unwrap();
+        let parent = locator.vhdx_parent().unwrap();
+        assert_eq!(parent.relative_path(), Some(relative.as_str()));
+        assert_eq!(parent.absolute_win32_path(), Some(absolute.as_str()));
+        assert_eq!(parent.volume_path(), Some(volume.as_str()));
+        assert_eq!(parent.linkage(), linkage);
+        assert_eq!(image.data_write_guid(), data_write_guid);
+    }
+
+    #[async_test]
     async fn set_parent_rejects_invalid_updates(driver: pal_async::DefaultDriver) {
         let file = InMemoryFile::new(0);
         let linkage = Guid::new_random();
@@ -1334,8 +1475,11 @@ mod tests {
         .unwrap();
         let original = file.snapshot();
         let new_path = "new".repeat(8_000);
+        let new_absolute = format!(r"\\?\C:\{new_path}");
         let parent = crate::VhdxParent::new(linkage)
             .with_relative_path(&new_path)
+            .unwrap()
+            .with_absolute_win32_path(&new_absolute)
             .unwrap();
         for flushes in 0..=6 {
             let mut image = VhdxFile::open(CrashAfterFlushFile::new(original.clone()))
@@ -1366,6 +1510,10 @@ mod tests {
             if result.is_ok() {
                 assert_eq!(path, new_path);
             }
+            assert_eq!(
+                locator.absolute_win32_path(),
+                (path == new_path).then_some(new_absolute.as_str())
+            );
             assert_eq!(locator.linkage(), linkage);
             assert_eq!(recovered.data_write_guid(), data_write_guid);
             recovered.close().await.unwrap();
@@ -1468,10 +1616,13 @@ mod tests {
         let mut image = VhdxFile::open(file).writable(&driver).await.unwrap();
         let data_write_guid = image.data_write_guid();
         let new_path = "new".repeat(8_000);
+        let new_absolute = format!(r"\\?\C:\{new_path}");
         image
             .set_parent(
                 &crate::VhdxParent::new(linkage)
                     .with_relative_path(&new_path)
+                    .unwrap()
+                    .with_absolute_win32_path(&new_absolute)
                     .unwrap(),
             )
             .await
@@ -1491,6 +1642,7 @@ mod tests {
             .vhdx_parent()
             .unwrap();
         assert_eq!(parent.relative_path(), Some(new_path.as_str()));
+        assert_eq!(parent.absolute_win32_path(), Some(new_absolute.as_str()));
         assert_eq!(parent.linkage(), linkage);
         assert_eq!(recovered.data_write_guid(), data_write_guid);
         recovered.close().await.unwrap();

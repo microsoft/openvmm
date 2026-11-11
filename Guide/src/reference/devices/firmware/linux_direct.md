@@ -56,6 +56,12 @@ On x86_64, OpenVMM follows the standard Linux boot protocol:
 The DSDT includes whatever x86 chipset devices are configured (serial ports,
 IOAPIC, PCI bus, VMBus, virtio-mmio, RTC, etc.).
 
+The `loader` crate also provides
+[`load_x86_mptable`](https://openvmm.dev/rustdoc/linux/loader/linux/mptable_boot/fn.load_x86_mptable.html)
+for kernels built without ACPI. It describes the processors and interrupt
+routing with Intel MP 1.4 tables instead of ACPI and SMBIOS, and it accepts
+only uncompressed ELF kernels. OpenVMM does not use this boot mode today.
+
 ## AArch64 Boot Flow
 
 On AArch64, OpenVMM supports two modes for presenting hardware descriptions to

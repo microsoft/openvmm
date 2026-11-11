@@ -10,6 +10,7 @@
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::ops::Deref;
+use std::process::ExitStatus;
 use std::process::Output;
 
 use serde::Deserialize;
@@ -258,7 +259,7 @@ impl<'a> FloweyCmd<'a> {
     }
 
     /// Run with inherited standard input, allowing interactive terminal use.
-    pub fn run_interactive(self) -> anyhow::Result<()> {
+    pub fn run_interactive(self) -> anyhow::Result<ExitStatus> {
         anyhow::ensure!(
             self.stdin_contents.is_none(),
             "interactive commands cannot also supply stdin contents"
@@ -274,7 +275,7 @@ impl<'a> FloweyCmd<'a> {
             status.success() || ignore_status,
             "command {description} exited with {status}"
         );
-        Ok(())
+        Ok(status)
     }
 
     /// Run the command and return its stdout as a string, with leading
@@ -417,11 +418,13 @@ mod tests {
     fn interactive_commands_preserve_wrapping_and_status_handling() {
         let mut sh = FloweyShell::new().unwrap();
         assert!(sh.wrap(fail_cmd(&sh)).run_interactive().is_err());
-        assert!(
+        assert_eq!(
             sh.wrap(fail_cmd(&sh))
                 .ignore_status()
                 .run_interactive()
-                .is_ok()
+                .unwrap()
+                .code(),
+            Some(1)
         );
         sh.set_wrapper(Some(CommandWrapperKind::Prefix));
         sh.wrap(xshell::cmd!(sh.xshell(), "nonexistent-program --flag"))

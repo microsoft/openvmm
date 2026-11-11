@@ -137,6 +137,10 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 }
 ```
 
+For OpenVMM tests, use a test-wide marker such as
+`unstable(on = mshv, reason = "Backend-specific failures")` to limit instability
+to one backend. The test still runs as stable on other backends.
+
 Unstable tests run in the same CI job as stable tests. In CI the
 `PETRI_IGNORE_UNSTABLE_FAILURES` environment variable is set, so when an unstable
 test fails the CI run passes with a warning. Outside of CI that variable is not

@@ -15,6 +15,7 @@
 
 // TODO: find a nice way to create const `Ucs2LeSlice` instances, and use proper
 // `const`ants instead of runtime methods...
+#[cfg(feature = "std")]
 macro_rules! defn_nvram_var {
     ($varname:ident = ($guid:expr, $name:literal)) => {
         #[expect(clippy::allow_attributes)]

@@ -29,7 +29,7 @@ struct Config {
     span: Span,
     extra_deps: Vec<Path>,
     /// If unstable, the reason why.
-    unstable: Option<String>,
+    unstable: Option<Unstable>,
     /// If ignored, the reason why (compile-time documentation only).
     ignored: Option<String>,
 }
@@ -39,7 +39,7 @@ struct ResolvedConfig {
     firmware: Firmware,
     arch: MachineArch,
     extra_deps: Vec<Path>,
-    unstable: Option<String>,
+    unstable: Option<Unstable>,
     ignored: Option<String>,
     requires_host_vendor: Option<HostVendor>,
     requires_capabilities: Vec<&'static str>,
@@ -56,6 +56,64 @@ struct NestedResolvedConfig {
     inner_module: syn::LitStr,
     test_fn: Ident,
     l2_config: ResolvedConfig,
+}
+
+#[derive(Clone)]
+struct Unstable {
+    reason: String,
+    on: Option<HostHypervisor>,
+}
+
+impl Parse for Unstable {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let on = if input.peek(syn::Ident) && input.fork().parse::<Ident>()? == "on" {
+            input.parse::<Ident>()?;
+            input.parse::<Token![=]>()?;
+            let hypervisor = input.parse()?;
+            input.parse::<Token![,]>()?;
+            Some(hypervisor)
+        } else {
+            None
+        };
+        let reason = parse_reason(input)?;
+        Ok(Self { reason, on })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HostHypervisor {
+    Mshv,
+    Kvm,
+    Whp,
+    Hvf,
+}
+
+impl Parse for HostHypervisor {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let ident = input.parse::<Ident>()?;
+        match ident.to_string().as_str() {
+            "mshv" => Ok(Self::Mshv),
+            "kvm" => Ok(Self::Kvm),
+            "whp" => Ok(Self::Whp),
+            "hvf" => Ok(Self::Hvf),
+            _ => Err(Error::new(
+                ident.span(),
+                "expected an OpenVMM backend: mshv, kvm, whp, or hvf",
+            )),
+        }
+    }
+}
+
+impl ToTokens for HostHypervisor {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let variant = match self {
+            Self::Mshv => quote!(Mshv),
+            Self::Kvm => quote!(Kvm),
+            Self::Whp => quote!(Whp),
+            Self::Hvf => quote!(Hvf),
+        };
+        tokens.extend(quote!(::petri::requirements::OpenVmmHypervisor::#variant));
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -338,7 +396,22 @@ impl Parse for ArgsWithOverrides {
                         _ => unreachable!(),
                     };
                 }
-                "unstable" | "ignore" => {
+                "unstable" => {
+                    let inner;
+                    syn::parenthesized!(inner in input);
+                    let unstable = inner.parse::<Unstable>()?;
+                    let _: Option<Token![,]> = inner.parse()?;
+                    if !inner.is_empty() {
+                        return Err(inner.error(
+                            "expected `unstable(reason = \"...\")` or \
+                             `unstable(on = <backend>, reason = \"...\")`",
+                        ));
+                    }
+                    if overrides.unstable.replace(unstable).is_some() {
+                        return Err(Error::new(ident.span(), "conflicting override"));
+                    }
+                }
+                "ignore" => {
                     let inner;
                     syn::parenthesized!(inner in input);
                     let reason = parse_reason(&inner)?;
@@ -346,11 +419,13 @@ impl Parse for ArgsWithOverrides {
                     let _: Option<Token![,]> = inner.parse()?;
                     if !inner.is_empty() {
                         return Err(inner.error(
-                            "whole-list `ignore`/`unstable` takes only `reason = \"...\"`; \
+                            "whole-list `ignore` takes only `reason = \"...\"`; \
                              wrap an individual config to scope it",
                         ));
                     }
-                    overrides.set_flag_reason(&ident, reason)?;
+                    if overrides.ignored.replace(reason).is_some() {
+                        return Err(Error::new(ident.span(), "conflicting override"));
+                    }
                 }
                 _ => overrides.apply_ident(&ident)?,
             }
@@ -371,7 +446,7 @@ impl Parse for ArgsWithOverrides {
 
 struct ParsedOverrides {
     vmm: Option<Vmm>,
-    unstable: Option<String>,
+    unstable: Option<Unstable>,
     ignored: Option<String>,
     with_vtl0_pipette: bool,
     requires_host_vendor: Option<HostVendor>,
@@ -414,19 +489,6 @@ impl ParsedOverrides {
             }
             _ => return Err(Error::new(ident.span(), "unrecognized vmm test override")),
         }
-        Ok(())
-    }
-
-    fn set_flag_reason(&mut self, ident: &Ident, reason: String) -> syn::Result<()> {
-        let slot = match ident.to_string().as_str() {
-            "unstable" => &mut self.unstable,
-            "ignore" => &mut self.ignored,
-            _ => unreachable!(),
-        };
-        if slot.is_some() {
-            return Err(Error::new(ident.span(), "conflicting override"));
-        }
-        *slot = Some(reason);
         Ok(())
     }
 
@@ -474,7 +536,7 @@ fn parse_required_capabilities(input: ParseStream<'_>) -> syn::Result<Vec<Requir
 
 impl Config {
     fn resolve(self, overrides: &ParsedOverrides) -> syn::Result<ResolvedConfig> {
-        Ok(ResolvedConfig {
+        let config = ResolvedConfig {
             vmm: match (overrides.vmm, self.vmm) {
                 (Some(Vmm::HyperV), Some(Vmm::HyperV))
                 | (Some(Vmm::HyperV), None)
@@ -493,14 +555,26 @@ impl Config {
             firmware: self.firmware,
             arch: self.arch,
             extra_deps: self.extra_deps,
-            // A per-config wrapper reason wins over the whole-list override.
+            // A per-config unstable marker replaces the whole-list reason and condition.
             // A config may carry both `unstable` and `ignored`; `ignore`
             // dominates at runtime (the test is skipped).
             unstable: self.unstable.or_else(|| overrides.unstable.clone()),
             ignored: self.ignored.or_else(|| overrides.ignored.clone()),
             requires_host_vendor: overrides.requires_host_vendor,
             requires_capabilities: overrides.requires_capabilities.clone(),
-        })
+        };
+        if config.vmm != Vmm::OpenVmm
+            && config
+                .unstable
+                .as_ref()
+                .is_some_and(|unstable| unstable.on.is_some())
+        {
+            return Err(Error::new(
+                self.span,
+                "`unstable(on = ...)` requires OpenVMM configurations",
+            ));
+        }
+        Ok(config)
     }
 }
 
@@ -627,7 +701,27 @@ fn parse_config(input: ParseStream<'_>, word: Ident) -> syn::Result<Config> {
     if word_string == "ignore" || word_string == "unstable" {
         let inner;
         syn::parenthesized!(inner in input);
-        let reason = parse_reason(&inner)?;
+        if word_string == "unstable"
+            && inner.peek(syn::Ident)
+            && inner.fork().parse::<Ident>()? == "on"
+        {
+            return Err(
+                inner.error("use test-wide `unstable(on = ..., reason = ...)` in `vmm_test_with`")
+            );
+        }
+        let unstable = if word_string == "unstable" {
+            Some(Unstable {
+                reason: parse_reason(&inner)?,
+                on: None,
+            })
+        } else {
+            None
+        };
+        let ignored = if word_string == "ignore" {
+            Some(parse_reason(&inner)?)
+        } else {
+            None
+        };
         inner.parse::<Token![,]>().map_err(|_| {
             Error::new(
                 word.span(),
@@ -647,11 +741,8 @@ fn parse_config(input: ParseStream<'_>, word: Ident) -> syn::Result<Config> {
                 "cannot nest `ignore`/`unstable` wrappers",
             ));
         }
-        if word_string == "ignore" {
-            config.ignored = Some(reason);
-        } else {
-            config.unstable = Some(reason);
-        }
+        config.ignored = ignored;
+        config.unstable = unstable;
         return Ok(config);
     }
 
@@ -1086,6 +1177,9 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
 /// `ignore(reason = "...", <config>)`. The `reason` is mandatory. Use
 /// `vmm_test_with` to apply either to the whole list of configs.
 ///
+/// Use the test-wide `unstable(on = <backend>, reason = "...")` attribute in
+/// `vmm_test_with` to limit instability to an OpenVMM backend.
+///
 /// Valid configuration options are:
 /// - `{vmm}_linux_direct_{arch}[list,of,options]`: Our provided Linux direct image
 /// - `{vmm}_linux_direct_bzimage_x64`: Our provided Linux direct bzImage (compressed kernel, x86_64 only)
@@ -1189,6 +1283,9 @@ pub fn vmm_test(
 ///
 /// The available attributes are:
 /// - unstable(reason = "..."): all variants are unstable (failures don't block PRs)
+/// - `unstable(on = <backend>, reason = "...")`: OpenVMM variants are unstable only
+///   on the selected backend (`mshv`, `kvm`, `whp`, or `hvf`); they still run as
+///   stable tests on other backends
 /// - ignore(reason = "..."): all variants are ignored (skipped by default)
 /// - noagent: don't use pipette in vtl0 for this test
 /// - amd: this test only runs on AMD-vendor hosts (skipped otherwise)
@@ -1200,6 +1297,8 @@ pub fn vmm_test(
 /// `unstable` and `ignore` can also be applied to a single config by wrapping
 /// it: `unstable(reason = "...", <config>)` / `ignore(reason = "...", <config>)`.
 /// A per-config wrapper cannot itself be nested inside another.
+/// The `on` selector is only supported in the test-wide `unstable` attribute,
+/// not in a per-config wrapper.
 ///
 /// `requires(...)` lists capabilities the test needs. Petri auto-detects some
 /// capabilities, such as `vpci`, and execution environments can advertise
@@ -1403,7 +1502,14 @@ fn make_vmm_test_config(
     let petri_vm_config =
         quote!(::petri::PetriVmBuilder::<#backend>::new(params, artifacts, &driver)?);
     let unstable = match &config.unstable {
-        Some(reason) => quote!(.unstable(#reason)),
+        Some(Unstable {
+            reason,
+            on: Some(hypervisor),
+        }) => quote!(.unstable_on(
+            #reason,
+            ::petri::requirements::TestRequirement::OpenVmmHypervisor(#hypervisor)
+        )),
+        Some(Unstable { reason, on: None }) => quote!(.unstable(#reason)),
         None => quote!(),
     };
     let ignore = if config.ignored.is_some() {
@@ -1517,4 +1623,110 @@ fn build_requirements(
     quote!(
         ::petri::requirements::TestCaseRequirements::new(#requirement_expr)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn expand(attr: TokenStream) -> syn::Result<String> {
+        let args = syn::parse2::<ArgsWithOverrides>(attr)?;
+        let item = syn::parse_quote! {
+            async fn restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+                Ok(())
+            }
+        };
+        let output = make_vmm_test(args, item)?;
+        syn::parse2::<syn::File>(output.clone())?;
+        Ok(output.to_string())
+    }
+
+    #[test]
+    fn test_wide_instability_selects_the_backend() {
+        for (backend, variant) in [
+            (quote!(mshv), quote!(Mshv)),
+            (quote!(kvm), quote!(Kvm)),
+            (quote!(whp), quote!(Whp)),
+            (quote!(hvf), quote!(Hvf)),
+        ] {
+            let output = expand(quote! {
+                openvmm, unstable(on = #backend, reason = "backend issue",),
+                configs(linux_direct_x64)
+            })
+            .unwrap();
+            let requirement = quote! {
+                ::petri::requirements::TestRequirement::OpenVmmHypervisor(
+                    ::petri::requirements::OpenVmmHypervisor::#variant
+                )
+            };
+            assert!(
+                output.contains(&quote!(.unstable_on("backend issue", #requirement)).to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn per_config_instability_replaces_the_whole_list_condition() {
+        let output = expand(quote! {
+            openvmm, unstable(on = mshv, reason = "outer"),
+            configs(unstable(reason = "inner", linux_direct_x64))
+        })
+        .unwrap();
+        assert!(output.contains(&quote!(.unstable("inner")).to_string()));
+        assert!(!output.contains("unstable_on"));
+        assert!(!output.contains("Mshv"));
+    }
+
+    #[test]
+    fn unconditional_instability_and_ignore_keep_their_syntax() {
+        let output = expand(quote! {
+            openvmm, unstable(reason = "all hosts",),
+            configs(ignore(reason = "not ready", linux_direct_x64,))
+        })
+        .unwrap();
+        assert!(output.contains(&quote!(.unstable("all hosts")).to_string()));
+        assert!(output.contains(&quote!(.ignore()).to_string()));
+    }
+
+    #[test]
+    fn invalid_conditional_instability_is_rejected() {
+        for attr in [
+            quote! {
+                openvmm, unstable(on = mshv), configs(linux_direct_x64)
+            },
+            quote! {
+                openvmm, unstable(on = unknown_backend, reason = "backend issue"),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                openvmm, unstable(reason = "one"), unstable(on = mshv, reason = "two"),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                openvmm, configs(unstable(on = mshv, reason = "backend issue", linux_direct_x64))
+            },
+            quote! {
+                openvmm, configs(unstable(reason = "backend issue", on = mshv, linux_direct_x64))
+            },
+            quote! {
+                openvmm, unstable(reason = "backend issue", when = requirement),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                openvmm, unstable(on = TestRequirement::Any, reason = "backend issue"),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                hyperv, unstable(on = mshv, reason = "backend issue"),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                qemu, unstable(on = mshv, reason = "backend issue"),
+                configs(linux_direct_x64)
+            },
+        ] {
+            assert!(expand(attr).is_err());
+        }
+    }
 }
