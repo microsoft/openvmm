@@ -1447,6 +1447,29 @@ mod gicd {
         }
 
         #[test]
+        fn distributor_ack_skips_active_and_empty_bits() {
+            let mut distributor = empty_test_distributor();
+            let mut gicr = distributor.add_redistributor(0, true);
+            let mask = (1 << (32 & 31)) | (1 << (63 & 31));
+            set_group_enables(&distributor, false, true);
+            assert!(distributor.write32(GicdRegister(GicdRegister::IGROUPR0.0 + 4), mask));
+            assert!(distributor.write32(GicdRegister(GicdRegister::ISENABLER0.0 + 4), mask));
+            assert_eq!(distributor.ack(&mut gicr, true), 1023);
+
+            set_software_pending_spi(&distributor, 32, true);
+            assert_eq!(distributor.ack(&mut gicr, true), 32);
+
+            // Skip the active low bit and select the other pending interrupt.
+            set_software_pending_spi(&distributor, 32, true);
+            set_software_pending_spi(&distributor, 63, true);
+            assert_eq!(distributor.ack(&mut gicr, true), 63);
+            assert_eq!(distributor.ack(&mut gicr, true), 1023);
+
+            set_software_pending_spi(&distributor, 63, true);
+            assert_eq!(distributor.ack(&mut gicr, true), 1023);
+        }
+
+        #[test]
         fn spi_iar_and_eoir_work_for_nonzero_target_vp() {
             let mut distributor = empty_test_distributor();
             let gicr0 = distributor.add_redistributor(0, false);
@@ -3091,30 +3114,11 @@ mod gicr {
         use test_with_tracing::test;
 
         #[test]
-        fn distributor_ack_skips_active_and_empty_bits() {
-            let mut distributor = crate::Distributor::new(
-                0,
-                memory_range::MemoryRange::new(
-                    0x100000..0x100000 + aarch64defs::GIC_REDISTRIBUTOR_SIZE,
-                ),
-                64,
-            );
-            let mut gicr = distributor.add_redistributor(0, true);
-            assert_eq!(distributor.ack(&mut gicr, true), 1023);
-
-            distributor.set_pending(32, true);
-            distributor.set_pending(63, true);
-            assert_eq!(distributor.ack(&mut gicr, true), 63);
-            assert_eq!(distributor.ack(&mut gicr, true), 32);
-            assert_eq!(distributor.ack(&mut gicr, true), 1023);
-
-            distributor.set_pending(63, true);
-            assert_eq!(distributor.ack(&mut gicr, true), 1023);
-        }
-
-        #[test]
         fn ack_selects_highest_pending_inactive_bit() {
             let (mut gicr, _) = Redistributor::new(0, 0, true);
+            let mask = (1 << 0) | (1 << 7) | (1 << 31);
+            assert!(gicr.shared.sgi_write32(GicrSgiRegister::IGROUPR0, mask));
+            assert!(gicr.shared.sgi_write32(GicrSgiRegister::ISENABLER0, mask));
             assert_eq!(gicr.ack(true), None);
 
             for intid in [0, 7, 31] {
@@ -3137,17 +3141,28 @@ mod gicr {
 mod tests {
     use super::*;
     use aarch64defs::SystemReg;
+    use aarch64defs::gic::GicdCtlr;
     use aarch64defs::gic::GicdRegister;
     use memory_range::MemoryRange;
     use test_with_tracing::test;
+    use vm_topology::processor::VpIndex;
 
     fn spi(intid: u32, edge: bool) -> (Distributor, Redistributor) {
         let mut distributor = Distributor::new(
             0,
             MemoryRange::new(0x20000..0x20000 + aarch64defs::GIC_REDISTRIBUTOR_SIZE),
             160,
-        );
+        )
+        .unwrap();
         let redistributor = distributor.add_redistributor(0, true);
+        assert!(distributor.write(
+            u64::from(GicdRegister::CTLR.0),
+            &u32::from(GicdCtlr::new().with_enable_grp1_non_secure(true)).to_le_bytes(),
+        ));
+        assert!(distributor.write(
+            u64::from(GicdRegister::IGROUPR.start) + u64::from(intid / 32 * 4),
+            &(1u32 << (intid & 31)).to_le_bytes(),
+        ));
         assert!(distributor.write(
             u64::from(GicdRegister::ICFGR.start) + u64::from(intid / 16 * 4),
             &(u32::from(edge) << ((intid & 15) * 2 + 1)).to_le_bytes(),
@@ -3164,11 +3179,11 @@ mod tests {
         for intid in [32, 39, 47, 48, 63] {
             let (distributor, mut redistributor) = spi(intid, true);
             for _ in 0..2 {
-                assert_eq!(distributor.set_pending(intid, true), Some(0));
-                assert_eq!(distributor.set_pending(intid, false), None);
-                assert!(distributor.irq_pending(&redistributor));
+                assert_eq!(distributor.set_spi_irq(intid, true), [VpIndex::new(0)]);
+                assert!(distributor.set_spi_irq(intid, false).is_empty());
+                assert!(distributor.irq_pending(&redistributor, true));
                 assert_eq!(distributor.ack(&mut redistributor, true), intid);
-                assert!(!distributor.irq_pending(&redistributor));
+                assert!(!distributor.irq_pending(&redistributor, true));
                 assert!(distributor.write_sysreg(
                     &mut redistributor,
                     SystemReg::ICC_EOIR1_EL1,
@@ -3183,10 +3198,10 @@ mod tests {
     #[test]
     fn level_triggered_spi_deassertion_clears_pending() {
         let (distributor, mut redistributor) = spi(39, false);
-        distributor.set_pending(39, true);
-        assert!(distributor.irq_pending(&redistributor));
-        distributor.set_pending(39, false);
-        assert!(!distributor.irq_pending(&redistributor));
+        distributor.set_spi_irq(39, true);
+        assert!(distributor.irq_pending(&redistributor, true));
+        distributor.set_spi_irq(39, false);
+        assert!(!distributor.irq_pending(&redistributor, true));
         assert_eq!(distributor.ack(&mut redistributor, true), 1023);
     }
 
@@ -3199,10 +3214,10 @@ mod tests {
         assert!(distributor.read(address, &mut priority));
         assert_eq!(u32::from_le_bytes(priority), 0xa0a0a0a0);
 
-        distributor.set_pending(130, true);
-        assert!(distributor.irq_pending(&redistributor));
-        distributor.set_pending(130, false);
-        assert!(!distributor.irq_pending(&redistributor));
+        distributor.set_spi_irq(130, true);
+        assert!(distributor.irq_pending(&redistributor, true));
+        distributor.set_spi_irq(130, false);
+        assert!(!distributor.irq_pending(&redistributor, true));
         assert_eq!(distributor.ack(&mut redistributor, true), 1023);
     }
 }
