@@ -1055,6 +1055,7 @@ mod vlan_tag_tests {
     use pci_core::capabilities::msix::MsixEmulator;
     use pci_core::msi::MsiTarget;
     use std::task::Context;
+    use test_with_tracing::test;
     use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vm_task::VmTaskDriverSource;
 
