@@ -1331,6 +1331,40 @@ fn round_up_to_2mb(bytes: u64) -> u64 {
     (bytes + (2 * 1024 * 1024) - 1) & !((2 * 1024 * 1024) - 1)
 }
 
+/// Decides whether to run the VPCI relay: by default for isolated guests where
+/// it can work (VBS needs MMIO hypercalls; all need a high VTL0 MMIO window).
+/// Explicitly enabling it where it can't work is an error.
+fn resolve_vpci_relay(
+    requested: Option<bool>,
+    isolation: virt::IsolationType,
+    with_vmbus_relay: bool,
+    use_mmio_hypercalls: bool,
+    mmio_window_available: bool,
+) -> anyhow::Result<bool> {
+    let vbs = isolation == virt::IsolationType::Vbs;
+    if requested == Some(true) {
+        if !with_vmbus_relay {
+            anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
+        }
+        if vbs && !use_mmio_hypercalls {
+            anyhow::bail!("cannot run the VPCI relay on VBS without MMIO hypercalls");
+        }
+        if !mmio_window_available {
+            anyhow::bail!("too little VTL0 MMIO space to take for the VPCI relay");
+        }
+    }
+    let wanted = requested.unwrap_or(
+        with_vmbus_relay && (isolation.is_hardware_isolated() || (vbs && use_mmio_hypercalls)),
+    );
+    if wanted && !mmio_window_available {
+        tracing::warn!(
+            CVM_ALLOWED,
+            "too little high VTL0 MMIO space for the VPCI relay, so it is disabled"
+        );
+    }
+    Ok(wanted && mmio_window_available)
+}
+
 #[cfg(guest_arch = "x86_64")]
 fn new_x86_topology(
     cpus: &[bootloader_fdt_parser::Cpu],
@@ -1696,7 +1730,7 @@ async fn new_underhill_vm(
     // TODO: Centralize cpuid based feature determination.
     #[cfg(guest_arch = "x86_64")]
     let use_mmio_hypercalls = use_mmio_hypercalls
-        || hardware_isolated && {
+        || isolation.is_isolated() && {
             let result =
                 safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
             hvdef::HvEnlightenmentInformation::from(
@@ -1707,6 +1741,7 @@ async fn new_underhill_vm(
             )
             .use_hypercall_for_mmio_access()
         };
+    tracing::info!(CVM_ALLOWED, use_mmio_hypercalls, "MMIO access mode");
 
     let boot_info = runtime_params.parsed_openhcl_boot();
 
@@ -1730,7 +1765,7 @@ async fn new_underhill_vm(
                 * virt_mshv_vtl::SnpBacked::shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
 
-            round_up_to_2mb(cpu_bytes + device_dma + attestation)
+            cpu_bytes + device_dma + attestation
         }
         #[cfg(guest_arch = "x86_64")]
         virt::IsolationType::Tdx => {
@@ -1738,9 +1773,9 @@ async fn new_underhill_vm(
                 * virt_mshv_vtl::TdxBacked::shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
 
-            round_up_to_2mb(cpu_bytes + device_dma + attestation)
+            cpu_bytes + device_dma + attestation
         }
-        virt::IsolationType::Vbs => round_up_to_2mb(device_dma + attestation),
+        virt::IsolationType::Vbs => device_dma + attestation,
         _ => 0,
     };
 
@@ -1772,14 +1807,6 @@ async fn new_underhill_vm(
         with_vmbus_relay = !hide_isolation;
     }
 
-    let enable_vpci_relay = env_cfg
-        .enable_vpci_relay
-        .unwrap_or(hardware_isolated && !hide_isolation && with_vmbus_relay);
-
-    if enable_vpci_relay && !with_vmbus_relay {
-        anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
-    }
-
     // Construct chipset MMIO ranges from the positional convention in the
     // device tree: [0] = low (below 4 GiB), [1] = high (above RAM).
     let mut chipset_mmio = ChipsetMmioRanges {
@@ -1795,12 +1822,17 @@ async fn new_underhill_vm(
             .unwrap_or(MemoryRange::EMPTY),
     };
 
+    let required_len = 64 * vpci_relay::VPCI_RELAY_MMIO_PER_DEVICE;
+    let enable_vpci_relay = resolve_vpci_relay(
+        env_cfg.enable_vpci_relay,
+        isolation,
+        with_vmbus_relay,
+        use_mmio_hypercalls,
+        chipset_mmio.high.len() >= required_len,
+    )?;
+
     let vpci_relay_mmio = if enable_vpci_relay {
         // Carve out enough VTL0 MMIO space from the high range for 64 devices.
-        let required_len = 64 * vpci_relay::VPCI_RELAY_MMIO_PER_DEVICE;
-        if chipset_mmio.high.is_empty() || chipset_mmio.high.len() < required_len {
-            anyhow::bail!("too little VTL0 MMIO space to take for the VPCI relay");
-        }
         let (rest, vpci) = chipset_mmio
             .high
             .split_at_offset(chipset_mmio.high.len() - required_len);
@@ -1809,6 +1841,18 @@ async fn new_underhill_vm(
     } else {
         MemoryRange::EMPTY
     };
+
+    // In isolated guests the relays' VMBus rings also come from the shared pool;
+    // the shutdown relay's 4-page ring is only used for VBS.
+    let mut relay_ring_pages = 0;
+    if isolation.is_isolated() && enable_vpci_relay {
+        relay_ring_pages += 64 * u64::from(vpci_relay::VPCI_RELAY_RING_PAGES);
+    }
+    if isolation == virt::IsolationType::Vbs && with_vmbus_relay {
+        relay_ring_pages += 4;
+    }
+    let shared_pool_size =
+        round_up_to_2mb(shared_pool_size + relay_ring_pages * hvdef::HV_PAGE_SIZE);
 
     let BuiltVtl0MemoryLayout {
         vtl0_memory_map,
@@ -2229,9 +2273,11 @@ async fn new_underhill_vm(
         // suppressed). See the comment where `stateful` is computed.
         tpm_persisted: stateful,
         hardware_sealing_policy,
+        // VBS follows the relay; SNP/TDX keep the value their sealed VMGS keys use.
         filtered_vpci_devices_allowed: with_vmbus_relay
             && dps.general.vpci_boot_enabled
-            && isolation.is_isolated(),
+            && hardware_isolated
+            || (isolation == virt::IsolationType::Vbs && enable_vpci_relay),
         vm_unique_id: dps.general.bios_guid.to_string(),
         vmgs_provisioner: prov_claims.clone(),
     };
@@ -3495,7 +3541,9 @@ async fn new_underhill_vm(
             let mut vpci_filter = vmbus_client::filter::FilterDefinition::new("vpci")
                 .by_interface(guid::guid!("44C4F61D-4444-4400-9D52-802E27EDE19F"));
 
-            if enable_vpci_relay {
+            // Isolated guests may only see allow-listed VPCI devices, so their
+            // VPCI offers never fall through to the generic relay below.
+            if enable_vpci_relay || isolation.is_isolated() {
                 filter.add(&mut vpci_filter);
             }
 
@@ -3521,7 +3569,7 @@ async fn new_underhill_vm(
                     dma_manager.new_client(DmaClientParameters {
                         device_name: "vpci-relay".into(),
                         lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                        allocation_visibility: if hardware_isolated {
+                        allocation_visibility: if isolation.is_isolated() {
                             AllocationVisibility::Shared
                         } else {
                             AllocationVisibility::Private
@@ -3548,45 +3596,26 @@ async fn new_underhill_vm(
                     },
                 );
 
-                // Allow NVMe devices.
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: None,
-                    device_id: None,
-                    revision_id: None,
-                    prog_if: Some(
-                        ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
-                    ),
-                    sub_class: Some(Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY),
-                    base_class: Some(ClassCode::MASS_STORAGE_CONTROLLER),
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
-
-                // Allow MANA devices.
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(pci_core::microsoft::VENDOR_ID),
-                    device_id: Some(pci_core::microsoft::DeviceId::GDMA.0),
-                    revision_id: None,
-                    prog_if: Some(ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA),
-                    sub_class: Some(Subclass::NETWORK_CONTROLLER_ETHERNET),
-                    base_class: Some(ClassCode::NETWORK_CONTROLLER),
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
-
-                // Allow Azi HSM devices.
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(pci_core::microsoft::VENDOR_ID), // Microsoft vendor ID
-                    device_id: Some(pci_core::microsoft::DeviceId::AZIHSM.0), // Azi HSM device ID
-                    revision_id: None,
-                    prog_if: Some(ProgrammingInterface::NONE),
-                    sub_class: Some(Subclass::NONE),
-                    base_class: Some(ClassCode::ENCRYPTION_CONTROLLER),
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
+                for d in measured_product_policy.allowed_pci_devices() {
+                    let device = AllowedDevice {
+                        vendor_id: d.vendor_id,
+                        device_id: d.device_id,
+                        revision_id: d.revision_id,
+                        prog_if: d.prog_if.map(ProgrammingInterface),
+                        sub_class: d.sub_class.map(Subclass),
+                        base_class: d.base_class.map(ClassCode),
+                        sub_vendor_id: d.sub_vendor_id,
+                        sub_system_id: d.sub_system_id,
+                    };
+                    tracing::info!(CVM_ALLOWED, ?device, "allowing VPCI device");
+                    relay.add_allowed_device(device);
+                }
 
                 vpci_relay = Some(relay);
+            } else if isolation.is_isolated() {
+                tracing::warn!(CVM_ALLOWED, "VPCI relay not running, rejecting VPCI offers");
+                // Releasing the filtered offers rejects current and future ones.
+                drop(vpci_filter.take());
             }
 
             let mut intercept_list = Vec::new();
@@ -3816,7 +3845,11 @@ async fn new_underhill_vm(
                 .new_client(DmaClientParameters {
                     device_name: "shutdown-relay".into(),
                     lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                    allocation_visibility: AllocationVisibility::Private,
+                    allocation_visibility: if isolation.is_isolated() {
+                        AllocationVisibility::Shared
+                    } else {
+                        AllocationVisibility::Private
+                    },
                     persistent_allocations: false,
                 })
                 .context("shutdown relay dma client")?,
@@ -4557,3 +4590,6 @@ impl chipset_device_worker::RemoteDynamicResolvers for OpenHclRemoteDynamicResol
 mesh_worker::register_workers! {
     chipset_device_worker::worker::RemoteChipsetDeviceWorker<OpenHclRemoteDynamicResolvers>
 }
+
+#[cfg(test)]
+mod tests;

@@ -120,6 +120,10 @@ pub enum Image {
         /// to avoid having multiple igvmfilegen tools with and without the feature.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         product_policy: Option<ProductPolicy>,
+        /// Optional device policy file, relative to the manifest: the PCI devices
+        /// that the VPCI relay may expose to VTL0. Without one, it exposes none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_policy: Option<PathBuf>,
     },
     /// Load the Linux kernel.
     /// TODO: Currently, this only works with underhill.
@@ -489,6 +493,30 @@ mod test {
             }
         ));
         guest.image.validate().unwrap();
+    }
+
+    /// The SIVM manifests must be the VBS configuration of the CVM manifests
+    /// with the SIVM device policy, so they can't drift apart.
+    #[test]
+    fn sivm_manifests_are_cvm_vbs_config_plus_policy() {
+        let pairs = [
+            (
+                include_str!("../../manifests/openhcl-x64-cvm-sivm-dev.json"),
+                include_str!("../../manifests/openhcl-x64-cvm-dev.json"),
+            ),
+            (
+                include_str!("../../manifests/openhcl-x64-cvm-sivm-release.json"),
+                include_str!("../../manifests/openhcl-x64-cvm-release.json"),
+            ),
+        ];
+        for (sivm, cvm) in pairs {
+            let sivm: serde_json::Value = serde_json::from_str(sivm).unwrap();
+            let mut cvm: serde_json::Value = serde_json::from_str(cvm).unwrap();
+            let guests = cvm["guest_configs"].as_array_mut().unwrap();
+            guests.retain(|guest| guest["isolation_type"]["vbs"].is_object());
+            guests[0]["image"]["openhcl"]["device_policy"] = "policies/sivm.toml".into();
+            assert_eq!(sivm, cvm);
+        }
     }
 
     #[test]

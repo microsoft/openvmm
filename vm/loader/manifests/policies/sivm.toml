@@ -1,0 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# PCI devices that OpenHCL exposes to SIVM guests: the Azure ones plus the GPU.
+devices = "devices.toml"
+allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm", "nvidia-gpu"]

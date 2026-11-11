@@ -28,24 +28,36 @@ pub use paste::paste as __paste;
 /// Absolute path of the measured product policy file in the OpenHCL initrd.
 pub const PRODUCT_POLICY_PATH: &str = "/openhcl-product-policy";
 
-/// Per-VM measured product policy.
+/// Per-VM measured product policy and allowed PCI devices.
 ///
-/// `None` means no policy was installed; any `Some(_)` carries the
+/// A `None` policy means no policy was installed; any `Some(_)` carries the
 /// decoded variant body.
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 #[cfg_attr(feature = "inspect", inspect(transparent))]
-pub struct MeasuredProductPolicy(Option<ProductPolicy>);
+pub struct MeasuredProductPolicy {
+    policy: Option<ProductPolicy>,
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    allowed_pci_devices: Vec<AllowedPciDevice>,
+}
 
 impl MeasuredProductPolicy {
     /// Wrap the decoded policy (or its absence).
     pub fn new(policy: Option<ProductPolicy>) -> Self {
-        Self(policy)
+        Self {
+            policy,
+            allowed_pci_devices: Vec::new(),
+        }
     }
 
     /// The decoded policy, if any.
     pub fn raw(&self) -> Option<&ProductPolicy> {
-        self.0.as_ref()
+        self.policy.as_ref()
+    }
+
+    /// The PCI devices that OpenHCL's VPCI relay may expose to VTL0.
+    pub fn allowed_pci_devices(&self) -> &[AllowedPciDevice] {
+        &self.allowed_pci_devices
     }
 }
 
@@ -54,12 +66,51 @@ struct ProductPolicyInternal {
     #[mesh(1)]
     magic: u64,
     #[mesh(2)]
-    policy: ProductPolicy,
+    policy: Option<ProductPolicy>,
+    #[mesh(3)]
+    allowed_pci_devices: Vec<AllowedPciDevice>,
 }
 
 impl ProductPolicyInternal {
     /// Magic header for an encoded product policy payload ("OHCLPOL").
     const MAGIC: u64 = 0x4F48434C504F4C00;
+}
+
+/// A PCI device that OpenHCL's VPCI relay may expose to VTL0: one with every
+/// ID that is set. Mesh tags are part of the wire format and must never be
+/// reused.
+#[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq, Default)]
+#[cfg_attr(
+    feature = "manifest",
+    derive(serde::Deserialize),
+    serde(deny_unknown_fields)
+)]
+#[mesh(package = "openhcl.product_policy")]
+pub struct AllowedPciDevice {
+    /// Vendor ID.
+    #[mesh(1)]
+    pub vendor_id: Option<u16>,
+    /// Device ID.
+    #[mesh(2)]
+    pub device_id: Option<u16>,
+    /// Revision ID.
+    #[mesh(3)]
+    pub revision_id: Option<u8>,
+    /// Base class code.
+    #[mesh(4)]
+    pub base_class: Option<u8>,
+    /// Subclass code.
+    #[mesh(5)]
+    pub sub_class: Option<u8>,
+    /// Programming interface.
+    #[mesh(6)]
+    pub prog_if: Option<u8>,
+    /// Subsystem vendor ID.
+    #[mesh(7)]
+    pub sub_vendor_id: Option<u16>,
+    /// Subsystem ID.
+    #[mesh(8)]
+    pub sub_system_id: Option<u16>,
 }
 
 /// Defines the `ProductPolicy` enum and, for each variant `Foo(Body)`,
@@ -168,18 +219,24 @@ impl core::error::Error for ProductPolicyDecodeError {
     }
 }
 
-/// Encode a policy as `mesh_protobuf` bytes for the IGVM payload.
-pub fn encode_product_policy(policy: &ProductPolicy) -> Vec<u8> {
+/// Encode a policy and device list as `mesh_protobuf` bytes for the initrd
+/// policy file.
+pub fn encode_product_policy(
+    policy: Option<&ProductPolicy>,
+    allowed_pci_devices: &[AllowedPciDevice],
+) -> Vec<u8> {
     let policy = ProductPolicyInternal {
         magic: ProductPolicyInternal::MAGIC,
-        policy: policy.clone(),
+        policy: policy.cloned(),
+        allowed_pci_devices: allowed_pci_devices.to_vec(),
     };
     mesh_protobuf::encode(policy)
 }
 
-/// Decode `mesh_protobuf` bytes. Caller must skip empty payloads
-/// (which signal "no policy installed") before calling.
-pub fn decode_product_policy(bytes: &[u8]) -> Result<ProductPolicy, ProductPolicyDecodeError> {
+/// Decode `mesh_protobuf` bytes.
+pub fn decode_product_policy(
+    bytes: &[u8],
+) -> Result<MeasuredProductPolicy, ProductPolicyDecodeError> {
     let data: ProductPolicyInternal =
         mesh_protobuf::decode(bytes).map_err(ProductPolicyDecodeError::Mesh)?;
 
@@ -187,7 +244,10 @@ pub fn decode_product_policy(bytes: &[u8]) -> Result<ProductPolicy, ProductPolic
         return Err(ProductPolicyDecodeError::BadMagic);
     }
 
-    Ok(data.policy)
+    Ok(MeasuredProductPolicy {
+        policy: data.policy,
+        allowed_pci_devices: data.allowed_pci_devices,
+    })
 }
 
 pub use uefi_security_policy::UefiSecurityPolicy;
