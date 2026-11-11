@@ -501,6 +501,7 @@ impl VmManifestBuilder {
                 with_i440bx_host_pci_bridge: false,
                 dt_com_ports: [false; 4],
                 dt_pl011_uarts: false,
+                omitted_com_ports: None,
             },
         };
         let is_x86 = matches!(self.arch, MachineArch::X86_64);
@@ -1040,6 +1041,10 @@ impl VmChipsetResult {
             *described = backend.is_some();
         }
         let configured = backends.each_ref().map(Option::is_some);
+        if only_configured {
+            self.capabilities.dt_com_ports = configured;
+            self.capabilities.omitted_com_ports = Some(configured.map(|c| !c));
+        }
         let devices = serial_16550_devices(wait_for_rts, debugger_mode, backends);
 
         self.chipset_devices.extend(
@@ -1320,6 +1325,17 @@ mod tests {
             assert_eq!(
                 uart_handle_count(&result),
                 mask.count_ones() as usize,
+                "backend mask {mask:#x}"
+            );
+            let configured: [bool; 4] = std::array::from_fn(|index| mask & (1 << index) != 0);
+            assert_eq!(
+                dt_uarts(&result),
+                (configured, false),
+                "backend mask {mask:#x}"
+            );
+            assert_eq!(
+                result.capabilities.omitted_com_ports,
+                Some(configured.map(|c| !c)),
                 "backend mask {mask:#x}"
             );
         }
