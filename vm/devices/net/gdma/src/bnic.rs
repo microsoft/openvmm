@@ -3,6 +3,7 @@
 
 use self::bnic_defs::CQE_RX_TRUNCATED;
 use self::bnic_defs::CQE_TX_GDMA_ERR;
+use self::bnic_defs::CQE_TX_INVALID_OOB;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
 use self::bnic_defs::MANA_LONG_PKT_FMT;
@@ -31,6 +32,7 @@ use anyhow::Context;
 use anyhow::anyhow;
 use gdma_defs::GdmaQueueType;
 use gdma_defs::GdmaReqHdr;
+use gdma_defs::Sge;
 use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use gdma_defs::bnic as bnic_defs;
@@ -580,15 +582,44 @@ impl TxRxTask {
             };
 
         let lso = sqe.header.params.client_oob_in_sgl();
+        // A checksum send gets its header layout from the frame, the way the NIC parses
+        // it; see `checksum_send_headers`. Every other send keeps the driver's `trans_off`.
+        let (l2_len, trans_off) =
+            if !lso && (oob.s_oob.comp_tcp_csum() || oob.s_oob.comp_udp_csum()) {
+                let mut headers = [0; MAX_CHECKSUM_HEADER_LEN];
+                let read = read_frame_prefix(self.pool.guest_memory(), sqe.sgl(), &mut headers);
+                match checksum_send_headers(&headers[..read], &oob.s_oob) {
+                    // An injected tag is not in the frame, so it never moves the transport
+                    // header; it still counts toward `l2_len`, as for any other send.
+                    Ok(layout) => (
+                        l2_len as u16 + layout.l2_len - net_backend::ETHERNET_HEADER_LEN as u16,
+                        layout.transport_offset(),
+                    ),
+                    Err(err) => {
+                        // The NIC completes a send whose OOB does not match how it parsed
+                        // the frame with CQE_TX_INVALID_OOB, which costs that packet only.
+                        // Guessing a checksum location instead would have the backend write
+                        // the checksum over whatever bytes sit there.
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            "dropping a checksum send the device cannot offload"
+                        );
+                        self.post_tx_completion_invalid_oob();
+                        return Ok(());
+                    }
+                }
+            } else {
+                (l2_len as u16, oob.s_oob.trans_off())
+            };
         let mut meta = TxMetadata {
             id: TxId(0),
             segment_count: sqe.sgl().len().try_into().unwrap(),
             len: total_len.try_into().unwrap(),
             flags: tx_flags(&oob.s_oob, lso),
             l2_len: l2_len as u8,
-            l3_len: oob.s_oob.trans_off().clamp(l2_len as u16, 255) - l2_len as u16,
+            l3_len: trans_off.clamp(l2_len, 255) - l2_len,
             l4_len: 0,
-            transport_header_offset: oob.s_oob.trans_off(),
+            transport_header_offset: trans_off,
             max_segment_size: 0,
             vlan,
         };
@@ -652,6 +683,21 @@ impl TxRxTask {
             cqe_hdr: ManaCqeHeader::new()
                 .with_client_type(MANA_CQE_COMPLETION)
                 .with_cqe_type(CQE_TX_GDMA_ERR),
+            tx_data_offset: 0,
+            offsets: ManaTxCompOobOffsets::new(),
+            reserved: [0; 12],
+        };
+        self.queues
+            .post_cq(self.sq_cq_id, tx_oob.as_bytes(), self.sq_id, true);
+    }
+
+    /// Completes a send the device refused for its headers, as the NIC does: the error
+    /// covers that packet only and the queue keeps running.
+    fn post_tx_completion_invalid_oob(&mut self) {
+        let tx_oob = ManaTxCompOob {
+            cqe_hdr: ManaCqeHeader::new()
+                .with_client_type(MANA_CQE_COMPLETION)
+                .with_cqe_type(CQE_TX_INVALID_OOB),
             tx_data_offset: 0,
             offsets: ManaTxCompOobOffsets::new(),
             reserved: [0; 12],
@@ -738,6 +784,196 @@ fn tx_flags(s_oob: &ManaTxShortOob, lso: bool) -> TxFlags {
         .with_is_ipv6(s_oob.is_outer_ipv6() && !is_ipv4)
 }
 
+/// The 802.1Q customer tag's EtherType.
+const ETHERTYPE_VLAN: u16 = 0x8100;
+/// The 802.1ad service tag's EtherType, the outer tag of a QinQ stack.
+const ETHERTYPE_QINQ: u16 = 0x88a8;
+const ETHERTYPE_IPV4: u16 = 0x0800;
+const ETHERTYPE_IPV6: u16 = 0x86dd;
+const IP_PROTOCOL_TCP: u8 = 6;
+const IP_PROTOCOL_UDP: u8 = 17;
+/// The length of an in-band 802.1Q or 802.1ad tag.
+const VLAN_TAG_LEN: u16 = 4;
+/// In-band tags a checksum send may carry: a single tag or a QinQ pair.
+const MAX_IN_BAND_TAGS: u16 = 2;
+const TCP_HEADER_MIN_LEN: u16 = 20;
+const UDP_HEADER_LEN: u16 = 8;
+/// IPv4 flags and fragment offset: the MF flag or a nonzero offset marks a fragment.
+const IPV4_MORE_FRAGMENTS_AND_OFFSET: u16 = 0x3fff;
+/// The most header bytes a checksum send can need: Ethernet, two in-band tags, an IPv4
+/// header with every option, and a TCP header. A frame is never read past this.
+const MAX_CHECKSUM_HEADER_LEN: usize = net_backend::ETHERNET_HEADER_LEN as usize
+    + (MAX_IN_BAND_TAGS * VLAN_TAG_LEN) as usize
+    + 60
+    + TCP_HEADER_MIN_LEN as usize;
+
+/// The header layout of a checksum send, as read from its frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChecksumHeaders {
+    /// The Ethernet header with any in-band tags, as it is in the frame.
+    l2_len: u16,
+    /// The IP header, with IPv4 options.
+    l3_len: u16,
+}
+
+impl ChecksumHeaders {
+    fn transport_offset(&self) -> u16 {
+        self.l2_len + self.l3_len
+    }
+}
+
+/// Why a checksum send cannot be offloaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+enum ChecksumSendError {
+    #[error("the send asks for both a TCP and a UDP checksum")]
+    BothProtocols,
+    #[error("the frame ends inside its headers")]
+    Truncated,
+    #[error("the frame is not IPv4 or IPv6 (EtherType {0:#06x})")]
+    NotIp(u16),
+    #[error("the IP header is malformed")]
+    MalformedIpHeader,
+    #[error("the OOB names a different IP version than the frame carries")]
+    IpVersionMismatch,
+    #[error("the frame is an IP fragment")]
+    Fragment,
+    #[error("an IPv6 extension header (next header {0}) precedes the transport header")]
+    Ipv6ExtensionHeader(u8),
+    #[error("the frame carries IP protocol {found}, not the requested {requested}")]
+    ProtocolMismatch { requested: u8, found: u8 },
+    #[error("trans_off {stated} does not match the transport header at {parsed}")]
+    OffsetMismatch { stated: u16, parsed: u16 },
+}
+
+/// Copies the start of a frame described by `sgl` into `buf`, returning how many bytes it
+/// copied. It stops early where the frame ends or a guest address cannot be read, so a
+/// short count means a frame shorter than `buf`.
+fn read_frame_prefix(gm: &GuestMemory, sgl: &[Sge], buf: &mut [u8]) -> usize {
+    let mut copied = 0;
+    for sge in sgl {
+        if copied == buf.len() {
+            break;
+        }
+        let len = (sge.size as usize).min(buf.len() - copied);
+        if gm
+            .read_at(sge.address, &mut buf[copied..copied + len])
+            .is_err()
+        {
+            break;
+        }
+        copied += len;
+    }
+    copied
+}
+
+fn be16(bytes: &[u8], offset: u16) -> Result<u16, ChecksumSendError> {
+    let offset = offset as usize;
+    bytes
+        .get(offset..offset + 2)
+        .map(|b| u16::from_be_bytes([b[0], b[1]]))
+        .ok_or(ChecksumSendError::Truncated)
+}
+
+fn byte_at(bytes: &[u8], offset: u16) -> Result<u8, ChecksumSendError> {
+    bytes
+        .get(offset as usize)
+        .copied()
+        .ok_or(ChecksumSendError::Truncated)
+}
+
+/// Whether an IPv6 next-header value names an extension header (RFC 8200 section 4,
+/// plus the IANA registry's later entries) rather than an upper-layer protocol.
+fn is_ipv6_extension_header(next_header: u8) -> bool {
+    matches!(
+        next_header,
+        0 | 43 | 44 | 50 | 51 | 60 | 135 | 139 | 140 | 253 | 254
+    )
+}
+
+/// Reads the header layout of a TCP or UDP checksum send from the start of its frame, and
+/// checks it against what the OOB asks for.
+///
+/// The NIC parses the frame itself, which is why a driver may leave `trans_off` at 0:
+/// Linux's mana driver does on every UDP checksum send (`mana_start_xmit`), and that
+/// driver works on hardware. So a `trans_off` of 0 means "not stated"; a stated one must
+/// match the parsed offset. A send the device cannot parse into a layout it can checksum
+/// is refused rather than handed to the backend with a guessed checksum location, which
+/// would write the checksum over whatever bytes sit there.
+///
+/// In-band tags are walked (they are in the frame, so they lengthen `l2_len`); a tag
+/// injected from the OOB is not in the frame and changes nothing here. IPv4 options are
+/// counted. IPv6 extension headers are not walked: a send that carries one is refused,
+/// as is any IP fragment, since a fragment's transport checksum covers data the frame
+/// does not hold. Linux's driver only offloads a frame whose transport header follows
+/// the IP header directly (`mana_checksum_info` looks at `protocol`/`nexthdr` alone), so
+/// none of these refusals reaches a send that driver offloads.
+fn checksum_send_headers(
+    frame: &[u8],
+    s_oob: &ManaTxShortOob,
+) -> Result<ChecksumHeaders, ChecksumSendError> {
+    let (requested, l4_min_len) = match (s_oob.comp_tcp_csum(), s_oob.comp_udp_csum()) {
+        (true, false) => (IP_PROTOCOL_TCP, TCP_HEADER_MIN_LEN),
+        (false, true) => (IP_PROTOCOL_UDP, UDP_HEADER_LEN),
+        _ => return Err(ChecksumSendError::BothProtocols),
+    };
+
+    let mut l2_len = net_backend::ETHERNET_HEADER_LEN as u16;
+    let mut ethertype = be16(frame, l2_len - 2)?;
+    for _ in 0..MAX_IN_BAND_TAGS {
+        if ethertype != ETHERTYPE_VLAN && ethertype != ETHERTYPE_QINQ {
+            break;
+        }
+        ethertype = be16(frame, l2_len + 2)?;
+        l2_len += VLAN_TAG_LEN;
+    }
+
+    let (l3_len, found) = match ethertype {
+        ETHERTYPE_IPV4 => {
+            if s_oob.is_outer_ipv6() {
+                return Err(ChecksumSendError::IpVersionMismatch);
+            }
+            let version_ihl = byte_at(frame, l2_len)?;
+            let l3_len = u16::from(version_ihl & 0xf) * 4;
+            if version_ihl >> 4 != 4 || l3_len < net_backend::IPV4_MIN_HEADER_LEN {
+                return Err(ChecksumSendError::MalformedIpHeader);
+            }
+            if be16(frame, l2_len + 6)? & IPV4_MORE_FRAGMENTS_AND_OFFSET != 0 {
+                return Err(ChecksumSendError::Fragment);
+            }
+            (l3_len, byte_at(frame, l2_len + 9)?)
+        }
+        ETHERTYPE_IPV6 => {
+            if s_oob.is_outer_ipv4() {
+                return Err(ChecksumSendError::IpVersionMismatch);
+            }
+            if byte_at(frame, l2_len)? >> 4 != 6 {
+                return Err(ChecksumSendError::MalformedIpHeader);
+            }
+            let next_header = byte_at(frame, l2_len + 6)?;
+            if is_ipv6_extension_header(next_header) {
+                return Err(ChecksumSendError::Ipv6ExtensionHeader(next_header));
+            }
+            (net_backend::IPV6_MIN_HEADER_LEN, next_header)
+        }
+        other => return Err(ChecksumSendError::NotIp(other)),
+    };
+    if found != requested {
+        return Err(ChecksumSendError::ProtocolMismatch { requested, found });
+    }
+
+    let layout = ChecksumHeaders { l2_len, l3_len };
+    // The whole transport header must be in the frame, not just its checksum field.
+    byte_at(frame, layout.transport_offset() + l4_min_len - 1)?;
+    let stated = s_oob.trans_off();
+    if stated != 0 && stated != layout.transport_offset() {
+        return Err(ChecksumSendError::OffsetMismatch {
+            stated,
+            parsed: layout.transport_offset(),
+        });
+    }
+    Ok(layout)
+}
+
 struct TxRxState;
 
 impl AsyncRun<TxRxTask> for TxRxState {
@@ -755,8 +991,10 @@ impl AsyncRun<TxRxTask> for TxRxState {
 mod tests {
     use super::*;
     use crate::test_helpers as helper;
+    use gdma_defs::CLIENT_OOB_24;
     use gdma_defs::Cqe;
     use gdma_defs::WqDoorbellValue;
+    use gdma_defs::WqeParams;
     use net_backend::TxError;
     use pal_async::DefaultPool;
     use parking_lot::Mutex;
@@ -893,6 +1131,421 @@ mod tests {
             .gm
             .read_plain(helper::CQ + index * size_of::<Cqe>() as u64)
             .unwrap()
+    }
+
+    /// An Ethernet header with `tags` in-band tags (their EtherTypes, outermost first) ahead of
+    /// `ethertype`.
+    fn eth(tags: &[u16], ethertype: u16) -> Vec<u8> {
+        let mut bytes = vec![0x02, 0, 0, 0, 0, 1, 0x02, 0, 0, 0, 0, 2];
+        for &tag in tags {
+            bytes.extend_from_slice(&tag.to_be_bytes());
+            // The TCI: priority 1, VLAN 0x123.
+            bytes.extend_from_slice(&0x2123u16.to_be_bytes());
+        }
+        bytes.extend_from_slice(&ethertype.to_be_bytes());
+        bytes
+    }
+
+    /// An IPv4 header with `option_words` 32-bit option words, carrying `protocol`, whose
+    /// flags-and-fragment-offset field is `fragment`.
+    fn ipv4(option_words: u8, protocol: u8, fragment: u16) -> Vec<u8> {
+        let mut bytes = vec![0x45 + option_words, 0, 0, 0, 0x12, 0x34];
+        bytes.extend_from_slice(&fragment.to_be_bytes());
+        bytes.extend_from_slice(&[64, protocol, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2]);
+        // Options: a run of NOPs.
+        bytes.extend(std::iter::repeat_n(1, usize::from(option_words) * 4));
+        bytes
+    }
+
+    /// An IPv6 header whose next header is `next_header`.
+    fn ipv6(next_header: u8) -> Vec<u8> {
+        let mut bytes = vec![0x60, 0, 0, 0, 0, 0, next_header, 64];
+        bytes.extend_from_slice(&[0xfd; 32]);
+        bytes
+    }
+
+    /// A TCP header with no options, ports 1234 -> 80.
+    fn tcp() -> Vec<u8> {
+        let mut bytes = vec![
+            0x04, 0xd2, 0, 80, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x18, 0xff, 0xff,
+        ];
+        bytes.extend_from_slice(&[0; 4]);
+        bytes
+    }
+
+    /// A UDP header, ports 1234 -> 53.
+    fn udp() -> Vec<u8> {
+        vec![0x04, 0xd2, 0, 53, 0, 8, 0, 0]
+    }
+
+    fn udp_csum() -> ManaTxShortOob {
+        ManaTxShortOob::new().with_comp_udp_csum(true)
+    }
+
+    fn tcp_csum() -> ManaTxShortOob {
+        ManaTxShortOob::new().with_comp_tcp_csum(true)
+    }
+
+    fn task_with(queues: Arc<Queues>, epqueue: Box<dyn Queue>) -> TxRxTask {
+        let mut task = task(queues, backend());
+        task.epqueue = epqueue;
+        task
+    }
+
+    /// What became of a send: the metadata the backend got, if any, and the completion type.
+    struct SendOutcome {
+        sent: Option<TxMetadata>,
+        cqe_type: u8,
+    }
+
+    /// Sends `frame` through the real `process_sqe` in two SGEs, the first `split` bytes long,
+    /// with a backend standing in for the tap.
+    fn send_frame(s_oob: ManaTxShortOob, frame: &[u8], split: usize) -> SendOutcome {
+        send_frame_with(s_oob, FromZeros::new_zeroed(), frame, split)
+    }
+
+    fn send_frame_with(
+        s_oob: ManaTxShortOob,
+        l_oob: bnic_defs::ManaTxLongOob,
+        frame: &[u8],
+        split: usize,
+    ) -> SendOutcome {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut task = task_with(
+            queues.clone(),
+            Box::new(RecordingQueue { sent: sent.clone() }),
+        );
+        let (head, tail) = frame.split_at(split);
+        queues.gm.write_at(0x6000, head).unwrap();
+        queues.gm.write_at(0x8000, tail).unwrap();
+        let sgl = [
+            frame_sge(0x6000, head.len() as u32),
+            frame_sge(0x8000, tail.len() as u32),
+        ];
+
+        let mut sqe = Wqe::new_zeroed();
+        sqe.header.params = WqeParams::new()
+            .with_num_sgl_entries(2)
+            .with_inline_client_oob_size(CLIENT_OOB_24);
+        let oob = ManaTxOob {
+            s_oob,
+            l_oob,
+            reserved3: 0,
+            reserved4: 0,
+        };
+        oob.write_to_prefix(&mut sqe.data[..]).unwrap();
+        let sgl_offset = sqe.header.sgl_offset();
+        sgl.write_to_prefix(&mut sqe.data[sgl_offset..]).unwrap();
+        task.process_sqe(sqe).unwrap();
+
+        let cqe = completion(&queues, 0);
+        assert_eq!(cqe.params.owner_count(), 1, "one completion per send");
+        let sent = sent.lock().pop();
+        SendOutcome {
+            sent,
+            cqe_type: ManaTxCompOob::read_from_prefix(&cqe.data)
+                .unwrap()
+                .0
+                .cqe_hdr
+                .cqe_type(),
+        }
+    }
+
+    /// Linux's UDP checksum send: `trans_off` left at 0, the IP header split from the
+    /// Ethernet header across SGEs, and an IPv4 option in it.
+    #[test]
+    fn a_udp_checksum_send_without_trans_off_gets_it_from_the_frame() {
+        let frame = [eth(&[], 0x0800), ipv4(1, 17, 0), udp()].concat();
+        for split in [14, 20, 30, frame.len() - 1] {
+            let outcome = send_frame(udp_csum().with_is_outer_ipv4(true), &frame, split);
+            assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+            let meta = outcome.sent.unwrap();
+            assert_eq!(meta.l2_len, 14);
+            assert_eq!(meta.l3_len, 24);
+            assert_eq!(meta.transport_header_offset, 38);
+        }
+    }
+
+    /// The device refuses the send the way the NIC does, and the backend never sees it.
+    #[test]
+    fn a_checksum_send_the_device_cannot_parse_is_refused_per_packet() {
+        // A UDP checksum asked for on a TCP frame.
+        let frame = [eth(&[], 0x0800), ipv4(0, 6, 0), tcp()].concat();
+        let outcome = send_frame(udp_csum(), &frame, 14);
+        assert_eq!(outcome.cqe_type, CQE_TX_INVALID_OOB);
+        assert!(outcome.sent.is_none());
+    }
+
+    /// A send with no checksum asked for is not parsed: its `trans_off` goes through as is,
+    /// whatever the frame holds.
+    #[test]
+    fn a_send_without_a_checksum_keeps_trans_off_and_is_not_parsed() {
+        let frame = [eth(&[], 0x0806), vec![0; 28]].concat();
+        let plain = ManaTxShortOob::new().with_trans_off(7);
+        let outcome = send_frame(plain, &frame, 14);
+        assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+        assert_eq!(outcome.sent.unwrap().transport_header_offset, 7);
+    }
+
+    fn layout(s_oob: ManaTxShortOob, frame: &[u8]) -> Result<(u16, u16), ChecksumSendError> {
+        checksum_send_headers(frame, &s_oob).map(|h| (h.l2_len, h.transport_offset()))
+    }
+
+    #[test]
+    fn checksum_send_layouts_the_device_accepts() {
+        let v4_udp = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        assert_eq!(layout(udp_csum(), &v4_udp), Ok((14, 34)));
+        // IPv4 options, up to the 60-byte maximum.
+        let v4_opts = [eth(&[], 0x0800), ipv4(10, 6, 0), tcp()].concat();
+        assert_eq!(layout(tcp_csum(), &v4_opts), Ok((14, 74)));
+        // Don't Fragment is not a fragment.
+        let v4_df = [eth(&[], 0x0800), ipv4(0, 17, 0x4000), udp()].concat();
+        assert_eq!(layout(udp_csum(), &v4_df), Ok((14, 34)));
+        let v6_tcp = [eth(&[], 0x86dd), ipv6(6), tcp()].concat();
+        assert_eq!(
+            layout(tcp_csum().with_is_outer_ipv6(true), &v6_tcp),
+            Ok((14, 54))
+        );
+        let v6_udp = [eth(&[], 0x86dd), ipv6(17), udp()].concat();
+        assert_eq!(layout(udp_csum(), &v6_udp), Ok((14, 54)));
+    }
+
+    /// An in-band tag is in the frame, so it lengthens the L2 header; QinQ has two.
+    #[test]
+    fn in_band_tags_lengthen_the_l2_header() {
+        let one = [eth(&[0x8100], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        assert_eq!(layout(udp_csum(), &one), Ok((18, 38)));
+        let qinq = [eth(&[0x88a8, 0x8100], 0x86dd), ipv6(6), tcp()].concat();
+        assert_eq!(layout(tcp_csum(), &qinq), Ok((22, 62)));
+        // A third tag is past what the device walks.
+        let three = [
+            eth(&[0x88a8, 0x8100, 0x8100], 0x0800),
+            ipv4(0, 17, 0),
+            udp(),
+        ]
+        .concat();
+        assert_eq!(
+            layout(udp_csum(), &three),
+            Err(ChecksumSendError::NotIp(0x8100))
+        );
+    }
+
+    /// A stated offset must be the one the frame has. This replaces counting any offset short
+    /// of a minimal IP header as omitted: only 0 is.
+    #[test]
+    fn a_stated_trans_off_must_match_the_frame() {
+        let frame = [eth(&[], 0x0800), ipv4(1, 6, 0), tcp()].concat();
+        assert_eq!(layout(tcp_csum().with_trans_off(38), &frame), Ok((14, 38)));
+        for stated in [1, 33, 34, 39] {
+            assert_eq!(
+                layout(tcp_csum().with_trans_off(stated), &frame),
+                Err(ChecksumSendError::OffsetMismatch { stated, parsed: 38 })
+            );
+        }
+    }
+
+    #[test]
+    fn checksum_send_layouts_the_device_refuses() {
+        use ChecksumSendError::*;
+        let v4 = |protocol, fragment| [eth(&[], 0x0800), ipv4(0, protocol, fragment)].concat();
+        let cases: Vec<(ManaTxShortOob, Vec<u8>, ChecksumSendError)> = vec![
+            (
+                udp_csum().with_comp_tcp_csum(true),
+                [v4(17, 0), udp()].concat(),
+                BothProtocols,
+            ),
+            (
+                udp_csum(),
+                [v4(6, 0), tcp()].concat(),
+                ProtocolMismatch {
+                    requested: 17,
+                    found: 6,
+                },
+            ),
+            (
+                tcp_csum(),
+                [eth(&[], 0x86dd), ipv6(17), udp()].concat(),
+                ProtocolMismatch {
+                    requested: 6,
+                    found: 17,
+                },
+            ),
+            // More Fragments, and a later fragment with MF clear.
+            (udp_csum(), [v4(17, 0x2000), udp()].concat(), Fragment),
+            (udp_csum(), [v4(17, 0x00b9), udp()].concat(), Fragment),
+            // Hop-by-hop options and a fragment header ahead of the transport header.
+            (
+                udp_csum(),
+                [eth(&[], 0x86dd), ipv6(0), udp()].concat(),
+                Ipv6ExtensionHeader(0),
+            ),
+            (
+                tcp_csum(),
+                [eth(&[], 0x86dd), ipv6(44), tcp()].concat(),
+                Ipv6ExtensionHeader(44),
+            ),
+            (
+                udp_csum(),
+                [eth(&[], 0x0806), vec![0; 28]].concat(),
+                NotIp(0x0806),
+            ),
+            // An IHL below the minimum, and IPv6 bytes behind an IPv4 EtherType.
+            (
+                udp_csum(),
+                [
+                    eth(&[], 0x0800),
+                    vec![0x44],
+                    ipv4(0, 17, 0)[1..].to_vec(),
+                    udp(),
+                ]
+                .concat(),
+                MalformedIpHeader,
+            ),
+            (
+                udp_csum(),
+                [eth(&[], 0x0800), ipv6(17), udp()].concat(),
+                MalformedIpHeader,
+            ),
+            // The OOB names the other IP version.
+            (
+                udp_csum().with_is_outer_ipv6(true),
+                [v4(17, 0), udp()].concat(),
+                IpVersionMismatch,
+            ),
+            (
+                tcp_csum().with_is_outer_ipv4(true),
+                [eth(&[], 0x86dd), ipv6(6), tcp()].concat(),
+                IpVersionMismatch,
+            ),
+        ];
+        for (s_oob, frame, expected) in cases {
+            assert_eq!(layout(s_oob, &frame), Err(expected), "{frame:02x?}");
+        }
+    }
+
+    /// A frame that ends anywhere inside its headers is refused, whichever header it ends in.
+    #[test]
+    fn a_frame_ending_inside_its_headers_is_refused() {
+        for (s_oob, frame) in [
+            (
+                udp_csum(),
+                [eth(&[0x8100], 0x0800), ipv4(2, 17, 0), udp()].concat(),
+            ),
+            (tcp_csum(), [eth(&[], 0x86dd), ipv6(6), tcp()].concat()),
+        ] {
+            assert!(layout(s_oob, &frame).is_ok());
+            for len in 0..frame.len() {
+                assert_eq!(
+                    layout(s_oob, &frame[..len]),
+                    Err(ChecksumSendError::Truncated),
+                    "length {len}"
+                );
+            }
+        }
+    }
+
+    /// The device never reads past what the largest layout needs, and stops at the frame's end
+    /// or at an address it cannot read.
+    #[test]
+    fn the_frame_prefix_is_bounded_by_the_frame_and_the_buffer() {
+        let gm = GuestMemory::allocate(0x2000);
+        gm.write_at(0x10, &[0xaa; 4]).unwrap();
+        gm.write_at(0x1000, &[0xbb; 0x200]).unwrap();
+        let mut buf = [0; MAX_CHECKSUM_HEADER_LEN];
+        let n = read_frame_prefix(
+            &gm,
+            &[frame_sge(0x10, 4), frame_sge(0x1000, 0x200)],
+            &mut buf,
+        );
+        assert_eq!(n, MAX_CHECKSUM_HEADER_LEN);
+        assert_eq!(&buf[..5], &[0xaa, 0xaa, 0xaa, 0xaa, 0xbb]);
+        let n = read_frame_prefix(&gm, &[frame_sge(0x10, 4), frame_sge(0x1000, 3)], &mut buf);
+        assert_eq!(n, 7);
+        let n = read_frame_prefix(
+            &gm,
+            &[frame_sge(0x10, 4), frame_sge(u64::MAX, 32)],
+            &mut buf,
+        );
+        assert_eq!(n, 4);
+    }
+
+    /// A backend that keeps what it was asked to send, standing in for the tap or the VF.
+    #[derive(InspectMut)]
+    struct RecordingQueue {
+        #[inspect(skip)]
+        sent: Arc<Mutex<Vec<TxMetadata>>>,
+    }
+
+    impl Queue for RecordingQueue {
+        fn poll_ready(&mut self, _cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
+            Poll::Pending
+        }
+
+        fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, _done: &[RxId]) {}
+
+        fn rx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _packets: &mut [RxId],
+        ) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+
+        fn tx_avail(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            segments: &[TxSegment],
+        ) -> anyhow::Result<(bool, usize)> {
+            let TxSegmentType::Head(meta) = &segments[0].ty else {
+                panic!("the first segment is the head");
+            };
+            self.sent.lock().push(meta.clone());
+            Ok((true, segments.len()))
+        }
+
+        fn tx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _done: &mut [TxId],
+        ) -> Result<usize, TxError> {
+            Ok(0)
+        }
+    }
+
+    fn frame_sge(address: u64, size: u32) -> Sge {
+        Sge {
+            address,
+            mem_key: 0,
+            size,
+        }
+    }
+
+    /// A tagged IPv4 checksum send as Linux lays it out: the tag in the OOB, none in the
+    /// frame, `trans_off` 34. Byte 18 of the frame is the IP ID's high byte, here 0x60, so
+    /// counting the tag in the frame would read an IPv6 version nibble there.
+    #[test]
+    fn an_injected_tag_is_not_looked_for_in_the_frame() {
+        let mut v4 = ipv4(0, 17, 0);
+        v4[4] = 0x60;
+        let frame = [eth(&[], 0x0800), v4, udp()].concat();
+        let s_oob = udp_csum()
+            .with_is_outer_ipv4(true)
+            .with_pkt_fmt(MANA_LONG_PKT_FMT);
+        let l_oob = bnic_defs::ManaTxLongOob::new()
+            .with_inject_vlan_pri_tag(true)
+            .with_vlan_id(5);
+        for s_oob in [s_oob, s_oob.with_trans_off(34)] {
+            let outcome = send_frame_with(s_oob, l_oob, &frame, 14);
+            assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+            let meta = outcome.sent.unwrap();
+            assert_eq!(meta.vlan.unwrap().vlan_id(), 5);
+            // Whether `l2_len` counts the injected tag is a separate question; the headers
+            // it and `l3_len` describe must still end where the transport header starts.
+            assert_eq!(u16::from(meta.l2_len) + meta.l3_len, 34);
+            assert_eq!(meta.transport_header_offset, 34);
+        }
     }
 
     #[test]
