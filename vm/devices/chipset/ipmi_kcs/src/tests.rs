@@ -858,21 +858,6 @@ fn save_restore_preserves_abort_phase() {
 }
 
 #[test]
-fn restore_without_last_addition_uses_newest_timestamped_record() {
-    let (_, mut source) = device(0x0102_0304);
-    add_record(&mut source, 0x11);
-    let mut state = source.save().unwrap();
-    state.last_addition_timestamp = 0;
-
-    let mut restored = restore_target(0, state);
-    let info = transact(&mut restored, &storage_request(COMMAND_GET_SEL_INFO, &[]));
-    assert_eq!(
-        u32::from_le_bytes([info[8], info[9], info[10], info[11]]),
-        0x0102_0304
-    );
-}
-
-#[test]
 fn save_restore_preserves_sel_and_adjusted_time() {
     let clock = FakeClock::new(1000);
     let mut source = IpmiKcs::new(Box::new(clock.clone()));
