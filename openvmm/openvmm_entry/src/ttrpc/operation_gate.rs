@@ -5,10 +5,11 @@
 //!
 //! Operations that mutate the VM are admitted through this gate. Topology
 //! operations (hot add/remove of devices and resources) are independent of one
-//! another and share the gate; pause and resume are exclusive and exclude
-//! everything else. The gate never queues: a conflicting caller is rejected
-//! immediately with `ABORTED`. Teardown and quit are terminal and don't use
-//! the gate: the service cancels in-flight topology operations instead.
+//! another and share the gate; pause, resume, save, and restore are exclusive
+//! and exclude everything else. The gate never queues: a conflicting caller is
+//! rejected immediately with `ABORTED`. Teardown and quit are terminal and
+//! don't use the gate: the service cancels in-flight topology operations
+//! instead.
 //!
 //! The gate must be acquired before any side effect of the operation, and is
 //! released when its guard drops, so completion, error, and cancellation all
@@ -27,6 +28,10 @@ pub(crate) enum VmOperation {
     Pause,
     /// Resume. Exclusive.
     Resume,
+    /// Save a snapshot. Exclusive.
+    Save,
+    /// Restore a VM from a snapshot. Exclusive.
+    Restore,
     /// Hot add or remove of a device or resource. Shared with other topology
     /// operations.
     Topology,
@@ -37,6 +42,8 @@ impl VmOperation {
         match self {
             VmOperation::Pause => "pause",
             VmOperation::Resume => "resume",
+            VmOperation::Save => "save",
+            VmOperation::Restore => "restore",
             VmOperation::Topology => "device or resource modification",
         }
     }
@@ -133,6 +140,8 @@ mod tests {
         for op in [
             VmOperation::Pause,
             VmOperation::Resume,
+            VmOperation::Save,
+            VmOperation::Restore,
             VmOperation::Topology,
         ] {
             let status = grpc_error(gate.try_acquire(op).err().unwrap());

@@ -14,6 +14,7 @@ mod operation_gate;
 use fd_passing::FdRegistry;
 use operation_gate::VmOperation;
 use operation_gate::VmOperationGate;
+use operation_gate::VmOperationGuard;
 
 /// On non-unix platforms the fd-passing protocol does not exist. The registry
 /// is still threaded through the shared NIC configuration code, so provide an
@@ -401,6 +402,7 @@ impl Worker for TtrpcWorker {
                 memory_backing_file: None,
                 rpc_tasks: Vec::new(),
                 operation_gate: VmOperationGate::default(),
+                save_guard: None,
                 gated_tasks: Vec::new(),
                 gated_cancel_ctx,
                 gated_cancel,
@@ -900,6 +902,11 @@ struct VmService {
     rpc_tasks: Vec<Task<()>>,
     /// Rejects an operation that conflicts with one already in flight.
     operation_gate: VmOperationGate,
+    /// The gate guard of a SaveVM whose controller request hasn't completed.
+    /// Held by the service rather than the request, so a client that cancels
+    /// SaveVM doesn't release the gate while the controller is still writing
+    /// the snapshot. Released when the save completes, or at teardown.
+    save_guard: Option<VmOperationGuard>,
     /// In-flight gated operations that run as background tasks (device and
     /// resource changes).
     gated_tasks: Vec<Task<()>>,
@@ -1151,6 +1158,7 @@ impl VmService {
         let config = request
             .config
             .ok_or_else(|| anyhow!(Code::InvalidArgument).context("missing configuration"))?;
+        let _gate = self.operation_gate.try_acquire(VmOperation::Restore)?;
         if self.vm.is_some() {
             return Err(anyhow!(Code::FailedPrecondition).context("VM already created"));
         }
@@ -1770,8 +1778,9 @@ impl VmService {
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
         // Teardown is terminal: it cancels in-flight device and resource
-        // changes rather than being rejected by them. Pause and resume run
-        // inline, so neither can be in flight here.
+        // changes rather than being rejected by them. Pause, resume, save,
+        // and restore run inline, so none can be in flight here, but a save
+        // whose client cancelled may still hold the gate (`save_guard`).
         self.cancel_gated_tasks().await;
         let controller = self.vm_controller.take().context("vm not created")?;
         // Drop the VM's device RPC channels before waiting on the controller.
@@ -1788,6 +1797,7 @@ impl VmService {
         self.vm_controller_events.take();
         self.lifecycle = VmLifecycle::Uninitialized;
         self.snapshot_saved = false;
+        self.save_guard = None;
         self.memory_backing_file = None;
         if let Some((_, response)) = self.wait_vm_response.take() {
             response.send(Err(grpc_error(anyhow!("VM torn down"))));
@@ -1974,6 +1984,7 @@ impl VmService {
                 anyhow!(Code::InvalidArgument).context("missing snapshot destination directory")
             );
         }
+        let gate = self.operation_gate.try_acquire(VmOperation::Save)?;
         if !matches!(self.lifecycle, VmLifecycle::Running | VmLifecycle::Paused) {
             return Err(
                 anyhow!(Code::FailedPrecondition).context("SaveVM requires a running or paused VM")
@@ -2002,15 +2013,19 @@ impl VmService {
         // hard-links the guest memory backing file. Record that before
         // awaiting: if this future is dropped (the client cancelled), the
         // controller still finishes the save, and resuming would then write
-        // guest memory into the snapshot.
+        // guest memory into the snapshot. For the same reason the service,
+        // not this future, holds the gate: until the controller replies or,
+        // if the client cancels, until teardown.
         self.snapshot_saved = true;
         self.lifecycle = VmLifecycle::Paused;
+        self.save_guard = Some(gate);
 
         let result = controller
             .call(VmControllerRpc::SaveSnapshot, request.destination_dir)
             .await
             .map_err(anyhow::Error::from)
             .and_then(|r| r.map_err(anyhow::Error::from));
+        self.save_guard = None;
         match result {
             Ok(snapshot_id) => Ok(vmservice::SaveVmResponse {
                 snapshot_id: snapshot_id.to_string(),
@@ -3499,6 +3514,7 @@ mod tests {
             memory_backing_file: None,
             rpc_tasks: Vec::new(),
             operation_gate: VmOperationGate::default(),
+            save_guard: None,
             gated_tasks: Vec::new(),
             gated_cancel_ctx,
             gated_cancel,
@@ -3603,6 +3619,20 @@ mod tests {
                 "PauseVM is rejected while the change is in flight: {}",
                 status.message
             );
+            let status = grpc_error(
+                service
+                    .save_vm(vmservice::SaveVmRequest {
+                        destination_dir: dir.path().join("snapshot").to_str().unwrap().into(),
+                    })
+                    .await
+                    .unwrap_err(),
+            );
+            assert_eq!(
+                status.code,
+                i32::from(Code::Aborted),
+                "SaveVM is rejected while the change is in flight: {}",
+                status.message
+            );
 
             service.cancel_gated_tasks().await;
             let status = recv.await.unwrap().unwrap_err();
@@ -3635,6 +3665,77 @@ mod tests {
             let (_config, response) = rpc.split();
             response.complete(Ok(()));
             recv.await.unwrap().unwrap();
+        });
+    }
+
+    /// SaveVM holds the gate while the controller writes the snapshot. A
+    /// completed save releases it; a save whose client cancelled keeps it,
+    /// because the controller may still be writing, until teardown.
+    #[test]
+    fn save_holds_the_gate_until_the_controller_replies() {
+        DefaultPool::run_with(async |driver| {
+            let dir = tempfile::tempdir().unwrap();
+            let request = |name: &str| vmservice::SaveVmRequest {
+                destination_dir: dir.path().join(name).to_str().unwrap().into(),
+            };
+            let with_controller = |service: &mut VmService| {
+                let (send, recv) = mesh::channel();
+                service.vm_controller = Some(send);
+                service.memory_backing_file = Some(dir.path().join("memory.bin"));
+                recv
+            };
+
+            // Completed save: the gate is released.
+            let mut svc = service(driver.clone(), None);
+            let mut controller = with_controller(&mut svc);
+            let (result, ()) = futures::join!(svc.save_vm(request("completed")), async {
+                let Some(VmControllerRpc::SaveSnapshot(rpc)) = controller.next().await else {
+                    panic!("expected a SaveSnapshot request");
+                };
+                let (_dir, response) = rpc.split();
+                response.complete(Ok(Guid::new_random()));
+            });
+            result.unwrap();
+            drop(
+                svc.operation_gate
+                    .try_acquire(VmOperation::Topology)
+                    .expect("a completed save releases the gate"),
+            );
+
+            // Cancelled save: the gate stays held until teardown.
+            let mut svc = service(driver, None);
+            let mut controller = with_controller(&mut svc);
+            let rpc = match futures::future::select(
+                std::pin::pin!(svc.save_vm(request("cancelled"))),
+                controller.next(),
+            )
+            .await
+            {
+                futures::future::Either::Right((Some(VmControllerRpc::SaveSnapshot(rpc)), _)) => {
+                    rpc
+                }
+                _ => panic!("expected a SaveSnapshot request"),
+            };
+            let status = grpc_error(
+                svc.operation_gate
+                    .try_acquire(VmOperation::Topology)
+                    .err()
+                    .expect("the gate stays held after the client cancels"),
+            );
+            assert_eq!(status.code, i32::from(Code::Aborted));
+            assert!(
+                status.message.contains("save in progress"),
+                "{}",
+                status.message
+            );
+            let (_dir, response) = rpc.split();
+            response.complete(Ok(Guid::new_random()));
+            svc.teardown_vm().await.unwrap();
+            drop(
+                svc.operation_gate
+                    .try_acquire(VmOperation::Topology)
+                    .expect("teardown releases the gate"),
+            );
         });
     }
 
@@ -4503,6 +4604,7 @@ mod tests {
                     memory_backing_file: None,
                     rpc_tasks: vec![driver.spawn("pending-rpc", std::future::pending())],
                     operation_gate: VmOperationGate::default(),
+                    save_guard: None,
                     gated_tasks: Vec::new(),
                     gated_cancel_ctx,
                     gated_cancel,
