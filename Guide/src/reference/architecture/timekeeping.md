@@ -55,8 +55,11 @@ offsets and scales cannot be inferred from the counters' numeric values.
 stopped at zero. While running, its value is the VM time at the last start
 plus elapsed host monotonic time. Stopping captures a fixed value;
 starting again establishes a new host-time anchor without adding the
-stopped interval. Reset sets it to zero, and restore installs a saved VM
-time rather than an old host timestamp.
+stopped interval. A snapshot restore that advances the stopped time across
+its downtime instead names the host instant at which the guest's other
+clocks resumed, and the next start runs VM time from that instant. Reset
+sets it to zero, and restore installs a saved VM time rather than an old
+host timestamp.
 This measures elapsed time, not scheduled VP runtime: it advances while
 guest CPUs are idle or descheduled unless the keeper is stopped.
 
