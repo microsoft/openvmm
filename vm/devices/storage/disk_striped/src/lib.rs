@@ -276,6 +276,12 @@ impl StripedDisk {
 }
 
 impl DiskIo for StripedDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.block_devices
+            .iter()
+            .any(Disk::requires_lockable_guest_memory)
+    }
+
     fn disk_type(&self) -> &str {
         "striped"
     }

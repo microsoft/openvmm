@@ -407,6 +407,10 @@ impl InspectMut for MockEndpoint {
 
 #[async_trait]
 impl Endpoint for MockEndpoint {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn endpoint_type(&self) -> &'static str {
         "mock"
     }
@@ -2541,6 +2545,10 @@ impl InspectMut for MockEndpointWithTxOffloads {
 
 #[async_trait]
 impl Endpoint for MockEndpointWithTxOffloads {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn endpoint_type(&self) -> &'static str {
         "mock-offloads"
     }

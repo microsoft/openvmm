@@ -530,6 +530,10 @@ impl DeviceMetadata {
 }
 
 impl DiskIo for BlockDevice {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn disk_type(&self) -> &str {
         "block_device"
     }

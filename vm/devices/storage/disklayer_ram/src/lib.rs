@@ -255,6 +255,10 @@ impl LayerAttach for LazyRamDiskLayer {
 }
 
 impl LayerIo for RamDiskLayer {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn layer_type(&self) -> &str {
         "ram"
     }

@@ -14,6 +14,7 @@ scsi_buffers.workspace = true
 
 [dev-dependencies]
 disk_prwrap.workspace = true
+disk_striped.workspace = true
 event-listener.workspace = true
 futures.workspace = true
 guestmem.workspace = true

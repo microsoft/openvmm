@@ -41,6 +41,10 @@ impl NvmeDisk {
 }
 
 impl DiskIo for NvmeDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn disk_type(&self) -> &str {
         "nvme"
     }

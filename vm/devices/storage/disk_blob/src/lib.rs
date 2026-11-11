@@ -116,6 +116,10 @@ impl BlobDisk {
 }
 
 impl DiskIo for BlobDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn disk_type(&self) -> &str {
         "blob"
     }

@@ -1673,6 +1673,7 @@ version = "0.0.0"
 dependencies = [
  "disk_backend",
  "disk_prwrap",
+ "disk_striped",
  "disklayer_ram",
  "event-listener",
  "futures",
@@ -1699,6 +1700,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "scsi_buffers",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "vm_resource",
@@ -5258,6 +5260,7 @@ dependencies = [
  "net_backend",
  "parking_lot",
  "pcap-file",
+ "test_with_tracing",
  "tracing",
 ]
 

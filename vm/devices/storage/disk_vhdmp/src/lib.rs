@@ -766,6 +766,10 @@ impl VhdmpDisk {
 }
 
 impl DiskIo for VhdmpDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.vhd.requires_lockable_guest_memory()
+    }
+
     fn disk_type(&self) -> &str {
         "vhdmp"
     }

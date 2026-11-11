@@ -164,6 +164,13 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     /// This is used for diagnostic purposes.
     fn disk_type(&self) -> &str;
 
+    /// Returns whether this backend requires kernel-lockable caller guest memory.
+    ///
+    /// If true, DMA addressing may also require separate validation. If false,
+    /// the backend can use fallible CPU copies of caller memory and backend-owned
+    /// staging instead of locking caller memory. This must not change at runtime.
+    fn requires_lockable_guest_memory(&self) -> bool;
+
     /// Returns the current sector count.
     ///
     /// For some backing stores, this may change at runtime. If it does, then
@@ -306,6 +313,7 @@ impl Debug for Disk {
 #[derive(Inspect)]
 #[inspect(bound = "T: DynDisk")]
 struct DiskInner<T: ?Sized = dyn DynDisk> {
+    requires_lockable_guest_memory: bool,
     sector_size: u32,
     sector_shift: u32,
     physical_sector_size: u32,
@@ -344,6 +352,7 @@ impl Disk {
             return Err(InvalidDisk::InvalidPhysicalSectorSize(physical_sector_size));
         }
         Ok(Self(Arc::new(DiskInner {
+            requires_lockable_guest_memory: disk.requires_lockable_guest_memory(),
             sector_size,
             sector_shift: sector_size.trailing_zeros(),
             physical_sector_size,
@@ -362,6 +371,13 @@ impl Disk {
     /// [`wait_resize`](Self::wait_resize) to detect this change.
     pub fn sector_count(&self) -> u64 {
         self.0.disk.sector_count()
+    }
+
+    /// Returns whether the backend requires kernel-lockable caller guest memory.
+    ///
+    /// See [`DiskIo::requires_lockable_guest_memory`] for the memory contract.
+    pub fn requires_lockable_guest_memory(&self) -> bool {
+        self.0.requires_lockable_guest_memory
     }
 
     /// Returns the logical sector size of the backing store.

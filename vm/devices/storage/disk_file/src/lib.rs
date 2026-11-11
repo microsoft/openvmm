@@ -166,6 +166,10 @@ impl FileDisk {
 }
 
 impl DiskIo for FileDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn disk_type(&self) -> &str {
         "file"
     }

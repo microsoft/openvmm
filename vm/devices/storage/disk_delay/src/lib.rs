@@ -41,6 +41,10 @@ impl DelayDisk {
 }
 
 impl DiskIo for DelayDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.inner.requires_lockable_guest_memory()
+    }
+
     fn disk_type(&self) -> &str {
         "delay"
     }

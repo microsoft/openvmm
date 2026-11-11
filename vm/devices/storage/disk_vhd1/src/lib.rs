@@ -174,6 +174,10 @@ impl Vhd1Disk {
 }
 
 impl DiskIo for Vhd1Disk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.file.requires_lockable_guest_memory()
+    }
+
     fn disk_type(&self) -> &str {
         "vhd1"
     }

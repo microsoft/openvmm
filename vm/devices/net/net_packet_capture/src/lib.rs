@@ -231,6 +231,10 @@ impl Endpoint for PacketCaptureEndpoint {
         self.current().endpoint_type()
     }
 
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.current().requires_lockable_guest_memory()
+    }
+
     async fn get_queues(
         &mut self,
         config: Vec<QueueConfig>,
@@ -565,5 +569,63 @@ impl Queue for PacketCaptureQueue {
 impl InspectMut for PacketCaptureQueue {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         self.current_mut().inspect_mut(req)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[derive(InspectMut)]
+    struct TestEndpoint {
+        #[inspect(skip)]
+        requires_lockable_guest_memory: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Endpoint for TestEndpoint {
+        fn endpoint_type(&self) -> &'static str {
+            "test"
+        }
+
+        fn requires_lockable_guest_memory(&self) -> bool {
+            self.requires_lockable_guest_memory.load(Ordering::Relaxed)
+        }
+
+        async fn get_queues(
+            &mut self,
+            _config: Vec<QueueConfig>,
+            _rss: Option<&RssConfig<'_>>,
+            _queues: &mut Vec<Box<dyn Queue>>,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+
+        async fn stop(&mut self) {
+            unreachable!()
+        }
+
+        fn is_ordered(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn memory_requirement_follows_inner_with_or_without_capture() {
+        let requires_lockable_guest_memory = Arc::new(AtomicBool::new(false));
+        let (endpoint, _control) = PacketCaptureEndpoint::new(
+            Box::new(TestEndpoint {
+                requires_lockable_guest_memory: requires_lockable_guest_memory.clone(),
+            }),
+            "test".into(),
+        );
+        for enabled in [false, true, false] {
+            endpoint.pcap.enabled.store(enabled, Ordering::Relaxed);
+            for required in [true, false, true] {
+                requires_lockable_guest_memory.store(required, Ordering::Relaxed);
+                assert_eq!(endpoint.requires_lockable_guest_memory(), required);
+            }
+        }
     }
 }

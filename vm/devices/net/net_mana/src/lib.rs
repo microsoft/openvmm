@@ -463,6 +463,10 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         "mana"
     }
 
+    fn requires_lockable_guest_memory(&self) -> bool {
+        !self.bounce_buffer
+    }
+
     async fn get_queues(
         &mut self,
         config: Vec<QueueConfig>,

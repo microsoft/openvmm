@@ -74,6 +74,7 @@ pub struct LayeredDisk {
     #[inspect(iter_by_index)]
     layers: Vec<Layer>,
     read_only: bool,
+    requires_lockable_guest_memory: bool,
     is_fua_respected: bool,
     sector_shift: u32,
     disk_id: Option<[u8; 16]>,
@@ -110,6 +111,8 @@ impl DiskLayer {
 #[derive(Clone)]
 #[expect(missing_docs)] // self-explanatory names
 pub struct DiskLayerMetadata {
+    /// The immutable caller-memory contract from [`LayerIo::requires_lockable_guest_memory`].
+    pub requires_lockable_guest_memory: bool,
     pub disk_id: Option<[u8; 16]>,
     pub sector_size: u32,
     pub sector_count: u64,
@@ -249,6 +252,7 @@ impl LayeredDisk {
         // common properties of the stack along the way.
         let mut last_write_through = true;
         let mut is_fua_respected = true;
+        let mut requires_lockable_guest_memory = false;
         let mut optimal_unmap_sectors = 1;
         let mut unmap_must_zero = false;
         let mut disk_id = None;
@@ -263,6 +267,8 @@ impl LayeredDisk {
         ) in attached_layers.iter().enumerate()
         {
             let layer_error = |e| InvalidLayeredDisk::Layer(i, e);
+
+            requires_lockable_guest_memory |= layer.meta.requires_lockable_guest_memory;
 
             if last_write_through {
                 if layer.meta.read_only && !read_only {
@@ -335,6 +341,7 @@ impl LayeredDisk {
             .collect::<Vec<_>>();
 
         Ok(Self {
+            requires_lockable_guest_memory,
             is_fua_respected,
             read_only,
             sector_shift: sector_size.trailing_zeros(),
@@ -451,6 +458,7 @@ impl<T: LayerAttach> DynLayerAttach for T {
                 let can_read_cache = backing.write_no_overwrite().is_some();
                 AttachedDiskLayer {
                     meta: DiskLayerMetadata {
+                        requires_lockable_guest_memory: backing.requires_lockable_guest_memory(),
                         sector_count: LayerIo::sector_count(&backing),
                         disk_id: backing.disk_id(),
                         is_fua_respected: backing.is_fua_respected(),
@@ -523,6 +531,12 @@ pub trait LayerIo: 'static + Send + Sync + Inspect {
     ///
     /// This is used for diagnostic purposes.
     fn layer_type(&self) -> &str;
+
+    /// Returns whether this layer requires kernel-lockable caller guest memory.
+    ///
+    /// This has the same immutable memory contract as
+    /// [`DiskIo::requires_lockable_guest_memory`].
+    fn requires_lockable_guest_memory(&self) -> bool;
 
     /// Returns the current sector count.
     ///
@@ -655,6 +669,10 @@ impl WriteNoOverwrite for NoIdet {
 }
 
 impl DiskIo for LayeredDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.requires_lockable_guest_memory
+    }
+
     fn disk_type(&self) -> &str {
         "layered"
     }
@@ -900,6 +918,10 @@ impl DiskIo for LayeredDisk {
 struct DiskAsLayer(Disk);
 
 impl LayerIo for DiskAsLayer {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.0.requires_lockable_guest_memory()
+    }
+
     fn layer_type(&self) -> &str {
         "disk"
     }
@@ -987,10 +1009,12 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::btree_map::Entry;
     use std::sync::Arc;
+    use test_with_tracing::test;
 
     #[derive(Inspect)]
     #[inspect(skip)]
     struct TestLayer {
+        requires_lockable_guest_memory: bool,
         sectors: Mutex<BTreeMap<u64, Data>>,
         sector_count: u64,
     }
@@ -998,6 +1022,7 @@ mod tests {
     impl TestLayer {
         fn new(sector_count: u64) -> Self {
             Self {
+                requires_lockable_guest_memory: false,
                 sectors: Mutex::new(BTreeMap::new()),
                 sector_count,
             }
@@ -1007,6 +1032,10 @@ mod tests {
     struct Data(Box<[u8]>);
 
     impl LayerIo for Arc<TestLayer> {
+        fn requires_lockable_guest_memory(&self) -> bool {
+            self.requires_lockable_guest_memory
+        }
+
         fn layer_type(&self) -> &str {
             "test"
         }
@@ -1130,6 +1159,45 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn caller_memory_contract_propagates_through_layers_and_disk_adapter() {
+        futures::executor::block_on(async {
+            for requirements in [[false, false], [true, false], [false, true], [true, true]] {
+                let mut layers = Vec::new();
+                for requires_lockable_guest_memory in requirements {
+                    let mut layer = TestLayer::new(8);
+                    layer.requires_lockable_guest_memory = requires_lockable_guest_memory;
+                    layers.push(LayerConfiguration {
+                        layer: DiskLayer::new(Arc::new(layer)),
+                        write_through: false,
+                        read_cache: false,
+                    });
+                }
+                let expected = requirements.into_iter().any(|required| required);
+                let inner = disk_backend::Disk::new(LayeredDisk::new(false, layers).await.unwrap())
+                    .unwrap();
+                let outer = disk_backend::Disk::new(
+                    LayeredDisk::new(
+                        false,
+                        vec![LayerConfiguration {
+                            layer: DiskLayer::from_disk(inner),
+                            write_through: false,
+                            read_cache: false,
+                        }],
+                    )
+                    .await
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    outer.requires_lockable_guest_memory(),
+                    expected,
+                    "{requirements:?}"
+                );
+            }
+        });
     }
 
     #[async_test]
