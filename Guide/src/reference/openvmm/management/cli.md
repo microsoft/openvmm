@@ -116,7 +116,7 @@ describes the source definitions.
   openvmm --hypervisor mshv --isolation snp \
     --igvm firmware=path/to/snp-linux-direct.bin,personality=linux-direct \
     --com1 console \
-    --hv --no-vmbus -m 160MB -p 1
+    --hv --no-vmbus --memory size=160MB,thp=off -p 1
   ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
   MSHV partition and loader-generated SNP VMSA. This is only supported on mshv
@@ -125,6 +125,16 @@ describes the source definitions.
   SNP GHCB CPUID requests so they are forwarded to OpenVMM. The default is
   offloading enabled. This diagnostic parameter is meaningful only with
   `--isolation snp`.
+* MSHV SNP always uses copy-only host access and owned bounce buffers.
+  Pass `thp=off` for guest RAM, including on every NUMA node. Existing
+  guest-memory backing files are not supported. Supported devices are
+  virtio-blk, software virtio-net, in-process vsock, serial, and the minimal
+  chipset. With `--hv`, also pass `--no-vmbus`. Disk format and direct-I/O
+  support are checked by the selected backend.
+  See [guest-memory I/O policy](#guest-memory-io-policy).
+
+  For VM-service configuration, see [MSHV SNP devices](grpc.md#mshv-snp-devices).
+
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP,
@@ -525,6 +535,18 @@ PCIe root port. The syntax varies slightly between device types:
 
 The optional `serial` value accepts 1-20 printable ASCII bytes except commas
 and brackets. If omitted, OpenVMM uses the disk ID or `openvmm-virtio-blk`.
+
+#### Guest-memory I/O policy
+
+`--force-guest-memory-bounce` makes guest-origin memory copy-only for the
+whole VM. It defaults to off. MSHV SNP selects this policy automatically.
+Devices must support copied I/O; unsupported direct-access operations fail.
+This option does not enable pointer-based VMBus rings or synthetic page loans.
+
+```admonish warning
+Copy-only is an OpenVMM I/O policy, not Linux memory isolation. It does not
+revoke other mappings, change guest page visibility, or add kernel enforcement.
+```
 
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 

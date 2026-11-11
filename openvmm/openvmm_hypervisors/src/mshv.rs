@@ -66,6 +66,7 @@ mod tests {
     fn parses_snp_cpuid_offload_parameter() {
         assert!(!parse_mshv_params(&[]).unwrap());
         assert!(parse_mshv_params(&[("snp_disable_cpuid_offload", "true")]).unwrap());
+        assert!(parse_mshv_params(&[("snp_disable_cpuid_offload", "invalid")]).is_err());
         assert!(parse_mshv_params(&[("unknown", "true")]).is_err());
     }
 }

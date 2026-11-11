@@ -8,6 +8,8 @@
 // Linux.
 #[cfg(target_os = "linux")]
 mod fd_passing;
+#[cfg(target_os = "linux")]
+mod snp;
 
 use anyhow::Context;
 use futures::AsyncBufReadExt;
@@ -78,7 +80,7 @@ async fn test_ttrpc_shutdown(
     let pidfile_path = tempdir.path().join("openvmm.pid");
     let (mut child, client, _stderr_task) = launch_openvmm(
         &driver,
-        &params,
+        params.log_source,
         &openvmm,
         &tempdir.path().join("ttrpc.sock"),
         &pidfile_path,
@@ -320,7 +322,7 @@ async fn test_ttrpc_shutdown_windows_guest(
     let pidfile_path = tempdir.path().join("openvmm.pid");
     let (mut child, client, _stderr_task) = launch_openvmm(
         &driver,
-        &params,
+        params.log_source,
         &openvmm,
         &tempdir.path().join("ttrpc.sock"),
         &pidfile_path,
@@ -455,6 +457,48 @@ async fn test_ttrpc_shutdown_windows_guest(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[vmm_test_macros::vmm_test_with(
+    openvmm,
+    configs(linux_direct_x64[
+        artifacts::OPENVMM_NATIVE,
+        artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE,
+        artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE,
+        petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL
+    ])
+)]
+async fn virtio_blk_vmdk<A, B, C, D>(
+    config: petri::PetriVmBuilder<petri::openvmm::OpenVmmPetriBackend>,
+    (openvmm, kernel, initrd, pipette): (
+        ResolvedArtifact<A>,
+        ResolvedArtifact<B>,
+        ResolvedArtifact<C>,
+        ResolvedArtifact<D>,
+    ),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    let initrd = std::fs::read(initrd.get()).context("read VMDK test initrd")?;
+    let pipette = std::fs::read(pipette.get()).context("read VMDK test pipette")?;
+    let initrd = initrd_cpio::inject_into_initrd(&initrd, "pipette", &pipette, 0o100755)
+        .context("inject pipette into VMDK test initrd")?;
+    let mut initrd_file = tempfile::NamedTempFile::new()?;
+    initrd_file.write_all(&initrd)?;
+    snp::run_with_boot(
+        config,
+        openvmm.erase(),
+        vmservice::vm_config::BootConfig::DirectBoot(vmservice::DirectBoot {
+            kernel_path: kernel.get().to_string_lossy().into(),
+            initrd_path: initrd_file.path().to_string_lossy().into(),
+            kernel_cmdline:
+                "console=ttyS0 rdinit=/pipette panic=-1 initcall_blacklist=hv_sock_init".into(),
+        }),
+        driver,
+        crate::utils::virtio_blk::DiskBacking::Vmdk,
+        false,
+    )
+    .await
+}
+
 petri::test!(test_ttrpc_no_vmbus, |resolver| {
     // Restrict this test to aarch64 for now: without Hyper-V enlightenments,
     // x64 guests rely on legacy timer calibration. PIT calibration is unreliable
@@ -492,7 +536,7 @@ async fn test_ttrpc_no_vmbus(
     let tempdir = tempfile::tempdir()?;
     let (mut child, client, _stderr_task) = launch_openvmm(
         &driver,
-        &params,
+        params.log_source,
         &openvmm,
         &tempdir.path().join("ttrpc.sock"),
         &tempdir.path().join("openvmm.pid"),
@@ -674,8 +718,14 @@ async fn test_ttrpc_interface(
         petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
     };
 
-    let (mut child, client, stderr_task) =
-        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+    let (mut child, client, stderr_task) = launch_openvmm(
+        &driver,
+        params.log_source,
+        &openvmm,
+        &socket_path,
+        &pidfile_path,
+    )
+    .await?;
 
     let query_props = || {
         client.call().start(
@@ -2013,8 +2063,14 @@ async fn test_ttrpc_uefi_boot(
     let com1_path = tempdir.path().join("com1.sock");
     let vmgs_path = tempdir.path().join("guest.vmgs");
 
-    let (mut child, client, _stderr_task) =
-        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        &driver,
+        params.log_source,
+        &openvmm,
+        &socket_path,
+        &pidfile_path,
+    )
+    .await?;
 
     client
             .call()
@@ -2575,7 +2631,7 @@ async fn mount_virtio_fs(
 /// task (which must be kept alive for the child's lifetime).
 async fn launch_openvmm(
     driver: &DefaultDriver,
-    params: &petri::PetriTestParams<'_>,
+    log_source: &petri::PetriLogSource,
     openvmm: &ResolvedArtifact,
     socket_path: &Path,
     pidfile_path: &Path,
@@ -2603,7 +2659,7 @@ async fn launch_openvmm(
     let stderr_task = driver.spawn(
         "stderr",
         petri::log_task(
-            params.log_source.log_file("stderr")?,
+            log_source.log_file("stderr")?,
             PolledPipe::new(driver, stderr_read)?,
             "openvmm stderr",
         ),

@@ -236,6 +236,10 @@ impl<T: IommuTranslator> TranslatingMemory<T> {
 // never gets a raw pointer. All accesses go through the fallback methods which
 // translate IOVAs to GPAs and delegate to the inner GuestMemory.
 unsafe impl<T: IommuTranslator> guestmem::GuestMemoryAccess for TranslatingMemory<T> {
+    fn io_policy(&self) -> guestmem::GuestMemoryIoPolicy {
+        self.inner_gm.io_policy()
+    }
+
     fn mapping(&self) -> Option<NonNull<u8>> {
         None
     }
@@ -518,6 +522,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
 
     /// Identity translator: GPA == IOVA, never faults. Records nothing — the
     /// `rid` validation happens in `TranslatingMemory` before `translate` is
@@ -551,6 +556,53 @@ mod tests {
         let r = AssignedBusRange::new();
         r.set_bus_range(secondary, subordinate);
         r
+    }
+
+    #[test]
+    fn translated_fallback_does_not_require_mandatory_staging() {
+        let gm = TranslatingMemory::new_guest_memory(
+            "translated",
+            IdentityTranslator,
+            bus_range(0, 0),
+            GuestMemory::allocate(0x2000),
+        );
+        assert!(!gm.supports_kernel_lock());
+        assert_eq!(gm.io_policy(), guestmem::GuestMemoryIoPolicy::Direct);
+        assert_eq!(gm.io_policy(), guestmem::GuestMemoryIoPolicy::Direct);
+        gm.write_at(0xffe, &[1, 2, 3, 4]).unwrap();
+        let mut bytes = [0; 4];
+        gm.read_at(0xffe, &mut bytes).unwrap();
+        assert_eq!(bytes, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn translated_memory_preserves_inner_copy_only_restrictions() {
+        let inner = GuestMemory::allocate(0x2000).copy_only_view();
+        let gm = TranslatingMemory::new_guest_memory(
+            "translated-copy-only",
+            IdentityTranslator,
+            bus_range(0, 0),
+            inner.clone(),
+        );
+        for view in [gm.clone(), gm.subrange(0, 0x2000, false).unwrap()] {
+            assert_eq!(view.io_policy(), guestmem::GuestMemoryIoPolicy::CopyOnly);
+            assert_eq!(view.io_policy(), guestmem::GuestMemoryIoPolicy::CopyOnly);
+            assert!(!view.supports_kernel_lock());
+            assert!(view.full_mapping().is_none());
+            for access in [guestmem::AccessType::Read, guestmem::AccessType::Write] {
+                for kernel in [false, true] {
+                    if kernel {
+                        assert!(view.lock_kernel_gpns(access, &[0]).is_err());
+                    } else {
+                        assert!(view.lock_user_gpns(access, &[0]).is_err());
+                    }
+                }
+            }
+            view.write_at(0xffe, &[1, 2, 3, 4]).unwrap();
+            let mut bytes = [0; 4];
+            view.read_at(0xffe, &mut bytes).unwrap();
+            assert_eq!(bytes, [1, 2, 3, 4]);
+        }
     }
 
     struct ReentrantRoute {

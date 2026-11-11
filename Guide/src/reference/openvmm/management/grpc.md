@@ -193,6 +193,25 @@ Port forwarding retains its existing semantics: `UPDATE` binds the supplied
 ports and `REMOVE` unbinds them. DNS and virtual-address operations only
 support `UPDATE`.
 
+## MSHV SNP devices
+
+MSHV SNP supports PCIe virtio-blk, virtio-net with Consomme or Linux TAP,
+and in-process virtio-vsock. Copied I/O is automatic; no force-bounce API
+option is needed. The same restrictions apply to `CreateVM` and
+`AddPcieDevice`.
+
+Disks retain their normal format restrictions. On Linux, raw regular files
+and host block devices support buffered or direct I/O through
+`FileDisk.direct`. Host block devices are treated as raw disks regardless
+of their path suffix. Flat VMDK images require read-only access without
+direct I/O. Character devices and FIFOs are rejected.
+
+Disable VMBus and omit legacy device configurations, HVSocket, crash dumps,
+iommufd contexts, and guest-visible IOMMUs. Other PCIe device types,
+vhost-user, and VPCI are unsupported. Empty hotplug ports and nested switches
+are allowed. Memory uses base pages by default; explicit transparent huge
+pages and huge-page backing are rejected.
+
 ## VFIO and accelerated SMMU
 
 On Linux, declare named host iommufd contexts in `VMConfig.iommufds`, then

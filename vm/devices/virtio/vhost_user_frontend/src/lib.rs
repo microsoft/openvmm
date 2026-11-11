@@ -345,6 +345,10 @@ impl VirtioDevice for VhostUserFrontend {
         // resets. The backend retains the memory mapping (it is
         // connection-scoped, not device-scoped), and the guest memory
         // backing doesn't change for the lifetime of the connection.
+        anyhow::ensure!(
+            resources.guest_memory.supports_kernel_lock(),
+            "vhost-user requires kernel-lockable guest memory"
+        );
         if !self.mem_table_sent {
             let sharing = resources.guest_memory.sharing().ok_or_else(|| {
                 anyhow::anyhow!(
