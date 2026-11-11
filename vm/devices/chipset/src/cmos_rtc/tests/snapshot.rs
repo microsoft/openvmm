@@ -16,6 +16,7 @@ use local_clock::MockLocalClock;
 use local_clock::MockLocalClockAccessor;
 use local_clock::SystemTimeClock;
 use pal_async::DefaultPool;
+use pal_async::timer::Instant;
 use std::task::Context;
 use std::task::Waker;
 use std::time::Duration;
@@ -276,7 +277,7 @@ fn restore_runs_the_clock_from_the_stop_with_vm_time() {
     let (restored_clock, mut restored) = new_restored_rtc(&mut pool, &keeper);
     restored.restore(saved).unwrap();
     restored_clock.tick(Duration::from_secs(7));
-    pool.run_until(keeper.advance(Duration::from_secs(3)));
+    pool.run_until(keeper.advance(Duration::from_secs(3), Instant::now()));
     pool.run_until(restored.advance_time(Duration::from_secs(3)))
         .unwrap();
     set_vmtime(&mut pool, &mut keeper, 4450);
