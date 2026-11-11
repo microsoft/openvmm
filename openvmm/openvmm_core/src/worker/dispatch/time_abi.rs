@@ -13,10 +13,8 @@ use super::LoadedVm;
 use crate::partition::HvlitePartition;
 use anyhow::Context as _;
 use chipset_resources::microvm_time::HostTimeFields;
-use chipset_resources::microvm_time::ResolvedTimeSampleSource;
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use chipset_resources::microvm_time::TimeSampleSource;
-use chipset_resources::microvm_time::TimeSampleSourceKind;
 use cpu_profile::CpuProfile;
 use cpu_profile::EffectiveCpuid;
 use cpu_profile::HostCpuSignature;
@@ -65,8 +63,6 @@ use virt::time_abi::publish::PublishedSample;
 use virt::time_abi::publish::SampleRates;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::tsc::GuestTscOffset;
-use vm_resource::PlatformResource;
-use vm_resource::ResolveResource;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -124,6 +120,100 @@ pub(super) struct PartitionTimeAbi {
     pub profile: PartitionProfile,
     /// The effective CPUID of the partition.
     pub effective_cpuid: Arc<EffectiveCpuid>,
+}
+
+pub(super) fn prepare_contract(
+    parameters: &openvmm_defs::time_abi::TimeAbiParameters,
+    hypervisor: &str,
+    restored: Option<&SnapshotCpuProfile>,
+    topology: &vm_topology::processor::ProcessorTopology,
+) -> anyhow::Result<(PartitionTimeAbi, TimeAbiConfig)> {
+    let profile = select_cpu_profile(
+        &parameters.cpu_profile,
+        hypervisor,
+        restored,
+        &parameters.hooks,
+    )?;
+    let effective_cpuid = Arc::new(virt::time_abi::cpuid::effective_cpuid(&profile, topology)?);
+    let (msrs, config) = partition_config(&profile, &effective_cpuid);
+    Ok((
+        PartitionTimeAbi {
+            msrs,
+            profile,
+            effective_cpuid,
+        },
+        config,
+    ))
+}
+
+pub(super) fn admit_partition(
+    prepared: PartitionTimeAbi,
+    context: super::TimeAbiAdmission<'_>,
+) -> anyhow::Result<TimeAbiState> {
+    let PartitionTimeAbi {
+        msrs,
+        profile,
+        effective_cpuid,
+    } = prepared;
+    let super::TimeAbiAdmission {
+        partition,
+        parameters,
+        hypervisor,
+        restore,
+        state_units,
+        driver_source,
+    } = context;
+    if let Some(input) = restore {
+        anyhow::ensure!(
+            input.cpu_profile.id == profile.id(),
+            "the partition's CPU profile '{}' is not the snapshot's '{}'",
+            profile.id(),
+            input.cpu_profile.id
+        );
+    }
+    check_cpu_profile(
+        partition.as_ref(),
+        hypervisor,
+        &profile,
+        &effective_cpuid,
+        restore.map(|input| &input.cpu_profile),
+    )?;
+    let report = declare_rates(
+        partition.as_ref(),
+        &msrs,
+        hypervisor,
+        profile.id().to_owned(),
+        restore.map(|input| DeclaredRates {
+            tsc_hz: input.contract.tsc_frequency_hz,
+            apic_hz: input.contract.apic_frequency_hz,
+        }),
+        &parameters.hooks,
+    )?;
+    let clock = Arc::new(TimeAbiClock::new(msrs.clone(), &report, &parameters.hooks));
+    let guest_tsc_offset: MeasureOffset = {
+        let partition = partition.clone();
+        let hypervisor = hypervisor.to_owned();
+        Box::new(move || guest_tsc_offset(partition.as_ref(), &hypervisor))
+    };
+    let unit = state_units
+        .add(TIME_ABI_UNIT)
+        .spawn(driver_source.simple(), {
+            let msrs = msrs.clone();
+            let report = report.clone();
+            move |recv| state_unit::run_unit(TimeAbiUnit { msrs, report }, recv)
+        })
+        .unwrap();
+    Ok(TimeAbiState {
+        _unit: unit,
+        msrs,
+        profile,
+        effective_cpuid,
+        report,
+        clock,
+        guest_tsc_offset,
+        generation: parameters.generation,
+        hooks: parameters.hooks.clone(),
+    })
 }
 
 /// Returns the identity MSR handler and the time ABI configuration of a new
@@ -246,8 +336,10 @@ fn select_on_host(
 /// `host-cpu-unknown` test hook in `hooks` treats it so, and host profiles
 /// serve it.
 fn falls_back(host: &HostCpuSignature, hooks: &TimeAbiTestHooks) -> bool {
-    (hooks.host_cpu_unknown || !cpu_profile::pinned_profile_serves(host))
-        && cpu_profile::supports_host_profiles(host)
+    cpu_profile::auto_falls_back_to_host(
+        !hooks.host_cpu_unknown && cpu_profile::pinned_profile_serves(host),
+        cpu_profile::supports_host_profiles(host),
+    )
 }
 
 /// Falls back from `--cpu-profile auto` to a host profile on the host CPU
@@ -531,11 +623,7 @@ fn leading_code(err: &anyhow::Error) -> Option<TimeAbiCode> {
 /// Fingerprints this host and the `hypervisor` backend, as
 /// `--cpu-fingerprint` does, for a host profile.
 fn host_fingerprint(hypervisor: &str) -> anyhow::Result<CpuFingerprint> {
-    let probe = hypervisor_resources::probe_by_name(hypervisor)
-        .with_context(|| format!("the {hypervisor} backend cannot be fingerprinted"))?;
-    let backend = probe
-        .cpu_fingerprint(&[])
-        .with_context(|| format!("failed to fingerprint the {hypervisor} backend"))?;
+    let backend = super::probe_cpu_fingerprint(hypervisor)?.into_x86()?;
     let host = cpu_profile::host::HostIdentity::collect().context("failed to identify the host")?;
     Ok(CpuFingerprint::new(
         cpu_profile::fingerprint::ToolIdentity {
@@ -1398,41 +1486,10 @@ impl TimeSampleSource for TimeAbiClock {
 /// Returns the time sample fields of a published sample, saturating the
 /// values that the sample carries in 32 bits.
 fn host_fields(sample: &PublishedSample) -> HostTimeFields {
-    use chipset_resources::microvm_time::HostClockStatus as SampleStatus;
-
     let saturate = |value: u64| u32::try_from(value).unwrap_or(u32::MAX);
-    HostTimeFields {
-        utc_ns: sample.utc_ns,
-        tsc: sample.tsc,
-        pairing_ns: saturate(sample.pairing_ns),
-        status: match sample.status {
-            HostClockStatus::Unknown => SampleStatus::Unknown,
-            HostClockStatus::Synchronized => SampleStatus::Synchronized,
-            HostClockStatus::FreeRunning => SampleStatus::FreeRunning,
-            HostClockStatus::Unreliable => SampleStatus::Unreliable,
-        },
-        disruption: sample.disruption,
-        correction: sample.correction,
-        correction_bound: sample.correction_bound.map(saturate),
-        max_error_us: sample.max_error_us.map(saturate),
-    }
-}
-
-/// Resolves the platform's time sample source, which the microVM portb device
-/// uses, to the time ABI's clock.
-pub(super) struct TimeSampleSourceResolver(pub Arc<TimeAbiClock>);
-
-impl ResolveResource<TimeSampleSourceKind, PlatformResource> for TimeSampleSourceResolver {
-    type Output = ResolvedTimeSampleSource;
-    type Error = std::convert::Infallible;
-
-    fn resolve(
-        &self,
-        _resource: PlatformResource,
-        _input: (),
-    ) -> Result<Self::Output, Self::Error> {
-        Ok(ResolvedTimeSampleSource(self.0.clone()))
-    }
+    super::published_time_fields(sample, saturate(sample.pairing_ns), |value| {
+        Some(saturate(value))
+    })
 }
 
 /// Measures the guest TSC's offset from the host TSC.

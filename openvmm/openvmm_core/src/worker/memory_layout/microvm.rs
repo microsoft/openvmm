@@ -128,6 +128,48 @@ mod tests {
     }
 
     #[test]
+    fn microvm_pa36_bounds_cover_ram_and_mmio_not_a_64gb_ram_cap() {
+        let aperture = MemoryRange::new(3 * GB..4 * GB);
+        for (ram, high_mmio, fits) in [
+            (63 * GB, 0, true),
+            (63 * GB + PAGE_SIZE, 0, false),
+            (64 * GB, 0, false),
+            (62 * GB, GB, true),
+            (62 * GB + TWO_MB, GB, false),
+        ] {
+            let sizes = [ram];
+            let mut config = input(&sizes, None);
+            config.physical_address_size = 36;
+            config.layout = vmm_core_defs::LayoutConfig {
+                chipset_low_mmio_size: GB as u32,
+                chipset_high_mmio_size: high_mmio,
+                vtl2_chipset_mmio_size: 0,
+            };
+            let result = resolve_memory_layout(config);
+            if fits {
+                let resolved = result.unwrap();
+                let layout = resolved.memory_layout;
+                assert_eq!(layout.ram().iter().map(|r| r.range.len()).sum::<u64>(), ram);
+                assert_eq!(layout.ram().last().unwrap().range.end(), ram + GB);
+                assert!(
+                    layout
+                        .ram()
+                        .iter()
+                        .all(|r| r.range.end() <= 1 << 36 && !r.range.overlaps(&aperture))
+                );
+                assert_eq!(resolved.chipset_mmio.low, aperture);
+                assert!(resolved.chipset_mmio.high.end() <= 1 << 36);
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains("exceeds the address width of 36 bits"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn memory_capacity_reserves_aperture_without_publishing_it_as_ram() {
         let mut config = input(&[512 * MB], None);
         config.memory_capacity = Some(2 * GB);

@@ -32,6 +32,8 @@ vm_resource::register_static_resolvers! {
 vm_resource::register_static_resolvers! {
     // Chipset devices
     chipset::acpi_power_button::AcpiPowerButtonResolver,
+    #[cfg(guest_arch = "aarch64")]
+    chipset::microvm::resolver::MicrovmPlatformControlResolver,
     chipset_resources::cmos_rtc_time_source::SystemTimeClockResolver,
     firmware_uefi::resolver::UefiDeviceResolver,
     missing_dev::resolver::MissingDevResolver,

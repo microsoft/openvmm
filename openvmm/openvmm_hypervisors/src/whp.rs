@@ -57,6 +57,16 @@ impl hypervisor_resources::HypervisorProbe for WhpProbe {
         Ok(virt_whp::cpu_fingerprint()?)
     }
 
+    #[cfg(guest_arch = "aarch64")]
+    fn probe_cpu(
+        &self,
+        params: &[(&str, &str)],
+    ) -> anyhow::Result<cpu_profile::fingerprint::BackendCpuFingerprint> {
+        crate::reject_fingerprint_params("whp", params)?;
+        anyhow::ensure!(virt_whp::is_available()?, "WHP is not available");
+        Ok(virt_whp::cpu_fingerprint()?.into())
+    }
+
     #[cfg(guest_arch = "x86_64")]
     fn profile_unlisted_cpuid(
         &self,
@@ -66,5 +76,40 @@ impl hypervisor_resources::HypervisorProbe for WhpProbe {
         crate::reject_fingerprint_params("whp", params)?;
         anyhow::ensure!(virt_whp::is_available()?, "WHP is not available");
         Ok(Some(virt_whp::profile_unlisted_cpuid(profile)?))
+    }
+}
+
+#[cfg(all(test, guest_arch = "aarch64"))]
+mod tests {
+    use super::*;
+    use hypervisor_resources::HypervisorProbe;
+    use test_with_tracing::test;
+
+    #[test]
+    fn arm_legacy_fingerprint_is_unsupported_without_native_probe() {
+        // The default legacy method must fail even with invalid probe parameters,
+        // before any WHP availability query or transient partition creation.
+        let error = WhpProbe
+            .cpu_fingerprint(&[("invalid", "true")])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the whp hypervisor backend does not support CPU fingerprinting"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires native ARM64 Windows WHP; no guest entry"]
+    fn native_typed_arm_probe_records_backend_limit_separately_from_profile_width() {
+        let native = WhpProbe.probe_cpu(&[]).unwrap().into_aarch64().unwrap();
+        let profile = cpu_profile::aarch64::select(cpu_profile::AUTO, &native).unwrap();
+        assert!(native.backend_usable_gpa_bits > 0);
+        assert!(native.counter_hz > 0);
+        assert_ne!(native.midr, 0);
+        assert_eq!(profile.physical_address_bits, 36);
+        println!(
+            "ARM_TYPED_PROBE backend_usable_gpa_bits={} profile_architectural_pa_bits={} native_f={}",
+            native.backend_usable_gpa_bits, profile.physical_address_bits, native.counter_hz,
+        );
     }
 }
