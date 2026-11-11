@@ -272,7 +272,8 @@ impl LoadedVm {
     /// Prepares to restore `saved_state` into the loaded VM: checks that a
     /// time ABI restore has partition state, and starts the profile span of
     /// the restore. A time ABI restore drops the VPs' saved TSC values, which
-    /// its synchronized TSC set supersedes.
+    /// its synchronized TSC set supersedes, and holds their LAPIC timers until
+    /// it advances them.
     pub(super) async fn begin_snapshot_restore(
         &mut self,
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_variables))] saved_state: &SavedState,
@@ -283,7 +284,7 @@ impl LoadedVm {
             let time_abi_restore = self.snapshot_restore.time_abi.is_some();
             validate_snapshot_restore_partition_presence(saved_state, time_abi_restore)?;
             if time_abi_restore {
-                self.inner.partition_unit.omit_saved_tsc().await;
+                self.inner.partition_unit.prepare_time_abi_restore().await;
             }
         }
         Ok(ProfileSpan::start())

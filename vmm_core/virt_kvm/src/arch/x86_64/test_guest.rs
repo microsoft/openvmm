@@ -47,6 +47,16 @@ impl<'a> GuestRam<'a> {
         // running yet.
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(offset), data.len()) };
     }
+
+    pub fn read_u64(&self, gpa: u64) -> u64 {
+        let offset = gpa as usize;
+        assert!(offset + 8 <= self.len);
+        let mut value = [0; 8];
+        // SAFETY: the range is within the mapping, and the guest is not
+        // running.
+        unsafe { std::ptr::copy_nonoverlapping(self.ptr.add(offset), value.as_mut_ptr(), 8) };
+        u64::from_le_bytes(value)
+    }
 }
 
 impl Drop for GuestRam<'_> {

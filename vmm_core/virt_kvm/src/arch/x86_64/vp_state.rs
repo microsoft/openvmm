@@ -816,11 +816,14 @@ mod kvm_tests {
     use virt::time_abi::tsc::HostTscBracket;
     use virt::x86::vp::Apic;
     use virt::x86::vp::ApicRegisters;
+    use virt::x86::vp::LapicRestoreClock;
 
     const TIMER_VECTOR: u8 = 0x40;
     const CODE_GPA: u64 = 0x1000;
     const HANDLER_GPA: u64 = 0x2000;
     const COUNT_GPA: u64 = 0x3000;
+    const ARM_TSC_GPA: u64 = 0x3008;
+    const FIRE_TSC_GPA: u64 = 0x3010;
     const ARMED_PORT: u8 = 0x80;
     const TIMER_PORT: u8 = 0x81;
     const RFLAGS_IF: u64 = 1 << 9;
@@ -837,10 +840,11 @@ mod kvm_tests {
         partition
     }
 
-    /// Loads a real-mode guest into `ram` that arms its one-shot x2APIC timer
-    /// for `count` ticks, writes to `ARMED_PORT`, and then spins with
-    /// interrupts enabled. Its timer interrupt handler writes to `TIMER_PORT`
-    /// and ends the interrupt.
+    /// Loads a real-mode guest into `ram` that reads its TSC to `ARM_TSC_GPA`,
+    /// arms its one-shot x2APIC timer for `count` ticks, writes to
+    /// `ARMED_PORT`, and then spins with interrupts enabled. Its timer
+    /// interrupt handler reads its TSC to `FIRE_TSC_GPA`, writes to
+    /// `TIMER_PORT`, and ends the interrupt.
     fn load_guest(partition: &Partition, ram: &GuestRam<'_>, count: u32) {
         ram.write(
             u64::from(TIMER_VECTOR) * 4,
@@ -849,6 +853,9 @@ mod kvm_tests {
         ram.write(
             CODE_GPA,
             &[
+                0x0f, 0x31, // rdtsc
+                0x66, 0xa3, 0x08, 0x30, // mov [ARM_TSC_GPA], eax
+                0x66, 0x89, 0x16, 0x0c, 0x30, // mov [ARM_TSC_GPA + 4], edx
                 0x66, 0xb9, 0x38, 0x08, 0x00, 0x00, // mov ecx, TMICT
                 0x66, 0xa1, 0x00, 0x30, // mov eax, [COUNT_GPA]
                 0x66, 0x31, 0xd2, // xor edx, edx
@@ -860,6 +867,9 @@ mod kvm_tests {
         ram.write(
             HANDLER_GPA,
             &[
+                0x0f, 0x31, // rdtsc
+                0x66, 0xa3, 0x10, 0x30, // mov [FIRE_TSC_GPA], eax
+                0x66, 0x89, 0x16, 0x14, 0x30, // mov [FIRE_TSC_GPA + 4], edx
                 0xe6, TIMER_PORT, // out TIMER_PORT, al
                 0x66, 0xb9, 0x0b, 0x08, 0x00, 0x00, // mov ecx, EOI
                 0x66, 0x31, 0xc0, // xor eax, eax
@@ -957,28 +967,37 @@ mod kvm_tests {
         apic.registers().irr[vector / 32] & (1 << (vector % 32)) != 0
     }
 
-    /// A capture: the guest TSC at its anchor, and the VP's saved APIC state.
+    /// A capture: the guest TSC at its anchor, and the VP's saved APIC state
+    /// and, read after it as a save does, its TSC.
     struct Capture {
         capture_tsc: u64,
         apic: Apic,
+        saved_tsc: u64,
     }
 
     impl Capture {
-        fn take(vp: &Processor<'_>) -> Self {
+        fn take(vp: &Processor<'_>, anchor_to_save: Duration) -> Self {
+            let capture_tsc = guest_tsc(vp);
+            std::thread::sleep(anchor_to_save);
+            let apic = get_apic(vp);
             Self {
-                capture_tsc: guest_tsc(vp),
-                apic: get_apic(vp),
+                capture_tsc,
+                apic,
+                saved_tsc: guest_tsc(vp),
             }
         }
     }
 
     /// Restores `capture` into the VP as a time ABI restore does, after a
-    /// downtime of `downtime_ns`.
-    fn restore(vp: &Processor<'_>, capture: &Capture, downtime_ns: u64) {
+    /// downtime of `downtime_ns`, with `before_anchor` between the processor
+    /// restore and the restore anchor.
+    fn restore(vp: &Processor<'_>, capture: &Capture, downtime_ns: u64, before_anchor: Duration) {
         let tsc_hz = vp.tsc_frequency_hz().unwrap();
-        // The processor restore.
-        vp.set_lapic(&kvm_lapic_page(capture.apic.registers()))
-            .unwrap();
+        // The processor restore, which takes the timer out of the saved state.
+        let mut restored = capture.apic.clone();
+        let timer = restored.take_one_shot_timer(Some(capture.saved_tsc));
+        vp.set_lapic(&kvm_lapic_page(restored.registers())).unwrap();
+        std::thread::sleep(before_anchor);
         // The synchronized TSC set, at the restore anchor.
         let restore_tsc =
             virt::time_abi::downtime::tsc_target(capture.capture_tsc, downtime_ns, tsc_hz).unwrap();
@@ -987,7 +1006,20 @@ mod kvm_tests {
             .unwrap();
         // The LAPIC advance.
         let mut apic = get_apic(vp);
-        apic.advance_one_shot_timer(downtime_ns, APIC_HZ).unwrap();
+        let now = guest_tsc(vp);
+        apic.restore_one_shot_timer(
+            timer,
+            &LapicRestoreClock {
+                capture_tsc: capture.capture_tsc,
+                declared_tsc_hz: tsc_hz,
+                restore_tsc,
+                native_tsc_hz: tsc_hz,
+                downtime_ns,
+                apic_hz: APIC_HZ,
+            },
+            now,
+        )
+        .unwrap();
         vp.set_lapic(&kvm_lapic_page(apic.registers())).unwrap();
     }
 
@@ -1025,12 +1057,12 @@ mod kvm_tests {
         let ram = GuestRam::new(&partition, 0x10000);
         let mut guest = ArmedGuest::new(&partition, &ram, 1_000 * MS as u32);
         let vp = partition.vp(0);
-        let capture = Capture::take(&vp);
+        let capture = Capture::take(&vp, Duration::ZERO);
         assert_ne!(capture.apic.registers().timer_ccr, 0);
         // The downtime expires the timer, which queues its interrupt, and
         // KVM must not fire the timer again for a VP that runs with
         // interrupts enabled.
-        restore(&vp, &capture, 2_000 * MS);
+        restore(&vp, &capture, 2_000 * MS, Duration::ZERO);
         assert!(timer_pending(&get_apic(&vp)));
         assert_eq!(guest.run(None, Duration::from_millis(100)), (1, false));
     }
@@ -1046,13 +1078,45 @@ mod kvm_tests {
         // whose interrupt the guest took: expired, its vector neither pending
         // nor in service. Its interrupt must not be lost.
         std::thread::sleep(Duration::from_millis(20));
-        let capture = Capture::take(&vp);
+        let capture = Capture::take(&vp, Duration::ZERO);
         let saved = capture.apic.registers();
         let vector = usize::from(TIMER_VECTOR);
         assert_eq!((saved.timer_icr, saved.timer_ccr), (2 * MS as u32, 0));
         assert!(!timer_pending(&capture.apic));
         assert_eq!(saved.isr[vector / 32] & (1 << (vector % 32)), 0);
-        restore(&vp, &capture, 10 * MS);
+        restore(&vp, &capture, 10 * MS, Duration::ZERO);
         assert_eq!(guest.run(None, Duration::from_millis(100)), (1, false));
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn a_restored_timer_fires_on_the_guest_tsc() {
+        let partition = partition();
+        let ram = GuestRam::new(&partition, 0x10000);
+        let tsc_hz = partition.vp(0).tsc_frequency_hz().unwrap();
+        // Armed for 100 ms, captured 20 ms later with 20 ms from the capture
+        // anchor to the save, and restored after a downtime of 50 ms with 20
+        // ms from the processor restore to the restore anchor: the timer
+        // must fire 100 ms after it was armed in guest TSC time.
+        let mut guest = ArmedGuest::new(&partition, &ram, 100 * MS as u32);
+        let vp = partition.vp(0);
+        std::thread::sleep(Duration::from_millis(20));
+        let capture = Capture::take(&vp, Duration::from_millis(20));
+        restore(&vp, &capture, 50 * MS, Duration::from_millis(20));
+        assert_eq!(
+            guest.run(Some(TIMER_PORT), Duration::from_secs(5)),
+            (1, true)
+        );
+        let cycles = ram.read_u64(FIRE_TSC_GPA) - ram.read_u64(ARM_TSC_GPA);
+        let elapsed_ns = (u128::from(cycles) * 1_000_000_000 / u128::from(tsc_hz)) as i64;
+        let late_ns = elapsed_ns - (100 * MS) as i64;
+        tracing::info!(late_ns, "restored timer");
+        // KVM's timer runs on host monotonic time, which the host may slew
+        // against its TSC by up to 500 ppm, 50 us over the 100 ms. A timer
+        // that ignored the downtime would be 50 ms late.
+        assert!(
+            (-100_000..20 * MS as i64).contains(&late_ns),
+            "{late_ns} ns late"
+        );
     }
 }

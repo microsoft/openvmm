@@ -101,9 +101,14 @@ struct PartitionUnitRunner {
     req_recv: Receiver<PartitionRequest>,
     topology: ProcessorTopology,
     initial_regs: Option<Arc<InitialRegs>>,
-    /// Whether restores drop the VPs' saved TSC values (NVX time ABI).
+    /// Whether restores are NVX time ABI restores, which drop the VPs' saved
+    /// TSC values and take their LAPIC timers out of the restored state.
     #[cfg(guest_arch = "x86_64")]
-    omit_saved_tsc: bool,
+    time_abi_restore: bool,
+    /// The LAPIC timers that the last time ABI restore took out of the VPs'
+    /// restored state, which the LAPIC advance sets again.
+    #[cfg(guest_arch = "x86_64")]
+    restored_timers: snapshot::RestoredTimers,
 
     #[cfg(feature = "gdb")]
     debugger_state: debug::DebuggerState,
@@ -247,7 +252,9 @@ impl PartitionUnit {
             topology: params.processor_topology.clone(),
             initial_regs: None,
             #[cfg(guest_arch = "x86_64")]
-            omit_saved_tsc: false,
+            time_abi_restore: false,
+            #[cfg(guest_arch = "x86_64")]
+            restored_timers: Vec::new(),
             #[cfg(feature = "gdb")]
             debugger_state: debug::DebuggerState::new(
                 params.vtl_guest_memory[0]
@@ -723,19 +730,28 @@ mod save_restore {
             }
             self.vp_set.validate_restore_halt()?;
             self.partition.restore(partition)?;
+            #[cfg(guest_arch = "x86_64")]
+            let mut restored_timers = Vec::new();
             let vps = vps
                 .into_iter()
                 .map(|state::Vp { vp_index, data }| {
+                    let vp_index = VpIndex::new(vp_index);
                     #[cfg(guest_arch = "x86_64")]
-                    let data = if self.omit_saved_tsc {
-                        super::snapshot::without_saved_tsc(data)?
+                    let data = if self.time_abi_restore {
+                        let (data, timer) = super::snapshot::for_time_abi_restore(data)?;
+                        restored_timers.extend(timer.map(|timer| (vp_index, timer)));
+                        data
                     } else {
                         data
                     };
-                    Ok((VpIndex::new(vp_index), data))
+                    Ok((vp_index, data))
                 })
                 .collect::<Result<Vec<_>, RestoreError>>()?;
             self.vp_set.restore(vps).await?;
+            #[cfg(guest_arch = "x86_64")]
+            {
+                self.restored_timers = restored_timers;
+            }
             self.vp_set.restore_halt(halt_reason.is_some())?;
             if let Some(reason) = halt_reason {
                 self.record_halt(reason);
@@ -854,7 +870,9 @@ mod save_restore {
                 topology: test_topology(),
                 initial_regs: None,
                 #[cfg(guest_arch = "x86_64")]
-                omit_saved_tsc: false,
+                time_abi_restore: false,
+                #[cfg(guest_arch = "x86_64")]
+                restored_timers: Vec::new(),
                 #[cfg(feature = "gdb")]
                 debugger_state: crate::partition_unit::debug::DebuggerState::new(
                     guestmem::GuestMemory::empty(),
