@@ -10,6 +10,7 @@
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::ops::Deref;
+use std::process::ExitStatus;
 use std::process::Output;
 
 use serde::Deserialize;
@@ -259,22 +260,27 @@ impl<'a> FloweyCmd<'a> {
 
     /// Run with inherited standard input, allowing interactive terminal use.
     pub fn run_interactive(self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.stdin_contents.is_none(),
-            "interactive commands cannot also supply stdin contents"
-        );
-        if !self.quiet {
-            eprintln!("$ {self}");
-        }
         let ignore_status = self.ignore_status;
         let description = self.to_string();
-        let mut command: std::process::Command = self.into_resolved().into();
-        let status = command.status()?;
+        let status = self.status()?;
         anyhow::ensure!(
             status.success() || ignore_status,
             "command {description} exited with {status}"
         );
         Ok(())
+    }
+
+    /// Run with inherited standard streams and return the exit status.
+    pub fn status(self) -> anyhow::Result<ExitStatus> {
+        anyhow::ensure!(
+            self.stdin_contents.is_none(),
+            "streaming commands cannot also supply stdin contents"
+        );
+        if !self.quiet {
+            eprintln!("$ {self}");
+        }
+        let mut command: std::process::Command = self.into_resolved().into();
+        Ok(command.status()?)
     }
 
     /// Run the command and return its stdout as a string, with leading
@@ -432,6 +438,20 @@ mod tests {
                 .stdin("incompatible input")
                 .run_interactive()
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn status_preserves_wrapping_and_reports_exit_code() {
+        let mut sh = FloweyShell::new().unwrap();
+        assert_eq!(sh.wrap(fail_cmd(&sh)).status().unwrap().code(), Some(1));
+
+        sh.set_wrapper(Some(CommandWrapperKind::Prefix));
+        assert!(
+            sh.wrap(xshell::cmd!(sh.xshell(), "nonexistent-program --flag"))
+                .status()
+                .unwrap()
+                .success()
         );
     }
 
