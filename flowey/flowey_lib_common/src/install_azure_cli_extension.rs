@@ -1,14 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Ensure an Azure CLI (`az`) extension is installed.
+//! Check if an Azure CLI (`az`) extension is installed.
 //!
-//! Checks for the extension with `az extension show`, which only inspects the
-//! local install, and runs `az extension add` only if it is missing and
-//! auto-install is enabled.
+//! Checks for the extension with `az extension show`, and installs it with `az extension add`
+//! only if it is missing and auto-install is enabled.
+//!
+//! Azure CLI is required but extension installation is best-effort. If adding
+//! the extension fails, it will log a warning and return false. It is up to the
+//! caller to decide whether the missing extension is fatal or not.
 
+use crate::_util::group_by;
 use flowey::node::prelude::*;
-use std::collections::BTreeMap;
 
 flowey_config! {
     /// Config for the install_azure_cli_extension node.
@@ -20,11 +23,27 @@ flowey_config! {
     }
 }
 
+/// An Azure CLI extension that can be installed by this node.
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AzureCliExtension {
+    /// `azure-devops`
+    AzureDevops,
+}
+
+impl AzureCliExtension {
+    /// The name `az extension` uses for this extension.
+    pub fn name(self) -> &'static str {
+        match self {
+            AzureCliExtension::AzureDevops => "azure-devops",
+        }
+    }
+}
+
 flowey_request! {
+    /// Install the extension if needed, reporting whether it is available.
     pub struct Request {
-        /// Name of the extension (e.g: `azure-devops`)
-        pub name: String,
-        pub done: WriteVar<SideEffect>,
+        pub extension: AzureCliExtension,
+        pub installed: WriteVar<bool>,
     }
 }
 
@@ -43,10 +62,11 @@ impl FlowNodeWithConfig for Node {
         requests: Vec<Self::Request>,
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
-        let mut extensions: BTreeMap<String, Vec<WriteVar<SideEffect>>> = BTreeMap::new();
-        for Request { name, done } in requests {
-            extensions.entry(name).or_default().push(done);
-        }
+        let extensions = group_by(
+            requests
+                .into_iter()
+                .map(|req| (req.extension, req.installed)),
+        );
 
         if extensions.is_empty() {
             return Ok(());
@@ -70,36 +90,23 @@ impl FlowNodeWithConfig for Node {
 
         // -- end of req processing -- //
 
-        for (name, done) in extensions {
+        for (extension, installed) in extensions {
+            let name = extension.name();
             ctx.emit_rust_step(format!("install az extension {name}"), |ctx| {
                 let az_cli_bin = az_cli_bin.clone().claim(ctx);
-                done.claim(ctx);
+                let installed = installed.claim(ctx);
                 move |rt| {
                     let az_cli_bin = rt.read(az_cli_bin);
 
-                    let installed = flowey::shell_cmd!(
-                        rt,
-                        "{az_cli_bin} extension show --name {name} --output none"
-                    )
-                    .ignore_stderr()
-                    .run()
-                    .is_ok();
+                    let is_installed = match ensure_installed(rt, &az_cli_bin, name, auto_install) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            log::warn!("az extension {name} is unavailable: {e:#}");
+                            false
+                        }
+                    };
 
-                    if installed {
-                        log::info!("az extension {name} is already installed");
-                    } else if !auto_install {
-                        anyhow::bail!(
-                            "az extension {name} is not installed (install it with `az extension add --name {name}`)"
-                        );
-                    } else {
-                        flowey::shell_cmd!(
-                            rt,
-                            "{az_cli_bin} extension add --name {name} --output none"
-                        )
-                        .run()
-                        .with_context(|| format!("failed to install az extension {name}"))?;
-                    }
-
+                    rt.write_all(installed, &is_installed);
                     Ok(())
                 }
             });
@@ -107,4 +114,33 @@ impl FlowNodeWithConfig for Node {
 
         Ok(())
     }
+}
+
+fn ensure_installed(
+    rt: &RustRuntimeServices<'_>,
+    az_cli_bin: &Path,
+    name: &str,
+    auto_install: bool,
+) -> anyhow::Result<()> {
+    let installed = flowey::shell_cmd!(
+        rt,
+        "{az_cli_bin} extension show --name {name} --output none"
+    )
+    .ignore_stderr()
+    .run()
+    .is_ok();
+
+    if installed {
+        log::info!("az extension {name} is already installed");
+    } else if !auto_install {
+        anyhow::bail!(
+            "az extension {name} is not installed (install it with `az extension add --name {name}`)"
+        );
+    } else {
+        flowey::shell_cmd!(rt, "{az_cli_bin} extension add --name {name} --output none")
+            .run()
+            .with_context(|| format!("failed to install az extension {name}"))?;
+    }
+
+    Ok(())
 }

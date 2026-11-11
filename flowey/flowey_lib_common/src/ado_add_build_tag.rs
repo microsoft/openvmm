@@ -3,11 +3,12 @@
 
 //! Add a single tag to the pipeline running in an ADO environment.
 //!
-//! Requires the Azure CLI and the `azure-devops` extension to be installed.
-//!
-//! Once both are available, tagging is best-effort: tagging failures are reported as
-//! ADO warnings, and the step still succeeds.
+//! Requires the Azure CLI to be installed. Installing the `azure-devops`
+//! extension and tagging are best-effort: failures are reported as ADO
+//! warnings, and the step still succeeds.
 
+use crate::install_azure_cli_extension;
+use crate::install_azure_cli_extension::AzureCliExtension;
 use flowey::node::prelude::*;
 
 flowey_request! {
@@ -24,7 +25,7 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::install_azure_cli::Node>();
-        ctx.import::<crate::install_azure_cli_extension::Node>();
+        ctx.import::<install_azure_cli_extension::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -36,9 +37,9 @@ impl SimpleFlowNode for Node {
         }
 
         let az_cli_bin = ctx.reqv(crate::install_azure_cli::Request::GetAzureCli);
-        let az_devops_installed = ctx.reqv(|done| crate::install_azure_cli_extension::Request {
-            name: "azure-devops".into(),
-            done,
+        let az_devops_installed = ctx.reqv(|installed| install_azure_cli_extension::Request {
+            extension: AzureCliExtension::AzureDevops,
+            installed,
         });
         let access_token = ctx.get_ado_variable(AdoRuntimeVar::SYSTEM_ACCESS_TOKEN);
         let collection_uri = ctx.get_ado_variable(AdoRuntimeVar::SYSTEM_COLLECTION_URI);
@@ -46,8 +47,8 @@ impl SimpleFlowNode for Node {
         let build_id = ctx.get_ado_variable(AdoRuntimeVar::BUILD_BUILD_ID);
 
         ctx.emit_rust_step("add build tag", |ctx| {
-            let az_cli_bin = az_cli_bin.claim(ctx);
-            az_devops_installed.claim(ctx);
+            let az_cli_bin: ReadVar<PathBuf, VarClaimed> = az_cli_bin.claim(ctx);
+            let az_devops_installed = az_devops_installed.claim(ctx);
             let build_tag = build_tag.claim(ctx);
             let access_token = access_token.claim(ctx);
             let collection_uri = collection_uri.claim(ctx);
@@ -57,6 +58,14 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let az_cli_bin = rt.read(az_cli_bin);
                 let build_tag = rt.read(build_tag);
+
+                if !rt.read(az_devops_installed) {
+                    println!(
+                        "##vso[task.logissue type=warning]skipping build tag {build_tag:?}: azure-devops az extension is unavailable"
+                    );
+                    return Ok(());
+                }
+
                 let access_token = rt.read(access_token);
                 let collection_uri = rt.read(collection_uri);
                 let project_id = rt.read(project_id);
