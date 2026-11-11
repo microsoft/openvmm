@@ -45,6 +45,8 @@ use zerocopy::U32;
 
 pub(crate) const SEL_CAPACITY: usize = 128;
 const SEL_FORWARD_LIMIT: u32 = 256;
+/// First SEL record type whose bytes 3..16 are OEM payload with no timestamp.
+pub(crate) const SEL_RECORD_TYPE_OEM_NON_TIMESTAMPED: u8 = 0xe0;
 
 #[derive(Default)]
 pub(crate) struct SelState {
@@ -52,6 +54,7 @@ pub(crate) struct SelState {
     pub(crate) next_record_id: u16,
     pub(crate) reservation_id: u16,
     pub(crate) time_offset_seconds: i64,
+    pub(crate) last_addition_timestamp: u32,
     pub(crate) last_erase_timestamp: u32,
 }
 
@@ -66,16 +69,17 @@ impl SelState {
 
 #[derive(Default)]
 pub(crate) struct RateLimiter {
-    window_second: Option<i64>,
+    window_second: Option<u64>,
     forwarded_in_window: u32,
 }
 
 impl RateLimiter {
-    fn allow(&mut self, trusted_second: i64) -> bool {
-        if self.window_second.is_none()
-            || trusted_second.saturating_sub(self.window_second.unwrap_or(trusted_second)) >= 1
+    fn allow(&mut self, monotonic_second: u64) -> bool {
+        if self
+            .window_second
+            .is_none_or(|window| monotonic_second > window)
         {
-            self.window_second = Some(trusted_second);
+            self.window_second = Some(monotonic_second);
             self.forwarded_in_window = 0;
         }
 
@@ -116,12 +120,6 @@ impl IpmiKcs {
     fn get_sel_info(&mut self, out: &mut [u8; KCS_MESSAGE_MAX]) -> usize {
         let count = self.sel.records.len() as u16;
         let free_bytes = ((SEL_CAPACITY - self.sel.records.len()) * SEL_RECORD_SIZE) as u16;
-        let last_addition_timestamp = self
-            .sel
-            .records
-            .last()
-            .map(|record| u32::from_le_bytes([record[3], record[4], record[5], record[6]]))
-            .unwrap_or(0);
         write_response(
             out,
             &GetSelInfoResponse {
@@ -129,7 +127,7 @@ impl IpmiKcs {
                 sel_version: SEL_VERSION,
                 entry_count: U16::new(count),
                 free_space: U16::new(free_bytes),
-                last_addition_timestamp: U32::new(last_addition_timestamp),
+                last_addition_timestamp: U32::new(self.sel.last_addition_timestamp),
                 last_erase_timestamp: U32::new(self.sel.last_erase_timestamp),
                 operation_support: SEL_OPERATION_SUPPORT_RESERVE,
             },
@@ -208,14 +206,21 @@ impl IpmiKcs {
         let trusted_seconds = self.clock.unix_seconds();
         let timestamp = adjusted_timestamp(trusted_seconds, self.sel.time_offset_seconds);
         record[0..2].copy_from_slice(&record_id.to_le_bytes());
-        record[3..7].copy_from_slice(&timestamp.to_le_bytes());
+        // OEM non-timestamped records carry payload in the timestamp bytes.
+        if record[2] < SEL_RECORD_TYPE_OEM_NON_TIMESTAMPED {
+            record[3..7].copy_from_slice(&timestamp.to_le_bytes());
+        }
 
         self.sel.records.push(record);
+        self.sel.last_addition_timestamp = timestamp;
         self.stats.committed = self.stats.committed.saturating_add(1);
 
-        if let Some(sink) = self.sink.as_mut() {
-            if self.rate_limiter.allow(trusted_seconds) {
-                if sink.try_send(record_id, record) {
+        if let Some(forwarder) = self.forwarder.as_mut() {
+            if forwarder
+                .rate_limiter
+                .allow(forwarder.clock.monotonic_seconds())
+            {
+                if forwarder.sink.try_send(record_id, record) {
                     self.stats.forwarded = self.stats.forwarded.saturating_add(1);
                 } else {
                     self.stats.sink_dropped = self.stats.sink_dropped.saturating_add(1);
@@ -248,6 +253,7 @@ impl IpmiKcs {
             CLEAR_SEL_INITIATE_ERASE => {
                 self.sel.records.clear();
                 self.sel.next_record_id = 1;
+                self.sel.last_addition_timestamp = 0;
                 let trusted_seconds = self.clock.unix_seconds();
                 self.sel.last_erase_timestamp =
                     adjusted_timestamp(trusted_seconds, self.sel.time_offset_seconds);
