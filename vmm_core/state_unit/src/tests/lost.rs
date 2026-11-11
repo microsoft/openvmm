@@ -18,6 +18,7 @@ use crate::run_unit;
 use futures::StreamExt;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::timer::Instant;
 use std::time::Duration;
 use test_with_tracing::test;
 use vmcore::save_restore::NoSavedState;
@@ -66,7 +67,7 @@ async fn assert_terminal(units: &mut StateUnits, name: &str) {
         units.save().await.err().unwrap(),
         units.restore(Vec::new()).await.unwrap_err(),
         units
-            .advance_time(Duration::from_secs(1))
+            .advance_time(Duration::from_secs(1), Instant::now())
             .await
             .unwrap_err(),
     ] {
@@ -169,7 +170,7 @@ async fn a_lost_unit_fails_a_time_advance(driver: DefaultDriver) {
 
     assert_unanswered(
         units
-            .advance_time(Duration::from_secs(1))
+            .advance_time(Duration::from_secs(1), Instant::now())
             .await
             .unwrap_err(),
         "advance_time",
