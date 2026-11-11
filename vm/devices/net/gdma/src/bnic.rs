@@ -541,8 +541,10 @@ impl TxRxTask {
                         return Poll::Ready(Event::Rqe(wqe_offset, wqe));
                     }
                 }
-                if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
-                    return Poll::Ready(Event::Sqe(wqe));
+                if self.pending_tx.len() < MAX_PENDING_TX {
+                    if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
+                        return Poll::Ready(Event::Sqe(wqe));
+                    }
                 }
                 if self.epqueue.poll_ready(cx, &mut self.pool).is_ready() {
                     return Poll::Ready(Event::Ready);
@@ -602,12 +604,9 @@ impl TxRxTask {
                 let mut headers = [0; MAX_CHECKSUM_HEADER_LEN];
                 let read = read_frame_prefix(self.pool.guest_memory(), sqe.sgl(), &mut headers);
                 match checksum_send_headers(&headers[..read], &oob.s_oob) {
-                    // An injected tag is not in the frame, so it never moves the transport
-                    // header; it still counts toward `l2_len`, as for any other send.
-                    Ok(layout) => (
-                        l2_len as u16 + layout.l2_len - net_backend::ETHERNET_HEADER_LEN as u16,
-                        layout.transport_offset(),
-                    ),
+                    // An injected tag is not in the frame the backend gets, so the offsets
+                    // are the frame's own: the backend fixes up the IPv4 header at `l2_len`.
+                    Ok(layout) => (layout.l2_len, layout.transport_offset()),
                     Err(err) => {
                         // The NIC completes a send whose OOB does not match how it parsed
                         // the frame with CQE_TX_INVALID_OOB, which costs that packet only.
@@ -810,6 +809,11 @@ const TCP_HEADER_MAX_LEN: u16 = 60;
 const UDP_HEADER_LEN: u16 = 8;
 /// IPv4 flags and fragment offset: the MF flag or a nonzero offset marks a fragment.
 const IPV4_MORE_FRAGMENTS_AND_OFFSET: u16 = 0x3fff;
+/// The most sends whose completions may wait at once, behind the oldest send the backend
+/// still has. A driver frees an SQ slot only when it reads that send's completion, so a
+/// guest that keeps posting past it gets no further sends taken until the backend drains.
+const MAX_PENDING_TX: usize = 256;
+
 /// The most header bytes a checksum send can need: Ethernet, two in-band tags, an IPv4
 /// header with every option, and a TCP header with every option. A frame is never read
 /// past this.
@@ -1013,6 +1017,7 @@ impl AsyncRun<TxRxTask> for TxRxState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dma::DmaRegion;
     use crate::test_helpers as helper;
     use gdma_defs::CLIENT_OOB_24;
     use gdma_defs::Cqe;
@@ -1040,6 +1045,9 @@ mod tests {
         tx_hook: Arc<helper::StopHook>,
         rx_hook: Arc<helper::StopHook>,
         ready_hook: Arc<helper::StopHook>,
+        /// Fires when the task finds the backend not ready, that is, when it has no SQE or
+        /// RQE it will take.
+        idle_hook: Arc<helper::StopHook>,
         synchronous_tx: bool,
     }
 
@@ -1047,6 +1055,8 @@ mod tests {
         fn poll_ready(&mut self, _: &mut Context<'_>, _: &mut dyn BufferAccess) -> Poll<()> {
             let mut state = self.state.lock();
             if state.ready_budget == 0 {
+                drop(state);
+                self.idle_hook.fire();
                 return Poll::Pending;
             }
             state.ready_budget -= 1;
@@ -1146,6 +1156,7 @@ mod tests {
             tx_hook: Arc::new(helper::StopHook::default()),
             rx_hook: Arc::new(helper::StopHook::default()),
             ready_hook: Arc::new(helper::StopHook::default()),
+            idle_hook: Arc::new(helper::StopHook::default()),
             synchronous_tx: true,
         }
     }
@@ -1341,6 +1352,63 @@ mod tests {
         task.process_backend().unwrap();
         assert_eq!(cqe_type(&completion(&queues, 0)), CQE_TX_OKAY);
         assert_eq!(cqe_type(&completion(&queues, 1)), CQE_TX_INVALID_OOB);
+    }
+
+    /// Refused sends queued behind one the backend still has stop being taken at
+    /// `MAX_PENDING_TX`, and the task takes the rest once the backend completes it.
+    #[test]
+    fn sends_behind_one_in_flight_stop_at_the_completion_backlog_limit() {
+        let mut pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let mut epqueue = backend();
+        epqueue.synchronous_tx = false;
+        epqueue.state.lock().ready_budget = 0;
+        let state = epqueue.state.clone();
+        let idle_hook = epqueue.idle_hook.clone();
+        let mut task = task(queues.clone(), epqueue);
+
+        // Eight pages hold 512 of these 64-byte WQEs, more than the limit.
+        let sq_gpa = 0x8000;
+        let sq_pages = (0..8).map(|i| sq_gpa + i * 0x1000).collect();
+        task.sq_id = queues
+            .alloc_wq(true, DmaRegion::new(sq_pages, 0, 0x8000).unwrap())
+            .unwrap();
+        let accepted = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        let refused = [eth(&[], 0x0800), ipv4(0, 6, 0), tcp()].concat();
+        let sends = MAX_PENDING_TX + 44;
+        let mut tail = 0;
+        for i in 0..sends {
+            let (frame, gpa) = if i == 0 {
+                (&accepted, 0x5000)
+            } else {
+                (&refused, 0x5800)
+            };
+            let sqe = send_wqe(&queues, udp_csum(), FromZeros::new_zeroed(), frame, 14, gpa);
+            let len = sqe.header.total_len();
+            queues
+                .gm
+                .write_at(sq_gpa + tail as u64, &sqe.as_bytes()[..len])
+                .unwrap();
+            tail += len as u32;
+        }
+        queues.doorbell_sq(WqDoorbellValue::new().with_id(task.sq_id).with_tail(tail));
+
+        let control = Arc::new(Mutex::new(TaskControl::new(TxRxState)));
+        control.lock().insert(pool.driver(), "gdma-tx", task);
+        let signal = idle_hook.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        assert_eq!(
+            control.lock().state().unwrap().pending_tx.len(),
+            MAX_PENDING_TX
+        );
+
+        state.lock().ready_budget = 1;
+        let signal = idle_hook.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        assert!(control.lock().state().unwrap().pending_tx.is_empty());
+        assert_eq!(state.lock().tx_accepted, 1);
     }
 
     /// Linux's UDP checksum send: `trans_off` left at 0, the IP header split from the
@@ -1670,11 +1738,29 @@ mod tests {
             assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
             let meta = outcome.sent.unwrap();
             assert_eq!(meta.vlan.unwrap().vlan_id(), 5);
-            // Whether `l2_len` counts the injected tag is a separate question; the headers
-            // it and `l3_len` describe must still end where the transport header starts.
-            assert_eq!(u16::from(meta.l2_len) + meta.l3_len, 34);
+            assert_eq!(meta.l2_len, 14);
+            assert_eq!(meta.l3_len, 20);
             assert_eq!(meta.transport_header_offset, 34);
         }
+    }
+
+    /// With a tag in the frame and another in the OOB, the IP header follows the in-band
+    /// tag: the backend fixes up the IPv4 header at `l2_len`.
+    #[test]
+    fn an_injected_tag_does_not_move_the_ip_header_of_a_tagged_frame() {
+        let frame = [eth(&[0x8100], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        let s_oob = udp_csum()
+            .with_is_outer_ipv4(true)
+            .with_pkt_fmt(MANA_LONG_PKT_FMT);
+        let l_oob = bnic_defs::ManaTxLongOob::new()
+            .with_inject_vlan_pri_tag(true)
+            .with_vlan_id(5);
+        let outcome = send_frame_with(s_oob, l_oob, &frame, 18);
+        assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+        let meta = outcome.sent.unwrap();
+        assert_eq!(meta.l2_len, 18);
+        assert_eq!(meta.l3_len, 20);
+        assert_eq!(meta.transport_header_offset, 38);
     }
 
     #[test]
