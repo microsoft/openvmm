@@ -4097,6 +4097,7 @@ dependencies = [
  "range_map_vec",
  "serde",
  "serde_json",
+ "tempfile",
  "test_with_tracing",
  "toml_edit",
  "tracing",

@@ -25,7 +25,7 @@ pub fn append(
             p.require_bcd_integrity,
             &p.custom_uefi_json,
         ),
-        None if devices.is_empty() => return Ok(()),
+        None if device_policy.is_none() => return Ok(()),
         None => (false, false, false, &Vec::new()),
     };
     anyhow::ensure!(
@@ -180,6 +180,31 @@ mod tests {
         assert_eq!(
             (policy.raw(), policy.allowed_pci_devices()),
             (None, &azure[..])
+        );
+    }
+
+    /// An empty device policy still writes the policy file, so it replaces an
+    /// allowlist from an earlier layer and OpenHCL allows no devices.
+    #[test]
+    fn empty_device_policy_replaces_previous_allowlist() {
+        let policies =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests/policies");
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.toml");
+        fs_err::write(dir.path().join("devices.toml"), "").unwrap();
+        fs_err::write(
+            &empty,
+            "devices = \"devices.toml\"\nallowed_pci_devices = []\n",
+        )
+        .unwrap();
+        let mut initrd = Vec::new();
+        append(&mut initrd, None, Some(&policies.join("azure.toml"))).unwrap();
+        append(&mut initrd, None, Some(&empty)).unwrap();
+        let files = extract_files(&initrd);
+        let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
+        assert_eq!(
+            product_policy::decode_product_policy(bytes).unwrap(),
+            product_policy::MeasuredProductPolicy::default()
         );
     }
 
