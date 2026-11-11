@@ -50,6 +50,10 @@ pub struct OpenedSnapshot {
 
 impl OpenedSnapshot {
     /// Opens and structurally validates one exact snapshot generation.
+    ///
+    /// The paired scratch, if any, must be a regular file of its recorded
+    /// length, as [`Self::open_paired_scratch_file`] requires, so that a
+    /// restore never claims a resume snapshot whose scratch it cannot open.
     pub fn open(dir: &Path) -> anyhow::Result<Self> {
         let directory = OpenedSnapshotDirectory::open(dir)?;
         let manifest_file = directory.open_regular_file(MANIFEST_FILE_NAME, "snapshot manifest")?;
@@ -57,6 +61,10 @@ impl OpenedSnapshot {
         let memory_file = directory.open_regular_file(MEMORY_FILE_NAME, "snapshot memory")?;
         let manifest = decode_snapshot_manifest(&manifest_file)?;
         validate_snapshot_directory(&directory, &manifest)?;
+        // The handle is not kept: restore opens the paired scratch again to
+        // materialize it, and on Windows a held handle, which shares only
+        // reads, would refuse the writer of a direct-claimed scratch.
+        open_paired_scratch_file_in_directory(&directory, &manifest)?;
         anyhow::ensure!(
             manifest.state_size_bytes <= MAX_SAVED_STATE_SIZE_BYTES,
             "state.bin length in the manifest exceeds the maximum size of \
@@ -209,7 +217,7 @@ fn decode_snapshot_manifest(manifest_file: &std::fs::File) -> anyhow::Result<Sna
 /// Read a snapshot from the given directory.
 ///
 /// Returns the decoded manifest and raw saved-state bytes after structurally
-/// validating all three artifacts. `expected_memory_size` bounds memory.
+/// validating its artifacts. `expected_memory_size` bounds memory.
 pub fn read_snapshot(
     dir: &Path,
     expected_memory_size: u64,
@@ -408,7 +416,6 @@ mod tests {
     use super::super::microvm::paired_scratch_manifest;
     use super::super::microvm::test_machine_contract;
     use super::super::publish::write_snapshot;
-    #[cfg(target_os = "linux")]
     use super::super::publish::write_snapshot_from_memory_and_scratch_files;
     #[cfg(target_os = "linux")]
     use super::super::publish::write_snapshot_from_owned_memory_and_scratch_files;
@@ -1034,7 +1041,8 @@ mod tests {
             std::fs::rename(&set_aside, &artifact).unwrap();
         }
 
-        // Restore opens the paired scratch once it has opened the snapshot.
+        // Restore opens the paired scratch again to materialize it, once it
+        // has opened the snapshot.
         let snapshot = OpenedSnapshot::open(&snap_dir).unwrap();
         let scratch_path = snap_dir.join(SCRATCH_FILE_NAME);
         std::fs::remove_file(&scratch_path).unwrap();
@@ -1046,6 +1054,129 @@ mod tests {
             format!("{error:#}").contains("scratch.img is not a regular file"),
             "{error:#}"
         );
+    }
+
+    /// The open of a resume snapshot refuses a paired `scratch.img` that is
+    /// not a regular file of its recorded length, so a restore that claims
+    /// the snapshot once it has opened it never consumes a snapshot whose
+    /// scratch it cannot open. Once `scratch.img` is the published file again,
+    /// the snapshot opens, and the claim takes it.
+    #[test]
+    fn paired_scratch_of_another_type_or_length_is_refused_before_a_claim() {
+        let scratch = vec![0x5a_u8; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        manifest.snapshot_tier = SNAPSHOT_TIER_INSTANCE_CHECKPOINT.to_owned();
+        manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_RESUME.to_owned();
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .set_effective_command_line(
+                "console=hvc0 nvx_snapshot_tier=instance-checkpoint".to_owned(),
+            );
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let memory_source = dir.path().join("memory-source.bin");
+        let scratch_source = dir.path().join("scratch-source.bin");
+        std::fs::write(&memory_source, vec![0_u8; 1024]).unwrap();
+        std::fs::write(&scratch_source, &scratch).unwrap();
+        write_snapshot_from_memory_and_scratch_files(
+            &snap_dir,
+            &manifest,
+            b"state",
+            &std::fs::File::open(&memory_source).unwrap(),
+            Some(&std::fs::File::open(&scratch_source).unwrap()),
+        )
+        .unwrap();
+        let scratch_path = snap_dir.join(SCRATCH_FILE_NAME);
+        let published = dir.path().join(SCRATCH_FILE_NAME);
+        let claim_path = snap_dir.join(RESUME_CLAIM_FILE_NAME);
+        std::fs::rename(&scratch_path, &published).unwrap();
+        let refused = |case: &str, expected: &str| {
+            let Err(error) =
+                OpenedSnapshot::open(&snap_dir).and_then(|snapshot| snapshot.claim_for_restore())
+            else {
+                panic!("{case}: the snapshot opened, and the claim consumed it");
+            };
+            assert!(format!("{error:#}").contains(expected), "{case}: {error:#}");
+            assert!(!claim_path.exists(), "{case}");
+        };
+
+        // A directory, which the open on Windows refuses to open as a file,
+        // and elsewhere opens and refuses for its type.
+        std::fs::create_dir(&scratch_path).unwrap();
+        refused(
+            "directory",
+            if cfg!(windows) {
+                "failed to open scratch.img"
+            } else {
+                "scratch.img is not a regular file"
+            },
+        );
+        std::fs::remove_dir(&scratch_path).unwrap();
+
+        // A symbolic link to the published scratch, which the open does not
+        // follow: on Unix, it fails to open it, and on Windows, it opens the
+        // link itself and refuses its type.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&published, &scratch_path).unwrap();
+        #[cfg(windows)]
+        if let Err(error) = std::os::windows::fs::symlink_file(&published, &scratch_path) {
+            // Creating a symbolic link takes a privilege that the test may lack.
+            assert!(
+                error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(1314),
+                "failed to create test symlink: {error}"
+            );
+        }
+        if scratch_path.symlink_metadata().is_ok() {
+            refused(
+                "symbolic link",
+                if cfg!(windows) {
+                    "scratch.img is not a regular file"
+                } else {
+                    "failed to open scratch.img"
+                },
+            );
+            std::fs::remove_file(&scratch_path).unwrap();
+        }
+
+        // A FIFO without a writer, which the open refuses without waiting.
+        #[cfg(target_os = "linux")]
+        {
+            use super::super::fs::tests::refusal_of_writerless_fifo;
+
+            nix::unistd::mkfifo(
+                &scratch_path,
+                nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+            )
+            .unwrap();
+            let snapshot = snap_dir.clone();
+            let error = refusal_of_writerless_fifo(&scratch_path, move || {
+                OpenedSnapshot::open(&snapshot)?.claim_for_restore()
+            });
+            assert!(
+                format!("{error:#}").contains("scratch.img is not a regular file"),
+                "{error:#}"
+            );
+            assert!(!claim_path.exists());
+            std::fs::remove_file(&scratch_path).unwrap();
+        }
+
+        // A regular file of another length.
+        std::fs::write(&scratch_path, vec![0x5a_u8; 1024]).unwrap();
+        refused(
+            "longer file",
+            "scratch.img size (1024 bytes) doesn't match manifest (512 bytes)",
+        );
+        std::fs::remove_file(&scratch_path).unwrap();
+
+        // The published scratch again.
+        std::fs::rename(&published, &scratch_path).unwrap();
+        let snapshot = OpenedSnapshot::open(&snap_dir).unwrap();
+        snapshot.claim_for_restore().unwrap();
+        assert!(claim_path.exists());
+        snapshot.open_paired_scratch_file().unwrap().unwrap();
     }
 
     #[cfg(unix)]
