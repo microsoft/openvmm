@@ -145,8 +145,9 @@ flight, rather than queuing it.
 
 - A rejected request has no side effects, and the server never retries it.
 - `PauseVM`, `ResumeVM`, `SaveVM`, and `TeardownVM` complete before the server
-  reads its next request, so requests that arrive meanwhile wait instead of
-  being rejected.
+  reads its next request, so they never conflict with each other. A request
+  sent meanwhile is read only afterwards, and is then admitted or rejected as
+  above.
 - Cancelling a change stops the server waiting for it. A change the VM has
   already received still completes, or is discarded when the VM stops; if the
   VM is blocked on it (for example, on an unresponsive device backend),
@@ -154,14 +155,15 @@ flight, rather than queuing it.
 - A client that cancels or disconnects does not end the operation early. If a
   `SaveVM` client cancels, the save may still be writing the snapshot, so
   device and resource changes and `PauseVM` are rejected with `ABORTED` until
-  `TeardownVM`.
+  `TeardownVM` or until the VM worker stops.
 - `CreateVM`, `RestoreVM`, `WaitVM`, `CapabilitiesVM`, and `PropertiesVM` are
   not gated. `CreateVM` and `RestoreVM` require that no VM exists, so no change
   can be in flight.
 - Consomme NIC changes (`ModifyResource` `UPDATE` or `REMOVE` of a Consomme
   NIC, including ports, DNS records, and virtual addresses) require a running
-  VM and otherwise fail with `FAILED_PRECONDITION`, because the NIC processes
-  them only while the VM runs.
+  VM. A well-formed change otherwise fails with `FAILED_PRECONDITION`, because
+  the NIC processes these changes only while the VM runs; a malformed one is
+  rejected for its arguments first.
 
 ## Hvsocket relay listeners
 

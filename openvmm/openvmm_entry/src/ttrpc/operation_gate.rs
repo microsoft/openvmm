@@ -92,6 +92,7 @@ impl VmOperationGate {
                 None
             }
             (State::Shared(n), true) => {
+                // Bounded by the in-flight RPC tasks, far below `u32::MAX`.
                 *state = State::Shared(n + 1);
                 None
             }

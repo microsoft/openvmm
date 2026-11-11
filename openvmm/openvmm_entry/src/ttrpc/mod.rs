@@ -905,7 +905,8 @@ struct VmService {
     /// The gate guard of a SaveVM whose controller request hasn't completed.
     /// Held by the service rather than the request, so a client that cancels
     /// SaveVM doesn't release the gate while the controller is still writing
-    /// the snapshot. Released when the save completes, or at teardown.
+    /// the snapshot. Released when the save completes, at teardown, or when
+    /// the worker stops.
     save_guard: Option<VmOperationGuard>,
     /// In-flight gated operations that run as background tasks (device and
     /// resource changes).
@@ -2070,9 +2071,12 @@ impl VmService {
                     response.send(Err(status));
                 }
                 // Clear VM state since the worker is gone. The controller
-                // task will be awaited during final cleanup.
+                // task will be awaited during final cleanup. A save whose
+                // client cancelled can no longer be writing, so release its
+                // gate too; otherwise a later VM would stay gated.
                 self.vm.take();
                 self.vm_controller.take();
+                self.save_guard = None;
                 self.lifecycle = VmLifecycle::Uninitialized;
             }
             VmControllerEvent::VncWorkerStopped { error } => {
@@ -3707,7 +3711,7 @@ mod tests {
             );
 
             // Cancelled save: the gate stays held until teardown.
-            let mut svc = service(driver, None);
+            let mut svc = service(driver.clone(), None);
             let mut controller = with_controller(&mut svc);
             let rpc = match futures::future::select(
                 std::pin::pin!(svc.save_vm(request("cancelled"))),
@@ -3748,6 +3752,25 @@ mod tests {
                 svc.operation_gate
                     .try_acquire(VmOperation::Topology)
                     .expect("teardown releases the gate"),
+            );
+
+            // Cancelled save, then the worker stops: the gate is released, so
+            // a later VM isn't blocked.
+            let mut svc = service(driver, None);
+            let mut controller = with_controller(&mut svc);
+            drop(
+                futures::future::select(
+                    std::pin::pin!(svc.save_vm(request("worker-stopped"))),
+                    controller.next(),
+                )
+                .await,
+            );
+            assert!(svc.save_guard.is_some());
+            svc.handle_controller_event(VmControllerEvent::WorkerStopped { error: None });
+            drop(
+                svc.operation_gate
+                    .try_acquire(VmOperation::Topology)
+                    .expect("a stopped worker releases the gate"),
             );
         });
     }
