@@ -703,14 +703,16 @@ impl TxRxTask {
     }
 
     /// Completes the oldest send the backend had, then the finished sends behind it.
-    fn complete_backend_tx(&mut self) {
-        let oldest = self.pending_tx.pop_front();
-        debug_assert!(matches!(oldest, Some(PendingTx::InBackend)));
+    fn complete_backend_tx(&mut self) -> anyhow::Result<()> {
+        if !matches!(self.pending_tx.pop_front(), Some(PendingTx::InBackend)) {
+            anyhow::bail!("tx completion with no send outstanding in the backend");
+        }
         self.post_tx_completion(CQE_TX_OKAY);
         while let Some(&PendingTx::Done(cqe_type)) = self.pending_tx.front() {
             self.pending_tx.pop_front();
             self.post_tx_completion(cqe_type);
         }
+        Ok(())
     }
 
     // Possible test improvement: provide proper OOB data for a GDMA error.
@@ -769,7 +771,7 @@ impl TxRxTask {
         let mut packets = [TxId(0)];
         if self.epqueue.tx_poll(&mut self.pool, &mut packets)? > 0 {
             tracing::trace!("tx async complete");
-            self.complete_backend_tx();
+            self.complete_backend_tx()?;
         }
 
         Ok(())
@@ -1409,6 +1411,19 @@ mod tests {
         helper::stopped(&mut pool, &control, signal);
         assert!(control.lock().state().unwrap().pending_tx.is_empty());
         assert_eq!(state.lock().tx_accepted, 1);
+    }
+
+    /// A backend that reports a send it was never given must not complete one of the guest's:
+    /// the driver would free its oldest outstanding send for it.
+    #[test]
+    fn a_backend_completion_with_no_send_outstanding_is_refused() {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let epqueue = backend();
+        epqueue.state.lock().tx_done = true;
+        let mut task = task(queues.clone(), epqueue);
+        assert!(task.process_backend().is_err());
+        assert_eq!(completion(&queues, 0).params.owner_count(), 0);
     }
 
     /// Linux's UDP checksum send: `trans_off` left at 0, the IP header split from the
