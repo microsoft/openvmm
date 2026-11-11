@@ -57,6 +57,7 @@ pub fn github_yaml(
         gh_schedule_triggers,
         gh_ci_triggers,
         gh_pr_triggers,
+        gh_merge_group_triggers,
         gh_bootstrap_template,
         parameters,
         ado_name: _,
@@ -739,6 +740,9 @@ EOF
             }
             None => None,
         },
+        merge_group: gh_merge_group_triggers.map(|triggers| github_yaml_defs::MergeGroupTrigger {
+            types: triggers.types,
+        }),
         push: match gh_ci_triggers {
             Some(gh_ci_triggers) => {
                 if let Some(group) = gh_ci_triggers.concurrency_group {

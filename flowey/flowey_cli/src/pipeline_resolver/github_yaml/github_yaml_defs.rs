@@ -77,6 +77,13 @@ pub struct PrTrigger {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub struct MergeGroupTrigger {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct CiTrigger {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub branches: Vec<String>,
@@ -115,6 +122,8 @@ pub struct Triggers {
     pub workflow_dispatch: Option<WorkflowDispatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pull_request: Option<PrTrigger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_group: Option<MergeGroupTrigger>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub push: Option<CiTrigger>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
