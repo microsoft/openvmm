@@ -305,6 +305,10 @@ pub enum Error {
     SetTscOffset(#[source] nix::Error),
     #[error("Run")]
     Run(#[source] nix::Error),
+    #[error("failed to hold the cancellation signal pending")]
+    HoldSignal(#[source] io::Error),
+    #[error("SetSignalMask")]
+    SetSignalMask(#[source] nix::Error),
     #[error("RunMemoryFault(flags={flags:#x}, gpa={gpa:#x}, size={size:#x})")]
     RunMemoryFault {
         flags: u64,
@@ -2201,24 +2205,57 @@ impl<'a> VpRunner<'a> {
             // SAFETY: Calling IOCTL as documented, with no special requirements.
             let result = unsafe { ioctl::kvm_run(vp.vcpu.as_raw_fd(), 0) };
             CURRENT_KVM_RUN.with(|r| r.store(NO_KVM_RUN, Ordering::Relaxed));
-            match result {
-                Ok(_) => Ok(true),
-                Err(err) => match err {
-                    nix::errno::Errno::EINTR | nix::errno::Errno::EAGAIN => Ok(false),
-                    _ if self.run_data().exit_reason == KVM_EXIT_MEMORY_FAULT => {
-                        // SAFETY: KVM reported KVM_EXIT_MEMORY_FAULT, so this is the active union field.
-                        let memory_fault = unsafe { self.run_data().__bindgen_anon_1.memory_fault };
-                        Err(Error::RunMemoryFault {
-                            flags: memory_fault.flags,
-                            gpa: memory_fault.gpa,
-                            size: memory_fault.size,
-                            source: err,
-                        })
-                    }
-                    _ => Err(Error::Run(err)),
-                },
-            }
+            self.run_result(result)
         })
+    }
+
+    /// Returns whether the result of a `KVM_RUN` is an exit, or whether a
+    /// signal interrupted it.
+    fn run_result(&mut self, result: nix::Result<libc::c_int>) -> Result<bool> {
+        match result {
+            Ok(_) => Ok(true),
+            Err(err) => match err {
+                nix::errno::Errno::EINTR | nix::errno::Errno::EAGAIN => Ok(false),
+                _ if self.run_data().exit_reason == KVM_EXIT_MEMORY_FAULT => {
+                    // SAFETY: KVM reported KVM_EXIT_MEMORY_FAULT, so this is the active union field.
+                    let memory_fault = unsafe { self.run_data().__bindgen_anon_1.memory_fault };
+                    Err(Error::RunMemoryFault {
+                        flags: memory_fault.flags,
+                        gpa: memory_fault.gpa,
+                        size: memory_fault.size,
+                        source: err,
+                    })
+                }
+                _ => Err(Error::Run(err)),
+            },
+        }
+    }
+
+    /// Issues `KVM_RUN` with this thread's cancellation signal pending, which
+    /// makes KVM return before it enters the guest. Returns whether KVM
+    /// reported an exit, as [`Self::run_vp_once`] does.
+    fn run_vp_without_entering_guest(&mut self) -> Result<bool> {
+        let vcpu = self.get().vcpu.as_raw_fd();
+        let signal = libc::SIGRTMIN();
+        // Block the signal and queue one for this thread, so that it stays
+        // pending until KVM_RUN unblocks it.
+        let held = HeldSignal::new(signal).map_err(Error::HoldSignal)?;
+        let mask = KvmSignalMask::new(&held.previous, signal);
+        // SAFETY: calling IOCTL as documented, with a valid signal mask.
+        unsafe { ioctl::kvm_set_signal_mask(vcpu, mask.as_ptr()) }.map_err(Error::SetSignalMask)?;
+        let rdata = self.run_data();
+        rdata.immediate_exit = 0;
+        // KVM would otherwise report an open interrupt window as an exit.
+        let request_interrupt_window = std::mem::take(&mut rdata.request_interrupt_window);
+        // SAFETY: Calling IOCTL as documented, with no special requirements.
+        let result = unsafe { ioctl::kvm_run(vcpu, 0) };
+        self.run_data().request_interrupt_window = request_interrupt_window;
+        // SAFETY: calling IOCTL as documented; a null mask makes KVM_RUN keep
+        // the thread's own mask again.
+        unsafe { ioctl::kvm_set_signal_mask(vcpu, std::ptr::null()) }
+            .map_err(Error::SetSignalMask)?;
+        drop(held);
+        self.run_result(result)
     }
 
     /// Completes the current exit without running the VP further.
@@ -2229,6 +2266,31 @@ impl<'a> VpRunner<'a> {
         self.run()
     }
 
+    /// Completes the current exit, if any, and has KVM deliver to the VP's
+    /// local APIC the interrupts that it has recorded but not injected, all
+    /// without running the VP.
+    ///
+    /// KVM records a LAPIC timer that expires while the VP is outside
+    /// `KVM_RUN` as pending, and sets its vector in the IRR only in the run
+    /// loop of the next `KVM_RUN`, so until then `KVM_GET_LAPIC` reports the
+    /// timer as expired but not its interrupt. Unlike
+    /// [`Self::complete_exit`], this runs that loop once, but with a signal
+    /// pending, which makes KVM return before entering the guest. KVM first
+    /// handles the VP's pending requests, some of which, such as an EOI for a
+    /// userspace I/O APIC, are exits: this returns such an exit for the caller
+    /// to handle, after which the caller calls this again. Otherwise KVM
+    /// delivers the interrupts, and this returns [`Exit::Interrupted`].
+    ///
+    /// KVM does not record an expiry of the VMX preemption timer, which it can
+    /// use for the LAPIC timer of a running VP, while the VP is outside guest
+    /// mode, so this does not deliver one.
+    pub fn deliver_pending_interrupts(&mut self) -> Result<Exit<'_>, Error> {
+        if !self.run_vp_without_entering_guest()? {
+            return Ok(Exit::Interrupted);
+        }
+        self.exit()
+    }
+
     /// Continues running the VP.
     ///
     /// Runs until an exit occurs or interrupted by a signal or a call to
@@ -2237,7 +2299,11 @@ impl<'a> VpRunner<'a> {
         if !self.run_vp_once()? {
             return Ok(Exit::Interrupted);
         }
+        self.exit()
+    }
 
+    /// Returns the exit that the last `KVM_RUN` reported.
+    fn exit(&mut self) -> Result<Exit<'_>, Error> {
         let exit = match self.run_data().exit_reason {
             #[cfg(target_arch = "x86_64")]
             KVM_EXIT_DEBUG => {
@@ -2585,6 +2651,90 @@ unsafe fn set_immediate_exit(rdata: *mut kvm_run) {
     unsafe {
         (*(std::ptr::addr_of!((*rdata).immediate_exit).cast::<AtomicU8>()))
             .store(1, Ordering::Relaxed);
+    }
+}
+
+/// A signal that the current thread blocks, with one instance queued for the
+/// thread, which stays pending until a `KVM_RUN` whose signal mask unblocks
+/// it. Dropping this takes that instance and restores the thread's mask.
+struct HeldSignal {
+    signal: libc::c_int,
+    /// The thread's signal mask before the signal was blocked.
+    previous: libc::sigset_t,
+}
+
+impl HeldSignal {
+    fn new(signal: libc::c_int) -> io::Result<Self> {
+        let set = signal_set(signal);
+        // SAFETY: an all-zero sigset_t is a valid value for the call to fill.
+        let mut previous = unsafe { std::mem::zeroed() };
+        // SAFETY: calling as documented, with valid signal sets.
+        let r = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut previous) };
+        if r != 0 {
+            return Err(io::Error::from_raw_os_error(r));
+        }
+        let held = Self { signal, previous };
+        Pthread::current().signal(signal)?;
+        Ok(held)
+    }
+}
+
+impl Drop for HeldSignal {
+    fn drop(&mut self) {
+        let set = signal_set(self.signal);
+        let timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // Take one instance of the signal, the one that `new` queued: as a
+        // real-time signal, a cancellation signal sent meanwhile is queued as
+        // another one, which the handler receives once the mask is restored.
+        //
+        // SAFETY: calling as documented, with a valid signal set and timeout.
+        unsafe { libc::sigtimedwait(&set, std::ptr::null_mut(), &timeout) };
+        // SAFETY: calling as documented, with a valid signal set.
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.previous, std::ptr::null_mut()) };
+    }
+}
+
+/// Returns the signal set that holds only `signal`.
+fn signal_set(signal: libc::c_int) -> libc::sigset_t {
+    // SAFETY: an all-zero sigset_t is a valid value for the calls to fill.
+    let mut set = unsafe { std::mem::zeroed() };
+    // SAFETY: calling as documented, with a valid signal set.
+    unsafe {
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, signal);
+    }
+    set
+}
+
+/// A `struct kvm_signal_mask` with the kernel's signal set, which holds 64
+/// signals on the architectures that this crate supports.
+#[repr(C)]
+struct KvmSignalMask {
+    len: u32,
+    sigset: [u8; 8],
+}
+
+impl KvmSignalMask {
+    /// Returns the signals of `set`, except `signal`.
+    fn new(set: &libc::sigset_t, signal: libc::c_int) -> Self {
+        let mut mask = 0u64;
+        for n in 1..=64 {
+            // SAFETY: calling as documented, with a valid signal set.
+            if n != signal && unsafe { libc::sigismember(set, n) } == 1 {
+                mask |= 1 << (n - 1);
+            }
+        }
+        Self {
+            len: 8,
+            sigset: mask.to_ne_bytes(),
+        }
+    }
+
+    fn as_ptr(&self) -> *const kvm_signal_mask {
+        std::ptr::from_ref(self).cast()
     }
 }
 
