@@ -17,6 +17,7 @@ mod serial_io;
 mod storage_builder;
 mod tracing_init;
 mod ttrpc;
+mod usb;
 mod vm_controller;
 
 // `pub` so that the missing_docs warning fires for options without
@@ -208,125 +209,53 @@ struct ConsoleState<'a> {
     input: Box<dyn AsyncWrite + Unpin + Send>,
 }
 
-/// Normalize CLI selections, reserving explicit connectors before assigning defaults.
-/// The linked resolver still validates the controller's actual connector capacity.
+/// Builds controller configurations from the USB command-line options. The
+/// controller resolver assigns omitted connectors and validates connectors.
 fn usb_controller_configs(
     pcie_ports: &[cli_args::UsbXhciCli],
     devices: &[cli_args::UsbDeviceCli],
 ) -> anyhow::Result<Vec<(String, usb_config_resources::UsbControllerConfig)>> {
-    use usb_config_resources::UsbDeviceConfig;
-
-    let mut controllers = Vec::new();
-    let mut pcie_port_names = HashSet::new();
-    for pcie_port in pcie_ports {
-        anyhow::ensure!(
-            !pcie_port.port_name.is_empty(),
-            "--usb-xhci requires a PCIe port name"
-        );
-        anyhow::ensure!(
-            pcie_port_names.insert(pcie_port.port_name.as_str()),
-            "duplicate USB controller on PCIe port {:?}",
-            pcie_port.port_name
-        );
-        controllers.push((
-            pcie_port.port_name.clone(),
-            usb_config_resources::UsbControllerConfig::default(),
-        ));
-    }
-    let default_pcie_port = if pcie_ports.len() == 1 {
-        Some(pcie_ports[0].port_name.as_str())
+    let mut controllers: Vec<_> = pcie_ports
+        .iter()
+        .map(|pcie_port| usb::UsbControllerSpec {
+            port_name: pcie_port.port_name.clone(),
+            devices: Vec::new(),
+            winusb_all: false,
+        })
+        .collect();
+    let default_pcie_port = if let [pcie_port] = pcie_ports {
+        Some(pcie_port.port_name.as_str())
     } else {
         None
     };
-    // Reserve all explicit connector numbers before assigning defaults, so an
-    // earlier default cannot take a connector explicitly requested later.
-    let mut selected_devices = Vec::new();
-    let mut occupied_connectors = HashSet::new();
     for device in devices {
         let pcie_port_name = device
             .controller_pcie_port()
             .or(default_pcie_port)
             .context("on=PCIE_PORT is required unless exactly one xHCI controller is declared")?;
-        anyhow::ensure!(
-            pcie_port_names.contains(pcie_port_name),
-            "USB device references undeclared controller on PCIe port {pcie_port_name:?}"
-        );
-        if let cli_args::UsbDeviceCli::Device { location, .. } = device {
-            if let Some(connector) = location.connector {
-                let connector = connector.number();
-                anyhow::ensure!(
-                    occupied_connectors.insert((pcie_port_name, connector)),
-                    "USB connector {connector} is selected more than once on PCIe port {pcie_port_name:?}"
-                );
-            }
-        }
-        selected_devices.push((pcie_port_name, device));
-    }
-    let mut instance_ids = HashSet::new();
-    let mut automatic_pcie_port = None;
-    for (pcie_port_name, device) in selected_devices {
-        // The first pass validated every controller name; this lookup cannot fail.
-        let (_, controller) = controllers
+        let controller = controllers
             .iter_mut()
-            .find(|(name, _)| name == pcie_port_name)
-            .unwrap();
+            .find(|controller| controller.port_name == pcie_port_name)
+            .with_context(|| {
+                format!(
+                    "USB device references undeclared controller on PCIe port {pcie_port_name:?}"
+                )
+            })?;
         match device {
-            cli_args::UsbDeviceCli::Device { location, backend } => {
-                let connector = match location.connector {
-                    Some(connector) => connector.number(),
-                    None => {
-                        // This bounds the config representation, not controller capacity.
-                        let connector = (1..=u8::MAX)
-                            .find(|connector| {
-                                !occupied_connectors.contains(&(pcie_port_name, *connector))
-                            })
-                            .with_context(|| {
-                                format!(
-                                    "no free USB connector numbers on PCIe port {pcie_port_name:?}"
-                                )
-                            })?;
-                        occupied_connectors.insert((pcie_port_name, connector));
-                        connector
-                    }
-                };
-                if let cli_args::UsbBackendCli::WinUsb(handle) = backend {
-                    // Windows instance IDs are case-insensitive and unique across the VM.
-                    anyhow::ensure!(
-                        instance_ids.insert(handle.instance_id.to_ascii_uppercase()),
-                        "WinUSB instance selected more than once: {}",
-                        handle.instance_id
-                    );
-                }
-                controller.devices.push(UsbDeviceConfig::Device {
-                    connector,
-                    device: backend.clone().into_resource(),
-                });
-            }
+            cli_args::UsbDeviceCli::Device { location, backend } => controller.devices.push((
+                location.connector.map(cli_args::UsbConnectorCli::number),
+                backend.clone(),
+            )),
             cli_args::UsbDeviceCli::WinUsbAll { .. } => {
                 anyhow::ensure!(
-                    automatic_pcie_port.replace(pcie_port_name).is_none(),
+                    !controller.winusb_all,
                     "winusb-all may be selected only once per VM"
                 );
+                controller.winusb_all = true;
             }
         }
     }
-    if let Some(pcie_port_name) = automatic_pcie_port {
-        // Build discovery only after collecting explicit IDs from every controller,
-        // including selections that appeared after winusb-all on the command line.
-        let mut excluded_instance_ids: Vec<_> = instance_ids.into_iter().collect();
-        excluded_instance_ids.sort();
-        let (_, controller) = controllers
-            .iter_mut()
-            .find(|(name, _)| name == pcie_port_name)
-            .unwrap();
-        controller.devices.push(UsbDeviceConfig::Discover(
-            usb_config_resources::WinUsbAllConfig {
-                excluded_instance_ids,
-            }
-            .into_resource(),
-        ));
-    }
-    Ok(controllers)
+    usb::controller_configs(controllers)
 }
 
 /// Build a flat list of switches with their parent port assignments.
@@ -3428,9 +3357,9 @@ mod tests {
         );
     }
 
-    /// A sole controller supplies omitted on values and consecutive connector defaults.
+    /// A sole controller supplies omitted on values; omitted connectors are left to the resolver.
     #[test]
-    fn usb_cli_infers_single_controller_and_connector_defaults() {
+    fn usb_cli_infers_single_controller() {
         let opt = Options::try_parse_from([
             "openvmm",
             "--usb-xhci",
@@ -3454,48 +3383,16 @@ mod tests {
         let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
         assert_eq!(controllers[0].0, "usb0");
         assert_eq!(controllers[0].1.devices.len(), 7);
-        for (index, config) in controllers[0].1.devices.iter().take(6).enumerate() {
+        for config in controllers[0].1.devices.iter().take(6) {
             let usb_config_resources::UsbDeviceConfig::Device { connector, .. } = config else {
                 panic!("expected a device attachment");
             };
-            assert_eq!(usize::from(*connector), index + 1);
+            assert_eq!(*connector, None);
         }
         assert!(matches!(
             controllers[0].1.devices[6],
             usb_config_resources::UsbDeviceConfig::Discover(_)
         ));
-    }
-
-    /// Explicit connectors take precedence even when they follow devices using defaults.
-    #[test]
-    fn usb_cli_reserves_explicit_connectors_before_assigning_defaults() {
-        let opt = Options::try_parse_from([
-            "openvmm",
-            "--usb-xhci",
-            "usb0",
-            "--usb-device",
-            "mock-hid",
-            "--usb-device",
-            "mock-storage,connector=1",
-            "--usb-device",
-            "mock-loopback",
-            "--usb-device",
-            "mock-mutt,connector=3",
-        ])
-        .unwrap();
-        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
-        let connectors: Vec<_> = controllers[0]
-            .1
-            .devices
-            .iter()
-            .map(|config| {
-                let usb_config_resources::UsbDeviceConfig::Device { connector, .. } = config else {
-                    panic!("expected a device attachment");
-                };
-                *connector
-            })
-            .collect();
-        assert_eq!(connectors, [2, 1, 4, 3]);
     }
 
     /// An omitted on value is ambiguous when more than one controller is declared.
@@ -3522,53 +3419,6 @@ mod tests {
         }
     }
 
-    /// Each controller has an independent set of occupied connector numbers.
-    #[test]
-    fn usb_cli_allocates_connector_defaults_per_controller() {
-        let opt = Options::try_parse_from([
-            "openvmm",
-            "--usb-xhci",
-            "usb0",
-            "--usb-xhci",
-            "usb1",
-            "--usb-device",
-            "mock-hid,on=usb1",
-            "--usb-device",
-            "mock-hid,on=usb0",
-            "--usb-device",
-            "mock-storage,on=usb1",
-            "--usb-device",
-            "mock-storage,on=usb0,connector=1",
-        ])
-        .unwrap();
-        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
-        for ((_, config), expected) in controllers.iter().zip([[2, 1], [1, 2]]) {
-            let connectors: Vec<_> = config
-                .devices
-                .iter()
-                .map(|config| {
-                    let usb_config_resources::UsbDeviceConfig::Device { connector, .. } = config
-                    else {
-                        panic!("expected a device attachment");
-                    };
-                    *connector
-                })
-                .collect();
-            assert_eq!(connectors, expected);
-        }
-    }
-
-    /// Exhausting the public connector-number representation must produce an error.
-    #[test]
-    fn usb_cli_reports_exhausted_connector_numbers() {
-        let mut opt = Options::try_parse_from(["openvmm", "--usb-xhci", "usb0"]).unwrap();
-        opt.usb_device = vec!["mock-hid".parse().unwrap(); usize::from(u8::MAX)];
-        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_ok());
-        opt.usb_device.push("mock-hid".parse().unwrap());
-        let error = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap_err();
-        assert!(error.to_string().contains("no free USB connector numbers"));
-    }
-
     /// Normalization preserves one-based connector numbers and explicit mock overrides.
     #[test]
     fn usb_cli_preserves_one_based_connectors_and_mock_overrides() {
@@ -3590,16 +3440,16 @@ mod tests {
         else {
             panic!("expected fixed HID attachment");
         };
-        assert_eq!(*connector, 1);
+        assert_eq!(*connector, Some(1));
         assert_eq!(device.id(), "mock_hid_config");
         let usb_config_resources::UsbDeviceConfig::Device { connector, .. } =
             &controllers[1].1.devices[0]
         else {
             panic!("expected fixed storage attachment");
         };
-        assert_eq!(*connector, 15);
+        assert_eq!(*connector, Some(15));
         let cli_args::UsbDeviceCli::Device {
-            backend: cli_args::UsbBackendCli::Hid(handle),
+            backend: usb::UsbBackend::Hid(handle),
             ..
         } = &opt.usb_device[0]
         else {
@@ -3611,7 +3461,7 @@ mod tests {
         );
         assert_eq!(handle.identity.serial_number.as_deref(), Some("HID001"));
         let cli_args::UsbDeviceCli::Device {
-            backend: cli_args::UsbBackendCli::Storage(handle),
+            backend: usb::UsbBackend::Storage(handle),
             ..
         } = &opt.usb_device[1]
         else {
@@ -3637,7 +3487,7 @@ mod tests {
         .unwrap();
         let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
         let cli_args::UsbDeviceCli::Device {
-            backend: cli_args::UsbBackendCli::WinUsb(handle),
+            backend: usb::UsbBackend::WinUsb(handle),
             ..
         } = &opt.usb_device[0]
         else {
@@ -3649,7 +3499,7 @@ mod tests {
         else {
             panic!("expected fixed WinUSB attachment");
         };
-        assert_eq!(*connector, 3);
+        assert_eq!(*connector, Some(3));
         assert_eq!(device.id(), "winusb_config");
         let usb_config_resources::UsbDeviceConfig::Discover(discovery) =
             &controllers[0].1.devices[1]
@@ -3707,7 +3557,8 @@ mod tests {
         assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
     }
 
-    /// Backend defaults and capacity limits must not be baked into the shared CLI.
+    /// Backend defaults, capacity limits, and connector conflicts must not be
+    /// baked into the shared CLI.
     #[test]
     fn usb_cli_leaves_defaults_and_implementation_limits_to_resolvers() {
         let opt = Options::try_parse_from([
@@ -3718,11 +3569,13 @@ mod tests {
             "mock-storage,on=usb0,connector=16,blocks=524289",
             "--usb-device",
             "mock-storage,on=usb0,connector=1",
+            "--usb-device",
+            "mock-hid,on=usb0,connector=1",
         ])
         .unwrap();
         assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_ok());
         let cli_args::UsbDeviceCli::Device {
-            backend: cli_args::UsbBackendCli::Storage(config),
+            backend: usb::UsbBackend::Storage(config),
             ..
         } = &opt.usb_device[1]
         else {
@@ -3820,22 +3673,6 @@ mod tests {
             .unwrap();
             assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
         }
-    }
-
-    /// Two devices cannot explicitly claim the same connector on one controller.
-    #[test]
-    fn usb_cli_rejects_duplicate_connectors() {
-        let opt = Options::try_parse_from([
-            "openvmm",
-            "--usb-xhci",
-            "usb0",
-            "--usb-device",
-            "mock-hid,on=usb0,connector=1",
-            "--usb-device",
-            "mock-storage,on=usb0,connector=1",
-        ])
-        .unwrap();
-        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
     }
 
     #[test]

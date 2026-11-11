@@ -18,6 +18,7 @@
 //       anything else on this file though.
 #![warn(missing_docs)]
 
+use crate::usb::UsbBackend;
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
@@ -3760,38 +3761,6 @@ pub struct UsbDeviceLocationCli {
     pub connector: Option<UsbConnectorCli>,
 }
 
-/// Typed configuration selecting a USB backend.
-#[derive(Clone, Debug)]
-pub enum UsbBackendCli {
-    /// Loopback mock.
-    Loopback(usb_config_resources::MockLoopbackConfig),
-    /// Composite HID mock.
-    Hid(usb_config_resources::MockHidConfig),
-    /// Mass-storage mock.
-    Storage(usb_config_resources::MockStorageConfig),
-    /// FX2 MUTT mock.
-    Mutt(usb_config_resources::MockMuttConfig),
-    /// FX3 SuperMUTT mock.
-    SuperMutt(usb_config_resources::MockSuperMuttConfig),
-    /// One Windows host device.
-    WinUsb(usb_config_resources::WinUsbConfig),
-}
-
-impl UsbBackendCli {
-    /// Erases the configuration type for resource resolution.
-    pub fn into_resource(self) -> vm_resource::Resource<usb_config_resources::UsbDeviceConfigKind> {
-        use vm_resource::IntoResource;
-        match self {
-            Self::Loopback(handle) => handle.into_resource(),
-            Self::Hid(handle) => handle.into_resource(),
-            Self::Storage(handle) => handle.into_resource(),
-            Self::Mutt(handle) => handle.into_resource(),
-            Self::SuperMutt(handle) => handle.into_resource(),
-            Self::WinUsb(handle) => handle.into_resource(),
-        }
-    }
-}
-
 /// A concrete attachment or an automatic device-discovery request.
 #[derive(Clone, Debug)]
 pub enum UsbDeviceCli {
@@ -3800,7 +3769,7 @@ pub enum UsbDeviceCli {
         /// Controller and connector selection.
         location: UsbDeviceLocationCli,
         /// Backend-specific configuration.
-        backend: UsbBackendCli,
+        backend: UsbBackend,
     },
     /// Discover WinUSB devices and attach them to free connectors.
     WinUsbAll {
@@ -3890,13 +3859,13 @@ impl FromStr for UsbDeviceCli {
                 let (location, identity) = args.into_parts();
                 (
                     location,
-                    UsbBackendCli::Loopback(MockLoopbackConfig { identity }),
+                    UsbBackend::Loopback(MockLoopbackConfig { identity }),
                 )
             }
             "mock-hid" => {
                 let args: UsbMockArgs = options.parse()?;
                 let (location, identity) = args.into_parts();
-                (location, UsbBackendCli::Hid(MockHidConfig { identity }))
+                (location, UsbBackend::Hid(MockHidConfig { identity }))
             }
             "mock-storage" => {
                 let args: UsbStorageArgs = options.parse()?;
@@ -3907,7 +3876,7 @@ impl FromStr for UsbDeviceCli {
                 let (location, identity) = args.mock.into_parts();
                 (
                     location,
-                    UsbBackendCli::Storage(MockStorageConfig {
+                    UsbBackend::Storage(MockStorageConfig {
                         identity,
                         block_count: args.blocks,
                     }),
@@ -3916,12 +3885,9 @@ impl FromStr for UsbDeviceCli {
             "mock-mutt" => {
                 let args: UsbMockArgs = options.parse()?;
                 let (location, identity) = args.into_parts();
-                (location, UsbBackendCli::Mutt(MockMuttConfig { identity }))
+                (location, UsbBackend::Mutt(MockMuttConfig { identity }))
             }
-            "mock-supermutt" => (
-                options.parse()?,
-                UsbBackendCli::SuperMutt(MockSuperMuttConfig),
-            ),
+            "mock-supermutt" => (options.parse()?, UsbBackend::SuperMutt(MockSuperMuttConfig)),
             "winusb" => {
                 let args: UsbWinUsbArgs = options.parse()?;
                 anyhow::ensure!(
@@ -3930,7 +3896,7 @@ impl FromStr for UsbDeviceCli {
                 );
                 (
                     args.location,
-                    UsbBackendCli::WinUsb(WinUsbConfig {
+                    UsbBackend::WinUsb(WinUsbConfig {
                         instance_id: args.instance_id,
                     }),
                 )
@@ -4299,14 +4265,14 @@ mod tests {
             assert_eq!(location.on, None);
             assert_eq!(location.connector, None);
             let identity = match (kind, backend) {
-                ("mock-loopback", UsbBackendCli::Loopback(config)) => config.identity,
-                ("mock-hid", UsbBackendCli::Hid(config)) => config.identity,
-                ("mock-storage", UsbBackendCli::Storage(config)) => {
+                ("mock-loopback", UsbBackend::Loopback(config)) => config.identity,
+                ("mock-hid", UsbBackend::Hid(config)) => config.identity,
+                ("mock-storage", UsbBackend::Storage(config)) => {
                     assert_eq!(config.block_count, None);
                     config.identity
                 }
-                ("mock-mutt", UsbBackendCli::Mutt(config)) => config.identity,
-                ("mock-supermutt", UsbBackendCli::SuperMutt(_)) => continue,
+                ("mock-mutt", UsbBackend::Mutt(config)) => config.identity,
+                ("mock-supermutt", UsbBackend::SuperMutt(_)) => continue,
                 _ => panic!("wrong backend variant for {kind}"),
             };
             assert_eq!(identity, usb_config_resources::UsbIdentityConfig::default());
@@ -4333,13 +4299,13 @@ mod tests {
             assert_eq!(location.on.as_deref(), Some("usb0"));
             assert_eq!(location.connector.map(UsbConnectorCli::number), Some(7));
             let identity = match (kind, backend) {
-                ("mock-loopback", UsbBackendCli::Loopback(config)) => config.identity,
-                ("mock-hid", UsbBackendCli::Hid(config)) => config.identity,
-                ("mock-storage", UsbBackendCli::Storage(config)) => {
+                ("mock-loopback", UsbBackend::Loopback(config)) => config.identity,
+                ("mock-hid", UsbBackend::Hid(config)) => config.identity,
+                ("mock-storage", UsbBackend::Storage(config)) => {
                     assert_eq!(config.block_count, Some(4096));
                     config.identity
                 }
-                ("mock-mutt", UsbBackendCli::Mutt(config)) => config.identity,
+                ("mock-mutt", UsbBackend::Mutt(config)) => config.identity,
                 _ => panic!("wrong backend variant for {kind}"),
             };
             assert_eq!(identity.vendor_id, Some(0x1234));
@@ -4361,7 +4327,7 @@ mod tests {
         ] {
             let UsbDeviceCli::Device {
                 location,
-                backend: UsbBackendCli::WinUsb(config),
+                backend: UsbBackend::WinUsb(config),
             } = UsbDeviceCli::from_str(selection).unwrap()
             else {
                 panic!("expected explicit WinUSB selection");

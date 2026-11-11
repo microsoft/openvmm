@@ -22,13 +22,14 @@ impl ResourceId<PciDeviceHandleKind> for UsbControllerConfig {
     const ID: &'static str = "usb_xhci_config";
 }
 
-/// A fixed attachment or a request to discover devices for free connectors.
+/// A configured device or a request to discover devices for free connectors.
 #[derive(Debug, MeshPayload)]
 pub enum UsbDeviceConfig {
-    /// Attach one configured device to a particular connector.
+    /// Attach one configured device to a connector.
     Device {
-        /// One-based physical connector number.
-        connector: u8,
+        /// One-based physical connector number. `None` selects the lowest
+        /// free connector after every explicit connector is reserved.
+        connector: Option<u8>,
         /// Configuration interpreted by a device-specific resolver.
         device: Resource<UsbDeviceConfigKind>,
     },
@@ -174,8 +175,12 @@ mod tests {
         let config = UsbControllerConfig {
             devices: vec![
                 UsbDeviceConfig::Device {
-                    connector: 15,
+                    connector: Some(15),
                     device: MockHidConfig::default().into_resource(),
+                },
+                UsbDeviceConfig::Device {
+                    connector: None,
+                    device: MockStorageConfig::default().into_resource(),
                 },
                 UsbDeviceConfig::Discover(WinUsbAllConfig::default().into_resource()),
             ],
@@ -187,9 +192,15 @@ mod tests {
             panic!("expected a fixed attachment");
         };
         // Serialization must not convert the public one-based connector to an internal index.
-        assert_eq!(*connector, 15);
+        assert_eq!(*connector, Some(15));
         assert_eq!(device.id(), MockHidConfig::ID);
-        let UsbDeviceConfig::Discover(discovery) = &decoded.devices[1] else {
+        // An omitted connector must stay omitted so the resolver can choose one.
+        let UsbDeviceConfig::Device { connector, device } = &decoded.devices[1] else {
+            panic!("expected an attachment without a connector");
+        };
+        assert_eq!(*connector, None);
+        assert_eq!(device.id(), MockStorageConfig::ID);
+        let UsbDeviceConfig::Discover(discovery) = &decoded.devices[2] else {
             panic!("expected a discovery request");
         };
         assert_eq!(discovery.id(), WinUsbAllConfig::ID);
