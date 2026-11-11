@@ -8,6 +8,7 @@
 mod cpu_contract;
 mod extint;
 mod fingerprint;
+mod lapic_timer;
 mod regs;
 pub(crate) mod snp;
 #[cfg(test)]
@@ -712,6 +713,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             cpuid,
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
             mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
+            lapic_preemption_timer: lapic_timer::kvm_may_use_preemption_timer(),
             synic_ports: Default::default(),
             time_abi,
         });
@@ -1147,6 +1149,7 @@ impl virt::BindProcessor for KvmProcessorBinder {
             siefp_overlay: OverlayPage::default(),
             vmtime: &mut self.vmtime,
             interrupt_window_stale: true,
+            timer_at_stop: None,
         };
 
         // 1. Reset the APIC state to clear the directed EOI bit, which is
@@ -1214,6 +1217,10 @@ pub struct KvmProcessor<'a> {
     /// Whether the VP state may have changed since KVM last reported the
     /// interrupt window in `kvm_run`.
     interrupt_window_stale: bool,
+    /// The VP's LAPIC timer when the VP last stopped, until it runs again or
+    /// its LAPIC state is set.
+    #[inspect(skip)]
+    timer_at_stop: Option<lapic_timer::TimerAtStop>,
 }
 
 impl KvmProcessor<'_> {
@@ -1749,42 +1756,51 @@ impl<'p> Processor for KvmProcessor<'p> {
                 .sync_invariant_control(&self.kvm)
                 .map_err(|err| dev.fatal_error(KvmRunVpError::TimeAbi(err).into()))?;
         }
+        // Whether KVM may hold interrupts that it has not delivered to the
+        // VP's LAPIC since the VP last ran, which it must deliver before the
+        // VP stops.
+        let mut undelivered = true;
         loop {
             self.inner.needs_yield.maybe_yield().await;
-            stop.check()?;
-
-            if self.partition.hv1_enabled {
-                // Deliver pending synic messages now, while KVM is not
-                // accessing the message page.
-                if let Some(next) = self.try_deliver_synic_messages() {
-                    self.vmtime.set_timeout_if_before(next)
-                } else {
-                    self.vmtime.cancel_timeout();
-                }
+            let stopping = stop.check().is_err();
+            if stopping && !undelivered {
+                stop.check()?;
             }
 
-            // Check for pending PIC interrupts, once KVM has reported the
-            // interrupt window for the current VP state (see below).
-            //
-            // Check and clear this with a relaxed ordering since `evaluate_vp`
-            // (called when this is set) will force the VP to exit, causing us
-            // to re-check.
-            if !self.interrupt_window_stale
-                && self.inner.request_interrupt_window.load(Ordering::Relaxed)
-            {
-                self.inner
-                    .request_interrupt_window
-                    .store(false, Ordering::Relaxed);
-                if self.runner.check_or_request_interrupt_window() {
-                    self.deliver_pic_interrupt(dev)
-                        .map_err(|e| dev.fatal_error(e.into()))?;
+            if !stopping {
+                if self.partition.hv1_enabled {
+                    // Deliver pending synic messages now, while KVM is not
+                    // accessing the message page.
+                    if let Some(next) = self.try_deliver_synic_messages() {
+                        self.vmtime.set_timeout_if_before(next)
+                    } else {
+                        self.vmtime.cancel_timeout();
+                    }
                 }
-            }
 
-            // Arm the timer. If it has expired, then loop around to scan for
-            // synic messages again.
-            if poll_fn(|cx| Poll::Ready(self.vmtime.poll_timeout(cx).is_ready())).await {
-                continue;
+                // Check for pending PIC interrupts, once KVM has reported the
+                // interrupt window for the current VP state (see below).
+                //
+                // Check and clear this with a relaxed ordering since
+                // `evaluate_vp` (called when this is set) will force the VP to
+                // exit, causing us to re-check.
+                if !self.interrupt_window_stale
+                    && self.inner.request_interrupt_window.load(Ordering::Relaxed)
+                {
+                    self.inner
+                        .request_interrupt_window
+                        .store(false, Ordering::Relaxed);
+                    if self.runner.check_or_request_interrupt_window() {
+                        self.deliver_pic_interrupt(dev)
+                            .map_err(|e| dev.fatal_error(e.into()))?;
+                    }
+                }
+
+                // Arm the timer. If it has expired, then loop around to scan
+                // for synic messages again.
+                if poll_fn(|cx| Poll::Ready(self.vmtime.poll_timeout(cx).is_ready())).await {
+                    continue;
+                }
             }
 
             // Run the VP and handle exits until `evaluate_vp` is called or the
@@ -1801,21 +1817,36 @@ impl<'p> Processor for KvmProcessor<'p> {
                 && self.inner.request_interrupt_window.load(Ordering::Relaxed);
             let mut pending_exit = false;
             loop {
+                let stopping = stop.check().is_err();
+                let mut delivering = false;
                 let exit = if refresh_interrupt_window
                     || self.inner.eval.load(Ordering::Relaxed)
-                    || stop.check().is_err()
+                    || stopping
                 {
                     // Break out of the loop as soon as there is no pending exit
                     // and no pending refresh of the interrupt window.
                     let refresh_pending = refresh_interrupt_window && self.interrupt_window_stale;
-                    if !pending_exit && !refresh_pending {
+                    if stopping && undelivered {
+                        // Have KVM deliver the interrupts that it holds, which
+                        // also completes any pending exit, but read the LAPIC
+                        // timer first, so that the stopped VP's LAPIC state
+                        // reports an expired timer exactly (see `lapic_timer`).
+                        if self.timer_at_stop.is_none() {
+                            self.timer_at_stop = lapic_timer::TimerAtStop::read(&self.kvm);
+                        }
+                        delivering = true;
+                        self.runner.deliver_pending_interrupts()
+                    } else if !pending_exit && !refresh_pending {
                         self.inner.eval.store(false, Ordering::Relaxed);
                         break;
+                    } else {
+                        // Complete the current exit.
+                        self.runner.complete_exit()
                     }
-                    // Complete the current exit.
-                    self.runner.complete_exit()
                 } else {
                     // Run the VP.
+                    undelivered = true;
+                    self.timer_at_stop = None;
                     self.runner.run()
                 };
                 // KVM reports the interrupt window for the current VP state
@@ -1830,6 +1861,13 @@ impl<'p> Processor for KvmProcessor<'p> {
                     kvm::Exit::Interrupted => {
                         tracing::trace!("interrupted");
                         pending_exit = false;
+                        if delivering {
+                            // KVM must deliver again if it may have recorded
+                            // an expiry of the LAPIC timer only since.
+                            undelivered = self.timer_at_stop.as_mut().is_some_and(|timer| {
+                                timer.await_expiry(&self.kvm, self.partition.lapic_preemption_timer)
+                            });
+                        }
                     }
                     kvm::Exit::InterruptWindow => {
                         self.deliver_pic_interrupt(dev)

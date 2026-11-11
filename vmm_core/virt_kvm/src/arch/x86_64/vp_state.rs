@@ -449,14 +449,17 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         let mut state = FromZeros::new_zeroed();
         self.kvm().get_lapic(&mut state)?;
 
-        Ok(vp::Apic::new(
-            apic_base.into(),
-            vp::ApicRegisters::from_page(&state),
-            [0; 8],
-        ))
+        let mut registers = vp::ApicRegisters::from_page(&state);
+        if let Some(timer) = self.vp.timer_at_stop {
+            timer.settle(apic_base, &mut registers);
+        }
+        Ok(vp::Apic::new(apic_base.into(), registers, [0; 8]))
     }
 
     fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
+        // The VP's timer is no longer the one that it stopped with.
+        self.vp.timer_at_stop = None;
+
         // Set this first to set the APIC mode before updating the APIC register
         // state.
         self.kvm()
@@ -719,7 +722,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
 /// is pending in IRR, as after a time ABI restore that expires the timer. Such
 /// a timer gets an initial count of 0, which KVM does not start, so the guest
 /// reads 0 from the initial count register.
-fn kvm_lapic_page(registers: &vp::ApicRegisters) -> [u8; 1024] {
+pub(super) fn kvm_lapic_page(registers: &vp::ApicRegisters) -> [u8; 1024] {
     let mut registers = *registers;
     let lvt = x86defs::apic::Lvt::from(registers.lvt_timer);
     let vector = lvt.vector();
