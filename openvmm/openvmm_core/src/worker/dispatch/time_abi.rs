@@ -58,6 +58,7 @@ use virt::time_abi::TimeAbiTestHooks;
 use virt::time_abi::TscSetReport;
 use virt::time_abi::TscSyncMethod;
 use virt::time_abi::host::HostClockStatus;
+use virt::time_abi::phase_us;
 use virt::time_abi::publish::HostClockPublisher;
 use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::publish::PublishedSample;
@@ -1301,8 +1302,8 @@ impl LoadedVm {
         // the end of the TSC set.
         tracing::info!(
             tsc_set_us = tsc_set.as_micros() as u64,
-            lapic_us = (lapic_advanced - tsc_set).as_micros() as u64,
-            vm_time_us = (vm_time_advanced - tsc_set).as_micros() as u64,
+            lapic_us = phase_us(tsc_set, lapic_advanced),
+            vm_time_us = phase_us(tsc_set, vm_time_advanced),
             total_us = finished.as_micros() as u64,
             "time ABI restore clock"
         );
