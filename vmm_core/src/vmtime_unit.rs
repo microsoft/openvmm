@@ -39,8 +39,12 @@ impl StateUnit for KeeperUnit<'_> {
         Ok(())
     }
 
-    async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()> {
-        self.0.advance(duration).await;
+    async fn advance_time(
+        &mut self,
+        duration: std::time::Duration,
+        resumed: pal_async::timer::Instant,
+    ) -> anyhow::Result<()> {
+        self.0.advance(duration, resumed).await;
         Ok(())
     }
 }

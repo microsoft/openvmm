@@ -101,10 +101,21 @@ pub enum StateRequest {
     Restore(FailableRpc<SavedStateBlob, ()>),
 
     /// Advance guest-visible time while stopped after snapshot restore.
-    AdvanceTime(FailableRpc<std::time::Duration, ()>),
+    AdvanceTime(FailableRpc<TimeAdvance, ()>),
 
     /// Inspect state.
     Inspect(inspect::Deferred),
+}
+
+/// The downtime by which [`StateRequest::AdvanceTime`] advances a stopped
+/// unit's guest-visible time.
+#[derive(Debug, Copy, Clone, MeshPayload)]
+pub struct TimeAdvance {
+    /// The time that passed while the unit was stopped, until `resumed_ns`.
+    pub duration: std::time::Duration,
+    /// The host instant at which the guest's time resumed, as
+    /// [`pal_async::timer::Instant`] nanoseconds.
+    pub resumed_ns: u64,
 }
 
 /// Trait implemented by an object that can act as a state unit.
@@ -155,10 +166,17 @@ pub trait StateUnit: InspectMut {
     /// requires a reset even if the previous restore failed.
     async fn restore(&mut self, buffer: SavedStateBlob) -> Result<(), RestoreError>;
 
-    /// Advance guest-visible time after restore. Most units derive their
+    /// Advance guest-visible time after restore, by `duration`, the time
+    /// that passed while the unit was stopped until the host instant
+    /// `resumed`, at which the guest's time resumed. A unit whose time stays
+    /// stopped until it starts runs it from `resumed`. Most units derive their
     /// deadlines from VM time and need no direct adjustment; only units added
     /// with [`UnitBuilder::advances_time`] receive this request.
-    async fn advance_time(&mut self, _duration: std::time::Duration) -> anyhow::Result<()> {
+    async fn advance_time(
+        &mut self,
+        _duration: std::time::Duration,
+        _resumed: pal_async::timer::Instant,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -261,8 +279,14 @@ impl StateRequest {
                     .await
             }
             StateRequest::AdvanceTime(rpc) => {
-                rpc.handle_failable(async |duration| unit.advance_time(duration).await)
+                rpc.handle_failable(async |advance: TimeAdvance| {
+                    unit.advance_time(
+                        advance.duration,
+                        pal_async::timer::Instant::from_nanos(advance.resumed_ns),
+                    )
                     .await
+                })
+                .await
             }
             StateRequest::Inspect(req) => req.inspect(unit),
         }
@@ -1214,6 +1238,8 @@ mod tests {
     use mesh::payload::Protobuf;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use pal_async::timer::Instant;
+    use parking_lot::Mutex;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
@@ -1429,8 +1455,8 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
-    /// A unit that records whether it was asked to advance time.
-    struct TimeUnit(Arc<AtomicBool>);
+    /// A unit that records the time advance that it was asked for.
+    struct TimeUnit(Arc<Mutex<Option<(Duration, Instant)>>>);
 
     impl StateUnit for TimeUnit {
         async fn start(&mut self) {}
@@ -1449,8 +1475,12 @@ mod tests {
             Ok(())
         }
 
-        async fn advance_time(&mut self, _duration: Duration) -> anyhow::Result<()> {
-            self.0.store(true, Ordering::Relaxed);
+        async fn advance_time(
+            &mut self,
+            duration: Duration,
+            resumed: Instant,
+        ) -> anyhow::Result<()> {
+            *self.0.lock() = Some((duration, resumed));
             Ok(())
         }
     }
@@ -1464,8 +1494,8 @@ mod tests {
     #[async_test]
     async fn advance_time_reaches_only_units_that_advance_time(driver: DefaultDriver) {
         let mut units = StateUnits::new();
-        let flagged = Arc::new(AtomicBool::new(false));
-        let unflagged = Arc::new(AtomicBool::new(false));
+        let flagged = Arc::new(Mutex::new(None));
+        let unflagged = Arc::new(Mutex::new(None));
         let a = units
             .add("flagged")
             .advances_time()
@@ -1477,9 +1507,14 @@ mod tests {
             .spawn(&driver, |recv| run_unit(TimeUnit(unflagged.clone()), recv))
             .unwrap();
 
-        units.advance_time(Duration::from_secs(1)).await.unwrap();
-        assert!(flagged.load(Ordering::Relaxed));
-        assert!(!unflagged.load(Ordering::Relaxed));
+        // The unit receives the downtime and the instant at which it ended.
+        let resumed = Instant::now();
+        units
+            .advance_time(Duration::from_secs(1), resumed)
+            .await
+            .unwrap();
+        assert_eq!(*flagged.lock(), Some((Duration::from_secs(1), resumed)));
+        assert_eq!(*unflagged.lock(), None);
 
         // Both units are stopped again and can start.
         units.start().await.unwrap();

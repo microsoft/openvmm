@@ -15,6 +15,7 @@ use inspect::InspectMut;
 use mesh::Receiver;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::timer::Instant;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
@@ -76,7 +77,7 @@ impl StateUnit for LoggingUnit {
         Ok(())
     }
 
-    async fn advance_time(&mut self, _duration: Duration) -> anyhow::Result<()> {
+    async fn advance_time(&mut self, _duration: Duration, _resumed: Instant) -> anyhow::Result<()> {
         self.log.push(self.name, "advance_time");
         Ok(())
     }
@@ -171,7 +172,7 @@ async fn assert_requests_fail(units: &mut StateUnits, name: &str, log: &Log) {
     );
     assert_terminal_unit_error(
         units
-            .advance_time(Duration::from_secs(1))
+            .advance_time(Duration::from_secs(1), Instant::now())
             .await
             .unwrap_err(),
         "advance_time",
