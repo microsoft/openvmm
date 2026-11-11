@@ -125,7 +125,9 @@ impl SimpleFlowNode for Node {
                     args.push(parameters_json.clone());
                 }
 
-                let status = flowey::shell_cmd!(rt, "{runner} {args...}").status()?;
+                let status = flowey::shell_cmd!(rt, "{runner} {args...}")
+                    .ignore_status()
+                    .run_interactive()?;
 
                 rt.write(
                     output,

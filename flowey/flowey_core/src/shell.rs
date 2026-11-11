@@ -259,28 +259,23 @@ impl<'a> FloweyCmd<'a> {
     }
 
     /// Run with inherited standard input, allowing interactive terminal use.
-    pub fn run_interactive(self) -> anyhow::Result<()> {
-        let ignore_status = self.ignore_status;
-        let description = self.to_string();
-        let status = self.status()?;
-        anyhow::ensure!(
-            status.success() || ignore_status,
-            "command {description} exited with {status}"
-        );
-        Ok(())
-    }
-
-    /// Run with inherited standard streams and return the exit status.
-    pub fn status(self) -> anyhow::Result<ExitStatus> {
+    pub fn run_interactive(self) -> anyhow::Result<ExitStatus> {
         anyhow::ensure!(
             self.stdin_contents.is_none(),
-            "streaming commands cannot also supply stdin contents"
+            "interactive commands cannot also supply stdin contents"
         );
         if !self.quiet {
             eprintln!("$ {self}");
         }
+        let ignore_status = self.ignore_status;
+        let description = self.to_string();
         let mut command: std::process::Command = self.into_resolved().into();
-        Ok(command.status()?)
+        let status = command.status()?;
+        anyhow::ensure!(
+            status.success() || ignore_status,
+            "command {description} exited with {status}"
+        );
+        Ok(status)
     }
 
     /// Run the command and return its stdout as a string, with leading
@@ -423,11 +418,13 @@ mod tests {
     fn interactive_commands_preserve_wrapping_and_status_handling() {
         let mut sh = FloweyShell::new().unwrap();
         assert!(sh.wrap(fail_cmd(&sh)).run_interactive().is_err());
-        assert!(
+        assert_eq!(
             sh.wrap(fail_cmd(&sh))
                 .ignore_status()
                 .run_interactive()
-                .is_ok()
+                .unwrap()
+                .code(),
+            Some(1)
         );
         sh.set_wrapper(Some(CommandWrapperKind::Prefix));
         sh.wrap(xshell::cmd!(sh.xshell(), "nonexistent-program --flag"))
@@ -438,20 +435,6 @@ mod tests {
                 .stdin("incompatible input")
                 .run_interactive()
                 .is_err()
-        );
-    }
-
-    #[test]
-    fn status_preserves_wrapping_and_reports_exit_code() {
-        let mut sh = FloweyShell::new().unwrap();
-        assert_eq!(sh.wrap(fail_cmd(&sh)).status().unwrap().code(), Some(1));
-
-        sh.set_wrapper(Some(CommandWrapperKind::Prefix));
-        assert!(
-            sh.wrap(xshell::cmd!(sh.xshell(), "nonexistent-program --flag"))
-                .status()
-                .unwrap()
-                .success()
         );
     }
 
