@@ -253,15 +253,14 @@ impl<'scope> Scope<'scope, '_> {
 
     /// Restores the IRQ handler and IRQ delivery state saved by this scope.
     pub(super) fn arch_reset(&mut self) {
+        // Keep IRQs masked until both the handler and saved delivery state are restored.
+        disable_interrupts();
         if let SavedIrqHandler::Saved(handler) = core::mem::take(&mut self.arch.old_irq_handler) {
-            let _disable = disable_guarded();
             // SAFETY: IRQ_HANDLER is not concurrently accessed while IRQs are disabled.
             unsafe { IRQ_HANDLER = handler };
         }
         if self.arch.interrupts_enabled {
             enable_interrupts();
-        } else {
-            disable_interrupts();
         }
     }
 
