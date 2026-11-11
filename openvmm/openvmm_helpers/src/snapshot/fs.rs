@@ -762,15 +762,40 @@ impl OpenedSnapshotDirectory {
         name: &str,
         description: &str,
     ) -> anyhow::Result<std::fs::File> {
+        self.open_regular_file_with_access(name, description, false)
+    }
+
+    /// Opens the artifact `name` of this directory for reading and writing, as
+    /// [`Self::open_regular_file`] opens it for reading. On Windows, the handle
+    /// denies other writers.
+    pub(super) fn open_regular_file_for_writing(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<std::fs::File> {
+        self.open_regular_file_with_access(name, description, true)
+    }
+
+    fn open_regular_file_with_access(
+        &self,
+        name: &str,
+        description: &str,
+        writable: bool,
+    ) -> anyhow::Result<std::fs::File> {
         #[cfg(target_os = "linux")]
         let file = {
             use nix::fcntl::OFlag;
             use nix::sys::stat::Mode;
 
+            let access = if writable {
+                OFlag::O_RDWR
+            } else {
+                OFlag::O_RDONLY
+            };
             let fd = nix::fcntl::openat(
                 &self.file,
                 name,
-                OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK,
+                access | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK,
                 Mode::empty(),
             )
             .map_err(nix_error)
@@ -783,10 +808,17 @@ impl OpenedSnapshotDirectory {
             std::fs::File::from(fd)
         };
         #[cfg(windows)]
-        let file = pal::windows::fs::relative::open_relative_read_only(
-            &self.file,
-            std::ffi::OsStr::new(name),
-        )
+        let file = if writable {
+            pal::windows::fs::relative::open_relative_read_write(
+                &self.file,
+                std::ffi::OsStr::new(name),
+            )
+        } else {
+            pal::windows::fs::relative::open_relative_read_only(
+                &self.file,
+                std::ffi::OsStr::new(name),
+            )
+        }
         .with_context(|| {
             format!(
                 "failed to open {description} at {}",
@@ -794,7 +826,7 @@ impl OpenedSnapshotDirectory {
             )
         })?;
         #[cfg(not(any(target_os = "linux", windows)))]
-        let file = open_regular_file_impl(&self.path.join(name), description)?;
+        let file = open_regular_file_impl(&self.path.join(name), description, writable)?;
 
         accept_opened_regular_file(&file, description, &self.display_path(name))?;
         Ok(file)
@@ -830,11 +862,20 @@ impl OpenedSnapshotDirectory {
         artifact_name: &str,
     ) -> anyhow::Result<std::fs::File> {
         let file = self.open_regular_file(name, artifact_name)?;
-        let length = opened_file_generation(&file, artifact_name)?.length();
-        anyhow::ensure!(
-            length == expected_length,
-            "{artifact_name} size ({length} bytes) doesn't match manifest ({expected_length} bytes)",
-        );
+        ensure_manifest_length(&file, expected_length, artifact_name)?;
+        Ok(file)
+    }
+
+    /// Opens the artifact `name` of this directory for reading and writing, as
+    /// [`Self::open_file_with_length`] opens it for reading.
+    pub(super) fn open_file_with_length_for_writing(
+        &self,
+        name: &str,
+        expected_length: u64,
+        artifact_name: &str,
+    ) -> anyhow::Result<std::fs::File> {
+        let file = self.open_regular_file_for_writing(name, artifact_name)?;
+        ensure_manifest_length(&file, expected_length, artifact_name)?;
         Ok(file)
     }
 
@@ -945,12 +986,16 @@ fn nix_error(error: nix::errno::Errno) -> std::io::Error {
 }
 
 pub(super) fn open_regular_file(path: &Path, description: &str) -> anyhow::Result<std::fs::File> {
-    open_regular_file_impl(path, description)
+    open_regular_file_impl(path, description, false)
 }
 
-fn open_regular_file_impl(path: &Path, description: &str) -> anyhow::Result<std::fs::File> {
+fn open_regular_file_impl(
+    path: &Path,
+    description: &str,
+    writable: bool,
+) -> anyhow::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
-    options.read(true);
+    options.read(true).write(writable);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -1148,18 +1193,19 @@ pub(super) fn read_bounded_open_file(
     Ok(bytes)
 }
 
-pub(super) fn open_file_with_length(
-    path: &Path,
+/// Refuses an opened artifact whose length is not `expected_length`, the
+/// length that the manifest records for it.
+fn ensure_manifest_length(
+    file: &std::fs::File,
     expected_length: u64,
     artifact_name: &str,
-) -> anyhow::Result<std::fs::File> {
-    let file = open_regular_file(path, artifact_name)?;
-    let length = opened_file_generation(&file, artifact_name)?.length();
+) -> anyhow::Result<()> {
+    let length = opened_file_generation(file, artifact_name)?.length();
     anyhow::ensure!(
         length == expected_length,
         "{artifact_name} size ({length} bytes) doesn't match manifest ({expected_length} bytes)",
     );
-    Ok(file)
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1220,10 +1266,17 @@ pub(super) mod tests {
     #[test]
     fn artifact_opens_refuse_a_writerless_fifo_without_waiting() {
         type Open = fn(&Path, &str) -> anyhow::Result<std::fs::File>;
-        let opens: [(&str, Open); 5] = [
+        let opens: [(&str, Open); 6] = [
             ("open_regular_file in a directory", |dir, name| {
                 OpenedSnapshotDirectory::open(dir)?.open_regular_file(name, "artifact")
             }),
+            (
+                "open_regular_file_for_writing in a directory",
+                |dir, name| {
+                    OpenedSnapshotDirectory::open(dir)?
+                        .open_regular_file_for_writing(name, "artifact")
+                },
+            ),
             (
                 "open_regular_file_for_identity in a directory",
                 |dir, name| {
@@ -1234,11 +1287,15 @@ pub(super) mod tests {
             ("open_file_with_length in a directory", |dir, name| {
                 OpenedSnapshotDirectory::open(dir)?.open_file_with_length(name, 0, "artifact")
             }),
+            (
+                "open_file_with_length_for_writing in a directory",
+                |dir, name| {
+                    OpenedSnapshotDirectory::open(dir)?
+                        .open_file_with_length_for_writing(name, 0, "artifact")
+                },
+            ),
             ("open_regular_file", |dir, name| {
                 open_regular_file(&dir.join(name), "artifact")
-            }),
-            ("open_file_with_length", |dir, name| {
-                open_file_with_length(&dir.join(name), 0, "artifact")
             }),
         ];
         let dir = tempfile::tempdir().unwrap();

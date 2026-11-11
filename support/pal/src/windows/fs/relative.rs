@@ -143,6 +143,24 @@ pub fn open_relative_read_only(
     )
 }
 
+/// Opens an existing regular file relative to an opened directory for reading
+/// and writing.
+///
+/// The resulting handle allows read and delete sharing only. While it remains
+/// open, other writers are rejected through every name of the file.
+pub fn open_relative_read_write(
+    directory: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    open_relative_file(
+        directory,
+        name,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        ntioapi::FILE_OPEN,
+    )
+}
+
 /// Opens an existing file relative to a directory without denying access to
 /// other handles. This is intended for identity checks during publication,
 /// not for retaining an immutable restore generation.
@@ -632,6 +650,46 @@ mod tests {
         fs::rename(&source_path, &renamed_path).unwrap();
         fs::remove_file(&renamed_path).unwrap();
         fs::remove_file(&alias_path).unwrap();
+    }
+
+    #[test]
+    fn read_write_open_writes_in_place_and_denies_other_writers() {
+        let root = TestDirectory::new();
+        let directory = open_directory(root.path(), false);
+        let mut source = create_relative_new(&directory, "source".as_ref()).unwrap();
+        source.write_all(b"contents").unwrap();
+        hard_link_relative(&source, &directory, "alias".as_ref()).unwrap();
+        let source_identity = file_identity(&source).unwrap();
+        drop(source);
+
+        let source_path = root.path().join("source");
+        let alias_path = root.path().join("alias");
+        let mut read_write = open_relative_read_write(&directory, "source".as_ref()).unwrap();
+        assert_eq!(file_identity(&read_write).unwrap(), source_identity);
+
+        // Other writers are denied through every name of the file, and so is a
+        // reader that would deny this handle's writes. Other readers are
+        // allowed.
+        for path in [&source_path, &alias_path] {
+            assert_sharing_violation(OpenOptions::new().write(true).open(path));
+        }
+        assert_sharing_violation(open_relative_read_only(&directory, "alias".as_ref()));
+        drop(open_relative_for_identity(&directory, "alias".as_ref()).unwrap());
+        drop(fs::File::open(&alias_path).unwrap());
+
+        // The handle reads and writes the file itself.
+        let mut contents = Vec::new();
+        read_write.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"contents");
+        read_write.write_all(b" changed").unwrap();
+        drop(read_write);
+        assert_eq!(fs::read(&alias_path).unwrap(), b"contents changed");
+        OpenOptions::new()
+            .write(true)
+            .open(&alias_path)
+            .unwrap()
+            .write_all(b"rewritten")
+            .unwrap();
     }
 
     #[test]
