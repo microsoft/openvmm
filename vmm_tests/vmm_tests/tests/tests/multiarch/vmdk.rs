@@ -201,6 +201,7 @@ fn with_read_only_vmdk_disk(
                             disk,
                             read_only: true,
                             serial: Some(VMDK_SERIAL.into()),
+                            options: Default::default(),
                         }
                         .into_resource(),
                     )
