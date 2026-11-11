@@ -14,6 +14,7 @@ use pal_async_test::async_test;
 use serial_core::SerialIo;
 use std::fs::File;
 use std::fs::OpenOptions;
+use test_with_tracing::test;
 use windows_sys::Win32::Foundation::GENERIC_READ;
 use windows_sys::Win32::Foundation::GENERIC_WRITE;
 use windows_sys::Win32::System::Pipes::PIPE_NOWAIT;
