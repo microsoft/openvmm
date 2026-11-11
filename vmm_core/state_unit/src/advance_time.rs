@@ -7,11 +7,15 @@ use super::State;
 use super::StateRequest;
 use super::StateTransitionError;
 use super::StateUnits;
+use super::TimeAdvance;
 use super::check;
+use pal_async::timer::Instant;
 use std::time::Duration;
 
 impl StateUnits {
-    /// Advances guest-visible time on all stopped units in dependency order.
+    /// Advances guest-visible time on all stopped units in dependency order,
+    /// by `duration`, the time that passed while they were stopped until the
+    /// host instant `resumed`, at which the guest's time resumed.
     /// Only units added with [`UnitBuilder::advances_time`](crate::UnitBuilder::advances_time)
     /// receive the request; the others pass through the operation without a
     /// round trip.
@@ -20,9 +24,17 @@ impl StateUnits {
     /// whether or not the units run. Otherwise panics if running. A unit whose
     /// task does not answer its request fails the time advance, and is left in
     /// a terminal state.
-    pub async fn advance_time(&mut self, duration: Duration) -> Result<(), StateTransitionError> {
+    pub async fn advance_time(
+        &mut self,
+        duration: Duration,
+        resumed: Instant,
+    ) -> Result<(), StateTransitionError> {
         self.check_no_terminal_units("advance_time")?;
         assert!(!self.running);
+        let advance = TimeAdvance {
+            duration,
+            resumed_ns: resumed.as_nanos(),
+        };
         let results = self
             .run_op(
                 "advance_time",
@@ -32,7 +44,7 @@ impl StateUnits {
                 State::Stopped,
                 State::AdvanceTimeUncertain,
                 StateRequest::AdvanceTime,
-                |_, unit| unit.advances_time.then_some(duration),
+                |_, unit| unit.advances_time.then_some(advance),
                 |unit| Some(&unit.dependencies),
             )
             .await;

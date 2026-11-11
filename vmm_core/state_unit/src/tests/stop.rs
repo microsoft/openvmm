@@ -13,6 +13,7 @@ use futures::StreamExt;
 use mesh::Receiver;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::timer::Instant;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -102,7 +103,12 @@ async fn a_lost_unit_fails_the_stop_and_keeps_its_dependencies_running(driver: D
     );
     assert!(units.save().await.is_err());
     assert!(units.restore(Vec::new()).await.is_err());
-    assert!(units.advance_time(Duration::from_secs(1)).await.is_err());
+    assert!(
+        units
+            .advance_time(Duration::from_secs(1), Instant::now())
+            .await
+            .is_err()
+    );
 
     // A later stop fails the same way while the lost unit remains.
     assert!(units.stop().await.is_err());
@@ -177,7 +183,12 @@ async fn a_unit_whose_stop_is_unanswered_can_be_stopped_again(driver: DefaultDri
     assert!(units.reset().await.is_err());
     assert!(units.save().await.is_err());
     assert!(units.restore(Vec::new()).await.is_err());
-    assert!(units.advance_time(Duration::from_secs(1)).await.is_err());
+    assert!(
+        units
+            .advance_time(Duration::from_secs(1), Instant::now())
+            .await
+            .is_err()
+    );
 }
 
 #[async_test]

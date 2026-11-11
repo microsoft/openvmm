@@ -357,6 +357,10 @@ pub struct VmTimeKeeper {
     time: TimeState,
     #[inspect(skip)]
     stop_host_time: Option<u64>,
+    /// The host instant from which VM time runs once it next starts, when an
+    /// advance set one.
+    #[inspect(skip)]
+    resumed: Option<Instant>,
 }
 
 // UNSAFETY: Needed to derive SavedStateRoot in the same crate it is declared
@@ -514,6 +518,7 @@ impl VmTimeKeeper {
         Self {
             time,
             stop_host_time: None,
+            resumed: None,
             req_send,
             builder: VmTimeSourceBuilder { new_send },
             _task: task,
@@ -537,19 +542,25 @@ impl VmTimeKeeper {
         self.reset_to(vmtime).await
     }
 
-    /// Advances stopped VM time by `duration`.
-    pub async fn advance(&mut self, duration: Duration) {
+    /// Advances stopped VM time by `duration`, the time that passed while it
+    /// was stopped until the host instant `resumed`, from which the guest's
+    /// other clocks run again. Unless a restore or reset comes first, VM time
+    /// then runs from `resumed` once it starts, rather than from the start,
+    /// so that it keeps in step with those clocks.
+    pub async fn advance(&mut self, duration: Duration, resumed: Instant) {
         let vmtime = self
             .time
             .stop_time()
             .expect("VM time must be stopped before advancing")
             .wrapping_add(duration);
         self.reset_to(vmtime).await;
+        self.resumed = Some(resumed);
     }
 
     async fn reset_to(&mut self, vmtime: VmTime) {
         assert!(!self.time.is_started(), "should be stopped");
         self.stop_host_time = None;
+        self.resumed = None;
         self.time = TimeState::Stopped(vmtime);
         self.req_send
             .call(KeeperRequest::Reset, vmtime)
@@ -562,11 +573,16 @@ impl VmTimeKeeper {
         self.reset_to(VmTime::from_100ns(0)).await
     }
 
-    /// Starts the timer, so that the current time will increase.
+    /// Starts the timer, so that the current time will increase: from the
+    /// instant that a preceding [`Self::advance`] named, and otherwise from
+    /// now.
     pub async fn start(&mut self) {
         let vmtime = self.time.stop_time().expect("should be stopped");
         self.stop_host_time = None;
-        let timestamp = Timestamp::new(vmtime, Instant::now());
+        let now = Instant::now();
+        // An instant later than now would hold VM time still while it runs.
+        let start = self.resumed.take().map_or(now, |resumed| resumed.min(now));
+        let timestamp = Timestamp::new(vmtime, start);
         self.time = TimeState::Started(timestamp);
         self.req_send
             .call(KeeperRequest::Start, timestamp)
@@ -1154,6 +1170,61 @@ mod tests {
         assert_eq!(keeper.save().stop_host_time(), None);
         assert_eq!(acc1.now(), zero);
         assert_eq!(acc2.now(), zero);
+    }
+
+    #[async_test]
+    async fn test_advance_runs_from_the_resumed_instant(driver: DefaultDriver) {
+        let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let access = keeper
+            .builder()
+            .build(&driver)
+            .await
+            .unwrap()
+            .access("test");
+        let mut timer = PolledTimer::new(&driver);
+        let advanced = VmTime::from_100ns(10_000_000);
+
+        // Time advanced across a downtime that ended before the start runs
+        // from the end of the downtime, not from the start.
+        let resumed = Instant::now();
+        keeper.advance(Duration::from_secs(1), resumed).await;
+        assert_eq!(access.now(), advanced);
+        timer.sleep(Duration::from_millis(10)).await;
+        keeper.start().await;
+        assert_eq!(access.host_time(advanced), Some(resumed));
+        assert!(
+            !access
+                .now()
+                .is_before(advanced.wrapping_add(Duration::from_millis(10)))
+        );
+        keeper.stop().await;
+
+        // The next start runs from itself again.
+        let stopped = access.now();
+        let before = Instant::now();
+        keeper.start().await;
+        assert!(access.host_time(stopped).unwrap() >= before);
+        keeper.stop().await;
+
+        // A restore discards the instant of an earlier advance.
+        keeper.advance(Duration::from_secs(1), Instant::now()).await;
+        keeper
+            .restore(SavedState::from_vmtime(VmTime::from_100ns(0)))
+            .await;
+        timer.sleep(Duration::from_millis(10)).await;
+        let before = Instant::now();
+        keeper.start().await;
+        assert!(access.host_time(VmTime::from_100ns(0)).unwrap() >= before);
+        keeper.stop().await;
+
+        // VM time never runs from a later instant than its start.
+        let stopped = access.now();
+        keeper
+            .advance(Duration::ZERO, Instant::now() + Duration::from_secs(3600))
+            .await;
+        keeper.start().await;
+        assert!(access.host_time(stopped).unwrap() <= Instant::now());
+        keeper.stop().await;
     }
 
     /// Checks that `access`, waiting for a timeout that the host clock cannot
