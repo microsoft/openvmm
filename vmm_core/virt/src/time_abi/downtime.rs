@@ -9,8 +9,9 @@ use super::TimeAbiCode;
 use super::TimeAbiError;
 use super::TimeAbiTestHooks;
 
-/// The longest accepted downtime: 30 days.
-pub const MAX_DOWNTIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
+/// The longest accepted downtime, inclusive: 365 days, the fixed duration of
+/// 31,536,000 seconds rather than a calendar year.
+pub const MAX_DOWNTIME_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
 /// The smallest disagreement between the UTC delta and a monotonic downtime
 /// that is reported as a host wall-clock step.
 pub const HOST_WALL_CLOCK_STEP_NS: u64 = 1_000_000_000;
@@ -117,6 +118,7 @@ pub fn tsc_target(capture_tsc: u64, downtime_ns: u64, tsc_hz: u64) -> Result<u64
 mod tests {
     use super::*;
     use crate::time_abi::HostClockKind;
+    use crate::time_abi::rate::MAX_TSC_HZ;
 
     const SECOND: u64 = 1_000_000_000;
 
@@ -202,26 +204,39 @@ mod tests {
 
     #[test]
     fn bounds() {
-        let max_seconds = MAX_DOWNTIME_NS / SECOND;
-        let downtime =
-            select(&identity(2, 2), &after(max_seconds, 0), &Default::default()).unwrap();
-        assert_eq!(downtime.nanos, MAX_DOWNTIME_NS);
-        assert_eq!(
-            select(
-                &identity(2, 2),
-                &after(max_seconds + 1, 0),
-                &Default::default()
-            )
-            .unwrap_err()
-            .code,
-            TimeAbiCode::DowntimeExcessive
-        );
-        let hooks = TimeAbiTestHooks {
-            downtime_add_s: 2_592_001,
+        assert_eq!(MAX_DOWNTIME_NS, 31_536_000 * SECOND);
+        // Exactly 365 days is accepted from either source, and one
+        // nanosecond more is not.
+        let at = |nanos: u64| {
+            let capture = capture();
+            HostTimeSample {
+                utc_ns: capture.sample.utc_ns + nanos,
+                monotonic_ns: capture.sample.monotonic_ns + nanos,
+            }
+        };
+        for (destination, source) in [
+            (identity(1, 1), DowntimeSource::HostMonotonic),
+            (identity(2, 2), DowntimeSource::Utc),
+        ] {
+            let downtime = select(&destination, &at(MAX_DOWNTIME_NS), &Default::default()).unwrap();
+            assert_eq!((downtime.nanos, downtime.source), (MAX_DOWNTIME_NS, source));
+            assert_eq!(
+                select(&destination, &at(MAX_DOWNTIME_NS + 1), &Default::default())
+                    .unwrap_err()
+                    .code,
+                TimeAbiCode::DowntimeExcessive
+            );
+        }
+        // The downtime-add-s hook adds to D before the check: the boundary
+        // in seconds is accepted, and one second more is not.
+        let hooks = |downtime_add_s| TimeAbiTestHooks {
+            downtime_add_s,
             ..Default::default()
         };
+        let downtime = select(&identity(1, 1), &after(0, 0), &hooks(31_536_000)).unwrap();
+        assert_eq!(downtime.nanos, MAX_DOWNTIME_NS);
         assert_eq!(
-            select(&identity(1, 1), &after(0, 0), &hooks)
+            select(&identity(1, 1), &after(0, 0), &hooks(31_536_001))
                 .unwrap_err()
                 .code,
             TimeAbiCode::DowntimeExcessive
@@ -284,6 +299,22 @@ mod tests {
         assert_eq!(
             tsc_target(u64::MAX - 2, 1, 2_000_000_000).unwrap(),
             u64::MAX
+        );
+        // The longest downtime at the highest plausible TSC rate advances the
+        // TSC by about 1.7% of its range, and the overflow check still holds
+        // at the boundary.
+        let cycles = MAX_DOWNTIME_NS / SECOND * MAX_TSC_HZ;
+        assert_eq!(cycles, 315_360_000_000_000_000);
+        assert_eq!(tsc_target(0, MAX_DOWNTIME_NS, MAX_TSC_HZ).unwrap(), cycles);
+        assert_eq!(
+            tsc_target(u64::MAX - cycles, MAX_DOWNTIME_NS, MAX_TSC_HZ).unwrap(),
+            u64::MAX
+        );
+        assert_eq!(
+            tsc_target(u64::MAX - cycles + 1, MAX_DOWNTIME_NS, MAX_TSC_HZ)
+                .unwrap_err()
+                .code,
+            TimeAbiCode::TscTargetOverflow
         );
     }
 }
