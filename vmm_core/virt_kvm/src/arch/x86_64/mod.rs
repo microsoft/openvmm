@@ -10,6 +10,8 @@ mod extint;
 mod fingerprint;
 mod regs;
 pub(crate) mod snp;
+#[cfg(test)]
+mod test_guest;
 mod time_abi;
 mod vm_state;
 mod vp_state;
