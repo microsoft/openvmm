@@ -150,6 +150,7 @@ fn div_round_nearest(num: i128, den: i128) -> i128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time_abi::downtime::MAX_DOWNTIME_NS;
 
     #[test]
     fn plausibility_bounds_are_inclusive() {
@@ -267,9 +268,16 @@ mod tests {
         assert_eq!(lapic_ticks(4, LAPIC_HZ_HYPERV, 1), Some(0));
         assert_eq!(lapic_ticks(5, LAPIC_HZ_HYPERV, 1), Some(1));
         assert_eq!(lapic_ticks(1_999, LAPIC_HZ_KVM, 2), Some(999));
-        // Thirty days at 1 GHz.
-        let thirty_days = 30 * 24 * 60 * 60 * 1_000_000_000;
-        assert_eq!(lapic_ticks(thirty_days, LAPIC_HZ_KVM, 1), Some(thirty_days));
+        // The longest downtime at both backend rates: 1 GHz counts one tick
+        // per nanosecond, about 0.17% of the range of a u64.
+        assert_eq!(
+            lapic_ticks(MAX_DOWNTIME_NS, LAPIC_HZ_KVM, 1),
+            Some(MAX_DOWNTIME_NS)
+        );
+        assert_eq!(
+            lapic_ticks(MAX_DOWNTIME_NS, LAPIC_HZ_HYPERV, MAX_LAPIC_DIVIDE),
+            Some(MAX_DOWNTIME_NS / 5 / u64::from(MAX_LAPIC_DIVIDE))
+        );
         assert_eq!(lapic_ticks(1, LAPIC_HZ_KVM, 3), None);
         assert_eq!(lapic_ticks(1, LAPIC_HZ_KVM, 256), None);
         assert_eq!(lapic_ticks(1, LAPIC_HZ_KVM, 0), None);
