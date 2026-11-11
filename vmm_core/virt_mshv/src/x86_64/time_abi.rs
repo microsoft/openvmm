@@ -91,6 +91,7 @@ use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
 use virt::time_abi::msr::MSR_VP_INDEX;
 use virt::time_abi::msr::amd_config_msr_read;
 use virt::time_abi::msr::amd_config_msr_write;
+use virt::time_abi::phase_us;
 use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::tsc::GuestTscOffset;
@@ -1307,7 +1308,7 @@ impl TimeAbiBackend for MshvPartition {
             readback_equal = result.is_ok(),
             thawed,
             freeze_us = frozen.as_micros() as u64,
-            write_us = (written - frozen).as_micros() as u64,
+            write_us = phase_us(frozen, written),
             total_us = started.elapsed().as_micros() as u64,
             "time ABI: synchronized TSC set while partition time is frozen"
         );
