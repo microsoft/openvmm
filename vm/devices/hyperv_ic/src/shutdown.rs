@@ -421,6 +421,8 @@ mod save_restore {
             pub waiting_on_version: bool,
             #[mesh(4)]
             pub waiting_on_shutdown_response: bool,
+            /// Defaults to zero when absent in downlevel snapshots, matching the
+            /// transaction ID used by older implementations.
             #[mesh(5)]
             pub transaction_id: u8,
         }
@@ -428,26 +430,12 @@ mod save_restore {
 
     impl SaveRestoreSimpleVmbusDevice for ShutdownIc {
         fn save_open(&mut self, runner: &Self::Runner) -> state::SavedState {
-            runner.save()
-        }
-
-        fn restore_open(
-            &mut self,
-            saved_state: Self::SavedState,
-            channel: RawAsyncChannel<GpadlRingMem>,
-        ) -> Result<Self::Runner, ChannelOpenError> {
-            ShutdownChannel::restore(saved_state, channel)
-        }
-    }
-
-    impl<M: RingMem + Unpin> ShutdownChannel<M> {
-        pub(super) fn save(&self) -> state::SavedState {
             let (versions, shutdown_request, waiting_on_shutdown_response) =
                 if let ChannelState::Ready {
                     versions,
                     ref state,
                     clients: _,
-                } = self.state
+                } = runner.state
                 {
                     let request = if let ReadyState::SendShutdown(request) = state {
                         Some(request.into())
@@ -460,7 +448,7 @@ mod save_restore {
                     (None, None, false)
                 };
             let waiting_on_version = matches!(
-                self.state,
+                runner.state,
                 ChannelState::Negotiate(NegotiateState::WaitVersion)
             );
             state::SavedState {
@@ -468,14 +456,15 @@ mod save_restore {
                 shutdown_request,
                 waiting_on_version,
                 waiting_on_shutdown_response,
-                transaction_id: self.pipe.transaction_id,
+                transaction_id: runner.pipe.transaction_id,
             }
         }
 
-        pub(super) fn restore(
+        fn restore_open(
+            &mut self,
             saved_state: state::SavedState,
-            channel: RawAsyncChannel<M>,
-        ) -> Result<Self, ChannelOpenError> {
+            channel: RawAsyncChannel<GpadlRingMem>,
+        ) -> Result<Self::Runner, ChannelOpenError> {
             let state = if let Some((framework, message)) = saved_state.version {
                 let state = if let Some(request) = saved_state.shutdown_request {
                     ReadyState::SendShutdown(request.into())
@@ -522,9 +511,15 @@ mod tests {
     use vmbus_async::async_dgram::AsyncRecvExt;
     use vmbus_async::pipe::MessagePipe;
     use vmbus_channel::connected_async_channels;
+    use vmbus_channel::gpadl::GpadlId;
+    use vmbus_channel::gpadl::GpadlMap;
+    use vmbus_channel::gpadl_ring::AlignedGpadlView;
     use vmbus_channel::test_helpers::gated_channels;
     use vmbus_channel::test_helpers::stop_with_timeout;
     use vmbus_channel::test_helpers::with_timeout;
+    use vmbus_ring::IncomingRing;
+    use vmbus_ring::OutgoingRing;
+    use vmbus_ring::gparange::MultiPagedRangeBuf;
     use zerocopy::FromBytes;
     use zerocopy::FromZeros;
 
@@ -761,13 +756,15 @@ mod tests {
 
     #[async_test]
     async fn restore_preserves_transaction_id(driver: DefaultDriver) {
+        let (_send, recv) = mesh::channel();
+        let mut ic = ShutdownIc::new(recv);
         for waiting_on_version in [false, true] {
             for transaction_id in [0, 42, u8::MAX] {
                 let versions = Versions {
                     framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_3,
                     message_version: SHUTDOWN_VERSION_3,
                 };
-                let (host, _guest) = connected_async_channels(16384);
+                let (host, _guest) = save_restore_channels();
                 let state = if waiting_on_version {
                     ChannelState::Negotiate(NegotiateState::WaitVersion)
                 } else {
@@ -779,12 +776,12 @@ mod tests {
                 };
                 let mut channel = ShutdownChannel::new(host, Some(state)).unwrap();
                 channel.pipe.transaction_id = transaction_id;
-                let saved = mesh::payload::encode(channel.save());
+                let saved = mesh::payload::encode(ic.save_open(&channel));
                 let saved = mesh::payload::decode(&saved).unwrap();
 
-                let (host, guest) = connected_async_channels(16384);
+                let (host, guest) = save_restore_channels();
                 let mut guest = MessagePipe::new(guest).unwrap();
-                let mut restored = ShutdownChannel::restore(saved, host).unwrap();
+                let mut restored = ic.restore_open(saved, host).unwrap();
                 assert_eq!(restored.pipe.transaction_id, transaction_id);
                 let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
                 assert!(guest.recv(&mut buffer).now_or_never().is_none());
@@ -883,9 +880,11 @@ mod tests {
         let bytes = mesh::payload::encode(legacy);
         let saved: save_restore::state::SavedState = mesh::payload::decode(&bytes).unwrap();
         assert_eq!(saved.transaction_id, 0);
-        let (host, guest) = connected_async_channels(16384);
+        let (_send, recv) = mesh::channel();
+        let mut ic = ShutdownIc::new(recv);
+        let (host, guest) = save_restore_channels();
         let mut guest = MessagePipe::new(guest).unwrap();
-        let mut restored = ShutdownChannel::restore(saved, host).unwrap();
+        let mut restored = ic.restore_open(saved, host).unwrap();
         guest.try_send(response().as_bytes()).unwrap();
         with_timeout(&driver, restored.process_state_machine(&mut Vec::new()))
             .await
@@ -897,6 +896,37 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn save_restore_channels() -> (RawAsyncChannel<GpadlRingMem>, RawAsyncChannel<GpadlRingMem>) {
+        let memory = guestmem::GuestMemory::allocate(10 * 4096);
+        let map = GpadlMap::new();
+        map.add(
+            GpadlId(1),
+            MultiPagedRangeBuf::from_range_buffer(1, vec![10 * 4096, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+                .unwrap(),
+        );
+        let rings = AlignedGpadlView::new(map.view().map(GpadlId(1)).unwrap()).unwrap();
+        let (host_ring, guest_ring) = rings.split(5).ok().unwrap();
+        let (host, guest) = connected_async_channels(16384);
+        (
+            RawAsyncChannel {
+                in_ring: IncomingRing::new(GpadlRingMem::new(host_ring.clone(), &memory).unwrap())
+                    .unwrap(),
+                out_ring: OutgoingRing::new(
+                    GpadlRingMem::new(guest_ring.clone(), &memory).unwrap(),
+                )
+                .unwrap(),
+                signal: host.signal,
+            },
+            RawAsyncChannel {
+                in_ring: IncomingRing::new(GpadlRingMem::new(guest_ring, &memory).unwrap())
+                    .unwrap(),
+                out_ring: OutgoingRing::new(GpadlRingMem::new(host_ring, &memory).unwrap())
+                    .unwrap(),
+                signal: guest.signal,
+            },
+        )
     }
 
     #[async_test]
