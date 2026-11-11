@@ -422,13 +422,41 @@ pub(super) mod tests {
 
     #[test]
     fn vm_time_downtime_starts_at_the_saved_cut() {
+        use virt::time_abi::downtime::MAX_DOWNTIME_NS;
+
         let contract = test_time_contract();
         assert_eq!(contract.vm_time_downtime_ns(1_000).unwrap(), 1_200);
 
-        let mut excessive = contract;
-        excessive.vm_time_cut_to_anchor_ns = virt::time_abi::downtime::MAX_DOWNTIME_NS;
+        // D + Q is bounded inclusively, like D, and a sum beyond 64 bits is
+        // excessive too.
+        let cut = contract.vm_time_cut_to_anchor_ns;
         assert_eq!(
-            excessive.vm_time_downtime_ns(1).unwrap_err().code,
+            contract.vm_time_downtime_ns(MAX_DOWNTIME_NS - cut).unwrap(),
+            MAX_DOWNTIME_NS
+        );
+        for anchor_downtime_ns in [MAX_DOWNTIME_NS - cut + 1, MAX_DOWNTIME_NS, u64::MAX] {
+            assert_eq!(
+                contract
+                    .vm_time_downtime_ns(anchor_downtime_ns)
+                    .unwrap_err()
+                    .code,
+                TimeAbiCode::DowntimeExcessive,
+                "{anchor_downtime_ns}"
+            );
+        }
+
+        // Q alone may reach the bound, which leaves no room for D.
+        let mut longest = contract.clone();
+        longest.vm_time_cut_to_anchor_ns = MAX_DOWNTIME_NS;
+        validate_time_contract(&longest).unwrap();
+        assert_eq!(
+            longest.vm_time_downtime_ns(1).unwrap_err().code,
+            TimeAbiCode::DowntimeExcessive
+        );
+        let mut excessive = contract;
+        excessive.vm_time_cut_to_anchor_ns = MAX_DOWNTIME_NS + 1;
+        assert_eq!(
+            code(validate_time_contract(&excessive)),
             TimeAbiCode::DowntimeExcessive
         );
     }
@@ -759,7 +787,7 @@ pub(super) mod tests {
             TimeAbiCode::DowntimeNegative
         );
         let excessive = TimeAbiTestHooks {
-            downtime_add_s: 30 * 24 * 60 * 60,
+            downtime_add_s: virt::time_abi::downtime::MAX_DOWNTIME_NS / 1_000_000_000,
             ..Default::default()
         };
         assert_eq!(
@@ -770,6 +798,50 @@ pub(super) mod tests {
         assert_eq!(
             fail(&contract, "whp", cpu_profile::HOST, host, &now, &hooks),
             TimeAbiCode::ProfileUnknown
+        );
+    }
+
+    #[test]
+    fn restore_preflight_bounds_the_anchor_and_vm_time_downtimes() {
+        use virt::time_abi::downtime::MAX_DOWNTIME_NS;
+
+        // The destination sample is 5 s after the anchor on the same host
+        // boot, so this hook makes D exactly 365 days.
+        let (contract, destination, now) = test_restore();
+        let boundary = TimeAbiTestHooks {
+            downtime_add_s: MAX_DOWNTIME_NS / 1_000_000_000 - 5,
+            ..Default::default()
+        };
+        let restore = |contract: &SnapshotMachineContract, hooks: &TimeAbiTestHooks| {
+            preflight(
+                contract,
+                "whp",
+                "auto",
+                Some(TEST_SIGNATURE),
+                &destination,
+                &now,
+                hooks,
+            )
+        };
+        let mut uncut = contract.clone();
+        uncut.time.as_mut().unwrap().vm_time_cut_to_anchor_ns = 0;
+        assert_eq!(
+            restore(&uncut, &boundary).unwrap().downtime.nanos,
+            MAX_DOWNTIME_NS
+        );
+        // The test snapshot's VM time stopped 200 ns before its anchor, so the
+        // same D would advance VM time beyond the bound.
+        assert_eq!(
+            restore(&contract, &boundary).unwrap_err().code,
+            TimeAbiCode::DowntimeExcessive
+        );
+        let beyond = TimeAbiTestHooks {
+            downtime_add_s: boundary.downtime_add_s + 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            restore(&uncut, &beyond).unwrap_err().code,
+            TimeAbiCode::DowntimeExcessive
         );
     }
 
