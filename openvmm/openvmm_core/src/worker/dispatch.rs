@@ -13,6 +13,10 @@ mod pcie_wiring;
 mod restore;
 mod smmu_wiring;
 mod snapshot_rpc;
+#[cfg(guest_arch = "x86_64")]
+mod time_abi;
+#[cfg(guest_arch = "aarch64")]
+#[path = "dispatch/time_abi_aarch64.rs"]
 mod time_abi;
 
 use self::device_removal::DeviceRemovalState;
@@ -515,8 +519,80 @@ pub(crate) struct InitializedVm {
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
     /// The time ABI of the partition, when it uses the time ABI.
-    #[cfg(guest_arch = "x86_64")]
     time_abi_partition: Option<time_abi::PartitionTimeAbi>,
+}
+
+struct TimeAbiAdmission<'a> {
+    partition: &'a Arc<dyn HvlitePartition>,
+    parameters: &'a openvmm_defs::time_abi::TimeAbiParameters,
+    #[cfg(guest_arch = "x86_64")]
+    hypervisor: &'a str,
+    #[cfg(guest_arch = "x86_64")]
+    restore: Option<&'a openvmm_defs::time_abi::RestoreTimeInput>,
+    #[cfg(guest_arch = "x86_64")]
+    state_units: &'a StateUnits,
+    #[cfg(guest_arch = "x86_64")]
+    driver_source: &'a VmTaskDriverSource,
+    #[cfg(guest_arch = "aarch64")]
+    capacity: u32,
+}
+
+fn probe_cpu_fingerprint(
+    hypervisor: &str,
+) -> anyhow::Result<cpu_profile::fingerprint::BackendCpuFingerprint> {
+    let probe = hypervisor_resources::probe_by_name(hypervisor)
+        .with_context(|| format!("the {hypervisor} backend cannot be fingerprinted"))?;
+    probe
+        .probe_cpu(&[])
+        .with_context(|| format!("failed to fingerprint the {hypervisor} backend"))
+}
+
+// Keep each adapter's existing pairing/bound representation policy.
+fn published_time_fields(
+    sample: &virt::time_abi::publish::PublishedSample,
+    pairing_ns: u32,
+    bound: impl Fn(u64) -> Option<u32>,
+) -> chipset_resources::microvm_time::HostTimeFields {
+    use chipset_resources::microvm_time::HostClockStatus as SampleStatus;
+    use virt::time_abi::host::HostClockStatus;
+
+    chipset_resources::microvm_time::HostTimeFields {
+        utc_ns: sample.utc_ns,
+        tsc: sample.tsc,
+        pairing_ns,
+        status: match sample.status {
+            HostClockStatus::Unknown => SampleStatus::Unknown,
+            HostClockStatus::Synchronized => SampleStatus::Synchronized,
+            HostClockStatus::FreeRunning => SampleStatus::FreeRunning,
+            HostClockStatus::Unreliable => SampleStatus::Unreliable,
+        },
+        disruption: sample.disruption,
+        correction: sample.correction,
+        correction_bound: sample.correction_bound.and_then(&bound),
+        max_error_us: sample.max_error_us.and_then(bound),
+    }
+}
+
+struct TimeSampleSourceResolver(Arc<dyn chipset_resources::microvm_time::TimeSampleSource>);
+
+impl
+    vm_resource::ResolveResource<
+        chipset_resources::microvm_time::TimeSampleSourceKind,
+        vm_resource::PlatformResource,
+    > for TimeSampleSourceResolver
+{
+    type Output = chipset_resources::microvm_time::ResolvedTimeSampleSource;
+    type Error = std::convert::Infallible;
+
+    fn resolve(
+        &self,
+        _resource: vm_resource::PlatformResource,
+        _input: (),
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(chipset_resources::microvm_time::ResolvedTimeSampleSource(
+            self.0.clone(),
+        ))
+    }
 }
 
 trait ExtractTopologyConfig {
@@ -827,6 +903,43 @@ mod tests {
     use super::*;
     use test_with_tracing::test;
 
+    #[test]
+    fn shared_time_fields_preserve_adapter_bound_policy() {
+        use chipset_resources::microvm_time::HostClockStatus as SampleStatus;
+        use virt::time_abi::host::HostClockStatus;
+
+        for (status, expected) in [
+            (HostClockStatus::Unknown, SampleStatus::Unknown),
+            (HostClockStatus::Synchronized, SampleStatus::Synchronized),
+            (HostClockStatus::FreeRunning, SampleStatus::FreeRunning),
+            (HostClockStatus::Unreliable, SampleStatus::Unreliable),
+        ] {
+            let sample = virt::time_abi::publish::PublishedSample {
+                utc_ns: 123,
+                tsc: 456,
+                pairing_ns: 789,
+                status,
+                disruption: 2,
+                correction: -17,
+                correction_bound: Some(u64::MAX),
+                max_error_us: Some(19),
+            };
+            let fields = published_time_fields(&sample, 789, |v| u32::try_from(v).ok());
+            assert_eq!(fields.utc_ns, sample.utc_ns);
+            assert_eq!(fields.tsc, sample.tsc);
+            assert_eq!(fields.pairing_ns, 789);
+            assert_eq!(fields.status, expected);
+            assert_eq!(fields.disruption, sample.disruption);
+            assert_eq!(fields.correction, sample.correction);
+            assert_eq!(fields.correction_bound, None);
+            assert_eq!(fields.max_error_us, Some(19));
+            let legacy =
+                published_time_fields(&sample, 789, |v| Some(u32::try_from(v).unwrap_or(u32::MAX)));
+            assert_eq!(legacy.correction_bound, Some(u32::MAX));
+            assert_eq!(legacy.max_error_us, fields.max_error_us);
+        }
+    }
+
     fn linux_load_mode(isolation: openvmm_defs::config::LinuxIsolationConfig) -> LoadMode {
         LoadMode::Linux {
             kernel: File::open(std::env::current_exe().unwrap()).unwrap(),
@@ -966,6 +1079,8 @@ struct LoadedVmInner {
     chipset_cfg: BaseChipsetManifest,
     chipset_capabilities: VmChipsetCapabilities,
     dt_uarts: Vec<UartId>,
+    #[cfg(guest_arch = "aarch64")]
+    microvm_fixed_devices: Vec<super::vm_loaders::FixedMmioDevice<'static>>,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_region: MemoryRange,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
@@ -1259,8 +1374,12 @@ impl InitializedVm {
                 .iter()
                 .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu { .. })))
                 .count();
-            let result =
-                build_aarch64_topology(&cfg.processor_topology, &platform_info, smmu_count)?;
+            let result = if cfg.machine_profile == MachineProfile::Microvm {
+                anyhow::ensure!(smmu_count == 0, "ARM microVM does not support SMMU");
+                microvm::build_aarch64_topology(&cfg.processor_topology, &platform_info)?
+            } else {
+                build_aarch64_topology(&cfg.processor_topology, &platform_info, smmu_count)?
+            };
             (result.processor_topology, result.spi_layout)
         };
         #[cfg(not(guest_arch = "aarch64"))]
@@ -1306,28 +1425,15 @@ impl InitializedVm {
             microvm::uses_lazy_memory_registration(&cfg, shared_memory.as_ref());
         let user_mode_memory_faults = !lazy_memory_registration;
 
-        #[cfg(guest_arch = "x86_64")]
         let (time_abi_partition, time_abi_config) = match &cfg.microvm.time_abi {
             Some(parameters) if cfg.machine_profile == MachineProfile::Microvm => {
-                let profile = time_abi::select_cpu_profile(
-                    &parameters.cpu_profile,
+                let (prepared, config) = time_abi::prepare_contract(
+                    parameters,
                     &cfg.microvm.hypervisor_id,
                     cfg.microvm.restored_host_profile.as_ref(),
-                    &parameters.hooks,
-                )?;
-                let effective_cpuid = Arc::new(virt::time_abi::cpuid::effective_cpuid(
-                    &profile,
                     &processor_topology,
-                )?);
-                let (msrs, config) = time_abi::partition_config(&profile, &effective_cpuid);
-                (
-                    Some(time_abi::PartitionTimeAbi {
-                        msrs,
-                        profile,
-                        effective_cpuid,
-                    }),
-                    Some(config),
-                )
+                )?;
+                (Some(prepared), Some(config))
             }
             _ => (None, None),
         };
@@ -1344,7 +1450,6 @@ impl InitializedVm {
                 device_assignment_msi_iova_range,
                 user_mode_memory_faults,
                 lazy_memory_registration,
-                #[cfg(guest_arch = "x86_64")]
                 time_abi: time_abi_config,
             })
             .context("failed to create the prototype partition")?;
@@ -1402,12 +1507,11 @@ impl InitializedVm {
         //  2. Fix UEFI to allow booting from >0.
         //  3. Install a little bit of low memory, enough for UEFI to get to DXE
         //     (which can run anywhere.)
-        let ram_start_address =
-            if cfg!(guest_arch = "aarch64") && matches!(cfg.load_mode, LoadMode::Linux { .. }) {
-                1024 * 1024 * 1024 // 1 GiB
-            } else {
-                0
-            };
+        let ram_start_address = if matches!(cfg.load_mode, LoadMode::Linux { .. }) {
+            microvm::linux_ram_start_address(cfg.machine_profile)
+        } else {
+            0
+        };
 
         let vtl2_framebuffer_size = if cfg.vtl2_gfx {
             cfg.framebuffer
@@ -1722,7 +1826,6 @@ impl InitializedVm {
             processor_topology,
             igvm_file,
             driver_source,
-            #[cfg(guest_arch = "x86_64")]
             time_abi_partition,
         })
     }
@@ -1756,7 +1859,6 @@ impl InitializedVm {
             processor_topology,
             igvm_file,
             driver_source,
-            #[cfg(guest_arch = "x86_64")]
             time_abi_partition,
         } = self;
 
@@ -1992,85 +2094,42 @@ impl InitializedVm {
             })
             .unwrap();
 
-        #[cfg(guest_arch = "x86_64")]
-        let time_abi_state = match time_abi_partition {
-            Some(time_abi::PartitionTimeAbi {
-                msrs,
-                profile,
-                effective_cpuid,
-            }) => {
+        let _time_abi_state = match time_abi_partition {
+            Some(prepared) => {
                 let parameters = cfg
                     .microvm
                     .time_abi
                     .as_ref()
                     .context("time ABI parameters are missing")?;
-                let hypervisor = &cfg.microvm.hypervisor_id;
                 let restore = snapshot_restore.time_abi.as_ref();
                 anyhow::ensure!(
                     saved_state.is_some() == restore.is_some(),
                     "a time ABI restore requires both the saved state and the time ABI restore inputs"
                 );
-                if let Some(input) = restore {
-                    anyhow::ensure!(
-                        input.cpu_profile.id == profile.id(),
-                        "the partition's CPU profile '{}' is not the snapshot's '{}'",
-                        profile.id(),
-                        input.cpu_profile.id
-                    );
-                }
-                time_abi::check_cpu_profile(
-                    partition.as_ref(),
-                    hypervisor,
-                    &profile,
-                    &effective_cpuid,
-                    restore.map(|input| &input.cpu_profile),
+                #[cfg(guest_arch = "aarch64")]
+                anyhow::ensure!(
+                    restore.is_none() && parameters.generation == 0,
+                    "ARM CPU/time contracts support cold generation zero only"
+                );
+                let state = time_abi::admit_partition(
+                    prepared,
+                    TimeAbiAdmission {
+                        partition: &partition,
+                        parameters,
+                        #[cfg(guest_arch = "x86_64")]
+                        hypervisor: &cfg.microvm.hypervisor_id,
+                        #[cfg(guest_arch = "x86_64")]
+                        restore,
+                        #[cfg(guest_arch = "x86_64")]
+                        state_units: &state_units,
+                        #[cfg(guest_arch = "x86_64")]
+                        driver_source: &driver_source,
+                        #[cfg(guest_arch = "aarch64")]
+                        capacity: processor_topology.vp_count(),
+                    },
                 )?;
-                let report = time_abi::declare_rates(
-                    partition.as_ref(),
-                    &msrs,
-                    hypervisor,
-                    profile.id().to_owned(),
-                    restore.map(|input| virt::time_abi::DeclaredRates {
-                        tsc_hz: input.contract.tsc_frequency_hz,
-                        apic_hz: input.contract.apic_frequency_hz,
-                    }),
-                    &parameters.hooks,
-                )?;
-                // The portb device takes the host fields of its time samples
-                // from the clock, which pairs host UTC with the guest TSC
-                // through the offset that the VM measures at every start.
-                let clock = Arc::new(time_abi::TimeAbiClock::new(
-                    msrs.clone(),
-                    &report,
-                    &parameters.hooks,
-                ));
-                resolver.add_resolver(time_abi::TimeSampleSourceResolver(clock.clone()));
-                let guest_tsc_offset: time_abi::MeasureOffset = {
-                    let partition = partition.clone();
-                    let hypervisor = hypervisor.clone();
-                    Box::new(move || time_abi::guest_tsc_offset(partition.as_ref(), &hypervisor))
-                };
-                let unit = state_units
-                    .add(time_abi::TIME_ABI_UNIT)
-                    .spawn(driver_source.simple(), {
-                        let msrs = msrs.clone();
-                        let report = report.clone();
-                        move |recv| {
-                            state_unit::run_unit(time_abi::TimeAbiUnit { msrs, report }, recv)
-                        }
-                    })
-                    .unwrap();
-                Some(time_abi::TimeAbiState {
-                    _unit: unit,
-                    msrs,
-                    profile,
-                    effective_cpuid,
-                    report,
-                    clock,
-                    guest_tsc_offset,
-                    generation: parameters.generation,
-                    hooks: parameters.hooks.clone(),
-                })
+                resolver.add_resolver(TimeSampleSourceResolver(state.clock.clone()));
+                Some(state)
             }
             None => {
                 anyhow::ensure!(
@@ -3374,6 +3433,13 @@ impl InitializedVm {
             }
         }
 
+        #[cfg(guest_arch = "aarch64")]
+        let microvm_fixed_devices = if cfg.machine_profile == MachineProfile::Microvm {
+            microvm_virtio_slots.into_fixed_devices()
+        } else {
+            Vec::new()
+        };
+
         let (chipset, devices) = chipset_builder.build()?;
         let (fatal_error_send, _fatal_error_recv) = mesh::channel();
         let chipset = vmm_core::vmotherboard_adapter::AdaptedChipset::new(
@@ -3466,7 +3532,7 @@ impl InitializedVm {
                 chipset_devices: devices,
                 _vmtime: vmtime,
                 #[cfg(guest_arch = "x86_64")]
-                time_abi: time_abi_state,
+                time_abi: _time_abi_state,
                 memory_manager,
                 gm,
                 vtl0_hvsock_relay,
@@ -3488,6 +3554,8 @@ impl InitializedVm {
                 chipset_cfg: cfg.chipset,
                 chipset_capabilities: cfg.chipset_capabilities,
                 dt_uarts,
+                #[cfg(guest_arch = "aarch64")]
+                microvm_fixed_devices,
                 firmware_event_send: cfg.firmware_event_send,
                 machine_profile: cfg.machine_profile,
                 load_mode: cfg.load_mode,
@@ -3793,17 +3861,35 @@ impl LoadedVmInner {
                     None
                 };
 
-                super::vm_loaders::linux::load_linux_arm64(
-                    &kernel_config,
-                    &self.gm,
-                    &self.dt_uarts,
-                    linux_arm64_console(&self.dt_uarts, enable_serial),
-                    &self.processor_topology,
-                    &self.pcie_host_bridges,
-                    &smmu_configs,
-                    &self.chipset_mmio,
-                    build_acpi,
-                )?
+                if self.machine_profile == MachineProfile::Microvm {
+                    anyhow::ensure!(
+                        boot_mode == LinuxDirectBootMode::DeviceTree
+                            && !enable_serial
+                            && self.dt_uarts.is_empty()
+                            && self.pcie_host_bridges.is_empty()
+                            && smmu_configs.is_empty(),
+                        "ARM microVM requires its fixed DT boot without UART, PCI or SMMU"
+                    );
+                    super::vm_loaders::microvm::load_linux_arm64(
+                        &kernel_config,
+                        &self.gm,
+                        &self.processor_topology,
+                        &self.chipset_mmio,
+                        &self.microvm_fixed_devices,
+                    )?
+                } else {
+                    super::vm_loaders::linux::load_linux_arm64(
+                        &kernel_config,
+                        &self.gm,
+                        &self.dt_uarts,
+                        linux_arm64_console(&self.dt_uarts, enable_serial),
+                        &self.processor_topology,
+                        &self.pcie_host_bridges,
+                        &smmu_configs,
+                        &self.chipset_mmio,
+                        build_acpi,
+                    )?
+                }
             }
             &LoadMode::Uefi {
                 ref firmware,

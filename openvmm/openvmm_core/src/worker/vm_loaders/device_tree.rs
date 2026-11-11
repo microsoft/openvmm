@@ -38,6 +38,7 @@ const PHANDLE_SMMU_BASE: u32 = 5;
 const GIC_SPI: u32 = 0;
 const GIC_PPI: u32 = 1;
 const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
+const IRQ_TYPE_EDGE_RISING: u32 = 1;
 
 #[derive(Debug, Error)]
 pub enum DeviceTreeError {
@@ -65,6 +66,26 @@ pub enum DeviceTreeError {
     Memory,
     #[error("processor topology is empty or too large")]
     Processors,
+    #[error("invalid fixed MMIO device description")]
+    FixedDevice,
+    #[error("reserved memory is empty, overlapping, or outside RAM")]
+    ReservedMemory,
+}
+
+/// A profile-owned fixed MMIO device, serialized by the shared DT writer.
+pub(crate) struct FixedMmioDevice<'a> {
+    pub name: &'a str,
+    pub compatible: &'a str,
+    pub range: MemoryRange,
+    pub interrupt: Option<FixedGicInterrupt>,
+    pub dma_coherent: bool,
+}
+
+/// A full GIC interrupt ID and its profile-owned trigger policy.
+#[derive(Clone, Copy)]
+pub(crate) struct FixedGicInterrupt {
+    pub intid: u32,
+    pub edge_triggered: bool,
 }
 
 /// Builds a device tree for IGVM or Linux direct boot.
@@ -80,6 +101,8 @@ pub(crate) struct DeviceTreeBuilder<'a, T: DeviceTreeArch> {
     boot: DeviceTreeBootType<'a>,
     command_line: &'a str,
     console: Option<UartId>,
+    fixed_devices: &'a [FixedMmioDevice<'a>],
+    reserved_memory: &'a [MemoryRange],
 }
 
 /// The boot path that receives the device tree.
@@ -125,6 +148,8 @@ impl<'a, T: DeviceTreeArch> DeviceTreeBuilder<'a, T> {
             boot,
             command_line: "",
             console: None,
+            fixed_devices: &[],
+            reserved_memory: &[],
         }
     }
 
@@ -135,6 +160,16 @@ impl<'a, T: DeviceTreeArch> DeviceTreeBuilder<'a, T> {
 
     pub(crate) fn with_console(mut self, console: Option<UartId>) -> Self {
         self.console = console;
+        self
+    }
+
+    pub(crate) fn with_fixed_devices(mut self, devices: &'a [FixedMmioDevice<'a>]) -> Self {
+        self.fixed_devices = devices;
+        self
+    }
+
+    pub(crate) fn with_reserved_memory(mut self, ranges: &'a [MemoryRange]) -> Self {
+        self.reserved_memory = ranges;
         self
     }
 
@@ -176,7 +211,57 @@ impl<'a, T: DeviceTreeArch> DeviceTreeBuilder<'a, T> {
                 return Err(DeviceTreeError::InitrdRange);
             }
         }
-        T::validate(self.topology, self.smmus(), self.pcie)
+        T::validate(self.topology, self.smmus(), self.pcie)?;
+        if self.fixed_devices.is_empty() && self.reserved_memory.is_empty() {
+            return Ok(());
+        }
+        let DeviceTreeBootType::LinuxDirect(linux) = &self.boot else {
+            return Err(DeviceTreeError::FixedDevice);
+        };
+        for (index, reserved) in self.reserved_memory.iter().enumerate() {
+            if reserved.is_empty()
+                || !self.ram.iter().any(|ram| ram.range.contains(reserved))
+                || self.reserved_memory[..index]
+                    .iter()
+                    .any(|other| other.overlaps(reserved))
+                || linux
+                    .initrd
+                    .is_some_and(|(start, end)| reserved.start() < end && start < reserved.end())
+            {
+                return Err(DeviceTreeError::ReservedMemory);
+            }
+        }
+        for (index, device) in self.fixed_devices.iter().enumerate() {
+            if device.name.is_empty()
+                || device.name.contains(['\0', '/', '@'])
+                || device.compatible.is_empty()
+                || device.compatible.contains('\0')
+                || device.range.is_empty()
+                || !(linux.low_mmio.contains(&device.range)
+                    || linux.high_mmio.contains(&device.range))
+                || self.ram.iter().any(|ram| ram.range.overlaps(&device.range))
+                || self.fixed_devices[..index]
+                    .iter()
+                    .any(|other| other.range.overlaps(&device.range))
+                || self.dt_uarts.iter().any(|uart| {
+                    let (base, len, _) = uart_resources(*uart);
+                    uart_is_mmio(*uart)
+                        && base < device.range.end()
+                        && device.range.start() < base + len
+                })
+                || self
+                    .pcie
+                    .iter()
+                    .any(|bridge| bridge.ecam_range.overlaps(&device.range))
+                || self.smmus().iter().any(|smmu| {
+                    smmu.base < device.range.end() && device.range.start() < smmu.base + 0x2_0000
+                })
+            {
+                return Err(DeviceTreeError::FixedDevice);
+            }
+            T::validate_fixed_device(self.topology, device)?;
+        }
+        Ok(())
     }
 
     fn smmus(&self) -> &'a [AcpiSmmuConfig] {
@@ -188,11 +273,19 @@ impl<'a, T: DeviceTreeArch> DeviceTreeBuilder<'a, T> {
 
     pub(crate) fn build(self) -> Result<Vec<u8>, DeviceTreeError> {
         self.validate()?;
+        let reservations: Vec<_> = self
+            .reserved_memory
+            .iter()
+            .map(|range| fdt::ReserveEntry {
+                address: range.start().into(),
+                size: range.len().into(),
+            })
+            .collect();
         let mut buffer = vec![0; self.capacity];
         let mut fdt_builder = Builder::new(fdt::builder::BuilderConfig {
             blob_buffer: &mut buffer,
             string_table_cap: STRING_TABLE_CAP,
-            memory_reservations: &[],
+            memory_reservations: &reservations,
         })?;
 
         let p = Properties::new(&mut fdt_builder)?;
@@ -233,6 +326,48 @@ impl<'a, T: DeviceTreeArch> DeviceTreeBuilder<'a, T> {
                     root = emit_memory(root, &p, entry.range, None)?;
                 }
             }
+        }
+
+        if !self.reserved_memory.is_empty() {
+            let mut reserved = root
+                .start_node("reserved-memory")?
+                .add_u32(p.address_cells, 2)?
+                .add_u32(p.size_cells, 2)?
+                .add_null(p.ranges)?;
+            for range in self.reserved_memory {
+                reserved = reserved
+                    .start_node(&format!("reserved@{:x}", range.start()))?
+                    .add_u64_array(p.reg, &[range.start(), range.len()])?
+                    .end_node()?;
+            }
+            root = reserved.end_node()?;
+        }
+        for device in self.fixed_devices {
+            let mut node = root
+                .start_node(&format!("{}@{:x}", device.name, device.range.start()))?
+                .add_str(p.compatible, device.compatible)?
+                .add_u64_array(p.reg, &[device.range.start(), device.range.len()])?
+                .add_str(p.status, "okay")?;
+            if let Some(interrupt) = device.interrupt {
+                node = node
+                    .add_u32(p.interrupt_parent, PHANDLE_GIC)?
+                    .add_u32_array(
+                        p.interrupts,
+                        &[
+                            GIC_SPI,
+                            interrupt.intid - 32,
+                            if interrupt.edge_triggered {
+                                IRQ_TYPE_EDGE_RISING
+                            } else {
+                                IRQ_TYPE_LEVEL_HIGH
+                            },
+                        ],
+                    )?;
+            }
+            if device.dma_coherent {
+                node = node.add_null(p.dma_coherent)?;
+            }
+            root = node.end_node()?;
         }
 
         let smmus = self.smmus();
@@ -342,6 +477,11 @@ pub(crate) trait DeviceTreeArch: ArchTopology + inspect::Inspect {
         pcie: &[PcieHostBridge],
     ) -> Result<(), DeviceTreeError>;
 
+    fn validate_fixed_device(
+        topology: &ProcessorTopology<Self>,
+        device: &FixedMmioDevice<'_>,
+    ) -> Result<(), DeviceTreeError>;
+
     /// Adds architecture-specific properties to the root node.
     fn emit_root_properties<'a>(
         root: Builder<'a, Nest<()>>,
@@ -380,6 +520,13 @@ pub(crate) trait DeviceTreeArch: ArchTopology + inspect::Inspect {
 
 impl DeviceTreeArch for X86Topology {
     const MMIO_UARTS: bool = false;
+
+    fn validate_fixed_device(
+        _topology: &ProcessorTopology<Self>,
+        _device: &FixedMmioDevice<'_>,
+    ) -> Result<(), DeviceTreeError> {
+        Err(DeviceTreeError::FixedDevice)
+    }
 
     fn validate(
         _topology: &ProcessorTopology<Self>,
@@ -442,6 +589,39 @@ impl DeviceTreeArch for X86Topology {
 
 impl DeviceTreeArch for Aarch64Topology {
     const MMIO_UARTS: bool = true;
+
+    fn validate_fixed_device(
+        topology: &ProcessorTopology<Self>,
+        device: &FixedMmioDevice<'_>,
+    ) -> Result<(), DeviceTreeError> {
+        if device
+            .interrupt
+            .is_some_and(|irq| irq.intid < 32 || irq.intid >= topology.gic_nr_irqs())
+        {
+            return Err(DeviceTreeError::Interrupt);
+        }
+        let [dist_base, dist_size, second_base, second_size] = gic_registers(topology);
+        for (base, size) in [(dist_base, dist_size), (second_base, second_size)] {
+            let end = base.checked_add(size).ok_or(DeviceTreeError::GicRange)?;
+            if base < device.range.end() && device.range.start() < end {
+                return Err(DeviceTreeError::FixedDevice);
+            }
+        }
+        let msi = match topology.gic_msi() {
+            GicMsiController::Its(its) => Some((its.its_base, 0x2_0000)),
+            GicMsiController::V2m(v2m) => {
+                Some((v2m.frame_base, openvmm_defs::config::GIC_V2M_MSI_FRAME_SIZE))
+            }
+            GicMsiController::None => None,
+        };
+        if let Some((base, size)) = msi {
+            let end = base.checked_add(size).ok_or(DeviceTreeError::FixedDevice)?;
+            if base < device.range.end() && device.range.start() < end {
+                return Err(DeviceTreeError::FixedDevice);
+            }
+        }
+        Ok(())
+    }
 
     fn validate(
         topology: &ProcessorTopology<Self>,
@@ -1168,6 +1348,225 @@ mod tests {
             .unwrap()
             .read_str()
             .unwrap()
+    }
+
+    #[test]
+    fn fixed_dt_extension_preserves_existing_bytes() {
+        let x86 = TopologyBuilder::new_x86().build(2).unwrap();
+        let dt = igvm(&x86, 0x10000)
+            .with_fixed_devices(&[])
+            .with_reserved_memory(&[])
+            .build()
+            .unwrap();
+        assert_eq!((crc32fast::hash(&dt), dt.len()), (0x6d6d_b899, 2564));
+        for (count, crc, len) in [
+            (1, 0xb694_7c8f, 2812),
+            (2, 0xa564_92a0, 2924),
+            (4, 0x663f_58a1, 3108),
+            (8, 0xb6dc_4a00, 3476),
+        ] {
+            let arm = TopologyBuilder::new_aarch64(arm_platform())
+                .build(count)
+                .unwrap();
+            let dt = linux(&arm, &[], &[])
+                .with_fixed_devices(&[])
+                .with_reserved_memory(&[])
+                .build()
+                .unwrap();
+            assert_eq!((crc32fast::hash(&dt), dt.len()), (crc, len), "VPs={count}");
+        }
+    }
+
+    #[test]
+    fn fixed_arm_devices_reservations_and_interrupts_match_profile_geometry() {
+        for count in [1, 2, 4, 8] {
+            let topology = TopologyBuilder::new_aarch64(Aarch64PlatformConfig {
+                gic_distributor_base: 0xffff_0000,
+                gic_version: GicVersion::V3 {
+                    redistributors_base: 0xefff_0000,
+                },
+                gic_msi: GicMsiController::None,
+                pmu_gsiv: None,
+                virt_timer_ppi: 20,
+                gic_nr_irqs: 992,
+            })
+            .build(count)
+            .unwrap();
+            let mut devices: Vec<_> = [0, 1, 2, 3, 6, 7]
+                .into_iter()
+                .map(|slot| {
+                    let base = 0xd000_0000 + u64::from(slot) * 0x1000;
+                    FixedMmioDevice {
+                        name: "virtio",
+                        compatible: "virtio,mmio",
+                        range: MemoryRange::new(base..base + 0x1000),
+                        interrupt: Some(FixedGicInterrupt {
+                            intid: 32 + slot,
+                            edge_triggered: true,
+                        }),
+                        dma_coherent: true,
+                    }
+                })
+                .collect();
+            devices.push(FixedMmioDevice {
+                name: "nvx-platform",
+                compatible: "microsoft,nvx-platform-control-v1",
+                range: MemoryRange::new(0xd100_0000..0xd100_1000),
+                interrupt: None,
+                dma_coherent: false,
+            });
+            let reservations = [MemoryRange::new(0x30000..0x31000)];
+            let dt = DeviceTreeBuilder::new(
+                &topology,
+                RAM,
+                &[],
+                &[],
+                0x10000,
+                DeviceTreeBootType::LinuxDirect(LinuxDirectBoot {
+                    low_mmio: MemoryRange::new(0xc000_0000..0x1_0000_0000),
+                    high_mmio: MemoryRange::EMPTY,
+                    initrd: None,
+                    smmus: &[],
+                }),
+            )
+            .with_fixed_devices(&devices)
+            .with_reserved_memory(&reservations)
+            .build()
+            .unwrap();
+            for slot in [0, 1, 2, 3, 6, 7] {
+                let base = 0xd000_0000 + u64::from(slot) * 0x1000;
+                let device = node(&dt, &format!("/virtio@{base:x}"));
+                assert_eq!(u64_property(&device, "reg"), [base, 0x1000]);
+                assert_eq!(
+                    u32_property(&device, "interrupts"),
+                    [GIC_SPI, slot, IRQ_TYPE_EDGE_RISING]
+                );
+                assert!(device.find_property("dma-coherent").unwrap().is_some());
+            }
+            let root = Parser::new(&dt).unwrap().root().unwrap();
+            for slot in [4, 5, 8] {
+                let name = format!("virtio@{:x}", 0xd000_0000_u64 + slot * 0x1000);
+                assert!(
+                    !root
+                        .children()
+                        .map(Result::unwrap)
+                        .any(|child| child.name == name)
+                );
+            }
+            let reserved = node(&dt, "/reserved-memory/reserved@30000");
+            assert_eq!(u64_property(&reserved, "reg"), [0x30000, 0x1000]);
+            assert!(reserved.find_property("no-map").unwrap().is_none());
+            let reservations: Vec<_> = Parser::new(&dt)
+                .unwrap()
+                .memory_reservations()
+                .map(Result::unwrap)
+                .collect();
+            assert_eq!(reservations.len(), 1);
+            assert_eq!(u64::from(reservations[0].address), 0x30000);
+            assert_eq!(u64::from(reservations[0].size), 0x1000);
+            assert_eq!(node(&dt, "/cpus").children().count(), count as usize);
+            for cpu in node(&dt, "/cpus").children().map(Result::unwrap) {
+                for name in [
+                    "i-cache-size",
+                    "i-cache-line-size",
+                    "i-cache-sets",
+                    "d-cache-size",
+                    "d-cache-line-size",
+                    "d-cache-sets",
+                    "next-level-cache",
+                ] {
+                    assert!(cpu.find_property(name).unwrap().is_none());
+                }
+            }
+            assert!(root.children().map(Result::unwrap).all(|child| {
+                child
+                    .find_property("compatible")
+                    .unwrap()
+                    .is_none_or(|property| property.read_str().unwrap() != "cache")
+            }));
+            assert_eq!(
+                u32_property(&node(&dt, "/timer"), "interrupts"),
+                [GIC_PPI, 4, 8]
+            );
+            assert!(
+                root.children()
+                    .map(Result::unwrap)
+                    .all(|child| child.name != "pmu")
+            );
+            let control = node(&dt, "/nvx-platform@d1000000");
+            assert_eq!(u64_property(&control, "reg"), [0xd100_0000, 0x1000]);
+            assert!(control.find_property("interrupts").unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn fixed_dt_extension_rejects_overlaps_bad_interrupts_and_reservations() {
+        let arm = TopologyBuilder::new_aarch64(arm_platform())
+            .build(2)
+            .unwrap();
+        let valid = || FixedMmioDevice {
+            name: "virtio",
+            compatible: "virtio,mmio",
+            range: MemoryRange::new(0xe100_0000..0xe100_1000),
+            interrupt: Some(FixedGicInterrupt {
+                intid: 32,
+                edge_triggered: true,
+            }),
+            dma_coherent: true,
+        };
+        for range in [
+            MemoryRange::EMPTY,
+            MemoryRange::new(0xd000_0000..0xd000_1000),
+            MemoryRange::new(0xeff0_0000..0xeff0_1000),
+        ] {
+            let devices = [FixedMmioDevice { range, ..valid() }];
+            assert!(
+                linux(&arm, &[], &[])
+                    .with_fixed_devices(&devices)
+                    .build()
+                    .is_err()
+            );
+        }
+        let duplicates = [valid(), valid()];
+        assert!(
+            linux(&arm, &[], &[])
+                .with_fixed_devices(&duplicates)
+                .build()
+                .is_err()
+        );
+        for intid in [0, 31, 256, u32::MAX] {
+            let devices = [FixedMmioDevice {
+                interrupt: Some(FixedGicInterrupt {
+                    intid,
+                    edge_triggered: true,
+                }),
+                ..valid()
+            }];
+            assert!(matches!(
+                linux(&arm, &[], &[]).with_fixed_devices(&devices).build(),
+                Err(DeviceTreeError::Interrupt)
+            ));
+        }
+        for ranges in [
+            vec![MemoryRange::EMPTY],
+            vec![MemoryRange::new(0x4000_0000..0x4000_1000)],
+            vec![
+                MemoryRange::new(0x30000..0x31000),
+                MemoryRange::new(0x30000..0x32000),
+            ],
+        ] {
+            assert!(matches!(
+                linux(&arm, &[], &[]).with_reserved_memory(&ranges).build(),
+                Err(DeviceTreeError::ReservedMemory)
+            ));
+        }
+        let x86 = TopologyBuilder::new_x86().build(2).unwrap();
+        assert!(
+            igvm(&x86, 0x10000)
+                .with_fixed_devices(&[valid()])
+                .build()
+                .is_err()
+        );
     }
 
     #[test]
