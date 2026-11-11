@@ -197,6 +197,8 @@ pub struct OpenVmmRelaunchConfig {
     builder: crate::PetriVmBuilder<OpenVmmPetriBackend>,
     /// Holds the disk write files shared by all launched workers.
     _diff_dir: tempfile::TempDir,
+    /// Bounds the entire recipe, including time between worker launches.
+    _watchdog_task: Option<Task<()>>,
 }
 
 impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
@@ -254,9 +256,12 @@ impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
             }
         }
 
+        let watchdog_task =
+            Self::start_watchdog_timer(&builder.resources.driver, builder.watchdog_timeout);
         Ok(OpenVmmRelaunchConfig {
             builder,
             _diff_dir: diff_dir,
+            _watchdog_task: watchdog_task,
         })
     }
 }
