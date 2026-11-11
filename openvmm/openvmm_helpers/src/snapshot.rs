@@ -9,6 +9,7 @@ use mesh::payload::Timestamp;
 pub mod publish;
 pub mod restore;
 
+pub use publish::check_snapshot_destination;
 pub use publish::write_snapshot;
 pub use restore::read_snapshot;
 
@@ -40,6 +41,12 @@ pub struct SnapshotManifest {
     /// Architecture string ("x86_64" or "aarch64").
     #[mesh(7)]
     pub architecture: String,
+    /// Unique snapshot identifier generated at save time. Zero if the manifest
+    /// has no snapshot ID.
+    #[mesh(18, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+    pub snapshot_id: guid::Guid,
+    // Field 19 is reserved for `compatibility_bundle_digest` and field 20 for
+    // `memory_artifacts`.
 }
 
 /// Validate that a snapshot manifest is compatible with the running VM config.
@@ -97,9 +104,34 @@ pub fn validate_manifest(
     Ok(())
 }
 
+/// Optional checks a caller can require a snapshot to pass on restore.
+#[derive(Default)]
+pub struct SnapshotExpectations {
+    /// If set, the manifest's snapshot ID must equal this value. If `None`,
+    /// the snapshot ID is not checked.
+    pub snapshot_id: Option<guid::Guid>,
+}
+
+/// Validate that a snapshot manifest matches the caller's expectations.
+pub fn validate_expectations(
+    manifest: &SnapshotManifest,
+    expectations: &SnapshotExpectations,
+) -> anyhow::Result<()> {
+    if let Some(expected) = expectations.snapshot_id {
+        if manifest.snapshot_id != expected {
+            anyhow::bail!("snapshot ID doesn't match the expected snapshot ID");
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_ID: guid::Guid = guid::guid!("3099921d-f0e6-48aa-9d58-8fd4811ce4d2");
+    const OTHER_ID: guid::Guid = guid::guid!("7b2a8c1e-5f4d-4e3a-9b6c-0d1e2f3a4b5c");
 
     /// Helper: build a test manifest with sensible defaults.
     fn test_manifest() -> SnapshotManifest {
@@ -114,6 +146,7 @@ mod tests {
             vp_count: 2,
             page_size: 4096,
             architecture: "x86_64".to_string(),
+            snapshot_id: TEST_ID,
         }
     }
 
@@ -136,10 +169,38 @@ mod tests {
         assert_eq!(read_manifest.memory_size_bytes, manifest.memory_size_bytes);
         assert_eq!(read_manifest.vp_count, manifest.vp_count);
         assert_eq!(read_manifest.architecture, manifest.architecture);
+        assert_eq!(read_manifest.snapshot_id, manifest.snapshot_id);
         assert_eq!(read_state, state);
 
         // memory.bin should exist in the snapshot directory.
         assert!(snap_dir.join("memory.bin").exists());
+    }
+
+    #[test]
+    fn decode_manifest_without_snapshot_id() {
+        // Older manifests have no snapshot ID, and NVX v6 manifests use field 8
+        // for an integer. Both decode with a zero ID, so the version check can
+        // reject unsupported formats with a clear error.
+        #[derive(Protobuf)]
+        #[mesh(package = "openvmm.snapshot")]
+        struct OldManifest {
+            #[mesh(1)]
+            version: u32,
+            #[mesh(8)]
+            state_size_bytes: u64,
+        }
+
+        let bytes = mesh::payload::encode(OldManifest {
+            version: 6,
+            state_size_bytes: 4096,
+        });
+        let manifest: SnapshotManifest = mesh::payload::decode(&bytes).unwrap();
+        assert!(manifest.snapshot_id.is_zero());
+        let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
+        assert!(
+            err.to_string().contains("version 6 is not supported"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -158,21 +219,75 @@ mod tests {
     }
 
     #[test]
-    fn write_snapshot_same_memory_path() {
-        // When the memory backing file IS <snap_dir>/memory.bin, the function
-        // should detect the collision and skip the hard-link.
+    fn write_snapshot_rejects_existing_directory() {
+        // An existing destination is rejected even if it is empty or holds the
+        // VM's own memory backing file, and nothing is written into it.
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         std::fs::create_dir_all(&snap_dir).unwrap();
 
         let mem_path = snap_dir.join("memory.bin");
-        std::fs::write(&mem_path, b"SAMEFILE").unwrap();
+        std::fs::write(&mem_path, b"MEM").unwrap();
 
-        // Should succeed without error.
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
+        let err = write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(std::fs::read(&mem_path).unwrap(), b"MEM");
+        assert!(!snap_dir.join("state.bin").exists());
+        assert!(!snap_dir.join("manifest.bin").exists());
+    }
 
-        // The file content should be unchanged.
-        assert_eq!(std::fs::read(&mem_path).unwrap(), b"SAMEFILE");
+    #[test]
+    fn write_snapshot_rejects_existing_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let mem_path = dir.path().join("memory.bin");
+        std::fs::write(&mem_path, b"MEM").unwrap();
+
+        let mut first = test_manifest();
+        first.snapshot_id = OTHER_ID;
+        write_snapshot(&snap_dir, &first, b"first", &mem_path).unwrap();
+
+        let second = test_manifest();
+        let err = write_snapshot(&snap_dir, &second, b"second", &mem_path).unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+
+        // The existing snapshot is untouched.
+        let (manifest, state) = read_snapshot(&snap_dir).unwrap();
+        assert_eq!(manifest.snapshot_id, OTHER_ID);
+        assert_eq!(state, b"first");
+        assert!(snap_dir.join("memory.bin").exists());
+    }
+
+    #[test]
+    fn write_snapshot_cleans_up_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        // The backing file doesn't exist, so linking memory.bin fails after
+        // state.bin has been written.
+        let mem_path = dir.path().join("missing.bin");
+
+        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap_err();
+
+        // Everything this call created, including the directory, is removed.
+        assert!(!snap_dir.exists());
+    }
+
+    #[test]
+    fn check_snapshot_destination_rejects_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_dir = dir.path().join("file");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+        let err = check_snapshot_destination(&not_a_dir).unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -225,6 +340,45 @@ mod tests {
         let err = validate_manifest(&manifest, "x86_64", 1024, 2, 65536).unwrap_err();
         assert!(
             err.to_string().contains("page size"),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn expect_id(id: guid::Guid) -> SnapshotExpectations {
+        SnapshotExpectations {
+            snapshot_id: Some(id),
+        }
+    }
+
+    #[test]
+    fn validate_expectations_snapshot_id_matches() {
+        let manifest = test_manifest();
+        validate_expectations(&manifest, &expect_id(TEST_ID)).unwrap();
+    }
+
+    #[test]
+    fn validate_expectations_skipped_when_not_provided() {
+        let manifest = test_manifest();
+        validate_expectations(&manifest, &SnapshotExpectations::default()).unwrap();
+    }
+
+    #[test]
+    fn validate_expectations_snapshot_id_mismatch() {
+        let manifest = test_manifest();
+        let err = validate_expectations(&manifest, &expect_id(OTHER_ID)).unwrap_err();
+        assert!(
+            err.to_string().contains("snapshot ID"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_expectations_snapshot_id_missing_from_manifest() {
+        let mut manifest = test_manifest();
+        manifest.snapshot_id = guid::Guid::ZERO;
+        let err = validate_expectations(&manifest, &expect_id(TEST_ID)).unwrap_err();
+        assert!(
+            err.to_string().contains("snapshot ID"),
             "unexpected error: {err}"
         );
     }

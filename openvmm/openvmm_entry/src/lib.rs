@@ -96,6 +96,7 @@ use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::config::supports_acpi_power_button;
 use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
@@ -257,20 +258,6 @@ fn base_chipset_type(opt: &Options) -> BaseChipsetType {
         BaseChipsetType::HyperVGen2LinuxDirect
     } else {
         BaseChipsetType::UnenlightenedLinuxDirect
-    }
-}
-
-/// Whether the VM gets an ACPI power button.
-///
-/// This reads the boot flags rather than the load mode, which is
-/// `LoadMode::None` when restoring a snapshot.
-fn acpi_power_button_enabled(opt: &Options) -> bool {
-    if opt.igvm.is_some() {
-        false
-    } else if opt.pcat || opt.uefi.is_some() {
-        true
-    } else {
-        !opt.device_tree
     }
 }
 
@@ -1362,12 +1349,7 @@ async fn vm_config_from_command_line(
         TpmVersionCli::V185 => TpmVersion::V185,
     });
 
-    if opt.restore_snapshot.is_some() {
-        // Snapshot restore: skip firmware loading entirely. Device state and
-        // memory come from the snapshot directory.
-        load_mode = LoadMode::None;
-        with_hv = true;
-    } else if let Some(igvm) = &opt.igvm {
+    if let Some(igvm) = &opt.igvm {
         let cli_args::UefiCli {
             firmware,
             debug: _,
@@ -1548,7 +1530,7 @@ async fn vm_config_from_command_line(
         };
     }
 
-    if acpi_power_button_enabled(opt) {
+    if supports_acpi_power_button(&load_mode) {
         let (send, recv) = mesh::channel();
         let irq = match arch {
             MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,

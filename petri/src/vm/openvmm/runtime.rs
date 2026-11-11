@@ -281,6 +281,11 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_ipmi_sel(&mut self) -> anyhow::Result<IpmiSelEvent>
     );
     petri_vm_fn!(
+        /// Wait for OpenHCL's VTL0 start report, preserving a guest-reported
+        /// initialization error separately from transport and VM-halt errors.
+        pub async fn wait_for_vtl0_start(&mut self) -> anyhow::Result<Result<(), get_resources::ged::Vtl0StartError>>
+    );
+    petri_vm_fn!(
         /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
         /// that will be closed when it is no longer ready. Returns `None` if
         /// the shutdown IC is not configured.
@@ -600,6 +605,21 @@ impl PetriVmInner {
             .await?;
 
         Ok(())
+    }
+
+    async fn wait_for_vtl0_start(
+        &mut self,
+    ) -> anyhow::Result<Result<(), get_resources::ged::Vtl0StartError>> {
+        self.resources
+            .ged_send
+            .as_ref()
+            .context("openhcl not configured")?
+            .call(
+                get_resources::ged::GuestEmulationRequest::WaitForVtl0Start,
+                (),
+            )
+            .await
+            .context("failed to receive OpenHCL VTL0 start report")
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {

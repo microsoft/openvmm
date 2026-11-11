@@ -34,6 +34,26 @@ impl Token {
     pub const UNKNOWN: Self = Self::Hibernated { major: 1, minor: 0 };
 }
 
+// Fail versioned builds whose release doesn't match `Token::CURRENT`.
+const _: () = {
+    let version = build_info::OpenHclVersion::new();
+    let (major, minor) = (version.major(), version.minor());
+    // Builds without `OPENHCL_VERSION` (e.g. `cargo test`) parse as 0.0.
+    if major != 0 || minor != 0 {
+        let Token::Hibernated {
+            major: token_major,
+            minor: token_minor,
+        } = Token::CURRENT
+        else {
+            panic!("Token::CURRENT must be a firmware version");
+        };
+        assert!(
+            major == token_major as u32 && minor == token_minor as u32,
+            "Token::CURRENT does not match the OPENHCL_VERSION major.minor; bump it"
+        );
+    }
+};
+
 impl From<Token> for u64 {
     fn from(token: Token) -> Self {
         match token {

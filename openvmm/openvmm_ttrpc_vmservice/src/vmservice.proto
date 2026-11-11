@@ -27,6 +27,20 @@ service VM {
     // has had PauseVM called on it, or to start a VM that was created with CreateVM.
     rpc ResumeVM(google.protobuf.Empty) returns (google.protobuf.Empty);
 
+    // SaveVM captures the VM's memory, device state, and processor state into
+    // a new snapshot directory and returns a unique snapshot ID, which is also
+    // stored in the snapshot manifest. The current implementation hard-links
+    // the guest memory backing file into the snapshot, so after a successful
+    // save the VM can't be resumed and should be torn down. Cancelling the
+    // call only stops the caller from waiting; the save may still complete.
+    rpc SaveVM(SaveVMRequest) returns (SaveVMResponse);
+
+    // RestoreVM creates a VM from a snapshot directory and the supplied device
+    // configuration. The service must not already contain a VM. The VM stays
+    // paused unless resume is set. The snapshot's memory.bin is used in place,
+    // so a snapshot can be restored only once.
+    rpc RestoreVM(RestoreVMRequest) returns (RestoreVMResponse);
+
     // ShutdownVM requests a cooperative guest power-off.
     // Success does not mean the guest has halted. Use WaitVM to observe a halt
     // and TeardownVM to release resources.
@@ -73,13 +87,13 @@ service VM {
 // type.googleapis.com/vmservice.NativeError.
 message NativeError {
     enum Os {
-        UNKNOWN = 0;
+        OS_UNSPECIFIED = 0;
         // Includes both Win32 and Winsock error codes.
-        WINDOWS = 1;
+        OS_WINDOWS = 1;
         // Linux errno values.
-        LINUX = 2;
+        OS_LINUX = 2;
         // macOS errno values.
-        MACOS = 3;
+        OS_MACOS = 3;
     }
     Os os = 1;
     int32 code = 2;
@@ -204,6 +218,9 @@ message MemoryConfig {
     uint64 low_mmio_gap_in_mb = 7;
     uint64 high_mmio_base_in_mb = 8;
     uint64 high_mmio_gap_in_mb = 9;
+    // Optional host file used to back guest memory. SaveVM requires
+    // file-backed memory. Must not be set for RestoreVM.
+    optional string backing_file_path = 10;
 }
 
 message ProcessorConfig {
@@ -919,6 +936,32 @@ message CreateVMRequest {
     string log_id = 2;
 }
 
+message SaveVMRequest {
+    string destination_dir = 1;
+}
+
+message SaveVMResponse {
+    // OpenVMM-generated GUID for the snapshot.
+    string snapshot_id = 1;
+}
+
+message RestoreVMRequest {
+    string source_dir = 1;
+    // Device and boot configuration must be compatible with the snapshot.
+    VMConfig config = 2;
+    // If set, restore fails unless it matches the snapshot ID in the
+    // snapshot manifest. An empty value is treated as not set, so the ID
+    // isn't checked.
+    optional string expected_snapshot_id = 3;
+    // Resume the restored VM immediately. Otherwise it remains paused.
+    bool resume = 4;
+}
+
+message RestoreVMResponse {
+    // Snapshot ID read from the snapshot manifest.
+    string snapshot_id = 1;
+}
+
 message MemoryStats {
     uint64 working_set_bytes = 1;
     uint64 available_memory = 2;
@@ -1123,10 +1166,8 @@ message WindowsPCIDevice {
 message VirtioFs {
     string tag = 1;
     string root_path = 2;
-    reserved 3;
-    reserved "read_only";
     // Backend mount options, separated by ';'. Include "ro" for read-only access.
-    string mount_options = 4;
+    string mount_options = 3;
     // Host-specific virtio-fs options. Omitted on non-Windows hosts.
     WindowsOptions windows_options = 5;
 
