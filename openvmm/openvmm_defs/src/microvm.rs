@@ -1917,6 +1917,26 @@ fn validate_machine_load_mode(
     }
 }
 
+/// Checks that every snapshot and restore RAM range is one that
+/// [`MemoryRange::new`] accepts: 4-KiB-aligned, and not ending before it
+/// starts. A range decoded from a mesh message skips that constructor's
+/// checks, and the worker's load merges adjacent ranges with it, which panics
+/// when a merged range is malformed, and otherwise backs RAM with the ranges as
+/// they are.
+fn validate_microvm_snapshot_memory_ranges(config: &MicrovmConfig) -> anyhow::Result<()> {
+    for range in config
+        .snapshot_memory_ranges
+        .iter()
+        .chain(&config.restore_memory_ranges)
+    {
+        anyhow::ensure!(
+            MemoryRange::try_new(range.start()..range.end()).is_ok(),
+            "microVM snapshot RAM range {range} is not 4-KiB-aligned or ends before it starts"
+        );
+    }
+    Ok(())
+}
+
 /// Validates the microVM machine contract. Standard-machine configurations are unchanged.
 pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> anyhow::Result<()> {
     let MachineProfile::Microvm = config.machine_profile else {
@@ -2003,6 +2023,7 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
             "microVM snapshot RAM ranges require a RAM capacity"
         );
     }
+    validate_microvm_snapshot_memory_ranges(&config.microvm)?;
     anyhow::ensure!(
         !config.hypervisor.with_hv
             && config.hypervisor.with_vtl2.is_none()
@@ -2571,6 +2592,174 @@ mod tests {
                 format!("10.0.0.2/{prefix_length}").parse().unwrap();
             validate_microvm_network_prefix(&network).unwrap();
             validate_microvm_command_line(&microvm_config_with_network(&network)).unwrap();
+        }
+    }
+
+    /// Chipset devices of configurations that are validated but never built,
+    /// with the resource IDs of the microVM's chipset-device inventory.
+    #[derive(MeshPayload)]
+    struct TestIoApic;
+    #[derive(MeshPayload)]
+    struct TestPortb;
+    #[derive(MeshPayload)]
+    struct TestShutdown;
+    #[derive(MeshPayload)]
+    struct TestSnapshotRequest;
+    #[derive(MeshPayload)]
+    struct TestPic;
+    #[derive(MeshPayload)]
+    struct TestPit;
+
+    impl vm_resource::ResourceId<vm_resource::kind::ChipsetDeviceHandleKind> for TestIoApic {
+        const ID: &'static str = "generic-ioapic";
+    }
+
+    impl vm_resource::ResourceId<vm_resource::kind::ChipsetDeviceHandleKind> for TestPortb {
+        const ID: &'static str = "microvm-portb";
+    }
+
+    impl vm_resource::ResourceId<vm_resource::kind::ChipsetDeviceHandleKind> for TestShutdown {
+        const ID: &'static str = "microvm-shutdown";
+    }
+
+    impl vm_resource::ResourceId<vm_resource::kind::ChipsetDeviceHandleKind> for TestSnapshotRequest {
+        const ID: &'static str = "microvm-snapshot-request";
+    }
+
+    impl vm_resource::ResourceId<vm_resource::kind::ChipsetDeviceHandleKind> for TestPic {
+        const ID: &'static str = "pic";
+    }
+
+    impl vm_resource::ResourceId<vm_resource::kind::ChipsetDeviceHandleKind> for TestPit {
+        const ID: &'static str = "pit";
+    }
+
+    /// Returns a microVM configuration that [`validate_machine_config`]
+    /// accepts: [`microvm_config_with_network`]'s, with the fixed topology of
+    /// one vCPU, the time ABI, the fixed chipset and RAM split, and two RAM
+    /// blocks in a capacity of two blocks.
+    fn valid_microvm_config() -> Config {
+        let mut config = microvm_config_with_network(&"10.0.0.2/24".parse().unwrap());
+        config.processor_topology = crate::config::ProcessorTopologyConfig {
+            proc_count: 1,
+            vps_per_socket: Some(1),
+            enable_smt: Some(false),
+            arch: Some(ArchTopologyConfig::X86(X86TopologyConfig {
+                apic_id_offset: 0,
+                x2apic: X2ApicConfig::Unsupported,
+            })),
+        };
+        config.numa.nodes = vec![crate::config::NumaNode {
+            mem: Some(crate::config::MemoryConfig {
+                mem_size: 2 * MICROVM_MEMORY_BLOCK_SIZE_BYTES,
+                prefetch_memory: false,
+                private_memory: false,
+                transparent_hugepages: false,
+                hugepages: false,
+                hugepage_size: None,
+                host_numa_node: None,
+            }),
+            vps: crate::config::VpAssignment::FromTopology,
+        }];
+        config.microvm.memory_capacity = Some(2 * MICROVM_MEMORY_BLOCK_SIZE_BYTES);
+        config.microvm.time_abi = Some(crate::time_abi::TimeAbiParameters {
+            cpu_profile: "auto".to_owned(),
+            generation: 0,
+            hooks: Default::default(),
+        });
+        config.chipset = BaseChipsetManifest {
+            with_generic_cmos_rtc: true,
+            ..BaseChipsetManifest::empty()
+        };
+        config.chipset_capabilities.with_ioapic = true;
+        config.chipset_capabilities.with_pic = true;
+        config.chipset_capabilities.with_pit = true;
+        let device = |name: &str, resource| vmotherboard::ChipsetDeviceHandle {
+            name: name.to_owned(),
+            resource,
+        };
+        config.chipset_devices = vec![
+            device("ioapic", vm_resource::Resource::new(TestIoApic)),
+            device("microvm-portb", vm_resource::Resource::new(TestPortb)),
+            device("microvm-shutdown", vm_resource::Resource::new(TestShutdown)),
+            device(
+                "microvm-snapshot-request",
+                vm_resource::Resource::new(TestSnapshotRequest),
+            ),
+            device("pic", vm_resource::Resource::new(TestPic)),
+            device("pit", vm_resource::Resource::new(TestPit)),
+        ];
+        config.layout.chipset_low_mmio_size = 1024 * 1024 * 1024;
+        config
+    }
+
+    /// Returns the `MemoryRange` that a mesh message carrying `start` and
+    /// `end` decodes to, which no constructor checked.
+    fn decoded_memory_range(start: u64, end: u64) -> MemoryRange {
+        /// `MemoryRange`'s Protobuf representation.
+        #[derive(mesh::payload::Protobuf)]
+        struct EncodedMemoryRange {
+            #[mesh(1)]
+            start: u64,
+            #[mesh(2)]
+            end: u64,
+        }
+
+        let range: MemoryRange =
+            mesh::payload::decode(&mesh::payload::encode(EncodedMemoryRange { start, end }))
+                .unwrap();
+        assert_eq!((range.start(), range.end()), (start, end));
+        range
+    }
+
+    #[test]
+    fn a_snapshot_ram_range_that_memory_range_refuses_is_rejected() {
+        let block = MICROVM_MEMORY_BLOCK_SIZE_BYTES;
+        let first = MemoryRange::new(0..block);
+        let second = MemoryRange::new(block..2 * block);
+        // The controller builds every range with `MemoryRange::new`: here, a
+        // restore that expands a snapshot of the first block into the second.
+        let mut config = valid_microvm_config();
+        config.microvm.snapshot_memory_ranges = vec![first];
+        config.microvm.restore_memory_ranges = vec![second];
+        validate_machine_config(&config, None).unwrap();
+
+        // A launch message that the controller did not build can carry any
+        // range. The worker's load merges adjacent ranges with
+        // `MemoryRange::new`.
+        let page = MemoryRange::new(0..0x1000);
+        let unaligned_end = decoded_memory_range(0x1000, 0x1800);
+        let low = decoded_memory_range(0, block - 0x800);
+        let high = decoded_memory_range(block - 0x800, block);
+        let mut cases = vec![
+            // Merged into 0..0x1800, which `MemoryRange::new` refuses, so the
+            // load panics.
+            (vec![page, unaligned_end], vec![], unaligned_end),
+            (vec![page], vec![unaligned_end], unaligned_end),
+            // Merged into the RAM layout's two blocks, so the load backs RAM
+            // with the ranges as they are.
+            (vec![low, high], vec![second], low),
+        ];
+        // An unaligned start, an unaligned end, and a reversed range, in
+        // either list.
+        for (start, end) in [(0x800, block), (0, block - 0x800), (block, 0)] {
+            let range = decoded_memory_range(start, end);
+            cases.push((vec![range], vec![], range));
+            let range = decoded_memory_range(block + start, block + end);
+            cases.push((vec![first], vec![range], range));
+        }
+        for (snapshot, restore, refused) in cases {
+            let mut config = valid_microvm_config();
+            config.microvm.snapshot_memory_ranges = snapshot;
+            config.microvm.restore_memory_ranges = restore;
+            assert_eq!(
+                validate_machine_config(&config, None)
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "microVM snapshot RAM range {refused} is not 4-KiB-aligned or ends before it starts"
+                ),
+            );
         }
     }
 
