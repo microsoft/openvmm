@@ -52,6 +52,8 @@ use firmware_uefi_resources::UefiDeviceHandle;
 use firmware_uefi_resources::UefiVarsDeltaJson;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
+use serial_16550_resources::COM_REGISTER_COUNT;
+use serial_16550_resources::MmioOrIoPort;
 use serial_16550_resources::Serial16550DeviceHandle;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_debugcon_resources::SerialDebugconDeviceHandle;
@@ -82,6 +84,7 @@ pub struct VmManifestBuilder {
     serial: Option<[Option<Resource<SerialBackendHandle>>; 4]>,
     serial_wait_for_rts: bool,
     serial_debugger_mode: [bool; 4],
+    only_configured_serial: bool,
     proxy_vga: bool,
     stub_floppy: bool,
     battery_status_recv: Option<mesh::Receiver<HostBatteryUpdate>>,
@@ -292,6 +295,7 @@ impl VmManifestBuilder {
             serial: None,
             serial_wait_for_rts: false,
             serial_debugger_mode: [false; 4],
+            only_configured_serial: false,
             proxy_vga: false,
             stub_floppy: false,
             battery_status_recv: None,
@@ -314,6 +318,7 @@ impl VmManifestBuilder {
     /// For Hyper-V generation 1 VMs, serial ports are always present but are
     /// disconnected unless this method is called. For other VMs, this method
     /// must be called to add serial ports.
+    /// Use with_only_configured_serial to omit unconfigured UARTs.
     ///
     /// For ARM64 VMs, only two serial ports are supported.
     pub fn with_serial(mut self, serial: [Option<Resource<SerialBackendHandle>>; 4]) -> Self {
@@ -327,6 +332,12 @@ impl VmManifestBuilder {
     /// until the guest has raised the RTS line.
     pub fn with_serial_wait_for_rts(mut self) -> Self {
         self.serial_wait_for_rts = true;
+        self
+    }
+
+    /// Emulate only the x86 COM ports that have a configured backend.
+    pub fn with_only_configured_serial(mut self) -> Self {
+        self.only_configured_serial = true;
         self
     }
 
@@ -517,6 +528,7 @@ impl VmManifestBuilder {
                 result.attach_serial_16550(
                     self.serial_wait_for_rts,
                     self.serial_debugger_mode,
+                    self.only_configured_serial,
                     self.serial.unwrap_or_else(|| [(); 4].map(|_| None)),
                 );
                 result.chipset = BaseChipsetManifest {
@@ -576,6 +588,7 @@ impl VmManifestBuilder {
                         self.arch,
                         self.serial_wait_for_rts,
                         self.serial_debugger_mode,
+                        self.only_configured_serial,
                         true,
                         self.serial,
                     )?
@@ -624,6 +637,7 @@ impl VmManifestBuilder {
                         self.arch,
                         self.serial_wait_for_rts,
                         self.serial_debugger_mode,
+                        self.only_configured_serial,
                         false,
                         self.serial,
                     )?
@@ -665,6 +679,7 @@ impl VmManifestBuilder {
                         self.arch,
                         self.serial_wait_for_rts,
                         self.serial_debugger_mode,
+                        self.only_configured_serial,
                         true,
                         self.serial,
                     )?
@@ -697,6 +712,7 @@ impl VmManifestBuilder {
                     self.arch,
                     self.serial_wait_for_rts,
                     self.serial_debugger_mode,
+                    self.only_configured_serial,
                     false,
                     self.serial,
                 )?;
@@ -967,13 +983,14 @@ impl VmChipsetResult {
         arch: MachineArch,
         wait_for_rts: bool,
         debugger_mode: [bool; 4],
+        only_configured: bool,
         register_missing: bool,
         serial: Option<[Option<Resource<SerialBackendHandle>>; 4]>,
     ) -> Result<&mut Self, ErrorInner> {
         if let Some(serial) = serial {
             match arch {
                 MachineArch::X86_64 => {
-                    self.attach_serial_16550(wait_for_rts, debugger_mode, serial);
+                    self.attach_serial_16550(wait_for_rts, debugger_mode, only_configured, serial);
                 }
                 MachineArch::Aarch64 => {
                     if wait_for_rts {
@@ -1008,6 +1025,7 @@ impl VmChipsetResult {
         &mut self,
         wait_for_rts: bool,
         debugger_mode: [bool; 4],
+        only_configured: bool,
         backends: [Option<Resource<SerialBackendHandle>>; 4],
     ) -> &mut Self {
         // Describe COM1/COM2 as a pair when any COM backend is configured.
@@ -1021,16 +1039,31 @@ impl VmChipsetResult {
         for (described, backend) in zip(&mut dt_com_ports[2..], &backends[2..]) {
             *described = backend.is_some();
         }
+        let configured = backends.each_ref().map(Option::is_some);
         let devices = serial_16550_devices(wait_for_rts, debugger_mode, backends);
 
         self.chipset_devices.extend(
             zip(
                 ["serial-com1", "serial-com2", "serial-com3", "serial-com4"],
-                devices,
+                zip(devices, configured),
             )
-            .map(|(name, device)| ChipsetDeviceHandle {
-                name: name.to_string(),
-                resource: device.into_resource(),
+            .map(|(name, (device, configured))| {
+                if only_configured
+                    && !configured
+                    && let MmioOrIoPort::IoPort(base) = device.base
+                {
+                    ChipsetDeviceHandle {
+                        name: format!("missing-{name}"),
+                        resource: MissingDevHandle::new()
+                            .claim_pio(name, base..=base + u16::from(COM_REGISTER_COUNT) - 1)
+                            .into_resource(),
+                    }
+                } else {
+                    ChipsetDeviceHandle {
+                        name: name.to_string(),
+                        resource: device.into_resource(),
+                    }
+                }
             }),
         );
         self
@@ -1274,6 +1307,25 @@ mod tests {
     }
 
     #[test]
+    fn only_configured_serial_omits_unconfigured_com_uarts() {
+        for mask in 0u32..16 {
+            let backends = std::array::from_fn(|index| {
+                (mask & (1 << index) != 0).then(|| DisconnectedSerialBackendHandle.into_resource())
+            });
+            let result = VmManifestBuilder::new(BaseChipsetType::HclHost, MachineArch::X86_64)
+                .with_serial(backends)
+                .with_only_configured_serial()
+                .build()
+                .unwrap();
+            assert_eq!(
+                uart_handle_count(&result),
+                mask.count_ones() as usize,
+                "backend mask {mask:#x}"
+            );
+        }
+    }
+
+    #[test]
     fn mandatory_disconnected_com_uarts_are_not_in_device_tree() {
         let result = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
             .build()
@@ -1391,7 +1443,7 @@ mod tests {
         {
             assert!(matches!(
                 device.base,
-                serial_16550_resources::MmioOrIoPort::IoPort(actual) if actual == base
+                MmioOrIoPort::IoPort(actual) if actual == base
             ));
             assert_eq!(device.irq, irq);
             assert_eq!(device.register_width, 1);

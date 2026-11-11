@@ -1293,6 +1293,11 @@ impl VmService {
 
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        if let Some(config) = &req_config.serial_config
+            && config.only_configured
+        {
+            chipset_builder = chipset_builder.with_only_configured_serial();
+        }
         let acpi_power_button_rpc = if supports_acpi_power_button(&load_mode) {
             let (send, recv) = mesh::channel();
             let irq = match arch {
