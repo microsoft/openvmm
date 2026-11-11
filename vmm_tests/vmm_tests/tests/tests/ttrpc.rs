@@ -26,6 +26,7 @@ use petri::ResolvedArtifact;
 use petri::TestChild;
 use petri::pipette::cmd;
 use petri_artifacts_vmm_test::artifacts;
+use prost::Message as _;
 use std::io::Write;
 use std::net::TcpListener;
 use std::path::Path;
@@ -66,6 +67,79 @@ petri::test!(test_ttrpc_shutdown, |resolver| {
             .erase(),
     ])
 });
+
+petri::test!(test_ttrpc_native_error, |resolver| {
+    Some([resolver.require(artifacts::OPENVMM_NATIVE).erase()])
+});
+
+async fn test_ttrpc_native_error(
+    params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    [openvmm]: [ResolvedArtifact; 1],
+) -> anyhow::Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        &driver,
+        &params,
+        &openvmm,
+        &tempdir.path().join("ttrpc.sock"),
+        &tempdir.path().join("openvmm.pid"),
+    )
+    .await?;
+
+    let kernel_path = tempdir.path().join("missing-kernel");
+    let expected_code = std::fs::File::open(&kernel_path)
+        .unwrap_err()
+        .raw_os_error()
+        .context("missing kernel did not produce a native error code")?;
+    let status = client
+        .call()
+        .start(
+            vmservice::Vm::CreateVm,
+            vmservice::CreateVmRequest {
+                config: Some(vmservice::VmConfig {
+                    boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                        vmservice::DirectBoot {
+                            kernel_path: kernel_path.to_string_lossy().into(),
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status.code, mesh_rpc::service::Code::Unknown as i32);
+    assert!(status.message.contains("failed to open kernel"));
+    let detail = status
+        .details
+        .iter()
+        .find(|detail| detail.type_url == "type.googleapis.com/vmservice.NativeError")
+        .context("TTRPC response lost the native error detail")?;
+    let native_error = vmservice::NativeError::decode(detail.value.as_slice())?;
+    assert_eq!(native_error.code, expected_code);
+    #[cfg(windows)]
+    assert_eq!(native_error.os, vmservice::native_error::Os::Windows as i32);
+    #[cfg(target_os = "linux")]
+    assert_eq!(native_error.os, vmservice::native_error::Os::Linux as i32);
+    #[cfg(target_os = "macos")]
+    assert_eq!(native_error.os, vmservice::native_error::Os::Macos as i32);
+
+    let status = client
+        .call()
+        .start(vmservice::Vm::RestoreVm, Default::default())
+        .await
+        .unwrap_err();
+    assert_eq!(status.code, mesh_rpc::service::Code::InvalidArgument as i32);
+    assert!(status.details.is_empty());
+
+    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+    let status = child.wait().await?;
+    anyhow::ensure!(status.success(), "OpenVMM exited with {status}");
+    Ok(())
+}
 
 async fn test_ttrpc_shutdown(
     params: petri::PetriTestParams<'_>,

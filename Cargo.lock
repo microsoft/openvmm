@@ -11632,6 +11632,7 @@ dependencies = [
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
  "pipette_client",
+ "prost",
  "scsidisk_resources",
  "serde",
  "serde_json",
