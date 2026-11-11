@@ -286,7 +286,7 @@ pub enum InvalidFormatReason {
     ParentLocatorContainsNull,
 
     /// Parent locator metadata exceeded supported size or encoding limits.
-    #[error("parent locator metadata exceeds supported size limits")]
+    #[error("parent locator metadata exceeds supported size or encoding limits")]
     ParentLocatorTooLarge,
 
     /// The block size / logical sector size combination is invalid (chunk ratio is zero).

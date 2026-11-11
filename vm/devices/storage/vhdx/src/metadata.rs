@@ -286,7 +286,11 @@ impl MetadataTable {
             if u64::from(offset) + u64::from(length) <= u64::from(entry.offset) {
                 break;
             }
-            offset = offset.max(entry.offset + entry.length);
+            let end = entry
+                .offset
+                .checked_add(entry.length)
+                .ok_or(VhdxIoErrorInner::MetadataRegionFull)?;
+            offset = offset.max(end);
         }
         if u64::from(offset) + u64::from(length) > u64::from(region_length) {
             return Err(VhdxIoErrorInner::MetadataRegionFull.into());
@@ -353,6 +357,7 @@ mod tests {
     use crate::tests::support::InMemoryFile;
     use pal_async::async_test;
     use std::sync::Arc;
+    use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
     fn metadata_cache(file: InMemoryFile, metadata_offset: u64) -> PageCache<InMemoryFile> {
@@ -584,6 +589,35 @@ mod tests {
             Err(OpenError(OpenErrorInner::Corrupt(
                 CorruptionType::ReservedMetadataTableFieldNonzero
             )))
+        ));
+    }
+
+    #[async_test]
+    async fn stage_replacement_rejects_overflowing_extent() {
+        // The reader rejects this layout; exercise staging's defensive check directly.
+        let table = MetadataTable {
+            entries: vec![MetadataTableEntry {
+                item_id: format::PARENT_LOCATOR_ITEM_GUID,
+                offset: format::METADATA_TABLE_SIZE as u32,
+                length: u32::MAX,
+                flags: format::MetadataTableEntryFlags::new().with_is_required(true),
+                reserved2: 0,
+            }],
+        };
+        let cache = metadata_cache(InMemoryFile::new(format::MB1), 0);
+
+        let result = table
+            .stage_replacement(
+                &cache,
+                &format::PARENT_LOCATOR_ITEM_GUID,
+                &[1],
+                format::MB1 as u32,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(VhdxIoError(VhdxIoErrorInner::MetadataRegionFull))
         ));
     }
 }
