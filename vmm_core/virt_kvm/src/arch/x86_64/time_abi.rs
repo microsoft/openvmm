@@ -722,6 +722,8 @@ impl TimeAbiBackend for KvmPartitionInner {
         Ok(TscSetReport {
             target: target_tsc,
             sample: paired.sample,
+            // The offset makes every TSC run from the target at the anchor.
+            resumed: paired.sample,
             readback,
             method: TscSyncMethod::CommonOffset,
         })
