@@ -197,12 +197,14 @@ impl<M: RingMem> IcPipe<M> {
             .await
             .context("ring buffer error")?;
         let buf = &self.buf[..n];
-        let (header, rest) = hyperv_ic_protocol::Header::read_from_prefix(buf)
-            .ok()
-            .context("missing header")?;
+        let Ok((header, rest)) = hyperv_ic_protocol::Header::read_from_prefix(buf) else {
+            tracelimit::warn_ratelimited!("dropping IC response with missing header");
+            return Ok(None);
+        };
 
         if !header.flags.transaction() || !header.flags.response() {
-            anyhow::bail!("invalid transaction response");
+            tracelimit::warn_ratelimited!("dropping invalid IC transaction response");
+            return Ok(None);
         }
 
         if header.transaction_id != self.transaction_id {
@@ -214,9 +216,10 @@ impl<M: RingMem> IcPipe<M> {
             return Ok(None);
         }
 
-        let rest = rest
-            .get(..header.message_size as usize)
-            .context("missing message body")?;
+        let Some(rest) = rest.get(..header.message_size as usize) else {
+            tracelimit::warn_ratelimited!("dropping IC response with missing message body");
+            return Ok(None);
+        };
 
         let valid_versions = if let Some(versions) = versions {
             header.framework_version == versions.framework_version
@@ -290,6 +293,27 @@ mod tests {
     fn new_pipes() -> (IcPipe<FlatRingMem>, MessagePipe<FlatRingMem>) {
         let (host, guest) = connected_async_channels(16384);
         (IcPipe::new(host).unwrap(), MessagePipe::new(guest).unwrap())
+    }
+
+    fn malformed_responses(response: &[u8]) -> Vec<Vec<u8>> {
+        let mut packets: Vec<_> = (0..size_of::<Header>())
+            .map(|len| response[..len].to_vec())
+            .collect();
+        for flags in [
+            HeaderFlags::new().with_response(true),
+            HeaderFlags::new().with_transaction(true),
+            HeaderFlags::new().with_request(true),
+        ] {
+            let mut packet = response.to_vec();
+            let (header, _) = Header::mut_from_prefix(packet.as_mut_slice()).unwrap();
+            header.flags = flags;
+            packets.push(packet);
+        }
+        let mut packet = response.to_vec();
+        let (header, _) = Header::mut_from_prefix(packet.as_mut_slice()).unwrap();
+        header.message_size += 1;
+        packets.push(packet);
+        packets
     }
 
     /// Runs the send half of negotiation and consumes the request from the
@@ -380,6 +404,12 @@ mod tests {
                 response.flags = HeaderFlags::new()
                     .with_transaction(true)
                     .with_response(true);
+
+                for packet in malformed_responses(response.as_bytes()) {
+                    guest.send(&packet).await.unwrap();
+                    assert!(pipe.read_response(&versions).await.unwrap().is_none());
+                    assert_eq!(pipe.transaction_id, expected_id);
+                }
 
                 for status in [Status::SUCCESS, Status::FAIL] {
                     let mut negotiation_response =
@@ -562,16 +592,37 @@ mod tests {
     }
 
     #[async_test]
-    async fn negotiate_rejects_non_transaction_response() {
-        let (mut pipe, mut guest) = new_pipes();
-        let mut state = NegotiateState::default();
-        send_version_request(&mut pipe, &mut state, &mut guest).await;
-        let mut response = version_response(FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION);
-        let (header, _) = Header::mut_from_prefix(response.as_mut_slice()).unwrap();
-        header.flags = HeaderFlags::new().with_request(true);
-        guest.send(&response).await.unwrap();
-        pipe.negotiate(&mut state, TEST_MESSAGE_VERSIONS)
-            .await
-            .unwrap_err();
+    async fn negotiate_drops_malformed_responses() {
+        let response = version_response(FRAMEWORK_VERSION_3, TEST_MESSAGE_VERSION);
+        for packet in malformed_responses(&response) {
+            let (mut pipe, mut guest) = new_pipes();
+            let mut state = NegotiateState::default();
+            send_version_request(&mut pipe, &mut state, &mut guest).await;
+            guest.send(&packet).await.unwrap();
+            guest.send(&response).await.unwrap();
+            assert!(
+                pipe.negotiate(&mut state, TEST_MESSAGE_VERSIONS)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(matches!(state, NegotiateState::WaitVersion));
+            assert_eq!(pipe.transaction_id, 0);
+            let versions = pipe
+                .negotiate(&mut state, TEST_MESSAGE_VERSIONS)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(versions.framework_version, FRAMEWORK_VERSION_3);
+            assert_eq!(versions.message_version, TEST_MESSAGE_VERSION);
+        }
+    }
+
+    #[async_test]
+    async fn read_propagates_transport_errors() {
+        let (mut pipe, guest) = new_pipes();
+        drop(guest);
+        let error = pipe.read_message(None).await.unwrap_err();
+        assert_eq!(error.to_string(), "ring buffer error");
     }
 }
