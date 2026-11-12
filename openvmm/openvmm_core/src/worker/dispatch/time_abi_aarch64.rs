@@ -8,7 +8,11 @@
 //! existing platform device encodes the v1 sample. No guest-TSC offset,
 //! implicit profile, or host-counter substitute is used.
 
-use super::time_abi_report::TimeAbiReport;
+#[path = "time_abi_report.rs"]
+mod report;
+
+use self::report::TimeAbiReport;
+pub(super) use self::report::published_time_fields;
 use crate::partition::HvlitePartition;
 use chipset_resources::microvm_time::ARM64_TIME_BINDING_LEN;
 use chipset_resources::microvm_time::HostTimeFields;
@@ -19,6 +23,7 @@ use std::sync::Weak;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiError;
 use virt::time_abi::TimeAbiTestHooks;
+use virt::time_abi::host::HostClockStatus;
 use virt::time_abi::publish::HostClockPublisher;
 use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::publish::PairedReadings;
@@ -195,7 +200,7 @@ impl TimeAbiClock {
                 "ARM counter pairing does not fit the v1 sample",
             )
         })?;
-        Ok(super::published_time_fields(&sample, pairing_ns, bound))
+        Ok(published_time_fields(&sample, pairing_ns, bound))
     }
 }
 

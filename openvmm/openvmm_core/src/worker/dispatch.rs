@@ -18,13 +18,14 @@ mod time_abi;
 #[cfg(guest_arch = "aarch64")]
 #[path = "dispatch/time_abi_aarch64.rs"]
 mod time_abi;
-mod time_abi_report;
 
 use self::device_removal::DeviceRemovalState;
 use self::device_removal::VPCI_EJECT_GRACE_PERIOD;
 use self::device_removal::VpciEjectResult;
 use self::device_removal::can_run_during_device_removal;
 use self::device_removal::wait_for_vpci_eject;
+#[cfg(test)]
+use self::time_abi::published_time_fields;
 use crate::emuplat;
 use crate::partition::BindHvliteVp;
 use crate::partition::HvlitePartition;
@@ -545,32 +546,6 @@ fn probe_cpu_fingerprint(
     probe
         .probe_cpu(&[])
         .with_context(|| format!("failed to fingerprint the {hypervisor} backend"))
-}
-
-// Keep each adapter's existing pairing/bound representation policy.
-fn published_time_fields(
-    sample: &virt::time_abi::publish::PublishedSample,
-    pairing_ns: u32,
-    bound: impl Fn(u64) -> Option<u32>,
-) -> chipset_resources::microvm_time::HostTimeFields {
-    use chipset_resources::microvm_time::HostClockStatus as SampleStatus;
-    use virt::time_abi::host::HostClockStatus;
-
-    chipset_resources::microvm_time::HostTimeFields {
-        utc_ns: sample.utc_ns,
-        tsc: sample.tsc,
-        pairing_ns,
-        status: match sample.status {
-            HostClockStatus::Unknown => SampleStatus::Unknown,
-            HostClockStatus::Synchronized => SampleStatus::Synchronized,
-            HostClockStatus::FreeRunning => SampleStatus::FreeRunning,
-            HostClockStatus::Unreliable => SampleStatus::Unreliable,
-        },
-        disruption: sample.disruption,
-        correction: sample.correction,
-        correction_bound: sample.correction_bound.and_then(&bound),
-        max_error_us: sample.max_error_us.and_then(bound),
-    }
 }
 
 struct TimeSampleSourceResolver(Arc<dyn chipset_resources::microvm_time::TimeSampleSource>);
