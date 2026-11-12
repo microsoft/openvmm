@@ -23,6 +23,11 @@
 # https://nexte.st/docs/configuration/per-test-overrides/#override-precedence
 # https://nexte.st/docs/configuration/?h=hierar#hierarchical-configuration
 
+# Hack to work around incorrect thread count on large machines
+[[profile.ci-large.overrides]]
+filter = 'package(~vmm_tests)'
+threads-required = 1
+
 [[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
@@ -91,11 +96,13 @@ failure-output = "final"
 # Do not cancel the test run on the first failure.
 fail-fast = false
 
-# Hack to work around incorrect thread count on large machines
 [profile.ci-large]
 inherits = "ci"
-threads-required = 1
 
 [profile.ci.junit]
+path = "junit.xml"
+store-success-output = "true"
+
+[profile.ci-large.junit]
 path = "junit.xml"
 store-success-output = "true"
