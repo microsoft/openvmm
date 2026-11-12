@@ -8,33 +8,16 @@ use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmRuntime;
 use petri::openvmm::OpenVmmPetriBackend;
-use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test_with;
 
-/// Verify that a UEFI snapshot restores in a new worker process.
-#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)))]
-async fn uefi_cross_process_restore(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> anyhow::Result<()> {
-    verify_openvmm_cross_process_restore(config).await
-}
-
-/// Verify that a Linux direct boot snapshot restores in a new worker process.
+/// Verify that a boot snapshot restores in a new worker process.
 // TODO: Fix the MSHV VP pause hang and remove the conditional unstable marker.
 #[vmm_test_with(
     openvmm,
     unstable(on = mshv, reason = "MSHV VP pause can hang"),
-    configs(linux_direct_x64)
+    configs(linux_direct_x64, uefi_x64(vhd(alpine_3_23_x64)))
 )]
-async fn linux_direct_cross_process_restore(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> anyhow::Result<()> {
-    verify_openvmm_cross_process_restore(config).await
-}
-
-async fn verify_openvmm_cross_process_restore(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> anyhow::Result<()> {
+async fn cross_process_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let config = config.prepare_openvmm_relaunch()?;
 
     // Shared backing file carries guest RAM across the process boundary.

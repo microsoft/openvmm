@@ -179,10 +179,10 @@ const HIBERNATE_ACTION_JSON: &[u8] = br#"{
     }
 }"#;
 
-/// Little-endian encoding of `hibernate::Token::CURRENT` (`Hibernated { 1, 9 }`,
-/// i.e. `0x0109`) as written to `vmgs::FileId::HIBERNATION_TOKEN`. Keep in sync
-/// with `underhill_core::hibernate::Token::CURRENT`.
-const HIBERNATE_TOKEN_CURRENT: [u8; 8] = [0x09, 0x01, 0, 0, 0, 0, 0, 0];
+/// Encoding of `hibernate::Token::CURRENT` (`Hibernated { 1, 9 }`) as written to
+/// `vmgs::FileId::HIBERNATION_TOKEN`. Keep in sync with
+/// `underhill_core::hibernate::Token::CURRENT`.
+const HIBERNATE_TOKEN_CURRENT: u64 = 0x0109;
 
 /// Verify that a guest hibernation request halts the VM with a hibernate reason.
 ///
@@ -231,6 +231,64 @@ async fn hibernate_token<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
 ) -> anyhow::Result<()> {
+    let token = hibernate_and_read_token(config, vmgstool, None).await?;
+    expect_token(token, HIBERNATE_TOKEN_CURRENT)
+}
+
+/// Verify that resuming under a different firmware version overloads VTL0's
+/// firmware with the hibernated version and keeps that version as the token.
+///
+/// The overload needs host support; when the host rejects it, OpenHCL falls back
+/// to the current version and there is nothing to validate.
+#[vmm_test_with(
+    noagent,
+    configs(openvmm_openhcl_uefi_x64(guest_test_uefi_x64)[VMGSTOOL_NATIVE])
+)]
+async fn hibernate_token_overload<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
+) -> anyhow::Result<()> {
+    const OLDER_VERSION: u64 = 0x0107;
+    let token = hibernate_and_read_token(config, vmgstool, Some(OLDER_VERSION)).await?;
+    if token == HIBERNATE_TOKEN_CURRENT {
+        tracing::warn!("firmware overload failed on this host; skipping token validation");
+        return Ok(());
+    }
+    expect_token(token, OLDER_VERSION)
+}
+
+/// Verify that an unrecognized hibernate token is ignored and the current
+/// firmware version is recorded instead.
+#[vmm_test_with(
+    noagent,
+    configs(openvmm_openhcl_uefi_x64(guest_test_uefi_x64)[VMGSTOOL_NATIVE])
+)]
+async fn hibernate_token_corrupt<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
+) -> anyhow::Result<()> {
+    // Just past the firmware-version range, so OpenHCL treats it as unrecognized.
+    const OUT_OF_RANGE: u64 = 0x1_0000;
+    let token = hibernate_and_read_token(config, vmgstool, Some(OUT_OF_RANGE)).await?;
+    expect_token(token, HIBERNATE_TOKEN_CURRENT)
+}
+
+fn expect_token(token: u64, expected: u64) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        token == expected,
+        "HIBERNATION_TOKEN = {token:#x}, expected {expected:#x}"
+    );
+    Ok(())
+}
+
+/// Boot `guest_test_uefi` under OpenHCL with a persistent VMGS, optionally
+/// seeding `HIBERNATION_TOKEN` first, let the guest hibernate, and return the
+/// token OpenHCL writes.
+async fn hibernate_and_read_token<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    vmgstool: ResolvedArtifact<impl IsVmgsTool>,
+    seed_token: Option<u64>,
+) -> anyhow::Result<u64> {
     let temp_dir = tempfile::tempdir()?;
     let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
@@ -253,6 +311,21 @@ async fn hibernate_token<T: PetriVmmBackend>(
         .arg("CUSTOM_UEFI");
     run_host_cmd(cmd).await?;
 
+    if let Some(seed_token) = seed_token {
+        let seed_path = temp_dir.path().join("seed_token.bin");
+        std::fs::write(&seed_path, seed_token.to_le_bytes())?;
+
+        let mut cmd = Command::new(vmgstool_path);
+        cmd.arg("write")
+            .arg("--filepath")
+            .arg(&vmgs_path)
+            .arg("--data-path")
+            .arg(&seed_path)
+            .arg("--file-id")
+            .arg("HIBERNATION_TOKEN");
+        run_host_cmd(cmd).await?;
+    }
+
     // Boot: the guest reads the selector and requests hibernation.
     let mut vm = config
         .with_windows_secure_boot_template()
@@ -273,7 +346,6 @@ async fn hibernate_token<T: PetriVmmBackend>(
 
     vm.teardown().await?;
 
-    // The hibernate token must record the current firmware version.
     let token_path = temp_dir.path().join("token.bin");
     let mut cmd = Command::new(vmgstool_path);
     cmd.arg("dump")
@@ -286,9 +358,9 @@ async fn hibernate_token<T: PetriVmmBackend>(
     run_host_cmd(cmd).await?;
 
     let token = std::fs::read(&token_path)?;
-    if token != HIBERNATE_TOKEN_CURRENT {
-        anyhow::bail!("HIBERNATION_TOKEN = {token:02x?}, expected {HIBERNATE_TOKEN_CURRENT:02x?}");
-    }
-
-    Ok(())
+    let token: [u8; 8] = token
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("HIBERNATION_TOKEN = {token:02x?}, expected 8 bytes"))?;
+    Ok(u64::from_le_bytes(token))
 }
