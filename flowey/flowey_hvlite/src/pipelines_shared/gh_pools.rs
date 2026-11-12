@@ -4,6 +4,7 @@
 //! Centralized list of constants enumerating available GitHub build pools.
 
 use flowey::pipeline::prelude::*;
+use flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile;
 
 // Constants in this file may be added, renamed or deleted, but the values
 // of these constants should not be changed to avoid changing the image to one
@@ -22,102 +23,129 @@ pub const INTEL_V6_POOL_1ES: &str = "openvmm-gh-intel-westus3-v6";
 pub const ARM_V5_POOL_1ES: &str = "openvmm-gh-arm-westus2";
 pub const ARM_V6_POOL_1ES: &str = "openvmm-gh-arm-westus3";
 
-fn gh_pool_with_image_1es(pool: &str, image: &str) -> GhRunner {
-    GhRunner::SelfHosted(vec![
-        "self-hosted".to_string(),
-        format!("1ES.Pool={pool}"),
-        format!("1ES.ImageOverride={image}"),
-    ])
+fn gh_pool_with_image_1es(pool: &str, image: &str) -> (GhRunner, NextestProfile) {
+    (
+        GhRunner::SelfHosted(vec![
+            "self-hosted".to_string(),
+            format!("1ES.Pool={pool}"),
+            format!("1ES.ImageOverride={image}"),
+        ]),
+        NextestProfile::Ci,
+    )
 }
 
-pub fn windows_arm_v6_1es() -> GhRunner {
+pub fn windows_arm_v6_1es() -> (GhRunner, NextestProfile) {
     gh_pool_with_image_1es(ARM_V6_POOL_1ES, WINDOWS_IMAGE_ARM64_V2)
 }
 
-pub fn windows_amd_v6_1es() -> GhRunner {
+pub fn windows_amd_v6_1es() -> (GhRunner, NextestProfile) {
     gh_pool_with_image_1es(AMD_V6_POOL_1ES, WINDOWS_IMAGE_AMD64_V2)
 }
 
-pub fn windows_intel_v6_1es() -> GhRunner {
+pub fn windows_intel_v6_1es() -> (GhRunner, NextestProfile) {
     gh_pool_with_image_1es(INTEL_V6_POOL_1ES, WINDOWS_IMAGE_AMD64_V2)
 }
 
-pub fn linux_arm_v5_1es() -> GhRunner {
+pub fn linux_arm_v5_1es() -> (GhRunner, NextestProfile) {
     gh_pool_with_image_1es(ARM_V5_POOL_1ES, LINUX_IMAGE_ARM64)
 }
 
-pub fn linux_amd_v6_1es() -> GhRunner {
+pub fn linux_amd_v6_1es() -> (GhRunner, NextestProfile) {
     gh_pool_with_image_1es(AMD_V6_POOL_1ES, LINUX_IMAGE_AMD64_PREPPED)
 }
 
-pub fn linux_amd_v7_1es() -> GhRunner {
+pub fn linux_amd_v7_1es() -> (GhRunner, NextestProfile) {
     gh_pool_with_image_1es(AMD_V7_POOL_1ES, LINUX_IMAGE_AMD64_PREPPED)
 }
 
-pub fn linux_mshv_intel_v5_1es() -> GhRunner {
+pub fn linux_mshv_intel_v5_1es() -> (GhRunner, NextestProfile) {
     gh_pool_with_image_1es(INTEL_V5_POOL_1ES, MSHV_IMAGE_AMD64)
 }
 
-pub fn windows_x64_gh() -> GhRunner {
-    GhRunner::GhHosted(GhRunnerOsLabel::WindowsLatest)
+pub fn windows_x64_gh() -> (GhRunner, NextestProfile) {
+    (
+        GhRunner::GhHosted(GhRunnerOsLabel::WindowsLatest),
+        NextestProfile::Ci,
+    )
 }
 
-pub fn linux_x64_gh() -> GhRunner {
-    GhRunner::GhHosted(GhRunnerOsLabel::UbuntuLatest)
+pub fn linux_x64_gh() -> (GhRunner, NextestProfile) {
+    (
+        GhRunner::GhHosted(GhRunnerOsLabel::UbuntuLatest),
+        NextestProfile::Ci,
+    )
 }
 
-pub fn windows_arm_gh() -> GhRunner {
-    GhRunner::GhHosted(GhRunnerOsLabel::Windows11Arm)
+pub fn windows_arm_gh() -> (GhRunner, NextestProfile) {
+    (
+        GhRunner::GhHosted(GhRunnerOsLabel::Windows11Arm),
+        NextestProfile::Ci,
+    )
 }
 
-pub fn linux_arm_gh() -> GhRunner {
-    GhRunner::GhHosted(GhRunnerOsLabel::Ubuntu2404Arm)
+pub fn linux_arm_gh() -> (GhRunner, NextestProfile) {
+    (
+        GhRunner::GhHosted(GhRunnerOsLabel::Ubuntu2404Arm),
+        NextestProfile::Ci,
+    )
 }
 
-pub fn windows_arm_self_hosted_baremetal() -> GhRunner {
-    GhRunner::SelfHosted(vec![
-        "self-hosted".to_string(),
-        "Windows".to_string(),
-        "ARM64".to_string(),
-        "Baremetal".to_string(),
-    ])
+pub fn windows_arm_self_hosted_baremetal() -> (GhRunner, NextestProfile) {
+    (
+        GhRunner::SelfHosted(vec![
+            "self-hosted".to_string(),
+            "Windows".to_string(),
+            "ARM64".to_string(),
+            "Baremetal".to_string(),
+        ]),
+        NextestProfile::CiLarge,
+    )
 }
 
-pub fn windows_tdx_gnr_self_hosted_baremetal() -> GhRunner {
-    GhRunner::SelfHosted(vec![
-        "self-hosted".to_string(),
-        "Windows".to_string(),
-        "X64".to_string(),
-        "TDX".to_string(),
-        "GNR".to_string(),
-        "Baremetal".to_string(),
-    ])
+pub fn windows_tdx_gnr_self_hosted_baremetal() -> (GhRunner, NextestProfile) {
+    (
+        GhRunner::SelfHosted(vec![
+            "self-hosted".to_string(),
+            "Windows".to_string(),
+            "X64".to_string(),
+            "TDX".to_string(),
+            "GNR".to_string(),
+            "Baremetal".to_string(),
+        ]),
+        NextestProfile::CiLarge,
+    )
 }
 
-pub fn windows_snp_self_hosted_baremetal() -> GhRunner {
-    GhRunner::SelfHosted(vec![
-        "self-hosted".to_string(),
-        "Windows".to_string(),
-        "X64".to_string(),
-        "SNP".to_string(),
-        "Baremetal".to_string(),
-    ])
+pub fn windows_snp_self_hosted_baremetal() -> (GhRunner, NextestProfile) {
+    (
+        GhRunner::SelfHosted(vec![
+            "self-hosted".to_string(),
+            "Windows".to_string(),
+            "X64".to_string(),
+            "SNP".to_string(),
+            "Baremetal".to_string(),
+        ]),
+        NextestProfile::CiLarge,
+    )
 }
 
-pub fn linux_snp_mshv_self_hosted() -> GhRunner {
-    GhRunner::SelfHosted(vec![
-        "self-hosted".to_string(),
-        "Linux".to_string(),
-        "X64".to_string(),
-        "SNP".to_string(),
-        "MSHV".to_string(),
-    ])
+pub fn linux_snp_mshv_self_hosted() -> (GhRunner, NextestProfile) {
+    (
+        GhRunner::SelfHosted(vec![
+            "self-hosted".to_string(),
+            "Linux".to_string(),
+            "X64".to_string(),
+            "SNP".to_string(),
+            "MSHV".to_string(),
+        ]),
+        NextestProfile::Ci,
+    )
 }
 
-pub fn default_windows() -> GhRunner {
+pub fn default_windows() -> (GhRunner, NextestProfile) {
     windows_intel_v6_1es()
 }
 
-pub fn default_linux() -> GhRunner {
+pub fn default_linux() -> (GhRunner, NextestProfile) {
     linux_amd_v7_1es()
 }

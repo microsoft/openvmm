@@ -87,6 +87,7 @@ flowey_request! {
     pub struct Params {
         pub label: String,
         pub profile: VmmTestsProfile,
+        pub nextest_profile: NextestProfile,
         pub repetitions: std::num::NonZeroU64,
         pub done: WriteVar<SideEffect>,
     }
@@ -106,6 +107,7 @@ impl SimpleFlowNode for Node {
         let Params {
             label,
             profile,
+            nextest_profile,
             repetitions,
             done,
         } = request;
@@ -128,7 +130,7 @@ impl SimpleFlowNode for Node {
             crate::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
                 junit_test_label: format!("{label}-vmm-tests"),
                 target: target.as_triple(),
-                nextest_profile: NextestProfile::Ci,
+                nextest_profile,
                 nextest_filter_expr: Some(nextest_filter_expr),
                 test_content_config: TestContentConfig::Uninitialized {
                     test_content_dir: None,

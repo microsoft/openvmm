@@ -72,7 +72,7 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
                 FlowArch::X86_64,
                 "assemble openvmm vendor artifact",
             )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
+            .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh().0)
             .publish(publish_release, |release| {
                 flowey_lib_hvlite::assemble_openvmm_vendor_release::Request { release }
             })
@@ -84,7 +84,7 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
                 FlowArch::X86_64,
                 "validate openvmm distribution build",
             )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
+            .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh().0)
             .dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::check_distro_build::Request {
                     release: ctx.use_typed_artifact(&use_release),
@@ -99,7 +99,7 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
                 FlowArch::X86_64,
                 "draft openvmm source release",
             )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
+            .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh().0)
             .dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::publish_openvmm_gh_release::Request {
                     release: ctx.use_typed_artifact(&use_release),
