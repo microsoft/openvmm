@@ -9,8 +9,12 @@
 
 #![cfg(guest_arch = "x86_64")]
 
+#[path = "time_abi_report.rs"]
+mod report;
+
+use self::report::TimeAbiReport;
+pub(super) use self::report::published_time_fields;
 use super::LoadedVm;
-use super::time_abi_report::TimeAbiReport;
 use crate::partition::HvlitePartition;
 use anyhow::Context as _;
 use chipset_resources::microvm_time::HostTimeFields;
@@ -44,6 +48,8 @@ use virt::CpuidLeaf;
 use virt::CpuidLeafSet;
 use virt::time_abi::DeclaredRates;
 use virt::time_abi::DowntimeSource;
+use virt::time_abi::IdentityMsrRoute;
+use virt::time_abi::RateCheck;
 use virt::time_abi::TIME_ABI_VERSION;
 use virt::time_abi::TimeAbiBackend;
 use virt::time_abi::TimeAbiCode;
@@ -1461,7 +1467,7 @@ impl TimeSampleSource for TimeAbiClock {
 /// values that the sample carries in 32 bits.
 fn host_fields(sample: &PublishedSample) -> HostTimeFields {
     let saturate = |value: u64| u32::try_from(value).unwrap_or(u32::MAX);
-    super::published_time_fields(sample, saturate(sample.pairing_ns), |value| {
+    published_time_fields(sample, saturate(sample.pairing_ns), |value| {
         Some(saturate(value))
     })
 }
@@ -1510,7 +1516,6 @@ mod tests {
     use std::sync::atomic::Ordering;
     use virt::time_abi::BackendPreflight;
     use virt::time_abi::HostTimeSample;
-    use virt::time_abi::IdentityMsrRoute;
     use virt::time_abi::TscAnchor;
     use virt::time_abi::cpuid::effective_cpuid;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
