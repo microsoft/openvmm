@@ -1758,8 +1758,12 @@ impl IntoPipeline for CheckinGatesCli {
                 label: "x64-windows-amd-snp",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
-                // PCAT VMs are unstable on AMD
-                nextest_filter_expr: format!("{cvm_filter} & !test(pcat)"),
+                // - PCAT VMs are unstable on AMD
+                // - Hyper-V VBS VMs fail on AMD with recent prerelease builds
+                // TODO: re-enable once fixed.
+                nextest_filter_expr: format!(
+                    "{cvm_filter} & !test(pcat) & !(test(hyperv) & test(vbs))"
+                ),
                 downloaded_artifacts: windows_x64_cvm_test_artifacts,
                 prep_steps_variants: vec!["standard".into()],
                 external_deps: VmmTestsExternalDeps::Windows(VmmTestsExternalDepsWindows {
