@@ -256,7 +256,7 @@ impl<F: AsyncFile> VhdxFile<F> {
 
         // Zero-length writes succeed immediately.
         if len == 0 {
-            return Ok(WriteIoGuard::new_completed(self));
+            return Ok(WriteIoGuard::new(self, BatGuard::empty(), 0, 0));
         }
 
         // First-write gate: update header with new GUIDs before any data.
@@ -337,12 +337,7 @@ impl<F: AsyncFile> VhdxFile<F> {
         // If nothing needs allocation, we're done. Transfer refcount
         // ownership from the ReadIoGuard to the WriteIoGuard.
         if blocks_needing_allocation.is_empty() {
-            return Ok(WriteIoGuard::new_no_alloc(
-                self,
-                refcount_guard,
-                offset,
-                len,
-            ));
+            return Ok(WriteIoGuard::new(self, refcount_guard, offset, len));
         }
 
         // --- Allocation phase ---
@@ -375,116 +370,94 @@ impl<F: AsyncFile> VhdxFile<F> {
         };
         // Declared after alloc_guard so cancellation rolls back ownership
         // before releasing the allocation lock.
-        let mut write_guard = WriteIoGuard::new_no_alloc(self, refcount_guard, offset, len);
+        let mut write_guard = WriteIoGuard::new(self, refcount_guard, offset, len);
 
         // Track blocks that got TFP set (for error cleanup and complete/abort).
         let tfp_records = &mut write_guard.tfp_records;
-
-        // Track whether any TFP allocation used unsafe (non-safe-data) space.
-        // When true, complete_write_inner() captures the current FSN and
-        // attaches it to the BAT page(s) so the log task waits for the
-        // data flush before logging the BAT update.
-        let needs_flush_before_log = &mut write_guard.needs_flush_before_log;
 
         // Re-check and allocate under the lock.
         // No block in our set should have TFP at this point — we waited
         // for all concurrent allocators to finish above.
         let eof = &mut *alloc_guard;
-        let allocation_result: Result<(), VhdxIoError> = async {
-            for span in &blocks_needing_allocation {
-                let is_full_block = span.is_full_block(self.block_size);
+        for span in &blocks_needing_allocation {
+            let is_full_block = span.is_full_block(self.block_size);
 
-                // Re-read mapping (may have changed since read phase).
-                let mapping = self.bat.get_block_mapping(span.block_number);
+            // Re-read mapping (may have changed since read phase).
+            let mapping = self.bat.get_block_mapping(span.block_number);
 
-                // Assert no TFP — we serialized against concurrent
-                // allocators in the loop above.
-                assert!(
-                    !mapping.transitioning_to_fully_present(),
-                    "block {} has TFP after overlap wait",
-                    span.block_number
-                );
+            // Assert no TFP — we serialized against concurrent
+            // allocators in the loop above.
+            assert!(
+                !mapping.transitioning_to_fully_present(),
+                "block {} has TFP after overlap wait",
+                span.block_number
+            );
 
-                match mapping.bat_state() {
-                    BatEntryState::FullyPresent => {
-                        // Already allocated by a concurrent writer — just emit range.
-                        ranges.push(WriteRange::Data {
-                            guest_offset: span.virtual_offset,
-                            length: span.length,
-                            file_offset: mapping.file_offset() + span.block_offset as u64,
-                        });
-                    }
-                    BatEntryState::PartiallyPresent if !is_full_block => {
-                        // A concurrent allocator may have made this block
-                        // partially present while we waited for the lock.
-                        ranges.push(WriteRange::Data {
-                            guest_offset: span.virtual_offset,
-                            length: span.length,
-                            file_offset: mapping.file_offset() + span.block_offset as u64,
-                        });
-                    }
-                    BatEntryState::PartiallyPresent => {
-                        // Fully-covering write to PartiallyPresent — set TFP
-                        // on existing mapping, no new space.
-                        // This is always safe (space already has this block's
-                        // data), so no change to needs_flush_before_log.
-                        let original = mapping;
-                        let new_mapping = original.with_transitioning_to_fully_present(true);
+            match mapping.bat_state() {
+                BatEntryState::FullyPresent => {
+                    // Already allocated by a concurrent writer — just emit range.
+                    ranges.push(WriteRange::Data {
+                        guest_offset: span.virtual_offset,
+                        length: span.length,
+                        file_offset: mapping.file_offset() + span.block_offset as u64,
+                    });
+                }
+                BatEntryState::PartiallyPresent if !is_full_block => {
+                    // A concurrent allocator may have made this block
+                    // partially present while we waited for the lock.
+                    ranges.push(WriteRange::Data {
+                        guest_offset: span.virtual_offset,
+                        length: span.length,
+                        file_offset: mapping.file_offset() + span.block_offset as u64,
+                    });
+                }
+                BatEntryState::PartiallyPresent => {
+                    // Fully-covering write to PartiallyPresent — set TFP
+                    // on existing mapping, no new space.
+                    // This is always safe: space already has this block's data.
+                    let original = mapping;
+                    let new_mapping = original.with_transitioning_to_fully_present(true);
 
-                        self.bat.set_block_mapping(span.block_number, new_mapping);
+                    self.bat.set_block_mapping(span.block_number, new_mapping);
 
-                        tfp_records.push(TfpRecord {
-                            block_number: span.block_number,
-                            original_mapping: original,
-                            allocation: None,
-                        });
+                    tfp_records.push(TfpRecord {
+                        block_number: span.block_number,
+                        original_mapping: original,
+                        allocation: None,
+                    });
 
-                        ranges.push(WriteRange::Data {
-                            guest_offset: span.virtual_offset,
-                            length: span.length,
-                            file_offset: mapping.file_offset() + span.block_offset as u64,
-                        });
-                    }
-                    BatEntryState::NotPresent
-                    | BatEntryState::Zero
-                    | BatEntryState::Unmapped
-                    | BatEntryState::Undefined => {
-                        // Unallocated block — allocate space.
-                        let original = mapping;
-                        let allocation = self
-                            .allocate_block_space(span.block_number, mapping, eof)
-                            .await?;
+                    ranges.push(WriteRange::Data {
+                        guest_offset: span.virtual_offset,
+                        length: span.length,
+                        file_offset: mapping.file_offset() + span.block_offset as u64,
+                    });
+                }
+                BatEntryState::NotPresent
+                | BatEntryState::Zero
+                | BatEntryState::Unmapped
+                | BatEntryState::Undefined => {
+                    // Unallocated block — allocate space.
+                    let original = mapping;
+                    let allocation = self
+                        .allocate_block_space(span.block_number, mapping, eof)
+                        .await?;
 
-                        if is_full_block {
-                            self.allocate_full_block(
-                                span,
-                                original,
-                                allocation,
-                                tfp_records,
-                                needs_flush_before_log,
-                                ranges,
-                            );
-                        } else {
-                            self.allocate_partial_block(
-                                span,
-                                original,
-                                allocation,
-                                eof,
-                                tfp_records,
-                                needs_flush_before_log,
-                                ranges,
-                            )
-                            .await?;
-                        }
+                    if is_full_block {
+                        self.allocate_full_block(span, original, allocation, tfp_records, ranges);
+                    } else {
+                        self.allocate_partial_block(
+                            span,
+                            original,
+                            allocation,
+                            eof,
+                            tfp_records,
+                            ranges,
+                        )
+                        .await?;
                     }
                 }
             }
-
-            Ok(())
         }
-        .await;
-
-        allocation_result?;
 
         // Allocation lock is released when _alloc_guard drops (after
         // returning ranges to caller).
@@ -550,7 +523,6 @@ impl<F: AsyncFile> VhdxFile<F> {
         original_mapping: BlockMapping,
         allocation: BlockAllocation,
         tfp_records: &mut Vec<TfpRecord>,
-        needs_flush_before_log: &mut bool,
         ranges: &mut Vec<WriteRange>,
     ) {
         let new_mapping = BlockMapping::new()
@@ -565,10 +537,6 @@ impl<F: AsyncFile> VhdxFile<F> {
             original_mapping,
             allocation: Some(allocation),
         });
-
-        if !allocation.state.is_safe() {
-            *needs_flush_before_log = true;
-        }
 
         ranges.push(WriteRange::Data {
             guest_offset: span.virtual_offset,
@@ -600,7 +568,6 @@ impl<F: AsyncFile> VhdxFile<F> {
         allocation: BlockAllocation,
         eof: &mut crate::space::EofState,
         tfp_records: &mut Vec<TfpRecord>,
-        needs_flush_before_log: &mut bool,
         ranges: &mut Vec<WriteRange>,
     ) -> Result<(), VhdxIoError> {
         let is_partial_present =
@@ -676,9 +643,6 @@ impl<F: AsyncFile> VhdxFile<F> {
                 .with_file_megabyte((new_offset / MB1) as u32);
 
             self.bat.set_block_mapping(span.block_number, new_mapping);
-            if !space_state.is_safe() {
-                *needs_flush_before_log = true;
-            }
         }
 
         // Emit zero + data + zero ranges.
@@ -766,14 +730,17 @@ impl<F: AsyncFile> VhdxFile<F> {
         offset: u64,
         len: u32,
         tfp_records: &mut Vec<TfpRecord>,
-        needs_flush_before_log: bool,
     ) -> Result<(), VhdxIoError> {
         let had_tfp = !tfp_records.is_empty();
 
         // Capture FSN after the caller's data writes.
         // Passed into write_block_mapping so it's stamped on the
         // cache page atomically with the dirty-mark.
-        let pre_log_fsn = if needs_flush_before_log {
+        let pre_log_fsn = if tfp_records.iter().any(|record| {
+            record
+                .allocation
+                .is_some_and(|allocation| !allocation.state.is_safe())
+        }) {
             self.log_state
                 .as_ref()
                 .map(|state| state.flush_sequencer.current_fsn())
@@ -983,44 +950,18 @@ pub struct WriteIoGuard<'a, F: AsyncFile> {
     offset: u64,
     /// The length of the write in bytes.
     len: u32,
-    /// Whether `complete()` was called. If false on drop, the write is aborted.
-    completed: bool,
-    /// True when at least one TFP block was allocated from space that is
-    /// NOT safe (could contain stale data from another block). When true,
-    /// `complete_write_inner` must capture the current FSN and apply it
-    /// to the BAT pages so the log task waits for the data flush before
-    /// logging the BAT update.
-    needs_flush_before_log: bool,
-    /// TFP records collected during resolve_write, needed by complete/abort.
-    /// `None` after complete() or for zero-length writes.
+    /// Unpublished allocation records, removed as completion publishes them.
     tfp_records: Vec<TfpRecord>,
 }
 
 impl<'a, F: AsyncFile> WriteIoGuard<'a, F> {
-    /// Create a write guard that is already completed (for zero-length writes).
-    fn new_completed(vhdx: &'a VhdxFile<F>) -> Self {
-        Self {
-            vhdx,
-            _bat_guard: BatGuard::empty(),
-            offset: 0,
-            len: 0,
-            completed: true,
-            needs_flush_before_log: false,
-            tfp_records: Vec::new(),
-        }
-    }
-
-    /// Create a write guard with no completion records (no allocation was
-    /// needed — all blocks were already FullyPresent or PartiallyPresent
-    /// with a sub-block write).
-    fn new_no_alloc(vhdx: &'a VhdxFile<F>, bat_guard: BatGuard<'a>, offset: u64, len: u32) -> Self {
+    /// Create a write guard with no pending allocation records.
+    fn new(vhdx: &'a VhdxFile<F>, bat_guard: BatGuard<'a>, offset: u64, len: u32) -> Self {
         Self {
             vhdx,
             _bat_guard: bat_guard,
             offset,
             len,
-            completed: false,
-            needs_flush_before_log: false,
             tfp_records: Vec::new(),
         }
     }
@@ -1031,26 +972,15 @@ impl<'a, F: AsyncFile> WriteIoGuard<'a, F> {
     /// Consumes the guard. Refcounts are decremented when `self` is dropped
     /// after this method returns.
     pub async fn complete(mut self) -> Result<(), VhdxIoError> {
-        let result = self
-            .vhdx
-            .complete_write_inner(
-                self.offset,
-                self.len,
-                &mut self.tfp_records,
-                self.needs_flush_before_log,
-            )
-            .await;
-        self.completed = result.is_ok();
-        result
+        self.vhdx
+            .complete_write_inner(self.offset, self.len, &mut self.tfp_records)
+            .await
     }
 }
 
 impl<F: AsyncFile> Drop for WriteIoGuard<'_, F> {
     fn drop(&mut self) {
-        // If complete() was not called, abort the write.
-        if !self.completed {
-            self.vhdx.abort_write_sync(&self.tfp_records);
-        }
+        self.vhdx.abort_write_sync(&self.tfp_records);
         // Refcounts are decremented when self.bat_guard drops.
     }
 }
