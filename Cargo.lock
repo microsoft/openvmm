@@ -10426,6 +10426,7 @@ dependencies = [
  "libc",
  "memory_range",
  "open_enum",
+ "pal_async",
  "pal_event",
  "parking_lot",
  "pci_core",
