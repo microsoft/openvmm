@@ -1712,13 +1712,22 @@ mod tests {
     /// reads and writes the counter as a PIT that never restored does.
     #[test]
     fn restore_rejects_rw0_control_word_without_changing_state() {
-        // A PIT at 0.1 s, counted up to its last tick. When `programmed`, each
-        // of its counters holds state other than a fresh PIT's, so that
-        // installing any part of a fresh PIT's saved state shows.
-        let new_guest = |programmed: bool| {
-            let mut guest = GuestPit::new();
-            guest.set_time(1_000_000);
-            guest.read(PIT_PORT61_REGISTER);
+        // The cases reset and reuse three PITs rather than create PITs for
+        // each: a dropped `GuestPit` leaves some of its files open on Linux,
+        // where PITs for every case would exhaust a process's default limit of
+        // 1024 open files.
+        //
+        // A fresh PIT, at VM time 0, whose saved state each case changes.
+        let mut fresh = GuestPit::new();
+        // Two PITs at 0.1 s, which each case resets and, when `programmed`,
+        // programs so that each of their counters holds state other than a
+        // fresh PIT's, so that installing any part of the saved state shows.
+        let mut guest = GuestPit::new();
+        let mut unrestored = GuestPit::new();
+        guest.set_time(1_000_000);
+        unrestored.set_time(1_000_000);
+        let prepare = |guest: &mut GuestPit, programmed: bool| {
+            guest.pool.run_until(guest.pit.reset());
             if programmed {
                 for (port, data) in [
                     // Counter 0: LSB then MSB, mode 2, binary.
@@ -1736,7 +1745,6 @@ mod tests {
                     guest.write(port, data);
                 }
             }
-            guest
         };
 
         for programmed in [false, true] {
@@ -1745,19 +1753,21 @@ mod tests {
                     let case = format!(
                         "programmed {programmed}, counter {counter}, control word {control:#04x}"
                     );
-                    // A fresh PIT's saved state, from VM time 0, in which the
-                    // counter's control word has RW = 0.
-                    let mut saved = GuestPit::new().pit.save().unwrap();
+                    // The fresh PIT's saved state, in which the counter's
+                    // control word has RW = 0, with a fraction of its last tick
+                    // that the reset PITs lack, so that installing it shows too.
+                    let mut saved = fresh.pit.save().unwrap();
                     saved.timers[usize::from(counter)].control = control;
+                    saved.last_frac_ns = 50;
 
-                    let mut guest = new_guest(programmed);
+                    prepare(&mut guest, programmed);
+                    prepare(&mut unrestored, programmed);
                     let result = guest.pit.restore(saved);
                     assert!(
                         matches!(result, Err(RestoreError::InvalidSavedState(_))),
                         "{case}: {result:?}"
                     );
 
-                    let mut unrestored = new_guest(programmed);
                     assert_eq!(
                         encoded_state(&mut guest),
                         encoded_state(&mut unrestored),
@@ -1785,15 +1795,19 @@ mod tests {
     /// does.
     #[test]
     fn restore_accepts_every_programmable_control_word() {
+        // Each case resets and reuses the two PITs, as the test above explains,
+        // which leaves them as fresh PITs.
+        let mut saved = GuestPit::new();
+        let mut restored = GuestPit::new();
         for counter in 0..3u8 {
             for rw in 1..=3u8 {
                 for mode in 0..8u8 {
                     for bcd in 0..2u8 {
                         let control = (counter << 6) | (rw << 4) | (mode << 1) | bcd;
-                        let mut saved = GuestPit::new();
+                        saved.pool.run_until(saved.pit.reset());
+                        restored.pool.run_until(restored.pit.reset());
                         saved.write(PIT_CONTROL_REGISTER, control);
 
-                        let mut restored = GuestPit::new();
                         if let Err(err) = restored.pit.restore(saved.pit.save().unwrap()) {
                             panic!("control word {control:#04x}: {err:?}");
                         }
