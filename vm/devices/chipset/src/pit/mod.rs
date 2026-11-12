@@ -366,7 +366,9 @@ impl Timer {
             RwMode::LOW => self.state.cr = n,
             RwMode::HIGH => self.state.cr = n << 8,
             RwMode::LOW_HIGH => {
-                if let Some(low) = self.state.cr_low {
+                // The high byte completes the count and returns the write
+                // flip-flop to the low byte of the next count.
+                if let Some(low) = self.state.cr_low.take() {
                     self.state.cr = (n << 8) | (low as u16);
                 } else {
                     self.state.cr_low = Some(n as u8);
@@ -949,15 +951,20 @@ mod save_restore {
 mod tests {
     use super::ControlWord;
     use super::Mode;
+    use super::NANOS_PER_TICK;
+    use super::PIT_CONTROL_REGISTER;
+    use super::PIT_TIMER_RANGE_START;
     use super::RwMode;
     use super::Timer;
     use super::to_bcd;
     use crate::pit::from_bcd;
+    use chipset_device::pio::PortIoIntercept;
     use parking_lot::Mutex;
     use std::sync::Arc;
     use test_with_tracing::test;
     use vmcore::line_interrupt::LineInterrupt;
     use vmcore::line_interrupt::LineSetTarget;
+    use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
 
     #[derive(Default)]
     struct RecordingTarget(Mutex<Vec<bool>>);
@@ -1077,6 +1084,126 @@ mod tests {
     #[test]
     fn test_bcd() {
         test_output(true);
+    }
+
+    #[test]
+    fn low_high_access_takes_each_count_low_byte_first() {
+        // The high byte of a count returns the write flip-flop to the low
+        // byte, so each count that follows without a control word starts with
+        // its low byte, whatever the mode.
+        for mode in [
+            Mode::TerminalCount,
+            Mode::HardwareOneShot,
+            Mode::RateGenerator,
+            Mode::SquareWave,
+            Mode::SoftwareStrobe,
+            Mode::HardwareStrobe,
+        ] {
+            let mut timer = Timer::new(true, None);
+            set_timer(&mut timer, mode, 0x1234, false);
+            for count in [0x5678_u16, 0x9abc] {
+                let [low, high] = count.to_le_bytes();
+                timer.write(low);
+                timer.write(high);
+                assert_eq!(timer.state.cr, count, "{mode:?}");
+            }
+        }
+    }
+
+    /// A PIT that a test programs through its I/O ports, as a guest does, in
+    /// a VM time that stands still until `run_to` moves it.
+    struct GuestPit {
+        pit: super::PitDevice,
+        irq0: Arc<TestLineInterruptTarget>,
+        keeper: vmcore::vmtime::VmTimeKeeper,
+        pool: pal_async::DefaultPool,
+    }
+
+    impl GuestPit {
+        fn new() -> Self {
+            use vmcore::vmtime::VmTime;
+
+            let mut pool = pal_async::DefaultPool::new();
+            let driver = pool.driver();
+            let keeper = vmcore::vmtime::VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+            let source = pool.run_until(keeper.builder().build(&driver)).unwrap();
+            let irq0 = TestLineInterruptTarget::new_arc();
+            let pit = super::PitDevice::new(
+                LineInterrupt::new_with_target("pit", irq0.clone(), 0),
+                source.access("pit"),
+            );
+            Self {
+                pit,
+                irq0,
+                keeper,
+                pool,
+            }
+        }
+
+        fn write(&mut self, port: u16, data: u8) {
+            self.pit.io_write(port, &[data]).unwrap();
+        }
+
+        /// Moves VM time to `ticks` PIT ticks after the start, rounded up to
+        /// VM time's 100 ns.
+        fn run_to(&mut self, ticks: u64) {
+            use vmcore::vmtime::SavedState;
+            use vmcore::vmtime::VmTime;
+
+            let time = VmTime::from_100ns((ticks * NANOS_PER_TICK).div_ceil(100));
+            self.pool
+                .run_until(self.keeper.restore(SavedState::from_vmtime(time)));
+        }
+
+        /// Latches counter 0, which brings the PIT up to VM time as every
+        /// port access does, and reads its count, low byte first.
+        fn latched_count(&mut self) -> u16 {
+            self.write(PIT_CONTROL_REGISTER, 0x00);
+            let mut count = [0; 2];
+            for byte in &mut count {
+                self.pit
+                    .io_read(PIT_TIMER_RANGE_START, std::slice::from_mut(byte))
+                    .unwrap();
+            }
+            u16::from_le_bytes(count)
+        }
+    }
+
+    #[test]
+    fn low_high_access_reloads_a_count_without_a_control_word() {
+        // Counter 0, low then high byte, mode 0: the count 0 (65536), then,
+        // without a control word, the count 16, which raises IRQ0 on the 17th
+        // tick, after the tick that loads it and its 16 counts.
+        let mut guest = GuestPit::new();
+        guest.write(PIT_CONTROL_REGISTER, 0x30);
+        for byte in [0x00, 0x00, 0x10, 0x00] {
+            guest.write(PIT_TIMER_RANGE_START, byte);
+        }
+
+        guest.run_to(16);
+        let count = guest.latched_count();
+        assert!(!guest.irq0.is_high(0), "count {count:#06x}");
+        guest.run_to(17);
+        let count = guest.latched_count();
+        assert!(guest.irq0.is_high(0), "count {count:#06x}");
+    }
+
+    #[test]
+    fn low_high_access_reprograms_a_running_rate_generator() {
+        // Counter 0, low then high byte, mode 2: the count 0x1234, then, while
+        // it counts and without a control word, the count 0x5678, which the
+        // counter loads at the end of the current period.
+        let mut guest = GuestPit::new();
+        guest.write(PIT_CONTROL_REGISTER, 0x34);
+        guest.write(PIT_TIMER_RANGE_START, 0x34);
+        guest.write(PIT_TIMER_RANGE_START, 0x12);
+        guest.run_to(1);
+        assert_eq!(guest.latched_count(), 0x1234);
+
+        guest.write(PIT_TIMER_RANGE_START, 0x78);
+        guest.write(PIT_TIMER_RANGE_START, 0x56);
+        guest.run_to(1 + 0x1234);
+        assert_eq!(guest.latched_count(), 0x5678);
     }
 
     #[test]
