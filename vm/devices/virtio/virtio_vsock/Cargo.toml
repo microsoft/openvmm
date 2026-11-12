@@ -42,6 +42,7 @@ guid.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
+sparse_mmap.workspace = true
 tempfile.workspace = true
 test_with_tracing.workspace = true
 

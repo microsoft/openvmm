@@ -23,12 +23,14 @@ use pal_async::async_test;
 use pal_async::socket::PolledSocket;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
+use sparse_mmap::SparseMapping;
 use std::collections::HashMap;
 use std::future::poll_fn;
 use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use std::vec;
@@ -129,8 +131,10 @@ impl TestHarness {
     /// Create a harness with a Unix listener at the expected socket path for the
     /// given port, plus a separate listener for host-initiated connections.
     fn new(driver: &DefaultDriver, tmp_dir: tempfile::TempDir) -> Self {
-        let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
+        Self::with_memory(driver, tmp_dir, GuestMemory::allocate(TOTAL_MEM_SIZE))
+    }
 
+    fn with_memory(driver: &DefaultDriver, tmp_dir: tempfile::TempDir, mem: GuestMemory) -> Self {
         // Initialize all three queue ring structures.
         init_avail_ring(&mem, RX_AVAIL_ADDR);
         init_used_ring(&mem, RX_USED_ADDR);
@@ -736,6 +740,15 @@ async fn vsock_reset_delivery_processes_one_descriptor_per_step(driver: DefaultD
     harness.enable().await;
     harness.device.worker.stop().await;
     let mut queues = harness.device.worker.remove();
+    assert!(
+        !harness
+            .device
+            .worker
+            .task_mut()
+            .flush_one_reset(&mut queues)
+            .unwrap()
+    );
+    assert_eq!(harness.device.worker.task().pending_resets.len(), 2);
     let buffers = [
         harness.post_rx_buffer(HDR_SIZE),
         harness.post_rx_buffer(HDR_SIZE),
@@ -748,7 +761,6 @@ async fn vsock_reset_delivery_processes_one_descriptor_per_step(driver: DefaultD
                 .worker
                 .task_mut()
                 .flush_one_reset(&mut queues)
-                .await
                 .unwrap()
         );
         assert_eq!(harness.device.worker.task().pending_resets.len(), 1 - index);
@@ -761,7 +773,6 @@ async fn vsock_reset_delivery_processes_one_descriptor_per_step(driver: DefaultD
             .worker
             .task_mut()
             .flush_one_reset(&mut queues)
-            .await
             .unwrap()
     );
     assert_eq!(harness.rx_used_idx, 2);
@@ -810,6 +821,7 @@ async fn vsock_save_restore_port_reuse_orders_reset_before_response(driver: Defa
     harness.enable().await;
     let header = harness.guest_header(10000, 5000, Operation::REQUEST, 0, 0);
     harness.post_tx_packet(&header, &[]);
+    harness.wait_for_tx_used().await;
     let (reset_descriptor, reset_gpa) = harness.post_rx_buffer(HDR_SIZE);
     let (response_descriptor, response_gpa) = harness.post_rx_buffer(HDR_SIZE);
     assert_eq!(
@@ -823,7 +835,6 @@ async fn vsock_save_restore_port_reuse_orders_reset_before_response(driver: Defa
         .await
         .unwrap()
         .unwrap();
-    harness.wait_for_tx_used().await;
     assert_eq!(
         harness.wait_for_rx_used().await,
         (response_descriptor, HDR_SIZE)
@@ -836,6 +847,169 @@ async fn vsock_save_restore_port_reuse_orders_reset_before_response(driver: Defa
     harness
         .exchange(&mut stream, 10000, 5000, b"reused ports")
         .await;
+}
+
+#[async_test]
+async fn vsock_reset_backpressure_allows_tx_and_write_ready(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    let mut listener = harness.create_port_listener(5000);
+    harness.enable().await;
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5000)
+        .await;
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+    let queues = harness.stop_queues().await;
+    let key = crate::connections::ConnectionKey {
+        local_port: 5001,
+        peer_port: 1025,
+    };
+    harness
+        .device
+        .worker
+        .task_mut()
+        .queue_pending(crate::PendingFutures::reset(key))
+        .unwrap();
+    let (ready_tx, ready_rx) = mesh::oneshot();
+    harness
+        .device
+        .worker
+        .task_mut()
+        .write_ready
+        .push(Box::pin(async move {
+            ready_tx.send(());
+            crate::connections::ConnectionInstanceId { key, seq: 0 }
+        }));
+    harness.start_queues(queues).await;
+
+    let payload = b"TX progresses without RX buffers";
+    let header = harness.guest_header(1024, 5000, Operation::RW, payload.len() as u32, 0);
+    harness.post_tx_packet(&header, payload);
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(async {
+            ready_rx.await.unwrap();
+            harness.wait_for_tx_used().await;
+            let mut received = vec![0; payload.len()];
+            stream.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, payload);
+        })
+        .await
+        .expect("reset backpressure blocked TX or write-ready processing");
+
+    let (state, queues) = harness.snapshot().await;
+    assert!(
+        state
+            .parse::<SavedState>()
+            .unwrap()
+            .connections_to_reset
+            .iter()
+            .any(|connection| connection.local_port == key.local_port
+                && connection.peer_port == key.peer_port)
+    );
+    harness.start_queues(queues).await;
+    let (_, gpa) = harness.post_rx_buffer(HDR_SIZE);
+    harness.wait_for_rx_used().await;
+    harness.assert_reset(gpa, key.local_port, key.peer_port);
+    harness
+        .exchange(&mut stream, 1024, 5000, b"still connected")
+        .await;
+}
+
+#[async_test]
+async fn vsock_save_restore_rejects_normal_rx_completion_failure(driver: DefaultDriver) {
+    let mapping = Arc::new(SparseMapping::new(TOTAL_MEM_SIZE).unwrap());
+    mapping.alloc(0, TOTAL_MEM_SIZE).unwrap();
+    let mut harness = TestHarness::with_memory(
+        &driver,
+        tempfile::tempdir().unwrap(),
+        GuestMemory::new("vsock RX completion failure", mapping.clone()),
+    );
+    let mut listener = harness.create_port_listener(5000);
+    harness.enable().await;
+    mapping.unmap(RX_USED_ADDR as usize, 0x1000).unwrap();
+    mapping.map_zero(RX_USED_ADDR as usize, 0x1000).unwrap();
+    let (_, gpa) = harness.post_rx_buffer(HDR_SIZE);
+    let header = harness.guest_header(1024, 5000, Operation::REQUEST, 0, 0);
+    harness.post_tx_packet(&header, &[]);
+    let (_stream, _) = CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    harness.wait_for_tx_used().await;
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(async {
+            while harness.read_header(gpa).operation() != Operation::RESPONSE {
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("normal RX packet was not written");
+    harness.stop_queues().await;
+    assert!(harness.device.worker.task().failed);
+    assert!(harness.device.save_device_state().await.is_err());
+}
+
+#[async_test]
+async fn vsock_save_restore_rejects_normal_tx_completion_failure(driver: DefaultDriver) {
+    let mapping = Arc::new(SparseMapping::new(TOTAL_MEM_SIZE).unwrap());
+    mapping.alloc(0, TOTAL_MEM_SIZE).unwrap();
+    let mut harness = TestHarness::with_memory(
+        &driver,
+        tempfile::tempdir().unwrap(),
+        GuestMemory::new("vsock TX completion failure", mapping.clone()),
+    );
+    let mut listener = harness.create_port_listener(5000);
+    harness.enable().await;
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5000)
+        .await;
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+    mapping.unmap(TX_USED_ADDR as usize, 0x1000).unwrap();
+    mapping.map_zero(TX_USED_ADDR as usize, 0x1000).unwrap();
+
+    let payload = b"delivered before completion fails";
+    let header = harness.guest_header(1024, 5000, Operation::RW, payload.len() as u32, 0);
+    harness.post_tx_packet(&header, payload);
+    let mut received = vec![0; payload.len()];
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(stream.read_exact(&mut received))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(received, payload);
+    harness.stop_queues().await;
+    assert!(harness.device.worker.task().failed);
+    assert!(harness.device.save_device_state().await.is_err());
+}
+
+#[async_test]
+async fn vsock_reset_backpressure_bounds_pending_resets(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    harness
+        .device
+        .restore_device_state(Some(reset_state(crate::MAX_SAVED_CONNECTIONS)))
+        .await
+        .unwrap();
+    harness.enable().await;
+
+    // A duplicate reset needs no additional capacity and must not block TX.
+    let header = harness.guest_header(10000, 5000, Operation::CREDIT_UPDATE, 0, 0);
+    harness.post_tx_packet(&header, &[]);
+    harness.wait_for_tx_used().await;
+    let header = harness.guest_header(10000, 5001, Operation::CREDIT_UPDATE, 0, 0);
+    harness.post_tx_packet(&header, &[]);
+    harness.wait_for_tx_used().await;
+    harness.stop_queues().await;
+    assert!(harness.device.worker.task().failed);
+    assert_eq!(
+        harness.device.worker.task().pending_resets.len(),
+        crate::MAX_SAVED_CONNECTIONS
+    );
+    assert!(harness.device.save_device_state().await.is_err());
 }
 
 #[async_test]

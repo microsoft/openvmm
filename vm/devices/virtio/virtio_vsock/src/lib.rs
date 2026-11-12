@@ -486,29 +486,48 @@ struct VsockWorker {
 impl VsockWorker {
     /// Queue pending futures returned from the connection manager to be processed by the worker run
     /// loop.
-    fn queue_pending(&mut self, pending: PendingFutures) {
+    fn queue_pending(&mut self, pending: PendingFutures) -> anyhow::Result<()> {
+        if let Some(key) = pending.reset {
+            // TX can generate resets even while the guest supplies no RX buffers.
+            anyhow::ensure!(
+                self.pending_resets.len() < MAX_SAVED_CONNECTIONS
+                    || self.pending_resets.contains(&key),
+                "too many pending vsock resets (maximum {MAX_SAVED_CONNECTIONS})"
+            );
+            self.connections.remove(&key);
+            self.pending_resets.insert(key);
+        }
         if let Some(work) = pending.rx_ready {
             self.rx_ready.push(work);
         }
         if let Some(work) = pending.write_ready {
             self.write_ready.push(work);
         }
-        if let Some(key) = pending.reset {
-            self.connections.remove(&key);
-            self.pending_resets.insert(key);
-        }
+        Ok(())
     }
 
     /// Handle a work item from the tx virtqueue (guest -> host).
-    fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, work: VirtioQueueCallbackWork) {
-        if let Err(err) = self.handle_guest_tx_inner(state, &work) {
-            tracelimit::error_ratelimited!(
-                error = err.as_ref() as &dyn std::error::Error,
-                "error handling vsock tx work"
-            );
-        }
-
-        state.tx_queue.get_mut().complete(work, 0);
+    fn handle_guest_tx(
+        &mut self,
+        state: &mut VsockWorkerState,
+        work: VirtioQueueCallbackWork,
+    ) -> anyhow::Result<()> {
+        let pending = match self.handle_guest_tx_inner(state, &work) {
+            Ok(pending) => pending,
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "error handling vsock tx work"
+                );
+                PendingFutures::NONE
+            }
+        };
+        state
+            .tx_queue
+            .get_mut()
+            .try_complete(work, 0)
+            .context("failed to complete vsock TX descriptor")?;
+        self.queue_pending(pending)
     }
 
     /// Handle a work item from the TX virtqueue (guest -> host).
@@ -516,7 +535,7 @@ impl VsockWorker {
         &mut self,
         state: &mut VsockWorkerState,
         work: &VirtioQueueCallbackWork,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<PendingFutures> {
         let mut header = VsockHeader::new_zeroed();
         work.read(&state.memory, header.as_mut_bytes())?;
 
@@ -573,8 +592,7 @@ impl VsockWorker {
             }
         };
 
-        self.queue_pending(pending);
-        Ok(())
+        Ok(pending)
     }
 
     /// Helper to write a packet to the RX queue. Returns the number of bytes
@@ -602,14 +620,16 @@ impl VsockWorker {
     }
 
     /// Try to deliver pending rx packets to the guest via the rx virtqueue.
-    fn handle_host_rx(&mut self, state: &mut VsockWorkerState, rx_ready: RxReady) {
+    fn handle_host_rx(
+        &mut self,
+        state: &mut VsockWorkerState,
+        rx_ready: RxReady,
+    ) -> anyhow::Result<()> {
         // Due to lifetime issues the PeekedWork cannot be passed into this function so get it
         // back here.
-        let peeked_work = state
-            .rx_queue
-            .try_peek()
-            .expect("peek already succeeded before")
-            .expect("queue was already checked to have items");
+        let Some(peeked_work) = state.rx_queue.try_peek()? else {
+            return self.queue_pending(PendingFutures::simple_rx(rx_ready));
+        };
 
         let (packet, pending) = self.connections.get_rx_packet(
             &state.memory,
@@ -623,7 +643,7 @@ impl VsockWorker {
             if packet.header.operation() == Operation::RST {
                 self.queue_pending(PendingFutures::reset(ConnectionKey::from_rx_packet(
                     &packet.header,
-                )));
+                )))?;
             } else {
                 let queue_work = peeked_work.consume();
                 let bytes = match Self::write_packet(state, &queue_work, &packet) {
@@ -635,24 +655,30 @@ impl VsockWorker {
                         );
                         self.queue_pending(PendingFutures::reset(ConnectionKey::from_rx_packet(
                             &packet.header,
-                        )));
+                        )))?;
                         0
                     }
                 };
-                state.rx_queue.complete(queue_work, bytes);
+                state
+                    .rx_queue
+                    .try_complete(queue_work, bytes)
+                    .context("failed to complete vsock RX descriptor")?;
             }
         }
 
-        self.queue_pending(pending);
+        self.queue_pending(pending)
     }
 
-    /// Attempt one reset so the caller can check cancellation between descriptors.
-    /// Returns whether reset work was pending, even if its RX buffer was unusable.
-    async fn flush_one_reset(&mut self, state: &mut VsockWorkerState) -> anyhow::Result<bool> {
+    /// Attempt one reset without waiting for RX buffers or blocking TX progress.
+    /// Returns whether an RX descriptor was consumed, even if its buffer was unusable.
+    fn flush_one_reset(&mut self, state: &mut VsockWorkerState) -> anyhow::Result<bool> {
         let Some(key) = self.pending_resets.first().copied() else {
             return Ok(false);
         };
-        let work = state.rx_queue.peek().await?.consume();
+        let Some(work) = state.rx_queue.try_peek()? else {
+            return Ok(false);
+        };
+        let work = work.consume();
         let packet = self.connections.reset_packet(key);
         let bytes = match Self::write_packet(state, &work, &packet) {
             Ok(bytes) => bytes,
@@ -682,68 +708,61 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
         stop.until_stopped(async {
             loop {
                 check.check()?;
-                match self.flush_one_reset(state).await {
-                    Ok(true) => continue,
-                    Ok(false) => {}
-                    Err(err) => {
-                        self.failed = true;
-                        tracelimit::error_ratelimited!(
-                            error = err.as_ref() as &dyn std::error::Error,
-                            "failed to deliver vsock resets, stopping worker"
-                        );
-                        return Ok(());
+                let has_rx_work = if self.pending_resets.is_empty() {
+                    match state.rx_queue.try_peek() {
+                        Ok(work) => work.is_some(),
+                        Err(err) => {
+                            self.failed = true;
+                            tracelimit::error_ratelimited!(
+                                error = &err as &dyn std::error::Error,
+                                "error peeking virtio rx queue"
+                            );
+                            return Ok(());
+                        }
                     }
-                }
-                let peeked = match state.rx_queue.try_peek() {
-                    Ok(p) => p,
-                    Err(err) => {
-                        self.failed = true;
-                        tracing::error!(
-                            error = &err as &dyn std::error::Error,
-                            "error peeking virtio rx queue"
-                        );
-                        return Ok(());
+                } else {
+                    match self.flush_one_reset(state) {
+                        Ok(true) => continue,
+                        // Retain RX priority without waiting here: TX and host writes
+                        // must still make progress while RX buffers are unavailable.
+                        Ok(false) => false,
+                        Err(err) => {
+                            self.failed = true;
+                            tracelimit::error_ratelimited!(
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "failed to deliver vsock resets, stopping worker"
+                            );
+                            return Ok(());
+                        }
                     }
                 };
 
-                let has_rx_work = peeked.is_some();
                 let mut rx_ready =
                     OptionFuture::from(has_rx_work.then(|| self.rx_ready.select_next_some()));
 
-                // This future unfortunately borrows state.rx_queue, which means peeked cannot be
-                // used below.
                 let mut rx_queue_kick = OptionFuture::from(
                     (!has_rx_work).then(|| poll_fn(|cx| state.rx_queue.poll_kick(cx)).fuse()),
                 );
 
                 // Wait for work to do from either host or guest.
-                futures::select! {
+                let result = futures::select! {
                     id = self.write_ready.select_next_some() => {
                         let pending = self.connections.handle_write_ready(id);
-                        self.queue_pending(pending);
+                        self.queue_pending(pending)
                     }
                     r = state.tx_queue.select_next_some() => {
                         match r {
                             Ok(work) => self.handle_guest_tx(state, work),
-                            Err(err) => {
-                                self.failed = true;
-                                // The queue is retired: the rejected chain is
-                                // never consumed, so retrying would fail
-                                // identically forever.
-                                tracing::error!(
-                                    error = &err as &dyn std::error::Error,
-                                    "error reading from virtio tx queue, stopping worker"
-                                );
-                                return Ok(());
-                            }
+                            Err(err) => Err(err).context("failed to read vsock TX queue"),
                         }
                     }
                     r = rx_ready => {
                         let work = r.unwrap();
-                        self.handle_host_rx(state, work);
+                        self.handle_host_rx(state, work)
                     }
                     _ = rx_queue_kick => {
                         // New buffers are available in the rx queue; repeat the loop to peek again.
+                        Ok(())
                     }
                     r = self.listener.accept().fuse() => {
                         match r {
@@ -751,24 +770,34 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                                 tracing::trace!("host unix socket accepted");
                                 match self.connections.handle_host_connect(&self.driver, stream) {
                                     Err(err) => {
-                                        tracing::error!(
+                                        tracelimit::error_ratelimited!(
                                             error = err.as_ref() as &dyn std::error::Error,
                                             "error handling Unix socket connect"
                                         );
+                                        Ok(())
                                     }
-                                    Ok((read_work, timeout_work)) => {
-                                        self.queue_pending(read_work);
-                                        self.queue_pending(timeout_work);
-                                    }
+                                    Ok((read_work, timeout_work)) => self.queue_pending(read_work)
+                                        .and_then(|()| self.queue_pending(timeout_work)),
                                 }
                             }
-                            Err(err) => tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "error accepting host connections"
-                            ),
+                            Err(err) => {
+                                tracelimit::error_ratelimited!(
+                                    error = &err as &dyn std::error::Error,
+                                    "error accepting host connections"
+                                );
+                                Ok(())
+                            }
                         }
                     }
                 };
+                if let Err(err) = result {
+                    self.failed = true;
+                    tracelimit::error_ratelimited!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "vsock worker failed, stopping"
+                    );
+                    return Ok(());
+                }
             }
         })
         .await?
