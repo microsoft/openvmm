@@ -558,6 +558,10 @@ mod kvm_tests {
         }
     }
 
+    /// Linux's `SIGEV_THREAD_ID`, which the `libc` crate does not define for
+    /// musl.
+    const SIGEV_THREAD_ID: libc::c_int = 4;
+
     /// A timer that sends the VP cancellation signal to this thread, as
     /// `Processor::force_exit` does, to force the VP out of `KVM_RUN` at a
     /// deadline.
@@ -569,7 +573,7 @@ mod kvm_tests {
             // the calls are as documented.
             unsafe {
                 let mut event: libc::sigevent = std::mem::zeroed();
-                event.sigev_notify = libc::SIGEV_THREAD_ID;
+                event.sigev_notify = SIGEV_THREAD_ID;
                 event.sigev_signo = libc::SIGRTMIN();
                 event.sigev_notify_thread_id = libc::gettid();
                 let mut timer = std::mem::zeroed();
