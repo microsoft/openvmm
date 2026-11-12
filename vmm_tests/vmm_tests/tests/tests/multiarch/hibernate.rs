@@ -179,10 +179,10 @@ const HIBERNATE_ACTION_JSON: &[u8] = br#"{
     }
 }"#;
 
-/// Encoding of `hibernate::Token::CURRENT` (`Hibernated { 1, 9 }`) as written to
+/// Encoding of `hibernate::Token::CURRENT` (`Hibernated { 26, 0 }`) as written to
 /// `vmgs::FileId::HIBERNATION_TOKEN`. Keep in sync with
 /// `underhill_core::hibernate::Token::CURRENT`.
-const HIBERNATE_TOKEN_CURRENT: u64 = 0x0109;
+const HIBERNATE_TOKEN_CURRENT: u64 = 0x1A00;
 
 /// Verify that a guest hibernation request halts the VM with a hibernate reason.
 ///
@@ -235,7 +235,7 @@ async fn hibernate_token<T: PetriVmmBackend>(
     expect_token(token, HIBERNATE_TOKEN_CURRENT)
 }
 
-/// Verify that resuming under a different firmware version overloads VTL0's
+/// Verify that resuming under a down-level firmware version overloads VTL0's
 /// firmware with the hibernated version and keeps that version as the token.
 ///
 /// The overload needs host support; when the host rejects it, OpenHCL falls back
@@ -248,6 +248,7 @@ async fn hibernate_token_overload<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
 ) -> anyhow::Result<()> {
+    // Legacy OpenHCL 1.7 moniker.
     const OLDER_VERSION: u64 = 0x0107;
     let token = hibernate_and_read_token(config, vmgstool, Some(OLDER_VERSION)).await?;
     if token == HIBERNATE_TOKEN_CURRENT {
