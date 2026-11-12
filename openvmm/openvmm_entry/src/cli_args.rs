@@ -579,12 +579,6 @@ options:
     #[clap(long, default_value_t = 64, value_parser = clap::value_parser!(u16).range(1..))]
     pub virtio_blk_io_depth: u16,
 
-    /// Use a separate task driver per native virtio-blk queue.
-    ///
-    /// The standalone VMM thread backend gives each queue its own I/O thread.
-    #[clap(long)]
-    pub virtio_blk_dedicated_threads: bool,
-
     /// Attach a vhost-user device via a Unix socket.
     ///
     /// The first positional argument is the socket path. Options:

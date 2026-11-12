@@ -56,7 +56,6 @@ use vmcore::device_state::ChangeDeviceState;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
-use vmcore::vm_task::thread::ThreadDriverBackend;
 use zerocopy::IntoBytes;
 
 // --- Constants ---
@@ -542,7 +541,7 @@ impl TestHarness {
 // --- Tests ---
 
 #[async_test]
-async fn multiqueue_threads_complete_independently_and_restart(driver: DefaultDriver) {
+async fn multiqueue_completes_independently_and_restarts(driver: DefaultDriver) {
     let (started, started_recv) = async_channel::unbounded();
     let (release, release_recv) = async_channel::bounded(1);
     let disk = HookDisk::new(64 * 1024, 512)
@@ -551,10 +550,7 @@ async fn multiqueue_threads_complete_independently_and_restart(driver: DefaultDr
             let release = release_recv.clone();
             async move {
                 let write = matches!(op, DiskOperation::Write { .. });
-                started
-                    .send((write, std::thread::current().id()))
-                    .await
-                    .unwrap();
+                started.send(write).await.unwrap();
                 if write {
                     release.recv().await.unwrap();
                 }
@@ -562,7 +558,7 @@ async fn multiqueue_threads_complete_independently_and_restart(driver: DefaultDr
             }
         })
         .into_disk();
-    let source = VmTaskDriverSource::new(ThreadDriverBackend::new(driver.clone()));
+    let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
     let mut first = TestHarness::new(&driver, disk.clone(), false);
     first.device = VirtioBlkDevice::with_options(
         &source,
@@ -572,7 +568,6 @@ async fn multiqueue_threads_complete_independently_and_restart(driver: DefaultDr
         VirtioBlkOptions {
             queue_count: 2,
             io_depth: 1,
-            dedicated_threads: true,
         },
     )
     .unwrap();
@@ -591,7 +586,7 @@ async fn multiqueue_threads_complete_independently_and_restart(driver: DefaultDr
         .unwrap();
 
     let status = first.post_write_request(0, 0, &[0xa5; 512]);
-    let (write, writer_thread) = with_timeout(
+    let write = with_timeout(
         &driver,
         Duration::from_secs(5),
         "first queue did not start its write",
@@ -602,10 +597,8 @@ async fn multiqueue_threads_complete_independently_and_restart(driver: DefaultDr
     assert!(write);
     second.post_read_request(0, 1, 512);
     assert_eq!(second.wait_for_used().await, (0, 513));
-    let (write, reader_thread) = started_recv.recv().await.unwrap();
+    let write = started_recv.recv().await.unwrap();
     assert!(!write);
-    assert_ne!(writer_thread, reader_thread);
-    assert_ne!(reader_thread, std::thread::current().id());
     assert_eq!(read_used_idx(&first.mem, USED_ADDR), 0);
 
     let saved = first.device.stop_queue(1).await.unwrap();
@@ -685,7 +678,6 @@ async fn multiqueue_requires_negotiation_and_valid_queue_indices(driver: Default
                 VirtioBlkOptions {
                     queue_count,
                     io_depth,
-                    dedicated_threads: false,
                 },
             )
             .is_err()

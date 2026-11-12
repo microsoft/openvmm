@@ -343,7 +343,7 @@ impl VirtioBlkDevice {
         let supports_discard = disk.unmap_behavior() != disk_backend::UnmapBehavior::Ignored;
 
         let workers = (0..options.queue_count)
-            .map(|index| QueueWorker {
+            .map(|_| QueueWorker {
                 worker: TaskControl::new(BlkWorker {
                     disk: disk.clone(),
                     read_only,
@@ -352,14 +352,7 @@ impl VirtioBlkDevice {
                     stats: WorkerStats::default(),
                     ios: FuturesUnordered::new(),
                 }),
-                driver: if options.dedicated_threads {
-                    driver_source
-                        .builder()
-                        .target_vp(u32::from(index))
-                        .build(format!("virtio-blk-{index}"))
-                } else {
-                    driver_source.simple()
-                },
+                driver: driver_source.simple(),
             })
             .collect();
 
