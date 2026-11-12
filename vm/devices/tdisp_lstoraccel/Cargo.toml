@@ -8,8 +8,8 @@ rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 anyhow.workspace = true
+mesh_protobuf.workspace = true
 nvme_spec.workspace = true
-static_assertions.workspace = true
 thiserror.workspace = true
 vmcore.workspace = true
 zerocopy.workspace = true

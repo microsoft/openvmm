@@ -8670,9 +8670,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "disklayer_ram",
+ "mesh_protobuf",
  "nvme_spec",
  "pal_async",
- "static_assertions",
  "tdisp",
  "test_with_tracing",
  "thiserror 2.0.16",

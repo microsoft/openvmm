@@ -7,16 +7,14 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
-use zerocopy::FromBytes;
-use zerocopy::IntoBytes;
 
+use self::persisted::CredentialCollection;
 use self::persisted::CredentialRecord;
-use self::persisted::CredentialStoreHeader;
 
 const STORE_VERSION: u32 = 1;
 const MAX_CREDENTIALS: usize = 32;
-const MAX_STORE_SIZE: usize =
-    size_of::<CredentialStoreHeader>() + MAX_CREDENTIALS * size_of::<CredentialRecord>();
+// Encoded-size budget with headroom; the capacity test checks worst-case records fit.
+const MAX_STORE_SIZE: usize = 4 * 1024;
 
 /// Authorization credential size in bytes.
 pub const CREDENTIAL_LEN: usize = 32;
@@ -45,7 +43,7 @@ pub enum CredentialStoreError {
     /// The namespace already has a credential.
     #[error("a credential already exists for this namespace")]
     CredentialAlreadyExists,
-    /// The store has reached its credential capacity.
+    /// The update would exceed the credential count or encoded-size limit.
     #[error("credential store is full")]
     OutOfSpace,
 }
@@ -65,40 +63,41 @@ pub struct LstoraccelCredentialStore {
 }
 
 mod persisted {
-    //! Credential-store on-disk format.
+    //! Version 1 credential-store protobuf format.
     //!
-    //! Version 1 consists of a header followed by zero or more fixed-size
-    //! credential records, extending to the end of the blob.
-    //! Integer fields currently use native byte order.
+    //! Field numbers are persistent identifiers and must not be reused.
 
-    use super::CREDENTIAL_LEN;
-    use zerocopy::FromBytes;
-    use zerocopy::Immutable;
-    use zerocopy::IntoBytes;
-    use zerocopy::KnownLayout;
+    use mesh_protobuf::Protobuf;
 
-    /// Version 1 store header.
-    #[repr(C)]
-    #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-    pub(super) struct CredentialStoreHeader {
+    /// A credential collection in format version 1.
+    #[derive(Protobuf)]
+    #[mesh(package = "tdisp_lstoraccel.credential_store")]
+    pub(super) struct CredentialCollection {
         /// Format version. Only version 1 is currently supported.
+        #[mesh(1)]
         pub(super) version: u32,
+        /// Expected record count; detects truncation between complete protobuf records.
+        #[mesh(2)]
+        pub(super) record_count: u32,
+        /// Namespace credentials, limited by [`super::MAX_CREDENTIALS`].
+        #[mesh(3)]
+        pub(super) records: Vec<CredentialRecord>,
     }
 
     /// A namespace credential record in format version 1.
-    #[repr(C)]
-    #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
+    #[derive(Protobuf)]
+    #[mesh(package = "tdisp_lstoraccel.credential_store")]
     pub(super) struct CredentialRecord {
-        /// Controller virtual serial number.
-        pub(super) vsn: [u8; 20],
+        /// Exact 20-byte controller virtual serial number.
+        #[mesh(1)]
+        pub(super) vsn: Vec<u8>,
         /// Namespace ID within that controller.
+        #[mesh(2)]
         pub(super) nsid: u32,
-        /// The namespace's 32-byte authorization credential.
-        pub(super) credential: [u8; CREDENTIAL_LEN],
+        /// Authorization credential, exactly [`super::CREDENTIAL_LEN`] bytes.
+        #[mesh(3)]
+        pub(super) credential: Vec<u8>,
     }
-
-    static_assertions::const_assert_eq!(size_of::<CredentialStoreHeader>(), 4);
-    static_assertions::const_assert_eq!(size_of::<CredentialRecord>(), 56);
 }
 
 impl LstoraccelCredentialStore {
@@ -152,9 +151,11 @@ impl LstoraccelCredentialStore {
         &mut self,
         temp_state: BTreeMap<NamespaceCredentialKey, [u8; CREDENTIAL_LEN]>,
     ) -> Result<(), CredentialStoreError> {
-        self.store
-            .persist(serialize_credential_store(&temp_state))
-            .await?;
+        let bytes = serialize_credential_store(&temp_state);
+        if bytes.len() > MAX_STORE_SIZE {
+            return Err(CredentialStoreError::OutOfSpace);
+        }
+        self.store.persist(bytes).await?;
         self.state = temp_state;
         Ok(())
     }
@@ -168,23 +169,35 @@ fn deserialize_credential_store(
     if bytes.len() > MAX_STORE_SIZE {
         return Err(Error::InvalidData("credential store exceeds maximum size"));
     }
-    let (header, mut bytes) = CredentialStoreHeader::read_from_prefix(bytes)
-        .map_err(|_| Error::InvalidData("truncated store header"))?;
-    if header.version != STORE_VERSION {
-        return Err(Error::UnsupportedVersion(header.version));
+    let collection: CredentialCollection = mesh_protobuf::decode(bytes)
+        .map_err(|_| Error::InvalidData("malformed credential store"))?;
+    if collection.version != STORE_VERSION {
+        return Err(Error::UnsupportedVersion(collection.version));
     }
+    if collection.records.len() > MAX_CREDENTIALS {
+        return Err(Error::InvalidData("too many credential records"));
+    }
+    if collection.record_count as usize != collection.records.len() {
+        return Err(Error::InvalidData("credential record count mismatch"));
+    }
+
     let mut state = BTreeMap::new();
-    while !bytes.is_empty() {
-        let (record, rest) = CredentialRecord::read_from_prefix(bytes)
-            .map_err(|_| Error::InvalidData("truncated credential record"))?;
+    for record in collection.records {
+        let vsn = record
+            .vsn
+            .try_into()
+            .map_err(|_| Error::InvalidData("invalid controller serial length"))?;
+        let credential = record
+            .credential
+            .try_into()
+            .map_err(|_| Error::InvalidData("invalid credential length"))?;
         let key = NamespaceCredentialKey {
-            vsn: record.vsn,
+            vsn,
             nsid: record.nsid,
         };
-        if state.insert(key, record.credential).is_some() {
+        if state.insert(key, credential).is_some() {
             return Err(Error::InvalidData("duplicate namespace credential"));
         }
-        bytes = rest;
     }
     Ok(state)
 }
@@ -192,26 +205,19 @@ fn deserialize_credential_store(
 fn serialize_credential_store(
     state: &BTreeMap<NamespaceCredentialKey, [u8; CREDENTIAL_LEN]>,
 ) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(
-        size_of::<CredentialStoreHeader>() + state.len() * size_of::<CredentialRecord>(),
-    );
-    bytes.extend_from_slice(
-        CredentialStoreHeader {
-            version: STORE_VERSION,
-        }
-        .as_bytes(),
-    );
-    for (key, credential) in state {
-        bytes.extend_from_slice(
-            CredentialRecord {
-                vsn: key.vsn,
-                nsid: key.nsid,
-                credential: *credential,
-            }
-            .as_bytes(),
-        );
-    }
-    bytes
+    let records: Vec<_> = state
+        .iter()
+        .map(|(key, credential)| CredentialRecord {
+            vsn: key.vsn.to_vec(),
+            nsid: key.nsid,
+            credential: credential.to_vec(),
+        })
+        .collect();
+    mesh_protobuf::encode(CredentialCollection {
+        version: STORE_VERSION,
+        record_count: records.len() as u32,
+        records,
+    })
 }
 
 #[cfg(test)]
@@ -237,12 +243,20 @@ mod tests {
         LstoraccelCredentialStore::open(store.store).await.unwrap()
     }
 
-    async fn open_store_with_persisted_bytes(
-        bytes: Vec<u8>,
-    ) -> Result<LstoraccelCredentialStore, CredentialStoreError> {
-        let mut store = EphemeralNonVolatileStore::new_boxed();
-        store.persist(bytes).await.unwrap();
-        LstoraccelCredentialStore::open(store).await
+    fn persisted_record(nsid: u32) -> CredentialRecord {
+        CredentialRecord {
+            vsn: vec![1; 20],
+            nsid,
+            credential: vec![2; CREDENTIAL_LEN],
+        }
+    }
+
+    fn persisted_collection(records: Vec<CredentialRecord>) -> CredentialCollection {
+        CredentialCollection {
+            version: STORE_VERSION,
+            record_count: records.len() as u32,
+            records,
+        }
     }
 
     #[async_test]
@@ -273,10 +287,15 @@ mod tests {
         store.remove(&controller_a_ns2).await.unwrap();
         store.remove(&controller_a_ns2).await.unwrap();
 
-        let store = reopen(store).await;
+        let mut store = reopen(store).await;
         assert_eq!(store.get(&controller_a_ns1), Some(&credential_a1));
         assert!(store.get(&controller_a_ns2).is_none());
         assert_eq!(store.get(&controller_b_ns1), Some(&credential_b1));
+
+        store.remove(&controller_a_ns1).await.unwrap();
+        store.remove(&controller_b_ns1).await.unwrap();
+        let store = reopen(store).await;
+        assert!(store.state.is_empty());
     }
 
     #[async_test]
@@ -305,14 +324,19 @@ mod tests {
     #[async_test]
     async fn capacity_limit_preserves_existing_credentials() {
         let mut store = new_store().await;
-        let key = |nsid| NamespaceCredentialKey { vsn: [1; 20], nsid };
-        for nsid in 1..=MAX_CREDENTIALS as u32 {
+        let key = |index| NamespaceCredentialKey {
+            vsn: [1; 20],
+            nsid: u32::MAX - (index - 1),
+        };
+        for index in 1..=MAX_CREDENTIALS as u32 {
             store
-                .put(&key(nsid), &[nsid as u8; CREDENTIAL_LEN])
+                .put(&key(index), &[index as u8; CREDENTIAL_LEN])
                 .await
                 .unwrap();
         }
         let before = store.store.restore().await.unwrap();
+        assert!(before.as_ref().unwrap().len() <= MAX_STORE_SIZE);
+        let mut store = reopen(store).await;
         assert!(matches!(
             store.put(&key(1), &[0; CREDENTIAL_LEN]).await,
             Err(CredentialStoreError::CredentialAlreadyExists)
@@ -323,65 +347,121 @@ mod tests {
             store.put(&new_key, &new_credential).await,
             Err(CredentialStoreError::OutOfSpace)
         ));
+        // Bypass put's record-count limit to exercise the encoded-size guard.
+        let oversized_state = (1..=(MAX_STORE_SIZE / CREDENTIAL_LEN + 1) as u32)
+            .map(|index| (key(index), [0; CREDENTIAL_LEN]))
+            .collect();
+        assert!(matches!(
+            store.flush(oversized_state).await,
+            Err(CredentialStoreError::OutOfSpace)
+        ));
         assert_eq!(store.store.restore().await.unwrap(), before);
         assert!(store.get(&new_key).is_none());
-        for nsid in 1..=MAX_CREDENTIALS as u32 {
-            assert_eq!(store.get(&key(nsid)), Some(&[nsid as u8; CREDENTIAL_LEN]));
+        for index in 1..=MAX_CREDENTIALS as u32 {
+            assert_eq!(store.get(&key(index)), Some(&[index as u8; CREDENTIAL_LEN]));
         }
         store.remove(&key(1)).await.unwrap();
         store.put(&new_key, &new_credential).await.unwrap();
         let store = reopen(store).await;
         assert!(store.get(&key(1)).is_none());
         assert_eq!(store.get(&new_key), Some(&new_credential));
-        for nsid in 2..=MAX_CREDENTIALS as u32 {
-            assert_eq!(store.get(&key(nsid)), Some(&[nsid as u8; CREDENTIAL_LEN]));
+        for index in 2..=MAX_CREDENTIALS as u32 {
+            assert_eq!(store.get(&key(index)), Some(&[index as u8; CREDENTIAL_LEN]));
         }
     }
 
-    #[async_test]
-    async fn malformed_data_is_not_an_empty_store() {
+    #[test]
+    fn invalid_persisted_data_is_rejected() {
         use CredentialStoreError as Error;
 
-        for len in 0..size_of::<CredentialStoreHeader>() {
+        for version in [0, STORE_VERSION + 1] {
+            let mut collection = persisted_collection(Vec::new());
+            collection.version = version;
             assert!(matches!(
-                open_store_with_persisted_bytes(vec![0; len]).await,
-                Err(Error::InvalidData("truncated store header"))
+                deserialize_credential_store(&mesh_protobuf::encode(collection)),
+                Err(Error::UnsupportedVersion(found)) if found == version
             ));
         }
-        let unsupported = CredentialStoreHeader {
-            version: STORE_VERSION + 1,
-        }
-        .as_bytes()
-        .to_vec();
-        assert!(matches!(
-            open_store_with_persisted_bytes(unsupported).await,
-            Err(Error::UnsupportedVersion(version)) if version == STORE_VERSION + 1
-        ));
-        let header = CredentialStoreHeader {
-            version: STORE_VERSION,
-        }
-        .as_bytes()
-        .to_vec();
-        for len in [
-            1,
-            size_of::<CredentialRecord>() - 1,
-            size_of::<CredentialRecord>() + 1,
-        ] {
-            let mut bytes = header.clone();
-            bytes.resize(header.len() + len, 0);
-            assert!(matches!(
-                open_store_with_persisted_bytes(bytes).await,
-                Err(Error::InvalidData("truncated credential record"))
+
+        let mut truncated = mesh_protobuf::encode(persisted_collection(vec![persisted_record(1)]));
+        truncated.pop().unwrap();
+        let mut invalid = vec![
+            (vec![0x08], "malformed credential store"),
+            (truncated, "malformed credential store"),
+            (
+                STORE_VERSION.to_ne_bytes().to_vec(),
+                "malformed credential store",
+            ),
+            (
+                vec![0; MAX_STORE_SIZE + 1],
+                "credential store exceeds maximum size",
+            ),
+        ];
+        for len in [0, 19, 21] {
+            let mut record = persisted_record(1);
+            record.vsn.resize(len, 0);
+            invalid.push((
+                mesh_protobuf::encode(persisted_collection(vec![record])),
+                "invalid controller serial length",
             ));
         }
-        let mut oversized = header.clone();
-        oversized.resize(MAX_STORE_SIZE + 1, 0);
-        assert!(matches!(
-            open_store_with_persisted_bytes(oversized).await,
-            Err(Error::InvalidData("credential store exceeds maximum size"))
+        for len in [0, CREDENTIAL_LEN - 1, CREDENTIAL_LEN + 1] {
+            let mut record = persisted_record(1);
+            record.credential.resize(len, 0);
+            invalid.push((
+                mesh_protobuf::encode(persisted_collection(vec![record])),
+                "invalid credential length",
+            ));
+        }
+
+        let duplicate = persisted_collection(vec![persisted_record(1), persisted_record(1)]);
+        invalid.push((
+            mesh_protobuf::encode(duplicate),
+            "duplicate namespace credential",
         ));
-        let store = open_store_with_persisted_bytes(header).await.unwrap();
-        assert!(store.state.is_empty());
+
+        let excess =
+            persisted_collection((0..=MAX_CREDENTIALS as u32).map(persisted_record).collect());
+        let bytes = mesh_protobuf::encode(excess);
+        assert!(bytes.len() <= MAX_STORE_SIZE);
+        invalid.push((bytes, "too many credential records"));
+
+        for (bytes, expected) in invalid {
+            assert!(
+                matches!(
+                    deserialize_credential_store(&bytes),
+                    Err(Error::InvalidData(message)) if message == expected
+                ),
+                "expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn record_count_must_match_the_collection() {
+        let mut collection = persisted_collection(vec![persisted_record(1)]);
+        collection.record_count = 0;
+        assert!(matches!(
+            deserialize_credential_store(&mesh_protobuf::encode(collection)),
+            Err(CredentialStoreError::InvalidData(
+                "credential record count mismatch"
+            ))
+        ));
+
+        let mut collection = persisted_collection(vec![persisted_record(1)]);
+        collection.record_count = 2;
+        let prefix = mesh_protobuf::encode(collection);
+        let complete = mesh_protobuf::encode(persisted_collection(vec![
+            persisted_record(1),
+            persisted_record(2),
+        ]));
+        assert_eq!(&complete[..prefix.len()], prefix);
+        assert!(matches!(
+            deserialize_credential_store(&complete[..prefix.len()]),
+            Err(CredentialStoreError::InvalidData(
+                "credential record count mismatch"
+            ))
+        ));
     }
 
     #[async_test]
