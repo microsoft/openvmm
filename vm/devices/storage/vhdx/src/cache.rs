@@ -314,6 +314,48 @@ enum WritePendingAction<B> {
     AcquirePermit(Arc<Mutex<PageData<B>>>),
 }
 
+/// Reset transient page state if the future driving it is cancelled.
+struct PendingPageGuard<'a, F: AsyncFile> {
+    cache: &'a PageCache<F>,
+    entry: Option<Arc<Mutex<PageData<F::Buffer>>>>,
+}
+
+impl<'a, F: AsyncFile> PendingPageGuard<'a, F> {
+    fn new(cache: &'a PageCache<F>, entry: Arc<Mutex<PageData<F::Buffer>>>) -> Self {
+        Self {
+            cache,
+            entry: Some(entry),
+        }
+    }
+
+    fn into_entry(mut self) -> Arc<Mutex<PageData<F::Buffer>>> {
+        self.entry.take().expect("pending page is owned")
+    }
+}
+
+impl<F: AsyncFile> Drop for PendingPageGuard<'_, F> {
+    fn drop(&mut self) {
+        if let Some(entry) = self.entry.take() {
+            let mut pages = self.cache.pages.lock();
+            let mut page = entry.lock();
+            assert!(matches!(
+                page.state,
+                PageState::Loading | PageState::AcquiringPermit
+            ));
+            page.state = PageState::Clean;
+            let key = pages.lru.nodes[page.lru_index].key;
+            pages
+                .map
+                .get_mut(&key)
+                .expect("pending page is cached")
+                .idle = true;
+            drop(page);
+            drop(pages);
+            self.cache.state_event.notify(usize::MAX);
+        }
+    }
+}
+
 /// Log pipeline state shared between the cache and the log/apply tasks.
 ///
 /// Present only when the file is opened writable with a log task.
@@ -418,11 +460,12 @@ impl<F: AsyncFile> PageCache<F> {
             match action {
                 PendingAction::Wait(listener) => listener.await,
                 PendingAction::Load(file_offset, entry) => {
+                    let pending = PendingPageGuard::new(self, entry);
                     let buf = self.file.alloc_buffer(PAGE_SIZE);
                     match self.file.read_into(file_offset, buf).await {
-                        Ok(buf) => self.complete_load(entry, Some(Arc::new(buf))),
+                        Ok(buf) => self.complete_load(pending.into_entry(), Some(Arc::new(buf))),
                         Err(e) => {
-                            self.complete_load(entry, None);
+                            self.complete_load(pending.into_entry(), None);
                             return Err(CacheError::Read {
                                 err: e,
                                 file_offset,
@@ -486,6 +529,11 @@ impl<F: AsyncFile> PageCache<F> {
                 Err(PendingAction::Wait(listener))
             }
             PageState::Clean if guard.data.is_none() => {
+                pages
+                    .map
+                    .get_mut(&key)
+                    .expect("loading page is cached")
+                    .idle = false;
                 guard.state = PageState::Loading;
                 let entry_arc = ArcMutexGuard::into_arc(guard);
                 drop(pages);
@@ -515,6 +563,7 @@ impl<F: AsyncFile> PageCache<F> {
     /// On failure (`data` is `None`): removes the entry from the cache so the
     /// next acquirer creates a fresh entry and retries.
     fn complete_load(&self, entry: Arc<Mutex<PageData<F::Buffer>>>, data: Option<Arc<F::Buffer>>) {
+        let mut pages = self.pages.lock();
         let mut page = entry.lock();
         assert!(
             page.state == PageState::Loading,
@@ -527,6 +576,10 @@ impl<F: AsyncFile> PageCache<F> {
         );
         page.state = PageState::Clean;
         page.data = data;
+        let key = pages.lru.nodes[page.lru_index].key;
+        pages.map.get_mut(&key).expect("loaded page is cached").idle = true;
+        drop(page);
+        drop(pages);
         self.state_event.notify(usize::MAX);
     }
 
@@ -549,11 +602,12 @@ impl<F: AsyncFile> PageCache<F> {
             match action {
                 WritePendingAction::Wait(listener) => listener.await,
                 WritePendingAction::Load(file_offset, entry) => {
+                    let pending = PendingPageGuard::new(self, entry);
                     let buf = self.file.alloc_buffer(PAGE_SIZE);
                     match self.file.read_into(file_offset, buf).await {
-                        Ok(buf) => self.complete_load(entry, Some(Arc::new(buf))),
+                        Ok(buf) => self.complete_load(pending.into_entry(), Some(Arc::new(buf))),
                         Err(e) => {
-                            self.complete_load(entry, None);
+                            self.complete_load(pending.into_entry(), None);
                             return Err(CacheError::Read {
                                 err: e,
                                 file_offset,
@@ -562,14 +616,15 @@ impl<F: AsyncFile> PageCache<F> {
                     }
                 }
                 WritePendingAction::AcquirePermit(entry) => {
+                    let pending = PendingPageGuard::new(self, entry);
                     let permits = &self.log_state.as_ref().unwrap().permits;
                     let result = permits.acquire(1).await;
                     match result {
                         Ok(()) => {
-                            return self.finalize_permit(entry);
+                            return self.finalize_permit(pending.into_entry());
                         }
                         Err(e) => {
-                            self.finalize_permit_failed(entry);
+                            self.finalize_permit_failed(pending.into_entry());
                             return Err(CacheError::PipelineFailed(e));
                         }
                     }
