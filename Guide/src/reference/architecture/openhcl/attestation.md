@@ -103,11 +103,22 @@ state also schedules a durable rewrite, as described below.
 
 ### Runtime TCB policy
 
+Live migration is currently supported for TDX only. The resealing worker is also
+enabled for eligible SNP VMs, so lack of SNP migration support does not prevent
+the host from sending a completion notification without a migration.
+
 For SNP, the trusted computing base (TCB) floor prevents runtime resealing at a
 lower accepted security version. Boot establishes it from local reports already
 obtained during platform-security initialization, including reports obtained
 before failed SKR callouts. It is held in protected OpenHCL memory, not loaded
 from host-controlled VMGS metadata.
+
+The SNP-specific threat is a host lowering `reported_tcb` through `SNP_CONFIG`
+and then triggering resealing on the same platform. This changes neither the
+executing firmware nor the resident DEK, but OpenHCL selects that reported TCB
+for key derivation. Without the floor, it could publish a protector recoverable
+at a lower TCB. Report authenticity and successful unsealing alone do not reject
+that policy change. See [AMD 56860][amd-snp], sections 3.4 and 8.7.
 
 For TDX, migration admission is responsible for destination TCB policy before
 transferring the VM. OpenHCL uses fresh local observations without comparing
@@ -115,12 +126,28 @@ their SVNs to earlier observations. A destination may therefore have lower or
 incomparable SVNs, or a different module identity. The completion notification
 triggers recovery; it does not establish that admission succeeded.
 
+TDX sealing uses local module/CPU SVN metadata, not SNP's host-configurable
+reported-TCB selection. Intel's [module loader][intel-seamldr], section 4.2,
+rejects lower `SEAMSVN` during `UPDATE`; its [microcode update
+architecture][intel-mcu], section 4.1, rejects loads below the committed MCU SVN.
+Deferred commit can allow rollback of an uncommitted update. These checks bound
+security SVNs, not build revisions, and do not establish that every rebootless
+update preserves a running TD.
+
+OpenHCL supplies `TEE_TCB_SVN` and `CPUSVN` to `TDG.MR.KEY.GET`. Across module
+updates, `TEE_TCB_SVN` is creation-bound, unlike current-module `TEE_TCB_SVN2`
+([TDX Module Base specification][intel-tdx-base], section 12.7.1). A fresh report
+therefore need not select the newest module SVN. The MCU anti-rollback SVN is
+also distinct from the raw CPU SVN array; platform validation must connect the
+update rules to these sealing inputs. Local anti-rollback does not replace
+destination admission.
+
 Compatible higher SNP observations advance the floor. Retries, persistence
 failures, reset, and normal stop/start cannot lower it. If boot cannot establish
 a usable observation, runtime resealing stays disabled with a warning; existing
 boot recovery behavior is unchanged.
 
-If optional boot sealing does not succeed, no floor is exported to the runtime
+If optional boot sealing does not succeed, no state is exported to the runtime
 worker. When hardware sealing is only a backup, finalization failure disables
 runtime recovery without failing boot. When sealing is required, or boot used
 hardware unsealing to recover the DEK, failure to confirm the active sealed key
@@ -139,9 +166,9 @@ order:
   select the layout. Version 2 and unknown domains require exact SVN equality;
   cross-domain transitions are rejected. The floor tracks the reported SVN used
   for key derivation; it does not enforce the extended TCB added in report v6.
-- **TDX:** both raw SVN arrays are retained for derivation, candidate
-  verification, and saved state, but no historical minimum or module-identity
-  comparison is applied.
+- **TDX:** each operation uses its fresh report's raw SVN arrays for derivation
+  or candidate verification. No historical SVN is retained, and no historical
+  minimum or module-identity comparison is applied.
 
 Candidate verification also checks a fresh report. Its SVN must match the
 candidate exactly, even if the hardware could still derive an older SVN's key.
@@ -154,34 +181,39 @@ avoids interpreting one CPU's component bytes using another CPU's meanings.
 See [AMD 56860][amd-snp], revision 1.59, section 2.3, tables 4 and 5.
 
 [amd-snp]: https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP
+[intel-seamldr]: https://cdrdv2-public.intel.com/733584/343755-004-intel-tdx-seamldr-interface-specification.pdf
+[intel-mcu]: https://cdrdv2-public.intel.com/782715/356111-ucode-update.pdf
+[intel-tdx-base]: https://cdrdv2-public.intel.com/867568/intel-tdx-module-base-spec-348549008.pdf
 
 ### Lifecycle and saved state
 
-Memory-preserving migration retains the worker and its floor. Stopping the
-worker drains an in-flight recovery attempt. Reset does not request resealing;
-it preserves the floor, existing retries and backoff, and latched notifications.
+Memory-preserving migration retains the worker and its sealing state. Stopping
+the worker drains an in-flight recovery attempt. Reset does not request
+resealing; it preserves any SNP floor, existing retries and backoff, and latched
+notifications.
 
 The stopped worker saves a versioned protobuf state unit named
 `hardware_reseal`, containing:
 
-- The accepted SNP TCB floor and report version/CPU comparison domain, or the
-  latest raw TDX SVN arrays, including identity and reserved bytes.
+- The accepted SNP TCB floor and report version/CPU comparison domain, or an
+  initialized-TDX marker with no historical SVN.
 - The serialized VM configuration used by the sealing KDF, checked against the
   destination configuration rather than used to replace it.
 - Pending recovery, the failure count, and the latched migration notification.
-- Remaining retry and minimum-interval delays, bounded to 60 seconds. These are
-  relative durations, not process-specific clock values.
+- The remaining delay before another attempt is allowed, covering retry backoff
+  or the minimum interval after success. This is bounded to 60 seconds and saved
+  as a relative duration, not a process-specific clock value.
 
 No DEK, hardware secret, derived key, or attestation report is saved by this
 worker. Saving does not consume a notification or clear pending work: if another
 unit fails to save, the original worker can resume with its obligations intact.
 
-Restore constructs the worker without a floor, then installs the validated saved
-floor before starting. It does not obtain a fresh report to initialize a new
-floor or trust a VMGS protector as its source. Malformed or unsupported state,
-an incompatible TEE or sealing configuration, or a decrease relative to an
-existing resident SNP floor fails restore without replacing that floor. TDX
-observations may replace earlier TDX observations without SVN comparison. A saved
+Restore constructs the worker without initialized sealing state, then installs
+the validated saved state before starting. It does not obtain a fresh report to
+initialize a new SNP floor or trust a VMGS protector as its source. Malformed or
+unsupported state, an incompatible TEE or sealing configuration, or a decrease
+relative to an existing resident SNP floor fails restore without replacing the
+state. TDX requires an explicit matching initialized marker, not a saved SVN. A saved
 worker also requires compatible hardware sealing support and encrypted VMGS.
 
 Successful restore preserves retry backoff and merges saved notifications with
@@ -193,12 +225,12 @@ matching protector does not discharge a failed-flush obligation.
 
 If the saved VM has no `hardware_reseal` unit, runtime resealing stays disabled
 after reconstruction. This accommodates state from runtimes that were not
-enrolled or did not support resealer state, without inventing a replacement
-floor. Binaries that cannot interpret this state unit cannot restore an enrolled
+enrolled or did not support resealer state, without inventing replacement
+state. Binaries that cannot interpret this state unit cannot restore an enrolled
 worker's snapshot.
 
 ```admonish warning title="Trusted state transfer"
-Protobuf encoding does not authenticate the saved floor. The enclosing transfer
+Protobuf encoding does not authenticate the saved state. The enclosing transfer
 must preserve integrity, bind the state to the VM, and prevent rollback to an
 older snapshot. The resealer must not load this state from VMGS or
 unauthenticated host metadata. Host-returned servicing state cannot initialize

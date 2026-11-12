@@ -16,6 +16,37 @@ const TDX_SVN: KeyDerivationSvn = KeyDerivationSvn::Tdx {
     cpu_svn: [5; 16],
 };
 
+// Fixture creation deliberately does not inherit a resident SNP floor.
+pub(super) fn create_protector(
+    tee: &dyn TeeCall,
+    config: &AttestationVmConfig,
+    dek: &[u8; 32],
+) -> Result<Vec<u8>, Error> {
+    let (hardware, mix_measurement) = sealing_context(tee, config)?;
+    let svn = report_svn(tee, &local_report(tee)?)?;
+    create_protector_with_svn(hardware, config, svn, mix_measurement, dek)
+}
+
+// Inspect cached fixtures independently of the current report or runtime floor.
+pub(crate) fn protector_matches(
+    tee: &dyn TeeCall,
+    config: &AttestationVmConfig,
+    protector_bytes: &[u8],
+    dek: &[u8; 32],
+) -> Result<bool, Error> {
+    let (hardware, mix_measurement) = sealing_context(tee, config)?;
+    let Ok(protector) = parse_hardware_key_protector(protector_bytes) else {
+        return Ok(false);
+    };
+    let Some(policy) = validated_policy(&protector) else {
+        return Ok(false);
+    };
+    if policy.mix_measurement != mix_measurement || !svn_matches_tee(policy.svn, tee.tee_type()) {
+        return Ok(false);
+    }
+    unseal_matches(hardware, config, &protector, policy, dek)
+}
+
 // Deliberately not Debug: this state includes a mock hardware secret.
 struct HardwareState {
     secret: [u8; 32],

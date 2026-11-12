@@ -13,7 +13,7 @@ use pal_async::timer::Instant;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use underhill_attestation::runtime_sealing;
-use underhill_attestation::runtime_sealing::SavedRuntimeTcbFloor;
+use underhill_attestation::runtime_sealing::SavedRuntimeSealingState;
 use vmcore::save_restore::SavedStateRoot;
 
 #[derive(Debug, Clone, PartialEq, Eq, Protobuf, SavedStateRoot)]
@@ -22,9 +22,9 @@ pub(crate) struct SavedHardwareResealState {
     /// Required to equal 1. Missing (zero) and unknown versions are rejected.
     #[mesh(1)]
     pub version: u32,
-    /// Optional on the wire solely to detect a missing required floor.
+    /// Optional on the wire solely to detect missing initialized state.
     #[mesh(2)]
-    pub floor: Option<SavedRuntimeTcbFloor>,
+    pub sealing_state: Option<SavedRuntimeSealingState>,
     /// Exact JSON used by the hardware sealing KDF, not a replacement for the
     /// destination's configuration. No current_time normalization is performed.
     #[mesh(3)]
@@ -37,9 +37,7 @@ pub(crate) struct SavedHardwareResealState {
     pub pending_notification: bool,
     /// Remaining delay, bounded by MAX_RETRY_INTERVAL, relative to restore time.
     #[mesh(7)]
-    pub deadline_remaining_ns: u64,
-    #[mesh(8)]
-    pub not_before_remaining_ns: u64,
+    pub next_attempt_remaining_ns: u64,
 }
 
 impl HardwareReseal {
@@ -48,30 +46,28 @@ impl HardwareReseal {
             !self.schedule.running,
             "hardware reseal must be stopped before save"
         );
-        let floor = self.tcb_floor.lock();
-        let floor = floor
+        let state = self.sealing_state.lock();
+        let state = state
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("hardware reseal floor is not initialized"))?;
+            .ok_or_else(|| anyhow::anyhow!("hardware resealing state is not initialized"))?;
         let config_json = serde_json::to_string(&*self.config)?;
         let now = Instant::now();
-        let remaining = |deadline: Instant| {
-            // Clamp obsolete deadlines to zero and bound all saved delays.
-            deadline
-                .saturating_sub(now)
-                .min(MAX_RETRY_INTERVAL)
-                .as_nanos() as u64
-        };
+        let remaining = self
+            .schedule
+            .next_attempt_at
+            .saturating_sub(now)
+            .min(MAX_RETRY_INTERVAL)
+            .as_nanos() as u64;
         Ok(SavedHardwareResealState {
             version: 1,
-            floor: Some(floor.save()),
+            sealing_state: Some(state.save()),
             config_json,
             failures: self.schedule.failures,
             force_reseal: self.schedule.force_reseal,
             // Saving is observational. A failed VM save followed by resume
             // must still see this notification in the original worker.
             pending_notification: self.notification.pending.load(Ordering::Acquire),
-            deadline_remaining_ns: remaining(self.schedule.deadline),
-            not_before_remaining_ns: remaining(self.schedule.not_before),
+            next_attempt_remaining_ns: remaining,
         })
     }
 
@@ -95,26 +91,25 @@ impl HardwareReseal {
             state.failures == 0 || state.force_reseal,
             "hardware reseal failures without pending recovery"
         );
-        let deadline = Duration::from_nanos(state.deadline_remaining_ns);
-        let not_before = Duration::from_nanos(state.not_before_remaining_ns);
+        let delay = Duration::from_nanos(state.next_attempt_remaining_ns);
         anyhow::ensure!(
-            deadline <= MAX_RETRY_INTERVAL && not_before <= MAX_RETRY_INTERVAL,
+            delay <= MAX_RETRY_INTERVAL,
             "hardware reseal retry delay exceeds maximum"
         );
-        let restored = runtime_sealing::RuntimeTcbFloor::restore(
+        let restored = runtime_sealing::RuntimeSealingState::restore(
             state
-                .floor
-                .ok_or_else(|| anyhow::anyhow!("missing hardware reseal floor"))?,
+                .sealing_state
+                .ok_or_else(|| anyhow::anyhow!("missing hardware resealing state"))?,
             &*self.tee,
             &self.config,
         )?;
-        let mut resident = self.tcb_floor.lock();
+        let mut resident = self.sealing_state.lock();
         if let Some(resident) = resident.as_ref() {
-            resident.check_restored_successor(&restored)?;
+            resident.check_successor(&restored)?;
         }
 
         // Nothing above mutates state or performs hardware/broker I/O. Keep the
-        // same Arc and hold its lock across the ratchet check and entire commit.
+        // same Arc and hold its lock across the policy check and entire commit.
         let now = Instant::now();
         let schedule = Schedule {
             running: false,
@@ -123,8 +118,7 @@ impl HardwareReseal {
             // during downtime or after the source's notification save cutoff.
             force_reseal: true,
             failures: state.failures,
-            deadline: now.saturating_add(deadline),
-            not_before: now.saturating_add(not_before),
+            next_attempt_at: now.saturating_add(delay),
         };
         *resident = Some(restored);
         self.schedule = schedule;

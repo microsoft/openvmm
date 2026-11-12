@@ -392,7 +392,7 @@ async fn run_init_scenario(
         )
         .await
         .unwrap();
-        assert!(provisioned.runtime_tcb_floor.is_some());
+        assert!(provisioned.runtime_sealing_state.is_some());
         assert_eq!(tee.report_data.lock().len(), 1);
         let dek = *vmgs.active_encryption_key().unwrap();
         // ATTEST is the security profile, read before VMGS is unlocked. Keep
@@ -446,7 +446,7 @@ async fn run_init_scenario(
     } else {
         let result = result.unwrap();
         assert_eq!(
-            result.runtime_tcb_floor.is_some(),
+            result.runtime_sealing_state.is_some(),
             reference_writes_at_flush.is_none()
         );
         assert!(!result.host_attestation_settings.refresh_tpm_seeds);

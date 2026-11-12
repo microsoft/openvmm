@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::tests::create_protector;
 use super::*;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
@@ -12,6 +13,7 @@ use tee_call::KeyDerivationPolicy;
 use tee_call::TeeCallGetDerivedKey;
 use tee_call::TeeType;
 use test_with_tracing::test;
+use x86defs::snp::SnpReport;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
@@ -166,6 +168,14 @@ fn snp_svn(tcb: [u8; 8]) -> KeyDerivationSvn {
     }
 }
 
+fn state_from_hardware(
+    tee: &dyn TeeCall,
+    config: &AttestationVmConfig,
+) -> Result<RuntimeSealingState, Error> {
+    sealing_context(tee, config)?;
+    RuntimeSealingState::from_report(tee, &local_report(tee)?).map(|(state, _)| state)
+}
+
 fn config() -> AttestationVmConfig {
     AttestationVmConfig {
         current_time: None,
@@ -190,11 +200,24 @@ fn header_svn(protector: &[u8]) -> KeyDerivationSvn {
         .svn
 }
 
-fn assert_floor(floor: &RuntimeTcbFloor, svn: KeyDerivationSvn) {
-    assert!(svn_equal(floor.snapshot.svn, svn));
+fn assert_state(floor: &RuntimeSealingState, svn: KeyDerivationSvn) {
+    match (&floor.policy, svn) {
+        (TcbPolicy::Snp(floor), KeyDerivationSvn::Snp { tcb_version }) => {
+            assert_eq!(floor.tcb_version, tcb_version);
+        }
+        (TcbPolicy::Tdx, KeyDerivationSvn::Tdx { .. }) => {}
+        _ => panic!("runtime sealing TEE changed"),
+    }
 }
 
-fn protobuf_roundtrip(state: SavedRuntimeTcbFloor) -> SavedRuntimeTcbFloor {
+fn snp_floor(state: &RuntimeSealingState) -> &SnpTcbFloor {
+    let TcbPolicy::Snp(floor) = &state.policy else {
+        panic!("expected SNP state");
+    };
+    floor
+}
+
+fn protobuf_roundtrip(state: SavedRuntimeSealingState) -> SavedRuntimeSealingState {
     let bytes = mesh::payload::encode(state.clone());
     let decoded = mesh::payload::decode(&bytes).unwrap();
     assert_eq!(state, decoded);
@@ -202,7 +225,7 @@ fn protobuf_roundtrip(state: SavedRuntimeTcbFloor) -> SavedRuntimeTcbFloor {
 }
 
 #[test]
-fn saved_floor_roundtrip_preserves_exact_metadata_without_hardware_calls() {
+fn saved_state_preserves_snp_metadata_and_tdx_marker_without_hardware_calls() {
     // Known layouts, v2 without CPUID, and unknown versions/models must all
     // retain their original domain, including reserved raw TCB bytes.
     for (version, family, model) in [
@@ -218,12 +241,12 @@ fn saved_floor_roundtrip_preserves_exact_metadata_without_hardware_calls() {
     ] {
         let tcb = [1, 2, 3, 4, 5, 6, 7, 8];
         let tee = MutableTee::snp(version, family, model, tcb);
-        let floor = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let floor = state_from_hardware(&tee, &config()).unwrap();
         let saved = protobuf_roundtrip(floor.save());
         assert_eq!(saved.version, 1);
         assert_eq!(
-            saved.svn,
-            Some(SavedRuntimeTcbFloorSvn::Snp {
+            saved.tee,
+            Some(SavedRuntimeSealingTee::Snp {
                 tcb_version: u64::from_le_bytes(tcb),
                 report_version: version,
                 cpuid: (version >= 3).then_some(vec![family, model]),
@@ -231,10 +254,10 @@ fn saved_floor_roundtrip_preserves_exact_metadata_without_hardware_calls() {
         );
         tee.state.lock().fail_report = true;
         tee.state.lock().fail_derivation = true;
-        let restored = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+        let restored = RuntimeSealingState::restore(saved.clone(), &tee, &config()).unwrap();
         assert_eq!(restored.save(), saved);
-        floor.check_restored_successor(&restored).unwrap();
-        restored.check_restored_successor(&floor).unwrap();
+        floor.check_successor(&restored).unwrap();
+        restored.check_successor(&floor).unwrap();
         let state = tee.state.lock();
         assert_eq!(state.report_calls, 1);
         assert!(state.derivations.is_empty());
@@ -247,20 +270,15 @@ fn saved_floor_roundtrip_preserves_exact_metadata_without_hardware_calls() {
         tee_tcb_svn,
         cpu_svn,
     });
-    let floor = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+    let floor = state_from_hardware(&tee, &config()).unwrap();
     let saved = protobuf_roundtrip(floor.save());
-    assert_eq!(
-        saved.svn,
-        Some(SavedRuntimeTcbFloorSvn::Tdx {
-            tee_tcb_svn: tee_tcb_svn.to_vec(),
-            cpu_svn: cpu_svn.to_vec(),
-        })
-    );
+    assert_eq!(saved.version, 1);
+    assert_eq!(saved.tee, Some(SavedRuntimeSealingTee::Tdx));
     tee.state.lock().fail_report = true;
     tee.state.lock().fail_derivation = true;
-    let restored = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+    let restored = RuntimeSealingState::restore(saved.clone(), &tee, &config()).unwrap();
     assert_eq!(restored.save(), saved);
-    floor.check_restored_successor(&restored).unwrap();
+    floor.check_successor(&restored).unwrap();
     assert_eq!(tee.state.lock().report_calls, 1);
     assert!(tee.state.lock().derivations.is_empty());
 }
@@ -269,24 +287,24 @@ fn saved_floor_roundtrip_preserves_exact_metadata_without_hardware_calls() {
 fn saved_floor_rejects_invalid_shapes_and_tee_mismatch_without_io() {
     let snp = MutableTee::snp(3, 0x19, 0, BASE_TCB);
     let tdx = MutableTee::tdx();
-    let snp_state = SavedRuntimeTcbFloor {
+    let snp_state = SavedRuntimeSealingState {
         version: 1,
-        svn: Some(SavedRuntimeTcbFloorSvn::Snp {
+        tee: Some(SavedRuntimeSealingTee::Snp {
             tcb_version: u64::from_le_bytes(BASE_TCB),
             report_version: 3,
             cpuid: Some(vec![0x19, 0]),
         }),
     };
     let mut invalid = Vec::new();
-    for version in [0, 2, u32::MAX] {
-        invalid.push(SavedRuntimeTcbFloor {
+    for version in [0, 2, 3, u32::MAX] {
+        invalid.push(SavedRuntimeSealingState {
             version,
             ..snp_state.clone()
         });
     }
-    invalid.push(SavedRuntimeTcbFloor {
+    invalid.push(SavedRuntimeSealingState {
         version: 1,
-        svn: None,
+        tee: None,
     });
     for (report_version, cpuid) in [
         (0, Some(vec![0x19, 0])),
@@ -298,9 +316,9 @@ fn saved_floor_rejects_invalid_shapes_and_tee_mismatch_without_io() {
         (3, Some(vec![0x19, 0, 0])),
         (u32::MAX, None),
     ] {
-        invalid.push(SavedRuntimeTcbFloor {
+        invalid.push(SavedRuntimeSealingState {
             version: 1,
-            svn: Some(SavedRuntimeTcbFloorSvn::Snp {
+            tee: Some(SavedRuntimeSealingTee::Snp {
                 tcb_version: 0,
                 report_version,
                 cpuid,
@@ -309,46 +327,40 @@ fn saved_floor_rejects_invalid_shapes_and_tee_mismatch_without_io() {
     }
     for saved in invalid {
         assert!(matches!(
-            RuntimeTcbFloor::restore(protobuf_roundtrip(saved), &snp, &config()),
-            Err(Error(ErrorInner::InvalidSavedTcbFloor))
+            RuntimeSealingState::restore(protobuf_roundtrip(saved), &snp, &config()),
+            Err(Error(ErrorInner::InvalidSavedSealingState))
         ));
     }
-    for (tee_len, cpu_len) in [(0, 16), (15, 16), (17, 16), (16, 0), (16, 15), (16, 17)] {
-        let saved = SavedRuntimeTcbFloor {
-            version: 1,
-            svn: Some(SavedRuntimeTcbFloorSvn::Tdx {
-                tee_tcb_svn: vec![3; tee_len],
-                cpu_svn: vec![5; cpu_len],
-            }),
+    for version in [0, 2, 3, u32::MAX] {
+        let saved = SavedRuntimeSealingState {
+            version,
+            tee: Some(SavedRuntimeSealingTee::Tdx),
         };
         assert!(matches!(
-            RuntimeTcbFloor::restore(protobuf_roundtrip(saved), &tdx, &config()),
-            Err(Error(ErrorInner::InvalidSavedTcbFloor))
+            RuntimeSealingState::restore(protobuf_roundtrip(saved), &tdx, &config()),
+            Err(Error(ErrorInner::InvalidSavedSealingState))
         ));
     }
     assert!(matches!(
-        RuntimeTcbFloor::restore(snp_state, &tdx, &config()),
-        Err(Error(ErrorInner::InvalidSavedTcbFloor))
+        RuntimeSealingState::restore(snp_state, &tdx, &config()),
+        Err(Error(ErrorInner::InvalidSavedSealingState))
     ));
-    let tdx_state = SavedRuntimeTcbFloor {
+    let tdx_state = SavedRuntimeSealingState {
         version: 1,
-        svn: Some(SavedRuntimeTcbFloorSvn::Tdx {
-            tee_tcb_svn: vec![3; 16],
-            cpu_svn: vec![5; 16],
-        }),
+        tee: Some(SavedRuntimeSealingTee::Tdx),
     };
     assert!(matches!(
-        RuntimeTcbFloor::restore(tdx_state, &snp, &config()),
-        Err(Error(ErrorInner::InvalidSavedTcbFloor))
+        RuntimeSealingState::restore(tdx_state, &snp, &config()),
+        Err(Error(ErrorInner::InvalidSavedSealingState))
     ));
 
     // Empty message, version only, empty nested oneof, and unknown oneof tag.
     // Invalid nested enums may fail at protobuf decoding rather than restore.
     for bytes in [&[][..], &[8, 1], &[8, 1, 18, 0], &[8, 1, 18, 2, 26, 0]] {
-        if let Ok(saved) = mesh::payload::decode::<SavedRuntimeTcbFloor>(bytes) {
+        if let Ok(saved) = mesh::payload::decode::<SavedRuntimeSealingState>(bytes) {
             assert!(matches!(
-                RuntimeTcbFloor::restore(saved, &snp, &config()),
-                Err(Error(ErrorInner::InvalidSavedTcbFloor))
+                RuntimeSealingState::restore(saved, &snp, &config()),
+                Err(Error(ErrorInner::InvalidSavedSealingState))
             ));
         }
     }
@@ -362,15 +374,15 @@ fn saved_floor_rejects_invalid_shapes_and_tee_mismatch_without_io() {
 #[test]
 fn restore_checks_policy_and_capabilities_without_io() {
     for mut tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
-        let saved = RuntimeTcbFloor::new(&tee, &config()).unwrap().save();
+        let saved = state_from_hardware(&tee, &config()).unwrap().save();
         let mut config = config();
         config.hardware_sealing_policy = HardwareSealingPolicy::None;
         assert!(matches!(
-            RuntimeTcbFloor::restore(saved.clone(), &tee, &config),
+            RuntimeSealingState::restore(saved.clone(), &tee, &config),
             Err(Error(ErrorInner::DisabledPolicy))
         ));
         config.hardware_sealing_policy = HardwareSealingPolicy::Signer;
-        let result = RuntimeTcbFloor::restore(saved.clone(), &tee, &config);
+        let result = RuntimeSealingState::restore(saved.clone(), &tee, &config);
         if tee.is_tdx {
             assert!(matches!(
                 result,
@@ -382,7 +394,7 @@ fn restore_checks_policy_and_capabilities_without_io() {
         config.hardware_sealing_policy = HardwareSealingPolicy::Hash;
         tee.supports_derivation = false;
         assert!(matches!(
-            RuntimeTcbFloor::restore(saved, &tee, &config),
+            RuntimeSealingState::restore(saved, &tee, &config),
             Err(Error(ErrorInner::UnsupportedTee))
         ));
         let state = tee.state.lock();
@@ -395,9 +407,10 @@ fn restore_checks_policy_and_capabilities_without_io() {
 fn restored_snapshot_preserves_snp_ratchet_but_allows_lower_tdx() {
     for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
         let config = config();
-        let initial = RuntimeTcbFloor::new(&tee, &config).unwrap();
+        let initial = state_from_hardware(&tee, &config).unwrap();
         let mut floor =
-            RuntimeTcbFloor::restore(protobuf_roundtrip(initial.save()), &tee, &config).unwrap();
+            RuntimeSealingState::restore(protobuf_roundtrip(initial.save()), &tee, &config)
+                .unwrap();
         let low = tee.state.lock().svn.unwrap();
         let high = match low {
             KeyDerivationSvn::Snp { tcb_version } => {
@@ -423,20 +436,20 @@ fn restored_snapshot_preserves_snp_ratchet_but_allows_lower_tdx() {
             Err(Error(ErrorInner::Derive(_)))
         ));
         let saved_high = protobuf_roundtrip(floor.save());
-        floor = RuntimeTcbFloor::restore(saved_high.clone(), &tee, &config).unwrap();
+        floor = RuntimeSealingState::restore(saved_high.clone(), &tee, &config).unwrap();
         let mut invalid = saved_high.clone();
         invalid.version = 0;
         assert!(matches!(
-            RuntimeTcbFloor::restore(invalid, &tee, &config),
-            Err(Error(ErrorInner::InvalidSavedTcbFloor))
+            RuntimeSealingState::restore(invalid, &tee, &config),
+            Err(Error(ErrorInner::InvalidSavedSealingState))
         ));
         assert_eq!(floor.save(), saved_high);
-        initial.check_restored_successor(&floor).unwrap();
+        initial.check_successor(&floor).unwrap();
         if tee.is_tdx {
-            floor.check_restored_successor(&initial).unwrap();
+            floor.check_successor(&initial).unwrap();
         } else {
             assert!(matches!(
-                floor.check_restored_successor(&initial),
+                floor.check_successor(&initial),
                 Err(Error(ErrorInner::TcbLowered))
             ));
         }
@@ -457,7 +470,7 @@ fn restored_snapshot_preserves_snp_ratchet_but_allows_lower_tdx() {
                     .verify_protector(&tee, &config, &protector, &DEK)
                     .unwrap()
             );
-            assert_floor(&floor, low);
+            assert_state(&floor, low);
         } else {
             assert!(matches!(
                 floor.create_protector(&tee, &config, &DEK),
@@ -478,9 +491,9 @@ fn restored_snapshot_preserves_snp_ratchet_but_allows_lower_tdx() {
 fn restored_unknown_snp_domains_remain_equality_only() {
     for (version, family, model) in [(2, 0x19, 0), (3, 0x19, 0x20), (6, 0x1a, 0x90)] {
         let tee = MutableTee::snp(version, family, model, BASE_TCB);
-        let initial = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let initial = state_from_hardware(&tee, &config()).unwrap();
         let saved = protobuf_roundtrip(initial.save());
-        let mut floor = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+        let mut floor = RuntimeSealingState::restore(saved.clone(), &tee, &config()).unwrap();
         assert!(!floor.verify_protector(&tee, &config(), &[], &DEK).unwrap());
         let mut changed = BASE_TCB;
         changed[7] += 1;
@@ -489,9 +502,9 @@ fn restored_unknown_snp_domains_remain_equality_only() {
             floor.create_protector(&tee, &config(), &DEK),
             Err(Error(ErrorInner::TcbIncompatible))
         ));
-        let changed = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let changed = state_from_hardware(&tee, &config()).unwrap();
         assert!(matches!(
-            floor.check_restored_successor(&changed),
+            floor.check_successor(&changed),
             Err(Error(ErrorInner::TcbIncompatible))
         ));
         assert_eq!(floor.save(), saved);
@@ -500,20 +513,19 @@ fn restored_unknown_snp_domains_remain_equality_only() {
 }
 
 #[test]
-fn restored_snapshot_rejects_changed_snp_domains_but_allows_tdx_module_changes() {
+fn restored_snp_floor_rejects_changed_comparison_domains() {
     let tees = [
         MutableTee::snp(2, 0x19, 0, BASE_TCB),
         MutableTee::snp(3, 0x19, 0, BASE_TCB),
         MutableTee::snp(6, 0xff, 0xfe, BASE_TCB),
-        MutableTee::tdx(),
     ];
     for tee in tees {
-        let initial = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let initial = state_from_hardware(&tee, &config()).unwrap();
         let saved = protobuf_roundtrip(initial.save());
-        let mut floor = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+        let mut floor = RuntimeSealingState::restore(saved.clone(), &tee, &config()).unwrap();
         let mut changed = saved.clone();
-        match changed.svn.as_mut().unwrap() {
-            SavedRuntimeTcbFloorSvn::Snp {
+        match changed.tee.as_mut().unwrap() {
+            SavedRuntimeSealingTee::Snp {
                 report_version,
                 cpuid,
                 ..
@@ -526,87 +538,68 @@ fn restored_snapshot_rejects_changed_snp_domains_but_allows_tdx_module_changes()
                     tee.state.lock().report[..4].copy_from_slice(&1u32.to_le_bytes());
                 }
             }
-            SavedRuntimeTcbFloorSvn::Tdx { tee_tcb_svn, .. } => {
-                tee_tcb_svn[1] += 1;
-                tee.set_svn(KeyDerivationSvn::Tdx {
-                    tee_tcb_svn: tee_tcb_svn.clone().try_into().unwrap(),
-                    cpu_svn: [5; 16],
-                });
-            }
+            SavedRuntimeSealingTee::Tdx => unreachable!(),
         }
         let changed =
-            RuntimeTcbFloor::restore(protobuf_roundtrip(changed), &tee, &config()).unwrap();
-        if tee.is_tdx {
-            floor.check_restored_successor(&changed).unwrap();
-            let protector = floor.create_protector(&tee, &config(), &DEK).unwrap();
-            assert!(svn_equal(header_svn(&protector), changed.snapshot.svn));
-            assert_eq!(floor.save(), changed.save());
-            assert_eq!(tee.state.lock().derivations.len(), 1);
-        } else {
-            assert!(matches!(
-                floor.check_restored_successor(&changed),
-                Err(Error(ErrorInner::TcbIncompatible))
-            ));
-            assert!(matches!(
-                floor.create_protector(&tee, &config(), &DEK),
-                Err(Error(ErrorInner::TcbIncompatible))
-            ));
-            assert_eq!(floor.save(), saved);
-            assert!(tee.state.lock().derivations.is_empty());
-        }
+            RuntimeSealingState::restore(protobuf_roundtrip(changed), &tee, &config()).unwrap();
+        assert!(matches!(
+            floor.check_successor(&changed),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        assert!(matches!(
+            floor.create_protector(&tee, &config(), &DEK),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        assert_eq!(floor.save(), saved);
+        assert!(tee.state.lock().derivations.is_empty());
     }
 }
 
 #[test]
-fn restored_snapshot_compares_reserved_bytes_only_for_snp() {
+fn restored_snp_floor_keeps_reserved_bytes_in_comparisons() {
     for tee in [
         MutableTee::snp(3, 0x19, 0, [2; 8]),
         MutableTee::snp(5, 0x1a, 0xc0, [2; 8]),
-        MutableTee::tdx(),
     ] {
-        let initial = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let initial = state_from_hardware(&tee, &config()).unwrap();
         let saved = protobuf_roundtrip(initial.save());
-        let mut floor = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+        let mut floor = RuntimeSealingState::restore(saved.clone(), &tee, &config()).unwrap();
         let mut changed = saved.clone();
-        match changed.svn.as_mut().unwrap() {
-            SavedRuntimeTcbFloorSvn::Snp { tcb_version, .. } => {
+        match changed.tee.as_mut().unwrap() {
+            SavedRuntimeSealingTee::Snp { tcb_version, .. } => {
                 let mut bytes = tcb_version.to_le_bytes();
                 bytes[4] += 1; // Reserved in both supported SNP layouts.
                 *tcb_version = u64::from_le_bytes(bytes);
             }
-            SavedRuntimeTcbFloorSvn::Tdx { tee_tcb_svn, .. } => {
-                tee_tcb_svn[3] += 1; // Reserved, not an ordered component.
-            }
+            SavedRuntimeSealingTee::Tdx => unreachable!(),
         }
         let changed =
-            RuntimeTcbFloor::restore(protobuf_roundtrip(changed), &tee, &config()).unwrap();
-        tee.set_svn(changed.snapshot.svn);
-        if tee.is_tdx {
-            floor.check_restored_successor(&changed).unwrap();
-            let protector = floor.create_protector(&tee, &config(), &DEK).unwrap();
-            assert!(svn_equal(header_svn(&protector), changed.snapshot.svn));
-            assert_eq!(floor.save(), changed.save());
-            assert_eq!(tee.state.lock().derivations.len(), 1);
-        } else {
-            assert!(matches!(
-                floor.check_restored_successor(&changed),
-                Err(Error(ErrorInner::TcbIncompatible))
-            ));
-            assert!(matches!(
-                floor.create_protector(&tee, &config(), &DEK),
-                Err(Error(ErrorInner::TcbIncompatible))
-            ));
-            assert_eq!(floor.save(), saved);
-            assert!(tee.state.lock().derivations.is_empty());
-        }
+            RuntimeSealingState::restore(protobuf_roundtrip(changed), &tee, &config()).unwrap();
+        tee.set_svn(KeyDerivationSvn::Snp {
+            tcb_version: snp_floor(&changed).tcb_version,
+        });
+        assert!(matches!(
+            floor.check_successor(&changed),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        assert!(matches!(
+            floor.create_protector(&tee, &config(), &DEK),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        assert_eq!(floor.save(), saved);
+        assert!(tee.state.lock().derivations.is_empty());
     }
 }
 
 #[test]
 fn boot_collection_reuses_first_report_without_hardware_calls() {
     for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
-        assert!(BootTcbFloor::new(Some(&tee), &config()).finish().is_none());
-        let mut collector = BootTcbFloor::new(Some(&tee), &config());
+        assert!(
+            BootRuntimeSealing::new(Some(&tee), &config())
+                .finish()
+                .is_none()
+        );
+        let mut collector = BootRuntimeSealing::new(Some(&tee), &config());
         assert_eq!(tee.state.lock().report_calls, 0);
         let report = tee.get_attestation_report(&[0; REPORT_DATA_SIZE]).unwrap();
         // Any accidental fallback report/derivation would now fail.
@@ -614,7 +607,7 @@ fn boot_collection_reuses_first_report_without_hardware_calls() {
         tee.state.lock().fail_derivation = true;
         collector.observe(&tee, &report);
         let floor = collector.finish().unwrap();
-        assert_floor(&floor, report.key_derivation_svn.unwrap());
+        assert_state(&floor, report.key_derivation_svn.unwrap());
         let state = tee.state.lock();
         assert_eq!(state.report_calls, 1);
         assert!(state.derivations.is_empty());
@@ -624,7 +617,7 @@ fn boot_collection_reuses_first_report_without_hardware_calls() {
 #[test]
 fn boot_collection_ratchets_across_attempts_and_equal_reports() {
     for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
-        let mut collector = BootTcbFloor::new(Some(&tee), &config());
+        let mut collector = BootRuntimeSealing::new(Some(&tee), &config());
         for increment in [0, 1, 1, 2] {
             let svn = if tee.is_tdx {
                 KeyDerivationSvn::Tdx {
@@ -639,11 +632,11 @@ fn boot_collection_ratchets_across_attempts_and_equal_reports() {
             tee.set_svn(svn);
             let report = tee.get_attestation_report(&[0; REPORT_DATA_SIZE]).unwrap();
             collector.observe(&tee, &report);
-            assert_floor(collector.floor.as_ref().unwrap(), svn);
+            assert_state(collector.state.as_ref().unwrap(), svn);
         }
         let floor = collector.finish().unwrap();
         let state = tee.state.lock();
-        assert_floor(&floor, state.svn.unwrap());
+        assert_state(&floor, state.svn.unwrap());
         assert_eq!(state.report_calls, 4);
         assert!(state.derivations.is_empty());
     }
@@ -652,7 +645,7 @@ fn boot_collection_ratchets_across_attempts_and_equal_reports() {
 #[test]
 fn tdx_boot_collection_accepts_lower_svn_and_changed_module() {
     let tee = MutableTee::tdx();
-    let mut collector = BootTcbFloor::new(Some(&tee), &config());
+    let mut collector = BootRuntimeSealing::new(Some(&tee), &config());
     for svn in [
         TDX_SVN,
         KeyDerivationSvn::Tdx {
@@ -665,9 +658,9 @@ fn tdx_boot_collection_accepts_lower_svn_and_changed_module() {
         let report = tee.get_attestation_report(&[0; REPORT_DATA_SIZE]).unwrap();
         collector.observe(&tee, &report);
         assert!(!collector.invalid);
-        assert_floor(collector.floor.as_ref().unwrap(), svn);
+        assert_state(collector.state.as_ref().unwrap(), svn);
     }
-    assert_floor(&collector.finish().unwrap(), TDX_SVN);
+    assert_state(&collector.finish().unwrap(), TDX_SVN);
     assert!(tee.state.lock().derivations.is_empty());
 }
 
@@ -676,7 +669,7 @@ fn tdx_boot_collection_still_rejects_missing_or_wrong_tee_svn() {
     for svn in [None, Some(snp_svn(BASE_TCB))] {
         let tee = MutableTee::tdx();
         let good = tee.get_attestation_report(&[0; REPORT_DATA_SIZE]).unwrap();
-        let mut collector = BootTcbFloor::new(Some(&tee), &config());
+        let mut collector = BootRuntimeSealing::new(Some(&tee), &config());
         collector.observe(&tee, &good);
         let mut bad = tee.get_attestation_report(&[0; REPORT_DATA_SIZE]).unwrap();
         bad.key_derivation_svn = svn;
@@ -696,7 +689,7 @@ fn boot_bad_observation_permanently_disables_export() {
         for fault in 0..6 {
             let tee = MutableTee::snp(3, 0x19, 0, BASE_TCB);
             let good = tee.get_attestation_report(&[0; REPORT_DATA_SIZE]).unwrap();
-            let mut collector = BootTcbFloor::new(Some(&tee), &config());
+            let mut collector = BootRuntimeSealing::new(Some(&tee), &config());
             if first_good {
                 collector.observe(&tee, &good);
             }
@@ -723,7 +716,7 @@ fn boot_bad_observation_permanently_disables_export() {
             collector.observe(&tee, &bad);
             assert!(collector.invalid);
             if first_good {
-                assert_floor(collector.floor.as_ref().unwrap(), snp_svn(BASE_TCB));
+                assert_state(collector.state.as_ref().unwrap(), snp_svn(BASE_TCB));
             }
             // A later valid report cannot undo invalidation or bootstrap anew.
             collector.observe(&tee, &good);
@@ -772,7 +765,7 @@ fn boot_unsupported_or_disabled_context_never_collects() {
         (Some(&tdx), &signer),
     ];
     for (tee, config) in contexts {
-        let mut collector = BootTcbFloor::new(tee, config);
+        let mut collector = BootRuntimeSealing::new(tee, config);
         assert!(!collector.enabled);
         if let Some(tee) = tee {
             collector.observe(
@@ -796,41 +789,11 @@ fn boot_unsupported_or_disabled_context_never_collects() {
 #[test]
 fn initialization_fetches_one_report_without_deriving() {
     for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
-        let floor = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let floor = state_from_hardware(&tee, &config()).unwrap();
         let state = tee.state.lock();
         assert_eq!(state.report_calls, 1);
         assert!(state.derivations.is_empty());
-        assert_floor(&floor, state.svn.unwrap());
-    }
-}
-
-#[test]
-fn snp_layout_selection_separates_report_support_from_cpu_encoding() {
-    // Independent numeric expectations: catch gaps, endpoints, and accidental
-    // widening of the named production ranges.
-    for version in [0, 1, 2, 3, 4, 5, 6, u32::MAX] {
-        assert_eq!(
-            SnpDomain {
-                version,
-                cpuid: None
-            }
-            .tcb_layout(),
-            None
-        );
-        for family in [0x18, 0x19, 0x1a, 0x1b] {
-            for model in 0..=u8::MAX {
-                let expected = match (version, family, model) {
-                    (3..=5, 0x19, 0x00..=0x1f) => Some(SnpTcbLayout::Legacy),
-                    (3..=5, 0x1a, 0x90..=0xaf | 0xc0..=0xcf) => Some(SnpTcbLayout::Turin),
-                    _ => None,
-                };
-                let domain = SnpDomain {
-                    version,
-                    cpuid: Some([family, model]),
-                };
-                assert_eq!(domain.tcb_layout(), expected, "{domain:?}");
-            }
-        }
+        assert_state(&floor, state.svn.unwrap());
     }
 }
 
@@ -853,7 +816,7 @@ fn legacy_and_turin_equal_and_each_component_upgrade() {
             let mut tcb = [0; 8];
             let tee = MutableTee::snp(version, family, model, tcb);
             let config = config();
-            let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+            let mut floor = state_from_hardware(&tee, &config).unwrap();
             let equal = floor.create_protector(&tee, &config, &DEK).unwrap();
             assert!(floor.verify_protector(&tee, &config, &equal, &DEK).unwrap());
             for &component in components {
@@ -861,7 +824,7 @@ fn legacy_and_turin_equal_and_each_component_upgrade() {
                 tee.set_svn(snp_svn(tcb));
                 let upgraded = floor.create_protector(&tee, &config, &DEK).unwrap();
                 assert!(svn_equal(header_svn(&upgraded), snp_svn(tcb)));
-                assert_floor(&floor, snp_svn(tcb));
+                assert_state(&floor, snp_svn(tcb));
                 assert!(
                     floor
                         .verify_protector(&tee, &config, &upgraded, &DEK)
@@ -889,7 +852,7 @@ fn component_downgrades_rejected_even_with_larger_packed_number() {
             }
             let tee = MutableTee::snp(3, family, model, base);
             let config = config();
-            let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+            let mut floor = state_from_hardware(&tee, &config).unwrap();
             let mut lowered = base;
             lowered[component] -= 1;
             if component != 7 {
@@ -905,7 +868,7 @@ fn component_downgrades_rejected_even_with_larger_packed_number() {
                 floor.verify_protector(&tee, &config, &[], &DEK),
                 Err(Error(ErrorInner::TcbLowered))
             ));
-            assert_floor(&floor, snp_svn(base));
+            assert_state(&floor, snp_svn(base));
             assert!(tee.state.lock().derivations.is_empty());
         }
     }
@@ -926,7 +889,7 @@ fn reserved_tcb_bytes_must_remain_equal() {
             let base = [2; 8];
             let tee = MutableTee::snp(5, family, model, base);
             let config = config();
-            let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+            let mut floor = state_from_hardware(&tee, &config).unwrap();
             floor.create_protector(&tee, &config, &DEK).unwrap();
             for value in [1, 3] {
                 let mut changed = base;
@@ -937,7 +900,7 @@ fn reserved_tcb_bytes_must_remain_equal() {
                     floor.create_protector(&tee, &config, &DEK),
                     Err(Error(ErrorInner::TcbIncompatible))
                 ));
-                assert_floor(&floor, snp_svn(base));
+                assert_state(&floor, snp_svn(base));
             }
             assert_eq!(tee.state.lock().derivations.len(), 1);
         }
@@ -960,7 +923,7 @@ fn same_raw_tcb_byte_is_snp_component_or_reserved_depending_on_cpu() {
             let base = [2; 8];
             let tee = MutableTee::snp(version, family, model, base);
             let config = config();
-            let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+            let mut floor = state_from_hardware(&tee, &config).unwrap();
             let mut changed = base;
             changed[index] += 1;
             tee.set_svn(snp_svn(changed));
@@ -972,7 +935,7 @@ fn same_raw_tcb_byte_is_snp_component_or_reserved_depending_on_cpu() {
                         .verify_protector(&tee, &config, &protector, &DEK)
                         .unwrap()
                 );
-                assert_floor(&floor, snp_svn(changed));
+                assert_state(&floor, snp_svn(changed));
                 assert_eq!(tee.state.lock().derivations.len(), 2);
             } else {
                 assert!(matches!(
@@ -983,7 +946,7 @@ fn same_raw_tcb_byte_is_snp_component_or_reserved_depending_on_cpu() {
                     floor.verify_protector(&tee, &config, &[], &DEK),
                     Err(Error(ErrorInner::TcbIncompatible))
                 ));
-                assert_floor(&floor, snp_svn(base));
+                assert_state(&floor, snp_svn(base));
                 assert!(tee.state.lock().derivations.is_empty());
             }
         }
@@ -1027,15 +990,12 @@ fn version_family_and_model_domains_cannot_switch_even_at_equal_svn() {
             let destination_tee =
                 MutableTee::snp(destination.0, destination.1, destination.2, BASE_TCB);
             let config = config();
-            let mut floor = RuntimeTcbFloor::new(&source_tee, &config).unwrap();
+            let mut floor = state_from_hardware(&source_tee, &config).unwrap();
             assert!(matches!(
                 floor.create_protector(&destination_tee, &config, &DEK),
                 Err(Error(ErrorInner::TcbIncompatible))
             ));
-            assert_eq!(
-                floor.snapshot.snp_domain.as_ref().unwrap().version,
-                source.0
-            );
+            assert_eq!(snp_floor(&floor).domain.version, source.0);
             assert!(destination_tee.state.lock().derivations.is_empty());
         }
     }
@@ -1064,7 +1024,7 @@ fn v2_and_unknown_versions_or_cpus_are_exact_only() {
         let base = [2; 8];
         let tee = MutableTee::snp(version, family, model, base);
         let config = config();
-        let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+        let mut floor = state_from_hardware(&tee, &config).unwrap();
         let equal = floor.create_protector(&tee, &config, &DEK).unwrap();
         assert!(floor.verify_protector(&tee, &config, &equal, &DEK).unwrap());
         for index in 0..8 {
@@ -1076,7 +1036,7 @@ fn v2_and_unknown_versions_or_cpus_are_exact_only() {
                     floor.create_protector(&tee, &config, &DEK),
                     Err(Error(ErrorInner::TcbIncompatible))
                 ));
-                assert_floor(&floor, snp_svn(base));
+                assert_state(&floor, snp_svn(base));
             }
         }
         assert_eq!(tee.state.lock().derivations.len(), 2);
@@ -1099,16 +1059,16 @@ fn typed_snp_report_preserves_prefix_and_version_handling() {
             let mut bytes = report.as_bytes().to_vec();
             bytes.resize(bytes.len() + trailing, 0xa5);
             tee.state.lock().report = bytes;
-            let floor = RuntimeTcbFloor::new(&tee, &config()).unwrap();
-            assert_floor(&floor, snp_svn(BASE_TCB));
-            let domain = floor.snapshot.snp_domain.unwrap();
+            let floor = state_from_hardware(&tee, &config()).unwrap();
+            assert_state(&floor, snp_svn(BASE_TCB));
+            let domain = &snp_floor(&floor).domain;
             assert_eq!(domain.version, version);
             assert_eq!(domain.cpuid, (version >= 3).then_some([0x19, 0x11]));
         }
         for length in [0, 4, 0x188, 0x18b, size_of::<SnpReport>() - 1] {
             tee.state.lock().report = report.as_bytes()[..length].to_vec();
             assert!(matches!(
-                RuntimeTcbFloor::new(&tee, &config()),
+                state_from_hardware(&tee, &config()),
                 Err(Error(ErrorInner::MalformedReport))
             ));
         }
@@ -1119,10 +1079,10 @@ fn typed_snp_report_preserves_prefix_and_version_handling() {
 fn v2_does_not_infer_cpuid_from_reserved_report_bytes() {
     let tee = MutableTee::snp(2, 0x19, 0, BASE_TCB);
     let config = config();
-    let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+    let mut floor = state_from_hardware(&tee, &config).unwrap();
     tee.state.lock().report[0x188..0x18a].copy_from_slice(&[0x1a, 0x0f]);
     floor.create_protector(&tee, &config, &DEK).unwrap();
-    assert_eq!(floor.snapshot.snp_domain.as_ref().unwrap().cpuid, None);
+    assert_eq!(snp_floor(&floor).domain.cpuid, None);
     let mut upgraded = BASE_TCB;
     upgraded[7] += 1;
     tee.set_svn(snp_svn(upgraded));
@@ -1133,260 +1093,60 @@ fn v2_does_not_infer_cpuid_from_reserved_report_bytes() {
 }
 
 #[test]
-fn tdx_equal_svns_are_accepted_for_both_module_modes() {
-    for module_id in [0, 1] {
-        let mut tee_tcb_svn = [3; 16];
-        tee_tcb_svn[1] = module_id;
-        let svn = KeyDerivationSvn::Tdx {
-            tee_tcb_svn,
-            cpu_svn: [5; 16],
-        };
-        let tee = MutableTee::tdx();
+fn tdx_changes_need_no_history_but_still_verify_current_hardware_and_svn() {
+    let tee = MutableTee::tdx();
+    let config = config();
+    let mut state = state_from_hardware(&tee, &config).unwrap();
+    let saved = protobuf_roundtrip(state.save());
+    let mut mixed = [4; 16];
+    mixed[2] = 0;
+    for svn in [
+        TDX_SVN,
+        KeyDerivationSvn::Tdx {
+            tee_tcb_svn: [0; 16],
+            cpu_svn: [1; 16],
+        },
+        KeyDerivationSvn::Tdx {
+            tee_tcb_svn: mixed,
+            cpu_svn: [9; 16],
+        },
+        TDX_SVN,
+    ] {
         tee.set_svn(svn);
-        let config = config();
-        let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
-        let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
+        let protector = state.create_protector(&tee, &config, &DEK).unwrap();
         assert!(svn_equal(header_svn(&protector), svn));
         assert!(
-            floor
+            state
                 .verify_protector(&tee, &config, &protector, &DEK)
                 .unwrap()
         );
-        assert_floor(&floor, svn);
-        assert_eq!(tee.state.lock().derivations.len(), 2);
-    }
-}
-
-#[test]
-fn tdx_each_svn_byte_can_increase_and_decrease() {
-    for module_id in [0, 1] {
-        for change_cpu in [false, true] {
-            for index in 0..16 {
-                let mut tee_tcb_svn = [3; 16];
-                tee_tcb_svn[1] = module_id;
-                let mut cpu_svn = [5; 16];
-                let base = KeyDerivationSvn::Tdx {
-                    tee_tcb_svn,
-                    cpu_svn,
-                };
-                let tee = MutableTee::tdx();
-                tee.set_svn(base);
-                let config = config();
-                let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
-                let bytes = if change_cpu {
-                    &mut cpu_svn
-                } else {
-                    &mut tee_tcb_svn
-                };
-                bytes[index] += 1;
-                let next = KeyDerivationSvn::Tdx {
-                    tee_tcb_svn,
-                    cpu_svn,
-                };
-                tee.set_svn(next);
-                let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
-                assert!(svn_equal(header_svn(&protector), next));
-                assert_floor(&floor, next);
-                assert!(
-                    floor
-                        .verify_protector(&tee, &config, &protector, &DEK)
-                        .unwrap()
-                );
-                tee.set_svn(base);
-                assert!(
-                    !floor
-                        .verify_protector(&tee, &config, &protector, &DEK)
-                        .unwrap()
-                );
-                let replacement = floor.create_protector(&tee, &config, &DEK).unwrap();
-                assert!(svn_equal(header_svn(&replacement), base));
-                assert!(
-                    floor
-                        .verify_protector(&tee, &config, &replacement, &DEK)
-                        .unwrap()
-                );
-                assert_floor(&floor, base);
-                let state = tee.state.lock();
-                assert_eq!(state.derivations.len(), 4);
-                for (policy, expected) in state.derivations.iter().zip([next, next, base, base]) {
-                    assert!(svn_equal(policy.svn, expected));
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn tdx_reserved_changes_use_the_new_report_without_historical_comparison() {
-    for module_id in [0, 1] {
-        for index in 3..16 {
-            // Preserve raw report metadata in either direction, including
-            // zero -> nonzero, rather than imposing a cross-platform ordering.
-            for (reserved, changed) in [(0, 1), (3, 4), (3, 2)] {
-                for upgrade_components in [false, true] {
-                    let mut tee_tcb_svn = [reserved; 16];
-                    tee_tcb_svn[0] = 3;
-                    tee_tcb_svn[1] = module_id;
-                    tee_tcb_svn[2] = 3;
-                    let base = KeyDerivationSvn::Tdx {
-                        tee_tcb_svn,
-                        cpu_svn: [5; 16],
-                    };
-                    let tee = MutableTee::tdx();
-                    tee.set_svn(base);
-                    let config = config();
-                    let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
-                    let candidate = floor.create_protector(&tee, &config, &DEK).unwrap();
-
-                    tee_tcb_svn[index] = changed;
-                    if upgrade_components {
-                        tee_tcb_svn[0] += 1;
-                        tee_tcb_svn[2] += 1;
-                    }
-                    let next = KeyDerivationSvn::Tdx {
-                        tee_tcb_svn,
-                        cpu_svn: [if upgrade_components { 6 } else { 5 }; 16],
-                    };
-                    tee.set_svn(next);
-                    let replacement = floor.create_protector(&tee, &config, &DEK).unwrap();
-                    assert!(svn_equal(header_svn(&replacement), next));
-                    assert!(
-                        !floor
-                            .verify_protector(&tee, &config, &candidate, &DEK)
-                            .unwrap()
-                    );
-                    assert!(
-                        floor
-                            .verify_protector(&tee, &config, &replacement, &DEK)
-                            .unwrap()
-                    );
-                    assert_floor(&floor, next);
-                    assert_eq!(tee.state.lock().derivations.len(), 3);
-
-                    tee.set_svn(base);
-                    assert!(
-                        floor
-                            .verify_protector(&tee, &config, &candidate, &DEK)
-                            .unwrap()
-                    );
-                    assert_floor(&floor, base);
-                    assert_eq!(tee.state.lock().derivations.len(), 4);
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn tdx_incomparable_components_are_accepted() {
-    for module_id in [0, 1] {
-        for change_cpu in [false, true] {
-            for lowered_index in 1..16 {
-                if !change_cpu && lowered_index != 2 {
-                    continue;
-                }
-                let mut tee_tcb_svn = [3; 16];
-                tee_tcb_svn[1] = module_id;
-                let mut cpu_svn = [5; 16];
-                let base = KeyDerivationSvn::Tdx {
-                    tee_tcb_svn,
-                    cpu_svn,
-                };
-                let tee = MutableTee::tdx();
-                tee.set_svn(base);
-                let config = config();
-                let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
-                let bytes = if change_cpu {
-                    &mut cpu_svn
-                } else {
-                    &mut tee_tcb_svn
-                };
-                // The first differing byte increases, but a later one falls.
-                // Neither lexicographic ordering nor any-component growth
-                // establishes a component-wise successor.
-                bytes[0] += 1;
-                bytes[lowered_index] -= 1;
-                let next = KeyDerivationSvn::Tdx {
-                    tee_tcb_svn,
-                    cpu_svn,
-                };
-                tee.set_svn(next);
-                let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
-                assert!(svn_equal(header_svn(&protector), next));
-                assert!(
-                    floor
-                        .verify_protector(&tee, &config, &protector, &DEK)
-                        .unwrap()
-                );
-                assert_floor(&floor, next);
-                assert_eq!(tee.state.lock().derivations.len(), 2);
-            }
-        }
-    }
-}
-
-#[test]
-fn tdx_module_identity_changes_are_accepted() {
-    for (source_id, destination_id) in [(0, 1), (1, 0), (1, 2)] {
-        let mut tee_tcb_svn = [3; 16];
-        tee_tcb_svn[1] = source_id;
-        let base = KeyDerivationSvn::Tdx {
-            tee_tcb_svn,
-            cpu_svn: [5; 16],
-        };
-        let tee = MutableTee::tdx();
-        tee.set_svn(base);
-        let config = config();
-        let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
-        tee_tcb_svn[0] = 4;
-        tee_tcb_svn[2] = 4;
-        tee_tcb_svn[1] = destination_id;
-        let next = KeyDerivationSvn::Tdx {
-            tee_tcb_svn,
-            cpu_svn: [6; 16],
-        };
-        tee.set_svn(next);
-        let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
-        assert!(svn_equal(header_svn(&protector), next));
         assert!(
-            floor
-                .verify_protector(&tee, &config, &protector, &DEK)
+            !state
+                .verify_protector(&tee, &config, &protector, &[0xcd; 32])
                 .unwrap()
         );
-        assert_floor(&floor, next);
-        assert_eq!(tee.state.lock().derivations.len(), 2);
-    }
-}
-
-#[test]
-fn tdx_lower_module_isvsvn_is_accepted() {
-    for module_id in [0, 1] {
-        let mut tee_tcb_svn = [3; 16];
-        tee_tcb_svn[1] = module_id;
-        let base = KeyDerivationSvn::Tdx {
-            tee_tcb_svn,
-            cpu_svn: [5; 16],
-        };
-        let tee = MutableTee::tdx();
-        tee.set_svn(base);
-        let config = config();
-        let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
-        tee_tcb_svn[0] -= 1;
-        tee_tcb_svn[2] = 4;
-        let next = KeyDerivationSvn::Tdx {
-            tee_tcb_svn,
-            cpu_svn: [6; 16],
-        };
-        tee.set_svn(next);
-        let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
-        assert!(svn_equal(header_svn(&protector), next));
+        assert_eq!(state.save(), saved);
+        tee.state.lock().secret[0] ^= 1;
         assert!(
-            floor
+            !state
                 .verify_protector(&tee, &config, &protector, &DEK)
                 .unwrap()
         );
-        assert_floor(&floor, next);
-        assert_eq!(tee.state.lock().derivations.len(), 2);
+        let replacement = state.create_protector(&tee, &config, &DEK).unwrap();
+        assert!(
+            state
+                .verify_protector(&tee, &config, &replacement, &DEK)
+                .unwrap()
+        );
+
+        let mut restored = RuntimeSealingState::restore(saved.clone(), &tee, &config).unwrap();
+        state.check_successor(&restored).unwrap();
+        assert!(
+            restored
+                .verify_protector(&tee, &config, &replacement, &DEK)
+                .unwrap()
+        );
+        assert_eq!(restored.save(), saved);
     }
 }
 
@@ -1403,7 +1163,7 @@ fn tdx_derivation_failure_does_not_prevent_retry_at_lower_svn() {
             let tee = MutableTee::tdx();
             tee.set_svn(base);
             let config = config();
-            let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+            let mut floor = state_from_hardware(&tee, &config).unwrap();
             tee_tcb_svn[0] += 1;
             let next = KeyDerivationSvn::Tdx {
                 tee_tcb_svn,
@@ -1411,8 +1171,8 @@ fn tdx_derivation_failure_does_not_prevent_retry_at_lower_svn() {
             };
             tee.set_svn(next);
             // Create independently so verification itself must observe the change.
-            let candidate = super::super::create_protector(&tee, &config, &DEK).unwrap();
-            assert_floor(&floor, base);
+            let candidate = create_protector(&tee, &config, &DEK).unwrap();
+            assert_state(&floor, base);
             tee.state.lock().fail_derivation = true;
             let error = if verify {
                 floor
@@ -1422,7 +1182,7 @@ fn tdx_derivation_failure_does_not_prevent_retry_at_lower_svn() {
                 floor.create_protector(&tee, &config, &DEK).unwrap_err()
             };
             assert!(matches!(error, Error(ErrorInner::Derive(_))));
-            assert_floor(&floor, next);
+            assert_state(&floor, next);
             {
                 let state = tee.state.lock();
                 assert_eq!(state.derivations.len(), 2);
@@ -1442,7 +1202,7 @@ fn tdx_derivation_failure_does_not_prevent_retry_at_lower_svn() {
                     .verify_protector(&tee, &config, &replacement, &DEK)
                     .unwrap()
             );
-            assert_floor(&floor, base);
+            assert_state(&floor, base);
             assert_eq!(tee.state.lock().derivations.len(), 4);
             tee.set_svn(next);
             assert!(
@@ -1450,7 +1210,7 @@ fn tdx_derivation_failure_does_not_prevent_retry_at_lower_svn() {
                     .verify_protector(&tee, &config, &candidate, &DEK)
                     .unwrap()
             );
-            assert_floor(&floor, next);
+            assert_state(&floor, next);
             assert_eq!(tee.state.lock().derivations.len(), 5);
         }
     }
@@ -1474,7 +1234,7 @@ fn tdx_candidate_requires_exact_svn_despite_available_old_key() {
                 let tee = MutableTee::tdx();
                 tee.set_svn(base);
                 let config = config();
-                let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+                let mut floor = state_from_hardware(&tee, &config).unwrap();
                 let bytes = if change_cpu {
                     &mut cpu_svn
                 } else {
@@ -1490,14 +1250,14 @@ fn tdx_candidate_requires_exact_svn_despite_available_old_key() {
                 tee.state.lock().after_report = Some(next);
                 let candidate = floor.create_protector(&tee, &config, &DEK).unwrap();
                 assert!(svn_equal(header_svn(&candidate), base));
-                assert_floor(&floor, base);
+                assert_state(&floor, base);
                 assert_eq!(tee.state.lock().report_calls, 2);
                 assert!(
                     !floor
                         .verify_protector(&tee, &config, &candidate, &DEK)
                         .unwrap()
                 );
-                assert_floor(&floor, next);
+                assert_state(&floor, next);
                 {
                     let state = tee.state.lock();
                     assert_eq!(state.report_calls, 3);
@@ -1512,7 +1272,7 @@ fn tdx_candidate_requires_exact_svn_despite_available_old_key() {
                         .verify_protector(&tee, &config, &candidate, &DEK)
                         .unwrap()
                 );
-                assert_floor(&floor, base);
+                assert_state(&floor, base);
                 assert_eq!(tee.state.lock().derivations.len(), 2);
                 tee.set_svn(next);
                 let replacement = floor.create_protector(&tee, &config, &DEK).unwrap();
@@ -1522,10 +1282,50 @@ fn tdx_candidate_requires_exact_svn_despite_available_old_key() {
                         .verify_protector(&tee, &config, &replacement, &DEK)
                         .unwrap()
                 );
-                assert_floor(&floor, next);
+                assert_state(&floor, next);
                 assert_eq!(tee.state.lock().derivations.len(), 4);
             }
         }
+    }
+}
+
+#[test]
+fn runtime_verification_rejects_bad_headers_and_policy_before_derivation() {
+    for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
+        let config = config();
+        let mut state = state_from_hardware(&tee, &config).unwrap();
+        let valid = state.create_protector(&tee, &config, &DEK).unwrap();
+        let mut invalid = vec![Vec::new(), valid[..valid.len() - 1].to_vec()];
+        for field in 0..5 {
+            let mut candidate = vmgs::HardwareKeyProtectorV3::read_from_bytes(&valid).unwrap();
+            match field {
+                0 => candidate.header.version = u32::MAX,
+                1 => candidate.header.length = 0,
+                2 => candidate.header.mix_measurement = 2,
+                3 => candidate.header.mix_measurement = 0,
+                4 => candidate.header._reserved[0] = 1,
+                _ => unreachable!(),
+            }
+            invalid.push(candidate.as_bytes().to_vec());
+        }
+        let calls = tee.state.lock().derivations.len();
+        for candidate in invalid {
+            assert!(
+                !state
+                    .verify_protector(&tee, &config, &candidate, &DEK)
+                    .unwrap()
+            );
+        }
+        assert_eq!(tee.state.lock().derivations.len(), calls);
+        assert!(state.verify_protector(&tee, &config, &valid, &DEK).unwrap());
+        let mut tampered = vmgs::HardwareKeyProtectorV3::read_from_bytes(&valid).unwrap();
+        tampered.hmac[0] ^= 1;
+        assert!(
+            !state
+                .verify_protector(&tee, &config, tampered.as_bytes(), &DEK)
+                .unwrap()
+        );
+        assert_eq!(tee.state.lock().derivations.len(), calls + 2);
     }
 }
 
@@ -1536,7 +1336,7 @@ fn mixed_tees_and_mismatched_report_svn_are_rejected() {
         (MutableTee::tdx(), MutableTee::snp(3, 0x19, 0, BASE_TCB)),
     ] {
         let config = config();
-        let mut floor = RuntimeTcbFloor::new(&source, &config).unwrap();
+        let mut floor = state_from_hardware(&source, &config).unwrap();
         let source_svn = source.state.lock().svn.unwrap();
         assert!(matches!(
             floor.create_protector(&destination, &config, &DEK),
@@ -1548,14 +1348,14 @@ fn mixed_tees_and_mismatched_report_svn_are_rejected() {
         ));
         destination.set_svn(source_svn);
         assert!(matches!(
-            RuntimeTcbFloor::new(&destination, &config),
+            state_from_hardware(&destination, &config),
             Err(Error(ErrorInner::ReportSvnMismatch))
         ));
         assert!(matches!(
             floor.create_protector(&destination, &config, &DEK),
             Err(Error(ErrorInner::ReportSvnMismatch))
         ));
-        assert_floor(&floor, source_svn);
+        assert_state(&floor, source_svn);
         assert!(destination.state.lock().derivations.is_empty());
     }
 }
@@ -1564,12 +1364,12 @@ fn mixed_tees_and_mismatched_report_svn_are_rejected() {
 fn reports_must_be_full_sized_and_raw_tcb_must_match_returned_svn() {
     let tee = MutableTee::snp(3, 0x19, 0, BASE_TCB);
     let config = config();
-    let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+    let mut floor = state_from_hardware(&tee, &config).unwrap();
     let valid = tee.state.lock().report.clone();
     for size in 0..1184 {
         tee.state.lock().report = valid[..size].to_vec();
         assert!(matches!(
-            RuntimeTcbFloor::new(&tee, &config),
+            state_from_hardware(&tee, &config),
             Err(Error(ErrorInner::MalformedReport))
         ));
         assert!(matches!(
@@ -1580,13 +1380,13 @@ fn reports_must_be_full_sized_and_raw_tcb_must_match_returned_svn() {
             floor.verify_protector(&tee, &config, &[], &DEK),
             Err(Error(ErrorInner::MalformedReport))
         ));
-        assert_floor(&floor, snp_svn(BASE_TCB));
+        assert_state(&floor, snp_svn(BASE_TCB));
     }
     tee.state.lock().report = valid;
     for index in 0..8 {
         tee.state.lock().report[0x180 + index] ^= 1;
         assert!(matches!(
-            RuntimeTcbFloor::new(&tee, &config),
+            state_from_hardware(&tee, &config),
             Err(Error(ErrorInner::ReportTcbMismatch))
         ));
         assert!(matches!(
@@ -1609,7 +1409,7 @@ fn reports_must_be_full_sized_and_raw_tcb_must_match_returned_svn() {
 fn report_failure_and_missing_svn_never_reset_floor() {
     for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
         let config = config();
-        let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+        let mut floor = state_from_hardware(&tee, &config).unwrap();
         let initial = tee.state.lock().svn.unwrap();
         for report_failure in [true, false] {
             {
@@ -1618,7 +1418,7 @@ fn report_failure_and_missing_svn_never_reset_floor() {
                 state.svn = None;
             }
             let errors = [
-                RuntimeTcbFloor::new(&tee, &config).unwrap_err(),
+                state_from_hardware(&tee, &config).unwrap_err(),
                 floor.create_protector(&tee, &config, &DEK).unwrap_err(),
                 floor
                     .verify_protector(&tee, &config, &[], &DEK)
@@ -1631,7 +1431,7 @@ fn report_failure_and_missing_svn_never_reset_floor() {
                     assert!(matches!(error, Error(ErrorInner::MissingKeyDerivationSvn)));
                 }
             }
-            assert_floor(&floor, initial);
+            assert_state(&floor, initial);
         }
         assert!(tee.state.lock().derivations.is_empty());
         tee.set_svn(initial);
@@ -1643,10 +1443,10 @@ fn report_failure_and_missing_svn_never_reset_floor() {
 fn policy_is_validated_before_reports_and_floor_changes() {
     let tee = MutableTee::snp(3, 0x19, 0, BASE_TCB);
     let mut config = config();
-    let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+    let mut floor = state_from_hardware(&tee, &config).unwrap();
     config.hardware_sealing_policy = HardwareSealingPolicy::None;
     assert!(matches!(
-        RuntimeTcbFloor::new(&tee, &config),
+        state_from_hardware(&tee, &config),
         Err(Error(ErrorInner::DisabledPolicy))
     ));
     assert!(matches!(
@@ -1662,7 +1462,7 @@ fn policy_is_validated_before_reports_and_floor_changes() {
     config.hardware_sealing_policy = HardwareSealingPolicy::Signer;
     let tdx = MutableTee::tdx();
     assert!(matches!(
-        RuntimeTcbFloor::new(&tdx, &config),
+        state_from_hardware(&tdx, &config),
         Err(Error(ErrorInner::TdxSignerPolicyUnsupported))
     ));
     assert_eq!(tdx.state.lock().report_calls, 0);
@@ -1677,7 +1477,7 @@ fn policy_is_validated_before_reports_and_floor_changes() {
     let mut unavailable = MutableTee::snp(3, 0x19, 0, BASE_TCB);
     unavailable.supports_derivation = false;
     assert!(matches!(
-        RuntimeTcbFloor::new(&unavailable, &config),
+        state_from_hardware(&unavailable, &config),
         Err(Error(ErrorInner::UnsupportedTee))
     ));
     assert_eq!(unavailable.state.lock().report_calls, 0);
@@ -1687,7 +1487,7 @@ fn policy_is_validated_before_reports_and_floor_changes() {
 fn create_uses_one_report_and_retains_ratchet_after_derivation_error() {
     let tee = MutableTee::snp(3, 0x19, 0, BASE_TCB);
     let config = config();
-    let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+    let mut floor = state_from_hardware(&tee, &config).unwrap();
     let mut next = BASE_TCB;
     next[7] += 1;
     tee.set_svn(snp_svn(next));
@@ -1696,7 +1496,7 @@ fn create_uses_one_report_and_retains_ratchet_after_derivation_error() {
         floor.create_protector(&tee, &config, &DEK),
         Err(Error(ErrorInner::Derive(_)))
     ));
-    assert_floor(&floor, snp_svn(next));
+    assert_state(&floor, snp_svn(next));
     {
         let state = tee.state.lock();
         assert_eq!(state.report_calls, 2);
@@ -1717,14 +1517,14 @@ fn create_uses_one_report_and_retains_ratchet_after_derivation_error() {
     tee.state.lock().after_report = Some(snp_svn(later));
     let candidate = floor.create_protector(&tee, &config, &DEK).unwrap();
     assert!(svn_equal(header_svn(&candidate), snp_svn(next)));
-    assert_floor(&floor, snp_svn(next));
+    assert_state(&floor, snp_svn(next));
     assert_eq!(tee.state.lock().report_calls, 4);
     assert!(
         !floor
             .verify_protector(&tee, &config, &candidate, &DEK)
             .unwrap()
     );
-    assert_floor(&floor, snp_svn(later));
+    assert_state(&floor, snp_svn(later));
     assert_eq!(tee.state.lock().derivations.len(), 2);
 }
 
@@ -1732,18 +1532,18 @@ fn create_uses_one_report_and_retains_ratchet_after_derivation_error() {
 fn verify_changed_report_returns_false_and_ratchets_before_header_check() {
     let tee = MutableTee::snp(3, 0x19, 0, BASE_TCB);
     let config = config();
-    let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+    let mut floor = state_from_hardware(&tee, &config).unwrap();
     let old = floor.create_protector(&tee, &config, &DEK).unwrap();
     let mut next = BASE_TCB;
     next[7] += 1;
     tee.set_svn(snp_svn(next));
     assert!(!floor.verify_protector(&tee, &config, &old, &DEK).unwrap());
-    assert_floor(&floor, snp_svn(next));
+    assert_state(&floor, snp_svn(next));
     assert_eq!(tee.state.lock().derivations.len(), 1);
     next[7] += 1;
     tee.set_svn(snp_svn(next));
     assert!(!floor.verify_protector(&tee, &config, &[], &DEK).unwrap());
-    assert_floor(&floor, snp_svn(next));
+    assert_state(&floor, snp_svn(next));
     tee.set_svn(snp_svn(BASE_TCB));
     assert!(matches!(
         floor.verify_protector(&tee, &config, &old, &DEK),
@@ -1756,19 +1556,19 @@ fn verify_changed_report_returns_false_and_ratchets_before_header_check() {
 fn verify_derivation_failure_keeps_new_floor_and_can_retry() {
     let tee = MutableTee::snp(3, 0x19, 0, BASE_TCB);
     let config = config();
-    let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+    let mut floor = state_from_hardware(&tee, &config).unwrap();
     let mut next = BASE_TCB;
     next[7] += 1;
     tee.set_svn(snp_svn(next));
     // Independent candidate creation must not be what ratchets this floor.
-    let candidate = super::super::create_protector(&tee, &config, &DEK).unwrap();
-    assert_floor(&floor, snp_svn(BASE_TCB));
+    let candidate = create_protector(&tee, &config, &DEK).unwrap();
+    assert_state(&floor, snp_svn(BASE_TCB));
     tee.state.lock().fail_derivation = true;
     assert!(matches!(
         floor.verify_protector(&tee, &config, &candidate, &DEK),
         Err(Error(ErrorInner::Derive(_)))
     ));
-    assert_floor(&floor, snp_svn(next));
+    assert_state(&floor, snp_svn(next));
     tee.state.lock().fail_derivation = false;
     tee.set_svn(snp_svn(BASE_TCB));
     assert!(matches!(
@@ -1787,7 +1587,7 @@ fn verify_derivation_failure_keeps_new_floor_and_can_retry() {
 fn tampered_old_header_cannot_lower_floor_or_bypass_authentication() {
     let tee = MutableTee::snp(3, 0x19, 0, BASE_TCB);
     let config = config();
-    let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+    let mut floor = state_from_hardware(&tee, &config).unwrap();
     let old = floor.create_protector(&tee, &config, &DEK).unwrap();
     let mut next = BASE_TCB;
     next[7] += 1;
@@ -1800,7 +1600,7 @@ fn tampered_old_header_cannot_lower_floor_or_bypass_authentication() {
             .verify_protector(&tee, &config, forged.as_bytes(), &DEK)
             .unwrap()
     );
-    assert_floor(&floor, snp_svn(next));
+    assert_state(&floor, snp_svn(next));
     assert_eq!(tee.state.lock().derivations.len(), 2);
 
     forged.header.svn[..8].fill(0);
@@ -1815,7 +1615,7 @@ fn tampered_old_header_cannot_lower_floor_or_bypass_authentication() {
             .verify_protector(&tee, &config, forged.as_bytes(), &DEK)
             .unwrap()
     );
-    assert_floor(&floor, snp_svn(next));
+    assert_state(&floor, snp_svn(next));
     assert_eq!(tee.state.lock().derivations.len(), 2);
     tee.set_svn(snp_svn(BASE_TCB));
     assert!(matches!(
@@ -1828,7 +1628,7 @@ fn tampered_old_header_cannot_lower_floor_or_bypass_authentication() {
 fn unchanged_svn_still_rederives_and_checks_dek_and_hardware_identity() {
     for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
         let config = config();
-        let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+        let mut floor = state_from_hardware(&tee, &config).unwrap();
         let protector = floor.create_protector(&tee, &config, &DEK).unwrap();
         assert!(
             floor

@@ -56,7 +56,7 @@ pub(crate) fn has_saved_state(units: &[state_unit::SavedStateUnit]) -> anyhow::R
     Ok(found)
 }
 
-/// Restore provenance and enrollment information, not a replacement TCB floor.
+/// Restore provenance and enrollment information, not replacement sealing state.
 pub(crate) struct RestoreContext {
     pub has_saved_state: bool,
     pub from_host: bool,
@@ -66,7 +66,7 @@ pub(crate) struct RestoreContext {
 /// Hardware eligibility includes policy, key-derivation support and encrypted VMGS.
 pub(crate) fn should_enable(
     eligible: bool,
-    boot_floor_available: bool,
+    boot_state_available: bool,
     restore: Option<RestoreContext>,
 ) -> anyhow::Result<bool> {
     if let Some(restore) = restore {
@@ -81,7 +81,7 @@ pub(crate) fn should_enable(
         // Never use boot observations to invent enrollment on a restore path.
         Ok(restore.has_saved_state)
     } else {
-        Ok(eligible && boot_floor_available)
+        Ok(eligible && boot_state_available)
     }
 }
 
@@ -114,9 +114,7 @@ struct Schedule {
     force_reseal: bool,
     failures: u32,
     #[inspect(skip)]
-    deadline: Instant,
-    #[inspect(skip)]
-    not_before: Instant,
+    next_attempt_at: Instant,
 }
 
 impl Schedule {
@@ -125,26 +123,19 @@ impl Schedule {
             running: false,
             force_reseal: false,
             failures: 0,
-            deadline: now,
-            not_before: now,
+            next_attempt_at: now,
         }
     }
 
-    fn notified(&mut self, now: Instant) {
+    fn notified(&mut self) {
         self.force_reseal = true;
-        self.deadline = now;
-    }
-
-    fn due(&self) -> Instant {
-        self.deadline.max(self.not_before)
     }
 
     fn completed(&mut self, now: Instant, success: bool, jitter: u8) {
         if success {
             self.failures = 0;
             self.force_reseal = false;
-            self.not_before = now + MIN_RESEAL_INTERVAL;
-            // No new deadline: stay idle until another notification.
+            self.next_attempt_at = now + MIN_RESEAL_INTERVAL;
         } else {
             self.failures = self.failures.saturating_add(1);
             // A failed flush may leave a valid protector in cache but not on
@@ -153,8 +144,7 @@ impl Schedule {
             let backoff = Duration::from_secs(1 << self.failures.saturating_sub(1).min(6));
             let delay =
                 (backoff + Duration::from_millis(u64::from(jitter) * 4)).min(MAX_RETRY_INTERVAL);
-            self.not_before = now + delay;
-            self.deadline = self.not_before;
+            self.next_attempt_at = now + delay;
         }
     }
 }
@@ -175,10 +165,10 @@ pub(crate) struct HardwareReseal {
     tee: Arc<dyn TeeCall>,
     #[inspect(skip)]
     config: Arc<AttestationVmConfig>,
-    // Trusted local reports or validated servicing state initialize this floor.
-    // A shared mutex preserves advances even when a blocking job returns Err.
+    // The shared state preserves SNP increases even if a blocking job fails,
+    // and distinguishes initialized workers from those awaiting restore.
     #[inspect(skip)]
-    tcb_floor: Arc<Mutex<Option<runtime_sealing::RuntimeTcbFloor>>>,
+    sealing_state: Arc<Mutex<Option<runtime_sealing::RuntimeSealingState>>>,
 }
 
 impl HardwareReseal {
@@ -188,15 +178,15 @@ impl HardwareReseal {
         vmgs: VmgsClient,
         tee: Box<dyn TeeCall>,
         config: AttestationVmConfig,
-        tcb_floor: runtime_sealing::RuntimeTcbFloor,
+        sealing_state: runtime_sealing::RuntimeSealingState,
     ) -> Self {
         let worker = Self::new_for_restore(notification, timer, vmgs, tee, config);
-        *worker.tcb_floor.lock() = Some(tcb_floor);
+        *worker.sealing_state.lock() = Some(sealing_state);
         worker
     }
 
-    /// Construct without observing hardware or bootstrapping a potentially lower
-    /// floor. Only use when servicing state is available, then restore before
+    /// Construct without observing hardware or initializing sealing state.
+    /// Only use when servicing state is available, then restore before
     /// starting. Until restore succeeds, no reseal I/O is allowed.
     pub fn new_for_restore(
         notification: Arc<MigrationNotification>,
@@ -212,7 +202,7 @@ impl HardwareReseal {
             vmgs,
             tee: tee.into(),
             config: Arc::new(config),
-            tcb_floor: Arc::new(Mutex::new(None)),
+            sealing_state: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -227,15 +217,19 @@ impl HardwareReseal {
                 if let Poll::Ready(req) = recv.poll_next_unpin(cx) {
                     return Poll::Ready(Event::State(req));
                 }
-                if !self.schedule.running || self.tcb_floor.lock().is_none() {
+                if !self.schedule.running || self.sealing_state.lock().is_none() {
                     return Poll::Pending;
                 }
                 if self.notification.take(cx) {
                     let now = Instant::now();
-                    self.schedule.notified(now);
+                    self.schedule.notified();
                     tracelimit::info_ratelimited!(
                         CVM_ALLOWED,
-                        delay_ms = self.schedule.due().saturating_sub(now).as_millis() as u64,
+                        delay_ms = self
+                            .schedule
+                            .next_attempt_at
+                            .saturating_sub(now)
+                            .as_millis() as u64,
                         failures = self.schedule.failures,
                         "hardware reseal notification consumed; work scheduled"
                     );
@@ -244,7 +238,7 @@ impl HardwareReseal {
                     return Poll::Pending;
                 }
                 self.timer
-                    .poll_until(cx, self.schedule.due())
+                    .poll_until(cx, self.schedule.next_attempt_at)
                     .map(|_| Event::Reseal)
             })
             .await;
@@ -291,9 +285,12 @@ impl HardwareReseal {
                                     error = error.as_ref() as &dyn std::error::Error,
                                     elapsed_ms,
                                     failures = self.schedule.failures,
-                                    retry_delay_ms =
-                                        self.schedule.due().saturating_sub(completed).as_millis()
-                                            as u64,
+                                    retry_delay_ms = self
+                                        .schedule
+                                        .next_attempt_at
+                                        .saturating_sub(completed)
+                                        .as_millis()
+                                        as u64,
                                     pending_notification,
                                     "VMGS hardware protector recovery pending; retrying"
                                 );
@@ -312,8 +309,8 @@ impl HardwareReseal {
     /// against fresh hardware derivations before and after persistence.
     async fn reseal(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.tcb_floor.lock().is_some(),
-            "hardware reseal floor is not initialized"
+            self.sealing_state.lock().is_some(),
+            "hardware resealing state is not initialized"
         );
         tracelimit::info_ratelimited!(CVM_ALLOWED, "requesting active VMGS key");
         let key = self
@@ -326,26 +323,26 @@ impl HardwareReseal {
         // in flight, and each is awaited before advancing the attempt.
         let tee = self.tee.clone();
         let config = self.config.clone();
-        let tcb_floor = self.tcb_floor.clone();
+        let sealing_state = self.sealing_state.clone();
         let span = tracing::Span::current();
         tracelimit::info_ratelimited!(CVM_ALLOWED, "queueing hardware protector preparation");
         let protector = blocking::unblock(move || {
             span.in_scope(|| -> anyhow::Result<Vec<u8>> {
                 tracelimit::info_ratelimited!(CVM_ALLOWED, "preparing hardware protector");
-                let mut floor = tcb_floor.lock();
-                let floor = floor
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("hardware reseal floor is not initialized"))?;
-                let protector = floor
+                let mut state = sealing_state.lock();
+                let state = state.as_mut().ok_or_else(|| {
+                    anyhow::anyhow!("hardware resealing state is not initialized")
+                })?;
+                let protector = state
                     .create_protector(&*tee, &config, &key)
-                    .context("hardware reseal: checking TCB floor and creating protector")?;
+                    .context("hardware reseal: checking policy and creating protector")?;
                 // Validate with a second derivation, not the seal-time keys.
                 tracelimit::info_ratelimited!(
                     CVM_ALLOWED,
                     "verifying hardware protector before write"
                 );
                 anyhow::ensure!(
-                    floor
+                    state
                         .verify_protector(&*tee, &config, &protector, &key)
                         .context("hardware reseal: verifying before write")?,
                     "hardware changed while constructing the protector"
@@ -370,7 +367,7 @@ impl HardwareReseal {
         // here remains latched for another attempt regardless of this result.
         let tee = self.tee.clone();
         let config = self.config.clone();
-        let tcb_floor = self.tcb_floor.clone();
+        let sealing_state = self.sealing_state.clone();
         let span = tracing::Span::current();
         tracelimit::info_ratelimited!(CVM_ALLOWED, "queueing post-flush hardware verification");
         blocking::unblock(move || {
@@ -380,10 +377,12 @@ impl HardwareReseal {
                     "verifying hardware protector after flush"
                 );
                 anyhow::ensure!(
-                    tcb_floor
+                    sealing_state
                         .lock()
                         .as_mut()
-                        .ok_or_else(|| anyhow::anyhow!("hardware reseal floor is not initialized"))?
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "hardware resealing state is not initialized"
+                        ))?
                         .verify_protector(&*tee, &config, &protector, &key)
                         .context("hardware reseal: verifying after flush")?,
                     "hardware changed while persisting the protector"
@@ -408,7 +407,7 @@ impl StateUnit for HardwareReseal {
         self.schedule.running = true;
         tracelimit::info_ratelimited!(
             CVM_ALLOWED,
-            floor_initialized = self.tcb_floor.lock().is_some(),
+            state_initialized = self.sealing_state.lock().is_some(),
             recovery_pending = self.schedule.force_reseal,
             pending_notification = self.notification.pending.load(Ordering::Acquire),
             "hardware reseal worker started"
@@ -427,7 +426,7 @@ impl StateUnit for HardwareReseal {
 
     async fn reset(&mut self) -> anyhow::Result<()> {
         // Reset is not a migration notification. Preserve pending work, retry
-        // timing, and the resident floor without introducing recovery.
+        // timing, and the resident sealing state without introducing recovery.
         Ok(())
     }
 
