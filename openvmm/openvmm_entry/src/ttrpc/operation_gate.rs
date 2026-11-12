@@ -78,8 +78,9 @@ pub(crate) struct VmOperationGuard {
 }
 
 impl VmOperationGate {
-    /// Acquires the gate for `operation`, or fails with `ABORTED` if a
-    /// conflicting operation holds it.
+    /// Acquires the gate for `operation`. Fails with `ABORTED` if a
+    /// conflicting operation holds it, or with `RESOURCE_EXHAUSTED` if the
+    /// shared-operation count would overflow.
     pub(crate) fn try_acquire(&self, operation: VmOperation) -> anyhow::Result<VmOperationGuard> {
         let mut state = self.state.lock();
         let held = match (*state, operation.is_shared()) {
@@ -92,8 +93,15 @@ impl VmOperationGate {
                 None
             }
             (State::Shared(n), true) => {
-                // Bounded by the in-flight RPC tasks, far below `u32::MAX`.
-                *state = State::Shared(n + 1);
+                let Some(n) = n.checked_add(1) else {
+                    return Err(anyhow::Error::new(Code::ResourceExhausted)).with_context(|| {
+                        format!(
+                            "too many operations in progress, cannot start {}",
+                            operation.name()
+                        )
+                    });
+                };
+                *state = State::Shared(n);
                 None
             }
             (State::Shared(_), false) => Some(VmOperation::Topology),
@@ -165,6 +173,15 @@ mod tests {
         drop(b);
         drop(gate.try_acquire(VmOperation::Resume).unwrap());
         drop(gate.try_acquire(VmOperation::Topology).unwrap());
+    }
+
+    #[test]
+    fn shared_count_overflow_is_rejected_without_changing_state() {
+        let gate = VmOperationGate::default();
+        *gate.state.lock() = State::Shared(u32::MAX);
+        let status = grpc_error(gate.try_acquire(VmOperation::Topology).err().unwrap());
+        assert_eq!(status.code, i32::from(Code::ResourceExhausted));
+        assert_eq!(*gate.state.lock(), State::Shared(u32::MAX));
     }
 
     #[test]

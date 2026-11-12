@@ -2237,8 +2237,17 @@ impl VmService {
                 } else if request.r#type == vmservice::ModifyType::Update as i32
                     || request.r#type == vmservice::ModifyType::Remove as i32
                 {
+                    // Check the VM state once the NIC is known to be a
+                    // Consomme NIC, before validating the rest of the change:
+                    // a paused VM fails fast with `FAILED_PRECONDITION`, and
+                    // other backends still get `parse`'s backend error.
+                    if matches!(
+                        nic.backend,
+                        Some(vmservice::nic_config::Backend::Consomme(_))
+                    ) {
+                        self.require_running_for_consomme_changes()?;
+                    }
                     let modification = ConsommeNicModification::parse(nic, request.r#type)?;
-                    self.require_running_for_consomme_changes()?;
                     Ok(modify_consomme_nic(vm, modification)?.boxed())
                 } else {
                     anyhow::bail!("unsupported NIC modify type {}", request.r#type);
@@ -3581,6 +3590,55 @@ mod tests {
                 let (response, ()) = futures::join!(response, worker);
                 assert!(response.unwrap().result.is_none());
             }
+        });
+    }
+
+    /// While the VM is paused, a Consomme NIC change fails on the VM state
+    /// before the rest of the change is validated; a NIC with another backend
+    /// still gets the backend error.
+    #[test]
+    fn consomme_change_while_paused_checks_backend_then_state() {
+        DefaultPool::run_with(async |driver| {
+            let mut service = service(driver, None);
+            service.lifecycle = VmLifecycle::Paused;
+            let nic_update = |backend| vmservice::ModifyResourceRequest {
+                r#type: vmservice::ModifyType::Update as i32,
+                resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
+                    vmservice::NicConfig {
+                        nic_id: Guid::new_random().to_string(),
+                        backend: Some(backend),
+                        ..Default::default()
+                    },
+                )),
+            };
+
+            // The invalid protocol isn't reached: the state is checked first.
+            let consomme = vmservice::nic_config::Backend::Consomme(vmservice::ConsommeBackend {
+                ports: vec![vmservice::PortConfig {
+                    host_port: 8080,
+                    guest_port: 80,
+                    protocol: 99,
+                    host_address: String::new(),
+                }],
+                ..Default::default()
+            });
+            let status = grpc_error(service.modify_resource(nic_update(consomme)).err().unwrap());
+            assert_eq!(
+                status.code,
+                i32::from(Code::FailedPrecondition),
+                "{}",
+                status.message
+            );
+
+            let tap = vmservice::nic_config::Backend::Tap(Default::default());
+            let status = grpc_error(service.modify_resource(nic_update(tap)).err().unwrap());
+            assert!(
+                status
+                    .message
+                    .contains("only supported for consomme backend"),
+                "{}",
+                status.message
+            );
         });
     }
 

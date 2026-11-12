@@ -161,9 +161,9 @@ flight, rather than queuing it.
   can be in flight.
 - Consomme NIC changes (`ModifyResource` `UPDATE` or `REMOVE` of a Consomme
   NIC, including ports, DNS records, and virtual addresses) require a running
-  VM. A well-formed change otherwise fails with `FAILED_PRECONDITION`, because
-  the NIC processes these changes only while the VM runs; a malformed one is
-  rejected for its arguments first.
+  VM and otherwise fail with `FAILED_PRECONDITION`, before the rest of the
+  change is validated, because the NIC processes these changes only while the
+  VM runs.
 
 ## Hvsocket relay listeners
 
