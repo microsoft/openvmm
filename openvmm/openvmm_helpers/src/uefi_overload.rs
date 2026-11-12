@@ -34,16 +34,25 @@ pub fn uefi_overload_image(token: u64, image: Vec<u8>) -> anyhow::Result<UefiOve
     })
 }
 
-/// Reads the UEFI image at `path` and builds the GED overload image for the
-/// token it identifies itself with.
-///
-/// Returns `None` if the image has no version record.
-pub fn uefi_overload_image_from_file(path: &Path) -> anyhow::Result<Option<UefiOverloadImage>> {
+/// The legacy `LoadFirmware` token of OpenHCL 1.8, from before tokens tracked
+/// the UEFI version.
+pub const OPENHCL_1_8_TOKEN: u64 = 0x0108;
+
+/// Reads the UEFI image at `path` and builds the GED overload catalog it
+/// serves: the token it identifies itself with (if it has a version record)
+/// and [`OPENHCL_1_8_TOKEN`].
+pub fn uefi_overload_images_from_file(path: &Path) -> anyhow::Result<Vec<UefiOverloadImage>> {
     let image = fs_err::read(path)?;
-    let Some(token) = uefi_firmware_token(&image)? else {
-        return Ok(None);
-    };
-    uefi_overload_image(token, image).map(Some)
+    let mut tokens = Vec::new();
+    if let Some(token) = uefi_firmware_token(&image)? {
+        tokens.push(token);
+    }
+    // OpenHCL 1.8 shipped a 26.0 UEFI, which this image supersedes.
+    tokens.push(OPENHCL_1_8_TOKEN);
+    tokens
+        .into_iter()
+        .map(|token| uefi_overload_image(token, image.clone()))
+        .collect()
 }
 
 fn token_from_base_version(base_version: &str) -> Option<u64> {

@@ -1673,19 +1673,18 @@ async fn vm_config_from_command_line(
                     force_dma_bounce_enabled: uefi_options.force_dma_bounce,
                     smbios: ged_smbios,
                     uefi_overload_images: cli_args::default_uefi_firmware()
-                        .and_then(|path| {
-                            openvmm_helpers::uefi_overload::uefi_overload_image_from_file(&path)
+                        .map(|path| {
+                            openvmm_helpers::uefi_overload::uefi_overload_images_from_file(&path)
                                 .unwrap_or_else(|err| {
                                     tracing::warn!(
                                         error = err.as_ref() as &dyn std::error::Error,
                                         path = %path.display(),
                                         "failed to read the default uefi firmware; firmware overload will be rejected"
                                     );
-                                    None
+                                    Vec::new()
                                 })
                         })
-                        .into_iter()
-                        .collect(),
+                        .unwrap_or_default(),
                 }
                 .into_resource(),
             ),

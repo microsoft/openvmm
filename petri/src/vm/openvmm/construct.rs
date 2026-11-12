@@ -1081,7 +1081,8 @@ impl PetriVmConfigSetupCore<'_> {
                     custom_command_line: _,
                     log_levels: _,
                     vtl2_base_address_type,
-                    vtl2_settings: _, // run_core
+                    vtl2_settings: _,          // run_core
+                    uefi_overload_firmware: _, // config_openhcl_vmbus_devices
                 } = openhcl_config;
 
                 let mut cmdline = Some(openhcl_config.command_line());
@@ -1224,7 +1225,11 @@ impl PetriVmConfigSetupCore<'_> {
                 efi_diagnostics_log_level,
                 efi_diagnostics_rate_limit: _, // applied device-side via UefiManifest::new
             },
-            OpenHclConfig { vmbus_redirect, .. },
+            OpenHclConfig {
+                vmbus_redirect,
+                uefi_overload_firmware,
+                ..
+            },
         ) = match self.firmware {
             Firmware::OpenhclUefi {
                 uefi_config,
@@ -1292,7 +1297,13 @@ impl PetriVmConfigSetupCore<'_> {
             },
             force_dma_bounce_enabled: *force_dma_bounce,
             smbios: Default::default(),
-            uefi_overload_images: Vec::new(),
+            uefi_overload_images: match uefi_overload_firmware {
+                Some(firmware) => {
+                    openvmm_helpers::uefi_overload::uefi_overload_images_from_file(firmware.get())
+                        .context("failed to read the uefi overload firmware")?
+                }
+                None => Vec::new(),
+            },
         };
 
         Ok((ged, guest_request_send))
