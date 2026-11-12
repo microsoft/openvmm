@@ -856,6 +856,8 @@ mod save_restore {
         InvalidLastTick,
         #[error("last tick time fraction {0} ns is not below 100 ns")]
         InvalidLastTickFraction(u32),
+        #[error("timer {timer} control word {control:#04x} has no read/write mode")]
+        NoReadWriteMode { timer: usize, control: u8 },
     }
 
     impl SaveRestore for PitDevice {
@@ -925,6 +927,21 @@ mod save_restore {
                 return Err(RestoreError::InvalidSavedState(
                     PitDeviceRestoreError::InvalidLastTickFraction(last_frac_ns).into(),
                 ));
+            }
+
+            // Check every timer before changing any state. RW = 0 encodes the
+            // counter latch command, which `Timer::set_control` never stores
+            // and `Timer::read` and `Timer::write` cannot handle.
+            for (timer, saved) in timers.iter().enumerate() {
+                if ControlWord::from(saved.control).rw() == 0 {
+                    return Err(RestoreError::InvalidSavedState(
+                        PitDeviceRestoreError::NoReadWriteMode {
+                            timer,
+                            control: saved.control,
+                        }
+                        .into(),
+                    ));
+                }
             }
 
             for (timer, state) in self.timers.iter_mut().zip(timers) {
@@ -1005,6 +1022,7 @@ mod tests {
     use vmcore::line_interrupt::LineInterrupt;
     use vmcore::line_interrupt::LineSetTarget;
     use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+    use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveRestore;
     use vmcore::vmtime::VmTime;
 
@@ -1668,6 +1686,130 @@ mod tests {
             guest.set_time(time);
             guest.poll();
             assert_eq!(guest.irq0.is_high(0), time == 185, "IRQ 0 at {time}");
+        }
+    }
+
+    /// Returns the PIT's saved state, encoded, to compare whole PITs.
+    fn encoded_state(guest: &mut GuestPit) -> Vec<u8> {
+        mesh::payload::encode(guest.pit.save().unwrap())
+    }
+
+    /// Reads the counter's port, writes 1 to it, and reads it again, and
+    /// returns the bytes read.
+    fn access_counter(guest: &mut GuestPit, counter: u16) -> [u8; 2] {
+        let port = PIT_TIMER_RANGE_START + counter;
+        let first = guest.read(port);
+        guest.write(port, 1);
+        [first, guest.read(port)]
+    }
+
+    /// RW = 0 in an 8254 control word is the counter latch command, which
+    /// latches a counter's count without programming the counter, so no
+    /// counter holds a control word with RW = 0, and `Timer::read` and
+    /// `Timer::write` handle only RW = 1, 2, and 3. Restoring a saved state in
+    /// which a counter's control word has RW = 0, whatever its other bits,
+    /// fails as invalid saved state before it changes the PIT, which then
+    /// reads and writes the counter as a PIT that never restored does.
+    #[test]
+    fn restore_rejects_rw0_control_word_without_changing_state() {
+        // A PIT at 0.1 s, counted up to its last tick. When `programmed`, each
+        // of its counters holds state other than a fresh PIT's, so that
+        // installing any part of a fresh PIT's saved state shows.
+        let new_guest = |programmed: bool| {
+            let mut guest = GuestPit::new();
+            guest.set_time(1_000_000);
+            guest.read(PIT_PORT61_REGISTER);
+            if programmed {
+                for (port, data) in [
+                    // Counter 0: LSB then MSB, mode 2, binary.
+                    (PIT_CONTROL_REGISTER, 0x34),
+                    (PIT_TIMER_RANGE_START, 0x34),
+                    (PIT_TIMER_RANGE_START, 0x12),
+                    // Counter 1: LSB only, mode 3, BCD.
+                    (PIT_CONTROL_REGISTER, 0x57),
+                    (PIT_TIMER_RANGE_START + 1, 0x50),
+                    // Counter 2: gate high, then MSB only, mode 1, binary.
+                    (PIT_PORT61_REGISTER, 0x01),
+                    (PIT_CONTROL_REGISTER, 0xa2),
+                    (PIT_TIMER_RANGE_START + 2, 0x20),
+                ] {
+                    guest.write(port, data);
+                }
+            }
+            guest
+        };
+
+        for programmed in [false, true] {
+            for counter in 0..3 {
+                for control in (0..=u8::MAX).filter(|control| control & 0x30 == 0) {
+                    let case = format!(
+                        "programmed {programmed}, counter {counter}, control word {control:#04x}"
+                    );
+                    // A fresh PIT's saved state, from VM time 0, in which the
+                    // counter's control word has RW = 0.
+                    let mut saved = GuestPit::new().pit.save().unwrap();
+                    saved.timers[usize::from(counter)].control = control;
+
+                    let mut guest = new_guest(programmed);
+                    let result = guest.pit.restore(saved);
+                    assert!(
+                        matches!(result, Err(RestoreError::InvalidSavedState(_))),
+                        "{case}: {result:?}"
+                    );
+
+                    let mut unrestored = new_guest(programmed);
+                    assert_eq!(
+                        encoded_state(&mut guest),
+                        encoded_state(&mut unrestored),
+                        "{case}"
+                    );
+                    assert_eq!(
+                        access_counter(&mut guest, counter),
+                        access_counter(&mut unrestored, counter),
+                        "{case}"
+                    );
+                    assert_eq!(
+                        encoded_state(&mut guest),
+                        encoded_state(&mut unrestored),
+                        "{case}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every control word that a counter holds once programmed, with RW = 1,
+    /// 2, or 3, any mode, including 6 and 7, which the 8254 takes as modes 2
+    /// and 3, and either count format, survives a save and restore, after
+    /// which the restored PIT reads and writes the counter as the saved one
+    /// does.
+    #[test]
+    fn restore_accepts_every_programmable_control_word() {
+        for counter in 0..3u8 {
+            for rw in 1..=3u8 {
+                for mode in 0..8u8 {
+                    for bcd in 0..2u8 {
+                        let control = (counter << 6) | (rw << 4) | (mode << 1) | bcd;
+                        let mut saved = GuestPit::new();
+                        saved.write(PIT_CONTROL_REGISTER, control);
+
+                        let mut restored = GuestPit::new();
+                        if let Err(err) = restored.pit.restore(saved.pit.save().unwrap()) {
+                            panic!("control word {control:#04x}: {err:?}");
+                        }
+                        assert_eq!(
+                            encoded_state(&mut restored),
+                            encoded_state(&mut saved),
+                            "control word {control:#04x}"
+                        );
+                        assert_eq!(
+                            access_counter(&mut restored, counter.into()),
+                            access_counter(&mut saved, counter.into()),
+                            "control word {control:#04x}"
+                        );
+                    }
+                }
+            }
         }
     }
 }
