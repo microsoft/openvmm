@@ -33,6 +33,7 @@ use flowey_lib_hvlite::init_vmm_tests_env::PetriParams;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
+use flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile;
 use petri_artifacts_vmm_test::ErasedVmmTestImage;
 use petri_artifacts_vmm_test::artifacts::test_iso;
 use petri_artifacts_vmm_test::artifacts::test_vhd;
@@ -1459,8 +1460,7 @@ impl IntoPipeline for CheckinGatesCli {
                     .dep_on(|ctx| {
                         flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests::Params {
                             junit_test_label: test_label,
-                            nextest_profile:
-                                flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                            nextest_profile: NextestProfile::Ci,
                             fail_job_on_test_fail: true,
                             target: target.clone(),
                             profile: CommonProfile::from_release(release),
@@ -1560,6 +1560,7 @@ impl IntoPipeline for CheckinGatesCli {
             prep_steps_variants: Vec<String>,
             external_deps: VmmTestsExternalDeps,
             prebuilt_artifacts: VmmTestsPreBuiltArtifactsSelections,
+            nextest_profile: NextestProfile,
         }
 
         let standard_filter = {
@@ -1675,6 +1676,7 @@ impl IntoPipeline for CheckinGatesCli {
             prep_steps_variants,
             external_deps,
             prebuilt_artifacts,
+            nextest_profile,
         } in [
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1693,6 +1695,7 @@ impl IntoPipeline for CheckinGatesCli {
                     hardware_isolation: false,
                 }),
                 prebuilt_artifacts: standard_x64_prebuilt_artifacts.clone(),
+                nextest_profile: NextestProfile::Ci,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1711,6 +1714,7 @@ impl IntoPipeline for CheckinGatesCli {
                     hardware_isolation: false,
                 }),
                 prebuilt_artifacts: standard_x64_prebuilt_artifacts.clone(),
+                nextest_profile: NextestProfile::Ci,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1729,6 +1733,7 @@ impl IntoPipeline for CheckinGatesCli {
                     hardware_isolation: true,
                 }),
                 prebuilt_artifacts: standard_x64_prebuilt_artifacts.clone(),
+                nextest_profile: NextestProfile::CiLarge,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1749,6 +1754,7 @@ impl IntoPipeline for CheckinGatesCli {
                     hardware_isolation: false,
                 }),
                 prebuilt_artifacts: standard_x64_prebuilt_artifacts.clone(),
+                nextest_profile: NextestProfile::Ci,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1768,6 +1774,7 @@ impl IntoPipeline for CheckinGatesCli {
                     hardware_isolation: true,
                 }),
                 prebuilt_artifacts: standard_x64_prebuilt_artifacts.clone(),
+                nextest_profile: NextestProfile::CiLarge,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -1793,6 +1800,7 @@ impl IntoPipeline for CheckinGatesCli {
                     qemu_system_aarch64_linux_x64: true,
                     ..standard_x64_prebuilt_artifacts
                 },
+                nextest_profile: NextestProfile::Ci,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
@@ -1814,6 +1822,7 @@ impl IntoPipeline for CheckinGatesCli {
                     prepare_vhost_vsock: true,
                 }),
                 prebuilt_artifacts: standard_x64_prebuilt_artifacts.clone(),
+                nextest_profile: NextestProfile::Ci,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
@@ -1835,6 +1844,7 @@ impl IntoPipeline for CheckinGatesCli {
                     test_linux_initrd_x64: true,
                     ..Default::default()
                 },
+                nextest_profile: NextestProfile::Ci,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1864,6 +1874,7 @@ impl IntoPipeline for CheckinGatesCli {
                     uefi_aarch64: true,
                     ..Default::default()
                 },
+                nextest_profile: NextestProfile::CiLarge,
             },
         ] {
             // Skip unsupported jobs on ADO backend
@@ -1894,7 +1905,7 @@ impl IntoPipeline for CheckinGatesCli {
                 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
                     junit_test_label: test_label,
                     target: target.as_triple(),
-                    nextest_profile: flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                    nextest_profile,
                     nextest_filter_expr: Some(nextest_filter_expr),
                     test_content_config: TestContentConfig::Uninitialized {
                         test_content_dir: None,

@@ -91,6 +91,11 @@ failure-output = "final"
 # Do not cancel the test run on the first failure.
 fail-fast = false
 
+# Hack to work around incorrect thread count on large machines
+[profile.ci-large]
+inherits = "ci"
+threads-required = 1
+
 [profile.ci.junit]
 path = "junit.xml"
 store-success-output = "true"
