@@ -34,6 +34,7 @@ before their implementation is connected end to end.
 * ResumeVM
 * SaveVM
 * RestoreVM
+* ShutdownVM
 * WaitVM
 * CapabilitiesVM
 * PropertiesVM
@@ -44,14 +45,15 @@ before their implementation is connected end to end.
 * RemoveVpciDevice
 * Quit
 
+## Snapshots (SaveVM and RestoreVM)
+
 `SaveVM` is a compound operation that pauses the VM and writes `manifest.bin`,
 `state.bin`, and `memory.bin` to the requested directory. The VM must use the
 `MemoryConfig.backing_file_path` setting. The currently supported
-implementation hard-links that backing file into the snapshot, and the VM
-remains paused and cannot be resumed afterward. Each save generates a unique
-snapshot ID (a GUID string) that is stored in
-`manifest.bin` and returned in `SaveVmResult.snapshot_id`. A destination that
-already contains a snapshot is rejected, and `manifest.bin` is written last.
+implementation hard-links that backing file into the snapshot, so after a
+successful save the VM can't be resumed and should be torn down. Each save
+generates a unique snapshot ID (a GUID string) that is stored in
+`manifest.bin` and returned in `SaveVMResponse.snapshot_id`.
 Cancelling `SaveVM` only stops the caller from waiting; the save may still
 complete.
 
@@ -60,23 +62,77 @@ complete.
 supplied by the caller. `MemoryConfig.source` selects how the snapshot memory
 is populated:
 
-* If `source` is absent, or explicitly selects `SHARED_IN_PLACE`,
+* If `source` is absent, or selects `SNAPSHOT_MEMORY_POPULATION_SHARED_IN_PLACE`,
   `memory.bin` is used directly as mutable guest memory.
-  `MemoryConfig.backing_file_path` must be absent, and the snapshot is no
-  longer reusable after the restored VM runs.
-* `EAGER_COPY` allocates independent guest RAM and copies `memory.bin` into it
-  before processor and device state is restored. If
-  `MemoryConfig.backing_file_path` is supplied, that file is created or reused
-  as the clone's writable backing; otherwise OpenVMM allocates a fresh shared
-  memory object. The source snapshot remains reusable by other clones.
+  `MemoryConfig.backing_file_path` must not be set, and the snapshot can be
+  restored only once.
+* `SNAPSHOT_MEMORY_POPULATION_EAGER_COPY` allocates independent guest RAM and
+  copies `memory.bin` into it before processor and device state is restored. If
+  `MemoryConfig.backing_file_path` is set, that file is created or reused as
+  the clone's writable backing; it must not be `memory.bin` or a hard link to
+  it. Otherwise OpenVMM allocates a fresh shared memory object. The snapshot
+  is not modified and can be restored any number of times.
 
-The initial eager-copy implementation supports one memory object on KVM and
-WHP, for both direct Linux boot and UEFI. The public population choices are
-currently limited to `EAGER_COPY` and `SHARED_IN_PLACE`. If
-`expected_snapshot_id` is provided, the restore fails unless it matches the
-snapshot ID in `manifest.bin`. The restored snapshot's ID is returned in
-`RestoreVmResult.snapshot_id`. Set `resume` to start the restored VM
-immediately; otherwise it is created paused.
+Because `source` is part of `MemoryConfig`, eager copy isn't available for VMs
+configured with `NumaConfig`. If `expected_snapshot_id` is provided, the restore
+fails unless it matches the snapshot ID in `manifest.bin`. An empty value is
+treated as not provided, so the ID isn't checked. The restored snapshot's ID is
+returned in `RestoreVMResponse.snapshot_id`. Set `resume` to start the restored
+VM immediately; otherwise it is created paused.
+
+## Virtio-console file output
+
+`VmService` can write a virtio-console stream directly to a host file. Set the
+console's `SerialBackend` to `SerialFile`:
+
+```text
+pcie {
+  root_complexes {
+    name: "rc0"
+    root_ports {
+      name: "console"
+      attached { device { virtio { console {
+        backend { file {
+          path: "path/to/console.log"
+          append: false
+        } }
+      } } } }
+    }
+  }
+}
+```
+
+The file is opened while `CreateVM` processes the device configuration, so an
+invalid path or permission failure causes `CreateVM` to fail. With `append`
+unset or `false`, OpenVMM creates or truncates the file. With `append: true`,
+OpenVMM preserves existing contents and appends new guest output.
+
+The backend remains open for the console lifetime. OpenVMM does not rotate or
+limit the file, so the management client owns retention. `SerialRelay` remains
+available when the client needs an interactive or externally managed stream.
+The backend writes synchronously to the file, without an intermediate socket,
+named pipe, or background copy task. Successful writes complete before returning
+to the serial device, so there is no background output to drain during teardown.
+A slow or stalled file write can block the calling device thread. After
+`TeardownVM` or `Quit` completes, the management client can read the completed
+output. Writes do not force a disk synchronization and do not guarantee that the
+output survives a host crash or power failure.
+If a write fails, OpenVMM logs the error and disconnects the file backend.
+Further console output is discarded; the backend does not automatically retry
+or reopen the file.
+
+## Graceful guest shutdown
+
+`ShutdownVM` requests a cooperative guest power-off, non-forced by default.
+
+Success means IC acknowledgement or ACPI event injection, not that the guest
+has halted. Neither mechanism falls back to the other or forcibly powers off
+the VM.
+
+See `ShutdownVM` and `ShutdownVMRequest` in [`vmservice.proto`] for prerequisites,
+request fields, shutdown lifecycle.
+
+## VPCI hotplug
 
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
@@ -88,6 +144,67 @@ or previously removed instance ID returns an error.
 Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
 hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe
 hotplug semantics or a non-VPCI host backend is required.
+
+## Hvsocket relay listeners
+
+Use `ModifyResource` with `hvsocket_listener` to relay a host Unix socket to a
+guest hvsocket service on VTL0. VMBus and hvsocket support must be available.
+Specify either a `service_id` GUID or a `vsock_port`; both identify the same
+service when the GUID is the vsock port's hvsocket mapping.
+
+For example, this protobuf text-format `ModifyResourceRequest` adds a listener:
+
+```text
+type: ADD
+hvsocket_listener {
+    path: "path/to/service.sock"
+    vsock_port: 50001
+}
+```
+
+Clients send application data immediately. These listeners do not require a
+hybrid-vsock `CONNECT` request and do not send an `OK` response.
+
+Only one listener per service is supported. `ADD` fails if the path already
+exists, including a stale socket file; it does not replace or remove that path.
+The caller owns socket-file cleanup, including after a failed `ADD` that
+successfully bound the path before failing to register the listener.
+
+To remove a listener, send `REMOVE` with the same service selector; `path` is
+ignored. Removal waits for the listening socket to close, but established relay
+connections remain active. Removing an unknown service returns an error.
+Remove the socket file yourself before reusing its path.
+
+## Consomme NIC modifications
+
+Use `ModifyResource` with `type: UPDATE` and `nic_config.nic_id` to modify
+an existing Consomme NIC. Select `nic_config.consomme` and supply either
+`ports`, `add_dns_record`, or `create_virtual_address`. DNS and virtual-address
+operations cannot be combined with port modifications or used at VM creation.
+They are not supported for other NIC backends.
+
+For example, this protobuf text-format request adds a static DNS A record:
+
+```text
+type: UPDATE
+nic_config {
+    nic_id: "11111111-1111-1111-1111-111111111111"
+    consomme {
+        add_dns_record { name: "host.example" address: "192.0.2.1" }
+    }
+}
+```
+
+To allocate a guest-visible alias for a host IPv4 or IPv6 address, use
+`create_virtual_address { destination: "127.0.0.1" }` instead. The allocated
+address is returned in
+`ModifyResourceResponse.virtual_address.virtual_address`. Repeating the
+operation for the same destination returns the same alias.
+
+DNS and port changes return a `ModifyResourceResponse` without a result.
+Port forwarding retains its existing semantics: `UPDATE` binds the supplied
+ports and `REMOVE` unbinds them. DNS and virtual-address operations only
+support `UPDATE`.
 
 ## VFIO and accelerated SMMU
 
@@ -147,10 +264,22 @@ complex without a guest-visible IOMMU.
 
 `SmmuConfig.oas_bits` selects a fixed output address size in bits. Omit it for
 the CLI's `oas=auto` policy: initially 48 bits, adopting the physical SMMU's
-width when an accelerated device attaches before VM start. VM start freezes the
-advertised width; subsequent hot-add must be compatible with it. A fixed width
-cannot exceed the physical SMMU's width with acceleration. SMMU configuration
-cannot be changed at runtime. See [the CLI reference](cli.md) and [Arm
-SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
+width when an accelerated device is available during VM construction. Later
+device attachments must support the resulting advertised width. A fixed width
+cannot exceed the physical SMMU's width with acceleration.
+
+`SmmuConfig.ssid_bits` selects a fixed SubstreamID width from 0 to 20.
+Explicit zero disables substreams. Omitting the field selects `ssidsize=auto`:
+zero in software mode, or the cold-plug host SMMU's width under acceleration.
+Later device attachments must support the resulting advertised width. A fixed
+width must not exceed the host's width under acceleration.
+
+SMMU configuration cannot be changed at runtime. See [the CLI reference](cli.md)
+and [Arm SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
+
+## Extending the API
+
+When editing `vmservice.proto`, follow the
+[Protocol Buffers enum conventions](../../../dev_guide/contrib/code.md#protocol-buffers-enums).
 
 [`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto

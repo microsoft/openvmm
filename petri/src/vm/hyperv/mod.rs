@@ -11,6 +11,7 @@ use vmsocket::VmSocket;
 use crate::Disk;
 use crate::Drive;
 use crate::Firmware;
+use crate::IgvmFirmwareSource;
 use crate::IsolationType;
 use crate::ModifyFn;
 use crate::NoPetriVmInspector;
@@ -50,8 +51,11 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 pub use powershell::request_physical_nvme;
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::io::ErrorKind;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -176,8 +180,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
         config: PetriVmConfig,
         _modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-        properties: PetriVmProperties,
+        properties: &PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
+        anyhow::ensure!(
+            !matches!(config.firmware, Firmware::IgvmLinuxDirect { .. }),
+            "Linux-direct IGVM boot is not supported by the Hyper-V backend"
+        );
         let PetriVmResources {
             driver,
             log_source,
@@ -193,9 +201,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let temp_dir = tempfile::tempdir()?;
 
-        let igvm_file = properties
-            .is_openhcl
-            .then(|| temp_dir.path().join(IGVM_FILE_NAME));
+        let igvm_file = matches!(
+            config.firmware.openhcl_firmware(),
+            Some(IgvmFirmwareSource::File(_))
+        )
+        .then(|| temp_dir.path().join(IGVM_FILE_NAME));
 
         let mut openhcl_command_line = config.firmware.openhcl_config().map(|c| c.command_line());
 
@@ -400,6 +410,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         // Once this is done, the files can safely be deleted.
 
         let imc_hiv = if properties.using_vtl0_pipette
+            && !properties.external_pipette
             && matches!(properties.os_flavor, OsFlavor::Windows)
             && !properties.is_isolated
         {
@@ -441,19 +452,20 @@ impl PetriVmmBackend for HyperVPetriBackend {
             imc_hiv,
             management_vtl_settings,
 
-            ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
+            ..HyperVNewCustomVMArgs::from_config(&config, properties)?
         };
 
         let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
 
         if properties.is_openhcl {
-            // Copy the IGVM file locally, since it may not be accessible by
-            // Hyper-V (e.g., if it is in a WSL filesystem).
-            let local_path = igvm_file.as_ref().unwrap();
-            fs_err::copy(config.firmware.openhcl_firmware().unwrap(), local_path)
-                .context("failed to copy igvm file")?;
-            acl_for_vm(local_path, Some(*vm.vmid()), false)
-                .context("failed to set ACL for igvm file")?;
+            if let Some(local_path) = &igvm_file {
+                // Hyper-V cannot access IGVM files in a WSL filesystem.
+                let Some(IgvmFirmwareSource::File(igvm_path)) = config.firmware.openhcl_firmware()
+                else {
+                    unreachable!();
+                };
+                copy_igvm_to_temp(igvm_path.get(), local_path, *vm.vmid()).await?;
+            }
 
             let openhcl_log_file = log_source.log_file("openhcl")?;
             if supports_com3 {
@@ -483,7 +495,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         // Grant the VM access to NVMe VHDs
         for path in &nvme_disk_paths {
-            acl_for_vm(path, Some(*vm.vmid()), true).context("failed to set ACL for nvme VHD")?;
+            acl_for_vm(path, Some(*vm.vmid()), true)
+                .await
+                .context("failed to set ACL for nvme VHD")?;
         }
 
         let serial_pipe_path = vm.get_vm_com_port_path(1);
@@ -502,7 +516,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 temp_dir,
                 output_dir: log_source.output_dir().to_owned(),
                 driver: driver.clone(),
-                properties,
+                properties: properties.clone(),
             },
             config
                 .firmware
@@ -677,7 +691,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 }
 
-fn acl_for_vm(path: &Path, id: Option<Guid>, write: bool) -> anyhow::Result<()> {
+async fn acl_for_vm(path: &Path, id: Option<Guid>, write: bool) -> anyhow::Result<()> {
     let sid_arg = format!(
         "NT VIRTUAL MACHINE\\{name}:{perm}",
         name = if let Some(id) = id {
@@ -687,16 +701,13 @@ fn acl_for_vm(path: &Path, id: Option<Guid>, write: bool) -> anyhow::Result<()> 
         },
         perm = if write { 'M' } else { 'R' }
     );
-    let output = std::process::Command::new("icacls.exe")
-        .arg(path)
-        .arg("/grant")
-        .arg(sid_arg)
-        .output()
+
+    let mut cmd = std::process::Command::new("icacls.exe");
+    cmd.arg(path).arg("/grant").arg(sid_arg);
+    crate::run_host_cmd(cmd)
+        .await
         .context("failed to run icacls")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("icacls failed: {stderr}");
-    }
+
     Ok(())
 }
 
@@ -773,5 +784,57 @@ async fn petri_disk_to_hyperv(
         }
         Some(Disk::Persistent(path)) => Some(path.clone()),
         Some(Disk::Temporary(path)) => Some(path.to_path_buf()),
+        Some(Disk::SqliteDifferencing { .. }) => {
+            anyhow::bail!("Hyper-V backend does not support SQLite differencing disks")
+        }
     })
+}
+
+async fn copy_igvm_to_temp(
+    igvm_path: impl AsRef<Path>,
+    local_path: impl AsRef<Path>,
+    vmid: Guid,
+) -> anyhow::Result<()> {
+    let expected = calculate_sha256(igvm_path.as_ref())?;
+
+    for _ in 0..3 {
+        fs_err::copy(igvm_path.as_ref(), local_path.as_ref())
+            .context("failed to copy igvm file")?;
+
+        let new = calculate_sha256(local_path.as_ref())?;
+        if expected != new {
+            tracing::error!(?expected, ?new, "Hash did not match after copy");
+            continue;
+        }
+
+        acl_for_vm(local_path.as_ref(), Some(vmid), false)
+            .await
+            .context("failed to set ACL for igvm file")?;
+
+        let new = calculate_sha256(local_path.as_ref())?;
+        if expected != new {
+            tracing::error!(?expected, ?new, "Hash did not match after icacls");
+            continue;
+        }
+
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "failed to verify hash after three copy attempts"
+    ))
+}
+
+fn calculate_sha256(path: &Path) -> anyhow::Result<[u8; 32]> {
+    let mut file = fs_err::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(hasher.finalize().into())
 }

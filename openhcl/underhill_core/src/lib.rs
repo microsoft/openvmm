@@ -12,12 +12,12 @@ mod diag;
 mod dispatch;
 mod emuplat;
 mod get_tracing;
+mod hardware_reseal;
 mod hibernate;
 mod inspect_internal;
 mod inspect_proc;
 mod livedump;
 mod loader;
-#[cfg(feature = "product_policy")]
 mod measured_product_policy;
 mod nvme_manager;
 mod options;

@@ -8,7 +8,7 @@
 
 use flowey::node::prelude::*;
 
-pub const RUSTUP_TOOLCHAIN: &str = "1.95.0";
+pub const RUSTUP_TOOLCHAIN: &str = "1.97.1";
 
 new_simple_flow_node!(struct Node);
 

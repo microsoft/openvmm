@@ -30,7 +30,8 @@ file on disk rather than held in anonymous memory.
 The memory backing file and the snapshot directory must be on the **same
 filesystem**. OpenVMM creates a hard link from the backing file to
 `memory.bin` inside the snapshot directory, which does not work across
-filesystem boundaries.
+filesystem boundaries. Keep the backing file outside the snapshot directory:
+the snapshot directory must not exist before the save.
 ```
 
 ## Saving a snapshot
@@ -40,9 +41,11 @@ Start a VM with file-backed memory:
 ```bash
 cargo run -- \
   --uefi \
+  --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
-  --memory size=4096M,file=path/to/memory.bin
+  --memory size=4096M,file=path/to/memory.bin \
+  --processors 4
 ```
 
 Once the VM is running, open the interactive console and issue a save command,
@@ -53,10 +56,9 @@ save-snapshot path/to/snapshot-dir
 ```
 
 OpenVMM writes `state.bin`, a hard link to `memory.bin`, and finally
-`manifest.bin` into the specified directory. The save is refused if the
-directory already contains a snapshot (`manifest.bin`) or a `memory.bin` that
-is not the VM's memory backing file, so an existing snapshot is never
-overwritten. If the save fails, the files it created are removed.
+`manifest.bin` into the specified directory. The directory must not already
+exist, so existing data is never overwritten. If the save fails, the files it
+created are removed.
 
 ```admonish warning
 After saving, the VM remains **paused** and resume is blocked. Resuming
@@ -71,6 +73,7 @@ To restore, pass the snapshot directory with `--restore-snapshot`:
 ```bash
 cargo run -- \
   --uefi \
+  --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M \
@@ -82,6 +85,11 @@ cargo run -- \
 directory, so `file=...` should not be specified in `--memory` (the two
 options are mutually exclusive).
 
+Pass the same boot flags and files that were used at save time (for example
+`--uefi` and `--uefi-firmware`, or `--kernel` and `--initrd`). Restore does
+not run the firmware or kernel loader, but they are used if the restored VM is
+later reset.
+
 ```admonish warning
 `memory.bin` is used in place as the restored VM's memory, so running the
 restored VM modifies the snapshot. A snapshot can be restored only once;
@@ -89,13 +97,13 @@ restoring it again would combine modified memory with the original device
 state.
 ```
 
-The programmatic `RestoreVM` API also supports eager-copy restore. In that
-mode OpenVMM allocates independent RAM for the restored VM and copies
-`memory.bin` into it before applying processor and device state. Multiple
-OpenVMM processes can therefore restore isolated clones from the same
-snapshot. This option is currently exposed through
-`VMConfig.memory_config.source`; the `--restore-snapshot` CLI continues to use
-the shared-in-place behavior described above.
+The ttrpc `RestoreVM` API also supports eager-copy restore. In that mode
+OpenVMM allocates independent RAM for the restored VM and copies `memory.bin`
+into it before applying processor and device state, so the snapshot isn't
+modified and can be restored into any number of isolated clones. See
+[gRPC / ttrpc](../../reference/openvmm/management/grpc.md#snapshots-savevm-and-restorevm).
+The `--restore-snapshot` CLI continues to use the shared-in-place behavior
+described above.
 
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
@@ -174,6 +182,7 @@ OpenVMM snapshots:
 | virtio-net | Virtio (PCI/MMIO) | Yes |
 | virtio-pmem | Virtio (PCI/MMIO) | Yes |
 | virtio-rng | Virtio (PCI/MMIO) | Yes |
+| virtio-rtc | Virtio (PCI/MMIO) | Yes |
 | NVMe | PCI | **No** |
 | VGA | PCI | **No** (`todo!()`) |
 | GDMA (MANA network) | PCI | **No** (`todo!()`) |
@@ -198,10 +207,9 @@ immediately with a clear error if any active device does not support it.
 
 - Snapshots are **not portable** across architectures (e.g., you cannot
   restore an x86_64 snapshot on aarch64)
-- After restoring, `memory.bin` in the snapshot directory becomes the live
-  guest RAM backing file and will be modified as the VM runs when using the
-  CLI or the programmatic shared-in-place mode. Programmatic eager-copy
-  restore keeps the snapshot reusable.
+- After restoring with the CLI or shared-in-place `RestoreVM`, `memory.bin` in
+  the snapshot directory becomes the live guest RAM backing file and will be
+  modified as the VM runs. Eager-copy `RestoreVM` keeps the snapshot reusable.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
 - VMs using PCAT firmware do not support save/restore

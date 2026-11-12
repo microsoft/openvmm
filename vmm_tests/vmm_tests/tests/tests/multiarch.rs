@@ -3,8 +3,14 @@
 
 //! Integration tests that run on more than one architecture.
 
+#[cfg(target_os = "linux")]
+use crate::aarch64_exclusive::vm_host_emu;
+use crate::nested::vm_host;
 use anyhow::Context;
+use futures::AsyncBufReadExt;
+use futures::AsyncWriteExt;
 use futures::StreamExt;
+use futures::io::BufReader;
 use guid::Guid;
 use petri::EfiDiagnosticsLogLevel;
 use petri::MemoryConfig;
@@ -16,10 +22,16 @@ use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
+use petri::pipette::process::Stdio;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 #[cfg(target_os = "linux")]
 use petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_NATIVE;
+#[cfg(target_os = "linux")]
+use petri_artifacts_vmm_test::artifacts::host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL;
+use petri_artifacts_vmm_test::artifacts::host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL;
+#[cfg(target_os = "linux")]
+use petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -37,12 +49,19 @@ mod ic;
 mod large_pages;
 // Memory Validation tests.
 mod memstat;
+/// Windows netvsc adapter binding-stack tests.
+mod netvsc_bindings;
 /// NUMA topology tests.
 mod numa;
 /// Servicing tests.
 mod openhcl_servicing;
 /// PCIe emulation tests.
 mod pcie;
+/// Filesystem operations through the virtio-9p Linux client.
+#[cfg(target_os = "linux")]
+mod plan9;
+/// Cross-process snapshot save/restore tests.
+mod save_restore;
 /// Tests involving UEFI Secure Boot functionality.
 mod secureboot;
 /// Tests involving TPM functionality
@@ -53,6 +72,8 @@ mod tpm138;
 mod vlan;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
+/// Tests for VMDK disk functionality.
+mod vmdk;
 /// Tests involving VMGS functionality
 mod vmgs;
 
@@ -76,6 +97,10 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
 /// Basic boot test.
 #[vmm_test(
     openvmm_linux_direct_x64,
+    nested(
+        (vm_host, openvmm_linux_direct_x64),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "multiarch", openvmm_linux_direct_x64),
+    ),
     openvmm_linux_direct_aarch64,
     qemu_linux_direct_aarch64,
     openvmm_openhcl_linux_direct_x64,
@@ -98,13 +123,13 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
 )]
 async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
@@ -119,7 +144,7 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
 #[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
 async fn boot_virtio_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
-        .with_virtio_vsock()
+        .with_virtio_vsock(true)
         .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
         .run()
         .await?;
@@ -168,6 +193,97 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
     Ok(())
 }
 
+/// Validate the ACPI key event in minimal Linux-direct guests without a power policy.
+#[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
+async fn acpi_shutdown_linux_direct(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (mut vm, agent) = config.run().await?;
+
+    let mut handler = agent
+        .command("sh")
+        .args([
+            "-c",
+            r#"set -eu
+for path in /sys/class/input/event*; do
+    if [ "$(cat "$path/device/name")" = "Power Button" ]; then
+        exec 3<"/dev/input/${path##*/}"
+        echo ready
+        dd bs=24 count=1 <&3 | od -An -j16 -N8 -tu2
+        read -r action
+        if [ "$action" = poweroff ]; then
+            exec poweroff -f
+        fi
+        echo "Unexpected power-button test action: $action" >&2
+        exit 1
+    fi
+done
+echo "ACPI power-button input device not found" >&2
+exit 1
+"#,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .await?;
+    let mut output = BufReader::new(handler.stdout.take().context("missing guest stdout")?);
+
+    let mut line = String::new();
+    output.read_line(&mut line).await?;
+    anyhow::ensure!(
+        line.trim() == "ready",
+        "ACPI handler did not become ready: {line:?}"
+    );
+
+    vm.backend().send_acpi_shutdown().await?;
+    line.clear();
+    output.read_line(&mut line).await?;
+    anyhow::ensure!(
+        line.split_whitespace().collect::<Vec<_>>() == ["1", "116", "1", "0"],
+        "expected an EV_KEY KEY_POWER press, got {line:?}"
+    );
+    handler
+        .stdin
+        .as_mut()
+        .context("missing guest stdin")?
+        .write_all(b"poweroff\n")
+        .await?;
+    vm.wait_for_clean_teardown().await
+}
+
+/// Let the guest's normal power policy handle an ACPI shutdown request.
+#[openvmm_test(
+    pcat_x64(vhd(ubuntu_2504_server_x64)),
+    uefi_x64(vhd(ubuntu_2504_server_x64)),
+    uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+async fn acpi_shutdown(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (mut vm, agent) = config.run().await?;
+    agent.ping().await?;
+    vm.backend().send_acpi_shutdown().await?;
+    vm.wait_for_clean_teardown().await
+}
+
+/// Boot a small aarch64 Linux direct guest without Hyper-V enlightenments.
+#[cfg(target_os = "linux")]
+#[openvmm_test(
+    nested(
+        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "multiarch", linux_direct_aarch64),
+    ),
+)]
+async fn boot_no_hv(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_hv()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot a small aarch64 Linux guest via UEFI without Hyper-V enlightenments.
 ///
 /// The loader must pass the generic SEC platform type in `x2`, allowing the
@@ -175,13 +291,18 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 /// and CIDATA disks on separate controllers, and virtio-vsock provides the
 /// pipette transport because VMBus is off. Keeping separate controllers also
 /// verifies that the guest preserves OpenVMM's preassigned PCI resources.
-/// The `_aarch64_tcg` suffix opts the test into the QEMU incubator CI pass.
 #[cfg(target_os = "linux")]
-#[openvmm_test(uefi_aarch64(vhd(alpine_3_23_aarch64)))]
-#[openvmm_test(uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
-async fn boot_no_hv_uefi_aarch64_tcg(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> anyhow::Result<()> {
+#[openvmm_test(
+    nested(
+        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "multiarch", uefi_aarch64(vhd(ubuntu_2404_server_aarch64))),
+    ),
+    nested(
+        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "multiarch", uefi_aarch64(vhd(alpine_3_23_aarch64))),
+    ),
+)]
+async fn boot_no_hv_uefi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_no_hv()
         .with_boot_device_type(petri::BootDeviceType::PcieNvme)
@@ -558,10 +679,10 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    ignore(reason = "OpenVMM VBS boot is intermittently unreliable in CI", openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
-    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -580,9 +701,9 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 /// Basic boot test with a single VP.
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -682,8 +803,8 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))
 )]
@@ -698,9 +819,56 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
     Ok(())
 }
 
+/// Preserve a multi-socket topology and agent connectivity across repeated resets.
+#[vmm_test(openvmm_linux_direct_x64)]
+async fn reboot_multisocket(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (mut vm, mut agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 4,
+            vps_per_socket: Some(2),
+            enable_smt: Some(false),
+            ..Default::default()
+        })
+        .run()
+        .await?;
+
+    let mut previous_boot_id = None;
+    for boot in 0..=5 {
+        let shell = agent.unix_shell();
+        let online = shell.read_file("/sys/devices/system/cpu/online").await?;
+        anyhow::ensure!(online.trim() == "0-3", "boot {boot}: online CPUs: {online}");
+        let boot_id = shell.read_file("/proc/sys/kernel/random/boot_id").await?;
+        anyhow::ensure!(
+            previous_boot_id.as_ref() != Some(&boot_id),
+            "boot {boot}: guest did not reboot"
+        );
+        previous_boot_id = Some(boot_id);
+        for cpu in 0..4 {
+            let socket = shell
+                .read_file(format!(
+                    "/sys/devices/system/cpu/cpu{cpu}/topology/physical_package_id"
+                ))
+                .await?;
+            anyhow::ensure!(
+                socket.trim().parse::<u32>()? == cpu / 2,
+                "boot {boot}: CPU {cpu} socket: {socket}"
+            );
+        }
+        agent.ping().await?;
+        if boot != 5 {
+            agent.reboot().await?;
+            agent = vm.wait_for_reset().await?;
+        }
+    }
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Configure Guest VSM and reboot the VM to verify it works.
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
@@ -884,8 +1052,13 @@ async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
 /// Test EFI diagnostics with no boot devices.
 /// TODO:
 ///   - uefi_x64 + uefi_aarch64 trace searching support
+///   - Re-enable once the MU team fixes `[Bds] Unable to boot!` and its temporary
+///     suppression is removed: https://microsoft.visualstudio.com/OS/_workitems/edit/64415007
 #[vmm_test_with(
     noagent,
+    ignore(
+        reason = "Expected [Bds] Unable to boot! log is temporarily suppressed pending MU firmware fix (64415007)"
+    ),
     configs(
         hyperv_openhcl_uefi_x64(none),
         hyperv_openhcl_uefi_aarch64(none),

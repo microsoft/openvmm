@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::config::VmmPerfProfile;
+use super::config::VmmPerfProfileVariant;
 use super::host::platform_command;
 use anyhow::Context as _;
 use parking_lot::Mutex;
@@ -20,7 +20,7 @@ use std::sync::Arc;
 pub(crate) struct VirtualClientCommandBuilder<'a> {
     runtime_dir: &'a Path,
     virtual_client: &'a Path,
-    profile: Option<VmmPerfProfile>,
+    profile: Option<VmmPerfProfileVariant>,
     iterations: Option<u32>,
     metadata: BTreeMap<String, String>,
     parameters: BTreeMap<String, String>,
@@ -58,7 +58,7 @@ impl<'a> VirtualClientCommandBuilder<'a> {
         }
     }
 
-    pub(crate) fn profile(mut self, profile: VmmPerfProfile) -> Self {
+    pub(crate) fn profile(mut self, profile: VmmPerfProfileVariant) -> Self {
         self.profile = Some(profile);
         self
     }
@@ -274,12 +274,21 @@ fn log_process_output(
             line.pop();
         }
         let line = String::from_utf8_lossy(&line).into_owned();
-        tracing::debug!(
-            configuration = config_name,
-            stream = stream_name,
-            line = %line,
-            "VirtualClient output"
-        );
+        if stream_name == "stderr" {
+            tracing::warn!(
+                configuration = config_name,
+                stream = stream_name,
+                line = %line,
+                "VirtualClient output"
+            );
+        } else {
+            tracing::info!(
+                configuration = config_name,
+                stream = stream_name,
+                line = %line,
+                "VirtualClient output"
+            );
+        }
         let mut log_file = log_file.lock();
         writeln!(log_file, "[{stream_name}] {line}")
             .with_context(|| format!("failed to write VMM.Perf {stream_name} console output"))?;
@@ -292,7 +301,7 @@ fn log_process_output(
 #[cfg(test)]
 mod tests {
     use super::VirtualClientCommandBuilder;
-    use crate::config::VmmPerfProfile;
+    use crate::config::VmmPerfProfileVariant;
     use std::path::Path;
     use test_with_tracing::test;
 
@@ -300,6 +309,9 @@ mod tests {
     fn builds_virtual_client_arguments() -> anyhow::Result<()> {
         let runtime_dir = Path::new("runtime");
         let log_dir = Path::new("out");
+        let profile = "fio"
+            .parse::<VmmPerfProfileVariant>()
+            .expect("test profile is valid");
         let invocation = VirtualClientCommandBuilder::new(
             runtime_dir,
             &runtime_dir.join(if cfg!(target_os = "windows") {
@@ -308,7 +320,7 @@ mod tests {
                 "VirtualClient"
             }),
         )
-        .profile(VmmPerfProfile::Fio)
+        .profile(profile.clone())
         .iterations(1)
         .parameter("CpuCount", "4")
         .parameter("MemoryMB", "4096")
@@ -323,10 +335,7 @@ mod tests {
 
         assert!(invocation.args.contains(&format!(
             "--profile={}",
-            runtime_dir
-                .join("profiles")
-                .join(VmmPerfProfile::Fio.file())
-                .display()
+            runtime_dir.join("profiles").join(profile.file()).display()
         )));
         assert!(invocation.args.contains(&"--iterations=1".to_string()));
         assert!(invocation.args.contains(&format!(

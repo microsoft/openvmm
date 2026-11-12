@@ -10,16 +10,18 @@ rust-version.workspace = true
 default = []
 
 inspect = ["dep:inspect"]
+# The NVRAM variable-name helpers, which need `ucs2`.
+std = ["dep:ucs2", "dep:wchar"]
 
 [dependencies]
 guid.workspace = true
 inspect = { workspace = true, optional = true }
 open_enum.workspace = true
-ucs2.workspace = true
+ucs2 = { workspace = true, optional = true }
 
 bitfield-struct.workspace = true
 static_assertions.workspace = true
-wchar.workspace = true
+wchar = { workspace = true, optional = true }
 zerocopy.workspace = true
 [dev-dependencies]
 

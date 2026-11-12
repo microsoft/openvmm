@@ -6,6 +6,8 @@
 mod ipmi;
 mod openhcl_linux_direct;
 mod openhcl_uefi;
+#[cfg(target_os = "linux")]
+mod snp_linux_direct;
 mod storage;
 
 use anyhow::Context;
@@ -61,7 +63,10 @@ async fn crash_dump_on_triple_fault(
     let dump_dir = tempfile::tempdir().context("failed to create temp dir for crash dump")?;
     let dump_path = dump_dir.path().join("crash.vmrs");
 
+    // The template provides the `db` variable, which `test_dbdefault` needs
+    // to pass before the image reaches its watchdog test.
     let mut vm = config
+        .with_windows_secure_boot_template()
         .with_memory(petri::MemoryConfig {
             startup_bytes: 256 * 1024 * 1024,
             ..Default::default()
@@ -213,6 +218,23 @@ async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(
         .with_openhcl_command_line("OPENHCL_SIDECAR=log")
         .run()
         .await?;
+
+    let vps = vm.inspect_openhcl("vm/partition/vp", Some(3), None).await?;
+    let vps: serde_json::Value = serde_json::from_str(&format!("{}", vps.json()))?;
+    let vps = vps.as_object().unwrap();
+    // A VP retains its sidecar exit reason after migrating into Linux.
+    anyhow::ensure!(
+        vps.values().any(|vp| {
+            vp.get("sidecar").and_then(serde_json::Value::as_bool) == Some(true)
+                || vp
+                    .get("sidecar_exit_reason")
+                    .and_then(|reason| reason.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+        }),
+        "no VP ran in sidecar: {vps:?}"
+    );
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -250,6 +272,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                         resource: VirtioPciDeviceHandle(
                             VirtioNetHandle {
                                 max_queues: None,
+                                enable_rx_gso: false,
                                 mac_address: MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]),
                                 endpoint: NullHandle.into_resource(),
                             }
@@ -520,6 +543,90 @@ async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot with a writable virtio-pmem device on a PCIe root port and verify
+/// data flows in both directions between the host file and the guest.
+#[openvmm_test(linux_direct_x64)]
+async fn virtio_pmem_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    use openvmm_defs::config::PcieDeviceConfig;
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::Write;
+    use virtio_resources::pmem::VirtioPmemHandle;
+
+    const PMEM_SIZE: u64 = 4 * 1024 * 1024;
+    const HOST_DATA: &[u8] = b"host_pmem_data";
+    const GUEST_DATA: &str = "guest_pmem_data";
+    const GUEST_OFFSET: u64 = 4096;
+
+    let mut file = tempfile::NamedTempFile::new()?;
+    file.as_file().set_len(PMEM_SIZE)?;
+    file.write_all(HOST_DATA)?;
+    file.flush()?;
+    let path = file
+        .path()
+        .to_str()
+        .context("non-utf8 temp path")?
+        .to_owned();
+
+    let (vm, agent) = config
+        .modify_backend(move |b| {
+            b.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
+                c.pcie_devices.push(PcieDeviceConfig {
+                    port_name: "s0rc0rp0".to_string(),
+                    resource: VirtioPciDeviceHandle(
+                        VirtioPmemHandle {
+                            path,
+                            read_only: false,
+                        }
+                        .into_resource(),
+                    )
+                    .into_resource(),
+                });
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    let sectors = cmd!(sh, "cat /sys/block/pmem0/size")
+        .read()
+        .await
+        .context("/dev/pmem0 not found - guest kernel may lack CONFIG_VIRTIO_PMEM")?;
+    let sectors: u64 = sectors.trim().parse().context("parse pmem0 size")?;
+    assert_eq!(sectors * 512, PMEM_SIZE, "unexpected pmem0 size");
+
+    // Data written by the host before boot must be visible to the guest.
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/pmem0 bs=4096 count=1 2>/dev/null | head -c 14'"
+    )
+    .read()
+    .await
+    .context("read from /dev/pmem0")?;
+    assert_eq!(readback.as_bytes(), HOST_DATA, "guest read mismatch");
+
+    // Data written and flushed by the guest must land in the host file.
+    cmd!(
+        sh,
+        "sh -c 'echo -n guest_pmem_data | dd of=/dev/pmem0 bs=4096 seek=1 conv=notrunc,fsync 2>/dev/null'"
+    )
+    .run()
+    .await
+    .context("write to /dev/pmem0")?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    let mut buf = vec![0; GUEST_DATA.len()];
+    let f = file.as_file_mut();
+    f.seek(std::io::SeekFrom::Start(GUEST_OFFSET))?;
+    f.read_exact(&mut buf)?;
+    assert_eq!(buf, GUEST_DATA.as_bytes(), "host file mismatch");
+
     Ok(())
 }
 

@@ -77,6 +77,39 @@ impl<T: Into<OpenErrorInner>> From<T> for OpenError {
     }
 }
 
+impl OpenError {
+    /// Classify this error for programmatic handling.
+    pub fn kind(&self) -> OpenErrorKind {
+        match self.0 {
+            OpenErrorInner::Io(_) => OpenErrorKind::Io,
+            OpenErrorInner::Corrupt(CorruptionType::LogReplayRequired) => {
+                OpenErrorKind::LogReplayRequired
+            }
+            OpenErrorInner::Corrupt(_) => OpenErrorKind::Corruption,
+            OpenErrorInner::InvalidParameter(_) => OpenErrorKind::InvalidParameter,
+            OpenErrorInner::MetadataCache(CacheError::Read { .. }) => OpenErrorKind::Io,
+            OpenErrorInner::PipelineFailed(_)
+            | OpenErrorInner::MetadataCache(CacheError::PipelineFailed(_)) => OpenErrorKind::Other,
+        }
+    }
+}
+
+/// Classification of errors encountered while opening a VHDX file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OpenErrorKind {
+    /// The backing file could not be read or written.
+    Io,
+    /// The VHDX structure is inconsistent.
+    Corruption,
+    /// The VHDX has a dirty log that must be replayed.
+    LogReplayRequired,
+    /// An open option is invalid.
+    InvalidParameter,
+    /// Another internal open failure occurred.
+    Other,
+}
+
 /// Errors returned by runtime VHDX I/O operations.
 ///
 /// Covers read, write, flush, trim, and close. Use [`kind()`](Self::kind)
@@ -90,7 +123,10 @@ impl VhdxIoError {
     pub fn kind(&self) -> VhdxIoErrorKind {
         match self.0 {
             VhdxIoErrorInner::ReadOnly => VhdxIoErrorKind::ReadOnly,
-            VhdxIoErrorInner::UnalignedIo => VhdxIoErrorKind::InvalidInput,
+            VhdxIoErrorInner::UnalignedIo
+            | VhdxIoErrorInner::NoParent
+            | VhdxIoErrorInner::ParentLinkageMismatch
+            | VhdxIoErrorInner::ParentParameters(_) => VhdxIoErrorKind::InvalidInput,
             VhdxIoErrorInner::BeyondEndOfDisk => VhdxIoErrorKind::InvalidSector,
             _ => VhdxIoErrorKind::Other,
         }
@@ -143,6 +179,20 @@ pub(crate) enum VhdxIoErrorInner {
     BatCache(#[source] CacheError),
     #[error("failed to access sector bitmap page cache")]
     SectorBitmapCache(#[source] CacheError),
+    #[error("failed to access metadata page cache")]
+    MetadataCache(#[source] CacheError),
+    #[error("failed to read parent locator")]
+    ReadParentLocator(#[source] OpenError),
+    #[error("invalid VHDX parent locator")]
+    InvalidParentLocator(#[source] crate::locator::VhdxParentError),
+    #[error("invalid parent locator parameters")]
+    ParentParameters(#[source] InvalidFormatReason),
+    #[error("image is not a differencing VHDX")]
+    NoParent,
+    #[error("parent linkage mismatch; only relocation of the same parent is supported")]
+    ParentLinkageMismatch,
+    #[error("no space for the replacement parent locator in the metadata region")]
+    MetadataRegionFull,
     #[error("VHDX file is opened read-only")]
     ReadOnly,
     #[error("VHDX file failed")]
@@ -172,6 +222,25 @@ pub(crate) enum CacheError {
     /// The write pipeline has been poisoned by a previous fatal error.
     #[error("pipeline failed")]
     PipelineFailed(#[source] PipelineFailed),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_metadata_cache_failures() {
+        let read_error = OpenError(OpenErrorInner::MetadataCache(CacheError::Read {
+            err: std::io::Error::other("read failed"),
+            file_offset: 0,
+        }));
+        assert_eq!(read_error.kind(), OpenErrorKind::Io);
+
+        let pipeline_error = OpenError(OpenErrorInner::MetadataCache(CacheError::PipelineFailed(
+            PipelineFailed("failed".into()),
+        )));
+        assert_eq!(pipeline_error.kind(), OpenErrorKind::Other);
+    }
 }
 
 /// Specific reasons a VHDX creation or parameter validation may fail.
@@ -211,6 +280,14 @@ pub enum InvalidFormatReason {
     /// The block alignment is not a power of 2.
     #[error("block alignment must be a power of 2")]
     BlockAlignmentNotPowerOfTwo,
+
+    /// A parent locator string contained a NUL character.
+    #[error("parent locator strings cannot contain NUL characters")]
+    ParentLocatorContainsNull,
+
+    /// Parent locator metadata exceeded supported size or encoding limits.
+    #[error("parent locator metadata exceeds supported size or encoding limits")]
+    ParentLocatorTooLarge,
 
     /// The block size / logical sector size combination is invalid (chunk ratio is zero).
     #[error("invalid block size / logical sector size combination")]

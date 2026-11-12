@@ -550,3 +550,84 @@ impl Queues {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gdma_defs::CLIENT_OOB_8;
+    use gdma_defs::CLIENT_OOB_24;
+    use gdma_defs::CLIENT_OOB_32;
+    use gdma_defs::Sge;
+    use gdma_defs::WqeParams;
+
+    const WQ_GPA: u64 = 0x1000;
+
+    /// Writes a WQE at `offset` in the queue the way a driver lays it out and
+    /// returns its aligned length.
+    fn post_wqe(gm: &GuestMemory, offset: usize, oob: u8, oob_len: usize, sgl: &[Sge]) -> usize {
+        let header = WqeHeader {
+            reserved: [0; 3],
+            last_vbytes: 0,
+            params: WqeParams::new()
+                .with_inline_client_oob_size(oob)
+                .with_num_sgl_entries(sgl.len() as u8),
+        };
+        let base = WQ_GPA + offset as u64;
+        gm.write_at(base, header.as_bytes()).unwrap();
+        let oob_start = size_of::<WqeHeader>();
+        gm.write_at(base + oob_start as u64, &vec![0xab; oob_len])
+            .unwrap();
+        let sgl_start = (oob_start + oob_len).next_multiple_of(size_of::<Sge>());
+        gm.write_at(base + sgl_start as u64, sgl.as_bytes())
+            .unwrap();
+        (sgl_start + size_of_val(sgl)).next_multiple_of(WQE_ALIGNMENT)
+    }
+
+    fn sgl(first: u32, n: u32) -> Vec<Sge> {
+        (first..first + n)
+            .map(|i| Sge {
+                address: 0x10000 + u64::from(i) * 0x1000,
+                mem_key: 0x5000 + i,
+                size: 0x100 + i,
+            })
+            .collect()
+    }
+
+    fn assert_sgl_eq(got: &[Sge], want: &[Sge], what: &str) {
+        assert_eq!(got.len(), want.len(), "{what}: sge count");
+        for (i, (g, w)) in got.iter().zip(want).enumerate() {
+            assert_eq!(
+                (g.address, g.mem_key, g.size),
+                (w.address, w.mem_key, w.size),
+                "{what}: sge {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn poll_wqe_returns_the_posted_sgl() {
+        for (oob, oob_len) in [(CLIENT_OOB_8, 8), (CLIENT_OOB_24, 24), (CLIENT_OOB_32, 32)] {
+            let gm = GuestMemory::allocate(0x4000);
+            let first = sgl(0, 3);
+            let second = sgl(3, 2);
+            let first_len = post_wqe(&gm, 0, oob, oob_len, &first);
+            let second_len = post_wqe(&gm, first_len, oob, oob_len, &second);
+
+            let mut wq = Wq::new(DmaRegion::new(vec![WQ_GPA], 0, 4096).unwrap()).unwrap();
+            wq.tail = (first_len + second_len) as u32;
+            let mut cx = Context::from_waker(Waker::noop());
+            for (offset, want) in [(0, &first), (first_len, &second)] {
+                let Poll::Ready((head, wqe)) = wq.poll_wqe(&gm, &mut cx) else {
+                    panic!("{oob_len}-byte oob: wqe at {offset} not accepted");
+                };
+                assert_eq!(head as usize, offset, "{oob_len}-byte oob: wqe head");
+                assert_sgl_eq(
+                    wqe.sgl(),
+                    want,
+                    &format!("{oob_len}-byte oob, wqe at {offset}"),
+                );
+            }
+            assert_eq!(wq.head, wq.tail, "{oob_len}-byte oob: queue not drained");
+        }
+    }
+}

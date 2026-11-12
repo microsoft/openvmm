@@ -12,6 +12,7 @@ mod construct;
 #[cfg(target_os = "linux")]
 mod hugetlb;
 mod modify;
+mod mshv;
 mod runtime;
 mod start;
 
@@ -41,11 +42,14 @@ use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
+use disk_backend_resources::layer::SqliteDiskLayerFormatParams;
+use disk_backend_resources::layer::SqliteDiskLayerHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
@@ -71,6 +75,7 @@ use unix_socket::UnixListener;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::VirtioDeviceHandle;
 use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsResource;
 
@@ -86,11 +91,41 @@ pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
 }
 
+impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
+    /// Add a single-port Linux virtio console, captured in `hvc0.log`.
+    ///
+    /// Linux-direct boot selects `console=hvc0` and requires initrd-owned agent
+    /// startup. UEFI guests select their console through their boot configuration.
+    /// The firmware UART is unchanged.
+    pub fn with_virtio_console(mut self) -> Self {
+        assert!(
+            matches!(
+                self.config.firmware,
+                Firmware::LinuxDirect { .. } | Firmware::Uefi { .. }
+            ) && self.config.firmware.os_flavor() == petri_artifacts_common::tags::OsFlavor::Linux
+                && self.config.firmware.isolation().is_none(),
+            "virtio-console requires Linux-direct or non-isolated Linux UEFI"
+        );
+        self.use_virtio_console = true;
+        self
+    }
+}
+
+impl OpenVmmPetriBackend {
+    /// Launch a separately supplied, protocol-compatible native executable.
+    pub fn from_binary(path: PathBuf) -> Self {
+        Self {
+            openvmm_path: ResolvedArtifact::from_local_path(path),
+        }
+    }
+}
+
 #[async_trait]
 impl PetriVmmBackend for OpenVmmPetriBackend {
     type VmmConfig = PetriVmConfigOpenVmm;
     type VmRuntime = PetriVmOpenVmm;
     const SUPPORTS_VMBUS: bool = true;
+    const SUPPORTS_FILE_SHARING: bool = cfg!(any(windows, target_os = "linux"));
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
         !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))
@@ -143,7 +178,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-        properties: PetriVmProperties,
+        properties: &PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
         let mut config =
             PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties).await?;
@@ -156,13 +191,131 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     }
 }
 
+/// Reusable OpenVMM configuration for tests that launch the same VM recipe in
+/// multiple worker processes.
+pub struct OpenVmmRelaunchConfig {
+    builder: crate::PetriVmBuilder<OpenVmmPetriBackend>,
+    /// Holds the disk write files shared by all launched workers.
+    _diff_dir: tempfile::TempDir,
+    /// Bounds the entire recipe, including time between worker launches.
+    _watchdog_task: Option<Task<()>>,
+}
+
+impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
+    /// Prepare this configuration for launching multiple OpenVMM workers with
+    /// the same VM recipe.
+    ///
+    /// Differencing disks store their writes in files shared by all launched
+    /// workers, so a restored guest sees the disk writes made before the save.
+    pub fn prepare_openvmm_relaunch(self) -> anyhow::Result<OpenVmmRelaunchConfig> {
+        anyhow::ensure!(
+            self.modify_vmm_config.is_none(),
+            "OpenVMM relaunch configurations do not support modify_backend"
+        );
+
+        let mut builder = self.add_boot_disk()?.add_agent_disks()?;
+        if builder.uses_pipette_as_init() && builder.resources.prebuilt_initrd.is_none() {
+            builder.resources.prebuilt_initrd = Some(builder.prepare_initrd()?);
+        }
+
+        let diff_dir = tempfile::tempdir().context("failed to create disk write directory")?;
+        let config = &mut builder.config;
+        let drive_disks = config
+            .vmbus_storage_controllers
+            .values_mut()
+            .flat_map(|controller| controller.drives.values_mut())
+            .chain(config.pcie_nvme_drives.iter_mut().map(|d| &mut d.drive))
+            .chain(
+                config
+                    .pcie_virtio_blk_drives
+                    .iter_mut()
+                    .map(|d| &mut d.drive),
+            )
+            .chain(
+                config
+                    .firmware
+                    .ide_controllers_mut()
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .flatten(),
+            )
+            .filter_map(|drive| drive.disk.as_mut());
+        let vmgs_disk = match &mut config.vmgs {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::ReprovisionSingle(vmgs) => Some(&mut vmgs.disk),
+            PetriVmgsResource::Ephemeral => None,
+        };
+        for (i, disk) in drive_disks.chain(vmgs_disk).enumerate() {
+            if let Disk::Differencing(base) = disk {
+                *disk = Disk::SqliteDifferencing {
+                    base: base.clone(),
+                    dbhd_path: diff_dir.path().join(format!("disk{i}.dbhd")),
+                };
+            }
+        }
+
+        let watchdog_task =
+            Self::start_watchdog_timer(&builder.resources.driver, builder.watchdog_timeout);
+        Ok(OpenVmmRelaunchConfig {
+            builder,
+            _diff_dir: diff_dir,
+            _watchdog_task: watchdog_task,
+        })
+    }
+}
+
+impl OpenVmmRelaunchConfig {
+    async fn config(
+        &self,
+        memory_backing_file: impl Into<PathBuf>,
+    ) -> anyhow::Result<PetriVmConfigOpenVmm> {
+        Ok(PetriVmConfigOpenVmm::new(
+            &self.builder.backend.openvmm_path,
+            self.builder.config.clone(),
+            &self.builder.resources,
+            &self.builder.properties(),
+        )
+        .await?
+        .with_memory_backing_file(memory_backing_file))
+    }
+
+    /// Launch a new worker using this VM recipe and file-backed guest memory.
+    pub async fn launch(
+        &self,
+        memory_backing_file: impl Into<PathBuf>,
+    ) -> anyhow::Result<PetriVmOpenVmm> {
+        let (vm, _) = self.config(memory_backing_file).await?.run_core().await?;
+        Ok(vm)
+    }
+
+    /// Launch a new worker using this VM recipe and restore its state from
+    /// serialized snapshot bytes.
+    pub async fn restore(
+        &self,
+        memory_backing_file: impl Into<PathBuf>,
+        saved_state: &[u8],
+    ) -> anyhow::Result<PetriVmOpenVmm> {
+        let (vm, _) = self
+            .config(memory_backing_file)
+            .await?
+            .run_restore(saved_state)
+            .await?;
+        Ok(vm)
+    }
+}
+
 /// Configuration state for a test VM.
 pub struct PetriVmConfigOpenVmm {
+    guest_shares: std::collections::HashMap<String, crate::GuestShare>,
+    private_virtio_devices: Vec<(&'static str, Resource<VirtioDeviceHandle>)>,
     // Direct configuration related information.
     runtime_config: PetriVmRuntimeConfig,
     arch: MachineArch,
     host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
+    skip_save_restore: bool,
 
     // Mesh host
     mesh: mesh_process::Mesh,
@@ -197,6 +350,7 @@ struct PetriVmResourcesOpenVmm {
     firmware_event_recv: Receiver<FirmwareEvent>,
     ipmi_sel_event_recv: Receiver<get_resources::ged::IpmiSelEvent>,
     shutdown_ic_send: Option<Sender<ShutdownRpc>>,
+    acpi_power_button_send: Option<Sender<PowerButtonRpc>>,
     kvp_ic_send: Option<Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,
@@ -277,7 +431,71 @@ pub fn find_switch() -> Option<Guid> {
     None
 }
 
+fn ram_diff_layer() -> DiskLayerDescription {
+    RamDiskLayerHandle {
+        len: None,
+        sector_size: None,
+    }
+    .into_resource()
+    .into()
+}
+
+/// Returns a SQLite diff layer stored in `dbhd_path`, creating the file if it
+/// doesn't exist yet.
+fn sqlite_diff_layer(dbhd_path: &Path) -> DiskLayerDescription {
+    SqliteDiskLayerHandle {
+        dbhd_path: dbhd_path.display().to_string(),
+        format_dbhd: (!dbhd_path.exists()).then_some(SqliteDiskLayerFormatParams {
+            logically_read_only: false,
+            len: None,
+        }),
+    }
+    .into_resource()
+    .into()
+}
+
+fn layered_disk(
+    diff: DiskLayerDescription,
+    base: Vec<DiskLayerDescription>,
+) -> Resource<DiskHandleKind> {
+    LayeredDiskHandle {
+        layers: std::iter::once(diff).chain(base).collect(),
+    }
+    .into_resource()
+}
+
+/// Memory differencing disk over a local base disk.
 async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(layered_disk(
+        ram_diff_layer(),
+        local_base_layers(path).await?,
+    ))
+}
+
+/// Memory differencing disk over a remote base disk.
+fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(layered_disk(ram_diff_layer(), remote_base_layers(url)))
+}
+
+/// SQLite differencing disk over a local base disk, storing writes in
+/// `dbhd_path`.
+async fn sqldiff_disk(path: &Path, dbhd_path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(layered_disk(
+        sqlite_diff_layer(dbhd_path),
+        local_base_layers(path).await?,
+    ))
+}
+
+/// SQLite differencing disk over a remote base disk, storing writes in
+/// `dbhd_path`.
+fn sqldiff_remote_disk(url: &str, dbhd_path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(layered_disk(
+        sqlite_diff_layer(dbhd_path),
+        remote_base_layers(url),
+    ))
+}
+
+async fn local_base_layers(path: &Path) -> anyhow::Result<Vec<DiskLayerDescription>> {
     let disk = open_disk_type(
         path,
         OpenDiskOptions {
@@ -287,21 +505,10 @@ async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
     )
     .await
     .with_context(|| format!("failed to open disk: {}", path.display()))?;
-    Ok(LayeredDiskHandle {
-        layers: vec![
-            RamDiskLayerHandle {
-                len: None,
-                sector_size: None,
-            }
-            .into_resource()
-            .into(),
-            DiskLayerHandle(disk).into_resource().into(),
-        ],
-    }
-    .into_resource())
+    Ok(vec![DiskLayerHandle(disk).into_resource().into()])
 }
 
-fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
+fn remote_base_layers(url: &str) -> Vec<DiskLayerDescription> {
     // Strip query parameters and fragments before checking the file extension.
     let url_path = url.split(['?', '#']).next().unwrap_or(url);
     let format = if url_path.ends_with(".vhd") || url_path.ends_with(".vmgs") {
@@ -324,35 +531,26 @@ fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
         }
     };
 
-    Ok(LayeredDiskHandle {
-        layers: vec![
-            RamDiskLayerHandle {
-                len: None,
-                sector_size: None,
+    vec![
+        DiskLayerDescription {
+            read_cache: true,
+            write_through: false,
+            layer: SqliteAutoCacheDiskLayerHandle {
+                cache_path: cache_dir,
+                cache_key,
             }
-            .into_resource()
-            .into(),
-            DiskLayerDescription {
-                read_cache: true,
-                write_through: false,
-                layer: SqliteAutoCacheDiskLayerHandle {
-                    cache_path: cache_dir,
-                    cache_key,
-                }
-                .into_resource(),
-            },
-            DiskLayerHandle(
-                disk_backend_resources::BlobDiskHandle {
-                    url: url.to_owned(),
-                    format,
-                }
-                .into_resource(),
-            )
-            .into_resource()
-            .into(),
-        ],
-    }
-    .into_resource())
+            .into_resource(),
+        },
+        DiskLayerHandle(
+            disk_backend_resources::BlobDiskHandle {
+                url: url.to_owned(),
+                format,
+            }
+            .into_resource(),
+        )
+        .into_resource()
+        .into(),
+    ]
 }
 
 async fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
@@ -368,8 +566,8 @@ async fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> 
         PetriVmgsResource::ReprovisionOnFailure(disk) => {
             VmgsResource::ReprovisionOnFailure(convert_disk(disk).await?)
         }
-        PetriVmgsResource::Reprovision(disk) => {
-            VmgsResource::Reprovision(convert_disk(disk).await?)
+        PetriVmgsResource::ReprovisionSingle(disk) => {
+            VmgsResource::ReprovisionSingle(convert_disk(disk).await?)
         }
         PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
     })
@@ -384,6 +582,14 @@ async fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandl
         .into_resource(),
         Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path).await?,
         Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url)?,
+        Disk::SqliteDifferencing {
+            base: DiskPath::Local(path),
+            dbhd_path,
+        } => sqldiff_disk(path, dbhd_path).await?,
+        Disk::SqliteDifferencing {
+            base: DiskPath::Remote { url },
+            dbhd_path,
+        } => sqldiff_remote_disk(url, dbhd_path)?,
         Disk::Persistent(path) => {
             open_disk_type(
                 path.as_ref(),

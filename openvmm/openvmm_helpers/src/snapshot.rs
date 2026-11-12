@@ -3,13 +3,15 @@
 
 //! Snapshot manifest types and I/O functions for saving/restoring VM snapshots.
 
-use anyhow::Context;
 use mesh::payload::Protobuf;
 use mesh::payload::Timestamp;
-use std::io;
-use std::io::Write;
-use std::path::Path;
-use std::path::PathBuf;
+
+pub mod publish;
+pub mod restore;
+
+pub use publish::check_snapshot_destination;
+pub use publish::write_snapshot;
+pub use restore::read_snapshot;
 
 /// Current manifest format version. Bump when making incompatible changes.
 pub const MANIFEST_VERSION: u32 = 1;
@@ -39,251 +41,12 @@ pub struct SnapshotManifest {
     /// Architecture string ("x86_64" or "aarch64").
     #[mesh(7)]
     pub architecture: String,
-    /// Unique snapshot identifier generated at save time. Zero for snapshots
-    /// created before snapshot IDs were introduced.
-    #[mesh(8)]
+    /// Unique snapshot identifier generated at save time. Zero if the manifest
+    /// has no snapshot ID.
+    #[mesh(18, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
     pub snapshot_id: guid::Guid,
-}
-
-/// Returns whether `a` and `b` refer to the same underlying file (as opposed
-/// to merely having the same path). Hard links to the same file are reported
-/// as the same file.
-pub fn same_file(a: &Path, b: &Path) -> io::Result<bool> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let a = std::fs::metadata(a)?;
-        let b = std::fs::metadata(b)?;
-        Ok(a.dev() == b.dev() && a.ino() == b.ino())
-    }
-    #[cfg(windows)]
-    {
-        let canonical_a = fs_err::canonicalize(a)?;
-        let canonical_b = fs_err::canonicalize(b)?;
-        if canonical_a == canonical_b {
-            return Ok(true);
-        }
-        // File IDs are only unique within a volume. Files on different volumes
-        // (different path prefixes) can't be hard links of each other.
-        if canonical_a.components().next() != canonical_b.components().next() {
-            return Ok(false);
-        }
-        let id = |path: &Path| -> io::Result<i64> {
-            Ok(pal::windows::fs::query_stat_lx(&std::fs::File::open(path)?)?.FileId)
-        };
-        match (id(a), id(b)) {
-            (Ok(id_a), Ok(id_b)) => Ok(id_a == id_b),
-            // The file system can't report file IDs; treat the files as
-            // different so the caller fails safe.
-            _ => Ok(false),
-        }
-    }
-}
-
-/// Checks that `dir` can receive a new snapshot of a VM whose memory is backed
-/// by `memory_file_path`, without overwriting or deleting existing data.
-///
-/// Fails if `dir` exists but is not a directory, if it already contains a
-/// snapshot (`manifest.bin`), or if it contains a `memory.bin` that is not the
-/// same file as `memory_file_path`. A `memory.bin` that is the backing file
-/// itself (by path or by hard link) is allowed.
-pub fn check_snapshot_destination(dir: &Path, memory_file_path: &Path) -> anyhow::Result<()> {
-    match std::fs::metadata(dir) {
-        Ok(metadata) => {
-            if !metadata.is_dir() {
-                anyhow::bail!("snapshot destination {} is not a directory", dir.display());
-            }
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!("failed to access snapshot destination {}", dir.display())
-            });
-        }
-    }
-
-    let manifest_path = dir.join("manifest.bin");
-    if manifest_path
-        .try_exists()
-        .with_context(|| format!("failed to access {}", manifest_path.display()))?
-    {
-        anyhow::bail!(
-            "snapshot destination {} already contains a snapshot",
-            dir.display()
-        );
-    }
-
-    let memory_bin_path = dir.join("memory.bin");
-    if memory_bin_path
-        .try_exists()
-        .with_context(|| format!("failed to access {}", memory_bin_path.display()))?
-    {
-        let same = same_file(&memory_bin_path, memory_file_path).with_context(|| {
-            format!(
-                "failed to compare {} with {}",
-                memory_bin_path.display(),
-                memory_file_path.display()
-            )
-        })?;
-        if !same {
-            anyhow::bail!(
-                "{} already exists and is not the VM's memory backing file",
-                memory_bin_path.display()
-            );
-        }
-    }
-
-    Ok(())
-}
-
-/// Removes the files and directory created by a partially written snapshot
-/// unless disarmed.
-#[derive(Default)]
-struct SnapshotCleanup {
-    files: Vec<PathBuf>,
-    dir: Option<PathBuf>,
-}
-
-impl SnapshotCleanup {
-    fn disarm(mut self) {
-        self.files.clear();
-        self.dir = None;
-    }
-}
-
-impl Drop for SnapshotCleanup {
-    fn drop(&mut self) {
-        // Remove in reverse creation order so the manifest, if present, goes
-        // first and a partially cleaned directory never looks complete.
-        for file in self.files.iter().rev() {
-            if let Err(err) = std::fs::remove_file(file) {
-                if err.kind() != io::ErrorKind::NotFound {
-                    tracing::warn!(
-                        path = %file.display(),
-                        error = &err as &dyn std::error::Error,
-                        "failed to clean up partial snapshot file"
-                    );
-                }
-            }
-        }
-        if let Some(dir) = &self.dir {
-            // Only removes the directory if it is empty.
-            let _ = std::fs::remove_dir(dir);
-        }
-    }
-}
-
-/// Writes `data` to `path` and flushes it to disk. Registers `path` for
-/// cleanup once the file has been opened by this function.
-fn write_synced(
-    cleanup: &mut SnapshotCleanup,
-    path: &Path,
-    data: &[u8],
-    create_new: bool,
-) -> anyhow::Result<()> {
-    let mut options = fs_err::OpenOptions::new();
-    options.write(true);
-    if create_new {
-        options.create_new(true);
-    } else {
-        options.create(true).truncate(true);
-    }
-    let mut file = options.open(path)?;
-    cleanup.files.push(path.to_owned());
-    file.write_all(data)?;
-    file.sync_all()?;
-    Ok(())
-}
-
-/// Write a snapshot to the given directory.
-///
-/// The directory is created if it does not exist. The snapshot consists of:
-/// - `manifest.bin` — protobuf-encoded [`SnapshotManifest`]
-/// - `state.bin` — raw device saved-state bytes
-/// - `memory.bin` — hard link to the memory backing file
-///
-/// The destination is first checked with [`check_snapshot_destination`], so
-/// an existing snapshot or unrelated `memory.bin` is never overwritten or
-/// deleted. `state.bin` and `memory.bin` are written first and `manifest.bin`
-/// last, each flushed to disk, so the presence of `manifest.bin` indicates
-/// that the snapshot was written completely. On failure, the files (and
-/// directory) created by this call are removed.
-pub fn write_snapshot(
-    dir: &Path,
-    manifest: &SnapshotManifest,
-    saved_state_bytes: &[u8],
-    memory_file_path: &Path,
-) -> anyhow::Result<()> {
-    check_snapshot_destination(dir, memory_file_path)?;
-
-    let mut cleanup = SnapshotCleanup::default();
-    if !dir.try_exists()? {
-        cleanup.dir = Some(dir.to_owned());
-    }
-    fs_err::create_dir_all(dir)?;
-
-    // Write device state.
-    write_synced(
-        &mut cleanup,
-        &dir.join("state.bin"),
-        saved_state_bytes,
-        false,
-    )
-    .context("failed to write state.bin")?;
-
-    // Hard-link memory.bin to the backing file, unless the destination check
-    // found that it already is the backing file.
-    let memory_bin_path = dir.join("memory.bin");
-    if !memory_bin_path.try_exists()? {
-        let canonical_source = fs_err::canonicalize(memory_file_path)?;
-        if let Err(err) = std::fs::hard_link(&canonical_source, &memory_bin_path) {
-            if err.kind() == io::ErrorKind::CrossesDevices {
-                anyhow::bail!(
-                    "memory backing file ({}) must be on the same filesystem as the snapshot \
-                     directory ({}); consider placing the backing file inside the snapshot \
-                     directory",
-                    memory_file_path.display(),
-                    dir.display(),
-                );
-            }
-            return Err(err).with_context(|| {
-                format!(
-                    "failed to hard-link {} -> {}",
-                    canonical_source.display(),
-                    memory_bin_path.display()
-                )
-            });
-        }
-        cleanup.files.push(memory_bin_path);
-    }
-
-    // Write the manifest last.
-    let manifest_bytes = mesh::payload::encode(manifest.clone());
-    write_synced(
-        &mut cleanup,
-        &dir.join("manifest.bin"),
-        &manifest_bytes,
-        true,
-    )
-    .context("failed to write manifest.bin")?;
-
-    cleanup.disarm();
-    Ok(())
-}
-
-/// Read a snapshot from the given directory.
-///
-/// Returns the decoded manifest and the raw saved-state bytes.
-/// The caller is responsible for opening `memory.bin` separately.
-pub fn read_snapshot(dir: &Path) -> anyhow::Result<(SnapshotManifest, Vec<u8>)> {
-    let manifest_bytes =
-        fs_err::read(dir.join("manifest.bin")).context("failed to read manifest.bin")?;
-    let manifest: SnapshotManifest =
-        mesh::payload::decode(&manifest_bytes).context("failed to decode snapshot manifest")?;
-
-    let state_bytes = fs_err::read(dir.join("state.bin")).context("failed to read state.bin")?;
-
-    Ok((manifest, state_bytes))
+    // Field 19 is reserved for `compatibility_bundle_digest` and field 20 for
+    // `memory_artifacts`.
 }
 
 /// Validate that a snapshot manifest is compatible with the running VM config.
@@ -342,10 +105,10 @@ pub fn validate_manifest(
 }
 
 /// Optional checks a caller can require a snapshot to pass on restore.
-/// Unset fields are not checked.
 #[derive(Default)]
 pub struct SnapshotExpectations {
-    /// The snapshot ID the manifest must contain.
+    /// If set, the manifest's snapshot ID must equal this value. If `None`,
+    /// the snapshot ID is not checked.
     pub snapshot_id: Option<guid::Guid>,
 }
 
@@ -414,6 +177,33 @@ mod tests {
     }
 
     #[test]
+    fn decode_manifest_without_snapshot_id() {
+        // Older manifests have no snapshot ID, and NVX v6 manifests use field 8
+        // for an integer. Both decode with a zero ID, so the version check can
+        // reject unsupported formats with a clear error.
+        #[derive(Protobuf)]
+        #[mesh(package = "openvmm.snapshot")]
+        struct OldManifest {
+            #[mesh(1)]
+            version: u32,
+            #[mesh(8)]
+            state_size_bytes: u64,
+        }
+
+        let bytes = mesh::payload::encode(OldManifest {
+            version: 6,
+            state_size_bytes: 4096,
+        });
+        let manifest: SnapshotManifest = mesh::payload::decode(&bytes).unwrap();
+        assert!(manifest.snapshot_id.is_zero());
+        let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
+        assert!(
+            err.to_string().contains("version 6 is not supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn write_snapshot_creates_dir() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("a").join("b").join("c");
@@ -429,21 +219,24 @@ mod tests {
     }
 
     #[test]
-    fn write_snapshot_same_memory_path() {
-        // When the memory backing file IS <snap_dir>/memory.bin, the function
-        // should detect the collision and skip the hard-link.
+    fn write_snapshot_rejects_existing_directory() {
+        // An existing destination is rejected even if it is empty or holds the
+        // VM's own memory backing file, and nothing is written into it.
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         std::fs::create_dir_all(&snap_dir).unwrap();
 
         let mem_path = snap_dir.join("memory.bin");
-        std::fs::write(&mem_path, b"SAMEFILE").unwrap();
+        std::fs::write(&mem_path, b"MEM").unwrap();
 
-        // Should succeed without error.
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
-
-        // The file content should be unchanged.
-        assert_eq!(std::fs::read(&mem_path).unwrap(), b"SAMEFILE");
+        let err = write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(std::fs::read(&mem_path).unwrap(), b"MEM");
+        assert!(!snap_dir.join("state.bin").exists());
+        assert!(!snap_dir.join("manifest.bin").exists());
     }
 
     #[test]
@@ -460,7 +253,7 @@ mod tests {
         let second = test_manifest();
         let err = write_snapshot(&snap_dir, &second, b"second", &mem_path).unwrap_err();
         assert!(
-            err.to_string().contains("already contains a snapshot"),
+            err.to_string().contains("already exists"),
             "unexpected error: {err}"
         );
 
@@ -469,64 +262,6 @@ mod tests {
         assert_eq!(manifest.snapshot_id, OTHER_ID);
         assert_eq!(state, b"first");
         assert!(snap_dir.join("memory.bin").exists());
-    }
-
-    #[test]
-    fn write_snapshot_rejects_foreign_memory_bin() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-        std::fs::write(snap_dir.join("memory.bin"), b"OTHER").unwrap();
-
-        let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, b"MEM").unwrap();
-
-        let err = write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap_err();
-        assert!(
-            err.to_string().contains("not the VM's memory backing file"),
-            "unexpected error: {err}"
-        );
-
-        // The unrelated memory.bin is neither deleted nor replaced, and nothing
-        // else is left behind.
-        assert_eq!(
-            std::fs::read(snap_dir.join("memory.bin")).unwrap(),
-            b"OTHER"
-        );
-        assert!(!snap_dir.join("state.bin").exists());
-        assert!(!snap_dir.join("manifest.bin").exists());
-    }
-
-    #[test]
-    fn write_snapshot_accepts_hard_linked_memory_bin() {
-        // A memory.bin that is a hard link to the backing file has a different
-        // path but is the same file, so it must be accepted.
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-
-        let mem_path = dir.path().join("backing.bin");
-        std::fs::write(&mem_path, b"MEM").unwrap();
-        std::fs::hard_link(&mem_path, snap_dir.join("memory.bin")).unwrap();
-
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
-        assert!(snap_dir.join("manifest.bin").exists());
-        assert_eq!(std::fs::read(snap_dir.join("memory.bin")).unwrap(), b"MEM");
-    }
-
-    #[test]
-    fn write_snapshot_overwrites_leftover_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-        std::fs::write(snap_dir.join("state.bin"), b"stale").unwrap();
-
-        let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, b"MEM").unwrap();
-
-        write_snapshot(&snap_dir, &test_manifest(), b"fresh", &mem_path).unwrap();
-        let (_, state) = read_snapshot(&snap_dir).unwrap();
-        assert_eq!(state, b"fresh");
     }
 
     #[test]
@@ -544,31 +279,13 @@ mod tests {
     }
 
     #[test]
-    fn write_snapshot_cleanup_keeps_existing_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-        std::fs::write(snap_dir.join("unrelated.txt"), b"keep").unwrap();
-        let mem_path = dir.path().join("missing.bin");
-
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap_err();
-
-        assert!(!snap_dir.join("state.bin").exists());
-        assert!(!snap_dir.join("manifest.bin").exists());
-        assert_eq!(
-            std::fs::read(snap_dir.join("unrelated.txt")).unwrap(),
-            b"keep"
-        );
-    }
-
-    #[test]
     fn check_snapshot_destination_rejects_file() {
         let dir = tempfile::tempdir().unwrap();
         let not_a_dir = dir.path().join("file");
         std::fs::write(&not_a_dir, b"x").unwrap();
-        let err = check_snapshot_destination(&not_a_dir, &dir.path().join("mem")).unwrap_err();
+        let err = check_snapshot_destination(&not_a_dir).unwrap_err();
         assert!(
-            err.to_string().contains("not a directory"),
+            err.to_string().contains("already exists"),
             "unexpected error: {err}"
         );
     }

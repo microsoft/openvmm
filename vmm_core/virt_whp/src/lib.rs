@@ -1274,6 +1274,7 @@ impl WhpPartitionInner {
             )
             .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
+            caps.tsc_deadline &= matches!(vtl0.lapic, LocalApicKind::Offloaded);
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
             caps.nested_virt = nested_virt;
@@ -1834,12 +1835,12 @@ impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, hvdef::HvError> {
+    ) -> Result<guestmem::UserLockedPages, hvdef::HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
         Ok(self
             .0
-            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
             .unwrap())
     }
 

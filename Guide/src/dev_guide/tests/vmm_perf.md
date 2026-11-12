@@ -30,6 +30,22 @@ Run one profile:
 cargo xflowey vmm-perf --profile fio
 ```
 
+Profile selections use `WORKLOAD[:MODIFIER...]`. Bare `fio` and `iperf3`
+select their VMBus profiles for compatibility, while `boot-time` has no
+default modifier. Select VIRTIO explicitly, or repeat `--profile` to run both
+device variants:
+
+```bash
+cargo xflowey vmm-perf \
+  --profile fio:vmbus \
+  --profile fio:virtio
+```
+
+Modifiers are colon-delimited ASCII alphanumeric tokens. Multiple ordered
+modifiers select a profile with the same suffix order, such as
+`fio:ssh:virtio` selecting `FIO-SSH-VIRTIO`, when that profile exists in the
+pinned runtime.
+
 The pipeline selects a GNU Linux x64 target on Linux and Windows x64 on
 Windows. A static Linux runner can be selected with `--target linux-x64-musl`
 when required by the host environment.

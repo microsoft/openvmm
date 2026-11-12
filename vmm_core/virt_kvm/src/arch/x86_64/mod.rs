@@ -135,6 +135,16 @@ fn gb_pages_supported() -> bool {
         && safe_intrinsics::cpuid(GB_PAGE_LEAF, 0).edx & GB_PAGE_FLAG != 0
 }
 
+/// Checks KVM's Hyper-V CPUID leaves for the `use_apic_msrs` recommendation.
+///
+/// Missing or unrelated leaves are treated as no recommendation.
+fn kvm_recommends_hyperv_apic_msrs(cpuid: &[kvm::kvm_cpuid_entry2]) -> bool {
+    cpuid.iter().any(|leaf| {
+        leaf.function == hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION
+            && hvdef::HvEnlightenmentInformation::from(u128::from(leaf.eax)).use_apic_msrs()
+    })
+}
+
 impl virt::Hypervisor for Kvm {
     type ProtoPartition<'a> = KvmProtoPartition<'a>;
     type Partition = KvmPartition;
@@ -278,6 +288,7 @@ impl virt::Hypervisor for Kvm {
             use hvdef::*;
             let privileges = HvPartitionPrivilege::new()
                 .with_access_partition_reference_counter(true)
+                .with_access_partition_reference_tsc(true)
                 .with_access_hypercall_msrs(true)
                 .with_access_vp_index(true)
                 .with_access_frequency_msrs(true)
@@ -331,6 +342,8 @@ impl virt::Hypervisor for Kvm {
                     HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
                     split_u128(
                         HvEnlightenmentInformation::new()
+                            // Advertise enlightened APIC access only when KVM recommends it.
+                            .with_use_apic_msrs(kvm_recommends_hyperv_apic_msrs(&kvm_hv_cpuid))
                             .with_deprecate_auto_eoi(true)
                             .with_long_spin_wait_count(0xffffffff) // no spin wait notifications
                             .into(),
@@ -1214,11 +1227,11 @@ impl hv1_emulator::VtlProtectAccess for KvmNoVtlProtections<'_> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
         self.0
-            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
             .map_err(|_| HvError::OperationDenied)
     }
 
@@ -1841,8 +1854,8 @@ impl<'p> Processor for KvmProcessor<'p> {
                         dr6,
                         dr7,
                     } => {
-                        if dr6 & x86defs::DR6_BREAKPOINT_MASK != 0 {
-                            let i = dr6.trailing_zeros() as usize;
+                        if let Some(i) = (dr6 & x86defs::DR6_BREAKPOINT_MASK).lowest_one() {
+                            let i = i as usize;
                             let bp = HardwareBreakpoint::from_dr7(dr7, self.guest_debug_db[i], i);
                             return Err(VpHaltReason::HwBreak(bp));
                         } else if dr6 & x86defs::DR6_SINGLE_STEP != 0 {
@@ -2049,5 +2062,68 @@ impl GuestEventPort for KvmGuestEventPort {
 impl SignalMsi for KvmPartitionInner {
     fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.request_msi(MsiRequest { address, data });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kvm_recommends_hyperv_apic_msrs;
+    use hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION;
+    use hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES;
+    use hvdef::HvEnlightenmentInformation;
+    use test_with_tracing::test;
+
+    #[test]
+    fn only_recommends_apic_msrs_when_kvm_does() {
+        let recommendation =
+            u128::from(HvEnlightenmentInformation::new().with_use_apic_msrs(true)) as u32;
+        let other_enlightenment =
+            u128::from(HvEnlightenmentInformation::new().with_deprecate_auto_eoi(true)) as u32;
+
+        // A missing enlightenment-information leaf is not a recommendation.
+        assert!(!kvm_recommends_hyperv_apic_msrs(&[]));
+
+        // test various combinations of CPUID entries
+        for (function, eax, expected) in [
+            // The correct leaf without the recommendation bit must be rejected.
+            (HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0, false),
+            // Other enlightenment bits must not be mistaken for this recommendation.
+            (
+                HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                other_enlightenment,
+                false,
+            ),
+            // The recommendation bit is meaningful only in the correct leaf.
+            (HV_CPUID_FUNCTION_MS_HV_FEATURES, recommendation, false),
+            // The correct leaf with the recommendation bit must be accepted.
+            (
+                HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                recommendation,
+                true,
+            ),
+        ] {
+            assert_eq!(
+                kvm_recommends_hyperv_apic_msrs(&[kvm::kvm_cpuid_entry2 {
+                    function,
+                    eax,
+                    ..Default::default()
+                }]),
+                expected
+            );
+        }
+
+        // The search must continue when the relevant leaf is not first.
+        assert!(kvm_recommends_hyperv_apic_msrs(&[
+            kvm::kvm_cpuid_entry2 {
+                function: HV_CPUID_FUNCTION_MS_HV_FEATURES,
+                eax: recommendation,
+                ..Default::default()
+            },
+            kvm::kvm_cpuid_entry2 {
+                function: HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                eax: recommendation,
+                ..Default::default()
+            },
+        ]));
     }
 }

@@ -16,7 +16,7 @@ firmware_uefi_resources.workspace = true
 hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
 hyperv_uefi_custom_vars_json.workspace = true
 uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
-uefi_specs.workspace = true
+uefi_specs = { workspace = true, features = ["std"] }
 uefi_nvram_specvars.workspace = true
 generation_id.workspace = true
 watchdog_core.workspace = true
@@ -31,6 +31,7 @@ vmm_core.workspace = true
 
 async-trait.workspace = true
 bitfield-struct.workspace = true
+const-oid.workspace = true
 crypto.workspace = true
 cvm_tracing.workspace = true
 der = { workspace = true, features = ["derive", "alloc", "oid"] }
@@ -49,6 +50,7 @@ ucs2.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+parking_lot.workspace = true
 test_with_tracing.workspace = true
 wchar.workspace = true
 

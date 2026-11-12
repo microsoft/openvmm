@@ -79,10 +79,10 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let version = version.expect("local path handled above");
+        let version = version.context("missing openvmm-test-virtio-win version")?;
         let archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-            repo_owner: "microsoft".into(),
-            repo_name: "openvmm-deps".into(),
+            repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+            repo_name: crate::common::OPENVMM_DEPS_GITHUB_REPO.into(),
             needs_auth: false,
             tag: version.clone(),
             file_name: format!("openvmm-test-virtio-win.{version}.tar.gz"),

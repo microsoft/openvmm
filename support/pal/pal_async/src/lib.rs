@@ -60,6 +60,8 @@ pub mod unix {
 
 /// The default single-threaded IO driver for the platform.
 pub type DefaultDriver = sys::DefaultDriver;
+/// A weak reference to the platform's [`DefaultDriver`].
+pub type WeakDefaultDriver = sys::WeakDefaultDriver;
 /// The default single-threaded task pool for the platform.
 pub type DefaultPool = sys::DefaultPool;
 

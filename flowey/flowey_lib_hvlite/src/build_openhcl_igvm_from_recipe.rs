@@ -49,6 +49,10 @@ pub enum OpenhclIgvmOutput {
         #[serde(rename = "openhcl-x64-test-linux-direct.bin")]
         igvm_bin: PathBuf,
     },
+    X64TestSivm {
+        #[serde(rename = "openhcl-x64-test-sivm.bin")]
+        igvm_bin: PathBuf,
+    },
     X64TestLinuxDirectDevkern {
         #[serde(rename = "openhcl-x64-test-linux-direct-devkern.bin")]
         igvm_bin: PathBuf,
@@ -142,6 +146,7 @@ impl OpenhclIgvmOutput {
             | OpenhclIgvmOutput::X64 { igvm_bin }
             | OpenhclIgvmOutput::X64Devkern { igvm_bin }
             | OpenhclIgvmOutput::X64TestLinuxDirect { igvm_bin }
+            | OpenhclIgvmOutput::X64TestSivm { igvm_bin }
             | OpenhclIgvmOutput::X64TestLinuxDirectDevkern { igvm_bin }
             | OpenhclIgvmOutput::X64Cvm { igvm_bin, .. }
             | OpenhclIgvmOutput::X64CvmDevkern { igvm_bin, .. }
@@ -167,6 +172,7 @@ impl OpenhclIgvmOutput {
             OpenhclIgvmOutput::X64TestLinuxDirect { .. } => {
                 Some(OpenhclIgvmRecipe::X64TestLinuxDirect)
             }
+            OpenhclIgvmOutput::X64TestSivm { .. } => Some(OpenhclIgvmRecipe::X64TestSivm),
             OpenhclIgvmOutput::X64TestLinuxDirectDevkern { .. } => {
                 Some(OpenhclIgvmRecipe::X64TestLinuxDirectDevkern)
             }
@@ -218,6 +224,7 @@ impl OpenhclIgvmOutput {
                     OpenhclIgvmRecipe::X64TestLinuxDirect => {
                         OpenhclIgvmOutput::X64TestLinuxDirect { igvm_bin }
                     }
+                    OpenhclIgvmRecipe::X64TestSivm => OpenhclIgvmOutput::X64TestSivm { igvm_bin },
                     OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => {
                         OpenhclIgvmOutput::X64TestLinuxDirectDevkern { igvm_bin }
                     }
@@ -333,6 +340,7 @@ pub enum OpenhclIgvmRecipe {
     X64,
     X64Devkern,
     X64TestLinuxDirect,
+    X64TestSivm,
     X64TestLinuxDirectDevkern,
     X64Cvm,
     X64CvmDevkern,
@@ -358,9 +366,26 @@ impl ArtifactType for OpenhclIgvmRecipe {
 }
 
 impl OpenhclIgvmRecipe {
+    pub fn common_arch(&self) -> CommonArch {
+        match self {
+            OpenhclIgvmRecipe::X64
+            | OpenhclIgvmRecipe::X64Devkern
+            | OpenhclIgvmRecipe::X64TestLinuxDirect
+            | OpenhclIgvmRecipe::X64TestSivm
+            | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
+            | OpenhclIgvmRecipe::X64Cvm
+            | OpenhclIgvmRecipe::X64CvmDevkern => CommonArch::X86_64,
+            OpenhclIgvmRecipe::Aarch64 | OpenhclIgvmRecipe::Aarch64Devkern => CommonArch::Aarch64,
+        }
+    }
+
     pub fn uses_dev_kernel(&self) -> bool {
         match self {
-            Self::X64 | Self::X64TestLinuxDirect | Self::X64Cvm | Self::Aarch64 => false,
+            Self::X64
+            | Self::X64TestLinuxDirect
+            | Self::X64TestSivm
+            | Self::X64Cvm
+            | Self::Aarch64 => false,
             Self::X64Devkern
             | Self::X64TestLinuxDirectDevkern
             | Self::X64CvmDevkern
@@ -386,6 +411,7 @@ impl OpenhclIgvmRecipe {
             OpenhclIgvmRecipe::X64 | OpenhclIgvmRecipe::Aarch64 => None,
             OpenhclIgvmRecipe::X64Devkern | OpenhclIgvmRecipe::Aarch64Devkern => Some("devkern"),
             OpenhclIgvmRecipe::X64TestLinuxDirect => Some("test-linux-direct"),
+            OpenhclIgvmRecipe::X64TestSivm => Some("test-sivm"),
             OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => Some("test-linux-direct-devkern"),
             OpenhclIgvmRecipe::X64Cvm => Some("cvm"),
             OpenhclIgvmRecipe::X64CvmDevkern => Some("cvm-devkern"),
@@ -393,14 +419,9 @@ impl OpenhclIgvmRecipe {
     }
 
     fn arch(&self) -> &'static str {
-        match self {
-            OpenhclIgvmRecipe::X64
-            | OpenhclIgvmRecipe::X64Devkern
-            | OpenhclIgvmRecipe::X64TestLinuxDirect
-            | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
-            | OpenhclIgvmRecipe::X64Cvm
-            | OpenhclIgvmRecipe::X64CvmDevkern => "x64",
-            OpenhclIgvmRecipe::Aarch64 | OpenhclIgvmRecipe::Aarch64Devkern => "aarch64",
+        match self.common_arch() {
+            CommonArch::X86_64 => "x64",
+            CommonArch::Aarch64 => "aarch64",
         }
     }
 }
@@ -455,6 +476,12 @@ impl OpenhclIgvmRecipe {
         };
 
         match self {
+            Self::X64TestSivm => {
+                let mut details = Self::X64.recipe_details(release_cfg);
+                details.igvm_manifest =
+                    IgvmManifestPath::InTree("openhcl-x64-test-sivm.json".into());
+                details
+            }
             Self::X64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
@@ -582,6 +609,7 @@ flowey_request! {
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
         pub disable_secure_avic: bool,
+        pub uefi_firmware_flavor: Option<crate::download_uefi_mu_msvm::FirmwareFlavor>,
         /// Add the confidential debug flag to the measured OpenHCL command
         /// line, enabling confidential diagnostics on CVM builds.
         pub confidential_debug: bool,
@@ -620,6 +648,7 @@ impl SimpleFlowNode for Node {
             custom_target,
             extra_features,
             disable_secure_avic,
+            uefi_firmware_flavor,
             confidential_debug,
             openhcl_igvm,
             openhcl_igvm_extras,
@@ -708,8 +737,11 @@ impl SimpleFlowNode for Node {
             );
 
         let uefi_resource: Option<UefiResource> = with_uefi.then(|| UefiResource {
-            msvm_fd: ctx
-                .reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v }),
+            msvm_fd: ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch,
+                flavor: uefi_firmware_flavor,
+                msvm_fd,
+            }),
         });
 
         let vtl0_kernel_resource = vtl0_kernel_type.map(|typ| {

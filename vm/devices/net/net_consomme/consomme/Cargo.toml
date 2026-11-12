@@ -26,7 +26,6 @@ tracelimit.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 blocking.workspace = true
-cfg-if.workspace = true
 libc.workspace = true
 resolv-conf.workspace = true
 
@@ -34,6 +33,9 @@ resolv-conf.workspace = true
 pal.workspace = true
 slab.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_IO", "Win32_NetworkManagement_Dns", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_LibraryLoader"] }
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

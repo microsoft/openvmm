@@ -3,10 +3,14 @@
 
 //! Build an instance of `vmfirmwareigvm.dll`
 
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+
+pub const UNUSED_DLL_VERSION: (u16, u16, u16, u16) = (0, 0, 0, 0);
+pub const SNP_RESOURCE_ID: u32 = 13515;
 
 #[derive(Serialize, Deserialize)]
 pub struct VmfirmwareigvmDllOutput {
@@ -19,7 +23,9 @@ impl Artifact for VmfirmwareigvmDllOutput {}
 flowey_request! {
     pub struct Request {
         pub arch: CommonArch,
-        pub igvm_bin: ReadVar<PathBuf>,
+        pub openhcl_igvm: ReadVar<OpenhclIgvmOutput>,
+        /// ID to store the IGVM under within the `VMFW` resource type.
+        pub resource_id: u32,
         /// (major, minor, patch, revision)
         pub dll_version: ReadVar<(u16, u16, u16, u16)>,
         pub internal_dll_name: String,
@@ -34,22 +40,54 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             arch,
-            igvm_bin,
+            openhcl_igvm,
+            resource_id,
             internal_dll_name,
             dll_version,
             vmfirmwareigvm_dll,
         } = request;
 
+        let igvm_bin = openhcl_igvm.map(ctx, |o| o.igvm_bin().to_path_buf());
+
+        let mut pre_build_deps = Vec::new();
+        let mut cross_env = BTreeMap::new();
+        if let FlowPlatform::Linux(distro) = ctx.platform() {
+            if distro != FlowPlatformLinuxDistro::Nix {
+                pre_build_deps.push(ctx.reqv(|v| {
+                    flowey_lib_common::install_dist_pkg::Request::Install {
+                        package_names: vec!["clang".into(), "llvm".into(), "lld".into()],
+                        done: v,
+                    }
+                }));
+            }
+
+            // Resource-only DLLs need no Windows SDK or runtime libraries.
+            let target = CommonTriple::Common {
+                arch,
+                platform: crate::common::CommonPlatform::WindowsMsvc,
+            }
+            .as_triple()
+            .to_string()
+            .replace('-', "_");
+            cross_env.insert(format!("CC_{target}"), "clang".into());
+            cross_env.insert(format!("RC_{target}"), "llvm-rc".into());
+            cross_env.insert(
+                format!("CARGO_TARGET_{}_LINKER", target.to_uppercase()),
+                "lld-link".into(),
+            );
+        }
+
         let extra_env = ctx.emit_rust_stepv("determine vmfirmwareigvm_dll env vars", |ctx| {
             let igvm_bin = igvm_bin.claim(ctx);
             let dll_version = dll_version.claim(ctx);
             move |rt| {
-                let mut extra_env = BTreeMap::new();
+                let mut extra_env = cross_env;
 
                 // set the various build-time env vars `vmfirmwareigvm_dll` expects
                 {
@@ -66,6 +104,7 @@ impl SimpleFlowNode for Node {
                             .to_string()
                             .replace('\\', "/"),
                     );
+                    extra_env.insert("UH_RESOURCE_ID".into(), resource_id.to_string());
                     let (major, minor, patch, revision) = rt.read(dll_version);
                     extra_env.insert("UH_MAJOR".into(), major.to_string());
                     extra_env.insert("UH_MINOR".into(), minor.to_string());
@@ -96,7 +135,7 @@ impl SimpleFlowNode for Node {
             .as_triple(),
             no_split_dbg_info: false,
             extra_env: Some(extra_env),
-            pre_build_deps: Vec::new(),
+            pre_build_deps,
             output: v,
         });
 

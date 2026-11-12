@@ -26,12 +26,13 @@ pub enum Error {
     #[error("invalid UEFI firmware version information")]
     FirmwareVersion(#[source] loader::uefi::firmware_version::Error),
     #[error(
-        "incompatible UEFI firmware interface version {actual_major}.{actual_minor}; expected {expected_major}.{minimum_minor} or newer compatible minor"
+        "incompatible UEFI firmware interface version {actual_major}.{actual_minor}; expected major {minimum_major} through {maximum_major}, minor {minimum_minor} or newer"
     )]
     IncompatibleFirmwareVersion {
         actual_major: u16,
         actual_minor: u16,
-        expected_major: u16,
+        minimum_major: u16,
+        maximum_major: u16,
         minimum_minor: u16,
     },
     #[error("failed to build PCIe ACPI tables")]
@@ -76,11 +77,12 @@ pub struct UefiLoadSettings {
     pub force_firmware_version: bool,
 }
 
-const FIRMWARE_INTERFACE_MAJOR: u16 = 1;
+const FIRMWARE_INTERFACE_MINIMUM_MAJOR: u16 = 1;
+const FIRMWARE_INTERFACE_MAXIMUM_MAJOR: u16 = 2;
 const FIRMWARE_INTERFACE_MINIMUM_MINOR: u16 = 0;
 
 fn firmware_interface_is_compatible(major: u16, minor: u16) -> bool {
-    major == FIRMWARE_INTERFACE_MAJOR
+    (FIRMWARE_INTERFACE_MINIMUM_MAJOR..=FIRMWARE_INTERFACE_MAXIMUM_MAJOR).contains(&major)
         && minor
             .checked_sub(FIRMWARE_INTERFACE_MINIMUM_MINOR)
             .is_some()
@@ -139,8 +141,10 @@ fn check_firmware_version(image: &[u8], force: bool) -> Result<(), Error> {
                     version.interface_version_major, version.interface_version_minor
                 ),
                 required_interface = format_args!(
-                    "{}.{}+",
-                    FIRMWARE_INTERFACE_MAJOR, FIRMWARE_INTERFACE_MINIMUM_MINOR
+                    "major {}..={}, minor {}+",
+                    FIRMWARE_INTERFACE_MINIMUM_MAJOR,
+                    FIRMWARE_INTERFACE_MAXIMUM_MAJOR,
+                    FIRMWARE_INTERFACE_MINIMUM_MINOR
                 ),
                 "UEFI firmware interface is incompatible; continuing because force_firmware_version is set"
             );
@@ -148,7 +152,8 @@ fn check_firmware_version(image: &[u8], force: bool) -> Result<(), Error> {
             return Err(Error::IncompatibleFirmwareVersion {
                 actual_major: version.interface_version_major,
                 actual_minor: version.interface_version_minor,
-                expected_major: FIRMWARE_INTERFACE_MAJOR,
+                minimum_major: FIRMWARE_INTERFACE_MINIMUM_MAJOR,
+                maximum_major: FIRMWARE_INTERFACE_MAXIMUM_MAJOR,
                 minimum_minor: FIRMWARE_INTERFACE_MINIMUM_MINOR,
             });
         }
@@ -432,7 +437,7 @@ mod tests {
         let mut image = vec![
             0;
             if cfg!(guest_arch = "aarch64") {
-                0x20_0000
+                0x1000
             } else {
                 0
             }
@@ -548,20 +553,28 @@ mod tests {
         assert!(firmware_interface_is_compatible(1, 0));
         assert!(firmware_interface_is_compatible(1, 1));
         assert!(!firmware_interface_is_compatible(0, 0));
-        assert!(!firmware_interface_is_compatible(2, 0));
+        assert!(firmware_interface_is_compatible(2, 0));
+        assert!(firmware_interface_is_compatible(2, 1));
+        assert!(firmware_interface_is_compatible(1, u16::MAX));
+        assert!(firmware_interface_is_compatible(2, u16::MAX));
+        assert!(!firmware_interface_is_compatible(3, 0));
+        assert!(!firmware_interface_is_compatible(u16::MAX, 0));
     }
 
     #[test]
     fn firmware_version_validation_policy() {
         assert!(check_firmware_version(&firmware_image(Some((1, 0))), false).is_ok());
+        assert!(check_firmware_version(&firmware_image(Some((2, 0))), false).is_ok());
+        assert!(check_firmware_version(&firmware_image(Some((2, 1))), false).is_ok());
 
-        let incompatible = firmware_image(Some((2, 0)));
+        let incompatible = firmware_image(Some((3, 0)));
         assert!(matches!(
             check_firmware_version(&incompatible, false),
             Err(Error::IncompatibleFirmwareVersion {
-                actual_major: 2,
+                actual_major: 3,
                 actual_minor: 0,
-                expected_major: 1,
+                minimum_major: 1,
+                maximum_major: 2,
                 minimum_minor: 0,
             })
         ));
@@ -569,7 +582,7 @@ mod tests {
 
         let mut malformed = firmware_image(Some((1, 0)));
         let signature_offset = if cfg!(guest_arch = "aarch64") {
-            0x20_0000
+            0x1000
         } else {
             0
         } + size_of::<firmware_volume::FirmwareVolumeHeader>()
@@ -588,5 +601,26 @@ mod tests {
         let missing = firmware_image(None);
         assert!(check_firmware_version(&missing, false).is_ok());
         assert!(check_firmware_version(&missing, true).is_ok());
+    }
+
+    #[test]
+    #[cfg(guest_arch = "aarch64")]
+    fn firmware_version_validation_in_split_layout() {
+        for (interface, compatible) in [(None, true), (Some((1, 0)), true), (Some((3, 0)), false)] {
+            let mut image = firmware_image(None);
+            image.resize(0x200000, 0xff);
+            image[0x1000 + 32..0x1000 + 40].copy_from_slice(&0x1ff000_u64.to_le_bytes());
+            image.extend_from_slice(&firmware_image(interface)[0x1000..]);
+            let result = check_firmware_version(&image, false);
+            if compatible {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(Error::IncompatibleFirmwareVersion { .. })
+                ));
+            }
+            assert!(check_firmware_version(&image, true).is_ok());
+        }
     }
 }

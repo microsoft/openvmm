@@ -6,9 +6,10 @@
 //! This module provides a [`ChipsetDeviceProxy`] that implements the
 //! [`ChipsetDevice`] trait and forwards all operations over a channel.
 
-use crate::guestmem::GuestMemoryProxy;
+use crate::guestmem::GuestMemoryTask;
 use crate::protocol::*;
 use anyhow::Context;
+use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredRead;
@@ -27,11 +28,11 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerHandle;
-use pal_async::local::block_on;
 use slab::Slab;
 use std::task::Poll;
+use task_control::TaskControl;
 use vmcore::device_state::ChangeDeviceState;
-use vmcore::save_restore::ProtobufSaveRestore;
+use vmcore::save_restore::AsyncProtobufSaveRestore;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -54,9 +55,7 @@ pub(crate) struct ChipsetDeviceProxy {
     in_flight_writes: Slab<DeferredWrite>,
 
     #[inspect(skip)]
-    gm_proxy: GuestMemoryProxy,
-    #[inspect(skip)]
-    enc_gm_proxy: GuestMemoryProxy,
+    _guest_memory: TaskControl<GuestMemoryTask, ()>,
 
     mmio: Option<MmioProxy>,
     pio: Option<PioProxy>,
@@ -88,8 +87,7 @@ impl ChipsetDeviceProxy {
         resp_recv: mesh::Receiver<DeviceResponse>,
         cap_recv: mesh::OneshotReceiver<DeviceInit>,
         worker: WorkerHandle,
-        gm_proxy: GuestMemoryProxy,
-        enc_gm_proxy: GuestMemoryProxy,
+        guest_memory: TaskControl<GuestMemoryTask, ()>,
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> anyhow::Result<Self> {
         let DeviceInit { mmio, pio, pci } = cap_recv
@@ -129,8 +127,7 @@ impl ChipsetDeviceProxy {
             mmio,
             pio,
             pci,
-            gm_proxy,
-            enc_gm_proxy,
+            _guest_memory: guest_memory,
         })
     }
 }
@@ -237,9 +234,6 @@ impl PciConfigSpace for ChipsetDeviceProxy {
 
 impl PollDevice for ChipsetDeviceProxy {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
-        self.gm_proxy.poll(cx);
-        self.enc_gm_proxy.poll(cx);
-
         while let Poll::Ready(resp) = self.resp_recv.poll_next_unpin(cx) {
             match resp {
                 Some(DeviceResponse::Read { id, result }) => {
@@ -266,6 +260,17 @@ impl PollDevice for ChipsetDeviceProxy {
 }
 
 impl ChangeDeviceState for ChipsetDeviceProxy {
+    async fn teardown(mut self) {
+        self.req_send
+            .call(DeviceRequest::Teardown, ())
+            .await
+            .expect("failed to tear down remote device");
+        self.worker
+            .join()
+            .await
+            .expect("remote device worker failed");
+    }
+
     fn start(&mut self) {
         self.req_send.send(DeviceRequest::Start)
     }
@@ -289,18 +294,300 @@ impl ChangeDeviceState for ChipsetDeviceProxy {
     }
 }
 
-// TODO: Remove block_on calls for the below
-impl ProtobufSaveRestore for ChipsetDeviceProxy {
-    fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
+#[async_trait]
+impl AsyncProtobufSaveRestore for ChipsetDeviceProxy {
+    async fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
         // TODO: Do we need to include any state from ourselves?
-        block_on(self.req_send.call(DeviceRequest::Save, ()))
+        self.req_send
+            .call(DeviceRequest::Save, ())
+            .await
             .map_err(|e: mesh::rpc::RpcError| SaveError::Other(anyhow::anyhow!(e)))?
             .map_err(|e: mesh::error::RemoteError| SaveError::Other(anyhow::anyhow!(e)))
     }
 
-    fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
-        block_on(self.req_send.call(DeviceRequest::Restore, state))
+    async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
+        self.req_send
+            .call(DeviceRequest::Restore, state)
+            .await
             .map_err(|e: mesh::rpc::RpcError| RestoreError::Other(anyhow::anyhow!(e)))?
             .map_err(|e: mesh::error::RemoteError| RestoreError::Other(anyhow::anyhow!(e)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChipsetDeviceProxy;
+    use crate::RemoteDynamicResolvers;
+    use crate::guestmem::GuestMemoryTask;
+    use crate::protocol::DeviceInit;
+    use crate::worker::RemoteChipsetDeviceHandleParams;
+    use crate::worker::RemoteChipsetDeviceWorker;
+    use crate::worker::RemoteChipsetDeviceWorkerParameters;
+    use chipset_device::ChipsetDevice;
+    use chipset_device_resources::ResolveChipsetDeviceHandleParams;
+    use chipset_device_resources::ResolvedChipsetDevice;
+    use guestmem::GuestMemory;
+    use inspect::InspectMut;
+    use mesh::MeshPayload;
+    use mesh::payload::Protobuf;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use slab::Slab;
+    use std::convert::Infallible;
+    use std::task::Poll;
+    use task_control::TaskControl;
+    use test_with_tracing::test;
+    use vm_resource::IntoResource;
+    use vm_resource::ResolveResource;
+    use vm_resource::ResourceId;
+    use vm_resource::ResourceResolver;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::AsyncProtobufSaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SavedStateBlob;
+    use vmcore::save_restore::SavedStateRoot;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
+
+    #[derive(Protobuf, SavedStateRoot)]
+    #[mesh(package = "test.chipset_device_worker")]
+    struct TestSavedState {
+        #[mesh(1)]
+        value: u32,
+    }
+
+    #[derive(InspectMut)]
+    struct TestDevice {
+        value: u32,
+        #[inspect(skip)]
+        guest_memory: GuestMemory,
+        #[inspect(skip)]
+        encrypted_guest_memory: GuestMemory,
+    }
+
+    impl TestDevice {
+        fn access_memory(&self) {
+            for (index, memory) in [&self.guest_memory, &self.encrypted_guest_memory]
+                .into_iter()
+                .enumerate()
+            {
+                let expected = [self.value as u8, index as u8, index as u8, index as u8];
+                memory.write_at(0, &expected[..1]).unwrap();
+                memory.fill_at(1, index as u8, 3).unwrap();
+                let mut actual = [0; 4];
+                memory.read_at(0, &mut actual).unwrap();
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    impl ChipsetDevice for TestDevice {}
+
+    impl ChangeDeviceState for TestDevice {
+        fn start(&mut self) {}
+        async fn stop(&mut self) {
+            self.access_memory();
+        }
+        async fn reset(&mut self) {
+            self.access_memory();
+        }
+    }
+
+    async fn yield_once() {
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if std::mem::replace(&mut yielded, true) {
+                Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+
+    impl AsyncSaveRestore for TestDevice {
+        type SavedState = TestSavedState;
+
+        async fn save(&mut self) -> Result<TestSavedState, SaveError> {
+            self.access_memory();
+            yield_once().await;
+            if self.value == 0xdead {
+                return Err(SaveError::Other(anyhow::anyhow!("save failed")));
+            }
+            Ok(TestSavedState { value: self.value })
+        }
+
+        async fn restore(&mut self, state: TestSavedState) -> Result<(), RestoreError> {
+            yield_once().await;
+            if state.value == u32::MAX {
+                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                    "invalid value"
+                )));
+            }
+            self.value = state.value;
+            self.access_memory();
+            Ok(())
+        }
+    }
+
+    #[derive(MeshPayload)]
+    struct TestDeviceHandle;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for TestDeviceHandle {
+        const ID: &'static str = "test";
+    }
+
+    struct TestDeviceResolver;
+
+    impl ResolveResource<ChipsetDeviceHandleKind, TestDeviceHandle> for TestDeviceResolver {
+        type Output = ResolvedChipsetDevice;
+        type Error = Infallible;
+
+        fn resolve(
+            &self,
+            _resource: TestDeviceHandle,
+            input: ResolveChipsetDeviceHandleParams<'_>,
+        ) -> Result<Self::Output, Self::Error> {
+            let device = TestDevice {
+                value: 0,
+                guest_memory: input.guest_memory.clone(),
+                encrypted_guest_memory: input.encrypted_guest_memory.clone(),
+            };
+            device.access_memory();
+            Ok(device.into())
+        }
+    }
+
+    #[derive(Clone, MeshPayload)]
+    struct TestResolvers;
+
+    impl RemoteDynamicResolvers for TestResolvers {
+        const WORKER_ID_STR: &str = "test_remote_chipset_worker";
+
+        async fn register_remote_dynamic_resolvers(
+            self,
+            resolver: &mut ResourceResolver,
+        ) -> anyhow::Result<()> {
+            resolver.add_resolver(TestDeviceResolver);
+            Ok(())
+        }
+    }
+
+    async fn new_proxy(vmtime: &VmTimeKeeper, driver: &DefaultDriver) -> ChipsetDeviceProxy {
+        let (req_send, req_recv) = mesh::channel();
+        let (resp_send, resp_recv) = mesh::channel();
+        let (cap_send, cap_recv) = mesh::oneshot();
+        let (memory_task, gm_remote, enc_gm_remote) =
+            GuestMemoryTask::new(GuestMemory::allocate(4096), GuestMemory::allocate(4096));
+        let mut guest_memory = TaskControl::new(memory_task);
+        guest_memory.insert(driver, "test-guest-memory", ());
+        guest_memory.start();
+        let worker = mesh_worker::launch_local_worker::<RemoteChipsetDeviceWorker<TestResolvers>>(
+            RemoteChipsetDeviceWorkerParameters {
+                device: TestDeviceHandle.into_resource(),
+                dyn_resolvers: TestResolvers,
+                inputs: RemoteChipsetDeviceHandleParams {
+                    device_name: "test".to_owned(),
+                    is_restoring: false,
+                    vmtime: vmtime.builder().clone(),
+                    guest_memory: gm_remote,
+                    encrypted_guest_memory: enc_gm_remote,
+                },
+                req_recv,
+                resp_send,
+                cap_send,
+            },
+        )
+        .await
+        .unwrap();
+
+        let DeviceInit { mmio, pio, pci } = cap_recv.await.unwrap();
+        assert!(mmio.is_none() && pio.is_none() && pci.is_none());
+        ChipsetDeviceProxy {
+            req_send,
+            resp_recv,
+            worker,
+            in_flight_reads: Slab::new(),
+            in_flight_writes: Slab::new(),
+            _guest_memory: guest_memory,
+            mmio: None,
+            pio: None,
+            pci: None,
+        }
+    }
+
+    fn state(value: u32) -> SavedStateBlob {
+        SavedStateBlob::new(TestSavedState { value })
+    }
+
+    async fn stop_worker(proxy: &mut ChipsetDeviceProxy) {
+        proxy.worker.stop();
+        proxy.worker.join().await.unwrap();
+        proxy._guest_memory.stop().await;
+    }
+
+    #[async_test]
+    async fn async_typed_device_round_trip_through_worker(driver: DefaultDriver) {
+        let vmtime = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut proxy = new_proxy(&vmtime, &driver).await;
+
+        for value in [0, 5, 42] {
+            proxy.restore(state(value)).await.unwrap();
+            let saved = proxy.save().await.unwrap();
+            assert_eq!(saved.parse::<TestSavedState>().unwrap().value, value);
+        }
+
+        stop_worker(&mut proxy).await;
+    }
+
+    #[async_test]
+    async fn remote_save_restore_errors_are_reported(driver: DefaultDriver) {
+        let vmtime = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut proxy = new_proxy(&vmtime, &driver).await;
+
+        let error = proxy.restore(state(u32::MAX)).await.unwrap_err();
+        assert!(format!("{error:#}").contains("invalid value"));
+        assert_eq!(
+            proxy
+                .save()
+                .await
+                .unwrap()
+                .parse::<TestSavedState>()
+                .unwrap()
+                .value,
+            0
+        );
+
+        proxy.restore(state(0xdead)).await.unwrap();
+        assert_eq!(proxy.save().await.unwrap_err().to_string(), "save failed");
+
+        stop_worker(&mut proxy).await;
+        assert!(proxy.save().await.is_err());
+        assert!(proxy.restore(state(0)).await.is_err());
+    }
+
+    #[async_test]
+    async fn memory_access_while_device_polling_is_stopped(driver: DefaultDriver) {
+        let vmtime = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut proxy = new_proxy(&vmtime, &driver).await;
+        proxy.start();
+        proxy.stop().await;
+        proxy.reset().await;
+        proxy.restore(state(42)).await.unwrap();
+        assert_eq!(
+            proxy
+                .save()
+                .await
+                .unwrap()
+                .parse::<TestSavedState>()
+                .unwrap()
+                .value,
+            42
+        );
+        stop_worker(&mut proxy).await;
     }
 }

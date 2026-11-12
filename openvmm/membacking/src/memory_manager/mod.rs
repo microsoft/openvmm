@@ -688,9 +688,8 @@ impl GuestMemoryBuilder {
                             0x100000, range_end,
                         ];
                         range_starts
-                            .iter()
-                            .zip(range_starts.iter().skip(1))
-                            .map(|(&s, &e)| MemoryRange::new(s..e))
+                            .array_windows()
+                            .map(|&[s, e]| MemoryRange::new(s..e))
                             .collect::<Vec<_>>()
                     } else {
                         vec![*range]
@@ -1113,35 +1112,6 @@ mod tests {
         assert!(buf.iter().all(|&b| b == 0xbb));
     }
 
-    /// The x86 legacy split carves low memory into PAM/VGA regions. Population
-    /// must follow the same layout, so every byte lands at its GPA.
-    #[async_test]
-    async fn copy_from_follows_x86_legacy_split() {
-        const SIZE: u64 = 0x200000;
-        let page = SparseMapping::page_size() as u64;
-        let bytes = page_indexed(SIZE);
-        let mgr = GuestMemoryBuilder::new()
-            .x86_legacy_support(true)
-            .add_backing(
-                RamBackingRequest::new(vec![MemoryRange::new(0..SIZE)])
-                    .copy_from(source_file(&bytes)),
-            )
-            .build(SIZE)
-            .await
-            .unwrap();
-        let gm = mgr.client().guest_memory().await.unwrap();
-
-        let mut buf = vec![0u8; page as usize];
-        for gpa in [0, 0x9f000, 0xa0000, 0xc4000, 0xf0000, 0x100000, SIZE - page] {
-            gm.read_at(gpa, &mut buf).unwrap();
-            let expected = (gpa / page) as u8;
-            assert!(
-                buf.iter().all(|&b| b == expected),
-                "GPA {gpa:#x} expected page index {expected:#x}"
-            );
-        }
-    }
-
     #[async_test]
     async fn copy_from_writes_into_existing_mappable() {
         let page = SparseMapping::page_size() as u64;
@@ -1173,41 +1143,6 @@ mod tests {
         let mut buf = vec![0u8; size as usize];
         gm.read_at(0, &mut buf).unwrap();
         assert_eq!(buf, bytes);
-    }
-
-    #[async_test]
-    async fn copy_from_rejects_size_mismatch() {
-        let page = SparseMapping::page_size() as u64;
-        let err = GuestMemoryBuilder::new()
-            .add_backing(
-                RamBackingRequest::new(vec![MemoryRange::new(0..page)])
-                    .copy_from(source_file(&vec![0; (page / 2) as usize])),
-            )
-            .build(page)
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            MemoryBuildError::PopulateSizeMismatch {
-                file_len,
-                backing_len,
-            } if file_len == page / 2 && backing_len == page
-        ));
-    }
-
-    #[async_test]
-    async fn copy_from_rejects_private_memory() {
-        let page = SparseMapping::page_size() as u64;
-        let err = GuestMemoryBuilder::new()
-            .add_backing(
-                RamBackingRequest::new(vec![MemoryRange::new(0..page)])
-                    .private_memory(true)
-                    .copy_from(source_file(&vec![0; page as usize])),
-            )
-            .build(page)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, MemoryBuildError::PopulateWithPrivateMemory));
     }
 
     #[async_test]
@@ -1456,7 +1391,7 @@ mod tests {
         let (_mgr, gm) = build_thp_primary_memory(SIZE).await;
 
         let locked = gm
-            .lock_gpns(guestmem::AccessType::Write, false, &[0])
+            .lock_user_gpns(guestmem::AccessType::Write, &[0])
             .unwrap();
         // Store directly through the locked pointer (not via `write_at`, which
         // would fault the page in on its own).
@@ -1478,9 +1413,7 @@ mod tests {
         const SIZE: u64 = 2 * 1024 * 1024;
         let (_mgr, gm) = build_thp_primary_memory(SIZE).await;
 
-        let locked = gm
-            .lock_gpns(guestmem::AccessType::Read, false, &[0])
-            .unwrap();
+        let locked = gm.lock_user_gpns(guestmem::AccessType::Read, &[0]).unwrap();
         assert_eq!(locked.pages()[0][0].load(Ordering::SeqCst), 0);
         drop(locked);
     }

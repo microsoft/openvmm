@@ -143,6 +143,9 @@ issues requests in this order:
     - **CXL HDM and CHBCR** (`Mmio64`) — when a root complex is CXL-enabled,
       a Host-managed Device Memory window and a Host Bridge Component
       Registers window are placed, each aligned to its CXL-spec size.
+      The `cxl_spec` crate defines the CXL sizes and register formats and supports
+      `no_std` builds. The `cxl` crate implements the emulated registers and
+      devices.
 6. **Virtio-mmio slots** (`Mmio32`) — one contiguous region sized
    `slot_count * 4 KiB`, when any slots are configured.
 7. **IOMMU MMIO** (`Mmio32`) — a VM has at most one IOMMU type; one region

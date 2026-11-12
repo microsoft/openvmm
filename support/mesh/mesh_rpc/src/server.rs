@@ -496,8 +496,8 @@ mod grpc {
                     .last()
                     .ok_or(http::StatusCode::BAD_REQUEST)?
                 {
-                    b'H' => std::time::Duration::from_secs(60 * 60),
-                    b'M' => std::time::Duration::from_secs(60),
+                    b'H' => std::time::Duration::from_hours(1),
+                    b'M' => std::time::Duration::from_mins(1),
                     b'S' => std::time::Duration::from_secs(1),
                     b'm' => std::time::Duration::from_millis(1),
                     b'u' => std::time::Duration::from_micros(1),

@@ -87,7 +87,7 @@ impl Session {
         match result {
             Err(OperationError::FsError(e)) => {
                 if let Err(e) = sender.send_error(unique, e.value()) {
-                    tracing::error!(
+                    tracelimit::error_ratelimited!(
                         unique,
                         error = &e as &dyn std::error::Error,
                         "Failed to send reply",
@@ -98,7 +98,7 @@ impl Session {
                 if e.kind() == io::ErrorKind::NotFound {
                     tracing::trace!(unique, "Request was interrupted.");
                 } else {
-                    tracing::error!(
+                    tracelimit::error_ratelimited!(
                         unique,
                         error = &e as &dyn std::error::Error,
                         "Failed to send reply",
@@ -267,7 +267,7 @@ impl Session {
                 sender.send_empty(request.unique())?;
             }
             FuseOperation::Init { arg: _ } => {
-                tracing::warn!("Duplicate init message.");
+                tracelimit::warn_ratelimited!("Duplicate init message.");
                 return Err(lx::Error::EIO.into());
             }
             FuseOperation::OpenDir { arg } => {
@@ -316,7 +316,7 @@ impl Session {
             FuseOperation::Interrupt { arg: _ } => {
                 // Interrupt is potentially complicated, and none of the sample file systems seem
                 // to use it, so it's left as TODO for now.
-                tracing::warn!("FUSE_INTERRUPT not supported.");
+                tracelimit::warn_ratelimited!("FUSE_INTERRUPT not supported.");
                 return Err(lx::Error::ENOSYS.into());
             }
             FuseOperation::BMap { arg } => {
@@ -352,12 +352,12 @@ impl Session {
                 // Poll is not currently needed, and complicated to support. It appears to have some
                 // way of registering for later notifications, but I can't figure out how that
                 // works without libfuse source.
-                tracing::warn!("FUSE_POLL not supported.");
+                tracelimit::warn_ratelimited!("FUSE_POLL not supported.");
                 return Err(lx::Error::ENOSYS.into());
             }
             FuseOperation::NotifyReply { arg: _, data: _ } => {
                 // Not sure what this is. It has something to do with poll, I think.
-                tracing::warn!("FUSE_NOTIFY_REPLY not supported.");
+                tracelimit::warn_ratelimited!("FUSE_NOTIFY_REPLY not supported.");
                 return Err(lx::Error::ENOSYS.into());
             }
             FuseOperation::BatchForget { arg, nodes } => {
@@ -447,13 +447,13 @@ impl Session {
         let init: &fuse_init_in = if let FuseOperation::Init { arg } = request.operation() {
             arg
         } else {
-            tracing::error!(opcode = request.opcode(), "Expected FUSE_INIT");
+            tracelimit::error_ratelimited!(opcode = request.opcode(), "Expected FUSE_INIT");
             return Err(lx::Error::EIO.into());
         };
 
         let mut info = self.info.write();
         if self.is_initialized() {
-            tracing::error!("Racy FUSE_INIT requests.");
+            tracelimit::error_ratelimited!("Racy FUSE_INIT requests.");
             return Err(lx::Error::EIO.into());
         }
 
@@ -471,7 +471,7 @@ impl Session {
         // Don't bother supporting old versions. Version 7.27 is what kernel 4.19 uses, and can
         // be supported without needing to change the daemon's behavior for compatibility.
         if init.major < FUSE_KERNEL_VERSION || init.minor < 27 {
-            tracing::error!(
+            tracelimit::error_ratelimited!(
                 major = init.major,
                 minor = init.minor,
                 "Got unsupported kernel version",

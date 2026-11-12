@@ -7,6 +7,7 @@ use flowey::node::prelude::FlowPlatformKind;
 use flowey::node::prelude::RustRuntimeServices;
 use std::collections::BTreeMap;
 
+pub mod cargo_install;
 pub mod cargo_output;
 pub mod extract;
 pub mod wslpath;

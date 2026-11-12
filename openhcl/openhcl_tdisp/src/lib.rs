@@ -12,6 +12,8 @@ pub mod client;
 pub mod noop;
 #[cfg(target_os = "linux")]
 mod sevtio;
+#[cfg(target_os = "linux")]
+mod tdxconnect;
 
 pub use client::TdispClient;
 pub use client::TdispCommandTransport;
@@ -45,6 +47,8 @@ pub use tdisp_proto::TdispTdiState;
 
 #[cfg(target_os = "linux")]
 pub use sevtio::TdispSevTioResourceValidator;
+#[cfg(target_os = "linux")]
+pub use tdxconnect::TdispTdxConnectResourceValidator;
 
 #[cfg(target_os = "linux")]
 use anyhow::Context;
@@ -227,13 +231,23 @@ pub fn new_resource_validator(
         return Ok(Arc::new(noop::TdispNoopResourceValidator::new()));
     }
 
-    #[cfg(target_os = "linux")]
-    if matches!(isolation, IsolationType::Snp) {
-        let vtom = vtom.context("an SNP partition requires a VTOM to validate resources")?;
-        return Ok(Arc::new(TdispSevTioResourceValidator::new(vtom)?));
-    }
+    match isolation {
+        #[cfg(target_os = "linux")]
+        IsolationType::Snp => {
+            let vtom = vtom.context("an SNP partition requires a VTOM to validate resources")?;
+            Ok(Arc::new(TdispSevTioResourceValidator::new(vtom)?))
+        }
 
-    Ok(Arc::new(noop::TdispNoopResourceValidator::new()))
+        #[cfg(target_os = "linux")]
+        IsolationType::Tdx => {
+            let vtom = vtom.context("a TDX partition requires a VTOM to validate resources")?;
+            Ok(Arc::new(TdispTdxConnectResourceValidator::new(vtom)?))
+        }
+
+        // Isolation types with no validator of their own, or running in an
+        // environment outside of a OpenHCL Linux build
+        _ => Ok(Arc::new(noop::TdispNoopResourceValidator::new())),
+    }
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.

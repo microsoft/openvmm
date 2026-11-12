@@ -5,25 +5,18 @@
 
 use flowey::node::prelude::*;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub enum VmmPerfProfile {
-    BootTime,
-    Fio,
-    Iperf3,
+pub fn all_profiles() -> Vec<String> {
+    vec![
+        "boot-time".into(),
+        "fio:vmbus".into(),
+        "fio:virtio".into(),
+        "iperf3:vmbus".into(),
+        "iperf3:virtio".into(),
+    ]
 }
 
-impl VmmPerfProfile {
-    pub fn all() -> Vec<Self> {
-        vec![Self::BootTime, Self::Fio, Self::Iperf3]
-    }
-
-    fn cli_name(self) -> &'static str {
-        match self {
-            Self::BootTime => "boot-time",
-            Self::Fio => "fio",
-            Self::Iperf3 => "iperf3",
-        }
-    }
+pub fn default_profiles() -> Vec<String> {
+    vec!["boot-time".into(), "fio".into(), "iperf3".into()]
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -41,7 +34,7 @@ flowey_request! {
         pub runtime_archive: ReadVar<PathBuf>,
         pub output_dir: ReadVar<PathBuf>,
         pub temp_dir: Option<ReadVar<PathBuf>>,
-        pub profiles: Vec<VmmPerfProfile>,
+        pub profiles: Vec<String>,
         pub vm_sizes_json: Option<String>,
         pub parameters_json: Option<String>,
         /// Wait for host dependencies to be installed before running VMM.Perf.
@@ -121,7 +114,7 @@ impl SimpleFlowNode for Node {
                 }
                 for profile in &profiles {
                     args.push("--profile".into());
-                    args.push(profile.cli_name().into());
+                    args.push(profile.clone());
                 }
                 if let Some(vm_sizes_json) = &vm_sizes_json {
                     args.push("--vm-sizes-json".into());
@@ -132,22 +125,16 @@ impl SimpleFlowNode for Node {
                     args.push(parameters_json.clone());
                 }
 
-                let process = flowey::shell_cmd!(rt, "{runner} {args...}")
+                let status = flowey::shell_cmd!(rt, "{runner} {args...}")
                     .ignore_status()
-                    .output()?;
-                if !process.stdout.is_empty() {
-                    log::info!("{}", String::from_utf8_lossy(&process.stdout));
-                }
-                if !process.stderr.is_empty() {
-                    log::warn!("{}", String::from_utf8_lossy(&process.stderr));
-                }
+                    .run_interactive()?;
 
                 rt.write(
                     output,
                     &VmmPerfRunOutput {
                         results_dir: output_dir,
-                        success: process.status.success(),
-                        exit_code: process.status.code(),
+                        success: status.success(),
+                        exit_code: status.code(),
                     },
                 );
                 Ok(())

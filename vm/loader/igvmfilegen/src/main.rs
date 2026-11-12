@@ -22,6 +22,7 @@ mod firmware_dll;
 mod identity_mapping;
 mod measurement_diag;
 mod platform_mask;
+mod product_policy_initrd;
 mod snp_id_block;
 mod snp_linux_direct;
 mod vp_context_builder;
@@ -68,7 +69,6 @@ use loader::linux::InitrdConfig;
 use loader::paravisor::CommandLineType;
 use loader::paravisor::Vtl0Config;
 use loader::paravisor::Vtl0Linux;
-use product_policy::ProductPolicy;
 use std::io::Seek;
 use std::io::Write;
 use std::path::PathBuf;
@@ -657,7 +657,6 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
         let igvm_output: file_loader::IgvmOutput = match &config.image {
             Image::SnpLinuxDirect {
                 linux,
-                processor_count,
                 memory_page_count,
                 c_bit_position,
             } => {
@@ -683,7 +682,6 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
 
                 R::build_snp_linux_direct(snp_linux_direct::BuildParams {
                     linux,
-                    processor_count: *processor_count,
                     memory_page_count: *memory_page_count,
                     c_bit_position: *c_bit_position,
                     policy: SnpPolicy::from(*policy).with_debug(*enable_debug as u8),
@@ -1297,7 +1295,6 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
-        product_policy: Option<&ProductPolicy>,
     ) -> Result<(), loader::paravisor::Error>
     where
         F: std::io::Read + Seek;
@@ -1346,7 +1343,6 @@ impl IgvmfilegenRegister for X86Register {
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
-        product_policy: Option<&ProductPolicy>,
     ) -> Result<(), loader::paravisor::Error>
     where
         F: std::io::Read + Seek,
@@ -1361,7 +1357,6 @@ impl IgvmfilegenRegister for X86Register {
             memory_page_base,
             memory_page_count,
             vtl0_config,
-            product_policy,
         )
     }
 }
@@ -1410,7 +1405,6 @@ impl IgvmfilegenRegister for Aarch64Register {
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
-        product_policy: Option<&ProductPolicy>,
     ) -> Result<(), loader::paravisor::Error>
     where
         F: std::io::Read + Seek,
@@ -1424,7 +1418,6 @@ impl IgvmfilegenRegister for Aarch64Register {
             memory_page_base,
             memory_page_count,
             vtl0_config,
-            product_policy,
         )
     }
 }
@@ -1475,10 +1468,14 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 let initrd_path = resources
                     .get(ResourceType::UnderhillInitrd)
                     .expect("validated present");
-                Some(fs_err::File::open(initrd_path).context(format!(
+                let mut initrd = fs_err::read(initrd_path).context(format!(
                     "reading underhill initrd at {}",
                     initrd_path.display()
-                ))?)
+                ))?;
+                if let Some(policy) = product_policy {
+                    product_policy_initrd::append(&mut initrd, policy)?;
+                }
+                std::io::Cursor::new(initrd)
             };
 
             let shim_path = resources
@@ -1494,13 +1491,11 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                     None
                 };
 
-            let initrd_info = if let Some(ref mut f) = initrd {
-                let size = f.seek(std::io::SeekFrom::End(0))?;
-                f.rewind()?;
-                Some((f as &mut dyn loader::common::ReadSeek, size))
-            } else {
-                None
-            };
+            let initrd_size = initrd.get_ref().len() as u64;
+            let initrd_info = Some((
+                &mut initrd as &mut dyn loader::common::ReadSeek,
+                initrd_size,
+            ));
 
             // TODO: While the paravisor supports multiple things that can be
             // loaded in VTL0, we don't yet have updated file builder config for
@@ -1552,7 +1547,6 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 memory_page_base,
                 memory_page_count,
                 vtl0_load_config,
-                product_policy.as_ref(),
             )
             .context("underhill kernel loader")?;
         }

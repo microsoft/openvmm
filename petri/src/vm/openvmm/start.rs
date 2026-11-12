@@ -11,6 +11,7 @@ use crate::PetriLogFile;
 use crate::PetriVmRuntimeConfig;
 use crate::worker::Worker;
 use anyhow::Context;
+use mesh::payload::message::ProtobufMessage;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
@@ -26,12 +27,35 @@ use std::sync::Arc;
 use vm_resource::IntoResource;
 
 impl PetriVmConfigOpenVmm {
-    async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+    pub(super) async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        self.run_core_inner(None).await
+    }
+
+    /// Launch a fresh worker that restores from `saved_state`, mirroring
+    /// production `--restore-snapshot`. Exercises the path the in-process
+    /// pulse (`verify_save_restore`) cannot reach.
+    pub(crate) async fn run_restore(
+        self,
+        saved_state: &[u8],
+    ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        let saved_state: ProtobufMessage = mesh::payload::decode(saved_state)
+            .context("failed to decode serialized saved state")?;
+        self.run_core_inner(Some(saved_state)).await
+    }
+
+    async fn run_core_inner(
+        self,
+        saved_state: Option<ProtobufMessage>,
+    ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        let has_guest_shares = !self.guest_shares.is_empty();
         let Self {
+            guest_shares: _,
+            private_virtio_devices: _,
             runtime_config,
             arch,
             host_log_levels,
             mut config,
+            skip_save_restore,
 
             mesh,
 
@@ -46,7 +70,7 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
 
             pending_iommu,
-        } = self;
+        } = self.with_private_virtio_devices();
 
         // Resolve deferred IOMMU assignments.
         for (name, iommu_config) in &pending_iommu {
@@ -58,22 +82,46 @@ impl PetriVmConfigOpenVmm {
             rc.iommu = Some(iommu_config.clone());
         }
 
+        let enable_legacy_pci_config_io =
+            arch == MachineArch::X86_64 && !config.chipset.with_piix4_pci_bus;
+        for root_complex in &mut config.pcie_root_complexes {
+            root_complex.legacy_pci_config_io = enable_legacy_pci_config_io
+                && root_complex.segment == 0
+                && root_complex.start_bus == 0
+                && root_complex.end_bus == u8::MAX;
+        }
+        if config
+            .pcie_root_complexes
+            .iter()
+            .any(|root_complex| root_complex.legacy_pci_config_io)
+        {
+            config
+                .chipset_devices
+                .retain(|device| device.name != "missing-pci");
+        }
+
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
         // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
-        // TODO: virtio vsock doesn't support save/restore yet
-        // save/restore yet.
+        // TODO: virtio vsock and console don't support save/restore yet
+        // TODO: 9p shares don't support save/restore yet
+        // TODO: nested virt doesn't support save/restore yet
         let has_unsupported_pcie_save_restore_device = config
             .pcie_devices
             .iter()
             .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
-        let supports_save_restore = !resources.properties.is_openhcl
+        let supports_save_restore = !skip_save_restore
+            && !resources.properties.is_openhcl
+            && !resources.properties.is_isolated
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)
             && !resources.properties.using_vpci
             && !has_unsupported_pcie_save_restore_device
-            && !resources.properties.use_virtio_vsock;
+            && !resources.properties.use_virtio_vsock
+            && !resources.properties.use_virtio_console
+            && !has_guest_shares
+            && !config.hypervisor.nested_virt;
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
@@ -92,7 +140,7 @@ impl PetriVmConfigOpenVmm {
                 // Quiet down `hyper_util`'s connection-pool debug spam that
                 // `disk_blob` triggers on every HTTP range request.
                 ("OPENVMM_LOG".into(), "debug,hyper_util=info".into()),
-                ("OPENVMM_SHOW_SPANS".into(), "true".into()),
+                ("OPENVMM_SHOW_SPANS".into(), "false".into()),
             ]),
             Some(OpenvmmLogConfig::BuiltInDefault) => BTreeMap::new(),
             Some(OpenvmmLogConfig::Custom(levels)) => levels
@@ -145,7 +193,7 @@ impl PetriVmConfigOpenVmm {
             );
         }
 
-        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory)
+        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory, saved_state)
             .await
             .context("failed to launch vm worker")?;
 
@@ -181,7 +229,8 @@ impl PetriVmConfigOpenVmm {
         tracing::info!("Resuming VM");
         vm.resume().await?;
 
-        // Run basic save/restore test if it is supported
+        // Run the basic save/restore pulse if supported. This also verifies
+        // that a restored VM can be saved and restored again.
         if supports_save_restore && !is_minimal {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
@@ -198,6 +247,7 @@ impl PetriVmConfigOpenVmm {
         // Skip when VMBus is disabled — the no-vmbus prepped image has
         // pipette pre-configured via offline registry injection.
         if self.resources.properties.using_vtl0_pipette
+            && !self.resources.properties.external_pipette
             && matches!(self.resources.properties.os_flavor, OsFlavor::Windows)
             && !self.resources.properties.is_isolated
             && !self.resources.properties.no_vmbus

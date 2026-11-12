@@ -388,6 +388,24 @@ struct DeviceMetadata {
     fua: bool,
 }
 
+fn block_device_queue_path(devpath: &Path) -> anyhow::Result<PathBuf> {
+    let device = if devpath
+        .join("partition")
+        .try_exists()
+        .context("failed to inspect sysfs partition state")?
+    {
+        let partition =
+            fs_err::canonicalize(devpath).context("failed to resolve sysfs partition path")?;
+        partition
+            .parent()
+            .context("sysfs partition path has no parent device")?
+            .to_path_buf()
+    } else {
+        devpath.to_path_buf()
+    };
+    Ok(device.join("queue"))
+}
+
 impl DeviceMetadata {
     fn from_block_device(file: &fs::File, major: u32, minor: u32) -> anyhow::Result<Self> {
         // Ensure the sysfs path exists.
@@ -430,20 +448,18 @@ impl DeviceMetadata {
                 .with_context(|| format!("failed to parse {msg}"))
         }
 
-        let logical_block_size = read_val(&devpath, "queue/logical_block_size", "sector size")?;
-        let physical_block_size = read_val(
-            &devpath,
-            "queue/physical_block_size",
-            "physical sector size",
-        )?;
+        let queuepath = block_device_queue_path(&devpath)?;
+        let logical_block_size = read_val(&queuepath, "logical_block_size", "sector size")?;
+        let physical_block_size =
+            read_val(&queuepath, "physical_block_size", "physical sector size")?;
 
         // sys/dev/block/*/*/size shows the size in 512-byte
         // sectors irrespective of the block device
         let disk_size = read_val::<u64>(&devpath, "size", "disk size")? * 512;
         let discard_granularity =
-            read_val(&devpath, "queue/discard_granularity", "discard granularity")?;
+            read_val(&queuepath, "discard_granularity", "discard granularity")?;
 
-        let fua = read_val::<u8>(&devpath, "queue/fua", "fua")? != 0;
+        let fua = read_val::<u8>(&queuepath, "fua", "fua")? != 0;
 
         Self {
             device_type,
@@ -576,7 +592,7 @@ impl DiskIo for BlockDevice {
         // fall back to bounce buffering in that case.
         let should_bounce = self.always_bounce
             || !buffers.is_aligned(self.sector_size() as usize)
-            || !buffers.guest_memory().supports_locking();
+            || !buffers.guest_memory().supports_kernel_lock();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(true)?;
             locked.io_vecs()
@@ -638,7 +654,7 @@ impl DiskIo for BlockDevice {
         // fall back to bounce buffering in that case.
         let should_bounce = self.always_bounce
             || !buffers.is_aligned(self.sector_size() as usize)
-            || !buffers.guest_memory().supports_locking();
+            || !buffers.guest_memory().supports_kernel_lock();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(false)?;
             locked.io_vecs()
@@ -900,6 +916,63 @@ mod tests {
     use pal_uring::PoolClient;
     use scsi_buffers::OwnedRequestBuffers;
     use test_with_tracing::test;
+
+    #[test]
+    fn whole_device_queue_path_is_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let device = root.path().join("nvme0n1");
+        fs::create_dir_all(device.join("queue")).unwrap();
+        fs::write(device.join("queue/logical_block_size"), "512\n").unwrap();
+        let alias = root.path().join("259:0");
+        std::os::unix::fs::symlink(&device, &alias).unwrap();
+
+        let queue = block_device_queue_path(&alias).unwrap();
+        assert_eq!(queue, alias.join("queue"));
+        assert_eq!(
+            fs::read_to_string(queue.join("logical_block_size")).unwrap(),
+            "512\n"
+        );
+    }
+
+    #[test]
+    fn partition_queue_path_uses_parent_device() {
+        let root = tempfile::tempdir().unwrap();
+        let device = root.path().join("nvme0n1");
+        let partition = device.join("nvme0n1p2");
+        fs::create_dir_all(&partition).unwrap();
+        fs::create_dir(device.join("queue")).unwrap();
+        fs::write(partition.join("partition"), "2\n").unwrap();
+        fs::write(device.join("queue/logical_block_size"), "512\n").unwrap();
+        fs::write(device.join("queue/physical_block_size"), "4096\n").unwrap();
+        let alias = root.path().join("259:2");
+        std::os::unix::fs::symlink(&partition, &alias).unwrap();
+
+        let queue = block_device_queue_path(&alias).unwrap();
+        assert_eq!(queue, device.join("queue"));
+        assert_eq!(
+            fs::read_to_string(queue.join("logical_block_size")).unwrap(),
+            "512\n"
+        );
+        assert_eq!(
+            fs::read_to_string(queue.join("physical_block_size")).unwrap(),
+            "4096\n"
+        );
+        assert!(!alias.join("queue").exists());
+    }
+
+    #[test]
+    fn partition_queue_path_does_not_fall_back_to_child_queue() {
+        let root = tempfile::tempdir().unwrap();
+        let device = root.path().join("nvme0n1");
+        let partition = device.join("nvme0n1p2");
+        fs::create_dir_all(partition.join("queue")).unwrap();
+        fs::write(partition.join("partition"), "2\n").unwrap();
+        fs::write(partition.join("queue/logical_block_size"), "4096\n").unwrap();
+
+        let queue = block_device_queue_path(&partition).unwrap();
+        assert_eq!(queue, device.join("queue"));
+        assert!(fs::read_to_string(queue.join("logical_block_size")).is_err());
+    }
 
     fn is_buggy_kernel() -> bool {
         // 5.13 kernels seem to have a bug with io_uring where tests hang.

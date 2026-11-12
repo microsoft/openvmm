@@ -79,6 +79,8 @@ smmu.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 serial_16550_resources.workspace = true
+serial_pl011_resources.workspace = true
+serial_uart_resources.workspace = true
 tpm_resources.workspace = true
 virtio.workspace = true
 vmbus_channel.workspace = true
@@ -99,7 +101,6 @@ sparse_mmap.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-cfg-if.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true

@@ -26,6 +26,7 @@ impl Worker {
         host: &WorkerHost,
         cfg: Config,
         shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
+        saved_state: Option<mesh::payload::message::ProtobufMessage>,
     ) -> anyhow::Result<(Self, mesh::Receiver<HaltReason>)> {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
@@ -33,7 +34,7 @@ impl Worker {
         let params = VmWorkerParameters {
             hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
             cfg,
-            saved_state: None,
+            saved_state,
             guest_ram: shared_memory.map(GuestRamSource::MapShared),
             rpc: rpc_recv,
             notify: notify_send,

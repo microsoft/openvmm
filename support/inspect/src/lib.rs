@@ -2190,13 +2190,16 @@ where
 mod tests {
     use crate::AsBytes;
     use crate::AtomicMut;
+    use crate::Entry;
     use crate::Error;
+    use crate::ExternalRequestType;
     use crate::Inspect;
     use crate::InspectMut;
     use crate::InspectionBuilder;
     use crate::Node;
     use crate::Request;
     use crate::SensitivityLevel;
+    use crate::Value;
     use crate::ValueKind;
     use crate::adhoc;
     use crate::adhoc_mut;
@@ -2347,13 +2350,217 @@ mod tests {
             &driver,
             "",
             None,
-            Duration::from_secs(86400),
+            Duration::from_hours(24),
             adhoc(|req| {
                 drop(req.defer());
             }),
             expect!([r#"error (unresolved)|{"$error":"unresolved"}"#]),
         )
         .await;
+    }
+
+    #[test]
+    fn test_deferred_partial_results_and_resume() {
+        for finish_pending in [false, true] {
+            let mut pending = None;
+            let mut ready = None;
+            let mut inspection = inspect(
+                "",
+                adhoc_mut(|req| {
+                    req.respond()
+                        .child("pending", |req| pending = Some(req.defer()))
+                        .child("ready", |req| ready = Some(req.defer()));
+                }),
+            );
+            ready.take().unwrap().value(42u32);
+            assert!(inspection.resolve().now_or_never().is_none());
+
+            if finish_pending {
+                pending.take().unwrap().value(7u32);
+                assert!(inspection.resolve().now_or_never().is_some());
+            }
+            let Node::Dir(entries) = inspection.results() else {
+                panic!("expected directory");
+            };
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].name, "pending");
+            assert_eq!(
+                entries[0].node,
+                if finish_pending {
+                    Node::Value(Value::new(7u32))
+                } else {
+                    Node::Failed(Error::Unresolved)
+                }
+            );
+            assert_eq!(entries[1].name, "ready");
+            assert_eq!(entries[1].node, Node::Value(Value::new(42u32)));
+        }
+    }
+
+    #[test]
+    fn test_deferred_external_path() {
+        let mut deferred = None;
+        let mut inspection = InspectionBuilder::new("remote/leaf")
+            .sensitivity(Some(SensitivityLevel::Safe))
+            .inspect(adhoc_mut(|req| {
+                req.respond()
+                    .sensitivity_child("remote", SensitivityLevel::Safe, |req| {
+                        deferred = Some(req.defer());
+                    });
+            }));
+        let deferred = deferred.unwrap();
+        let request = deferred.external_request();
+        assert_eq!(request.path, "/leaf");
+        assert_eq!(request.sensitivity, SensitivityLevel::Safe);
+        assert!(matches!(
+            request.request_type,
+            ExternalRequestType::Inspect { .. }
+        ));
+        deferred.complete_external(Node::Value(Value::new(7u32)), SensitivityLevel::Safe);
+        assert!(inspection.resolve().now_or_never().is_some());
+        assert_eq!(inspection.results(), Node::Value(Value::new(7u32)));
+    }
+
+    #[test]
+    fn test_deferred_external_sensitivity() {
+        for sensitivity in [SensitivityLevel::Safe, SensitivityLevel::Sensitive] {
+            let mut deferred = None;
+            let mut inspection = InspectionBuilder::new("")
+                .sensitivity(Some(SensitivityLevel::Safe))
+                .inspect(adhoc_mut(|req| deferred = Some(req.defer())));
+            let allowed = Entry {
+                name: "allowed".into(),
+                sensitivity: SensitivityLevel::Safe,
+                node: Node::Value(Value::new(1u32)),
+            };
+            deferred.unwrap().complete_external(
+                Node::Dir(vec![
+                    allowed.clone(),
+                    Entry {
+                        name: "blocked".into(),
+                        sensitivity: SensitivityLevel::Sensitive,
+                        node: Node::Dir(vec![Entry {
+                            name: "child".into(),
+                            sensitivity: SensitivityLevel::Safe,
+                            node: Node::Value(Value::new(2u32)),
+                        }]),
+                    },
+                    Entry {
+                        name: "missing".into(),
+                        sensitivity: SensitivityLevel::Safe,
+                        node: Node::Failed(Error::NotFound),
+                    },
+                ]),
+                sensitivity,
+            );
+            assert!(inspection.resolve().now_or_never().is_some());
+            assert_eq!(
+                inspection.results(),
+                if sensitivity == SensitivityLevel::Safe {
+                    Node::Dir(vec![allowed])
+                } else {
+                    Node::Failed(Error::Unresolved)
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn test_deferred_update_results() {
+        for (direct, succeed) in [(true, true), (false, true), (true, false)] {
+            let mut deferred = None;
+            let update = update(
+                "",
+                "27",
+                adhoc_mut(|req| {
+                    let req = req.with_hex_format();
+                    deferred = Some(if direct {
+                        let Ok(req) = req.update() else {
+                            panic!("expected update request");
+                        };
+                        req.defer()
+                    } else {
+                        req.defer().update().unwrap()
+                    });
+                }),
+            );
+            let deferred = deferred.unwrap();
+            assert_eq!(deferred.new_value(), "27");
+            if succeed {
+                deferred.succeed(27u32);
+                assert_eq!(update.now_or_never().unwrap().unwrap(), Value::hex(27u32));
+            } else {
+                deferred.fail(std::io::Error::other("rejected"));
+                assert_eq!(
+                    update.now_or_never().unwrap().unwrap_err(),
+                    Error::Update("rejected".into())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_deferred_mesh_response() {
+        for mutable in [false, true] {
+            let (sender, mut receiver) = mesh::channel();
+            let mut proxy = crate::send(&sender, |request| request);
+            let mut inspection = if mutable {
+                inspect("", &mut proxy)
+            } else {
+                inspect("", &proxy)
+            };
+            let request = receiver.recv().now_or_never().unwrap().unwrap();
+            let request = request.update().unwrap_err();
+            request.respond(|response| {
+                response
+                    .field("value", 17u32)
+                    .child("ignored", |req| req.defer().ignore());
+            });
+            assert!(inspection.resolve().now_or_never().is_some());
+            assert_eq!(
+                inspection.results(),
+                Node::Dir(vec![Entry {
+                    name: "value".into(),
+                    sensitivity: SensitivityLevel::Unspecified,
+                    node: Node::Value(Value::new(17u32)),
+                }])
+            );
+        }
+    }
+
+    #[test]
+    fn test_deferred_update_dispatch() {
+        for new_value in ["27", "invalid"] {
+            let mut value = 7u32;
+            let mut deferred = None;
+            let update = update(
+                "remote/value",
+                new_value,
+                adhoc_mut(|req| {
+                    req.respond()
+                        .child("remote", |req| deferred = Some(req.defer()));
+                }),
+            );
+            let deferred = deferred.unwrap();
+            let request = deferred.external_request();
+            assert_eq!(request.path, "/value");
+            let ExternalRequestType::Update { value: requested } = request.request_type else {
+                panic!("expected external update request");
+            };
+            assert_eq!(requested, new_value);
+            let deferred = deferred.update().unwrap_err();
+            deferred.inspect(adhoc_mut(|req| {
+                req.respond().field_mut("value", &mut value);
+            }));
+            let result = update.now_or_never().unwrap();
+            if new_value == "27" {
+                assert_eq!(result.unwrap(), Value::new(27u32));
+                assert_eq!(value, 27);
+            } else {
+                assert!(matches!(result, Err(Error::Update(_))));
+                assert_eq!(value, 7);
+            }
+        }
     }
 
     #[test]

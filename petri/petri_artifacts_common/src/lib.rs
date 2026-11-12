@@ -4,8 +4,6 @@
 //! `petri` test artifact declarations used by all petri-based tests, no matter
 //! what VMM backend is being used.
 
-#![forbid(unsafe_code)]
-
 /// Runtime capabilities that VMM tests can require.
 pub mod capabilities {
     /// Software VPCI device emulation support.
@@ -14,12 +12,15 @@ pub mod capabilities {
     /// Support for resetting a partition running Windows.
     pub const WINDOWS_PARTITION_RESET: &str = "windows_partition_reset";
 
+    /// Support for nested virtualization
+    pub const NESTED_VIRT: &str = "nested_virt";
+
     /// All capability names known to petri, including those defined by
-    /// incubators. Incubator device capabilities are the device's profile
-    /// `name` with `-` replaced by `_` (e.g. `edu-initiator` → `edu_initiator`).
+    /// tests.
     pub const KNOWN_CAPABILITIES: &[&str] = &[
         VPCI,
         WINDOWS_PARTITION_RESET,
+        NESTED_VIRT,
         "test_disk",
         "edu_initiator",
         "ivshmem_target",

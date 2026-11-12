@@ -94,7 +94,8 @@ impl VirtioFs {
     /// Each child carries its own read-only setting (from `mount_options`), so
     /// shares under one aggregate device may differ.
     ///
-    /// Only valid in aggregate mode. Returns:
+    /// Volume setup failures retain their diagnostic context. Configuration failures use
+    /// [`crate::CreateError::Filesystem`] with the following errnos:
     /// - `EINVAL` on a direct-mode file system, or if `name` is empty,
     ///   reserved (`.`/`..`), or contains `/` or `\0`.
     /// - `EAGAIN` if the device has begun tearing down (see
@@ -106,9 +107,9 @@ impl VirtioFs {
         name: &str,
         root_path: impl AsRef<Path>,
         mount_options: Option<&LxVolumeOptions>,
-    ) -> lx::Result<()> {
+    ) -> Result<(), crate::CreateError> {
         let Some(aggregate) = self.inner.aggregate() else {
-            return Err(lx::Error::EINVAL);
+            return Err(lx::Error::EINVAL.into());
         };
 
         check_name(name.as_bytes())?;
@@ -125,7 +126,7 @@ impl VirtioFs {
         let mut registry = aggregate.registry.write();
         registry.check_can_add()?;
         if registry.entries.iter().any(|e| e.name == name) {
-            return Err(lx::Error::EEXIST);
+            return Err(lx::Error::EEXIST.into());
         }
 
         let volume_id = registry.next_volume_id;
@@ -242,7 +243,7 @@ impl VirtioFs {
     fn insert_child_root_entry(&self, volume: Arc<VirtioFsVolume>) -> lx::Result<fuse_entry_out> {
         let (inode, stat) = VirtioFsInode::new(volume, PathBuf::new())?;
         let attr = inode.attr_from_stat(&stat);
-        let (_, node_id) = self.insert_inode(inode);
+        let (_, node_id) = self.insert_inode(inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -257,6 +258,21 @@ impl VirtioFs {
         offset: u64,
         size: u32,
         plus: bool,
+    ) -> lx::Result<Vec<u8>> {
+        self.read_synthetic_root_dir_with(offset, size, plus, |volume| {
+            self.insert_child_root_entry(volume)
+        })
+    }
+
+    /// Reads the synthetic root directory, calling `lookup` to look up each
+    /// child's root for a readdirplus reply. A successful `lookup` takes the
+    /// lookup reference that the child's entry hands to the guest.
+    fn read_synthetic_root_dir_with(
+        &self,
+        offset: u64,
+        size: u32,
+        plus: bool,
+        mut lookup: impl FnMut(Arc<VirtioFsVolume>) -> lx::Result<fuse_entry_out>,
     ) -> lx::Result<Vec<u8>> {
         let Some(aggregate) = self.inner.aggregate() else {
             return Ok(Vec::new());
@@ -280,7 +296,21 @@ impl VirtioFs {
                     let Some((name, volume)) = child else {
                         break;
                     };
-                    self.write_child_entry(&mut buffer, &name, volume, next, plus)?
+                    match self.write_child_entry(
+                        &mut buffer,
+                        &name,
+                        volume,
+                        next,
+                        plus,
+                        &mut lookup,
+                    ) {
+                        Ok(fit) => fit,
+                        // As in `VirtioFsFile::read_dir`, don't discard entries
+                        // holding lookup references: stop at the failing child,
+                        // where the guest's next read starts and gets the error.
+                        Err(err) if buffer.is_empty() => return Err(err),
+                        Err(_) => break,
+                    }
                 }
             };
             if !fit {
@@ -319,6 +349,7 @@ impl VirtioFs {
         volume: Arc<VirtioFsVolume>,
         next_off: u64,
         plus: bool,
+        lookup: &mut impl FnMut(Arc<VirtioFsVolume>) -> lx::Result<fuse_entry_out>,
     ) -> lx::Result<bool> {
         if plus {
             if !buffer.check_dir_entry_plus(name) {
@@ -326,7 +357,7 @@ impl VirtioFs {
             }
             // readdirplus performs a lookup on each entry, incrementing its
             // lookup count, so create/insert the root inode here.
-            let entry = self.insert_child_root_entry(volume)?;
+            let entry = lookup(volume)?;
             Ok(buffer.dir_entry_plus(name, next_off, entry))
         } else {
             // Plain readdir: report the directory using the volume root's

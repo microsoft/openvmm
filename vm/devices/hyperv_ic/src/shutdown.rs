@@ -33,6 +33,7 @@ use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmbus_ring::RingMem;
 use zerocopy::IntoBytes;
 
 const SHUTDOWN_VERSIONS: &[hyperv_ic_protocol::Version] = &[
@@ -53,9 +54,9 @@ pub struct ShutdownIc {
 
 #[doc(hidden)]
 #[derive(InspectMut)]
-pub struct ShutdownChannel {
+pub struct ShutdownChannel<M: RingMem = GpadlRingMem> {
     #[inspect(mut)]
-    pipe: IcPipe,
+    pipe: IcPipe<M>,
     state: ChannelState,
     #[inspect(with = "Option::is_some")]
     pending_shutdown: Option<Rpc<(), ShutdownResult>>,
@@ -91,11 +92,11 @@ impl ShutdownIc {
     }
 }
 
-impl ShutdownChannel {
+impl<M: RingMem + Unpin> ShutdownChannel<M> {
     fn new(
-        channel: RawAsyncChannel<GpadlRingMem>,
+        channel: RawAsyncChannel<M>,
         restore_state: Option<ChannelState>,
-    ) -> Result<ShutdownChannel, ChannelOpenError> {
+    ) -> Result<Self, ChannelOpenError> {
         let pipe = IcPipe::new(channel)?;
         Ok(Self {
             pipe,
@@ -104,13 +105,18 @@ impl ShutdownChannel {
         })
     }
 
-    async fn process(&mut self, ic: &mut ShutdownIc) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        ic: &mut ShutdownIc,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
         enum Event {
             StateMachine(anyhow::Result<()>),
             Request(ShutdownRpc),
         }
 
         loop {
+            check.check()?;
             let event = pin!(
                 (
                     once(
@@ -126,7 +132,13 @@ impl ShutdownChannel {
             .unwrap();
             match event {
                 Event::StateMachine(r) => {
-                    r?;
+                    if let Err(err) = r {
+                        tracing::error!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "shutdown ic error"
+                        );
+                        return Ok(());
+                    }
                 }
                 Event::Request(req) => match req {
                     ShutdownRpc::WaitReady(rpc) => match &mut self.state {
@@ -186,6 +198,19 @@ impl ShutdownChannel {
             } => match state {
                 ReadyState::Ready => std::future::pending().await,
                 ReadyState::SendShutdown(params) => {
+                    let supported = match params.shutdown_type {
+                        ShutdownType::PowerOff => true,
+                        ShutdownType::Reboot => versions.message_version >= SHUTDOWN_VERSION_3_1,
+                        ShutdownType::Hibernate => versions.message_version >= SHUTDOWN_VERSION_3_2,
+                    };
+                    if !supported {
+                        if let Some(send) = self.pending_shutdown.take() {
+                            send.complete(ShutdownResult::Failed(Status::NOT_SUPPORTED.0));
+                        }
+                        *state = ReadyState::Ready;
+                        return Ok(());
+                    }
+
                     let mut flags =
                         hyperv_ic_protocol::shutdown::ShutdownFlags::new().with_force(params.force);
                     match params.shutdown_type {
@@ -268,18 +293,8 @@ impl SimpleVmbusDevice for ShutdownIc {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(async {
-            match runner.process(self).await {
-                Ok(()) => {}
-                Err(err) => {
-                    tracing::error!(
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "shutdown ic error"
-                    )
-                }
-            }
-        })
-        .await
+        let check = stop.check_handle()?;
+        stop.until_stopped(runner.process(self, &check)).await?
     }
 
     fn supports_save_restore(
@@ -459,5 +474,251 @@ mod save_restore {
             };
             ShutdownChannel::new(channel, Some(state))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use hyperv_ic_protocol::Header;
+    use hyperv_ic_protocol::HeaderFlags;
+    use hyperv_ic_protocol::MessageType;
+    use mesh::rpc::RpcSend;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use task_control::AsyncRun;
+    use task_control::TaskControl;
+    use test_with_tracing::test;
+    use vmbus_async::async_dgram::AsyncRecvExt;
+    use vmbus_async::pipe::MessagePipe;
+    use vmbus_channel::connected_async_channels;
+    use vmbus_channel::test_helpers::gated_channels;
+    use vmbus_channel::test_helpers::stop_with_timeout;
+    use vmbus_channel::test_helpers::with_timeout;
+    use zerocopy::FromBytes;
+    use zerocopy::FromZeros;
+
+    struct Worker<M: RingMem> {
+        ic: ShutdownIc,
+        channel: ShutdownChannel<M>,
+    }
+
+    impl<M: RingMem + Unpin + Sync + 'static> AsyncRun<()> for Worker<M> {
+        async fn run(&mut self, stop: &mut StopTask<'_>, _: &mut ()) -> Result<(), Cancelled> {
+            let check = stop.check_handle()?;
+            stop.until_stopped(self.channel.process(&mut self.ic, &check))
+                .await?
+        }
+    }
+
+    fn response() -> Header {
+        Header {
+            message_type: MessageType::SHUTDOWN,
+            status: Status::SUCCESS,
+            flags: HeaderFlags::new()
+                .with_transaction(true)
+                .with_response(true),
+            ..FromZeros::new_zeroed()
+        }
+    }
+
+    #[async_test]
+    async fn shutdown_operations_require_supported_versions(driver: DefaultDriver) {
+        let (_thread, worker_driver) =
+            pal_async::DefaultPool::spawn_on_thread("ic-shutdown-version");
+        for (message_version, reboot_supported, hibernate_supported) in [
+            (SHUTDOWN_VERSION_1, false, false),
+            (SHUTDOWN_VERSION_3, false, false),
+            (SHUTDOWN_VERSION_3_1, true, false),
+            (SHUTDOWN_VERSION_3_2, true, true),
+        ] {
+            let versions = Versions {
+                framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_3,
+                message_version,
+            };
+            let (host, guest) = connected_async_channels(16384);
+            let mut guest = MessagePipe::new(guest).unwrap();
+            let (send, recv) = mesh::channel();
+            let mut task = TaskControl::new(Worker {
+                ic: ShutdownIc::new(recv),
+                channel: ShutdownChannel::new(
+                    host,
+                    Some(ChannelState::Ready {
+                        versions,
+                        state: ReadyState::Ready,
+                        clients: Vec::new(),
+                    }),
+                )
+                .unwrap(),
+            });
+            task.insert(&worker_driver, "shutdown", ());
+            assert!(task.start());
+
+            for force in [false, true] {
+                for (shutdown_type, supported) in [
+                    (ShutdownType::Reboot, reboot_supported),
+                    (ShutdownType::Hibernate, hibernate_supported),
+                    (ShutdownType::PowerOff, true),
+                ] {
+                    let restart = matches!(shutdown_type, ShutdownType::Reboot);
+                    let hibernate = matches!(shutdown_type, ShutdownType::Hibernate);
+                    let pending = send.call(
+                        ShutdownRpc::Shutdown,
+                        ShutdownParams {
+                            shutdown_type,
+                            force,
+                        },
+                    );
+                    let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
+                    if supported {
+                        let size = with_timeout(&driver, guest.recv(&mut buffer))
+                            .await
+                            .unwrap();
+                        let (header, body) = Header::read_from_prefix(&buffer[..size]).unwrap();
+                        assert_eq!(header.message_type, MessageType::SHUTDOWN);
+                        assert_eq!(header.framework_version, versions.framework_version);
+                        assert_eq!(header.message_version, message_version);
+                        assert_eq!(
+                            header.message_size as usize,
+                            size_of::<hyperv_ic_protocol::shutdown::ShutdownMessage>()
+                        );
+                        let message =
+                            hyperv_ic_protocol::shutdown::ShutdownMessage::read_from_bytes(body)
+                                .unwrap();
+                        assert_eq!(message.flags.force(), force);
+                        assert_eq!(message.flags.restart(), restart);
+                        assert_eq!(message.flags.hibernate(), hibernate);
+                        let mut ack = response();
+                        ack.framework_version = versions.framework_version;
+                        ack.message_version = message_version;
+                        guest.try_send(ack.as_bytes()).unwrap();
+                        assert_eq!(
+                            with_timeout(&driver, pending).await.unwrap(),
+                            ShutdownResult::Ok
+                        );
+                    } else {
+                        assert_eq!(
+                            with_timeout(&driver, pending).await.unwrap(),
+                            ShutdownResult::Failed(Status::NOT_SUPPORTED.0),
+                            "unexpected result for version {message_version}, restart={restart}, hibernate={hibernate}, force={force}"
+                        );
+                    }
+                    assert!(guest.recv(&mut buffer).now_or_never().is_none());
+                }
+            }
+
+            stop_with_timeout(&mut task, &driver).await;
+            assert!(task.task().channel.pending_shutdown.is_none());
+            assert!(matches!(
+                &task.task().channel.state,
+                ChannelState::Ready {
+                    state: ReadyState::Ready,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[async_test]
+    async fn stop_between_stale_responses_preserves_negotiation(driver: DefaultDriver) {
+        let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("ic-negotiate-stop");
+        let (host, guest, gate) = gated_channels(16384);
+        let mut guest = MessagePipe::new(guest).unwrap();
+        guest.try_send(response().as_bytes()).unwrap();
+        guest.try_send(response().as_bytes()).unwrap();
+        let (_send, recv) = mesh::channel();
+        let mut task = TaskControl::new(Worker {
+            ic: ShutdownIc::new(recv),
+            channel: ShutdownChannel::new(host, None).unwrap(),
+        });
+        task.insert(&worker_driver, "shutdown", ());
+        assert!(task.start());
+        gate.stop(&mut task, &driver).await;
+        assert!(matches!(
+            &task.task().channel.state,
+            ChannelState::Negotiate(NegotiateState::WaitVersion)
+        ));
+        let mut buffer = [0; 256];
+        let n = task
+            .task_mut()
+            .channel
+            .pipe
+            .pipe
+            .recv(&mut buffer)
+            .now_or_never()
+            .unwrap()
+            .unwrap();
+        let (header, _) = Header::read_from_prefix(&buffer[..n]).unwrap();
+        assert_eq!(header.message_type, MessageType::SHUTDOWN);
+        let n = with_timeout(&driver, guest.recv(&mut buffer))
+            .await
+            .unwrap();
+        let (header, _) = Header::read_from_prefix(&buffer[..n]).unwrap();
+        assert_eq!(header.message_type, MessageType::VERSION_NEGOTIATION);
+        assert!(task.start());
+        stop_with_timeout(&mut task, &driver).await;
+        assert!(guest.recv(&mut buffer).now_or_never().is_none());
+    }
+
+    #[async_test]
+    async fn stop_waiting_for_shutdown_ack_preserves_rpc(driver: DefaultDriver) {
+        let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("ic-shutdown-stop");
+        let (host, guest) = connected_async_channels(16384);
+        let mut guest = MessagePipe::new(guest).unwrap();
+        let (send, recv) = mesh::channel();
+        let mut task = TaskControl::new(Worker {
+            ic: ShutdownIc::new(recv),
+            channel: ShutdownChannel::new(
+                host,
+                Some(ChannelState::Ready {
+                    versions: Versions {
+                        framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_3,
+                        message_version: SHUTDOWN_VERSION_3,
+                    },
+                    state: ReadyState::Ready,
+                    clients: Vec::new(),
+                }),
+            )
+            .unwrap(),
+        });
+        task.insert(&worker_driver, "shutdown", ());
+        assert!(task.start());
+        let pending = send.call(
+            ShutdownRpc::Shutdown,
+            ShutdownParams {
+                shutdown_type: ShutdownType::PowerOff,
+                force: false,
+            },
+        );
+        let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
+        with_timeout(&driver, guest.recv(&mut buffer))
+            .await
+            .unwrap();
+        stop_with_timeout(&mut task, &driver).await;
+        assert!(task.task().channel.pending_shutdown.is_some());
+        assert!(matches!(
+            &task.task().channel.state,
+            ChannelState::Ready {
+                state: ReadyState::WaitShutdown,
+                ..
+            }
+        ));
+        guest.try_send(response().as_bytes()).unwrap();
+        assert!(task.start());
+        assert_eq!(
+            with_timeout(&driver, pending).await.unwrap(),
+            ShutdownResult::Ok
+        );
+        stop_with_timeout(&mut task, &driver).await;
+        assert!(task.task().channel.pending_shutdown.is_none());
+        assert!(matches!(
+            &task.task().channel.state,
+            ChannelState::Ready {
+                state: ReadyState::Ready,
+                ..
+            }
+        ));
+        assert!(guest.recv(&mut buffer).now_or_never().is_none());
     }
 }

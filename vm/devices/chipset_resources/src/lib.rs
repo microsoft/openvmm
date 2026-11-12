@@ -412,9 +412,45 @@ pub mod hyperv_guest_watchdog {
     }
 }
 
+pub mod acpi_power_button {
+    //! Resource definitions for ACPI power-button events.
+
+    use mesh::MeshPayload;
+    use mesh::rpc::Rpc;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Power-button status register, in the architectural MMIO reservation on
+    /// both x86_64 and AArch64. Bit 0 is pending and write-one-to-clear.
+    // TODO: This should be made dynamic, as there is no hyper-v equivalent that
+    // it has to match.
+    pub const ACPI_POWER_BUTTON_MMIO_BASE: u32 = 0xfed8_0000;
+
+    /// Host requests to inject an ACPI power-button event.
+    #[derive(MeshPayload)]
+    pub enum PowerButtonRpc {
+        /// Acknowledge once the button event has been injected or latched.
+        Press(Rpc<(), ()>),
+    }
+
+    /// A handle to an ACPI generic event device with a latched power-button event.
+    #[derive(MeshPayload)]
+    pub struct AcpiPowerButtonDeviceHandle {
+        /// Interrupt line in the platform's IRQ line set.
+        pub irq: u32,
+        /// Button presses, acknowledged after the event is latched.
+        pub recv: mesh::Receiver<PowerButtonRpc>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for AcpiPowerButtonDeviceHandle {
+        const ID: &'static str = "acpi_power_button";
+    }
+}
+
 pub mod pm {
     //! Resource definitions for power management devices.
 
+    use crate::acpi_power_button::PowerButtonRpc;
     use mesh::MeshPayload;
     use vm_resource::CanResolveTo;
     use vm_resource::Resource;
@@ -462,6 +498,8 @@ pub mod pm {
     pub struct Piix4PowerManagementDeviceHandle {
         /// Optional PM timer assist resource.
         pub pm_timer_assist: Option<Resource<PmTimerAssistHandleKind>>,
+        /// Fixed ACPI power-button presses, acknowledged after latching PM1 status.
+        pub power_button_recv: Option<mesh::Receiver<PowerButtonRpc>>,
     }
 
     /// The fixed BDF used by the PIIX4 PM device in the Gen1 chipset.
@@ -470,10 +508,10 @@ pub mod pm {
     /// Default PIO base address for the PM dynamic register region.
     ///
     /// This value must match what is reported by the firmware (FADT).
-    pub const DEFAULT_PM_PIO_BASE: u16 = 0x400;
+    pub const DEFAULT_PM_PIO_BASE: u16 = acpi_spec::hyperv::DEFAULT_PM_PIO_BASE;
 
     /// Default ACPI IRQ line for the Hyper-V power management device.
-    pub const DEFAULT_ACPI_IRQ: u32 = 9;
+    pub const DEFAULT_ACPI_IRQ: u32 = acpi_spec::hyperv::DEFAULT_ACPI_IRQ;
 
     impl ResourceId<ChipsetDeviceHandleKind> for Piix4PowerManagementDeviceHandle {
         const ID: &'static str = "piix4_power_management";

@@ -82,6 +82,9 @@ features = [
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(unix)'.dev-dependencies]
+tempfile.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 caps.workspace = true
 seccompiler.workspace = true
@@ -90,8 +93,12 @@ fs-err.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+test_with_tracing.workspace = true
+
 [target.'cfg(windows)'.dev-dependencies]
 getrandom.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

@@ -7,7 +7,7 @@
 //! entries into runtime root-port definitions and validate that the configured
 //! root complexes form a consistent bus-number topology before the VM is built.
 
-use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
@@ -90,7 +90,6 @@ pub(super) fn validate_pcie_root_complexes(
 mod tests {
     use super::*;
     use openvmm_defs::config::PcieMmioRangeConfig;
-
     fn rc(name: &str, segment: u16, start_bus: u8, end_bus: u8) -> PcieRootComplexConfig {
         PcieRootComplexConfig {
             index: 0,
@@ -98,6 +97,7 @@ mod tests {
             segment,
             start_bus,
             end_bus,
+            legacy_pci_config_io: false,
             low_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
             high_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
             ports: Vec::new(),

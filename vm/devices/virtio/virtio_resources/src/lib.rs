@@ -92,6 +92,7 @@ pub mod pmem {
     #[derive(MeshPayload)]
     pub struct VirtioPmemHandle {
         pub path: String,
+        pub read_only: bool,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioPmemHandle {
@@ -109,6 +110,19 @@ pub mod rng {
 
     impl ResourceId<VirtioDeviceHandle> for VirtioRngHandle {
         const ID: &'static str = "virtio-rng";
+    }
+}
+
+pub mod rtc {
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioRtcHandle;
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioRtcHandle {
+        const ID: &'static str = "virtio-rtc";
     }
 }
 
@@ -142,6 +156,8 @@ pub mod net {
     #[derive(MeshPayload)]
     pub struct VirtioNetHandle {
         pub max_queues: Option<u16>,
+        /// Advertise guest TCP segmentation offload when the backend supports it.
+        pub enable_rx_gso: bool,
         pub mac_address: MacAddress,
         pub endpoint: Resource<NetEndpointHandleKind>,
     }
