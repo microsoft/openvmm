@@ -690,6 +690,38 @@ fn build_vnet_hdr(meta: &TxMetadata, ip: Option<IpVersion>) -> VirtioNetHdr {
     }
 }
 
+/// Fixes up the IP headers of an outgoing frame for the TAP and returns its virtio net header.
+///
+/// The IP header and its version come from the frame, behind any inline tags: a frontend may
+/// report `meta.l2_len` without a tag the guest laid into the frame, and a driver that lays one
+/// there can leave both IP version flags clear.
+fn prepare_tx_frame(packet: &mut [u8], meta: &TxMetadata) -> VirtioNetHdr {
+    let ip = ip_header(packet);
+    let segmentation =
+        meta.flags.offload_tcp_segmentation() || meta.flags.offload_udp_segmentation();
+    if let Some(IpHeader { offset, version }) = ip {
+        match version {
+            // The virtio net header cannot request IPv4 header checksum offload, so compute it
+            // here. This also covers NDIS LSO frames, where the guest zeroes the checksum: the
+            // host validates the IPv4 header when the frame enters its IP stack or a
+            // br_netfilter bridge, before segmentation, and drops it if the checksum is wrong.
+            IpVersion::V4 if meta.flags.offload_ip_header_checksum() => {
+                fixup_ipv4_header_checksum(packet, offset);
+            }
+            // NDIS LSO guests zero the IPv6 payload length too, and the host's IPv6 input
+            // validation truncates such a frame to its header before segmentation.
+            IpVersion::V6 if segmentation => fixup_ipv6_payload_length(packet, offset),
+            IpVersion::V4 | IpVersion::V6 => {}
+        }
+        // Convert the LSO length-less pseudo-header seed to the full-length form the kernel's
+        // GSO path expects, so segmentation produces correct per-segment checksums.
+        if segmentation {
+            fixup_gso_pseudo_header(packet, offset);
+        }
+    }
+    build_vnet_hdr(meta, ip.map(|ip| ip.version))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum InvalidRxMetadata {
     UnsupportedGsoProtocol,
@@ -887,6 +919,7 @@ fn parse_vnet_hdr(
 mod tests {
     use super::*;
     use net_backend::TxFlags;
+    use zerocopy::IntoBytes;
 
     fn all_rx_offloads() -> RxOffloadSupport {
         RxOffloadSupport {
@@ -995,6 +1028,121 @@ mod tests {
             protocol(meta(false, false), None),
             VirtioNetHdrGsoProtocol::TCPV6
         );
+    }
+
+    /// A frame with one 802.1Q tag in front of `ethertype`, then `l3` and a 20-byte TCP header
+    /// with 100 bytes of payload.
+    fn tagged_tcp_frame(ethertype: u16, l3: &[u8]) -> Vec<u8> {
+        let mut frame = vec![0; ETHERNET_ADDRESSES_LEN];
+        frame.extend_from_slice(&ETH_P_8021Q.to_be_bytes());
+        frame.extend_from_slice(&[0, 100]);
+        frame.extend_from_slice(&ethertype.to_be_bytes());
+        frame.extend_from_slice(l3);
+        let mut tcp = [0; 20];
+        tcp[12] = 0x50;
+        frame.extend_from_slice(&tcp);
+        frame.extend_from_slice(&[0xab; 100]);
+        frame
+    }
+
+    /// 10.0.0.1 to 10.0.0.2, TCP, with the total length and checksum left zero.
+    fn ipv4_header() -> [u8; 20] {
+        let mut header = [0; 20];
+        header[0] = 0x45;
+        header[8] = 64;
+        header[9] = 6;
+        header[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        header[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        header
+    }
+
+    /// ::1 to ::2, TCP, with the payload length left zero.
+    fn ipv6_header() -> [u8; 40] {
+        let mut header = [0; 40];
+        header[0] = 0x60;
+        header[6] = 6;
+        header[7] = 64;
+        header[23] = 1;
+        header[39] = 2;
+        header
+    }
+
+    /// TCP segmentation metadata whose `l2_len` leaves out the frame's tag.
+    fn tso_meta(flags: TxFlags) -> TxMetadata {
+        TxMetadata {
+            flags: flags
+                .with_offload_tcp_segmentation(true)
+                .with_offload_tcp_checksum(true),
+            l2_len: 14,
+            l3_len: 20,
+            l4_len: 20,
+            max_segment_size: 1000,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prepare_tx_frame_fixes_tagged_ipv4_segmentation() {
+        let mut frame = tagged_tcp_frame(ETH_P_IP, &ipv4_header());
+        let meta = tso_meta(TxFlags::new().with_offload_ip_header_checksum(true));
+        let hdr = prepare_tx_frame(&mut frame, &meta);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::TCPV4);
+        let ip = &frame[18..38];
+        assert_eq!(ip[2..4], 140u16.to_be_bytes());
+        let mut sum: u32 = ip
+            .chunks(2)
+            .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
+            .sum();
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        assert_eq!(sum, 0xffff);
+        // 0x0a00 + 0x0001 + 0x0a00 + 0x0002 + protocol 6 + TCP length 120.
+        assert_eq!(frame[54..56], 0x1481u16.to_be_bytes());
+    }
+
+    #[test]
+    fn prepare_tx_frame_fixes_tagged_ipv6_segmentation() {
+        let mut frame = tagged_tcp_frame(ETH_P_IPV6, &ipv6_header());
+        // The IPv4 checksum request must not touch an IPv6 header.
+        let meta = tso_meta(TxFlags::new().with_offload_ip_header_checksum(true));
+        let hdr = prepare_tx_frame(&mut frame, &meta);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::TCPV6);
+        let mut expected = ipv6_header();
+        expected[4..6].copy_from_slice(&120u16.to_be_bytes());
+        assert_eq!(frame[18..58], expected);
+        // ::1 + ::2 + protocol 6 + TCP length 120.
+        assert_eq!(frame[74..76], 0x0081u16.to_be_bytes());
+    }
+
+    #[test]
+    fn prepare_tx_frame_leaves_what_was_not_asked_for() {
+        let checksum_only = TxMetadata {
+            flags: TxFlags::new()
+                .with_offload_ip_header_checksum(true)
+                .with_offload_tcp_checksum(true),
+            l2_len: 14,
+            l3_len: 40,
+            ..Default::default()
+        };
+        let no_ip_checksum = TxMetadata {
+            flags: TxFlags::new().with_offload_tcp_checksum(true),
+            l2_len: 14,
+            l3_len: 20,
+            ..Default::default()
+        };
+        let not_ip = tso_meta(TxFlags::new().with_is_ipv4(true));
+        for (frame, meta) in [
+            (tagged_tcp_frame(ETH_P_IPV6, &ipv6_header()), checksum_only),
+            (tagged_tcp_frame(ETH_P_IP, &ipv4_header()), no_ip_checksum),
+            (tagged_tcp_frame(0x88b5, &ipv4_header()), not_ip),
+        ] {
+            let mut packet = frame.clone();
+            let hdr = prepare_tx_frame(&mut packet, &meta);
+            assert_eq!(packet, frame);
+            let expected = build_vnet_hdr(&meta, ip_header(&frame).map(|ip| ip.version));
+            assert_eq!(hdr.as_bytes(), expected.as_bytes());
+        }
     }
 
     #[test]
