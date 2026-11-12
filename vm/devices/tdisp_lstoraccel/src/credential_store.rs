@@ -50,9 +50,13 @@ pub enum CredentialStoreError {
 
 /// A single-owner namespace credential store.
 ///
-/// The caller supplies a backend configured for encrypted persistence. Do not
-/// open concurrent wrappers over the same backing blob: each update writes the
-/// entire collection.
+/// The caller must supply a backend that encrypts persisted credentials.
+/// With `VmgsNonVolatileStore`, VMGS must be encrypted and unlocked before
+/// writes. The adapter's `encrypted` flag alone is insufficient: VMGS can
+/// otherwise fall back to plaintext. This wrapper cannot verify that state.
+///
+/// Do not open concurrent wrappers over the same backing blob: each update
+/// writes the entire collection.
 ///
 /// Updates persist before changing the in-memory state. After a storage error
 /// or cancellation of an update, discard and reopen the store before further
@@ -76,9 +80,9 @@ mod persisted {
         /// Format version. Only version 1 is currently supported.
         #[mesh(1)]
         pub(super) version: u32,
-        /// Expected record count; detects truncation between complete protobuf records.
+        /// Required count; detects truncation before or between complete records.
         #[mesh(2)]
-        pub(super) record_count: u32,
+        pub(super) record_count: Option<u32>,
         /// Namespace credentials, limited by [`super::MAX_CREDENTIALS`].
         #[mesh(3)]
         pub(super) records: Vec<CredentialRecord>,
@@ -177,7 +181,10 @@ fn deserialize_credential_store(
     if collection.records.len() > MAX_CREDENTIALS {
         return Err(Error::InvalidData("too many credential records"));
     }
-    if collection.record_count as usize != collection.records.len() {
+    let record_count = collection
+        .record_count
+        .ok_or(Error::InvalidData("missing credential record count"))?;
+    if record_count as usize != collection.records.len() {
         return Err(Error::InvalidData("credential record count mismatch"));
     }
 
@@ -215,7 +222,7 @@ fn serialize_credential_store(
         .collect();
     mesh_protobuf::encode(CredentialCollection {
         version: STORE_VERSION,
-        record_count: records.len() as u32,
+        record_count: Some(records.len() as u32),
         records,
     })
 }
@@ -254,7 +261,7 @@ mod tests {
     fn persisted_collection(records: Vec<CredentialRecord>) -> CredentialCollection {
         CredentialCollection {
             version: STORE_VERSION,
-            record_count: records.len() as u32,
+            record_count: Some(records.len() as u32),
             records,
         }
     }
@@ -439,8 +446,19 @@ mod tests {
 
     #[test]
     fn record_count_must_match_the_collection() {
+        // A populated blob truncated immediately after its version field.
+        assert!(matches!(
+            deserialize_credential_store(&[0x08, 0x01]),
+            Err(CredentialStoreError::InvalidData(
+                "missing credential record count"
+            ))
+        ));
+
+        let empty = mesh_protobuf::encode(persisted_collection(Vec::new()));
+        assert!(deserialize_credential_store(&empty).unwrap().is_empty());
+
         let mut collection = persisted_collection(vec![persisted_record(1)]);
-        collection.record_count = 0;
+        collection.record_count = Some(0);
         assert!(matches!(
             deserialize_credential_store(&mesh_protobuf::encode(collection)),
             Err(CredentialStoreError::InvalidData(
@@ -449,7 +467,7 @@ mod tests {
         ));
 
         let mut collection = persisted_collection(vec![persisted_record(1)]);
-        collection.record_count = 2;
+        collection.record_count = Some(2);
         let prefix = mesh_protobuf::encode(collection);
         let complete = mesh_protobuf::encode(persisted_collection(vec![
             persisted_record(1),
