@@ -665,7 +665,7 @@ fn negotiated_rx_offload_support(features: NetworkFeaturesBank0) -> RxOffloadSup
         tcpv4_gso: checksum && features.guest_tso4(),
         tcpv6_gso: checksum && features.guest_tso6(),
         // A virtio net header has no tag field, so the tag stays in the frame.
-        vlan: false,
+        vlan_strip: false,
     }
 }
 

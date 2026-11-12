@@ -574,7 +574,7 @@ impl Endpoint for VlanRecordingEndpoint {
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
         self.vlan
-            .store(config[0].enabled_rx_offloads.vlan, Ordering::Relaxed);
+            .store(config[0].enabled_rx_offloads.vlan_strip, Ordering::Relaxed);
         self.inner.get_queues(config, rss, queues).await
     }
 

@@ -566,7 +566,7 @@ mod tap_tests {
 
     fn out_of_band_vlan() -> RxOffloadSupport {
         RxOffloadSupport {
-            vlan: true,
+            vlan_strip: true,
             ..Default::default()
         }
     }
@@ -656,7 +656,7 @@ mod tap_tests {
             "tap0",
             RxOffloadSupport {
                 checksum: true,
-                vlan: true,
+                vlan_strip: true,
                 ..Default::default()
             },
         )

@@ -7002,7 +7002,7 @@ async fn backend_is_asked_for_the_vlan_tag_out_of_band(driver: DefaultDriver) {
 
     let state = endpoint_state.lock();
     assert!(!state.rx_offloads.is_empty());
-    assert!(state.rx_offloads.iter().all(|offloads| offloads.vlan));
+    assert!(state.rx_offloads.iter().all(|offloads| offloads.vlan_strip));
 }
 
 #[async_test]

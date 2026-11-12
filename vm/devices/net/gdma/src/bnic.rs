@@ -394,7 +394,7 @@ impl BasicNic {
                                         driver: Box::new(state.queues.driver.clone()),
                                         // The guest reads the tag from the completion.
                                         enabled_rx_offloads: net_backend::RxOffloadSupport {
-                                            vlan: true,
+                                            vlan_strip: true,
                                             ..Default::default()
                                         },
                                     }],

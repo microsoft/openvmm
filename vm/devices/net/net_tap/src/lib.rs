@@ -316,7 +316,7 @@ impl Queue for TapQueue {
                         "TAP packet is missing the Ethernet frame"
                     );
                     assert_vnet_hdr_contract(&hdr, frame.len());
-                    let strip_tag = self.enabled_rx_offloads.vlan && has_vlan_tag(frame);
+                    let strip_tag = self.enabled_rx_offloads.vlan_strip && has_vlan_tag(frame);
                     if strip_tag && hdr.flags.needs_csum() {
                         // The kernel's offset counts the tag.
                         hdr.csum_start = hdr.csum_start.saturating_sub(VLAN_TAG_LEN);
@@ -881,7 +881,7 @@ mod tests {
             checksum: true,
             tcpv4_gso: true,
             tcpv6_gso: true,
-            vlan: false,
+            vlan_strip: false,
         }
     }
 
@@ -1117,7 +1117,7 @@ mod tests {
                 checksum: true,
                 tcpv4_gso: false,
                 tcpv6_gso: true,
-                vlan: false,
+                vlan_strip: false,
             },
         );
         assert!(recovery.permits(&InvalidRxMetadata::UnsupportedGsoOffload(
@@ -1145,7 +1145,7 @@ mod tests {
                     checksum: true,
                     tcpv4_gso: false,
                     tcpv6_gso: true,
-                    vlan: false,
+                    vlan_strip: false,
                 },
                 &recovery,
             )
@@ -1164,7 +1164,7 @@ mod tests {
                     checksum: true,
                     tcpv4_gso: false,
                     tcpv6_gso: true,
-                    vlan: false,
+                    vlan_strip: false,
                 },
                 &recovery,
             )
@@ -1180,7 +1180,7 @@ mod tests {
                 checksum: false,
                 tcpv4_gso: true,
                 tcpv6_gso: true,
-                vlan: false,
+                vlan_strip: false,
             },
         );
         assert!(recovery.permits(&InvalidRxMetadata::UnsupportedChecksumOffload));

@@ -35,7 +35,7 @@ async fn receive_gso_metadata(driver: DefaultDriver) {
                 checksum: true,
                 tcpv4_gso: !ipv6,
                 tcpv6_gso: ipv6,
-                vlan: false,
+                vlan_strip: false,
             },
         };
         client.recv_segments(
@@ -180,7 +180,7 @@ async fn receive_gso_requires_negotiated_checksum_and_ip_version(driver: Default
                         checksum,
                         tcpv4_gso,
                         tcpv6_gso,
-                        vlan: false,
+                        vlan_strip: false,
                     },
                 };
                 assert_eq!(client.rx_checksum_supported(), checksum);

@@ -4822,7 +4822,7 @@ impl Coordinator {
 
                 // The guest reads the tag from the VLAN PPI.
                 let rx_offloads = net_backend::RxOffloadSupport {
-                    vlan: true,
+                    vlan_strip: true,
                     ..Default::default()
                 };
                 let mut initial_rx = initial_rx.as_slice();
