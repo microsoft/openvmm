@@ -42,7 +42,11 @@ async fn disk_sized(
             disk_size,
             block_size: MB1 as u32,
             logical_sector_size: sector_size,
-            has_parent,
+            disk_type: if has_parent {
+                crate::DiskType::Differencing(crate::VhdxParent::unlinked())
+            } else {
+                crate::DiskType::Dynamic
+            },
             ..Default::default()
         },
     )
@@ -978,20 +982,38 @@ async fn model_run(driver: &DefaultDriver, seed: u64, sector_size: u32, persist:
     disk.close().await.unwrap();
 }
 
-#[async_test]
-async fn seeded_differencing_transition_model(driver: DefaultDriver) {
-    for seed in [1, 7, 0xBAD5EED, 0xDEADBEEF] {
-        for sector_size in [512, 4096] {
-            for persist in [false, true] {
-                let result =
-                    std::panic::AssertUnwindSafe(model_run(&driver, seed, sector_size, persist))
-                        .catch_unwind()
-                        .await;
-                assert!(
-                    result.is_ok(),
-                    "model failed: seed {seed}, sector size {sector_size}, early persistence {persist}"
-                );
-            }
+macro_rules! model_case {
+    ($name:ident, $seed:expr, $sector_size:expr, $persist:expr) => {
+        #[async_test]
+        async fn $name(driver: DefaultDriver) {
+            let seed = $seed;
+            let sector_size = $sector_size;
+            let persist = $persist;
+            let result =
+                std::panic::AssertUnwindSafe(model_run(&driver, seed, sector_size, persist))
+                    .catch_unwind()
+                    .await;
+            assert!(
+                result.is_ok(),
+                "model failed: seed {seed}, sector size {sector_size}, early persistence {persist}"
+            );
         }
-    }
+    };
 }
+
+model_case!(model_seed_1_512_volatile, 1, 512, false);
+model_case!(model_seed_1_512_persist, 1, 512, true);
+model_case!(model_seed_1_4096_volatile, 1, 4096, false);
+model_case!(model_seed_1_4096_persist, 1, 4096, true);
+model_case!(model_seed_7_512_volatile, 7, 512, false);
+model_case!(model_seed_7_512_persist, 7, 512, true);
+model_case!(model_seed_7_4096_volatile, 7, 4096, false);
+model_case!(model_seed_7_4096_persist, 7, 4096, true);
+model_case!(model_seed_bad5eed_512_volatile, 0xBAD5EED, 512, false);
+model_case!(model_seed_bad5eed_512_persist, 0xBAD5EED, 512, true);
+model_case!(model_seed_bad5eed_4096_volatile, 0xBAD5EED, 4096, false);
+model_case!(model_seed_bad5eed_4096_persist, 0xBAD5EED, 4096, true);
+model_case!(model_seed_deadbeef_512_volatile, 0xDEADBEEF, 512, false);
+model_case!(model_seed_deadbeef_512_persist, 0xDEADBEEF, 512, true);
+model_case!(model_seed_deadbeef_4096_volatile, 0xDEADBEEF, 4096, false);
+model_case!(model_seed_deadbeef_4096_persist, 0xDEADBEEF, 4096, true);

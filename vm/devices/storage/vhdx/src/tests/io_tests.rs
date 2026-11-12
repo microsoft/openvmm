@@ -2648,7 +2648,7 @@ async fn concurrent_partial_writes_diff_disk_preserve_parent(driver: DefaultDriv
     let mut params = CreateParams {
         disk_size: 8 * MB1,
         block_size: 2 * MB1 as u32,
-        has_parent: true,
+        disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();
@@ -2735,7 +2735,7 @@ async fn aborted_full_promotion_preserves_partial_bitmap(driver: DefaultDriver) 
     let mut params = CreateParams {
         disk_size: 8 * MB1,
         block_size: 2 * MB1 as u32,
-        has_parent: true,
+        disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();
@@ -2801,7 +2801,7 @@ async fn partial_allocation_clears_stale_sector_bitmap(driver: DefaultDriver) {
     let mut params = CreateParams {
         disk_size: 8 * MB1,
         block_size: 2 * MB1 as u32,
-        has_parent: true,
+        disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();
