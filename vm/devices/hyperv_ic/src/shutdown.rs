@@ -240,7 +240,18 @@ impl<M: RingMem + Unpin> ShutdownChannel<M> {
                     *state = ReadyState::WaitShutdown;
                 }
                 ReadyState::WaitShutdown => {
-                    let (status, _) = self.pipe.read_response().await?;
+                    let Some((message_type, status, _)) =
+                        self.pipe.read_message(Some(versions)).await?
+                    else {
+                        return Ok(());
+                    };
+                    if message_type != hyperv_ic_protocol::MessageType::SHUTDOWN {
+                        tracelimit::warn_ratelimited!(
+                            ?message_type,
+                            "dropping unexpected message while waiting for shutdown acknowledgment"
+                        );
+                        return Ok(());
+                    }
                     let result = if status == Status::SUCCESS {
                         ShutdownResult::Ok
                     } else {
@@ -410,6 +421,10 @@ mod save_restore {
             pub waiting_on_version: bool,
             #[mesh(4)]
             pub waiting_on_shutdown_response: bool,
+            /// Defaults to zero when absent in downlevel snapshots, matching the
+            /// transaction ID used by older implementations.
+            #[mesh(5)]
+            pub transaction_id: u8,
         }
     }
 
@@ -441,12 +456,13 @@ mod save_restore {
                 shutdown_request,
                 waiting_on_version,
                 waiting_on_shutdown_response,
+                transaction_id: runner.pipe.transaction_id,
             }
         }
 
         fn restore_open(
             &mut self,
-            saved_state: Self::SavedState,
+            saved_state: state::SavedState,
             channel: RawAsyncChannel<GpadlRingMem>,
         ) -> Result<Self::Runner, ChannelOpenError> {
             let state = if let Some((framework, message)) = saved_state.version {
@@ -472,7 +488,9 @@ mod save_restore {
                     NegotiateState::SendVersion
                 })
             };
-            ShutdownChannel::new(channel, Some(state))
+            let mut runner = ShutdownChannel::new(channel, Some(state))?;
+            runner.pipe.transaction_id = saved_state.transaction_id;
+            Ok(runner)
         }
     }
 }
@@ -493,9 +511,15 @@ mod tests {
     use vmbus_async::async_dgram::AsyncRecvExt;
     use vmbus_async::pipe::MessagePipe;
     use vmbus_channel::connected_async_channels;
+    use vmbus_channel::gpadl::GpadlId;
+    use vmbus_channel::gpadl::GpadlMap;
+    use vmbus_channel::gpadl_ring::AlignedGpadlView;
     use vmbus_channel::test_helpers::gated_channels;
     use vmbus_channel::test_helpers::stop_with_timeout;
     use vmbus_channel::test_helpers::with_timeout;
+    use vmbus_ring::IncomingRing;
+    use vmbus_ring::OutgoingRing;
+    use vmbus_ring::gparange::MultiPagedRangeBuf;
     use zerocopy::FromBytes;
     use zerocopy::FromZeros;
 
@@ -514,6 +538,8 @@ mod tests {
 
     fn response() -> Header {
         Header {
+            framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_3,
+            message_version: SHUTDOWN_VERSION_3,
             message_type: MessageType::SHUTDOWN,
             status: Status::SUCCESS,
             flags: HeaderFlags::new()
@@ -592,6 +618,7 @@ mod tests {
                         let mut ack = response();
                         ack.framework_version = versions.framework_version;
                         ack.message_version = message_version;
+                        ack.transaction_id = header.transaction_id;
                         guest.try_send(ack.as_bytes()).unwrap();
                         assert_eq!(
                             with_timeout(&driver, pending).await.unwrap(),
@@ -618,6 +645,288 @@ mod tests {
                 }
             ));
         }
+    }
+
+    #[async_test]
+    async fn shutdown_ignores_unrelated_responses(driver: DefaultDriver) {
+        let (_thread, worker_driver) =
+            pal_async::DefaultPool::spawn_on_thread("ic-shutdown-response");
+        for status in [Status::SUCCESS, Status::FAIL, Status::NOT_SUPPORTED] {
+            let (host, guest) = connected_async_channels(16384);
+            let mut guest = MessagePipe::new(guest).unwrap();
+            let (send, recv) = mesh::channel();
+            let mut task = TaskControl::new(Worker {
+                ic: ShutdownIc::new(recv),
+                channel: ShutdownChannel::new(
+                    host,
+                    Some(ChannelState::Ready {
+                        versions: Versions {
+                            framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_3,
+                            message_version: SHUTDOWN_VERSION_3,
+                        },
+                        state: ReadyState::Ready,
+                        clients: Vec::new(),
+                    }),
+                )
+                .unwrap(),
+            });
+            task.insert(&worker_driver, "shutdown", ());
+            assert!(task.start());
+            let mut pending = send.call(
+                ShutdownRpc::Shutdown,
+                ShutdownParams {
+                    shutdown_type: ShutdownType::PowerOff,
+                    force: false,
+                },
+            );
+            let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
+            with_timeout(&driver, guest.recv(&mut buffer))
+                .await
+                .unwrap();
+            stop_with_timeout(&mut task, &driver).await;
+
+            for unrelated_status in [Status::SUCCESS, Status::FAIL] {
+                for mut unrelated in [
+                    Header {
+                        message_type: MessageType::TIME_SYNC,
+                        ..response()
+                    },
+                    Header {
+                        transaction_id: 1,
+                        ..response()
+                    },
+                    Header {
+                        framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_1,
+                        ..response()
+                    },
+                    Header {
+                        message_version: SHUTDOWN_VERSION_3_1,
+                        ..response()
+                    },
+                    Header {
+                        message_type: MessageType::VERSION_NEGOTIATION,
+                        framework_version: hyperv_ic_protocol::Version::new(0, 0),
+                        message_version: hyperv_ic_protocol::Version::new(0, 0),
+                        ..response()
+                    },
+                ] {
+                    unrelated.status = unrelated_status;
+                    guest.try_send(unrelated.as_bytes()).unwrap();
+                    with_timeout(
+                        &driver,
+                        task.task_mut()
+                            .channel
+                            .process_state_machine(&mut Vec::new()),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(task.task().channel.pending_shutdown.is_some());
+                    assert!((&mut pending).now_or_never().is_none());
+                    assert!(matches!(
+                        &task.task().channel.state,
+                        ChannelState::Ready {
+                            state: ReadyState::WaitShutdown,
+                            ..
+                        }
+                    ));
+                }
+            }
+
+            let mut ack = response();
+            ack.status = status;
+            guest.try_send(ack.as_bytes()).unwrap();
+            assert!(task.start());
+            let expected = if status == Status::SUCCESS {
+                ShutdownResult::Ok
+            } else {
+                ShutdownResult::Failed(status.0)
+            };
+            assert_eq!(with_timeout(&driver, pending).await.unwrap(), expected);
+            stop_with_timeout(&mut task, &driver).await;
+            assert!(task.task().channel.pending_shutdown.is_none());
+            assert!(matches!(
+                &task.task().channel.state,
+                ChannelState::Ready {
+                    state: ReadyState::Ready,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[async_test]
+    async fn restore_preserves_transaction_id(driver: DefaultDriver) {
+        let (_send, recv) = mesh::channel();
+        let mut ic = ShutdownIc::new(recv);
+        for waiting_on_version in [false, true] {
+            for transaction_id in [0, 42, u8::MAX] {
+                let versions = Versions {
+                    framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_3,
+                    message_version: SHUTDOWN_VERSION_3,
+                };
+                let (host, _guest) = save_restore_channels();
+                let state = if waiting_on_version {
+                    ChannelState::Negotiate(NegotiateState::WaitVersion)
+                } else {
+                    ChannelState::Ready {
+                        versions,
+                        state: ReadyState::WaitShutdown,
+                        clients: Vec::new(),
+                    }
+                };
+                let mut channel = ShutdownChannel::new(host, Some(state)).unwrap();
+                channel.pipe.transaction_id = transaction_id;
+                let saved = mesh::payload::encode(ic.save_open(&channel));
+                let saved = mesh::payload::decode(&saved).unwrap();
+
+                let (host, guest) = save_restore_channels();
+                let mut guest = MessagePipe::new(guest).unwrap();
+                let mut restored = ic.restore_open(saved, host).unwrap();
+                assert_eq!(restored.pipe.transaction_id, transaction_id);
+                let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
+                assert!(guest.recv(&mut buffer).now_or_never().is_none());
+
+                let mut ack = response();
+                let body = if waiting_on_version {
+                    ack.message_type = MessageType::VERSION_NEGOTIATION;
+                    ack.framework_version = hyperv_ic_protocol::Version::new(0, 0);
+                    ack.message_version = hyperv_ic_protocol::Version::new(0, 0);
+                    let message = hyperv_ic_protocol::NegotiateMessage {
+                        framework_version_count: 1,
+                        message_version_count: 1,
+                        reserved: 0,
+                    };
+                    let table = [versions.framework_version, versions.message_version];
+                    [message.as_bytes(), table.as_bytes()].concat()
+                } else {
+                    Vec::new()
+                };
+                ack.message_size = body.len() as u16;
+                ack.transaction_id = transaction_id.wrapping_add(1);
+                guest.try_send(&[ack.as_bytes(), &body].concat()).unwrap();
+                with_timeout(&driver, restored.process_state_machine(&mut Vec::new()))
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    &restored.state,
+                    ChannelState::Negotiate(NegotiateState::WaitVersion)
+                        | ChannelState::Ready {
+                            state: ReadyState::WaitShutdown,
+                            ..
+                        }
+                ));
+                assert!(guest.recv(&mut buffer).now_or_never().is_none());
+
+                ack.transaction_id = transaction_id;
+                guest.try_send(&[ack.as_bytes(), &body].concat()).unwrap();
+                with_timeout(&driver, restored.process_state_machine(&mut Vec::new()))
+                    .await
+                    .unwrap();
+                let ChannelState::Ready {
+                    versions: restored_versions,
+                    state,
+                    ..
+                } = &mut restored.state
+                else {
+                    panic!("restored negotiation did not complete");
+                };
+                assert_eq!(
+                    restored_versions.framework_version,
+                    versions.framework_version
+                );
+                assert_eq!(restored_versions.message_version, versions.message_version);
+                assert!(matches!(state, ReadyState::Ready));
+                *state = ReadyState::SendShutdown(ShutdownParams {
+                    shutdown_type: ShutdownType::PowerOff,
+                    force: false,
+                });
+                with_timeout(&driver, restored.process_state_machine(&mut Vec::new()))
+                    .await
+                    .unwrap();
+                let size = with_timeout(&driver, guest.recv(&mut buffer))
+                    .await
+                    .unwrap();
+                let (header, _) = Header::read_from_prefix(&buffer[..size]).unwrap();
+                assert_eq!(header.message_type, MessageType::SHUTDOWN);
+                assert_eq!(header.transaction_id, transaction_id.wrapping_add(1));
+            }
+        }
+    }
+
+    #[async_test]
+    async fn restore_legacy_shutdown_transaction(driver: DefaultDriver) {
+        #[derive(mesh::payload::Protobuf)]
+        #[mesh(package = "shutdown_ic")]
+        struct LegacySavedState {
+            #[mesh(1)]
+            version: Option<(save_restore::state::Version, save_restore::state::Version)>,
+            #[mesh(2)]
+            shutdown_request: Option<save_restore::state::ShutdownParams>,
+            #[mesh(3)]
+            waiting_on_version: bool,
+            #[mesh(4)]
+            waiting_on_shutdown_response: bool,
+        }
+
+        let legacy = LegacySavedState {
+            version: Some((
+                hyperv_ic_protocol::FRAMEWORK_VERSION_3.into(),
+                SHUTDOWN_VERSION_3.into(),
+            )),
+            shutdown_request: None,
+            waiting_on_version: false,
+            waiting_on_shutdown_response: true,
+        };
+        let bytes = mesh::payload::encode(legacy);
+        let saved: save_restore::state::SavedState = mesh::payload::decode(&bytes).unwrap();
+        assert_eq!(saved.transaction_id, 0);
+        let (_send, recv) = mesh::channel();
+        let mut ic = ShutdownIc::new(recv);
+        let (host, guest) = save_restore_channels();
+        let mut guest = MessagePipe::new(guest).unwrap();
+        let mut restored = ic.restore_open(saved, host).unwrap();
+        guest.try_send(response().as_bytes()).unwrap();
+        with_timeout(&driver, restored.process_state_machine(&mut Vec::new()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            restored.state,
+            ChannelState::Ready {
+                state: ReadyState::Ready,
+                ..
+            }
+        ));
+    }
+
+    fn save_restore_channels() -> (RawAsyncChannel<GpadlRingMem>, RawAsyncChannel<GpadlRingMem>) {
+        let memory = guestmem::GuestMemory::allocate(10 * 4096);
+        let map = GpadlMap::new();
+        map.add(
+            GpadlId(1),
+            MultiPagedRangeBuf::from_range_buffer(1, vec![10 * 4096, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+                .unwrap(),
+        );
+        let rings = AlignedGpadlView::new(map.view().map(GpadlId(1)).unwrap()).unwrap();
+        let (host_ring, guest_ring) = rings.split(5).ok().unwrap();
+        let (host, guest) = connected_async_channels(16384);
+        (
+            RawAsyncChannel {
+                in_ring: IncomingRing::new(GpadlRingMem::new(host_ring.clone(), &memory).unwrap())
+                    .unwrap(),
+                out_ring: OutgoingRing::new(
+                    GpadlRingMem::new(guest_ring.clone(), &memory).unwrap(),
+                )
+                .unwrap(),
+                signal: host.signal,
+            },
+            RawAsyncChannel {
+                in_ring: IncomingRing::new(GpadlRingMem::new(guest_ring, &memory).unwrap())
+                    .unwrap(),
+                out_ring: OutgoingRing::new(GpadlRingMem::new(host_ring, &memory).unwrap())
+                    .unwrap(),
+                signal: guest.signal,
+            },
+        )
     }
 
     #[async_test]
@@ -683,6 +992,7 @@ mod tests {
             .unwrap(),
         });
         task.insert(&worker_driver, "shutdown", ());
+        task.task_mut().channel.pipe.transaction_id = 41;
         assert!(task.start());
         let pending = send.call(
             ShutdownRpc::Shutdown,
@@ -692,11 +1002,17 @@ mod tests {
             },
         );
         let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
-        with_timeout(&driver, guest.recv(&mut buffer))
+        let size = with_timeout(&driver, guest.recv(&mut buffer))
             .await
             .unwrap();
+        let (header, _) = Header::read_from_prefix(&buffer[..size]).unwrap();
+        assert_eq!(header.transaction_id, 42);
         stop_with_timeout(&mut task, &driver).await;
         assert!(task.task().channel.pending_shutdown.is_some());
+        assert_eq!(
+            task.task().channel.pipe.transaction_id,
+            header.transaction_id
+        );
         assert!(matches!(
             &task.task().channel.state,
             ChannelState::Ready {
@@ -704,7 +1020,9 @@ mod tests {
                 ..
             }
         ));
-        guest.try_send(response().as_bytes()).unwrap();
+        let mut ack = response();
+        ack.transaction_id = header.transaction_id;
+        guest.try_send(ack.as_bytes()).unwrap();
         assert!(task.start());
         assert_eq!(
             with_timeout(&driver, pending).await.unwrap(),
