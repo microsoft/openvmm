@@ -13,7 +13,18 @@ use x86_64 as arch;
 
 pub use arch::CONFIG_BLOB_GPA_BASE;
 pub use arch::IMAGE_SIZE;
+pub use arch::image_layout;
 pub use arch::load;
+
+/// Where `load` places a UEFI image in guest memory and where it starts
+/// executing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageLayout {
+    /// The guest physical address the image is loaded at.
+    pub base_gpa: u64,
+    /// The offset of the entry point from `base_gpa`.
+    pub entry_offset: u64,
+}
 
 use thiserror::Error;
 use uefi_specs::uefi::firmware_volume;
@@ -351,6 +362,18 @@ pub mod x86_64 {
     const MISC_PAGES_GPA_BASE: u64 = GDT_GPA_BASE + DEFAULT_GDT_SIZE; // 0x707000
     const MISC_PAGES_SIZE: u64 = HV_PAGE_SIZE * 2;
     pub const CONFIG_BLOB_GPA_BASE: u64 = MISC_PAGES_GPA_BASE + MISC_PAGES_SIZE; // 0x709000
+
+    /// Returns where [`load`] places `image` and its entry point.
+    pub fn image_layout(image: &[u8]) -> Result<super::ImageLayout, Error> {
+        if image.len() != IMAGE_SIZE as usize {
+            return Err(Error::InvalidImageSize);
+        }
+        let entry_offset = get_sec_entry_point_offset(image).ok_or(Error::NoSecEntryPoint)?;
+        Ok(super::ImageLayout {
+            base_gpa: IMAGE_GPA_BASE,
+            entry_offset,
+        })
+    }
 
     /// Load a UEFI image with the provided config type.
     ///
@@ -843,6 +866,19 @@ pub mod aarch64 {
 
     pub const IMAGE_SIZE: u64 = 0x800000;
     pub const CONFIG_BLOB_GPA_BASE: u64 = 0x824000;
+    const IMAGE_GPA_BASE: u64 = 0;
+    const ENTRY_OFFSET: u64 = 0x1000;
+
+    /// Returns where [`load`] places `image` and its entry point.
+    pub fn image_layout(image: &[u8]) -> Result<super::ImageLayout, Error> {
+        if image.len() != IMAGE_SIZE as usize {
+            return Err(Error::InvalidImageSize);
+        }
+        Ok(super::ImageLayout {
+            base_gpa: IMAGE_GPA_BASE,
+            entry_offset: ENTRY_OFFSET,
+        })
+    }
 
     /// Load a UEFI image with the provided config type.
     ///
@@ -864,7 +900,7 @@ pub mod aarch64 {
         let image_size = (image.len() as u64 + BYTES_2MB - 1) & !(BYTES_2MB - 1);
         importer
             .import_pages(
-                0,
+                IMAGE_GPA_BASE / HV_PAGE_SIZE,
                 image_size / HV_PAGE_SIZE,
                 "uefi-image",
                 BootPageAcceptance::Exclusive,
@@ -931,8 +967,8 @@ pub mod aarch64 {
         import_reg(Aarch64Register::Cpsr(
             Cpsr64::new().with_sp(true).with_el(1).into(),
         ))?;
-        import_reg(Aarch64Register::X0(0x1000))?;
-        import_reg(Aarch64Register::Pc(0x1000))?;
+        import_reg(Aarch64Register::X0(IMAGE_GPA_BASE + ENTRY_OFFSET))?;
+        import_reg(Aarch64Register::Pc(IMAGE_GPA_BASE + ENTRY_OFFSET))?;
         import_reg(Aarch64Register::X1(stack_end))?;
         let platform_type = if hv_enabled {
             loader_defs::uefi::SecPlatformType::HYPERV

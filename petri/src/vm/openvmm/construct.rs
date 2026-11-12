@@ -1292,6 +1292,7 @@ impl PetriVmConfigSetupCore<'_> {
             },
             force_dma_bounce_enabled: *force_dma_bounce,
             smbios: Default::default(),
+            uefi_overload_images: Vec::new(),
         };
 
         Ok((ged, guest_request_send))

@@ -177,6 +177,38 @@ pub struct GuestConfig {
     /// SMBIOS identity overrides.
     #[inspect(skip)]
     pub smbios: smbios_defs::SmbiosConfig,
+    /// VTL0 UEFI images the host can load in response to `LoadFirmware`.
+    #[inspect(iter_by_index)]
+    pub uefi_overload_images: Vec<UefiOverloadImage>,
+}
+
+/// A VTL0 UEFI image the host writes into guest memory in response to a
+/// `LoadFirmware` request.
+#[derive(Clone, Inspect)]
+pub struct UefiOverloadImage {
+    /// The `LoadFirmware` token that selects this image.
+    #[inspect(hex)]
+    pub token: u64,
+    /// The guest physical address to write the image at.
+    #[inspect(hex)]
+    pub base_gpa: u64,
+    /// The entry point's offset from `base_gpa`.
+    #[inspect(hex)]
+    pub entry_offset: u64,
+    /// The image bytes.
+    #[inspect(with = "|x| x.len()")]
+    pub image: std::sync::Arc<[u8]>,
+}
+
+impl std::fmt::Debug for UefiOverloadImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UefiOverloadImage")
+            .field("token", &format_args!("{:#x}", self.token))
+            .field("base_gpa", &format_args!("{:#x}", self.base_gpa))
+            .field("entry_offset", &format_args!("{:#x}", self.entry_offset))
+            .field("image_len", &self.image.len())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -666,7 +698,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::UNMAP_FRAMEBUFFER => self.handle_unmap_framebuffer(state).await?,
             HostRequests::CREATE_RAM_GPA_RANGE => self.handle_create_ram_gpa_range(message_buf)?,
             HostRequests::RESET_RAM_GPA_RANGE => self.handle_reset_ram_gpa_range(message_buf)?,
-            HostRequests::LOAD_FIRMWARE => self.handle_load_firmware(message_buf)?,
+            HostRequests::LOAD_FIRMWARE => self.handle_load_firmware(message_buf, state)?,
             _ => {
                 tracing::error!(message_id = ?header.message_id(), "unexpected message");
                 return Err(Error::InvalidSequence);
@@ -1086,7 +1118,11 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_load_firmware(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+    fn handle_load_firmware(
+        &mut self,
+        message_buf: &[u8],
+        state: &GuestEmulationDevice,
+    ) -> Result<(), Error> {
         let request = get_protocol::LoadFirmwareRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
@@ -1094,12 +1130,31 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let firmware_token = request.firmware_token;
         tracing::info!(firmware_token, "load firmware request");
 
-        // This emulated host does not have a firmware image to write into guest
-        // RAM, so the request is simply acknowledged with a zero entry-point
-        // offset (leave VTL0's RIP unchanged). A real host loads the image
-        // identified by the token and returns the computed SEC entry offset.
-        let response =
-            get_protocol::LoadFirmwareResponse::new(get_protocol::LoadFirmwareStatus::SUCCESS, 0);
+        // Write the image the token selects over VTL0's firmware and return
+        // its entry point offset.
+        let image = state
+            .config
+            .uefi_overload_images
+            .iter()
+            .find(|image| image.token == firmware_token);
+        let (status, entry_offset) = match image {
+            None => (get_protocol::LoadFirmwareStatus::INVALID_TOKEN, 0),
+            Some(image) => match self.gm.write_at(image.base_gpa, &image.image) {
+                Ok(()) => (
+                    get_protocol::LoadFirmwareStatus::SUCCESS,
+                    image.entry_offset,
+                ),
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        firmware_token,
+                        "failed to write the firmware image into guest memory"
+                    );
+                    (get_protocol::LoadFirmwareStatus::FAILED, 0)
+                }
+            },
+        };
+        let response = get_protocol::LoadFirmwareResponse::new(status, entry_offset);
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;

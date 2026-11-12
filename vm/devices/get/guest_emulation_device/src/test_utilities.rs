@@ -236,6 +236,15 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
     }
 }
 
+/// The `LoadFirmware` token the test GED accepts.
+pub const TEST_UEFI_FIRMWARE_TOKEN: u64 = 0x1A00;
+/// Where the test GED writes the image for [`TEST_UEFI_FIRMWARE_TOKEN`].
+pub const TEST_UEFI_FIRMWARE_GPA: u64 = 0x1000;
+/// The entry point offset the test GED returns for [`TEST_UEFI_FIRMWARE_TOKEN`].
+pub const TEST_UEFI_FIRMWARE_ENTRY_OFFSET: u64 = 0x10;
+/// The image the test GED writes for [`TEST_UEFI_FIRMWARE_TOKEN`].
+pub const TEST_UEFI_FIRMWARE_IMAGE: &[u8] = b"test uefi image";
+
 /// Create the host Guest Emulation Device and corresponding I/O.
 ///
 /// If `ged_responses` is Some(), then TestGedChannel will be used to
@@ -277,6 +286,12 @@ pub fn create_host_channel(
         efi_diagnostics_log_level: Default::default(),
         force_dma_bounce_enabled: false,
         smbios: Default::default(),
+        uefi_overload_images: vec![crate::UefiOverloadImage {
+            token: TEST_UEFI_FIRMWARE_TOKEN,
+            base_gpa: TEST_UEFI_FIRMWARE_GPA,
+            entry_offset: TEST_UEFI_FIRMWARE_ENTRY_OFFSET,
+            image: TEST_UEFI_FIRMWARE_IMAGE.into(),
+        }],
     };
 
     let halt_reason = Arc::new(Mutex::new(None));

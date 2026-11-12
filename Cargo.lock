@@ -6543,6 +6543,7 @@ dependencies = [
  "guid",
  "hypervisor_resources",
  "libc",
+ "loader",
  "mesh",
  "openvmm_defs",
  "pal_async",
