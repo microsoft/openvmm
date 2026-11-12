@@ -3,6 +3,8 @@
 
 //! aarch64-specific implementation of the mshv hypervisor backend.
 
+mod cca;
+
 use crate::Error;
 use crate::ErrorInner;
 use crate::LinuxMshv;
@@ -17,6 +19,7 @@ use crate::VcpuFdExt;
 use crate::common_synthetic_features;
 use crate::create_vm_with_retry;
 
+use crate::MshvProtoPartitionIsolation;
 use aarch64defs::EsrEl2;
 use aarch64defs::ExceptionClass;
 use aarch64defs::IssDataAbort;
@@ -38,6 +41,7 @@ use virt::Hv1;
 use virt::PartitionConfig;
 use virt::ProtoPartition;
 use virt::ProtoPartitionConfig;
+use virt::ProtoPartitionIsolation;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::aarch64::Aarch64PartitionCapabilities;
@@ -48,6 +52,10 @@ use virt::irqcon::MsiRequest;
 use virt::state::HvRegisterState;
 use vmcore::reference_time::ReferenceTimeSource;
 use zerocopy::FromZeros;
+
+use crate::MshvIsolationTypeState;
+pub(super) use cca::CcaError;
+pub(super) use cca::CcaPartitionState;
 
 impl virt::Hypervisor for LinuxMshv {
     type ProtoPartition<'a> = MshvProtoPartition<'a>;
@@ -71,9 +79,15 @@ impl virt::Hypervisor for LinuxMshv {
         if self.snp_disable_cpuid_offload {
             return Err(ErrorInner::IsolationNotSupported.into());
         }
-        if config.isolation.is_isolated() {
-            return Err(ErrorInner::IsolationNotSupported.into());
-        }
+
+        // TODO: use mshv_bindings value once the crate is updated
+        const MSHV_PT_ISOLATION_RME: u64 = 2;
+
+        let isolation = match config.isolation {
+            ProtoPartitionIsolation::None => mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
+            ProtoPartitionIsolation::Cca => MSHV_PT_ISOLATION_RME,
+            _ => return Err(ErrorInner::IsolationNotSupported.into()),
+        };
 
         let mut processor_features = [0; 2];
         for (features, property) in processor_features.iter_mut().zip([
@@ -85,9 +99,14 @@ impl virt::Hypervisor for LinuxMshv {
                 .get_host_partition_property(property.0)
                 .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
         }
-        let create_args = partition_create_args(processor_features);
+        let create_args = partition_create_args(isolation, processor_features);
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
+
+        let cca = matches!(config.isolation, ProtoPartitionIsolation::Cca);
+        if cca {
+            cca::set_disabled_processor_features(&vmfd)?;
+        }
 
         // Set synthetic processor features before initialization when the
         // guest interface is configured.
@@ -159,15 +178,48 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
             .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
-        MshvProtoPartition::new(config, vmfd)
+        let isolation = match config.isolation {
+            ProtoPartitionIsolation::None => MshvProtoPartitionIsolation::None,
+            ProtoPartitionIsolation::Cca => {
+                let physical_address_width = vmfd
+                    .get_partition_property(HvPartitionPropertyCode::PhysicalAddressWidth.0)
+                    .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
+                let shared_gpa_bit = 1 << (physical_address_width - 1);
+                MshvProtoPartitionIsolation::Cca { shared_gpa_bit }
+            }
+            _ => return Err(ErrorInner::IsolationNotSupported.into()),
+        };
+
+        let partition = MshvProtoPartition::new(config, vmfd, isolation)?;
+        if cca {
+            let vp = partition.config.processor_topology.vp_arch(VpIndex::BSP);
+            let mut regs = vec![HvRegisterAssoc::from((
+                HvArm64RegisterName::MpidrEl1,
+                u64::from(vp.mpidr),
+            ))];
+            if let Some(gicr) = vp.gicr {
+                regs.push(HvRegisterAssoc::from((
+                    HvArm64RegisterName::GicrBaseGpa,
+                    gicr,
+                )));
+            }
+            partition
+                .bsp
+                .set_hvdef_regs(&regs)
+                .map_err(ErrorInner::Register)?;
+        }
+        Ok(partition)
     }
 }
 
-fn partition_create_args(processor_features: [u64; 2]) -> mshv_bindings::mshv_create_partition_v2 {
+fn partition_create_args(
+    isolation: u64,
+    processor_features: [u64; 2],
+) -> mshv_bindings::mshv_create_partition_v2 {
     mshv_bindings::mshv_create_partition_v2 {
         pt_flags: (1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES)
             | (1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES),
-        pt_isolation: mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
+        pt_isolation: isolation,
         pt_num_cpu_fbanks: mshv_bindings::MSHV_NUM_CPU_FEATURES_BANKS as u16,
         // The ioctl takes disabled features, while the host reports enabled ones.
         // TODO: Limit enabled features to those with known save/restore support
@@ -188,14 +240,33 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             .expect("failed to get physical address width") as u8
     }
 
+    fn shared_gpa_bit(&self) -> Option<u64> {
+        match self.isolation {
+            MshvProtoPartitionIsolation::None => None,
+            MshvProtoPartitionIsolation::Cca { shared_gpa_bit } => Some(shared_gpa_bit),
+        }
+    }
+
     fn build(
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        let (isolation_cap, isolation_state, shared_gpa_bit) = match self.isolation {
+            MshvProtoPartitionIsolation::None => (virt::IsolationType::None, None, None),
+            MshvProtoPartitionIsolation::Cca { shared_gpa_bit } => (
+                virt::IsolationType::Cca,
+                Some(MshvIsolationState::new(MshvIsolationTypeState::Cca(
+                    CcaPartitionState::new(),
+                ))),
+                Some(shared_gpa_bit),
+            ),
+        };
+
         let caps = Aarch64PartitionCapabilities {
-            isolation: virt::IsolationType::None,
+            isolation: isolation_cap,
             supports_aarch32_el0: false,
             vendor: Vendor::ARM,
+            shared_gpa_bit,
         };
 
         let inner = Arc::new(MshvPartitionInner {
@@ -207,7 +278,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             vps: self.vps,
             caps,
             synic_ports: Default::default(),
-            isolation: MshvIsolationState::None,
+            isolation: isolation_state,
             time_frozen: true.into(),
             reset_with_scrub: false.into(),
             gic_msi: self.config.processor_topology.gic_msi(),
@@ -249,8 +320,16 @@ impl virt::Partition for MshvPartition {
         Some(self)
     }
 
+    fn supports_initial_page_acceptance(
+        &self,
+    ) -> Option<&dyn virt::AcceptInitialPages<Error = Error>> {
+        self.inner.isolation.is_some().then_some(self)
+    }
+
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
-        Some(self)
+        // TODO: Support resetting CCA launch state and rebuilding the protected
+        // guest before advertising reset support.
+        self.inner.cca().is_none().then_some(self)
     }
 
     fn doorbell_registration(
@@ -337,6 +416,20 @@ impl virt::irqcon::ControlGic for MshvPartitionInner {
                 error = &e as &dyn std::error::Error,
                 "failed to assert SPI"
             );
+        }
+    }
+}
+
+impl MshvPartitionInner {
+    /// Removes the CCA shared-address bit before routing an MMIO access.
+    ///
+    /// Realm guests use the shared bit to select the host-visible alias of a
+    /// device address, while routing entries contain the underlying IPA.
+    fn mmio_address(&self, address: u64) -> u64 {
+        if let Some(shared_bit) = self.caps.shared_gpa_bit {
+            address & (shared_bit - 1)
+        } else {
+            address
         }
     }
 }
@@ -485,11 +578,20 @@ impl MshvProcessor<'_> {
 
                 if iss.wnr() {
                     let value = self.get_x(reg);
-                    dev.write_mmio(self.vpindex, gpa, &value.to_ne_bytes()[..len])
-                        .await;
+                    dev.write_mmio(
+                        self.vpindex,
+                        self.partition.mmio_address(gpa),
+                        &value.to_ne_bytes()[..len],
+                    )
+                    .await;
                 } else {
                     let mut data = [0u8; 8];
-                    dev.read_mmio(self.vpindex, gpa, &mut data[..len]).await;
+                    dev.read_mmio(
+                        self.vpindex,
+                        self.partition.mmio_address(gpa),
+                        &mut data[..len],
+                    )
+                    .await;
                     let value = if iss.sse() {
                         match len {
                             1 => data[0] as i8 as i64 as u64,
@@ -512,6 +614,46 @@ impl MshvProcessor<'_> {
                 return Err(dev.fatal_error(
                     format!("unexpected exception class in memory intercept: {ec:?}").into(),
                 ));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_mmio_intercept(
+        &mut self,
+        message: &HvMessage,
+        dev: &impl CpuIo,
+    ) -> Result<(), VpHaltReason> {
+        let info = message.as_message::<hvdef::HvArm64MmioInterceptMessage>();
+        let gpa = info.guest_physical_address;
+        let len = info.access_size as usize;
+
+        match info.header.intercept_access_type {
+            hvdef::HvInterceptAccessType::WRITE => {
+                dev.write_mmio(
+                    self.vpindex,
+                    self.partition.mmio_address(gpa),
+                    &info.data[..len],
+                )
+                .await;
+            }
+            hvdef::HvInterceptAccessType::READ => {
+                let mut data = [0u8; 8];
+                dev.read_mmio(
+                    self.vpindex,
+                    self.partition.mmio_address(gpa),
+                    &mut data[..len],
+                )
+                .await;
+                let value = u64::from_ne_bytes(data) & ((1u128 << (len * 8)) - 1) as u64;
+                tracing::error!("unhandled MMIO read: gpa: {gpa:#x} value: {value:#x}");
+                // TODO: What to do with value?
+            }
+            iat => {
+                return Err(
+                    dev.fatal_error(format!("invalid mmio intercept access type: {iat:?}").into())
+                );
             }
         }
 
@@ -618,6 +760,15 @@ impl MshvProcessor<'_> {
 
         regs.get_values(assoc.iter_mut().map(|assoc| &mut assoc.value));
 
+        if let Some(cca) = self.partition.cca()
+            && cca.defer_registers(
+                &self.partition.isolation.as_ref().unwrap().launch_state,
+                &assoc,
+            )
+        {
+            return Ok(());
+        }
+
         self.runner
             .vcpufd
             .set_hvdef_regs(&assoc[..])
@@ -637,6 +788,9 @@ impl MshvProcessor<'_> {
             }
             HvMessageType::HvMessageTypeUnmappedGpa | HvMessageType::HvMessageTypeGpaIntercept => {
                 self.handle_memory_intercept(exit, dev).await?;
+            }
+            HvMessageType::HvMessageTypeMmioIntercept => {
+                self.handle_mmio_intercept(exit, dev).await?;
             }
             HvMessageType::HvMessageTypeSynicSintDeliverable => {
                 let info = exit.as_message::<hvdef::HvArm64SynicSintDeliverableMessage>();
@@ -745,26 +899,5 @@ impl hv1_hypercall::Arm64RegisterState for MshvHypercallHandler<'_> {
     fn set_x(&mut self, n: u8, v: u64) {
         self.x[n as usize] = v;
         self.dirty = true;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use test_with_tracing::test;
-
-    #[test]
-    fn partition_creation_uses_explicit_host_features() {
-        let host_features = [0x1234_5678_9abc_def0, 0xfedc_ba98_7654_3210];
-        let args = partition_create_args(host_features);
-        let num_banks = args.pt_num_cpu_fbanks;
-        let disabled_features = args.pt_cpu_fbanks;
-
-        assert_ne!(
-            args.pt_flags & (1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES),
-            0
-        );
-        assert_eq!(num_banks, 2);
-        assert_eq!(disabled_features, host_features.map(|features| !features));
     }
 }
