@@ -43,7 +43,7 @@
 //! # Handle hygiene is the process builder's job
 //!
 //! There is no grant envelope and no descriptor sweep inside this crate.
-//! [`prepare`] reports exactly which tagged handles must remain inheritable;
+//! [`prepare`] reports exactly which handles must remain inheritable;
 //! the platform process builder keeps those and its configured standard I/O
 //! inheritable while closing or marking every other descriptor before the
 //! child is reached.
@@ -74,7 +74,6 @@ mod windows;
 
 pub mod profiles;
 
-pub use prepare::HandleTag;
 pub use prepare::Identity;
 pub use prepare::RawHandle;
 pub use prepare::SandboxProcessConfig;

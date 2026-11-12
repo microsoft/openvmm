@@ -861,10 +861,7 @@ impl MeshInner {
                 let preparation = sandbox::prepare(
                     profile,
                     &sandbox::Identity::default(),
-                    &[(
-                        sandbox::HandleTag(0),
-                        sandbox::RawHandle(directory.as_raw_handle() as usize as u64),
-                    )],
+                    &[sandbox::RawHandle(directory.as_raw_handle() as usize as u64)],
                 )
                 .context("failed to prepare sandboxed Mesh process")?;
                 builder
@@ -931,7 +928,7 @@ impl MeshInner {
                 let preparation = sandbox::prepare(
                     profile,
                     &sandbox::Identity::default(),
-                    &[(sandbox::HandleTag(0), sandbox::RawHandle(IPC_FD as u64))],
+                    &[sandbox::RawHandle(IPC_FD as u64)],
                 )
                 .context("failed to prepare sandboxed Mesh process")?;
                 command

@@ -578,7 +578,7 @@ mod tests {
                 ..Default::default()
             },
             sandbox::SandboxProcessConfig {
-                inherit_handles: vec![(sandbox::HandleTag(0), sandbox::RawHandle(u64::MAX))],
+                inherit_handles: vec![sandbox::RawHandle(u64::MAX)],
                 ..Default::default()
             },
         ] {
@@ -654,7 +654,7 @@ mod tests {
 
         let mut cmd = Builder::new(std::env::current_exe().unwrap());
         let sandbox = sandbox::SandboxProcessConfig {
-            inherit_handles: vec![(sandbox::HandleTag(0), sandbox::RawHandle(ALLOWED_FD as u64))],
+            inherit_handles: vec![sandbox::RawHandle(ALLOWED_FD as u64)],
             ..Default::default()
         };
         cmd.args([

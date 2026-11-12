@@ -207,7 +207,7 @@ impl Builder<'_> {
 
 fn inherited_fds(config: &sandbox::SandboxProcessConfig) -> io::Result<Vec<i32>> {
     let mut fds = vec![0, 1, 2];
-    for (_, raw_handle) in &config.inherit_handles {
+    for raw_handle in &config.inherit_handles {
         fds.push(raw_handle.0.try_into().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -467,10 +467,7 @@ mod tests {
     #[test]
     fn sandbox_handles_become_inherited_fds() {
         let config = sandbox::SandboxProcessConfig {
-            inherit_handles: vec![
-                (sandbox::HandleTag(1), sandbox::RawHandle(7)),
-                (sandbox::HandleTag(2), sandbox::RawHandle(3)),
-            ],
+            inherit_handles: vec![sandbox::RawHandle(7), sandbox::RawHandle(3)],
             ..Default::default()
         };
         assert_eq!(inherited_fds(&config).unwrap(), [0, 1, 2, 3, 7]);

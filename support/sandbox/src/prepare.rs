@@ -15,21 +15,13 @@
 //! # Handle hygiene is the caller's job
 //!
 //! There is no grant envelope and no in-crate FD sweep. [`SandboxProcessConfig`]
-//! reports exactly which tagged handles must remain inheritable in
+//! reports exactly which handles must remain inheritable in
 //! [`SandboxProcessConfig::inherit_handles`]; the platform process builder is
 //! responsible for retaining those handles and its configured standard I/O,
 //! while closing every other descriptor in the pre-exec child context.
 
 use crate::Error;
 use crate::profile::Profile;
-
-/// An opaque tag identifying one inherited handle across the spawn boundary.
-///
-/// The control process and the worker agree on tags out-of-band (each worker
-/// class documents its own); the sandbox only records which raw value carries
-/// which tag so the caller can keep the right descriptors inheritable.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct HandleTag(pub u32);
 
 /// A child-visible, platform-native handle value: a target file-descriptor
 /// number on Unix, or an inherited `HANDLE` value on Windows.
@@ -79,10 +71,10 @@ pub struct SandboxProcessConfig {
     /// Map user and group ID 0 in the Linux user namespace to the spawning
     /// process's effective user and group IDs.
     pub map_current_user: bool,
-    /// The tagged handles that must remain inheritable across the spawn. Every
+    /// The handles that must remain inheritable across the spawn. Every
     /// descriptor *not* listed here, or configured as standard I/O by the
     /// process builder, must be closed before the child is reached.
-    pub inherit_handles: Vec<(HandleTag, RawHandle)>,
+    pub inherit_handles: Vec<RawHandle>,
     /// Windows LPAC construction data, present only when preparing on Windows.
     /// The caller turns this into an AppContainer SID, a capability SID array,
     /// and a `STARTUPINFOEX` attribute list. `None` on non-Windows hosts.
@@ -134,17 +126,17 @@ pub struct WindowsPreparation {
 /// * `identity` — the per-spawn identity. Unix UID/GID requests are unsupported
 ///   and return [`Error::RequiredPrimitiveUnavailable`]; Windows AppContainer
 ///   configuration is reflected in [`WindowsPreparation`].
-/// * `handles` — the tagged handles to keep inheritable. They are echoed into
+/// * `handles` — the handles to keep inheritable. They are echoed into
 ///   [`SandboxProcessConfig::inherit_handles`]; the platform process builder
 ///   closes every other descriptor except its configured standard I/O.
 ///
 /// # Example
 ///
 /// ```
-/// use sandbox::{HandleTag, Identity, Profile, RawHandle};
+/// use sandbox::{Identity, Profile, RawHandle};
 ///
 /// let profile = Profile::deny_all().build();
-/// let handles = [(HandleTag(0), RawHandle(3))];
+/// let handles = [RawHandle(3)];
 /// let preparation = sandbox::prepare(&profile, &Identity::default(), &handles)?;
 /// # Ok::<(), sandbox::Error>(())
 /// ```
@@ -155,7 +147,7 @@ pub struct WindowsPreparation {
 pub fn prepare(
     profile: &Profile,
     identity: &Identity,
-    handles: &[(HandleTag, RawHandle)],
+    handles: &[RawHandle],
 ) -> Result<SandboxProcessConfig, Error> {
     if identity.uid.is_some() || identity.gid.is_some() {
         return Err(Error::RequiredPrimitiveUnavailable(
@@ -247,7 +239,7 @@ mod tests {
     #[test]
     fn prepare_preserves_handles_and_self_maps() {
         let profile = Profile::deny_all().build();
-        let handles = [(HandleTag(1), RawHandle(3)), (HandleTag(2), RawHandle(7))];
+        let handles = [RawHandle(3), RawHandle(7)];
 
         let prep = prepare(&profile, &Identity::default(), &handles).unwrap();
 
