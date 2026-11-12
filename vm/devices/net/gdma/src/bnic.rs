@@ -419,6 +419,7 @@ impl BasicNic {
                                     tx_segment_buffer: Vec::new(),
                                     rx_buf_count: 0,
                                     pending_tx: VecDeque::new(),
+                                    next_tx_id: 0,
                                 },
                             );
                             vport.task.start();
@@ -496,13 +497,15 @@ pub struct TxRxTask {
     rx_buf_count: u32,
     /// Sends not yet completed to the guest, oldest first.
     pending_tx: VecDeque<PendingTx>,
+    /// The id the next send gives the backend.
+    next_tx_id: u32,
 }
 
 /// A send whose completion has not been posted yet.
 #[derive(Debug, Clone, Copy)]
 enum PendingTx {
-    /// The backend still has it.
-    InBackend,
+    /// The backend still has it, under this id.
+    InBackend(u32),
     /// Finished with this completion type, behind a send the backend still has.
     Done(u8),
 }
@@ -624,7 +627,7 @@ impl TxRxTask {
                 (l2_len as u16, oob.s_oob.trans_off())
             };
         let mut meta = TxMetadata {
-            id: TxId(0),
+            id: TxId(self.next_tx_id),
             segment_count: sqe.sgl().len().try_into().unwrap(),
             len: total_len.try_into().unwrap(),
             flags: tx_flags(&oob.s_oob, lso),
@@ -686,7 +689,9 @@ impl TxRxTask {
             tracing::trace!("tx sync complete");
             self.complete_tx(CQE_TX_OKAY);
         } else {
-            self.pending_tx.push_back(PendingTx::InBackend);
+            self.pending_tx
+                .push_back(PendingTx::InBackend(self.next_tx_id));
+            self.next_tx_id = self.next_tx_id.wrapping_add(1);
         }
         Ok(())
     }
@@ -702,12 +707,15 @@ impl TxRxTask {
         }
     }
 
-    /// Completes the oldest send the backend had, then the finished sends behind it.
-    fn complete_backend_tx(&mut self) -> anyhow::Result<()> {
-        if !matches!(self.pending_tx.pop_front(), Some(PendingTx::InBackend)) {
-            anyhow::bail!("tx completion with no send outstanding in the backend");
-        }
-        self.post_tx_completion(CQE_TX_OKAY);
+    /// Marks the send the backend finished as done, then completes the finished sends at
+    /// the front. The backend may finish sends in any order.
+    fn complete_backend_tx(&mut self, id: TxId) -> anyhow::Result<()> {
+        let send = self
+            .pending_tx
+            .iter_mut()
+            .find(|send| matches!(send, PendingTx::InBackend(pending) if *pending == id.0))
+            .context("tx completion for a send the backend does not have")?;
+        *send = PendingTx::Done(CQE_TX_OKAY);
         while let Some(&PendingTx::Done(cqe_type)) = self.pending_tx.front() {
             self.pending_tx.pop_front();
             self.post_tx_completion(cqe_type);
@@ -771,7 +779,7 @@ impl TxRxTask {
         let mut packets = [TxId(0)];
         if self.epqueue.tx_poll(&mut self.pool, &mut packets)? > 0 {
             tracing::trace!("tx async complete");
-            self.complete_backend_tx()?;
+            self.complete_backend_tx(packets[0])?;
         }
 
         Ok(())
@@ -1036,7 +1044,7 @@ mod tests {
         ready_budget: usize,
         ready_processed: usize,
         tx_accepted: usize,
-        tx_done: bool,
+        tx_done: Option<TxId>,
         rx: Option<RxId>,
     }
 
@@ -1106,7 +1114,10 @@ mod tests {
             let mut state = self.state.lock();
             state.tx_accepted += 1;
             if !self.synchronous_tx {
-                assert!(!std::mem::replace(&mut state.tx_done, true));
+                let TxSegmentType::Head(meta) = &segments[0].ty else {
+                    panic!("the first segment is the head");
+                };
+                assert!(state.tx_done.replace(meta.id).is_none());
             }
             drop(state);
             self.tx_hook.fire();
@@ -1118,8 +1129,8 @@ mod tests {
             _: &mut dyn BufferAccess,
             packets: &mut [TxId],
         ) -> Result<usize, TxError> {
-            if std::mem::take(&mut self.state.lock().tx_done) {
-                packets[0] = TxId(0);
+            if let Some(id) = self.state.lock().tx_done.take() {
+                packets[0] = id;
                 Ok(1)
             } else {
                 Ok(0)
@@ -1146,6 +1157,7 @@ mod tests {
             tx_segment_buffer: Vec::new(),
             rx_buf_count: 0,
             pending_tx: VecDeque::new(),
+            next_tx_id: 0,
         }
     }
 
@@ -1420,7 +1432,7 @@ mod tests {
         let pool = DefaultPool::new();
         let queues = helper::queues(&pool, None);
         let epqueue = backend();
-        epqueue.state.lock().tx_done = true;
+        epqueue.state.lock().tx_done = Some(TxId(0));
         let mut task = task(queues.clone(), epqueue);
         assert!(task.process_backend().is_err());
         assert_eq!(completion(&queues, 0).params.owner_count(), 0);
@@ -1724,6 +1736,136 @@ mod tests {
         ) -> Result<usize, TxError> {
             Ok(0)
         }
+    }
+
+    /// A backend that keeps every send and completes the ones the test names, in the
+    /// order it names them.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct ReorderingQueue {
+        sent: Arc<Mutex<Vec<TxId>>>,
+        complete: Arc<Mutex<VecDeque<TxId>>>,
+    }
+
+    impl Queue for ReorderingQueue {
+        fn poll_ready(&mut self, _cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
+            Poll::Pending
+        }
+
+        fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, _done: &[RxId]) {}
+
+        fn rx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _packets: &mut [RxId],
+        ) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+
+        fn tx_avail(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            segments: &[TxSegment],
+        ) -> anyhow::Result<(bool, usize)> {
+            let TxSegmentType::Head(meta) = &segments[0].ty else {
+                panic!("the first segment is the head");
+            };
+            self.sent.lock().push(meta.id);
+            Ok((false, segments.len()))
+        }
+
+        fn tx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            done: &mut [TxId],
+        ) -> Result<usize, TxError> {
+            let mut complete = self.complete.lock();
+            let mut n = 0;
+            while n < done.len() {
+                let Some(id) = complete.pop_front() else {
+                    break;
+                };
+                done[n] = id;
+                n += 1;
+            }
+            Ok(n)
+        }
+    }
+
+    /// The backend may complete sends out of order. The driver frees its oldest outstanding
+    /// send for each completion it reads, so nothing completes until the oldest send is done.
+    #[test]
+    fn a_later_send_the_backend_completes_first_waits_for_the_earlier_one() {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let complete = Arc::new(Mutex::new(VecDeque::new()));
+        let mut task = task_with(
+            queues.clone(),
+            Box::new(ReorderingQueue {
+                sent: sent.clone(),
+                complete: complete.clone(),
+            }),
+        );
+        let frame = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        for gpa in [0x6000, 0xa000] {
+            let sqe = send_wqe(
+                &queues,
+                udp_csum(),
+                FromZeros::new_zeroed(),
+                &frame,
+                14,
+                gpa,
+            );
+            task.process_sqe(sqe).unwrap();
+        }
+        let ids = sent.lock().clone();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0].0, ids[1].0, "each send has its own id");
+
+        complete.lock().push_back(ids[1]);
+        task.process_backend().unwrap();
+        assert_eq!(
+            completion(&queues, 0).params.owner_count(),
+            0,
+            "the earlier send is still in the backend"
+        );
+
+        complete.lock().push_back(ids[0]);
+        task.process_backend().unwrap();
+        assert_eq!(cqe_type(&completion(&queues, 0)), CQE_TX_OKAY);
+        assert_eq!(cqe_type(&completion(&queues, 1)), CQE_TX_OKAY);
+    }
+
+    /// A completion naming a send the backend never had is an error, not a completion.
+    #[test]
+    fn a_completion_for_an_unknown_send_is_refused() {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let complete = Arc::new(Mutex::new(VecDeque::new()));
+        let mut task = task_with(
+            queues.clone(),
+            Box::new(ReorderingQueue {
+                sent: sent.clone(),
+                complete: complete.clone(),
+            }),
+        );
+        let frame = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        let sqe = send_wqe(
+            &queues,
+            udp_csum(),
+            FromZeros::new_zeroed(),
+            &frame,
+            14,
+            0x6000,
+        );
+        task.process_sqe(sqe).unwrap();
+        let id = sent.lock()[0];
+
+        complete.lock().push_back(TxId(id.0.wrapping_add(1)));
+        assert!(task.process_backend().is_err());
+        assert_eq!(completion(&queues, 0).params.owner_count(), 0);
     }
 
     fn frame_sge(address: u64, size: u32) -> Sge {
