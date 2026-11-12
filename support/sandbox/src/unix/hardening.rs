@@ -22,18 +22,6 @@ const SECBIT_NO_SETUID_FIXUP_LOCKED: libc::c_ulong = 1 << 3;
 const SECBIT_NO_CAP_AMBIENT_RAISE: libc::c_ulong = 1 << 6;
 const SECBIT_NO_CAP_AMBIENT_RAISE_LOCKED: libc::c_ulong = 1 << 7;
 
-/// Clear the "dumpable" flag (`PR_SET_DUMPABLE = 0`).
-///
-/// A non-dumpable process produces no core dump (so guest memory cannot spill
-/// to disk on a crash) and cannot be `ptrace`-attached or have its
-/// `/proc/<pid>/mem` opened by another process of the same UID.
-pub fn set_dumpable_off() -> io::Result<()> {
-    // SAFETY: prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) affects only the calling
-    // process and takes no pointer arguments.
-    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }.syscall_result()?;
-    Ok(())
-}
-
 /// Lock securebits so sandbox cannot re-acquire root-like authority across an
 /// `execve`.
 ///

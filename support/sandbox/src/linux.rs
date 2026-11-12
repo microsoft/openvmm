@@ -12,7 +12,7 @@
 //! # Failure policy
 //!
 //! The `pivot_root` scaffold, capability drop, securebits, filesystem grants,
-//! `PR_SET_DUMPABLE`, and `no_new_privs` return [`Error`] on failure. The caller
+//! and `no_new_privs` return [`Error`] on failure. The caller
 //! must terminate the worker; restrictions already applied are not rolled back.
 //!
 //! The proc view is best-effort. Landlock is supplementary: it adapts to older
@@ -65,8 +65,6 @@ pub fn apply(profile: &Profile) -> Result<(), Error> {
 
     // Step 5 — drop every capability. Required: this is the deny-all base.
     drop_all_capabilities()?;
-
-    hardening::set_dumpable_off().map_err(required("dumpable"))?;
 
     // Step 6 — no_new_privs. Required, and a prerequisite for unprivileged
     // seccomp below.

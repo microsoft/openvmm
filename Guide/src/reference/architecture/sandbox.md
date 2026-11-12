@@ -104,9 +104,9 @@ provides scratch storage and a best-effort proc view; a profile with no
 explicit grants is not a process with no filesystem objects.
 
 After filesystem setup, the backend locks securebits, drops capabilities,
-disables dumpability, and sets `no_new_privs`. Seccomp, when selected by the
-profile, is installed last so it can deny setup syscalls that are no longer
-needed. It is a default-allow denylist, not a complete syscall allowlist.
+and sets `no_new_privs`. Seccomp, when selected by the profile, is installed
+last so it can deny setup syscalls that are no longer needed. It is a
+default-allow denylist, not a complete syscall allowlist.
 Selecting no seccomp policy leaves that syscall surface unfiltered.
 
 Required setup failures are returned to the caller; launch is not retried with
