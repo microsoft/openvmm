@@ -562,7 +562,12 @@ pub struct PitDevice {
     time_abi: bool,
 
     // Volatile state
+    /// The VM time of the last counted tick, rounded down to VM time's 100 ns
+    /// resolution.
     last: VmTime,
+    /// The nanoseconds, below 100, by which the last counted tick follows
+    /// `last`.
+    last_frac_ns: u32,
 }
 
 /// Channel 0 counts in a periodic mode, which the NVX time ABI forbids at
@@ -584,6 +589,7 @@ impl PitDevice {
                 Timer::new(false, None),
             ],
             last: vmtime.now(),
+            last_frac_ns: 0,
             vmtime,
             dram_refresh: false,
             time_abi: false,
@@ -615,11 +621,17 @@ impl PitDevice {
         //
         // N.B. if self.last were set to now, then each call to evaluate
         // would leak a portion of a tick, causing timers to expire late.
+        // Ticks generally fall between VM time's 100 ns steps, so the last
+        // counted tick lies `last_frac_ns` past `last`: dropping that part
+        // would count it again in the next call, causing timers to expire
+        // early, and the more so the more often the guest accesses the PIT.
         let delta = now.checked_sub(self.last).unwrap_or(Duration::ZERO);
-        let ticks = delta.as_nanos() as u64 / NANOS_PER_TICK;
-        self.last = self
-            .last
-            .wrapping_add(Duration::from_nanos(ticks * NANOS_PER_TICK));
+        let ticks =
+            (delta.as_nanos() as u64).saturating_sub(self.last_frac_ns.into()) / NANOS_PER_TICK;
+        let counted = u64::from(self.last_frac_ns) + ticks * NANOS_PER_TICK;
+        // `wrapping_add` adds the whole 100 ns steps of the counted time.
+        self.last = self.last.wrapping_add(Duration::from_nanos(counted));
+        self.last_frac_ns = (counted % 100) as u32;
         self.timers[0].evaluate(ticks);
         self.timers[1].evaluate(ticks);
         self.timers[2].evaluate(ticks);
@@ -631,10 +643,12 @@ impl PitDevice {
         if let Some(next) = self.timers[0].state.next_wakeup() {
             // Delay waking up if the next wakeup is too soon to avoid spinning.
             let next = next.max(20);
-            self.vmtime.set_timeout_if_before(
-                self.last
-                    .wrapping_add(Duration::from_nanos(next * NANOS_PER_TICK)),
-            );
+            // The timeout fires once VM time passes it, so rounding it down to
+            // VM time's 100 ns resolution still wakes up at or after the tick.
+            self.vmtime
+                .set_timeout_if_before(self.last.wrapping_add(Duration::from_nanos(
+                    u64::from(self.last_frac_ns) + next * NANOS_PER_TICK,
+                )));
         }
     }
 }
@@ -652,6 +666,7 @@ impl ChangeDeviceState for PitDevice {
             timer.reset();
         }
         self.last = self.vmtime.now();
+        self.last_frac_ns = 0;
     }
 }
 
@@ -828,6 +843,10 @@ mod save_restore {
             pub timers: [SavedTimerState; 3],
             #[mesh(2)]
             pub last: VmTime,
+            /// The nanoseconds, below 100, by which the last counted tick
+            /// follows `last`. A saved state without it restores with zero.
+            #[mesh(3)]
+            pub last_frac_ns: u32,
         }
     }
 
@@ -835,6 +854,8 @@ mod save_restore {
     enum PitDeviceRestoreError {
         #[error("last tick time is after current time")]
         InvalidLastTick,
+        #[error("last tick time fraction {0} ns is not below 100 ns")]
+        InvalidLastTickFraction(u32),
     }
 
     impl SaveRestore for PitDevice {
@@ -849,6 +870,7 @@ mod save_restore {
                 dram_refresh: _,
                 time_abi: _,
                 last,
+                last_frac_ns,
             } = self;
 
             Ok(state::SavedState {
@@ -889,11 +911,21 @@ mod save_restore {
                 }),
 
                 last: *last,
+                last_frac_ns: *last_frac_ns,
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState { timers, last } = state;
+            let state::SavedState {
+                timers,
+                last,
+                last_frac_ns,
+            } = state;
+            if last_frac_ns >= 100 {
+                return Err(RestoreError::InvalidSavedState(
+                    PitDeviceRestoreError::InvalidLastTickFraction(last_frac_ns).into(),
+                ));
+            }
 
             for (timer, state) in self.timers.iter_mut().zip(timers) {
                 let state::SavedTimerState {
@@ -934,7 +966,10 @@ mod save_restore {
             }
 
             self.last = last;
-            if last.is_after(self.vmtime.now()) {
+            self.last_frac_ns = last_frac_ns;
+            // The last tick, `last_frac_ns` past `last`, cannot follow now.
+            let now = self.vmtime.now();
+            if last.is_after(now) || (last == now && last_frac_ns != 0) {
                 return Err(RestoreError::InvalidSavedState(
                     PitDeviceRestoreError::InvalidLastTick.into(),
                 ));
@@ -953,18 +988,25 @@ mod tests {
     use super::Mode;
     use super::NANOS_PER_TICK;
     use super::PIT_CONTROL_REGISTER;
+    use super::PIT_PORT61_REGISTER;
     use super::PIT_TIMER_RANGE_START;
     use super::RwMode;
     use super::Timer;
     use super::to_bcd;
     use crate::pit::from_bcd;
     use chipset_device::pio::PortIoIntercept;
+    use chipset_device::poll_device::PollDevice;
     use parking_lot::Mutex;
     use std::sync::Arc;
+    use std::task::Context;
+    use std::task::Waker;
     use test_with_tracing::test;
+    use vmcore::device_state::ChangeDeviceState;
     use vmcore::line_interrupt::LineInterrupt;
     use vmcore::line_interrupt::LineSetTarget;
     use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::vmtime::VmTime;
 
     #[derive(Default)]
     struct RecordingTarget(Mutex<Vec<bool>>);
@@ -1111,7 +1153,7 @@ mod tests {
     }
 
     /// A PIT that a test programs through its I/O ports, as a guest does, in
-    /// a VM time that stands still until `run_to` moves it.
+    /// a VM time that stands still until `run_to` or `set_time` moves it.
     struct GuestPit {
         pit: super::PitDevice,
         irq0: Arc<TestLineInterruptTarget>,
@@ -1144,15 +1186,44 @@ mod tests {
             self.pit.io_write(port, &[data]).unwrap();
         }
 
+        fn read(&mut self, port: u16) -> u8 {
+            let mut data = 0;
+            self.pit
+                .io_read(port, std::slice::from_mut(&mut data))
+                .unwrap();
+            data
+        }
+
+        /// Programs counter 0 to count `count` in `mode`, low then high byte.
+        fn program_counter0(&mut self, mode: Mode, count: u16) {
+            let control = ControlWord::new()
+                .with_mode(mode as u8)
+                .with_rw(RwMode::LOW_HIGH.0);
+            self.write(PIT_CONTROL_REGISTER, control.into());
+            for byte in count.to_le_bytes() {
+                self.write(PIT_TIMER_RANGE_START, byte);
+            }
+        }
+
         /// Moves VM time to `ticks` PIT ticks after the start, rounded up to
         /// VM time's 100 ns.
         fn run_to(&mut self, ticks: u64) {
-            use vmcore::vmtime::SavedState;
-            use vmcore::vmtime::VmTime;
+            self.set_time((ticks * NANOS_PER_TICK).div_ceil(100));
+        }
 
-            let time = VmTime::from_100ns((ticks * NANOS_PER_TICK).div_ceil(100));
+        /// Moves VM time to `time` 100 ns units after the start.
+        fn set_time(&mut self, time: u64) {
+            use vmcore::vmtime::SavedState;
+
+            let time = VmTime::from_100ns(time);
             self.pool
                 .run_until(self.keeper.restore(SavedState::from_vmtime(time)));
+        }
+
+        /// Polls the PIT, as when its VM time wakeup fires.
+        fn poll(&mut self) {
+            self.pit
+                .poll_device(&mut Context::from_waker(Waker::noop()));
         }
 
         /// Latches counter 0, which brings the PIT up to VM time as every
@@ -1482,5 +1553,121 @@ mod tests {
 
         device(true).restore(saved).unwrap();
         drop(keeper);
+    }
+
+    #[test]
+    fn reads_at_one_vm_time_see_one_count() {
+        let mut guest = GuestPit::new();
+        guest.program_counter0(Mode::RateGenerator, 0x50);
+
+        // By 2.5 us, two ticks have elapsed: the first loads the count, and
+        // the second, at 1676 ns, between two 100 ns steps of VM time,
+        // decrements it.
+        guest.set_time(25);
+        assert_eq!(guest.latched_count(), 0x4f);
+        assert_eq!(guest.latched_count(), 0x4f);
+    }
+
+    #[test]
+    fn restored_pit_counts_from_the_saved_tick() {
+        let mut guest = GuestPit::new();
+        guest.program_counter0(Mode::RateGenerator, 0x50);
+        guest.set_time(25);
+        assert_eq!(guest.latched_count(), 0x4f);
+
+        let saved = mesh::payload::encode(guest.pit.save().unwrap());
+        let mut restored = GuestPit::new();
+        restored.set_time(25);
+        restored
+            .pit
+            .restore(mesh::payload::decode(&saved).unwrap())
+            .unwrap();
+        assert_eq!(restored.latched_count(), 0x4f);
+
+        // A tick every 838 ns from VM time zero: the first loads the count,
+        // and each later one decrements it, reloading it after one.
+        for time in 26..=1000 {
+            guest.set_time(time);
+            restored.set_time(time);
+            let count = 0x50 - ((time * 100 / 838 - 1) % 0x50) as u16;
+            assert_eq!(restored.latched_count(), count, "restored PIT at {time}");
+            assert_eq!(guest.latched_count(), count, "saved PIT at {time}");
+        }
+    }
+
+    #[test]
+    fn restore_rejects_an_invalid_last_tick_time() {
+        let mut guest = GuestPit::new();
+        // Count two ticks, up to 1676 ns.
+        guest.set_time(25);
+        guest.read(PIT_PORT61_REGISTER);
+
+        // The last tick lies at `last` plus a fraction below 100 ns, and not
+        // after the current time.
+        for (last, last_frac_ns, valid) in [
+            (16, 99, true),
+            (16, 100, false),
+            (25, 0, true),
+            (25, 1, false),
+        ] {
+            let mut saved = guest.pit.save().unwrap();
+            saved.last = VmTime::from_100ns(last);
+            saved.last_frac_ns = last_frac_ns;
+            assert_eq!(
+                guest.pit.restore(saved).is_ok(),
+                valid,
+                "last {last}, last_frac_ns {last_frac_ns}"
+            );
+        }
+    }
+
+    #[test]
+    fn polling_does_not_speed_up_the_pit() {
+        let mut polled = GuestPit::new();
+        let mut idle = GuestPit::new();
+        polled.program_counter0(Mode::RateGenerator, 0xffff);
+        idle.program_counter0(Mode::RateGenerator, 0xffff);
+
+        // Evaluate the PIT every 900 ns for 90 ms, as an access to its ports
+        // or to port 0x61 does.
+        for step in 1..=100_000 {
+            polled.pit.evaluate(VmTime::from_100ns(step * 9));
+        }
+
+        // 90 ms is 107,398 ticks: the first loads the count, and the other
+        // 107,397 count it down 41,862 past one period of 65,535.
+        polled.set_time(900_000);
+        idle.set_time(900_000);
+        assert_eq!(idle.latched_count(), 23_673);
+        assert_eq!(polled.latched_count(), 23_673);
+    }
+
+    #[test]
+    fn reset_pit_counts_ticks_from_the_reset() {
+        let mut guest = GuestPit::new();
+        // Count two ticks, up to 1676 ns.
+        guest.set_time(25);
+        guest.read(PIT_PORT61_REGISTER);
+
+        guest.pool.run_until(guest.pit.reset());
+        guest.program_counter0(Mode::RateGenerator, 0x50);
+        // 1.7 us after the reset, two ticks have elapsed.
+        guest.set_time(42);
+        assert_eq!(guest.latched_count(), 0x4f);
+    }
+
+    #[test]
+    fn wakeup_raises_irq0_once_the_output_changes() {
+        let mut guest = GuestPit::new();
+        // Programming counter 0 at 2.5 us counts two ticks, up to 1676 ns. The
+        // third tick loads the count, and the 22nd, at 18,436 ns, between two
+        // 100 ns steps of VM time, ends it and raises the output.
+        guest.set_time(25);
+        guest.program_counter0(Mode::TerminalCount, 19);
+        for time in 26..=185 {
+            guest.set_time(time);
+            guest.poll();
+            assert_eq!(guest.irq0.is_high(0), time == 185, "IRQ 0 at {time}");
+        }
     }
 }
