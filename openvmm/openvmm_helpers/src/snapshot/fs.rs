@@ -383,6 +383,22 @@ pub(super) fn copy_exact(
     destination
         .sync_all()
         .with_context(|| format!("failed to flush {destination_description}"))?;
+    // RestoreVM maps a snapshot's memory.bin in place. On MSHV, a VM restored
+    // from a copy whose pages were still in the page cache stopped on a memory
+    // intercept that an interrupt's delivery caused, which cannot be emulated,
+    // and one restored after they were dropped did not.
+    #[cfg(target_os = "linux")]
+    if let Err(error) = nix::fcntl::posix_fadvise(
+        &destination,
+        0,
+        0,
+        nix::fcntl::PosixFadviseAdvice::POSIX_FADV_DONTNEED,
+    ) {
+        tracing::warn!(
+            error = &error as &dyn std::error::Error,
+            "failed to drop the page cache of {destination_description}"
+        );
+    }
     let source_allocated_bytes = allocated_file_bytes(source_file, expected_length).ok();
     let allocated_bytes = allocated_file_bytes(&destination, expected_length).ok();
     tracing::info!(
