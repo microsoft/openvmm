@@ -389,14 +389,20 @@ fn sort_gic_candidates(candidates: &mut [u64], vmcr: IchVmcrEl2) {
     });
 }
 
-fn deactivate_virtual_interrupt(lrs: &mut [u64], active_overflow: &mut Vec<u64>, intid: u32) {
-    let deactivate = |lr: &mut u64| {
+fn set_virtual_interrupt_active(
+    lrs: &mut [u64],
+    overflow: &mut Vec<u64>,
+    intid: u32,
+    active: bool,
+) {
+    let update = |lr: &mut u64| {
         let value = IchLrEl2::from(*lr);
-        if lr_is_active(*lr) && value.vintid() == intid {
-            let state = match value.state() {
-                IchLrState::ACTIVE => IchLrState::INVALID,
-                IchLrState::PENDING_AND_ACTIVE => IchLrState::PENDING,
-                state => state,
+        if lr_is_valid(*lr) && value.vintid() == intid {
+            let state = match (value.state(), active) {
+                (IchLrState::PENDING, true) => IchLrState::PENDING_AND_ACTIVE,
+                (IchLrState::ACTIVE, false) => IchLrState::INVALID,
+                (IchLrState::PENDING_AND_ACTIVE, false) => IchLrState::PENDING,
+                (state, _) => state,
             };
             if state == IchLrState::INVALID {
                 *lr = 0;
@@ -406,9 +412,9 @@ fn deactivate_virtual_interrupt(lrs: &mut [u64], active_overflow: &mut Vec<u64>,
         }
     };
 
-    lrs.iter_mut().for_each(deactivate);
-    active_overflow.iter_mut().for_each(deactivate);
-    active_overflow.retain(|lr| lr_is_valid(*lr));
+    lrs.iter_mut().for_each(update);
+    overflow.iter_mut().for_each(update);
+    overflow.retain(|lr| lr_is_valid(*lr));
 }
 
 /// Adds an interrupt to an unbounded software active/pending list.
@@ -872,10 +878,11 @@ impl UhProcessor<'_, CcaBacked> {
                 // DIR only performs deactivation in EOImode == 1; in mode 0,
                 // EOIR deactivation is represented by HCR.EOIcount instead.
                 if IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr).veoim() {
-                    deactivate_virtual_interrupt(
+                    set_virtual_interrupt_active(
                         &mut self.runner.cca_rsi_plane_entry().gicv3_lrs[..self.shared.gic_num_lrs],
                         &mut self.backing.vtls[vtl].gic_lr_overflow,
                         value as u32,
+                        false,
                     );
                 }
                 true
@@ -923,23 +930,23 @@ impl UhProcessor<'_, CcaBacked> {
             );
         }
 
-        // MMIO deactivation can occur after the returned cache was folded.
-        // Update both LR locations and fold again to release removed SPIs'
-        // ownership before rebuilding pending entries. Consume EOIcount only
-        // on the first fold of this returned cache.
-        let deactivated = self
+        // MMIO active-state changes can occur after the returned cache was folded.
+        // Update both LR locations and fold again before rebuilding pending entries.
+        // Consume EOIcount only on the first fold of this returned cache.
+        let active_changes = self
             .shared
             .cvm
             .gic
-            .take_deactivated_interrupts(self.vp_index());
-        if reconciled && deactivated.is_empty() {
+            .take_active_state_changes(self.vp_index());
+        if reconciled && active_changes.is_empty() {
             return;
         }
-        for intid in deactivated {
-            deactivate_virtual_interrupt(
+        for (intid, active) in active_changes {
+            set_virtual_interrupt_active(
                 &mut self.runner.cca_rsi_plane_entry().gicv3_lrs[..gic_num_lrs],
                 &mut self.backing.vtls[vtl].gic_lr_overflow,
                 intid,
+                active,
             );
         }
 
@@ -1668,6 +1675,46 @@ mod tests {
     }
 
     #[test]
+    fn mmio_activation_updates_resident_and_overflow_interrupts() {
+        let pending = lr(0, 0x20, IchLrState::PENDING);
+        let unrelated = lr(2, 0x40, IchLrState::PENDING);
+        let overflow_pending = lr(3, 0x60, IchLrState::PENDING);
+        let already_active = lr(4, 0x80, IchLrState::ACTIVE);
+        let mut lrs = [pending, unrelated, 0];
+        let mut overflow = vec![overflow_pending, already_active];
+
+        for intid in [0, 3, 4, 5] {
+            set_virtual_interrupt_active(&mut lrs, &mut overflow, intid, true);
+        }
+        assert_eq!(
+            lrs,
+            [
+                IchLrEl2::from(pending)
+                    .with_state(IchLrState::PENDING_AND_ACTIVE)
+                    .into(),
+                unrelated,
+                0,
+            ]
+        );
+        assert_eq!(
+            overflow,
+            [
+                IchLrEl2::from(overflow_pending)
+                    .with_state(IchLrState::PENDING_AND_ACTIVE)
+                    .into(),
+                already_active,
+            ]
+        );
+
+        // Clearing active must preserve each pending request in either location.
+        for intid in [0, 3, 4] {
+            set_virtual_interrupt_active(&mut lrs, &mut overflow, intid, false);
+        }
+        assert_eq!(lrs, [pending, unrelated, 0]);
+        assert_eq!(overflow, [overflow_pending]);
+    }
+
+    #[test]
     fn trapped_dir_deactivates_resident_and_overflow_interrupts() {
         let mut lrs = [
             lr(1, 0, IchLrState::ACTIVE),
@@ -1675,8 +1722,8 @@ mod tests {
         ];
         let mut overflow = vec![lr(3, 0, IchLrState::ACTIVE)];
 
-        deactivate_virtual_interrupt(&mut lrs, &mut overflow, 1);
-        deactivate_virtual_interrupt(&mut lrs, &mut overflow, 3);
+        set_virtual_interrupt_active(&mut lrs, &mut overflow, 1, false);
+        set_virtual_interrupt_active(&mut lrs, &mut overflow, 3, false);
 
         assert_eq!(lrs[0], 0);
         assert_eq!(
