@@ -814,7 +814,7 @@ impl PetriVmConfigOpenVmm {
                 output_dir: log_source.output_dir().to_owned(),
                 openvmm_path: openvmm_path.clone(),
                 vtl2_vsock_path,
-                _vsock_path: vsock_path,
+                vsock_path,
                 properties: properties.clone(),
                 #[cfg(windows)]
                 _switch_ports: Vec::new(),

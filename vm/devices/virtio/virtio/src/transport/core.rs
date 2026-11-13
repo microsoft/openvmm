@@ -452,10 +452,17 @@ impl VirtioTransportCore {
     }
 
     /// Save the transport-agnostic portion of the common configuration.
-    pub fn save_common(&self) -> Result<super::saved_state::state::CommonSavedState, SaveError> {
+    pub async fn save_common(
+        &mut self,
+    ) -> Result<super::saved_state::state::CommonSavedState, SaveError> {
         if !self.supports_save_restore {
             return Err(SaveError::NotSupported);
         }
+        let device_state = self
+            .device_sender
+            .call(DeviceCommand::Save, ())
+            .await
+            .map_err(|err| SaveError::Other(err.into()))??;
         Ok(super::saved_state::state::CommonSavedState {
             device_status: self.device_status.into(),
             driver_feature_banks: (0..2usize).map(|i| self.driver_feature.bank(i)).collect(),
@@ -463,6 +470,7 @@ impl VirtioTransportCore {
             driver_feature_select: self.driver_feature_select,
             queue_select: self.queue_select,
             config_generation: self.config_generation,
+            device_state,
         })
     }
 
@@ -485,10 +493,10 @@ impl VirtioTransportCore {
     /// parameters, device status, and doorbells. The caller must restore
     /// transport-specific fields (interrupt status, MSI-X vectors, etc.)
     /// afterward.
-    pub fn restore_common(
+    pub async fn restore_common(
         &mut self,
         ops: &mut dyn TransportOps,
-        common: &super::saved_state::state::CommonSavedState,
+        common: super::saved_state::state::CommonSavedState,
         queue_states: impl Iterator<Item = (super::saved_state::state::CommonQueueState, u16)>,
         saved_queue_count: usize,
     ) -> Result<(), RestoreError> {
@@ -499,16 +507,18 @@ impl VirtioTransportCore {
         let queue_items: Vec<_> = queue_states.collect();
 
         super::saved_state::validate_restore(
-            common,
+            &common,
             &self.device_feature,
-            queue_items
-                .iter()
-                .enumerate()
-                .map(|(i, (q, _))| (i, q.size)),
+            queue_items.iter().enumerate().map(|(i, (q, _))| (i, q)),
             self.queues.len(),
             saved_queue_count,
             crate::MAX_QUEUE_SIZE,
         )?;
+
+        self.device_sender
+            .call(DeviceCommand::Restore, common.device_state)
+            .await
+            .map_err(|err| RestoreError::Other(err.into()))??;
 
         // Restore feature negotiation.
         self.driver_feature = VirtioDeviceFeatures::new();

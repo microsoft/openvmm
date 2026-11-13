@@ -104,13 +104,17 @@ impl PetriVmConfigOpenVmm {
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
         // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
-        // TODO: virtio vsock and console don't support save/restore yet
+        // TODO: kernel vhost-vsock and virtio console don't support save/restore yet
         // TODO: 9p shares don't support save/restore yet
         // TODO: nested virt doesn't support save/restore yet
         let has_unsupported_pcie_save_restore_device = config
             .pcie_devices
             .iter()
             .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
+        #[cfg(target_os = "linux")]
+        let has_kernel_vsock = resources.properties.vhost_vsock_guest_cid.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let has_kernel_vsock = false;
         let supports_save_restore = !skip_save_restore
             && !resources.properties.is_openhcl
             && !resources.properties.is_isolated
@@ -118,7 +122,7 @@ impl PetriVmConfigOpenVmm {
             && !matches!(arch, MachineArch::Aarch64)
             && !resources.properties.using_vpci
             && !has_unsupported_pcie_save_restore_device
-            && !resources.properties.use_virtio_vsock
+            && !has_kernel_vsock
             && !resources.properties.use_virtio_console
             && !has_guest_shares
             && !config.hypervisor.nested_virt;

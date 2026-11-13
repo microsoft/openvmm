@@ -371,7 +371,7 @@ struct PetriVmResourcesOpenVmm {
 
     // TempPaths that cannot be dropped until the end.
     vtl2_vsock_path: Option<TempPath>,
-    _vsock_path: TempPath,
+    vsock_path: TempPath,
 
     // properties needed at runtime
     properties: PetriVmProperties,

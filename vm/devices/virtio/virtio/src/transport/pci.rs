@@ -931,7 +931,7 @@ mod saved_state {
 
         async fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
-                common: self.core.save_common()?,
+                common: self.core.save_common().await?,
                 msix_config_vector: self.pci.msix_config_vector,
                 queues: self
                     .core
@@ -966,15 +966,17 @@ mod saved_state {
             // interrupt state restored below.
             SaveRestore::restore(&mut self.pci.config_space, state.cfg_space)?;
 
-            self.core.restore_common(
-                &mut self.pci,
-                &state.common,
-                state
-                    .queues
-                    .into_iter()
-                    .map(|sq| (sq.common, sq.msix_vector)),
-                saved_queue_count,
-            )?;
+            self.core
+                .restore_common(
+                    &mut self.pci,
+                    state.common,
+                    state
+                        .queues
+                        .into_iter()
+                        .map(|sq| (sq.common, sq.msix_vector)),
+                    saved_queue_count,
+                )
+                .await?;
 
             // Restore PCI-specific interrupt state.
             *self.pci.interrupt_status.lock() = state.interrupt_status;

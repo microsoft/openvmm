@@ -2312,7 +2312,7 @@ async fn log_serial<const N: usize>(
 }
 
 /// Wraps a `PcieDeviceKind` as a device attachment behind a PCIe port.
-fn attachment_device(device: vmservice::PcieDeviceKind) -> vmservice::PcieAttachment {
+pub(super) fn attachment_device(device: vmservice::PcieDeviceKind) -> vmservice::PcieAttachment {
     vmservice::PcieAttachment {
         kind: Some(vmservice::pcie_attachment::Kind::Device(device)),
     }
@@ -2327,7 +2327,7 @@ fn attachment_switch(switch: vmservice::PcieSwitch) -> vmservice::PcieAttachment
 
 /// Builds a PCIe root port with the given name, hotplug flag, and optional
 /// attached device/switch.
-fn pcie_root_port(
+pub(super) fn pcie_root_port(
     name: &str,
     hotplug: bool,
     attached: Option<vmservice::PcieAttachment>,
@@ -2362,7 +2362,7 @@ fn virtio_console_file_port(name: &str, path: &Path, append: bool) -> vmservice:
 }
 
 /// Wraps a virtio device function kind as a `PcieDeviceKind`.
-fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceKind {
+pub(super) fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceKind {
     vmservice::PcieDeviceKind {
         kind: Some(vmservice::pcie_device_kind::Kind::Virtio(
             vmservice::VirtioDevice { kind: Some(kind) },
@@ -2580,6 +2580,17 @@ async fn launch_openvmm(
     socket_path: &Path,
     pidfile_path: &Path,
 ) -> anyhow::Result<(TestChild, mesh_rpc::Client, Task<anyhow::Result<()>>)> {
+    launch_openvmm_with_log(driver, params, openvmm, socket_path, pidfile_path, "stderr").await
+}
+
+pub(super) async fn launch_openvmm_with_log(
+    driver: &DefaultDriver,
+    params: &petri::PetriTestParams<'_>,
+    openvmm: &ResolvedArtifact,
+    socket_path: &Path,
+    pidfile_path: &Path,
+    log_name: &str,
+) -> anyhow::Result<(TestChild, mesh_rpc::Client, Task<anyhow::Result<()>>)> {
     tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
 
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
@@ -2603,7 +2614,7 @@ async fn launch_openvmm(
     let stderr_task = driver.spawn(
         "stderr",
         petri::log_task(
-            params.log_source.log_file("stderr")?,
+            params.log_source.log_file(log_name)?,
             PolledPipe::new(driver, stderr_read)?,
             "openvmm stderr",
         ),

@@ -30,6 +30,7 @@ use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
+use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
@@ -39,6 +40,20 @@ impl PetriVmConfigOpenVmm {
     /// Skip automatic save/restore verification for devices that do not support it.
     pub fn without_save_restore(mut self) -> Self {
         self.skip_save_restore = true;
+        self
+    }
+
+    /// Attach the userspace virtio-vsock device via MMIO instead of PCIe.
+    ///
+    /// Requires [`crate::PetriVmBuilder::with_virtio_vsock`] to be enabled.
+    pub fn with_virtio_vsock_mmio(mut self) -> Self {
+        let index = self
+            .private_virtio_devices
+            .iter()
+            .position(|(_, resource)| resource.id() == "virtio-vsock")
+            .expect("enable userspace virtio-vsock before selecting MMIO");
+        let (_, device) = self.private_virtio_devices.remove(index);
+        self.config.virtio_devices.push((VirtioBus::Mmio, device));
         self
     }
 

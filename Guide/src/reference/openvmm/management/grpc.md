@@ -67,6 +67,11 @@ as not provided, so the ID isn't checked. The restored snapshot's
 ID is returned in `RestoreVMResponse.snapshot_id`. Set `resume` to start the
 restored VM immediately; otherwise it is created paused.
 
+PCIe userspace virtio-vsock supports these operations, but restoration resets
+existing streams; applications must reconnect. Supply the same guest CID and
+make the Unix relay endpoint available before restoring. Live host streams and
+device-side buffered data are not restored.
+
 ## Virtio-console file output
 
 `VmService` can write a virtio-console stream directly to a host file. Set the

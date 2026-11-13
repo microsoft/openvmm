@@ -12,6 +12,7 @@
 //! VMM-test artifact pipeline rather than launched by a developer on the host.
 //! `--transport tcp|vsock` selects the connection transport, and Windows builds
 //! additionally accept `--service`.
+//! `vsock-listener PORT` runs a persistent echo listener for reset tests.
 
 // UNSAFETY: init.rs requires unsafe for libc calls (fork, mount, reboot, waitpid)
 // on Linux; shutdown.rs requires unsafe for the Windows shutdown API.
@@ -31,6 +32,8 @@ mod mount;
 mod shutdown;
 #[cfg(any(target_os = "linux", windows))]
 mod trace;
+#[cfg(target_os = "linux")]
+mod vsock_listener;
 #[cfg(windows)]
 mod winsvc;
 
@@ -88,6 +91,11 @@ fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     if init::is_pid1() {
         init::init_as_pid1()?;
+    }
+
+    #[cfg(target_os = "linux")]
+    if std::env::args().nth(1).as_deref() == Some("vsock-listener") {
+        return vsock_listener::run(std::env::args().skip(2));
     }
 
     let args = parse_args()?;

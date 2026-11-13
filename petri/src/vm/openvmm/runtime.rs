@@ -257,6 +257,22 @@ impl PetriVmOpenVmm {
         }
     }
 
+    /// Get the userspace VTL0 vsock relay base path.
+    ///
+    /// Guest connections to port `P` use a host Unix listener at `<base>_P`.
+    pub fn vtl0_vsock_path(&self) -> anyhow::Result<&Path> {
+        #[cfg(target_os = "linux")]
+        anyhow::ensure!(
+            self.inner
+                .resources
+                .properties
+                .vhost_vsock_guest_cid
+                .is_none(),
+            "kernel vhost-vsock does not use a Unix relay"
+        );
+        Ok(&self.inner.resources.vsock_path)
+    }
+
     /// Get the path to the VTL 2 vsock socket, if the VM is configured with OpenHCL.
     pub fn vtl2_vsock_path(&self) -> anyhow::Result<&Path> {
         self.inner
@@ -378,6 +394,10 @@ impl PetriVmOpenVmm {
         /// reset, restore, and resume. Useful for verifying that device state
         /// survives a save/restore round-trip.
         pub async fn verify_save_restore(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Perform one save/reset/restore pulse, failing if reset is unsupported.
+        pub async fn pulse_save_restore(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(pub(crate) async fn launch_linux_direct_pipette(&mut self) -> anyhow::Result<()>);
 
@@ -836,6 +856,13 @@ impl PetriVmInner {
     async fn resume(&self) -> anyhow::Result<()> {
         self.worker.resume().await?;
         Ok(())
+    }
+
+    async fn pulse_save_restore(&self) -> anyhow::Result<()> {
+        self.worker
+            .pulse_save_restore()
+            .await
+            .context("save/restore pulse failed")
     }
 
     async fn verify_save_restore(&self) -> anyhow::Result<()> {

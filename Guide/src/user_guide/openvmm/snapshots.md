@@ -175,6 +175,8 @@ OpenVMM snapshots:
 | virtio-pmem | Virtio (PCI/MMIO) | Yes |
 | virtio-rng | Virtio (PCI/MMIO) | Yes |
 | virtio-rtc | Virtio (PCI/MMIO) | Yes |
+| virtio-vsock (userspace relay) | Virtio (PCI/MMIO) | Yes; applications reconnect after restore |
+| virtio-vsock (kernel vhost) | Virtio (PCI/MMIO) | **No** |
 | NVMe | PCI | **No** |
 | VGA | PCI | **No** (`todo!()`) |
 | GDMA (MANA network) | PCI | **No** (`todo!()`) |
@@ -188,6 +190,25 @@ OpenVMM snapshots:
 | Guest Emulation Device (GED) | VMBus | **No** |
 | VMBus serial (host) | VMBus | **No** |
 | Vmbfs | VMBus | **No** |
+
+```admonish note title="Virtio-vsock connections"
+After an actual restore, the userspace vsock device sends
+`VIRTIO_VSOCK_EVENT_TRANSPORT_RESET` on its event queue. A conforming guest
+driver closes established connections but keeps listening sockets usable;
+applications must reconnect. The guest CID must still match the saved
+configuration. Ordinary pause/resume, including saving without restoring,
+does not send this event.
+
+This requires a guest driver that handles and replenishes event-queue buffers.
+Host sockets and buffered stream data are not preserved. Individual connection
+errors still use targeted reset packets rather than resetting the transport.
+```
+
+```admonish warning title="Virtio queue progress"
+When a snapshot includes progress for an active virtio queue, its cursors must
+be valid for the negotiated ring layout and queue size. Invalid progress is
+rejected during restore rather than being discovered when queues restart.
+```
 
 ```admonish tip
 If you are unsure whether your VM configuration supports snapshots, try

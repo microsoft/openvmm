@@ -25,6 +25,7 @@ mesh.workspace = true
 open_enum.workspace = true
 parking_lot.workspace = true
 smallvec.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 tracelimit.workspace = true
 unicycle.workspace = true
@@ -41,6 +42,7 @@ guid.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
+sparse_mmap.workspace = true
 tempfile.workspace = true
 test_with_tracing.workspace = true
 

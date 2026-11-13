@@ -316,6 +316,36 @@ impl VirtioQueue {
         }
     }
 
+    /// Returns the driver's available-buffer cursor, not the device's consumption
+    /// cursor. Packed queues include the wrap bit. Use with
+    /// [`Self::poll_driver_avail_changed`] to wait for replenishment without
+    /// consuming buffers already on the queue.
+    pub fn driver_avail_state(&self) -> Result<u16, QueueError> {
+        self.core.driver_avail_state()
+    }
+
+    /// Waits for the driver to add buffers after `cursor`, ignoring stale kicks.
+    /// Use a cursor from [`Self::driver_avail_state`], or the device's
+    /// consumption cursor when waiting on an empty queue.
+    pub fn poll_driver_avail_changed(
+        &mut self,
+        cx: &mut Context<'_>,
+        cursor: u16,
+    ) -> Poll<Result<(), QueueError>> {
+        loop {
+            if !self.core.arm_kick_after(cursor)? {
+                return Poll::Ready(Ok(()));
+            }
+            ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
+        }
+    }
+
+    /// Reasserts notification for a previously published used buffer, for
+    /// example when resuming an event whose acknowledgment is still pending.
+    pub fn notify_used(&self) {
+        self.notify_guest.deliver();
+    }
+
     /// Polls until the queue is kicked by the guest, indicating new work may be
     /// available.
     ///
@@ -396,6 +426,16 @@ impl VirtioQueue {
         self.complete_prepared(work.into_completion(), bytes_written);
     }
 
+    /// Complete a descriptor, returning an error if publication to the used
+    /// ring fails. The completion token is consumed even on failure.
+    pub fn try_complete(
+        &mut self,
+        work: VirtioQueueCallbackWork,
+        bytes_written: u32,
+    ) -> Result<(), QueueError> {
+        self.try_complete_prepared(work.into_completion(), bytes_written)
+    }
+
     /// Completes a descriptor from a lightweight [`QueueCompletion`] token
     /// previously obtained via [`VirtioQueueCallbackWork::into_completion`].
     ///
@@ -403,24 +443,29 @@ impl VirtioQueue {
     /// the payload, so callers that buffer completions can store only the
     /// token.
     pub fn complete_prepared(&mut self, completion: QueueCompletion, bytes_written: u32) {
+        if let Err(err) = self.try_complete_prepared(completion, bytes_written) {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "failed to complete descriptor"
+            );
+        }
+    }
+
+    fn try_complete_prepared(
+        &mut self,
+        completion: QueueCompletion,
+        bytes_written: u32,
+    ) -> Result<(), QueueError> {
         // The completion token is consumed even if publishing it to the used ring
         // fails, so release its in-flight capacity before attempting the write.
         self.core.work_completed(&completion);
-        match self
+        if self
             .complete
-            .complete_descriptor(&completion, bytes_written)
+            .complete_descriptor(&completion, bytes_written)?
         {
-            Ok(true) => {
-                self.notify_guest.deliver();
-            }
-            Ok(false) => {}
-            Err(err) => {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to complete descriptor"
-                );
-            }
+            self.notify_guest.deliver();
         }
+        Ok(())
     }
 
     fn poll_next_buffer(
