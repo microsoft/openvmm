@@ -31,6 +31,11 @@ pub enum ShutdownRpc {
     /// receiver to be closed.
     WaitReady(Rpc<(), mesh::OneshotReceiver<()>>),
     /// Send a shutdown request to the guest.
+    ///
+    /// Waits for the guest acknowledgment, not completion of the power-state change.
+    /// Stopping the caller's wait does not withdraw a command already sent to the
+    /// guest. The device continues waiting for acknowledgment and rejects further
+    /// shutdown requests with [`ShutdownResult::AlreadyInProgress`].
     Shutdown(Rpc<ShutdownParams, ShutdownResult>),
 }
 
@@ -61,7 +66,8 @@ pub enum ShutdownResult {
     Ok,
     /// The IC is not ready to send shutdown requests.
     NotReady,
-    /// A shutdown is already in progress.
+    /// An earlier shutdown request remains in progress, even if its caller
+    /// stopped waiting for the result.
     AlreadyInProgress,
     /// The shutdown failed with the given error code.
     Failed(u32),

@@ -797,6 +797,125 @@ mod tests {
     }
 
     #[async_test]
+    async fn caller_cancellation_preserves_sent_shutdown(driver: DefaultDriver) {
+        let (_thread, worker_driver) =
+            pal_async::DefaultPool::spawn_on_thread("ic-shutdown-cancel");
+        for status in [Status::SUCCESS, Status::FAIL] {
+            let (host, guest) = connected_async_channels(16384);
+            let mut guest = MessagePipe::new(guest).unwrap();
+            let (send, recv) = mesh::channel();
+            let mut task = TaskControl::new(Worker {
+                ic: ShutdownIc::new(recv),
+                channel: ShutdownChannel::new(
+                    host,
+                    Some(ChannelState::Ready {
+                        versions: Versions {
+                            framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_3,
+                            message_version: SHUTDOWN_VERSION_3,
+                        },
+                        state: ReadyState::Ready,
+                        clients: Vec::new(),
+                    }),
+                )
+                .unwrap(),
+            });
+            task.insert(&worker_driver, "shutdown", ());
+            assert!(task.start());
+            let mut ready = with_timeout(&driver, send.call(ShutdownRpc::WaitReady, ()))
+                .await
+                .unwrap();
+            let pending = send.call(
+                ShutdownRpc::Shutdown,
+                ShutdownParams {
+                    shutdown_type: ShutdownType::PowerOff,
+                    force: false,
+                },
+            );
+            let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
+            let size = with_timeout(&driver, guest.recv(&mut buffer))
+                .await
+                .unwrap();
+            let (first, _) = Header::read_from_prefix(&buffer[..size]).unwrap();
+            assert_eq!(first.message_type, MessageType::SHUTDOWN);
+            drop(pending);
+
+            assert_eq!(
+                with_timeout(
+                    &driver,
+                    send.call(
+                        ShutdownRpc::Shutdown,
+                        ShutdownParams {
+                            shutdown_type: ShutdownType::Reboot,
+                            force: true,
+                        },
+                    ),
+                )
+                .await
+                .unwrap(),
+                ShutdownResult::AlreadyInProgress
+            );
+            stop_with_timeout(&mut task, &driver).await;
+            assert!(task.task().channel.pending_shutdown.is_some());
+            assert!(matches!(
+                &task.task().channel.state,
+                ChannelState::Ready {
+                    state: ReadyState::WaitShutdown,
+                    ..
+                }
+            ));
+            assert!((&mut ready).now_or_never().is_none());
+            assert!(guest.recv(&mut buffer).now_or_never().is_none());
+
+            let mut ack = response();
+            ack.transaction_id = first.transaction_id;
+            ack.status = status;
+            guest.try_send(ack.as_bytes()).unwrap();
+            with_timeout(
+                &driver,
+                task.task_mut()
+                    .channel
+                    .process_state_machine(&mut Vec::new()),
+            )
+            .await
+            .unwrap();
+            assert!(task.task().channel.pending_shutdown.is_none());
+            assert!(matches!(
+                &task.task().channel.state,
+                ChannelState::Ready {
+                    state: ReadyState::Ready,
+                    ..
+                }
+            ));
+            assert!((&mut ready).now_or_never().is_none());
+
+            let pending = send.call(
+                ShutdownRpc::Shutdown,
+                ShutdownParams {
+                    shutdown_type: ShutdownType::PowerOff,
+                    force: false,
+                },
+            );
+            assert!(task.start());
+            let size = with_timeout(&driver, guest.recv(&mut buffer))
+                .await
+                .unwrap();
+            let (second, _) = Header::read_from_prefix(&buffer[..size]).unwrap();
+            assert_eq!(second.message_type, MessageType::SHUTDOWN);
+            assert_eq!(second.transaction_id, first.transaction_id.wrapping_add(1));
+            ack.transaction_id = second.transaction_id;
+            ack.status = Status::SUCCESS;
+            guest.try_send(ack.as_bytes()).unwrap();
+            assert_eq!(
+                with_timeout(&driver, pending).await.unwrap(),
+                ShutdownResult::Ok
+            );
+            stop_with_timeout(&mut task, &driver).await;
+            assert!((&mut ready).now_or_never().is_none());
+            assert!(guest.recv(&mut buffer).now_or_never().is_none());
+        }
+    }
+
+    #[async_test]
     async fn restore_preserves_transaction_id(driver: DefaultDriver) {
         let (_send, recv) = mesh::channel();
         let mut ic = ShutdownIc::new(recv);
