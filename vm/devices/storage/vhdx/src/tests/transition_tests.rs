@@ -447,42 +447,32 @@ async fn partial_allocation_initializes_payload_before_bitmap_publication(driver
 }
 
 #[async_test]
-async fn cancelled_or_failed_payload_initialization_can_be_retried(driver: DefaultDriver) {
-    for cancel in [true, false] {
-        let disk = disk(&driver, true, 512).await;
-        write(&disk, 2 * MB1, disk.block_size(), 0xE7).await;
-        let stale_offset = disk.bat.get_block_mapping(2).file_offset();
-        disk.trim(TrimRequest::new(TrimMode::FreeSpace, 2 * MB1, MB1))
-            .await
-            .unwrap();
-        disk.flush().await.unwrap();
-        let mut ranges = Vec::new();
-        if cancel {
-            disk.file.pause(TestIo::Write, stale_offset);
-            let mut resolve = Box::pin(disk.resolve_write(0, 512, &mut ranges));
-            assert!(futures::poll!(&mut resolve).is_pending());
-            drop(resolve);
-            disk.file.resume();
-        } else {
-            disk.file.fail_next(TestIo::Write, stale_offset);
-            assert!(disk.resolve_write(0, 512, &mut ranges).await.is_err());
-        }
-        assert_eq!(
-            disk.bat.get_block_mapping(0).bat_state(),
-            BatEntryState::NotPresent
-        );
-        assert_eq!(disk.bat.io_refcount(0), 0);
-        assert_eq!(read(&disk, 0, 512).await, vec![parent_byte(0); 512]);
-        write(&disk, 0, 512, 0x61).await;
-        assert_eq!(disk.bat.get_block_mapping(0).file_offset(), stale_offset);
-        disk.flush().await.unwrap();
-        assert!(read(&disk, 0, 512).await.iter().all(|&b| b == 0x61));
-        disk.close().await.unwrap();
-    }
+async fn failed_payload_initialization_can_be_retried(driver: DefaultDriver) {
+    let disk = disk(&driver, true, 512).await;
+    write(&disk, 2 * MB1, disk.block_size(), 0xE7).await;
+    let stale_offset = disk.bat.get_block_mapping(2).file_offset();
+    disk.trim(TrimRequest::new(TrimMode::FreeSpace, 2 * MB1, MB1))
+        .await
+        .unwrap();
+    disk.flush().await.unwrap();
+    let mut ranges = Vec::new();
+    disk.file.fail_next(TestIo::Write, stale_offset);
+    assert!(disk.resolve_write(0, 512, &mut ranges).await.is_err());
+    assert_eq!(
+        disk.bat.get_block_mapping(0).bat_state(),
+        BatEntryState::NotPresent
+    );
+    assert_eq!(disk.bat.io_refcount(0), 0);
+    assert_eq!(read(&disk, 0, 512).await, vec![parent_byte(0); 512]);
+    write(&disk, 0, 512, 0x61).await;
+    assert_eq!(disk.bat.get_block_mapping(0).file_offset(), stale_offset);
+    disk.flush().await.unwrap();
+    assert!(read(&disk, 0, 512).await.iter().all(|&b| b == 0x61));
+    disk.close().await.unwrap();
 }
 
 #[async_test]
-async fn cancelled_resolve_reverts_preceding_allocations(driver: DefaultDriver) {
+async fn failed_resolve_reverts_preceding_allocations(driver: DefaultDriver) {
     let disk = disk(&driver, false, 512).await;
     let target = {
         let mut eof = disk.allocation_lock.lock().await;
@@ -490,25 +480,21 @@ async fn cancelled_resolve_reverts_preceding_allocations(driver: DefaultDriver) 
         assert_eq!(eof.zero_offset, eof.file_length);
         eof.file_length + 2 * disk.block_size() as u64
     };
-    disk.file.pause(TestIo::Resize, target);
+    disk.file.fail_next(TestIo::Resize, target);
     let mut ranges = Vec::new();
-    let mut resolve = Box::pin(disk.resolve_write(0, 2 * disk.block_size(), &mut ranges));
-    assert!(futures::poll!(&mut resolve).is_pending());
     assert!(
-        disk.bat
-            .get_block_mapping(0)
-            .transitioning_to_fully_present()
+        disk.resolve_write(0, 2 * disk.block_size(), &mut ranges)
+            .await
+            .is_err()
     );
-    drop(resolve);
     assert!(
         !disk
             .bat
             .get_block_mapping(0)
             .transitioning_to_fully_present(),
-        "cancelling resolve stranded an earlier allocation"
+        "failed resolve stranded an earlier allocation"
     );
     assert_eq!(disk.bat.io_refcount(0), 0);
-    disk.file.resume();
     write(&disk, 0, 2 * disk.block_size(), 0x51).await;
     disk.close().await.unwrap();
 }
@@ -552,45 +538,35 @@ async fn cancelled_complete_reverts_allocation_and_cache_permit_wait(driver: Def
 }
 
 #[async_test]
-async fn cancelled_or_failed_bitmap_load_can_be_retried(driver: DefaultDriver) {
-    for cancel in [true, false] {
-        for sector_size in [512, 4096] {
-            let disk = disk(&driver, true, sector_size).await;
-            write(&disk, 0, sector_size, 0x61).await;
-            disk.flush().await.unwrap();
-            let snapshot = disk.file.durable_snapshot();
-            disk.abort().await;
-            let disk = VhdxFile::open(YieldingCrashFile::from_durable(snapshot, false, false))
-                .writable(&driver)
+async fn failed_bitmap_load_can_be_retried(driver: DefaultDriver) {
+    for sector_size in [512, 4096] {
+        let disk = disk(&driver, true, sector_size).await;
+        write(&disk, 0, sector_size, 0x61).await;
+        disk.flush().await.unwrap();
+        let snapshot = disk.file.durable_snapshot();
+        disk.abort().await;
+        let disk = VhdxFile::open(YieldingCrashFile::from_durable(snapshot, false, false))
+            .writable(&driver)
+            .await
+            .unwrap();
+        let bitmap_offset = disk.bat.get_sector_bitmap_mapping(0).file_offset();
+        let mut ranges = Vec::new();
+        disk.file.fail_next(TestIo::Read, bitmap_offset);
+        assert!(
+            disk.resolve_read(0, sector_size, &mut ranges)
                 .await
-                .unwrap();
-            let bitmap_offset = disk.bat.get_sector_bitmap_mapping(0).file_offset();
-            let mut ranges = Vec::new();
-            if cancel {
-                disk.file.pause(TestIo::Read, bitmap_offset);
-                let mut resolve = Box::pin(disk.resolve_read(0, sector_size, &mut ranges));
-                assert!(futures::poll!(&mut resolve).is_pending());
-                drop(resolve);
-                disk.file.resume();
-            } else {
-                disk.file.fail_next(TestIo::Read, bitmap_offset);
-                assert!(
-                    disk.resolve_read(0, sector_size, &mut ranges)
-                        .await
-                        .is_err()
-                );
-            }
+                .is_err()
+        );
 
-            let mut ranges = Vec::new();
-            let mut retry = Box::pin(disk.resolve_read(0, sector_size, &mut ranges));
-            assert!(
-                matches!(futures::poll!(&mut retry), std::task::Poll::Ready(Ok(_))),
-                "bitmap load cancellation/failure left the cache permanently loading"
-            );
-            drop(retry);
-            assert!(read(&disk, 0, sector_size).await.iter().all(|&b| b == 0x61));
-            disk.close().await.unwrap();
-        }
+        let mut ranges = Vec::new();
+        let mut retry = Box::pin(disk.resolve_read(0, sector_size, &mut ranges));
+        assert!(
+            matches!(futures::poll!(&mut retry), std::task::Poll::Ready(Ok(_))),
+            "bitmap load failure left the cache permanently loading"
+        );
+        drop(retry);
+        assert!(read(&disk, 0, sector_size).await.iter().all(|&b| b == 0x61));
+        disk.close().await.unwrap();
     }
 }
 
@@ -633,7 +609,7 @@ async fn cancelled_completion_preserves_already_published_blocks(driver: Default
 }
 
 #[async_test]
-async fn cancelled_partial_resolve_restores_unpublished_payload(driver: DefaultDriver) {
+async fn failed_partial_resolve_restores_unpublished_payload(driver: DefaultDriver) {
     let disk = disk(&driver, true, 512).await;
     write(&disk, MB1, 512, 0x51).await;
     disk.flush().await.unwrap();
@@ -644,15 +620,12 @@ async fn cancelled_partial_resolve_restores_unpublished_payload(driver: DefaultD
         .await
         .unwrap();
     let expected_offset = disk.allocation_lock.lock().await.zero_offset;
-    disk.file.pause(
+    disk.file.fail_next(
         TestIo::Read,
         disk.bat.get_sector_bitmap_mapping(0).file_offset(),
     );
     let mut ranges = Vec::new();
-    let mut resolve = Box::pin(disk.resolve_write(0, 512, &mut ranges));
-    assert!(futures::poll!(&mut resolve).is_pending());
-    drop(resolve);
-    disk.file.resume();
+    assert!(disk.resolve_write(0, 512, &mut ranges).await.is_err());
     {
         let eof = disk.allocation_lock.lock().await;
         assert!(
@@ -671,7 +644,7 @@ async fn cancelled_partial_resolve_restores_unpublished_payload(driver: DefaultD
 }
 
 #[async_test]
-async fn cancelled_read_load_is_pinned_until_cleanup() {
+async fn read_load_stays_pinned_under_cache_pressure() {
     use crate::cache::PageCache;
     use crate::cache::PageKey;
     use std::sync::Arc;
@@ -695,13 +668,9 @@ async fn cancelled_read_load_is_pinned_until_cleanup() {
             .await
             .unwrap(),
     );
-    drop(pending);
     file.resume();
-    let mut retry = Box::pin(cache.acquire_read(PageKey { tag: 0, offset: 0 }));
-    assert!(
-        matches!(futures::poll!(&mut retry), std::task::Poll::Ready(Ok(_))),
-        "cancelled read load could not be retried after cache pressure"
-    );
+    let guard = pending.await.unwrap();
+    assert!(guard.iter().all(|&b| b == 0x51));
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

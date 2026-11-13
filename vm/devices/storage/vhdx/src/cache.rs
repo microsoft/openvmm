@@ -317,7 +317,7 @@ enum WritePendingAction<B> {
     AcquirePermit(Arc<Mutex<PageData<B>>>),
 }
 
-/// Reset transient page state if the future driving it is cancelled.
+/// Restore transient state on errors or cancelled permit acquisition.
 struct PendingPageGuard<'a, F: AsyncFile> {
     cache: &'a PageCache<F>,
     entry: Option<Arc<Mutex<PageData<F::Buffer>>>>,
@@ -463,17 +463,7 @@ impl<F: AsyncFile> PageCache<F> {
             match action {
                 PendingAction::Wait(listener) => listener.await,
                 PendingAction::Load(file_offset, entry) => {
-                    let pending = PendingPageGuard::new(self, entry);
-                    let buf = self.file.alloc_buffer(PAGE_SIZE);
-                    match self.file.read_into(file_offset, buf).await {
-                        Ok(buf) => self.complete_load(pending.into_entry(), Arc::new(buf)),
-                        Err(e) => {
-                            return Err(CacheError::Read {
-                                err: e,
-                                file_offset,
-                            });
-                        }
-                    }
+                    self.load_page(file_offset, entry).await?;
                 }
             }
         }
@@ -561,6 +551,22 @@ impl<F: AsyncFile> PageCache<F> {
         }
     }
 
+    async fn load_page(
+        &self,
+        file_offset: u64,
+        entry: Arc<Mutex<PageData<F::Buffer>>>,
+    ) -> Result<(), CacheError> {
+        let pending = PendingPageGuard::new(self, entry);
+        let buf = self.file.alloc_buffer(PAGE_SIZE);
+        let buf = self
+            .file
+            .read_into(file_offset, buf)
+            .await
+            .map_err(|err| CacheError::Read { err, file_offset })?;
+        self.complete_load(pending.into_entry(), Arc::new(buf));
+        Ok(())
+    }
+
     /// Complete a successful load without taking the map lock. The page stays
     /// pinned until the acquisition loop consumes `Loaded` under that lock.
     fn complete_load(&self, entry: Arc<Mutex<PageData<F::Buffer>>>, data: Arc<F::Buffer>) {
@@ -599,17 +605,7 @@ impl<F: AsyncFile> PageCache<F> {
             match action {
                 WritePendingAction::Wait(listener) => listener.await,
                 WritePendingAction::Load(file_offset, entry) => {
-                    let pending = PendingPageGuard::new(self, entry);
-                    let buf = self.file.alloc_buffer(PAGE_SIZE);
-                    match self.file.read_into(file_offset, buf).await {
-                        Ok(buf) => self.complete_load(pending.into_entry(), Arc::new(buf)),
-                        Err(e) => {
-                            return Err(CacheError::Read {
-                                err: e,
-                                file_offset,
-                            });
-                        }
-                    }
+                    self.load_page(file_offset, entry).await?;
                 }
                 WritePendingAction::AcquirePermit(entry) => {
                     let pending = PendingPageGuard::new(self, entry);
