@@ -23,13 +23,11 @@
 use crate::Error;
 use crate::profile::Access;
 use crate::profile::FsGrant;
-use crate::profile::Network;
 use crate::profile::Profile;
 use crate::profile::Restrictions;
 use crate::profile::Syscalls;
 use crate::unix::hardening;
 use crate::unix::mount_namespace;
-use crate::unix::network_namespace;
 use crate::unix::seccomp;
 use fs_err::os::unix::fs::OpenOptionsExt;
 use std::io;
@@ -49,28 +47,23 @@ pub fn apply(profile: &Profile) -> Result<(), Error> {
     // filesystem view.
     mount_namespace::make_root_private().map_err(required("mount_namespace"))?;
 
-    // Step 2 — configure an isolated network namespace, when requested, before
-    // filesystem setup so any FS step that could reach the network is already
-    // contained.
-    apply_network(p.network)?;
-
-    // Step 3 — filesystem: tmpfs root, per-grant binds, /proc, /tmp,
+    // Step 2 — filesystem: tmpfs root, per-grant binds, /proc, /tmp,
     // pivot_root, then opportunistic Landlock.
     apply_filesystem(&p.fs)?;
 
-    // Step 4 — lock securebits *before* the capability drop, while we still
+    // Step 3 — lock securebits *before* the capability drop, while we still
     // hold CAP_SETPCAP. A worker that can regain root-like
     // authority across an execve is not sandboxed.
     hardening::lock_securebits().map_err(required("securebits"))?;
 
-    // Step 5 — drop every capability. Required: this is the deny-all base.
+    // Step 4 — drop every capability. Required: this is the deny-all base.
     drop_all_capabilities()?;
 
-    // Step 6 — no_new_privs. Required, and a prerequisite for unprivileged
+    // Step 5 — no_new_privs. Required, and a prerequisite for unprivileged
     // seccomp below.
     hardening::set_no_new_privs().map_err(required("no_new_privs"))?;
 
-    // Step 7 — seccomp, *opt-in* per worker class. The deny-all
+    // Step 6 — seccomp, *opt-in* per worker class. The deny-all
     // default (`Syscalls::Unfiltered`) installs no filter; an explicit
     // `Syscalls::Deny` installs the dangerous-syscall baseline plus any extras.
     if let Syscalls::Deny(names) = &p.syscalls {
@@ -103,16 +96,6 @@ pub fn tighten(restrictions: &Restrictions) -> Result<(), Error> {
     }
 
     Ok(())
-}
-
-/// Configure the network namespace to match `scope`. Required: a failure
-/// aborts.
-fn apply_network(scope: Network) -> Result<(), Error> {
-    match scope {
-        Network::None | Network::Unrestricted => Ok(()),
-        Network::Loopback => network_namespace::bring_up_loopback(),
-    }
-    .map_err(required("network_namespace"))
 }
 
 /// Real filesystem setup: tmpfs staging root, per-grant bind mounts,

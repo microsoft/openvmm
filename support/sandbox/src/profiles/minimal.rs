@@ -24,7 +24,7 @@ use crate::Syscalls;
 /// let profile = profiles::minimal()
 ///     .name("my_worker")
 ///     .read_exec("/usr/lib")
-///     .network(Network::Loopback)
+///     .network(Network::Unrestricted)
 ///     .build();
 /// ```
 pub fn minimal() -> Builder {

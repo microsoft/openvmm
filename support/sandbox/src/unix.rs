@@ -21,7 +21,6 @@ use std::io;
 
 pub mod hardening;
 pub mod mount_namespace;
-pub mod network_namespace;
 pub mod seccomp;
 pub(crate) mod syscall_denylist;
 

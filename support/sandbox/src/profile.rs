@@ -174,8 +174,7 @@ impl Builder {
     /// Grant network reachability up to `scope`.
     ///
     /// The default (from [`Profile::deny_all`]) is [`Network::None`] — an
-    /// empty network namespace with no peer. [`Network::Loopback`] enables
-    /// loopback inside that namespace, while [`Network::Unrestricted`] keeps
+    /// empty network namespace with no peer. [`Network::Unrestricted`] keeps
     /// the worker in the caller's network namespace.
     pub fn network(mut self, scope: Network) -> Self {
         self.inner.network = scope;
@@ -234,9 +233,6 @@ pub enum Network {
     /// No network at all — an empty network namespace with no peer.
     #[default]
     None,
-    /// Loopback only (`127.0.0.0/8`, `::1`) — a network namespace with the
-    /// loopback interface brought up and nothing else.
-    Loopback,
     /// Preserve the caller's network namespace and ambient connectivity.
     Unrestricted,
 }
@@ -458,9 +454,6 @@ mod tests {
 
     #[test]
     fn network_grant_is_stored() {
-        let profile = Profile::deny_all().network(Network::Loopback).build();
-        assert_eq!(profile.inner.network, Network::Loopback);
-
         let profile = Profile::deny_all().network(Network::Unrestricted).build();
         assert_eq!(profile.inner.network, Network::Unrestricted);
     }

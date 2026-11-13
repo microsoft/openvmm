@@ -95,7 +95,7 @@ User, mount, and IPC namespaces are required. The user namespace allows setup
 without requiring host root privileges, but does not allocate a distinct host
 identity: namespace UID/GID 0 map to the spawning process's effective UID/GID.
 A new network namespace is also required unless the profile selects
-`Network::Unrestricted`; loopback can be enabled within an isolated namespace.
+`Network::Unrestricted`.
 
 Landlock supplements the mount boundary where available. Its rules degrade
 according to the kernel ABI, and failure logs a warning rather than aborting

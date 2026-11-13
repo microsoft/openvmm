@@ -15,7 +15,7 @@
 //!
 //! let profile = profiles::minimal()
 //!     .name("my_worker")
-//!     .network(Network::Loopback)
+//!     .network(Network::Unrestricted)
 //!     .build();
 //! ```
 //!
