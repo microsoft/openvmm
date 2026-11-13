@@ -1551,6 +1551,7 @@ impl VmService {
                 .vmbus
                 .as_mut()
                 .context("HVSocket requires VMBus to be enabled")?;
+            crate::cleanup_socket(hvsocket_config.path.as_ref());
             let listener = UnixListener::bind(&hvsocket_config.path).with_context(|| {
                 format!("failed to bind hvsocket path: {}", hvsocket_config.path)
             })?;
@@ -3056,6 +3057,7 @@ async fn build_virtio_device(
             socket_path,
             guest_cid,
         }) => {
+            crate::cleanup_socket(socket_path.as_ref());
             let listener = UnixListener::bind(&socket_path)
                 .with_context(|| format!("failed to bind virtio-vsock socket: {socket_path}"))?;
             virtio_resources::vsock::VirtioVsockHandle {
@@ -3353,6 +3355,28 @@ mod tests {
     use vfio_assigned_device_resources::BarAddressConfig;
     #[cfg(target_os = "linux")]
     use vmservice::vfio_bar_address::Source;
+
+    #[test]
+    fn virtio_vsock_reuses_socket_path() {
+        DefaultPool::run_with(async |_| {
+            let dir = tempfile::tempdir().unwrap();
+            let device = vmservice::VirtioDevice {
+                kind: Some(vmservice::virtio_device::Kind::Vsock(
+                    vmservice::VirtioVsock {
+                        socket_path: dir.path().join("vsock").to_str().unwrap().into(),
+                        guest_cid: None,
+                    },
+                )),
+            };
+            for _ in 0..2 {
+                drop(
+                    build_virtio_device(device.clone(), &FdRegistry::default())
+                        .await
+                        .unwrap(),
+                );
+            }
+        });
+    }
 
     fn service(
         driver: DefaultDriver,
