@@ -784,8 +784,9 @@ async fn second_write_no_header_update(driver: DefaultDriver) {
 
     // First write — triggers header update.
     let mut ranges = Vec::new();
-    let _guard = vhdx.resolve_write(0, 512, &mut ranges).await.unwrap();
+    let guard = vhdx.resolve_write(0, 512, &mut ranges).await.unwrap();
     let guid_after_first = vhdx.data_write_guid();
+    guard.complete().await.unwrap();
 
     // Second write — should NOT update header again.
     let mut ranges2 = Vec::new();
@@ -866,24 +867,26 @@ async fn resolve_write_sets_tfp_on_full_block(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn resolve_write_no_tfp_on_partial_block(driver: DefaultDriver) {
+async fn resolve_write_zero_partial_block_publishes_without_tfp(driver: DefaultDriver) {
     let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
     let vhdx = VhdxFile::open(file).writable(&driver).await.unwrap();
 
     let mut ranges = Vec::new();
-    let _guard = vhdx.resolve_write(0, 512, &mut ranges).await.unwrap();
+    let guard = vhdx.resolve_write(0, 512, &mut ranges).await.unwrap();
 
-    // Partial-block write should NOT set TFP — BAT committed immediately.
     let mapping = vhdx.bat.get_block_mapping(0);
-    assert!(
-        !mapping.transitioning_to_fully_present(),
-        "partial-block resolve_write should not set TFP"
-    );
-    assert_eq!(
-        mapping.bat_state(),
-        BatEntryState::FullyPresent,
-        "partial allocation should set FullyPresent immediately"
-    );
+    assert!(!mapping.transitioning_to_fully_present());
+    assert_eq!(mapping.bat_state(), BatEntryState::FullyPresent);
+    assert!(matches!(ranges.as_slice(), [WriteRange::Data { .. }]));
+
+    let mut second_ranges = Vec::new();
+    let mut second = std::pin::pin!(vhdx.resolve_write(512, 512, &mut second_ranges));
+    let std::task::Poll::Ready(Ok(second)) = futures::poll!(&mut second) else {
+        panic!("same-block write should not wait for an allocation of zero space");
+    };
+
+    guard.complete().await.unwrap();
+    second.complete().await.unwrap();
 }
 
 #[async_test]
@@ -1345,7 +1348,7 @@ async fn safe_data_skips_zero_padding(driver: DefaultDriver) {
     // Step 1: Partial write to block 0 at guest_offset=0, len=512.
     // Allocation comes from near-EOF → SpaceState::Zero → no zero ranges.
     let mut ranges = Vec::new();
-    let _guard = vhdx.resolve_write(0, 512, &mut ranges).await.unwrap();
+    let guard = vhdx.resolve_write(0, 512, &mut ranges).await.unwrap();
 
     let zero_ranges: Vec<_> = ranges
         .iter()
@@ -1362,6 +1365,8 @@ async fn safe_data_skips_zero_padding(driver: DefaultDriver) {
         WriteRange::Data { file_offset, .. } => file_offset,
         _ => panic!("expected Data range"),
     };
+
+    guard.complete().await.unwrap();
 
     // Step 2: Release the allocated space back to pool.
     // (Intentionally creating an inconsistency for testing purposes.)
@@ -1534,6 +1539,26 @@ async fn verify_block_pattern<F: AsyncFile>(
             }
         }
     }
+}
+
+/// Read one sector-bitmap bit from the file. The caller must flush first;
+/// bitmap updates live in the cache until then.
+async fn sector_bit_set<F: AsyncFile>(vhdx: &VhdxFile<F>, virtual_offset: u64) -> bool {
+    let sector = virtual_offset / vhdx.logical_sector_size() as u64;
+    let chunk = (sector / format::SECTORS_PER_CHUNK) as u32;
+    let bit = sector % format::SECTORS_PER_CHUNK;
+    let sbm = vhdx.bat.get_sector_bitmap_mapping(chunk);
+    assert_eq!(
+        sbm.bat_state(),
+        BatEntryState::FullyPresent,
+        "sector bitmap for chunk {chunk} is not allocated"
+    );
+    let mut byte = [0u8; 1];
+    vhdx.file
+        .read_at(sbm.file_offset() + bit / 8, &mut byte)
+        .await
+        .unwrap();
+    byte[0] & (1 << (bit % 8)) != 0
 }
 
 #[async_test]
@@ -2544,6 +2569,357 @@ async fn stress_write_trim_cycle(driver: DefaultDriver) {
 }
 
 // ---- SBM allocation tests ----
+
+#[async_test]
+async fn aborted_reclaimed_allocation_preserves_deferred_release(driver: DefaultDriver) {
+    for mode in [TrimMode::FreeSpace, TrimMode::FileSpace] {
+        for full_block in [false, true] {
+            let (file, _) = create_vhdx_with_block_size(8 * MB1, MB1 as u32).await;
+            let vhdx = VhdxFile::open(file).writable(&driver).await.unwrap();
+            let block_size = vhdx.block_size();
+            write_block(&vhdx, 0, block_size, 0xAA).await;
+            vhdx.flush().await.unwrap();
+
+            vhdx.trim(TrimRequest::new(mode, 0, block_size as u64))
+                .await
+                .unwrap();
+            let mut ranges = Vec::new();
+            let length = if full_block { block_size } else { 4096 };
+            let aborted = vhdx.resolve_write(0, length, &mut ranges).await.unwrap();
+            drop(aborted);
+
+            let mut ranges = Vec::new();
+            let other = vhdx
+                .resolve_write(block_size as u64, 4096, &mut ranges)
+                .await
+                .unwrap();
+            let WriteRange::Data { file_offset, .. } = ranges[0] else {
+                panic!("expected data range, got {ranges:?}");
+            };
+            vhdx.file
+                .write_at(file_offset, &vec![0xCC; 4096])
+                .await
+                .unwrap();
+            let snapshot = vhdx.file.snapshot();
+            drop(other);
+            vhdx.close().await.unwrap();
+
+            let recovered = VhdxFile::open(InMemoryFile::from_snapshot(snapshot))
+                .writable(&driver)
+                .await
+                .unwrap();
+            verify_block_pattern(&recovered, 0, 4096, 0xAA).await;
+            recovered.close().await.unwrap();
+        }
+    }
+}
+
+#[async_test]
+async fn aborted_reclaimed_allocation_restores_soft_anchor(driver: DefaultDriver) {
+    for full_block in [false, true] {
+        let (file, _) = create_vhdx_with_block_size(8 * MB1, MB1 as u32).await;
+        let vhdx = VhdxFile::open(file).writable(&driver).await.unwrap();
+        let block_size = vhdx.block_size();
+        write_block(&vhdx, 0, block_size, 0xAA).await;
+        vhdx.trim(TrimRequest::new(TrimMode::FileSpace, 0, block_size as u64))
+            .await
+            .unwrap();
+        vhdx.flush().await.unwrap();
+
+        let mut ranges = Vec::new();
+        let length = if full_block { block_size } else { 4096 };
+        let aborted = vhdx.resolve_write(0, length, &mut ranges).await.unwrap();
+        drop(aborted);
+
+        vhdx.trim(TrimRequest::new(
+            TrimMode::MakeTransparent,
+            0,
+            block_size as u64,
+        ))
+        .await
+        .unwrap();
+        vhdx.close().await.unwrap();
+    }
+}
+
+#[async_test]
+async fn concurrent_partial_writes_diff_disk_preserve_parent(driver: DefaultDriver) {
+    let file = InMemoryFile::new(0);
+    let mut params = CreateParams {
+        disk_size: 8 * MB1,
+        block_size: 2 * MB1 as u32,
+        disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
+        ..Default::default()
+    };
+    create::create(&file, &mut params).await.unwrap();
+    let vhdx = VhdxFile::open(file).writable(&driver).await.unwrap();
+    vhdx.enable_write_mode(WriteMode::DataWritable)
+        .await
+        .unwrap();
+
+    // Force both writers to observe NotPresent before either can allocate.
+    {
+        let allocation_guard = vhdx.allocation_lock.lock().await;
+        let mut first = std::pin::pin!(write_block(&vhdx, 0, 4096, 0xBB));
+        let mut second = std::pin::pin!(write_block(&vhdx, 8192, 4096, 0xCC));
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        drop(allocation_guard);
+        futures::join!(first, second);
+    }
+
+    let file = vhdx.file.clone();
+    vhdx.close().await.unwrap();
+    let vhdx = VhdxFile::open(InMemoryFile::from_snapshot(file.snapshot()))
+        .read_only()
+        .await
+        .unwrap();
+
+    let mut ranges = Vec::new();
+    let guard = vhdx
+        .resolve_read(0, vhdx.block_size(), &mut ranges)
+        .await
+        .unwrap();
+    // Model a parent whose entire block contains 0xAA.
+    let mut actual = vec![0xAA; vhdx.block_size() as usize];
+    for range in &ranges {
+        match *range {
+            ReadRange::Data {
+                guest_offset,
+                length,
+                file_offset,
+            } => {
+                vhdx.file
+                    .read_at(
+                        file_offset,
+                        &mut actual[guest_offset as usize..(guest_offset + length as u64) as usize],
+                    )
+                    .await
+                    .unwrap();
+            }
+            ReadRange::Zero {
+                guest_offset,
+                length,
+            } => {
+                actual[guest_offset as usize..(guest_offset + length as u64) as usize].fill(0);
+            }
+            ReadRange::Unmapped { .. } => {}
+        }
+    }
+    drop(guard);
+
+    let mut expected = vec![0xAA; vhdx.block_size() as usize];
+    expected[..4096].fill(0xBB);
+    expected[8192..12288].fill(0xCC);
+    let mismatch = actual.iter().zip(&expected).position(|(a, b)| a != b);
+    assert!(
+        mismatch.is_none(),
+        "first mismatch at {mismatch:?}; first write: {:#04x}; inherited: {:#04x}; \
+         second write: {:#04x}; child BAT: {:?}; read ranges: {ranges:?}",
+        actual[0],
+        actual[4096],
+        actual[8192],
+        vhdx.bat.get_block_mapping(0)
+    );
+    assert_eq!(
+        vhdx.bat.get_block_mapping(0).bat_state(),
+        BatEntryState::PartiallyPresent
+    );
+}
+
+/// A completed partial write must keep its sector bits if a later
+/// full-block promotion of the same block is aborted.
+#[async_test]
+async fn aborted_full_promotion_preserves_partial_bitmap(driver: DefaultDriver) {
+    let file = InMemoryFile::new(0);
+    let mut params = CreateParams {
+        disk_size: 8 * MB1,
+        block_size: 2 * MB1 as u32,
+        disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
+        ..Default::default()
+    };
+    create::create(&file, &mut params).await.unwrap();
+    let vhdx = VhdxFile::open(file).writable(&driver).await.unwrap();
+
+    // Establish a PartiallyPresent block so the full write promotes it.
+    write_block(&vhdx, 0, 4096, 0xBB).await;
+
+    let mut partial_ranges = Vec::new();
+    let partial = vhdx
+        .resolve_write(8192, 4096, &mut partial_ranges)
+        .await
+        .unwrap();
+    let WriteRange::Data { file_offset, .. } = partial_ranges[0] else {
+        panic!("expected an in-place data range, got {partial_ranges:?}");
+    };
+    vhdx.file
+        .write_at(file_offset, &vec![0xCC; 4096])
+        .await
+        .unwrap();
+
+    let mut full_ranges = Vec::new();
+    let full = vhdx
+        .resolve_write(0, vhdx.block_size(), &mut full_ranges)
+        .await
+        .unwrap();
+    assert!(
+        vhdx.bat
+            .get_block_mapping(0)
+            .transitioning_to_fully_present(),
+        "full-block promotion should set TFP before completion"
+    );
+
+    partial.complete().await.unwrap();
+    drop(full);
+
+    let mut ranges = Vec::new();
+    let guard = vhdx.resolve_read(8192, 4096, &mut ranges).await.unwrap();
+    assert!(
+        matches!(ranges[0], ReadRange::Data { .. }),
+        "aborted promotion dropped the completed write; ranges: {ranges:?}"
+    );
+    let ReadRange::Data { file_offset, .. } = ranges[0] else {
+        unreachable!()
+    };
+    let mut actual = vec![0u8; 4096];
+    vhdx.file.read_at(file_offset, &mut actual).await.unwrap();
+    drop(guard);
+    assert!(
+        actual.iter().all(|&b| b == 0xCC),
+        "completed partial write was not readable after promotion abort"
+    );
+}
+
+/// A later partial allocation must clear stale sector bits itself.
+///
+/// MakeTransparent leaves the bits set. They are ignored while the block is
+/// `NotPresent`, and the next `PartiallyPresent` publish is what must clear
+/// the whole block before readers can observe it.
+#[async_test]
+async fn partial_allocation_clears_stale_sector_bitmap(driver: DefaultDriver) {
+    let file = InMemoryFile::new(0);
+    let mut params = CreateParams {
+        disk_size: 8 * MB1,
+        block_size: 2 * MB1 as u32,
+        disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
+        ..Default::default()
+    };
+    create::create(&file, &mut params).await.unwrap();
+    let vhdx = VhdxFile::open(file).writable(&driver).await.unwrap();
+    let block_size = vhdx.block_size();
+
+    write_block(&vhdx, 0, 4096, 0xBB).await;
+    vhdx.flush().await.unwrap();
+    assert!(
+        sector_bit_set(&vhdx, 0).await,
+        "setup failed: written sector bit was not durable"
+    );
+    vhdx.trim(TrimRequest::new(
+        TrimMode::MakeTransparent,
+        0,
+        block_size as u64,
+    ))
+    .await
+    .unwrap();
+    vhdx.flush().await.unwrap();
+    assert!(
+        sector_bit_set(&vhdx, 0).await,
+        "trim cleared sector bits; that is the allocator's job on the next \
+         PartiallyPresent publish"
+    );
+
+    let mut discarded = Vec::new();
+    let _guard = vhdx.resolve_read(0, 4096, &mut discarded).await.unwrap();
+    assert!(
+        matches!(discarded[0], ReadRange::Unmapped { .. }),
+        "discarded block should be transparent before rewrite, got {discarded:?}"
+    );
+
+    write_block(&vhdx, 8192, 4096, 0xCC).await;
+
+    let mut revived = Vec::new();
+    let guard = vhdx.resolve_read(0, 4096, &mut revived).await.unwrap();
+    assert!(
+        matches!(revived[0], ReadRange::Unmapped { .. }),
+        "discarded sectors were revived by a later partial write; ranges: {revived:?}, \
+         BAT: {:?}",
+        vhdx.bat.get_block_mapping(0)
+    );
+    drop(guard);
+
+    verify_block_pattern(&vhdx, 8192, 4096, 0xCC).await;
+}
+
+/// Zero-fill returned for reused non-zero space must not clobber a write
+/// that landed after the block was published as fully present.
+#[async_test]
+async fn stale_space_zero_fill_does_not_clobber_concurrent_write(driver: DefaultDriver) {
+    let (file, _) = create_vhdx_with_block_size(8 * MB1, MB1 as u32).await;
+    let vhdx = VhdxFile::open(file).writable(&driver).await.unwrap();
+    let block_size = vhdx.block_size();
+
+    write_block(&vhdx, 0, block_size, 0xAA).await;
+    vhdx.trim(TrimRequest::new(TrimMode::FreeSpace, 0, block_size as u64))
+        .await
+        .unwrap();
+    vhdx.flush().await.unwrap();
+
+    let mut first_ranges = Vec::new();
+    let first = vhdx
+        .resolve_write(block_size as u64, 4096, &mut first_ranges)
+        .await
+        .unwrap();
+    assert!(
+        first_ranges
+            .iter()
+            .any(|range| matches!(range, WriteRange::Zero { .. })),
+        "setup failed: reused space did not require zero-fill, ranges: {first_ranges:?}"
+    );
+
+    // The disk layer zero-fills only after resolve returns. The second
+    // write must wait for that zero-fill instead of landing in the
+    // unpublished payload.
+    assert!(
+        vhdx.bat
+            .get_block_mapping(1)
+            .transitioning_to_fully_present(),
+        "unsafe partial allocation published before zero-fill"
+    );
+    let mut second = std::pin::pin!(write_block(&vhdx, block_size as u64 + 8192, 4096, 0xCC));
+    assert!(
+        futures::poll!(&mut second).is_pending(),
+        "same-block write did not wait for the zero-fill"
+    );
+
+    for range in &first_ranges {
+        match range {
+            WriteRange::Data {
+                file_offset,
+                length,
+                ..
+            } => {
+                vhdx.file
+                    .write_at(*file_offset, &vec![0xBB; *length as usize])
+                    .await
+                    .unwrap();
+            }
+            WriteRange::Zero {
+                file_offset,
+                length,
+            } => {
+                vhdx.file
+                    .write_at(*file_offset, &vec![0u8; *length as usize])
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+    first.complete().await.unwrap();
+    second.await;
+
+    verify_block_pattern(&vhdx, block_size as u64 + 8192, 4096, 0xCC).await;
+    verify_block_pattern(&vhdx, block_size as u64, 4096, 0xBB).await;
+}
 
 #[async_test]
 async fn partial_write_diff_disk_allocates_sbm(driver: DefaultDriver) {

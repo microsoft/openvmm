@@ -89,6 +89,9 @@ enum PageState {
     /// Page data is being loaded from disk by another task.
     /// Other acquirers wait on `state_event`.
     Loading,
+    /// Data is loaded but still pinned until the next acquisition consumes
+    /// the load under the map lock.
+    Loaded,
     /// A log permit is being acquired for this page.
     /// Other acquirers wait on `state_event`.
     AcquiringPermit,
@@ -100,8 +103,8 @@ enum PageState {
 /// Internal per-page data, generic over the file buffer type.
 struct PageData<B> {
     /// The page contents as `Arc` for zero-copy commit and COW.
-    /// `Some` when `state` is `Dirty`, and when `Clean` after a
-    /// successful load or write.
+    /// `Some` when `state` is `Loaded` or `Dirty`, and when `Clean` after
+    /// a successful load or write.
     /// `None` when `Clean` (freshly created, not yet loaded),
     /// `Loading`, or `AcquiringPermit`.
     data: Option<Arc<B>>,
@@ -314,6 +317,48 @@ enum WritePendingAction<B> {
     AcquirePermit(Arc<Mutex<PageData<B>>>),
 }
 
+/// Restore transient state on errors or cancelled permit acquisition.
+struct PendingPageGuard<'a, F: AsyncFile> {
+    cache: &'a PageCache<F>,
+    entry: Option<Arc<Mutex<PageData<F::Buffer>>>>,
+}
+
+impl<'a, F: AsyncFile> PendingPageGuard<'a, F> {
+    fn new(cache: &'a PageCache<F>, entry: Arc<Mutex<PageData<F::Buffer>>>) -> Self {
+        Self {
+            cache,
+            entry: Some(entry),
+        }
+    }
+
+    fn into_entry(mut self) -> Arc<Mutex<PageData<F::Buffer>>> {
+        self.entry.take().expect("pending page is owned")
+    }
+}
+
+impl<F: AsyncFile> Drop for PendingPageGuard<'_, F> {
+    fn drop(&mut self) {
+        if let Some(entry) = self.entry.take() {
+            let mut pages = self.cache.pages.lock();
+            let mut page = entry.lock();
+            assert!(matches!(
+                page.state,
+                PageState::Loading | PageState::AcquiringPermit
+            ));
+            page.state = PageState::Clean;
+            let key = pages.lru.nodes[page.lru_index].key;
+            pages
+                .map
+                .get_mut(&key)
+                .expect("pending page is cached")
+                .idle = true;
+            drop(page);
+            drop(pages);
+            self.cache.state_event.notify(usize::MAX);
+        }
+    }
+}
+
 /// Log pipeline state shared between the cache and the log/apply tasks.
 ///
 /// Present only when the file is opened writable with a log task.
@@ -418,17 +463,7 @@ impl<F: AsyncFile> PageCache<F> {
             match action {
                 PendingAction::Wait(listener) => listener.await,
                 PendingAction::Load(file_offset, entry) => {
-                    let buf = self.file.alloc_buffer(PAGE_SIZE);
-                    match self.file.read_into(file_offset, buf).await {
-                        Ok(buf) => self.complete_load(entry, Some(Arc::new(buf))),
-                        Err(e) => {
-                            self.complete_load(entry, None);
-                            return Err(CacheError::Read {
-                                err: e,
-                                file_offset,
-                            });
-                        }
-                    }
+                    self.load_page(file_offset, entry).await?;
                 }
             }
         }
@@ -486,17 +521,26 @@ impl<F: AsyncFile> PageCache<F> {
                 Err(PendingAction::Wait(listener))
             }
             PageState::Clean if guard.data.is_none() => {
+                pages
+                    .map
+                    .get_mut(&key)
+                    .expect("loading page is cached")
+                    .idle = false;
                 guard.state = PageState::Loading;
                 let entry_arc = ArcMutexGuard::into_arc(guard);
                 drop(pages);
                 Err(PendingAction::Load(file_offset, entry_arc))
             }
-            PageState::Clean | PageState::Dirty => {
+            PageState::Clean | PageState::Loaded | PageState::Dirty => {
                 assert!(
                     guard.data.is_some(),
                     "page in {:?} has no data",
                     guard.state
                 );
+                if guard.state == PageState::Loaded {
+                    pages.map.get_mut(&key).expect("loaded page is cached").idle = true;
+                    guard.state = PageState::Clean;
+                }
                 // Promote to MRU.
                 let idx = guard.lru_index;
                 guard.demoted = false;
@@ -507,14 +551,25 @@ impl<F: AsyncFile> PageCache<F> {
         }
     }
 
-    /// Complete a page load: store data and transition out of Loading.
-    ///
-    /// On success (`data` is `Some`): stores data, transitions `Loading → Clean`.
-    /// Uses the `entry` Arc directly — no map re-lookup needed.
-    ///
-    /// On failure (`data` is `None`): removes the entry from the cache so the
-    /// next acquirer creates a fresh entry and retries.
-    fn complete_load(&self, entry: Arc<Mutex<PageData<F::Buffer>>>, data: Option<Arc<F::Buffer>>) {
+    async fn load_page(
+        &self,
+        file_offset: u64,
+        entry: Arc<Mutex<PageData<F::Buffer>>>,
+    ) -> Result<(), CacheError> {
+        let pending = PendingPageGuard::new(self, entry);
+        let buf = self.file.alloc_buffer(PAGE_SIZE);
+        let buf = self
+            .file
+            .read_into(file_offset, buf)
+            .await
+            .map_err(|err| CacheError::Read { err, file_offset })?;
+        self.complete_load(pending.into_entry(), Arc::new(buf));
+        Ok(())
+    }
+
+    /// Complete a successful load without taking the map lock. The page stays
+    /// pinned until the acquisition loop consumes `Loaded` under that lock.
+    fn complete_load(&self, entry: Arc<Mutex<PageData<F::Buffer>>>, data: Arc<F::Buffer>) {
         let mut page = entry.lock();
         assert!(
             page.state == PageState::Loading,
@@ -525,8 +580,9 @@ impl<F: AsyncFile> PageCache<F> {
             page.data.is_none(),
             "complete_load called but page already has data"
         );
-        page.state = PageState::Clean;
-        page.data = data;
+        page.state = PageState::Loaded;
+        page.data = Some(data);
+        drop(page);
         self.state_event.notify(usize::MAX);
     }
 
@@ -549,27 +605,17 @@ impl<F: AsyncFile> PageCache<F> {
             match action {
                 WritePendingAction::Wait(listener) => listener.await,
                 WritePendingAction::Load(file_offset, entry) => {
-                    let buf = self.file.alloc_buffer(PAGE_SIZE);
-                    match self.file.read_into(file_offset, buf).await {
-                        Ok(buf) => self.complete_load(entry, Some(Arc::new(buf))),
-                        Err(e) => {
-                            self.complete_load(entry, None);
-                            return Err(CacheError::Read {
-                                err: e,
-                                file_offset,
-                            });
-                        }
-                    }
+                    self.load_page(file_offset, entry).await?;
                 }
                 WritePendingAction::AcquirePermit(entry) => {
+                    let pending = PendingPageGuard::new(self, entry);
                     let permits = &self.log_state.as_ref().unwrap().permits;
                     let result = permits.acquire(1).await;
                     match result {
                         Ok(()) => {
-                            return self.finalize_permit(entry);
+                            return self.finalize_permit(pending.into_entry());
                         }
                         Err(e) => {
-                            self.finalize_permit_failed(entry);
                             return Err(CacheError::PipelineFailed(e));
                         }
                     }
@@ -662,7 +708,7 @@ impl<F: AsyncFile> PageCache<F> {
                     ArcMutexGuard::into_arc(guard),
                 ))
             }
-            PageState::Clean => {
+            PageState::Clean | PageState::Loaded => {
                 // Promote to MRU.
                 let idx = guard.lru_index;
                 guard.demoted = false;
@@ -694,7 +740,7 @@ impl<F: AsyncFile> PageCache<F> {
         // MAX_COMMIT_PAGES, commit before adding this page.
         if pages.dirty_count >= MAX_COMMIT_PAGES {
             if let Err(e) = self.commit_locked(&mut pages) {
-                self.revert_permit(&entry, &mut pages, true);
+                self.revert_permit(&entry, &mut pages);
                 return Err(e);
             }
         }
@@ -745,21 +791,12 @@ impl<F: AsyncFile> PageCache<F> {
     /// Revert a page from `AcquiringPermit` back to `Clean` after a
     /// failure during finalization, mark it idle, and notify waiters.
     ///
-    /// `release_permit` controls whether a log permit is released. This
-    /// runs *before* [`finalize_permit`] increments `dirty_count`, so
-    /// `dirty_count` is intentionally left untouched. The two callers
-    /// differ only in whether a permit is held:
-    ///
-    /// - Permit *acquisition* failed: no permit was acquired, so
-    ///   `release_permit` must be `false`. Releasing here would push the
-    ///   semaphore above its capacity and trip the over-release assert.
-    /// - Commit failed in [`finalize_permit`]: the permit was already
-    ///   acquired, so it must be released (`release_permit == true`).
+    /// Releases the already-acquired log permit. This runs before
+    /// [`finalize_permit`] increments `dirty_count`, so that count is untouched.
     fn revert_permit(
         &self,
         entry: &Arc<Mutex<PageData<F::Buffer>>>,
         pages: &mut PageMap<F::Buffer>,
-        release_permit: bool,
     ) {
         let mut page = entry.lock();
         assert!(page.state == PageState::AcquiringPermit);
@@ -770,20 +807,10 @@ impl<F: AsyncFile> PageCache<F> {
         if let Some(ce) = pages.map.get_mut(&key) {
             ce.idle = true;
         }
-        if release_permit {
-            if let Some(ref state) = self.log_state {
-                state.permits.release(1);
-            }
+        if let Some(ref state) = self.log_state {
+            state.permits.release(1);
         }
         self.state_event.notify(usize::MAX);
-    }
-
-    /// Finalize a failed permit acquisition: revert to Clean. No permit
-    /// is held (acquisition failed) and `dirty_count` was never
-    /// incremented for this page, so neither is touched.
-    fn finalize_permit_failed(&self, entry: Arc<Mutex<PageData<F::Buffer>>>) {
-        let mut pages = self.pages.lock();
-        self.revert_permit(&entry, &mut pages, false);
     }
 
     /// Get the pre-log FSN for a specific page, if set.
@@ -1549,6 +1576,58 @@ mod tests {
     }
 
     // ---- Eviction tests ----
+
+    #[async_test]
+    async fn loaded_page_stays_pinned_until_reacquired() {
+        let file = InMemoryFile::new(PAGE_SIZE as u64 * 3);
+        file.write_at(0, &[0xAA; PAGE_SIZE]).await.unwrap();
+        let (mut cache, _rx) = writable_cache(file);
+        cache.quota = 1;
+        cache.register_tag(0, 0);
+        let key = PageKey { tag: 0, offset: 0 };
+        // A cancelled first write leaves a clean, data-less entry on the
+        // LRU list. Its subsequent read load must stay pinned at handoff.
+        let permits = cache.log_state.as_ref().unwrap().permits.clone();
+        let held = permits.available();
+        permits.acquire(held).await.unwrap();
+        let mut pending = Box::pin(cache.acquire_write(key, WriteMode::Overwrite));
+        assert!(futures::poll!(&mut pending).is_pending());
+        drop(pending);
+        permits.release(held);
+        let Err(PendingAction::Load(_, entry)) = cache.try_acquire_read(key) else {
+            panic!("expected an uncached page load");
+        };
+        cache.complete_load(entry, Arc::new(vec![0xAA; PAGE_SIZE]));
+        drop(
+            cache
+                .acquire_read(PageKey {
+                    tag: 0,
+                    offset: PAGE_SIZE as u64,
+                })
+                .await
+                .unwrap(),
+        );
+        assert!(
+            cache.pages.lock().map.contains_key(&key),
+            "completed load lost its pin before reacquisition"
+        );
+        let guard = cache.acquire_read(key).await.unwrap();
+        assert_eq!(guard[0], 0xAA);
+        drop(guard);
+        drop(
+            cache
+                .acquire_read(PageKey {
+                    tag: 0,
+                    offset: 2 * PAGE_SIZE as u64,
+                })
+                .await
+                .unwrap(),
+        );
+        assert!(
+            !cache.pages.lock().map.contains_key(&key),
+            "reacquired page retained its load pin"
+        );
+    }
 
     #[async_test]
     async fn eviction_removes_clean_page() {
