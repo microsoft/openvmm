@@ -718,6 +718,19 @@ impl RelayedVpciDevice {
         self.waker.wake_by_ref();
     }
 
+    /// Finishes the operation in flight and every write queued behind it.
+    ///
+    /// Nothing polls this device while it is stopped, so without this the
+    /// callers waiting on those writes would wait on a completion that never
+    /// comes.
+    async fn finish_pending(&mut self) {
+        while let Some((deferred, fut)) = self.pending.take() {
+            fut.await;
+            deferred.complete();
+            self.drain_queued();
+        }
+    }
+
     /// Applies the writes that queued up behind a TDISP operation, in arrival
     /// order, stopping at the first one that starts another operation.
     fn drain_queued(&mut self) {
@@ -846,20 +859,13 @@ impl ChangeDeviceState for RelayedVpciDevice {
     fn start(&mut self) {}
 
     async fn stop(&mut self) {
-        // Nothing polls this device while it is stopped, so finish asynchronous
-        // operations and everything queued behind them here. Otherwise the callers
-        // waiting on those writes would be left waiting on a completion that
-        // never comes.
-        while let Some((deferred, fut)) = self.pending.take() {
-            fut.await;
-            deferred.complete();
-            self.drain_queued();
-        }
+        self.finish_pending().await;
     }
 
     async fn reset(&mut self) {
-        // `stop` has already finished every operation and queued write.
-        assert!(self.pending.is_none() && self.queued.is_empty());
+        // A write can still arrive after `stop`, such as the VPCI channel
+        // turning MMIO off when it closes.
+        self.finish_pending().await;
 
         // Turn MMIO off, as closing the VPCI channel does. The channel skips the
         // device while it is being reset, so this is the only place the relayed

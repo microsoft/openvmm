@@ -590,3 +590,34 @@ async fn reset_turns_mmio_off(driver: DefaultDriver) {
         );
     }
 }
+
+/// A channel close can turn MMIO off after the device was stopped and before it
+/// is reset. Nothing polls a stopped device, so the reset finishes that write
+/// and everything queued behind it.
+#[async_test]
+async fn reset_finishes_writes_issued_after_stop(driver: DefaultDriver) {
+    let mut relay = connect_relay(&driver, true).await;
+    let activate = relay.deferred_write(
+        HeaderType00::STATUS_COMMAND.0,
+        command(true),
+        PciConfigByteEnable::LOW_WORD,
+    );
+    relay.drive(activate.write_future()).await.unwrap();
+    assert!(mmio_enabled(&relay));
+
+    vmcore::device_state::ChangeDeviceState::stop(relay.relay.get_mut()).await;
+    let deactivate = relay.deferred_write(
+        HeaderType00::STATUS_COMMAND.0,
+        command(false),
+        PciConfigByteEnable::LOW_WORD,
+    );
+    let scratch = relay.deferred_write(SCRATCH_OFFSET, 0xabcd_0000, PciConfigByteEnable::FULL);
+
+    vmcore::device_state::ChangeDeviceState::reset(relay.relay.get_mut()).await;
+
+    deactivate.write_future().await.unwrap();
+    scratch.write_future().await.unwrap();
+    assert!(!mmio_enabled(&relay));
+    assert_ne!(relay.device.tdisp().tdi_state().await, TdispTdiState::Run);
+    assert_eq!(relay.read(SCRATCH_OFFSET), 0xabcd_0000);
+}
