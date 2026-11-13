@@ -571,7 +571,7 @@ async fn locked_cross_page_memory() {
             )
             .await;
 
-            if second_gpa == 0x3000 && bytes_in_first_page < 8 {
+            if bytes_in_first_page < 8 {
                 assert!(matches!(
                     result,
                     Err(virt::VpHaltReason::TripleFault { .. })
@@ -588,6 +588,76 @@ async fn locked_cross_page_memory() {
                     support.state.rip,
                     rip + support.instruction_bytes.len() as u64
                 );
+            }
+            assert_eq!(support.state.gps, registers);
+            assert_eq!(support.state.rflags, flags);
+            assert!(support.injected_event().is_none());
+            let mut actual = vec![0; expected.len()];
+            gm.read_at(0, &mut actual).unwrap();
+            assert!(actual == expected, "locked write modified the wrong memory");
+        }
+    }
+}
+
+#[async_test]
+async fn locked_ram_alignment() {
+    const VALUE: u64 = 0x123456789abcdef0;
+    for size in [1, 2, 4, 8] {
+        for offset in 0..size {
+            let gpa = 0x400 + offset;
+            let gm = GuestMemory::allocate(0x1000);
+            let mut expected = vec![0xa5; 0x1000];
+            gm.write_at(0, &expected).unwrap();
+            let mut support = MockSupport::new(
+                MockSupportMode::Code(TranslateGvaResultCode::SUCCESS),
+                MockSupportTranslation {
+                    access_gva: gpa as u64,
+                    translate_to_gpa: gpa as u64,
+                    access_info: MockAccess::Write(VALUE),
+                },
+                false,
+                &gm,
+            );
+            let mut asm = CodeAssembler::new(64).unwrap();
+            match size {
+                1 => asm.xchg(byte_ptr(rax), sil),
+                2 => asm.xchg(word_ptr(rax), si),
+                4 => asm.xchg(dword_ptr(rax), esi),
+                8 => asm.xchg(qword_ptr(rax), rsi),
+                _ => unreachable!(),
+            }
+            .unwrap();
+            support.instruction_bytes = asm.assemble(0).unwrap();
+            let mut registers = support.state.gps;
+            let flags = support.state.rflags;
+            let result = emulate(
+                &mut support,
+                &EmulatorMemoryAccess {
+                    gm: &gm,
+                    kx_gm: &gm,
+                    ux_gm: &gm,
+                },
+                &MockCpu,
+            )
+            .await;
+
+            if offset != 0 {
+                assert!(matches!(
+                    result,
+                    Err(virt::VpHaltReason::TripleFault { .. })
+                ));
+                assert_eq!(support.state.rip, 0);
+            } else {
+                result.unwrap();
+                expected[gpa..gpa + size].copy_from_slice(&VALUE.to_le_bytes()[..size]);
+                registers[Gp::RSI as usize] = match size {
+                    1 => 0x123456789abcdea5,
+                    2 => 0x123456789abca5a5,
+                    4 => 0xa5a5a5a5,
+                    8 => 0xa5a5a5a5a5a5a5a5,
+                    _ => unreachable!(),
+                };
+                assert_eq!(support.state.rip, support.instruction_bytes.len() as u64);
             }
             assert_eq!(support.state.gps, registers);
             assert_eq!(support.state.rflags, flags);
