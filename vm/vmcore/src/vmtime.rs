@@ -318,6 +318,40 @@ impl TimerState {
         Poll::Pending
     }
 
+    /// Polls a single waiter whose timeout recurs every `period` units, at
+    /// least one and below 2^63, from `timeout` on.
+    ///
+    /// Once `timeout` is before now, this moves it to the first of its
+    /// recurrences after now, however many that skips, and returns
+    /// `Poll::Ready(now)`. Either way, the waiter then waits for the timeout,
+    /// which this returns too, and which is after the time that the poll read,
+    /// so that no recurrence is due before the waiter's next wake.
+    fn poll_periodic_timeout(
+        &mut self,
+        cx: &mut Context<'_>,
+        index: usize,
+        now_os: Instant,
+        timeout: VmTime,
+        period: u64,
+    ) -> (Poll<Timestamp>, VmTime) {
+        let now = self.now(now_os);
+        let (res, next) = if timeout.is_before(now.vmtime) {
+            // `timeout` is before `now` by at most 2^63 units, so the first
+            // recurrence after `now` is within a period of it, and its offset
+            // from `timeout` fits in 64 bits.
+            let missed = now.vmtime.0.wrapping_sub(timeout.0) / period;
+            let next = VmTime(timeout.0.wrapping_add((missed + 1) * period));
+            (Poll::Ready(now), next)
+        } else {
+            (Poll::Pending, timeout)
+        };
+        let state = &mut self.waiters[index];
+        state.next = Some(next);
+        state.waker = Some(cx.waker().clone());
+        self.set_next(next);
+        (res, next)
+    }
+
     /// Polls the timer, waking any waiters whose timeout has expired.
     fn poll(&mut self, cx: &mut Context<'_>) {
         while self.time.is_started() {
@@ -976,16 +1010,30 @@ impl VmTimeAccess {
             }
         }
     }
+
+    /// Polls the current timeout as one that recurs every `period` units, at
+    /// least one and below 2^63: once it is before now, this moves it to the
+    /// first of its recurrences after now, however many that skips, and
+    /// returns `Poll::Ready(now)`. Either way, this then waits for the
+    /// timeout, which is after the time that the poll read.
+    fn poll_periodic_timeout(&mut self, cx: &mut Context<'_>, period: u64) -> Poll<VmTime> {
+        let timeout = self.timeout.expect("a periodic timeout is set");
+        let now = Instant::now();
+        let (res, next) = self
+            .state
+            .write()
+            .poll_periodic_timeout(cx, self.index, now, timeout, period);
+        self.timeout = Some(next);
+        self.waiting = true;
+        res.map(|now| now.vmtime)
+    }
 }
 
 #[derive(Debug, Inspect)]
 #[inspect(tag = "state")]
 enum VmTimerPeriodicInner {
     Stopped,
-    Running {
-        last_timeout: VmTime,
-        period: Duration,
-    },
+    Running { period: Duration },
 }
 
 /// An abstraction over [`VmTimeAccess`] that streamlines the process of setting
@@ -1015,17 +1063,22 @@ impl VmTimerPeriodic {
 
     /// Start the timer, configuring it to fire at the specified period.
     ///
+    /// VM time counts the period in whole 100 ns units: a period shorter than
+    /// 100 ns counts as 100 ns.
+    ///
     /// If the timer is currently running, the timer will be cancelled +
     /// restarted.
     pub fn start(&mut self, period: Duration) {
         self.cancel();
 
+        // At least one unit, so that each deadline is after the one before it,
+        // and at most the longest interval that VM time's circular order puts
+        // after a time.
+        let period =
+            duration_from_100ns((period.as_nanos() / 100).clamp(1, i64::MAX as u128) as u64);
         let time = self.vmtime.now().wrapping_add(period);
         self.vmtime.set_timeout(time);
-        self.inner = VmTimerPeriodicInner::Running {
-            last_timeout: time,
-            period,
-        }
+        self.inner = VmTimerPeriodicInner::Running { period }
     }
 
     /// Check if the timer is currently running.
@@ -1036,7 +1089,10 @@ impl VmTimerPeriodic {
     /// Polls the timer.
     ///
     /// Returns `Poll::Ready(now)` when the timer is past-due, returning
-    /// `Poll::Pending` otherwise.
+    /// `Poll::Pending` otherwise. A ready poll accounts at once for every
+    /// deadline up to `now`, however many periods VM time skipped, as it does
+    /// across a downtime, and the timer then waits for the first deadline
+    /// after `now`, a whole number of periods after the timer started.
     pub fn poll_timeout(&mut self, cx: &mut Context<'_>) -> Poll<VmTime> {
         match self.inner {
             VmTimerPeriodicInner::Stopped => {
@@ -1045,20 +1101,9 @@ impl VmTimerPeriodic {
                 // This is guaranteed to return Pending according to its documentation thanks to the above assert.
                 self.vmtime.poll_timeout(cx)
             }
-            VmTimerPeriodicInner::Running {
-                ref mut last_timeout,
-                period,
-            } => {
-                let mut res = Poll::Pending;
-                while let Poll::Ready(now) = self.vmtime.poll_timeout(cx) {
-                    res = Poll::Ready(now);
-
-                    let time = last_timeout.wrapping_add(period);
-                    self.vmtime.set_timeout(time);
-                    *last_timeout = time;
-                }
-                res
-            }
+            VmTimerPeriodicInner::Running { period } => self
+                .vmtime
+                .poll_periodic_timeout(cx, (period.as_nanos() / 100) as u64),
         }
     }
 }
@@ -1139,6 +1184,149 @@ mod tests {
             _ = poll_fn(|cx| access.poll_timeout(cx)).fuse() => panic!("unexpected wait completion"),
         }
         keeper.stop().await;
+    }
+
+    /// Tests of [`VmTimerPeriodic`](crate::vmtime::VmTimerPeriodic).
+    mod periodic {
+        use crate::vmtime::SavedState;
+        use crate::vmtime::VmTime;
+        use crate::vmtime::VmTimeKeeper;
+        use crate::vmtime::VmTimerPeriodic;
+        use futures::FutureExt;
+        use pal_async::DefaultDriver;
+        use pal_async::DefaultPool;
+        use pal_async::async_test;
+        use std::future::poll_fn;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        use test_with_tracing::test;
+
+        /// Runs `test` with a pool of its own on a thread of its own, and
+        /// fails unless it completes within 10 s, so that a timer that spins
+        /// in its poll fails the test rather than hanging the test runner.
+        fn run_bounded(what: &str, test: impl 'static + Send + AsyncFnOnce(DefaultDriver)) {
+            let (send, recv) = mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                DefaultPool::run_with(test);
+                // The test may have stopped waiting.
+                let _ = send.send(());
+            });
+            match recv.recv_timeout(Duration::from_secs(10)) {
+                Ok(()) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("{what} did not complete within 10 s")
+                }
+                // The thread panicked. Report that panic rather than this one.
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    std::panic::resume_unwind(thread.join().unwrap_err())
+                }
+            }
+        }
+
+        #[test]
+        fn test_skips_missed_periods_at_once() {
+            run_bounded("a periodic timer's catch-up", async |driver| {
+                let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+                let source = keeper.builder().build(&driver).await.unwrap();
+                let mut timer = VmTimerPeriodic::new(source.access("test"));
+                // The RTC's fastest periodic rate, 8192 Hz, whose period VM
+                // time truncates to 1220 units of 100 ns.
+                timer.start(Duration::from_nanos(122_070));
+                let period = 1220;
+                // VM time moves 30 days ahead, as it does across a downtime,
+                // which leaves some 21 billion periods behind.
+                let now = VmTime::from_100ns(30 * 24 * 60 * 60 * 10_000_000);
+                keeper.restore(SavedState::from_vmtime(now)).await;
+                assert_eq!(
+                    poll_fn(|cx| timer.poll_timeout(cx)).now_or_never(),
+                    Some(now)
+                );
+                // The timer fired once for all of them, and waits for the
+                // first deadline after now, a whole number of periods after
+                // its start.
+                let next = VmTime::from_100ns((now.as_100ns() / period + 1) * period);
+                assert_eq!(timer.vmtime.get_timeout(), Some(next));
+                assert!(
+                    poll_fn(|cx| timer.poll_timeout(cx))
+                        .now_or_never()
+                        .is_none()
+                );
+
+                // Once VM time passes that deadline, the timer fires again,
+                // and waits for the deadline a period later.
+                let later = VmTime::from_100ns(next.as_100ns() + 1);
+                keeper.restore(SavedState::from_vmtime(later)).await;
+                assert_eq!(
+                    poll_fn(|cx| timer.poll_timeout(cx)).now_or_never(),
+                    Some(later)
+                );
+                assert_eq!(
+                    timer.vmtime.get_timeout(),
+                    Some(VmTime::from_100ns(next.as_100ns() + period))
+                );
+            });
+        }
+
+        #[test]
+        fn test_rounds_short_periods_up() {
+            run_bounded("a periodic timer with a 50 ns period", async |driver| {
+                let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+                let source = keeper.builder().build(&driver).await.unwrap();
+                let mut timer = VmTimerPeriodic::new(source.access("test"));
+                // A period shorter than VM time's 100 ns resolution counts as
+                // 100 ns, so the deadlines are at 1, 2, 3, and so on.
+                timer.start(Duration::from_nanos(50));
+                keeper
+                    .restore(SavedState::from_vmtime(VmTime::from_100ns(2)))
+                    .await;
+                assert_eq!(
+                    poll_fn(|cx| timer.poll_timeout(cx)).now_or_never(),
+                    Some(VmTime::from_100ns(2))
+                );
+                assert_eq!(timer.vmtime.get_timeout(), Some(VmTime::from_100ns(3)));
+                assert!(
+                    poll_fn(|cx| timer.poll_timeout(cx))
+                        .now_or_never()
+                        .is_none()
+                );
+
+                // While VM time runs, each poll that fires leaves the timer
+                // waiting for a deadline after the time that it read, which
+                // wakes the timer's task once it passes.
+                keeper.start().await;
+                for _ in 0..100 {
+                    let now = poll_fn(|cx| timer.poll_timeout(cx)).await;
+                    assert!(timer.vmtime.get_timeout().unwrap().is_after(now));
+                }
+                keeper.stop().await;
+            });
+        }
+
+        #[async_test]
+        async fn test_catch_up_across_the_wrap(driver: DefaultDriver) {
+            // VM time starts 30 units before it wraps around.
+            let start = VmTime::from_100ns(u64::MAX - 29);
+            let mut keeper = VmTimeKeeper::new(&driver, start);
+            let source = keeper.builder().build(&driver).await.unwrap();
+            let mut timer = VmTimerPeriodic::new(source.access("test"));
+            let period = Duration::from_micros(1);
+            timer.start(period);
+            // VM time crosses the wrap and stops on the timer's 20th deadline.
+            let now = start.wrapping_add(20 * period);
+            keeper.restore(SavedState::from_vmtime(now)).await;
+            assert_eq!(
+                poll_fn(|cx| timer.poll_timeout(cx)).now_or_never(),
+                Some(now)
+            );
+            // The poll fired for the deadline at now too, so the timer waits
+            // for the next one.
+            assert_eq!(timer.vmtime.get_timeout(), Some(now.wrapping_add(period)));
+            assert!(
+                poll_fn(|cx| timer.poll_timeout(cx))
+                    .now_or_never()
+                    .is_none()
+            );
+        }
     }
 
     #[async_test]
