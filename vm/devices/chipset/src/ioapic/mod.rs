@@ -719,9 +719,12 @@ impl MmioIntercept for IoApicDevice {
             _ => return IoResult::Err(IoError::InvalidRegister),
         };
 
-        // Allow any size read.
-        let n = data.len().min(size_of_val(&v));
-        data.copy_from_slice(&v.to_ne_bytes()[..n]);
+        // Allow any size read: return the low bytes of the 32-bit register,
+        // zero-extended for a wider read.
+        let bytes = v.to_ne_bytes();
+        let n = data.len().min(bytes.len());
+        data[..n].copy_from_slice(&bytes[..n]);
+        data[n..].fill(0);
         IoResult::Ok
     }
 
@@ -809,5 +812,57 @@ mod tests {
     fn masked_rte_emits_nothing() {
         let rte = RedirectionEntry::new().with_masked(true).with_vector(0x30);
         assert_eq!(rte.as_msi(), None);
+    }
+
+    /// The index and data registers are 32 bits wide, and a guest may read
+    /// them with any access size, such as a 64-bit `mov`. A narrower read
+    /// returns the register's low bytes, and a wider one returns the register
+    /// zero-extended.
+    #[test]
+    fn mmio_reads_of_any_size_are_zero_extended() {
+        struct NoRouting;
+
+        impl IoApicRouting for NoRouting {
+            fn assert(&self, _irq: u8) {}
+            fn set_route(&self, _irq: u8, _request: Option<(u64, u32)>) {}
+        }
+
+        const INDEX: u64 = IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS + Register::INDEX.0;
+        const DATA: u64 = IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS + Register::DATA.0;
+
+        fn write(device: &mut IoApicDevice, index: u8, value: u32) {
+            device.mmio_write(INDEX, &[index]).unwrap();
+            device.mmio_write(DATA, &value.to_le_bytes()).unwrap();
+        }
+
+        let mut device = IoApicDevice::new(24, Box::new(NoRouting));
+        write(&mut device, IndexRegister::ID.0, 3 << 24);
+        write(&mut device, 0x1a, 0x0001_0031);
+        write(&mut device, 0x1b, 0x0300_0000);
+
+        for (index, value) in [
+            // ID 3.
+            (IndexRegister::ID.0, 0x0300_0000),
+            // Version 0x11 with 24 entries, the last numbered 23.
+            (IndexRegister::VERSION.0, 0x0017_0011),
+            // Entry 5, masked, with vector 0x31 and destination 3.
+            (0x1a, 0x0001_0031),
+            (0x1b, 0x0300_0000),
+        ] {
+            device.mmio_write(INDEX, &[index]).unwrap();
+            for (address, register) in [(INDEX, u32::from(index)), (DATA, value)] {
+                let mut expected = [0; 8];
+                expected[..4].copy_from_slice(&register.to_le_bytes());
+                for len in 1..=8 {
+                    let mut data = [0xa5; 8];
+                    device.mmio_read(address, &mut data[..len]).unwrap();
+                    assert_eq!(
+                        data[..len],
+                        expected[..len],
+                        "{len}-byte read of {address:#x} with index {index:#x}"
+                    );
+                }
+            }
+        }
     }
 }
