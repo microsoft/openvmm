@@ -1242,14 +1242,18 @@ fn build_isolation_reply(
 }
 
 impl VpciChannel {
-    /// Runs `f` on the device's config space, or returns `None` if the device
-    /// is closed.
+    /// Runs `f` on the device's config space, or returns `None` if the channel
+    /// is closing and the device is closed.
     ///
     /// A VM reset can close this channel while the device's state unit holds
-    /// the device closed for its own reset, which returns the config space to
-    /// its initial state, so there is nothing left for the channel to write.
+    /// the device closed for its own reset, which turns the device off, so
+    /// there is nothing left for the channel to write.
     fn with_open_device<R>(&self, f: impl FnOnce(&mut dyn PciConfigSpace) -> R) -> Option<R> {
-        let mut device = self.device.lock_if_open()?;
+        let mut device = if self.closing {
+            self.device.lock_if_open()?
+        } else {
+            self.device.lock()
+        };
         Some(f(device.supports_pci().unwrap()))
     }
 
@@ -1496,6 +1500,8 @@ pub struct VpciChannel {
 
     // State.
     bars_set: bool,
+    /// Set while `close` runs, the only time the device may be closed.
+    closing: bool,
     #[inspect(iter_by_index)]
     interrupts: Vec<MsiAddressData>,
     #[inspect(skip)]
@@ -1626,6 +1632,7 @@ impl VpciChannel {
             max_protocol_version: protocol::ProtocolVersion::RB,
             device: device.clone(),
             bars_set: false,
+            closing: false,
             interrupts: Vec::new(),
             eject: VpciBusEject::default(),
         })
@@ -1680,7 +1687,9 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
 
     async fn close(&mut self) {
         self.eject.disconnect();
+        self.closing = true;
         self.release_all().await;
+        self.closing = false;
 
         // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
         self.config_space.unmap();
@@ -1843,6 +1852,7 @@ mod tests {
             max_protocol_version: protocol::ProtocolVersion::RB,
             device,
             bars_set: false,
+            closing: false,
             interrupts: Vec::new(),
             eject: VpciBusEject::default(),
         };
@@ -2300,6 +2310,17 @@ mod tests {
 
         // The channel wrote nothing to the device.
         assert!(mmio_enabled(&pci));
+    }
+
+    /// Only closing the channel skips a closed device. A guest request is
+    /// acknowledged to the guest, so it must not be dropped.
+    #[async_test]
+    #[should_panic(expected = "lock should not be closed")]
+    async fn guest_power_request_needs_the_device_open(_driver: DefaultDriver) {
+        let pci = null_device();
+        let mut channel = channel_for(pci.clone());
+        let _owner = pci.clone().close();
+        channel.set_power(false).await;
     }
 
     #[async_test]
