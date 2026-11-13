@@ -136,9 +136,8 @@ struct VirtioTestMemoryAccess {
 
 /// A doorbell registration as the transport asked for it.
 ///
-/// All queues of one virtio PCI device register at the SAME address (BAR0's
-/// notify register) and are told apart by `value`, the datamatch. So an
-/// assertion on addresses alone cannot see a missing queue.
+/// PCI queues have dedicated addresses; MMIO queues share an address and
+/// are distinguished by a value match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct DoorbellSpec {
     address: u64,
@@ -1824,11 +1823,19 @@ async fn verify_pci_config(driver: DefaultDriver) {
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
         )
         .unwrap();
-    assert_eq!(buf, 0x38);
+    assert_eq!(buf, 0x4c);
     pci_test_device
         .pci_device
         .pci_cfg_read(
             next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 4);
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 16,
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
         )
         .unwrap();
@@ -1961,6 +1968,10 @@ async fn verify_pci_config(driver: DefaultDriver) {
 /// Walk the capability list and return the config-space offset of the
 /// VIRTIO_PCI_CAP_PCI_CFG capability (identified by cfg_type == PCI_CFG).
 fn find_pci_cfg_cap_offset(dev: &mut VirtioPciDevice) -> u16 {
+    find_virtio_pci_cap_offset(dev, VirtioPciCapType::PCI_CFG)
+}
+
+fn find_virtio_pci_cap_offset(dev: &mut VirtioPciDevice, typ: VirtioPciCapType) -> u16 {
     let mut next = 0;
     dev.pci_cfg_read(
         0x34,
@@ -1975,13 +1986,36 @@ fn find_pci_cfg_cap_offset(dev: &mut VirtioPciDevice) -> u16 {
         )
         .unwrap();
         let header = header.to_le_bytes();
-        if header[0] == CapabilityId::VENDOR_SPECIFIC.0 && header[3] == VirtioPciCapType::PCI_CFG.0
-        {
+        if header[0] == CapabilityId::VENDOR_SPECIFIC.0 && header[3] == typ.0 {
             return next as u16;
         }
         next = header[1] as u32;
     }
-    panic!("VIRTIO_PCI_CAP_PCI_CFG capability not found");
+    panic!("virtio PCI capability {typ:?} not found");
+}
+
+fn pci_notification_address(dev: &mut VirtioPciTestDevice, queue: u16) -> u64 {
+    let cap = find_virtio_pci_cap_offset(&mut dev.pci_device, VirtioPciCapType::NOTIFY_CFG);
+    let mut offset = 0;
+    let mut multiplier = 0;
+    dev.pci_device
+        .pci_cfg_read(
+            cap + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut offset),
+        )
+        .unwrap();
+    dev.pci_device
+        .pci_cfg_read(
+            cap + 16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut multiplier),
+        )
+        .unwrap();
+    assert_eq!(multiplier, 4);
+    let status = dev.read_u32(0x10000000000 + 20) & 0xffff;
+    dev.write_u32(0x10000000000 + 20, u32::from(queue) << 16 | status);
+    let queue_notify_off = dev.read_u32(0x10000000000 + 28) >> 16;
+    assert_eq!(queue_notify_off, u32::from(queue));
+    0x10000000000 + u64::from(offset) + u64::from(multiplier) * u64::from(queue_notify_off)
 }
 
 /// Exercise the VIRTIO_PCI_CAP_PCI_CFG `pci_cfg_data` window: program the
@@ -3351,8 +3385,37 @@ async fn verify_device_multi_queue_pci_inner(
 
     for i in 0..num_queues {
         guest.add_to_avail_queue(i);
-        // notify device
-        dev.write_u32(0x10000000000 + 0x38, i as u32);
+        let address = pci_notification_address(&mut dev, i);
+        if i % 3 == 0 {
+            dev.pci_device
+                .mmio_write(address, &0u16.to_le_bytes())
+                .unwrap();
+        } else if i % 3 == 1 {
+            dev.write_u32(address, 0);
+        } else {
+            let cap = find_pci_cfg_cap_offset(&mut dev.pci_device);
+            for (offset, value) in [
+                (4, 0),
+                (8, (address - 0x10000000000) as u32),
+                (12, 2),
+                (16, 0),
+            ] {
+                dev.pci_device
+                    .pci_cfg_write(
+                        cap + offset,
+                        ByteEnabledDwordWrite::with_all_bytes_enabled(value),
+                    )
+                    .unwrap();
+            }
+            let mut value = !0;
+            dev.pci_device
+                .pci_cfg_read(
+                    cap + 16,
+                    ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+                )
+                .unwrap();
+            assert_eq!(value, 0);
+        }
     }
     // verify all queue processing finished
     timer.sleep(Duration::from_millis(100)).await;
@@ -3395,6 +3458,32 @@ async fn verify_device_packed_multi_queue_pci(driver: DefaultDriver) {
         .with_bank(0, VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | 2)
         .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
     verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
+}
+
+#[async_test]
+async fn pci_notification_rejects_invalid_accesses(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 2, 4, true);
+    let mut dev = VirtioPciTestDevice::new(&driver, 2, &test_mem, None);
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    let address = pci_notification_address(&mut dev, 1);
+    assert!(matches!(
+        dev.pci_device.mmio_write(address + 2, &[0; 2]),
+        IoResult::Err(IoError::UnalignedAccess)
+    ));
+    for data in [&[0; 1][..], &[0; 8][..]] {
+        assert!(matches!(
+            dev.pci_device.mmio_write(address, data),
+            IoResult::Err(IoError::InvalidAccessSize)
+        ));
+    }
+    assert!(matches!(
+        dev.pci_device.mmio_write(address + 4, &[0; 2]),
+        IoResult::Err(IoError::InvalidRegister)
+    ));
+    dev.pci_device.stop().await;
 }
 
 #[async_test]
@@ -4229,6 +4318,7 @@ trait TestTransport {
     fn stop(&mut self) -> impl Future<Output = ()>;
     /// Drive ChangeDeviceState::start().
     fn start(&mut self);
+    fn teardown(self) -> impl Future<Output = ()>;
 }
 
 /// Yield to the executor and poll the transport once. This ensures the device
@@ -4302,6 +4392,9 @@ impl TestTransport for MmioTestTransport {
     }
     fn start(&mut self) {
         ChangeDeviceState::start(&mut self.dev);
+    }
+    async fn teardown(self) {
+        self.dev.teardown().await;
     }
 }
 
@@ -4440,6 +4533,9 @@ impl TestTransport for PciTestTransport {
     }
     fn start(&mut self) {
         ChangeDeviceState::start(&mut self.dev);
+    }
+    async fn teardown(self) {
+        self.dev.teardown().await;
     }
 }
 
@@ -4957,9 +5053,8 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     const QUEUE_COUNT: u16 = 2;
     // What `setup_pci_device` programs BAR0 to.
     const BAR0_BASE: u64 = 0x10000000000;
-    // BAR0's base plus its notify offset. Every queue's doorbell lands on this one
-    // address; the queue index is the datamatch value.
-    let notify_address: u64 = BAR0_BASE + VIRTIO_PCI_COMMON_CFG_SIZE as u64;
+    // The test device has 12 bytes of device config after the first 64 bytes.
+    let notify_address: u64 = BAR0_BASE + 76;
 
     let test_mem = VirtioTestMemoryAccess::new();
 
@@ -4975,15 +5070,15 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     // wrong address, or one queue short, cannot pass.
     let expected: Vec<DoorbellSpec> = (0..QUEUE_COUNT)
         .map(|i| DoorbellSpec {
-            address: notify_address,
-            value: Some(i as u64),
-            length: Some(2),
+            address: notify_address + u64::from(i) * 4,
+            value: None,
+            length: None,
         })
         .collect();
     assert_eq!(
         test_mem.installed_doorbells(),
         expected,
-        "the live device should serve one doorbell per queue at BAR0's notify register"
+        "the live device should serve one address-only doorbell per queue"
     );
 
     dev.pci_device.stop().await;
@@ -5014,7 +5109,7 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     assert_eq!(
         test_mem.installed_doorbells(),
         expected,
-        "restore must reinstall every queue's doorbell at BAR0's notify register; \
+        "restore must reinstall every queue's dedicated doorbell; \
          without them each kick is an MMIO exit to userspace instead of the ioeventfd"
     );
 
@@ -6211,4 +6306,81 @@ async fn queue_stream_parks_after_failure(driver: DefaultDriver) {
             .is_pending(),
         "failed queue must park rather than repeat the error or end the stream"
     );
+}
+
+#[derive(InspectMut)]
+#[inspect(skip)]
+struct DropTrackingDevice(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DropTrackingDevice {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+impl VirtioDevice for DropTrackingDevice {
+    fn traits(&self) -> DeviceTraits {
+        DeviceTraits {
+            device_id: VirtioDeviceType::BLK,
+            max_queues: 1,
+            ..Default::default()
+        }
+    }
+
+    async fn read_registers_u32(&mut self, _: u16) -> u32 {
+        0
+    }
+
+    async fn write_registers_u32(&mut self, _: u16, _: u32) {}
+
+    async fn start_queue(
+        &mut self,
+        _: u16,
+        _: QueueResources,
+        _: &VirtioDeviceFeatures,
+        _: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn stop_queue(&mut self, _: u16) -> Option<QueueState> {
+        None
+    }
+}
+
+async fn verify_teardown_drops_backend(
+    mut transport: impl TestTransport,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+    started: bool,
+) {
+    if started {
+        transport.write_driver_ok();
+        transport.stop().await;
+    }
+    assert!(!dropped.load(Ordering::SeqCst));
+    transport.teardown().await;
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "teardown returned before the backend was destroyed"
+    );
+}
+
+#[async_test]
+async fn teardown_drops_backend_pci(driver: DefaultDriver) {
+    for started in [false, true] {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport =
+            PciTestTransport::new(Box::new(DropTrackingDevice(dropped.clone())), &driver, 1);
+        verify_teardown_drops_backend(transport, dropped, started).await;
+    }
+}
+
+#[async_test]
+async fn teardown_drops_backend_mmio(driver: DefaultDriver) {
+    for started in [false, true] {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport =
+            MmioTestTransport::new(Box::new(DropTrackingDevice(dropped.clone())), &driver, 1);
+        verify_teardown_drops_backend(transport, dropped, started).await;
+    }
 }

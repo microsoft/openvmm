@@ -74,7 +74,7 @@ impl GetVpRegisters for HvfHypercallHandler<'_, '_> {
                 HvArm64RegisterName::TimeRefCount => {
                     self.vp.partition.vmtime.now().as_100ns().into()
                 }
-                HvArm64RegisterName::VpIndex => 0u32.into(),
+                HvArm64RegisterName::VpIndex => self.vp.inner.vp_info.base.vp_index.index().into(),
                 HvArm64RegisterName::GuestOsId => self
                     .vp
                     .partition
@@ -167,12 +167,12 @@ impl<'a> hv1_emulator::VtlProtectAccess for HvfNoVtlProtections<'a> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
         Ok(self
             .0
-            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
             .unwrap())
     }
 

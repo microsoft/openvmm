@@ -13,18 +13,22 @@ use crate::cache::PageKey;
 use crate::error::CorruptionType;
 use crate::error::OpenError;
 use crate::error::OpenErrorInner;
+use crate::error::VhdxIoError;
+use crate::error::VhdxIoErrorInner;
 use crate::format;
 use crate::format::MetadataTableEntry;
 use crate::format::MetadataTableHeader;
 use guid::Guid;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Cache tag for metadata region pages.
 pub(crate) const METADATA_TAG: u8 = 1;
 
 /// In-memory representation of the validated metadata table.
 pub(crate) struct MetadataTable {
-    /// The validated entries (sorted by offset for free-space scanning).
+    /// The validated entries, used for lookup and free-space scanning.
+    /// Kept in on-disk table order so updates target the original table slot.
     entries: Vec<MetadataTableEntry>,
 }
 
@@ -86,6 +90,8 @@ impl MetadataTable {
             }
             entries.push(entry);
         }
+
+        let table_entries = entries.clone();
 
         // Sort by (is_user, item_id) for duplicate detection.
         entries.sort_by(|a, b| {
@@ -179,7 +185,9 @@ impl MetadataTable {
             return Err(CorruptionType::TotalMetadataSizeExceeded.into());
         }
 
-        Ok(MetadataTable { entries })
+        Ok(MetadataTable {
+            entries: table_entries,
+        })
     }
 
     /// Find an entry by GUID and user/system flag.
@@ -230,6 +238,114 @@ impl MetadataTable {
     pub fn entries(&self) -> &[MetadataTableEntry] {
         &self.entries
     }
+
+    /// Stage replacement data in a free extent. The caller must make
+    /// these writes durable before publishing the replacement table entry.
+    pub async fn stage_replacement<F: AsyncFile>(
+        &self,
+        cache: &PageCache<F>,
+        item_id: &Guid,
+        data: &[u8],
+        region_length: u32,
+    ) -> Result<(usize, MetadataTableEntry), VhdxIoError> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| !entry.flags.is_user() && &entry.item_id == item_id)
+            .ok_or(VhdxIoErrorInner::NoParent)?;
+        let length = u32::try_from(data.len())
+            .ok()
+            .filter(|&length| {
+                length != 0 && u64::from(length) <= format::MAXIMUM_METADATA_ITEM_SIZE
+            })
+            .ok_or(VhdxIoErrorInner::ParentParameters(
+                crate::InvalidFormatReason::ParentLocatorTooLarge,
+            ))?;
+        let total_size = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(i, entry)| *i != index && !entry.flags.is_user())
+            .map(|(_, entry)| u64::from(entry.length))
+            .sum::<u64>()
+            + u64::from(length);
+        if total_size > format::MAXIMUM_TOTAL_METADATA_SIZE_PER_CATEGORY {
+            return Err(VhdxIoErrorInner::MetadataRegionFull.into());
+        }
+
+        // Do not overwrite the old locator: an interrupted operation must
+        // leave it usable until the new table entry is committed.
+        let mut occupied: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.length != 0)
+            .collect();
+        occupied.sort_unstable_by_key(|entry| entry.offset);
+        let mut offset = format::METADATA_TABLE_SIZE as u32;
+        for entry in occupied {
+            if u64::from(offset) + u64::from(length) <= u64::from(entry.offset) {
+                break;
+            }
+            let end = entry
+                .offset
+                .checked_add(entry.length)
+                .ok_or(VhdxIoErrorInner::MetadataRegionFull)?;
+            offset = offset.max(end);
+        }
+        if u64::from(offset) + u64::from(length) > u64::from(region_length) {
+            return Err(VhdxIoErrorInner::MetadataRegionFull.into());
+        }
+        let mut position = u64::from(offset);
+        let mut remaining = data;
+        while !remaining.is_empty() {
+            let page_offset = position & !(PAGE_SIZE as u64 - 1);
+            let delta = (position - page_offset) as usize;
+            let len = remaining.len().min(PAGE_SIZE - delta);
+            let mut page = cache
+                .acquire_write(
+                    PageKey {
+                        tag: METADATA_TAG,
+                        offset: page_offset,
+                    },
+                    crate::cache::WriteMode::Modify,
+                )
+                .await
+                .map_err(VhdxIoErrorInner::MetadataCache)?;
+            page[delta..delta + len].copy_from_slice(&remaining[..len]);
+            position += len as u64;
+            remaining = &remaining[len..];
+        }
+
+        let mut entry = self.entries[index].clone();
+        entry.offset = offset;
+        entry.length = length;
+        Ok((index, entry))
+    }
+
+    /// Publish an entry after its replacement data has become durable.
+    pub async fn publish_replacement<F: AsyncFile>(
+        &mut self,
+        cache: &PageCache<F>,
+        replacement: (usize, MetadataTableEntry),
+    ) -> Result<(), VhdxIoError> {
+        let (index, entry) = replacement;
+        let table_offset =
+            size_of::<MetadataTableHeader>() + index * size_of::<MetadataTableEntry>();
+        let mut page = cache
+            .acquire_write(
+                PageKey {
+                    tag: METADATA_TAG,
+                    offset: (table_offset / PAGE_SIZE * PAGE_SIZE) as u64,
+                },
+                crate::cache::WriteMode::Modify,
+            )
+            .await
+            .map_err(VhdxIoErrorInner::MetadataCache)?;
+        let delta = table_offset % PAGE_SIZE;
+        page[delta..delta + size_of::<MetadataTableEntry>()].copy_from_slice(entry.as_bytes());
+        self.entries[index] = entry;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -241,6 +357,7 @@ mod tests {
     use crate::tests::support::InMemoryFile;
     use pal_async::async_test;
     use std::sync::Arc;
+    use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
     fn metadata_cache(file: InMemoryFile, metadata_offset: u64) -> PageCache<InMemoryFile> {
@@ -472,6 +589,35 @@ mod tests {
             Err(OpenError(OpenErrorInner::Corrupt(
                 CorruptionType::ReservedMetadataTableFieldNonzero
             )))
+        ));
+    }
+
+    #[async_test]
+    async fn stage_replacement_rejects_overflowing_extent() {
+        // The reader rejects this layout; exercise staging's defensive check directly.
+        let table = MetadataTable {
+            entries: vec![MetadataTableEntry {
+                item_id: format::PARENT_LOCATOR_ITEM_GUID,
+                offset: format::METADATA_TABLE_SIZE as u32,
+                length: u32::MAX,
+                flags: format::MetadataTableEntryFlags::new().with_is_required(true),
+                reserved2: 0,
+            }],
+        };
+        let cache = metadata_cache(InMemoryFile::new(format::MB1), 0);
+
+        let result = table
+            .stage_replacement(
+                &cache,
+                &format::PARENT_LOCATOR_ITEM_GUID,
+                &[1],
+                format::MB1 as u32,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(VhdxIoError(VhdxIoErrorInner::MetadataRegionFull))
         ));
     }
 }

@@ -55,7 +55,7 @@ pub struct IdentifyNamespace {
     pub anagrpid: u32,
     #[inspect(skip)]
     pub rsvd2: [u8; 3],
-    pub nsattr: u8,
+    pub nsattr: Nsattr,
     pub nvmsetid: u16,
     pub endgid: u16,
     pub nguid: [u8; 16],
@@ -101,6 +101,17 @@ pub struct Nsfeat {
     /// NPWG, NPWA, NPDG, NPDA, and NOWS are defined for this namespace.
     pub optperf: bool,
     #[bits(3)]
+    _rsvd: u8,
+}
+
+/// Namespace attributes
+#[derive(Inspect)]
+#[bitfield(u8)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct Nsattr {
+    /// The namespace is currently write protected, for any reason.
+    pub write_protected: bool,
+    #[bits(7)]
     _rsvd: u8,
 }
 

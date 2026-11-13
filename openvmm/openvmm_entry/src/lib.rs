@@ -1349,12 +1349,7 @@ async fn vm_config_from_command_line(
         TpmVersionCli::V185 => TpmVersion::V185,
     });
 
-    if opt.restore_snapshot.is_some() {
-        // Snapshot restore: skip firmware loading entirely. Device state and
-        // memory come from the snapshot directory.
-        load_mode = LoadMode::None;
-        with_hv = true;
-    } else if let Some(igvm) = &opt.igvm {
+    if let Some(igvm) = &opt.igvm {
         let cli_args::UefiCli {
             firmware,
             debug: _,
@@ -1972,6 +1967,7 @@ async fn vm_config_from_command_line(
     if let Some(pmem_args) = &opt.virtio_pmem {
         let resource: Resource<VirtioDeviceHandle> = virtio_resources::pmem::VirtioPmemHandle {
             path: pmem_args.path.clone(),
+            read_only: false,
         }
         .into_resource();
         if let Some(pcie_port) = &pmem_args.pcie_port {
@@ -3247,6 +3243,52 @@ mod tests {
     use std::fs::File;
     use test_with_tracing::test;
     use vm_resource::ResourceId;
+
+    /// The same boot flags give the same ACPI power button with and without
+    /// `--restore-snapshot`.
+    #[test]
+    fn restore_builds_the_acpi_power_button_of_its_boot_command_line() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let file = |name: &str| {
+                let path = temp_dir.path().join(name);
+                File::create(&path).unwrap();
+                path.to_str().unwrap().to_owned()
+            };
+            let kernel = file("kernel");
+            let initrd = file("initrd");
+            let uefi = format!("--uefi=firmware={}", file("firmware"));
+            // The config build does not read the snapshot directory.
+            let snapshot = temp_dir.path().join("snapshot");
+            let linux = ["--kernel", kernel.as_str(), "--initrd", initrd.as_str()];
+
+            for (boot, has_button) in [
+                (linux.to_vec(), true),
+                ([&linux[..], &["--device-tree"]].concat(), false),
+                (vec![uefi.as_str()], true),
+            ] {
+                for restore in [false, true] {
+                    let mut args = vec!["openvmm", "--single-process"];
+                    args.extend(&boot);
+                    if restore {
+                        args.extend(["--restore-snapshot", snapshot.to_str().unwrap()]);
+                    }
+                    let opt = Options::try_parse_from(&args).unwrap();
+                    let mesh = VmmMesh::new(&driver, true).unwrap();
+                    let (config, _) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                        .await
+                        .unwrap();
+                    mesh.shutdown().await;
+
+                    let built = config
+                        .chipset_devices
+                        .iter()
+                        .any(|device| device.name == "acpi-power-button");
+                    assert_eq!(built, has_button, "{args:?}");
+                }
+            }
+        });
+    }
 
     #[test]
     fn selects_non_volatile_store_backing() {
