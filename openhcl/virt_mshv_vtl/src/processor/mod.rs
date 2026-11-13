@@ -1263,29 +1263,30 @@ impl<B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'_, 
 
         let _target_vtl = self.target_vtl_no_higher(target_vtl).map_err(|e| (e, 0))?;
 
-        #[cfg(guest_arch = "aarch64")]
-        if true {
-            let _ = apic_ids;
-            let _ = vp_indices;
-            todo!("AARCH64_TODO");
-        }
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                for (i, (&apic_id, vp_index)) in apic_ids.iter().zip(vp_indices).enumerate() {
+                    *vp_index = self
+                        .vp
+                        .partition
+                        .vps
+                        .iter()
+                        .find(|vp| vp.vp_info.apic_id == apic_id)
+                        .ok_or((HvError::InvalidParameter, i))?
+                        .vp_info
+                        .base
+                        .vp_index
+                        .index()
+                }
 
-        #[cfg(guest_arch = "x86_64")]
-        for (i, (&apic_id, vp_index)) in apic_ids.iter().zip(vp_indices).enumerate() {
-            *vp_index = self
-                .vp
-                .partition
-                .vps
-                .iter()
-                .find(|vp| vp.vp_info.apic_id == apic_id)
-                .ok_or((HvError::InvalidParameter, i))?
-                .vp_info
-                .base
-                .vp_index
-                .index()
+                Ok(())
+            }}
+            guest_arch = "aarch64" => {{
+                let _ = (apic_ids, vp_indices);
+                todo!("AARCH64_TODO");
+            }}
+            _ => compile_error!("unsupported guest architecture"),
         }
-
-        Ok(())
     }
 }
 

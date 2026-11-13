@@ -638,8 +638,10 @@ impl MshvVpRunner<'_> {
             unsafe { std::mem::transmute::<mshv_bindings::hv_message, HvMessage>(msg) }
         })
     }
+}
 
-    #[cfg(guest_arch = "x86_64")]
+#[cfg(guest_arch = "x86_64")]
+impl MshvVpRunner<'_> {
     fn reg_page(&mut self) -> &mut hvdef::HvX64RegisterPage {
         let page = self
             .reg_page
@@ -650,7 +652,6 @@ impl MshvVpRunner<'_> {
         unsafe { &mut *page }
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn ghcb_page(&mut self) -> Option<&mut x86defs::snp::GhcbPage> {
         // SAFETY: The mapped page is owned by the mutably borrowed processor
         // binder and remains valid for this processor borrow.

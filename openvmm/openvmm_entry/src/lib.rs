@@ -940,34 +940,37 @@ async fn vm_config_from_command_line(
         _ => compile_error!("unsupported guest architecture"),
     };
 
-    #[cfg(guest_arch = "x86_64")]
-    anyhow::ensure!(
-        opt.amd_iommu.is_empty() || opt.intel_vtd.is_empty(),
-        "--amd-iommu and --intel-vtd cannot both be used in the same VM"
-    );
+    cfg_select! {
+        guest_arch = "x86_64" => {
+            anyhow::ensure!(
+                opt.amd_iommu.is_empty() || opt.intel_vtd.is_empty(),
+                "--amd-iommu and --intel-vtd cannot both be used in the same VM"
+            );
 
-    #[cfg(guest_arch = "x86_64")]
-    let mut amd_iommu_names: HashSet<&str> = opt.amd_iommu.iter().map(|s| s.as_str()).collect();
-    #[cfg(guest_arch = "x86_64")]
-    let mut vtd_names: HashSet<&str> = opt.intel_vtd.iter().map(|s| s.as_str()).collect();
-
-    // Map each `--smmu` entry to its root complex, rejecting duplicate `rc=`
-    // entries up front. Entries are removed as they are matched to a root
-    // complex below; any left over refer to unknown root complexes.
-    #[cfg(guest_arch = "aarch64")]
-    let mut smmu_names: std::collections::HashMap<&str, &cli_args::SmmuCli> = {
-        let mut map = std::collections::HashMap::new();
-        for s in &opt.smmu {
-            if map.insert(s.rc_name.as_str(), s).is_some() {
-                anyhow::bail!(
-                    "--smmu specified multiple times for root complex '{}'",
-                    s.rc_name
-                );
-            }
+            let mut amd_iommu_names: HashSet<&str> = opt.amd_iommu.iter().map(|s| s.as_str()).collect();
+            let mut vtd_names: HashSet<&str> = opt.intel_vtd.iter().map(|s| s.as_str()).collect();
         }
-        map
-    };
-
+        guest_arch = "aarch64" => {
+            // Map each `--smmu` entry to its root complex, rejecting duplicate `rc=`
+            // entries up front. Entries are removed as they are matched to a root
+            // complex below; any left over refer to unknown root complexes.
+            let mut smmu_names: std::collections::HashMap<&str, &cli_args::SmmuCli> = {
+                let mut map = std::collections::HashMap::new();
+                for s in &opt.smmu {
+                    if map.insert(s.rc_name.as_str(), s).is_some() {
+                        anyhow::bail!(
+                            "--smmu specified multiple times for root complex '{}'",
+                            s.rc_name
+                        );
+                    }
+                }
+                map
+            };
+        }
+        _ => {
+            compile_error!("unsupported guest architecture");
+        }
+    }
     let mut pcie_root_complexes = Vec::new();
     let mut legacy_pci_config_io_for_pcie = false;
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
@@ -1070,17 +1073,23 @@ async fn vm_config_from_command_line(
         });
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    if let Some(name) = smmu_names.into_keys().next() {
-        anyhow::bail!("--smmu refers to unknown root complex '{name}'");
-    }
-    #[cfg(guest_arch = "x86_64")]
-    if let Some(name) = amd_iommu_names.into_iter().next() {
-        anyhow::bail!("--amd-iommu refers to unknown root complex '{name}'");
-    }
-    #[cfg(guest_arch = "x86_64")]
-    if let Some(name) = vtd_names.into_iter().next() {
-        anyhow::bail!("--intel-vtd refers to unknown root complex '{name}'");
+    cfg_select! {
+        guest_arch = "x86_64" => {
+            if let Some(name) = amd_iommu_names.into_iter().next() {
+                anyhow::bail!("--amd-iommu refers to unknown root complex '{name}'");
+            }
+            if let Some(name) = vtd_names.into_iter().next() {
+                anyhow::bail!("--intel-vtd refers to unknown root complex '{name}'");
+            }
+        }
+        guest_arch = "aarch64" => {
+            if let Some(name) = smmu_names.into_keys().next() {
+                anyhow::bail!("--smmu refers to unknown root complex '{name}'");
+            }
+        }
+        _ => {
+            compile_error!("unsupported guest architecture");
+        }
     }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
@@ -1774,27 +1783,28 @@ async fn vm_config_from_command_line(
         vmbus_devices.push((openhcl_vtl, resource));
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    let topology_arch = openvmm_defs::config::ArchTopologyConfig::Aarch64(
-        openvmm_defs::config::Aarch64TopologyConfig {
-            // TODO: allow this to be configured from the command line
-            gic_config: None,
-            pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
-            gic_msi: match opt.gic_msi {
-                cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
-                cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
-                cli_args::GicMsiCli::V2m => {
-                    openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
-                }
+    let topology_arch = cfg_select! {
+        guest_arch = "aarch64" => openvmm_defs::config::ArchTopologyConfig::Aarch64(
+            openvmm_defs::config::Aarch64TopologyConfig {
+                // TODO: allow this to be configured from the command line
+                gic_config: None,
+                pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
+                gic_msi: match opt.gic_msi {
+                    cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
+                    cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
+                    cli_args::GicMsiCli::V2m => {
+                        openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
+                    }
+                },
             },
-        },
-    );
-    #[cfg(guest_arch = "x86_64")]
-    let topology_arch =
-        openvmm_defs::config::ArchTopologyConfig::X86(openvmm_defs::config::X86TopologyConfig {
-            apic_id_offset: opt.apic_id_offset,
-            x2apic: opt.x2apic,
-        });
+        ),
+        guest_arch = "x86_64" =>
+            openvmm_defs::config::ArchTopologyConfig::X86(openvmm_defs::config::X86TopologyConfig {
+                apic_id_offset: opt.apic_id_offset,
+                x2apic: opt.x2apic,
+            }),
+        _ => compile_error!("unsupported guest architecture"),
+    };
 
     let with_isolation = if let Some(isolation) = &opt.isolation {
         match isolation {

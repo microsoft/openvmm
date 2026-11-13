@@ -190,33 +190,34 @@ pub fn find_in_firmware_image(image: &[u8]) -> Result<Option<MsvmFirmwareVersion
     let fv = image
         .get(FIRST_FIRMWARE_VOLUME_OFFSET..)
         .ok_or(Error::VolumeHeader)?;
-    #[cfg(guest_arch = "x86_64")]
-    return find_in_firmware_volume(fv);
-    #[cfg(guest_arch = "aarch64")]
-    {
-        // Locate the record before interpreting its interface version. Older
-        // images have separate PEI/DXE volumes; newer ones combine them.
-        let mut volumes = fv;
-        loop {
-            let header = firmware_volume::FirmwareVolumeHeader::read_from_prefix(volumes)
-                .map_err(|_| Error::VolumeHeader)?
-                .0;
-            let length = usize::try_from(header.fv_length)
-                .ok()
-                .filter(|&length| {
-                    length >= size_of::<firmware_volume::FirmwareVolumeHeader>()
-                        && length <= volumes.len()
-                })
-                .ok_or(Error::VolumeHeader)?;
-            let (fv, remaining) = volumes.split_at(length);
-            if let Some(version) = find_in_firmware_volume(fv)? {
-                return Ok(Some(version));
+    cfg_select! {
+        guest_arch = "x86_64" => find_in_firmware_volume(fv),
+        guest_arch = "aarch64" => {{
+            // Locate the record before interpreting its interface version. Older
+            // images have separate PEI/DXE volumes; newer ones combine them.
+            let mut volumes = fv;
+            loop {
+                let header = firmware_volume::FirmwareVolumeHeader::read_from_prefix(volumes)
+                    .map_err(|_| Error::VolumeHeader)?
+                    .0;
+                let length = usize::try_from(header.fv_length)
+                    .ok()
+                    .filter(|&length| {
+                        length >= size_of::<firmware_volume::FirmwareVolumeHeader>()
+                            && length <= volumes.len()
+                    })
+                    .ok_or(Error::VolumeHeader)?;
+                let (fv, remaining) = volumes.split_at(length);
+                if let Some(version) = find_in_firmware_volume(fv)? {
+                    return Ok(Some(version));
+                }
+                if remaining.is_empty() {
+                    return Ok(None);
+                }
+                volumes = remaining;
             }
-            if remaining.is_empty() {
-                return Ok(None);
-            }
-            volumes = remaining;
-        }
+        }}
+        _ => compile_error!("unsupported guest architecture"),
     }
 }
 
@@ -349,10 +350,11 @@ mod tests {
 
     #[test]
     fn rejects_malformed_volumes_and_records() {
-        #[cfg(guest_arch = "x86_64")]
-        let layouts = [(false, 0)];
-        #[cfg(guest_arch = "aarch64")]
-        let layouts = [(false, 0x1000), (true, 0x200000)];
+        let layouts = cfg_select! {
+            guest_arch = "x86_64" => [(false, 0)],
+            guest_arch = "aarch64" => [(false, 0x1000), (true, 0x200000)],
+            _ => compile_error!("unsupported guest architecture"),
+        };
         for (split, offset) in layouts {
             let original = image(split, Some((2, 0)));
             let mut malformed = original.clone();

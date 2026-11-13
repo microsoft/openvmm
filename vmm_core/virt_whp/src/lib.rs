@@ -1281,16 +1281,20 @@ impl WhpPartitionInner {
             caps.nested_virt = nested_virt;
             caps
         };
-        let vendor = match whp::capabilities::processor_vendor().for_op("get processor vendor")? {
-            #[cfg(guest_arch = "x86_64")]
-            whp::abi::WHvProcessorVendorIntel => Vendor::INTEL,
-            #[cfg(guest_arch = "x86_64")]
-            whp::abi::WHvProcessorVendorAmd => Vendor::AMD,
-            #[cfg(guest_arch = "x86_64")]
-            whp::abi::WHvProcessorVendorHygon => Vendor::HYGON,
-            #[cfg(guest_arch = "aarch64")]
-            whp::abi::WHvProcessorVendorArm => Vendor::ARM,
-            _ => panic!("unsupported processor vendor"),
+        let processor_vendor =
+            whp::capabilities::processor_vendor().for_op("get processor vendor")?;
+        let vendor = cfg_select! {
+            guest_arch = "x86_64" => match processor_vendor {
+                whp::abi::WHvProcessorVendorIntel => Vendor::INTEL,
+                whp::abi::WHvProcessorVendorAmd => Vendor::AMD,
+                whp::abi::WHvProcessorVendorHygon => Vendor::HYGON,
+                _ => panic!("unsupported processor vendor"),
+            },
+            guest_arch = "aarch64" => match processor_vendor {
+                whp::abi::WHvProcessorVendorArm => Vendor::ARM,
+                _ => panic!("unsupported processor vendor"),
+            },
+            _ => compile_error!("unsupported guest architecture"),
         };
 
         #[cfg(guest_arch = "aarch64")]
@@ -1468,26 +1472,27 @@ impl VtlPartition {
                 .as_ref()
                 .is_some_and(|_| !offload_enlightenments);
 
-        #[cfg(guest_arch = "x86_64")]
-        let lapic = if user_mode_apic {
-            let x2apic_capable = !matches!(
-                config.processor_topology.apic_mode(),
-                vm_topology::processor::x86::ApicMode::XApic
-            );
-            if x2apic_capable {
-                // Needed to set the x2apic bit.
-                extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
-            }
-            let lapic = virt_support_apic::LocalApicSet::builder()
-                .x2apic_capable(x2apic_capable)
-                .hyperv_enlightenments(config.hv_config.is_some())
-                .build();
-            LocalApicKind::Emulated(lapic)
-        } else {
-            LocalApicKind::Offloaded
+        let lapic = cfg_select! {
+            guest_arch = "x86_64" => if user_mode_apic {
+                let x2apic_capable = !matches!(
+                    config.processor_topology.apic_mode(),
+                    vm_topology::processor::x86::ApicMode::XApic
+                );
+                if x2apic_capable {
+                    // Needed to set the x2apic bit.
+                    extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
+                }
+                let lapic = virt_support_apic::LocalApicSet::builder()
+                    .x2apic_capable(x2apic_capable)
+                    .hyperv_enlightenments(config.hv_config.is_some())
+                    .build();
+                LocalApicKind::Emulated(lapic)
+            } else {
+                LocalApicKind::Offloaded
+            },
+            guest_arch = "aarch64" => LocalApicKind::Offloaded,
+            _ => compile_error!("unsupported guest architecture"),
         };
-        #[cfg(guest_arch = "aarch64")]
-        let lapic = LocalApicKind::Offloaded;
 
         let mut whp_config = whp::PartitionConfig::new().for_op("create partition")?;
 
@@ -1979,10 +1984,17 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
 
 impl virt::Hv1 for WhpPartition {
     type Error = Error;
-    #[cfg(guest_arch = "x86_64")]
-    type Device = virt::x86::apic_software_device::ApicSoftwareDevice;
-    #[cfg(guest_arch = "aarch64")]
-    type Device = virt::aarch64::gic_software_device::GicSoftwareDevice;
+    cfg_select! {
+        guest_arch = "x86_64" => {
+            type Device = virt::x86::apic_software_device::ApicSoftwareDevice;
+        }
+        guest_arch = "aarch64" => {
+            type Device = virt::aarch64::gic_software_device::GicSoftwareDevice;
+        }
+        _ => {
+            compile_error!("unsupported guest architecture");
+        }
+    }
 
     fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
         match &self.inner.hvstate {

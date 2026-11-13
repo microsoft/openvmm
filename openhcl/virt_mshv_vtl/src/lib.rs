@@ -316,13 +316,9 @@ impl BackingShared {
 
     fn untrusted_synic(&self) -> Option<&GlobalSynic> {
         match self {
-            BackingShared::Hypervisor(_) => None,
-            #[cfg(guest_arch = "x86_64")]
-            BackingShared::Snp(_) => None,
             #[cfg(guest_arch = "x86_64")]
             BackingShared::Tdx(s) => s.untrusted_synic.as_ref(),
-            #[cfg(guest_arch = "aarch64")]
-            BackingShared::Cca(_) => None,
+            _ => None,
         }
     }
 }
@@ -2007,59 +2003,64 @@ impl<'a> UhProtoPartition<'a> {
             .collect();
 
         // Enable support for VPCI devices if the hypervisor supports it.
-        #[cfg(guest_arch = "x86_64")]
-        let software_devices = {
-            let res = if !is_hardware_isolated {
-                hcl.register_intercept(
-                    HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId,
-                    HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                    HvInterceptParameters::new_zeroed(),
-                )
-            } else {
-                Ok(())
-            };
-            match res {
-                Ok(()) => Some(ApicSoftwareDevices::new(
-                    params.topology.vps_arch().map(|vp| vp.apic_id).collect(),
-                )),
-                Err(HvError::InvalidParameter | HvError::AccessDenied) => None,
-                Err(err) => {
-                    return Err(Error::InstallIntercept(
+        let software_devices = cfg_select! {
+            guest_arch = "x86_64" => {{
+                let res = if !is_hardware_isolated {
+                    hcl.register_intercept(
                         HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId,
-                        err,
-                    ));
+                        HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                        HvInterceptParameters::new_zeroed(),
+                    )
+                } else {
+                    Ok(())
+                };
+                match res {
+                    Ok(()) => Some(ApicSoftwareDevices::new(
+                        params.topology.vps_arch().map(|vp| vp.apic_id).collect(),
+                    )),
+                    Err(HvError::InvalidParameter | HvError::AccessDenied) => None,
+                    Err(err) => {
+                        return Err(Error::InstallIntercept(
+                            HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId,
+                            err,
+                        ));
+                    }
                 }
+            }}
+            // TODO: CCA: will probably need to add some support here like above
+            guest_arch = "aarch64" => None,
+            _ => compile_error!("unsupported guest architecture"),
+        };
+
+        cfg_select! {
+            guest_arch = "x86_64" => {
+                let cpuid = UhPartition::construct_cpuid_results(
+                    cpuid,
+                    &late_params.cpuid,
+                    params.topology,
+                    isolation,
+                    params.hide_isolation,
+                );
+
+                let caps = UhPartition::construct_capabilities(
+                    params.topology,
+                    &cpuid,
+                    isolation,
+                    params.hide_isolation,
+                )
+                .map_err(Error::Capabilities)?;
             }
-        };
-
-        // TODO: CCA: will probably need to add some support here like above
-        #[cfg(guest_arch = "aarch64")]
-        let software_devices = None;
-
-        #[cfg(guest_arch = "aarch64")]
-        let caps = virt::aarch64::Aarch64PartitionCapabilities {
-            isolation: params.isolation,
-            vendor: Vendor::ARM,
-            supports_aarch32_el0: false,
-        };
-
-        #[cfg(guest_arch = "x86_64")]
-        let cpuid = UhPartition::construct_cpuid_results(
-            cpuid,
-            &late_params.cpuid,
-            params.topology,
-            isolation,
-            params.hide_isolation,
-        );
-
-        #[cfg(guest_arch = "x86_64")]
-        let caps = UhPartition::construct_capabilities(
-            params.topology,
-            &cpuid,
-            isolation,
-            params.hide_isolation,
-        )
-        .map_err(Error::Capabilities)?;
+            guest_arch = "aarch64" => {
+                let caps = virt::aarch64::Aarch64PartitionCapabilities {
+                    isolation: params.isolation,
+                    vendor: Vendor::ARM,
+                    supports_aarch32_el0: false,
+                };
+            }
+            _ => {
+                compile_error!("unsupported guest architecture");
+            }
+        }
 
         if params.handle_synic && !matches!(isolation, IsolationType::Tdx) {
             // The hypervisor will manage the untrusted SINTs (or the whole
@@ -2430,8 +2431,8 @@ impl UhProtoPartition<'_> {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 impl UhPartition {
-    #[cfg(guest_arch = "x86_64")]
     /// Constructs the set of cpuid results to show to the guest
     fn construct_cpuid_results(
         cpuid: virt::CpuidLeafSet,
@@ -2479,7 +2480,6 @@ impl UhPartition {
         virt::CpuidLeafSet::new(cpuid)
     }
 
-    #[cfg(guest_arch = "x86_64")]
     /// Computes the partition capabilities
     fn construct_capabilities(
         topology: &ProcessorTopology,

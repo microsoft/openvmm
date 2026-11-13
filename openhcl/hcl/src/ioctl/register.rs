@@ -501,31 +501,32 @@ impl Hcl {
     }
 
     /// Sets the Power Management Timer assist in the hypervisor.
-    #[cfg(guest_arch = "x86_64")]
     pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), SetRegError> {
-        tracing::debug!(?port, "set_pm_timer_assist");
-        if self.isolation.is_hardware_isolated() {
-            if port.is_some() {
-                unimplemented!("set_pm_timer_assist");
-            }
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                tracing::debug!(?port, "set_pm_timer_assist");
+                if self.isolation.is_hardware_isolated() {
+                    if port.is_some() {
+                        unimplemented!("set_pm_timer_assist");
+                    }
+                }
+
+                let val = HvRegisterValue::from(u64::from(match port {
+                    Some(p) => hvdef::HvPmTimerInfo::new()
+                        .with_port(p)
+                        .with_enabled(true)
+                        .with_width_24(false),
+                    None => 0.into(),
+                }));
+
+                self.set_partition_vtl2_register(HvArchRegisterName::PmTimerAssist, val)
+            }}
+            guest_arch = "aarch64" => {{
+                tracing::debug!(?port, "set_pm_timer_assist unimplemented on aarch64");
+                Err(SetRegError::Hypercall(HvError::UnknownRegisterName))
+            }}
+            _ => compile_error!("unsupported guest architecture"),
         }
-
-        let val = HvRegisterValue::from(u64::from(match port {
-            Some(p) => hvdef::HvPmTimerInfo::new()
-                .with_port(p)
-                .with_enabled(true)
-                .with_width_24(false),
-            None => 0.into(),
-        }));
-
-        self.set_partition_vtl2_register(HvArchRegisterName::PmTimerAssist, val)
-    }
-
-    /// Sets the Power Management Timer assist in the hypervisor.
-    #[cfg(guest_arch = "aarch64")]
-    pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), SetRegError> {
-        tracing::debug!(?port, "set_pm_timer_assist unimplemented on aarch64");
-        Err(SetRegError::Hypercall(HvError::UnknownRegisterName))
     }
 
     /// Get the given register on the partition for VTL 2 via hypercall.

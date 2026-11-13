@@ -2654,16 +2654,17 @@ impl InitializedVm {
         // commands trigger retranslation. The RID and the remapper come from
         // the same IOMMU, so ACPI discovery and runtime remapping agree.
         #[cfg(guest_arch = "x86_64")]
-        let ioapic_iommu = match &iommu_devices {
-            IommuDevices::AmdVi(devices) => devices.ioapic_iommu.as_ref(),
-            IommuDevices::IntelVtd(devices) => devices.ioapic_iommu.as_ref(),
-            IommuDevices::None => None,
+        let ioapic_iommu_rid: Option<u16> = {
+            let ioapic_iommu = match &iommu_devices {
+                IommuDevices::AmdVi(devices) => devices.ioapic_iommu.as_ref(),
+                IommuDevices::IntelVtd(devices) => devices.ioapic_iommu.as_ref(),
+                IommuDevices::None => None,
+            };
+            ioapic_iommu.map(|sel| {
+                ioapic_routing.connect_remapper(sel.ioapic_rid, sel.remapper.clone());
+                sel.ioapic_rid
+            })
         };
-        #[cfg(guest_arch = "x86_64")]
-        let ioapic_iommu_rid: Option<u16> = ioapic_iommu.map(|sel| {
-            ioapic_routing.connect_remapper(sel.ioapic_rid, sel.remapper.clone());
-            sel.ioapic_rid
-        });
 
         // Wire deferred root complex and switch MSI connections now that
         // IOMMU setup is complete. On x86_64, this applies IOMMU
