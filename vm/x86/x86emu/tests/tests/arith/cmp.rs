@@ -26,10 +26,10 @@ fn cmp_memory_to_regvalue() {
     for &(left, right, rflags) in &variations {
         let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
-            |asm| asm.cmp(dword_ptr(rax + 0x10), eax),
+            |asm| asm.cmp(dword_ptr(0x100), eax),
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), right);
-                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
+                cpu.valid_gva = 0x100;
                 cpu.mem_val = left;
             },
         );
@@ -58,10 +58,10 @@ fn cmp_memory_to_regvalue64() {
     for &(left, right, rflags) in &variations {
         let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
-            |asm| asm.cmp(qword_ptr(rax + 0x10), rax),
+            |asm| asm.cmp(qword_ptr(0x100), rax),
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), right);
-                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
+                cpu.valid_gva = 0x100;
                 cpu.mem_val = left;
             },
         );
@@ -134,10 +134,10 @@ fn cmp_regvalue_to_memory() {
     for &(left, right, rflags) in &variations {
         let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
-            |asm| asm.cmp(eax, dword_ptr(rax + 0x10)),
+            |asm| asm.cmp(eax, dword_ptr(0x100)),
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), left);
-                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
+                cpu.valid_gva = 0x100;
                 cpu.mem_val = right;
             },
         );
@@ -172,10 +172,10 @@ fn cmp_regvalue_to_memory64() {
     for &(left, right, rflags) in &variations {
         let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
-            |asm| asm.cmp(rax, qword_ptr(rax + 0x10)),
+            |asm| asm.cmp(rax, qword_ptr(0x100)),
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), left);
-                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
+                cpu.valid_gva = 0x100;
                 cpu.mem_val = right;
             },
         );

@@ -118,6 +118,8 @@ fn cmov_false_truncation() {
         RFlags::new(),
         |asm| asm.cmovo(r8d, dword_ptr(rax)),
         |cpu| {
+            cpu.set_gp(Gp::RAX.into(), 0x100);
+            cpu.valid_gva = 0x100;
             cpu.set_gp(Gp::R8.into(), 0x1234567890abcdef);
             let mut rflags = cpu.rflags();
             rflags.set_overflow(false);

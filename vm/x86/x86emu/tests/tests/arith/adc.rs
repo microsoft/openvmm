@@ -11,13 +11,13 @@ fn adc_regvalue_to_memory(variations: &[(u64, u64, u64, u64)], carry: bool) {
     for &(left, right, result, rflags) in variations {
         let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
-            |asm| asm.adc(eax, dword_ptr(rax + 0x10)),
+            |asm| asm.adc(eax, dword_ptr(0x100)),
             |cpu| {
                 let mut rflags = cpu.rflags();
                 rflags.set_carry(carry);
                 cpu.set_rflags(rflags);
                 cpu.set_gp(Gp::RAX.into(), left);
-                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
+                cpu.valid_gva = 0x100;
                 cpu.mem_val = right;
             },
         );

@@ -10584,6 +10584,7 @@ dependencies = [
  "hvdef",
  "iced-x86",
  "pal_async",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -12807,6 +12808,7 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "iced-x86",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "x86defs",

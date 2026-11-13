@@ -11,7 +11,7 @@ use iced_x86::OpKind;
 
 impl<T: Cpu> Emulator<'_, T> {
     pub(super) async fn mov(&mut self, instr: &Instruction) -> Result<(), InternalError<T::Error>> {
-        let value = self.op_value(instr, 1).await?;
+        let value = self.op_value(instr, 1, false).await?;
         self.write_op_0(instr, value).await?;
         Ok(())
     }
@@ -31,7 +31,7 @@ impl<T: Cpu> Emulator<'_, T> {
         alignment: AlignmentMode,
     ) -> Result<(), InternalError<T::Error>> {
         let value = match instr.op1_kind() {
-            OpKind::Memory => self.read_memory_op(instr, 1, alignment).await?,
+            OpKind::Memory => self.read_memory_op(instr, 1, alignment, false).await?,
             OpKind::Register => {
                 let reg = instr.op1_register();
                 assert!(reg.is_xmm());
@@ -67,6 +67,7 @@ impl<T: Cpu> Emulator<'_, T> {
             src,
             AlignmentMode::Unaligned,
             &mut buffer,
+            false,
         )
         .await?;
 

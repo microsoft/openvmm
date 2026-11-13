@@ -2467,6 +2467,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         vmsa.cr0()
     }
 
+    fn cr4(&mut self) -> u64 {
+        self.vp.runner.vmsa(self.vtl).cr4()
+    }
+
     fn rflags(&mut self) -> RFlags {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         vmsa.rflags().into()

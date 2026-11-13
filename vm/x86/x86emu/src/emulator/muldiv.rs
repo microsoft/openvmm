@@ -14,7 +14,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let right = self.op_value(instr, 0).await? as u128;
+        let right = self.op_value(instr, 0, false).await? as u128;
         self.do_unary_mul(instr, |left, operand_bit_size| {
             let prod = left * right;
             let flag = prod & (u128::MAX << operand_bit_size) != 0;
@@ -99,7 +99,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let right = self.op_value(instr, 0).await? as u128;
+        let right = self.op_value(instr, 0, false).await? as u128;
 
         self.do_unary_div(instr, right, |left, right, operand_bit_size| {
             let quotient = left / right;

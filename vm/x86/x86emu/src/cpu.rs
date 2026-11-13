@@ -10,19 +10,28 @@ use x86defs::RFlags;
 use x86defs::SegmentRegister;
 
 /// Trait for asynchronous callouts from the emulator to the VM.
+///
+/// Memory addresses already include the segment base.
 pub trait Cpu {
     /// The error type for IO access failures.
     type Error;
 
-    /// Performs a memory read of 1, 2, 4, or 8 bytes.
+    /// Performs a memory read.
+    ///
+    /// When `is_rmw` is set, this is the read of a read-modify-write
+    /// operation and must validate write permissions for the entire range.
     fn read_memory(
         &mut self,
         gva: u64,
         bytes: &mut [u8],
         is_user_mode: bool,
+        is_rmw: bool,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
-    /// Performs a memory write of 1, 2, 4, or 8 bytes.
+    /// Performs a memory write.
+    ///
+    /// Validate translation and permissions for the entire range before writing
+    /// any bytes, so a fault on a later page leaves the store untouched.
     fn write_memory(
         &mut self,
         gva: u64,
@@ -39,6 +48,8 @@ pub trait Cpu {
     /// includes ordinary RAM, but does not include device registers.
     ///
     /// Returns `true` if the exchange succeeded, `false` otherwise.
+    /// As with `write_memory`, a translation or permission fault on any page
+    /// must leave memory untouched.
     fn compare_and_write_memory(
         &mut self,
         gva: u64,
@@ -70,6 +81,7 @@ pub trait Cpu {
     fn segment(&mut self, index: Segment) -> SegmentRegister;
     fn efer(&mut self) -> u64;
     fn cr0(&mut self) -> u64;
+    fn cr4(&mut self) -> u64;
     fn rflags(&mut self) -> RFlags;
     fn set_rflags(&mut self, v: RFlags);
 }
@@ -82,8 +94,9 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         gva: u64,
         bytes: &mut [u8],
         is_user_mode: bool,
+        is_rmw: bool,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        (*self).read_memory(gva, bytes, is_user_mode)
+        (*self).read_memory(gva, bytes, is_user_mode, is_rmw)
     }
 
     fn write_memory(
@@ -159,6 +172,10 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
 
     fn cr0(&mut self) -> u64 {
         (*self).cr0()
+    }
+
+    fn cr4(&mut self) -> u64 {
+        (*self).cr4()
     }
 
     fn rflags(&mut self) -> RFlags {

@@ -33,10 +33,10 @@ fn or_regvalue_to_memory() {
     for (left, right, result, rflags) in variations {
         let mut cpu = run_test(
             RFLAGS_LOGIC_MASK,
-            |asm| asm.or(eax, dword_ptr(rax + 0x10)),
+            |asm| asm.or(eax, dword_ptr(0x100)),
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), left);
-                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
+                cpu.valid_gva = 0x100;
                 cpu.mem_val = right;
             },
         );

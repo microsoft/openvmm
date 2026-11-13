@@ -172,6 +172,7 @@ pub enum ExceptionCause {
     DivideByZero,
     IoPrivilegeLevel,
     SegmentValidity,
+    NonCanonicalAddress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -263,7 +264,8 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let efer = self.cpu.efer();
         let cs = self.cpu.segment(Segment::CS);
 
-        let base = match bitness(cr0, efer, cs) {
+        let bitness = bitness(cr0, efer, cs);
+        let base = match bitness {
             Bitness::Bit64 => {
                 if matches!(segment, Segment::FS | Segment::GS) {
                     self.cpu.segment(segment).base
@@ -279,6 +281,29 @@ impl<'a, T: Cpu> Emulator<'a, T> {
 
         let gva = base.wrapping_add(offset);
         tracing::trace!(?op, base, offset, gva, "compute_gva");
+        if bitness == Bitness::Bit64 {
+            let address_bits = if self.cpu.cr4() & x86defs::X64_CR4_LA57 != 0 {
+                57
+            } else {
+                48
+            };
+            if !x86defs::is_canonical_address(gva, address_bits)
+                || !x86defs::is_canonical_address(
+                    gva.wrapping_add(len.saturating_sub(1) as u64),
+                    address_bits,
+                )
+            {
+                return Err(Error::InstructionException(
+                    if matches!(segment, Segment::SS) {
+                        Exception::STACK_SEGMENT_FAULT
+                    } else {
+                        Exception::GENERAL_PROTECTION_FAULT
+                    },
+                    Some(0),
+                    ExceptionCause::NonCanonicalAddress,
+                ));
+            }
+        }
         self.verify_gva_alignment(gva, len, alignment)?;
         Ok(gva)
     }
@@ -299,6 +324,8 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let cs = self.cpu.segment(Segment::CS);
         let bitness = bitness(cr0, efer, cs);
         assert_ne!(bitness, Bitness::Bit64);
+        let protected_mode =
+            cr0 & x86defs::X64_CR0_PE != 0 && !self.cpu.rflags().virtual_8086_mode();
 
         let segment_value = self.cpu.segment(segment);
 
@@ -316,12 +343,23 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             Some(segment_value.selector.into()),
             ExceptionCause::SegmentValidity,
         );
+        let limit_error = || {
+            Error::InstructionException(
+                if matches!(segment, Segment::SS) {
+                    Exception::STACK_SEGMENT_FAULT
+                } else {
+                    Exception::GENERAL_PROTECTION_FAULT
+                },
+                Some(0),
+                ExceptionCause::SegmentValidity,
+            )
+        };
 
         // CS is treated differently from data segments. The segment type is treated as a code segment, and
         // writes are forbidden in protected mode. It also can't be expand-down and will always be present.
         if matches!(segment, Segment::CS) {
             // Forbid writes in protected mode
-            if bitness == Bitness::Bit32 && op == OperationKind::Write {
+            if protected_mode && op == OperationKind::Write {
                 return Err(gp0);
             }
 
@@ -332,25 +370,29 @@ impl<'a, T: Cpu> Emulator<'a, T> {
 
             // Check that the offset and length are not outside the segment limits
             if offset_end > segment_value.limit as u64 {
-                return Err(gp0);
+                return Err(limit_error());
             }
         } else {
             // Check for the segment not being present
             if !segment_value.attributes.present() {
                 Err(Error::InstructionException(
-                    Exception::SEGMENT_NOT_PRESENT,
-                    None,
+                    if matches!(segment, Segment::SS) {
+                        Exception::STACK_SEGMENT_FAULT
+                    } else {
+                        Exception::SEGMENT_NOT_PRESENT
+                    },
+                    Some(segment_value.selector as u32 & !0x3),
                     ExceptionCause::SegmentValidity,
                 ))?;
             }
 
             // Check for a null selector, ignoring the RPL
-            if bitness == Bitness::Bit32 && segment_value.selector & !0x3 == 0 {
+            if protected_mode && segment_value.selector & !0x3 == 0 {
                 return Err(gp0);
             }
 
-            // Check the RPL (if 32-bit) and CPL against the DPL
-            let rpl = if matches!(bitness, Bitness::Bit32) {
+            // Check the RPL (in protected mode) and CPL against the DPL.
+            let rpl = if protected_mode {
                 (segment_value.selector & 0x3) as u8
             } else {
                 0
@@ -377,7 +419,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             if segment_value.attributes.segment_type() & 0b0100 == 0 {
                 // Segment is not expand-down
                 if offset_end > segment_value.limit as u64 {
-                    return Err(gp0);
+                    return Err(limit_error());
                 }
             } else {
                 // Segment is expand-down
@@ -387,7 +429,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                     u16::MAX as u64
                 };
                 if offset <= segment_value.limit as u64 || offset_end > max {
-                    return Err(gp0);
+                    return Err(limit_error());
                 }
             };
         }
@@ -422,7 +464,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                     if !gva.is_multiple_of(len as u64) {
                         Err(Error::InstructionException(
                             Exception::ALIGNMENT_CHECK,
-                            None,
+                            Some(0),
                             ExceptionCause::AlignmentCheck,
                         ))?
                     }
@@ -432,26 +474,27 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         Ok(())
     }
 
-    /// Reads memory from the given segment:offset.
+    /// Reads memory from the given segment:offset, checking write permissions
+    /// when this is the read of a read-modify-write operation.
     pub async fn read_memory(
         &mut self,
         segment: Segment,
         offset: u64,
         alignment: AlignmentMode,
         data: &mut [u8],
+        is_rmw: bool,
     ) -> Result<(), Error<T::Error>> {
-        let gva = self.compute_and_validate_gva(
-            segment,
-            offset,
-            data.len(),
-            OperationKind::Read,
-            alignment,
-        )?;
+        let op = if is_rmw {
+            OperationKind::Write
+        } else {
+            OperationKind::Read
+        };
+        let gva = self.compute_and_validate_gva(segment, offset, data.len(), op, alignment)?;
         let user_mode = self.is_user_mode();
         self.cpu
-            .read_memory(gva, data, user_mode)
+            .read_memory(gva, data, user_mode, is_rmw)
             .await
-            .map_err(|err| Error::MemoryAccess(gva, OperationKind::Read, err))?;
+            .map_err(|err| Error::MemoryAccess(gva, op, err))?;
 
         Ok(())
     }
@@ -517,6 +560,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         instr: &Instruction,
         operand: u32,
         alignment: AlignmentMode,
+        is_rmw: bool,
     ) -> Result<R, InternalError<T::Error>> {
         let offset = self.memory_op_offset(instr, operand);
         let mut data = R::empty_bytes();
@@ -525,6 +569,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             offset,
             alignment,
             &mut data[..instr.memory_size().size()],
+            is_rmw,
         )
         .await?;
         Ok(R::from_le_bytes(data))
@@ -631,10 +676,11 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         &mut self,
         instr: &Instruction,
         operand: u32,
+        is_rmw: bool,
     ) -> Result<u64, InternalError<T::Error>> {
         Ok(match instr.op_kind(operand) {
             OpKind::Memory => {
-                self.read_memory_op(instr, operand, AlignmentMode::Standard)
+                self.read_memory_op(instr, operand, AlignmentMode::Standard, is_rmw)
                     .await?
             }
             OpKind::Register => self.cpu.gp(instr.op_register(operand).into()),
@@ -656,7 +702,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         instr: &Instruction,
         operand: u32,
     ) -> Result<i64, InternalError<T::Error>> {
-        let value = self.op_value(instr, operand).await?;
+        let value = self.op_value(instr, operand, false).await?;
         let size = instr.memory_size().size();
         let shift_size = 64 - (size * 8);
         let new_value = ((value as i64) << shift_size) >> shift_size;
@@ -725,7 +771,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let bitness = bitness(cr0, efer, cs);
         let mut decoder = Decoder::new(bitness.into(), self.bytes, self.decoder_options);
         decoder.set_ip(self.cpu.rip());
-        let instr = decoder.decode();
+        let mut instr = decoder.decode();
         if instr.code() == Code::INVALID {
             match decoder.last_error() {
                 DecoderError::None => unreachable!(),
@@ -739,6 +785,12 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                     return Err(Box::new(Error::DecodeFailure));
                 }
             }
+        }
+        // Ignored legacy overrides must not change the default #GP/#SS selection.
+        if bitness == Bitness::Bit64
+            && !matches!(instr.segment_prefix(), Register::FS | Register::GS)
+        {
+            instr.set_segment_prefix(Register::None);
         }
         tracing::trace!(
             bytes = ?self.bytes[..instr.len()],
@@ -834,10 +886,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             | Code::Movupd_xmm_xmmm128
             | Code::Movupd_xmmm128_xmm
             | Code::Movdqu_xmm_xmmm128
-            | Code::Movdqu_xmmm128_xmm
-            | Code::Movntdq_m128_xmm
-            | Code::Movntps_m128_xmm
-            | Code::Movntpd_m128_xmm => self.mov_sse(instr, AlignmentMode::Unaligned).await,
+            | Code::Movdqu_xmmm128_xmm => self.mov_sse(instr, AlignmentMode::Unaligned).await,
 
             // movaps
             // movapd
@@ -847,7 +896,10 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             | Code::Movapd_xmm_xmmm128
             | Code::Movapd_xmmm128_xmm
             | Code::Movdqa_xmm_xmmm128
-            | Code::Movdqa_xmmm128_xmm => self.mov_sse(instr, AlignmentMode::Aligned(16)).await,
+            | Code::Movdqa_xmmm128_xmm
+            | Code::Movntdq_m128_xmm
+            | Code::Movntps_m128_xmm
+            | Code::Movntpd_m128_xmm => self.mov_sse(instr, AlignmentMode::Aligned(16)).await,
 
             Code::Movdir64b_r16_m512 | Code::Movdir64b_r32_m512 | Code::Movdir64b_r64_m512 => {
                 self.movdir64b(instr).await
