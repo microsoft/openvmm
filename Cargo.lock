@@ -3295,7 +3295,6 @@ dependencies = [
  "smbios_defs",
  "task_control",
  "test_igvm_agent_lib",
- "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",

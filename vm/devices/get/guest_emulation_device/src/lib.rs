@@ -211,29 +211,6 @@ impl std::fmt::Debug for UefiOverloadImage {
     }
 }
 
-enum OverwriteError {
-    /// Guest memory was left unchanged.
-    Unchanged(guestmem::GuestMemoryError),
-    /// Guest memory holds part of the new image.
-    Corrupted(guestmem::GuestMemoryError),
-}
-
-/// Writes `data` to guest memory at `gpa`, restoring the original contents if
-/// the write fails part way through.
-fn overwrite_guest_memory(gm: &GuestMemory, gpa: u64, data: &[u8]) -> Result<(), OverwriteError> {
-    // Reading first checks the whole range is accessible before anything is written.
-    let mut original = vec![0; data.len()];
-    gm.read_at(gpa, &mut original)
-        .map_err(OverwriteError::Unchanged)?;
-    if let Err(err) = gm.write_at(gpa, data) {
-        return Err(match gm.write_at(gpa, &original) {
-            Ok(()) => OverwriteError::Unchanged(err),
-            Err(_) => OverwriteError::Corrupted(err),
-        });
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, Inspect)]
 #[inspect(external_tag)]
 pub enum GuestFirmwareConfig {
@@ -1162,26 +1139,17 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             .find(|image| image.token == firmware_token);
         let (status, entry_offset) = match image {
             None => (get_protocol::LoadFirmwareStatus::INVALID_TOKEN, 0),
-            Some(image) => match overwrite_guest_memory(&self.gm, image.base_gpa, &image.image) {
+            Some(image) => match self.gm.write_at(image.base_gpa, &image.image) {
                 Ok(()) => (
                     get_protocol::LoadFirmwareStatus::SUCCESS,
                     image.entry_offset,
                 ),
-                Err(OverwriteError::Unchanged(err)) => {
+                Err(err) => {
                     tracelimit::error_ratelimited!(
                         error = &err as &dyn std::error::Error,
                         firmware_token,
                         "failed to write the firmware image into guest memory"
                     );
-                    (get_protocol::LoadFirmwareStatus::FAILED, 0)
-                }
-                Err(OverwriteError::Corrupted(err)) => {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        firmware_token,
-                        "partially wrote the firmware image and could not restore the original; powering off"
-                    );
-                    state.power_client.power_request(PowerRequest::PowerOff);
                     (get_protocol::LoadFirmwareStatus::FAILED, 0)
                 }
             },
@@ -1625,35 +1593,5 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::OverwriteError;
-    use super::overwrite_guest_memory;
-    use guestmem::GuestMemory;
-    use test_with_tracing::test;
-
-    #[test]
-    fn overwrite_writes_data() {
-        let gm = GuestMemory::allocate(0x2000);
-        assert!(overwrite_guest_memory(&gm, 0x1000, &[0xaa; 0x10]).is_ok());
-        let mut data = [0; 0x10];
-        gm.read_at(0x1000, &mut data).unwrap();
-        assert_eq!(data, [0xaa; 0x10]);
-    }
-
-    #[test]
-    fn overwrite_past_end_leaves_memory_unchanged() {
-        let gm = GuestMemory::allocate(0x2000);
-        gm.write_at(0x1ff8, &[0x55; 8]).unwrap();
-        assert!(matches!(
-            overwrite_guest_memory(&gm, 0x1ff8, &[0xaa; 0x10]),
-            Err(OverwriteError::Unchanged(_))
-        ));
-        let mut data = [0; 8];
-        gm.read_at(0x1ff8, &mut data).unwrap();
-        assert_eq!(data, [0x55; 8]);
     }
 }
