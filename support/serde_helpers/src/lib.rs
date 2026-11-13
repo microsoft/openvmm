@@ -7,6 +7,12 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
+
+#[derive(serde::Deserialize)]
+#[serde(transparent)]
+struct CowStr<'a>(#[serde(borrow)] Cow<'a, str>);
+
 mod prelude {
     pub use serde::Deserialize;
     pub use serde::Deserializer;
@@ -16,6 +22,7 @@ mod prelude {
 
 /// de/serialize a `Vec<u8>` to/from a base64 encoded string.
 pub mod base64_vec {
+    use crate::CowStr;
     use crate::prelude::*;
     use base64::Engine;
 
@@ -24,15 +31,16 @@ pub mod base64_vec {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let s: &str = Deserialize::deserialize(d)?;
+        let CowStr(s) = Deserialize::deserialize(d)?;
         base64::engine::general_purpose::STANDARD
-            .decode(s)
+            .decode(s.as_bytes())
             .map_err(serde::de::Error::custom)
     }
 }
 
 /// de/serialize a `T: Display + FromStr`
 pub mod as_string {
+    use crate::CowStr;
     use crate::prelude::*;
     use std::fmt::Display;
     use std::str::FromStr;
@@ -46,7 +54,7 @@ pub mod as_string {
         T: FromStr,
         T::Err: std::error::Error,
     {
-        let s: &str = Deserialize::deserialize(d)?;
+        let CowStr(s) = Deserialize::deserialize(d)?;
         s.parse().map_err(serde::de::Error::custom)
     }
 }
@@ -64,6 +72,7 @@ pub mod as_debug {
 /// de/serialize an [`Option<Guid>`](guid::Guid) to/from a possibly-missing GUID
 /// string. Make sure to also specify `#[serde(default)]`.
 pub mod opt_guid_str {
+    use crate::CowStr;
     use crate::prelude::*;
     use guid::Guid;
 
@@ -75,10 +84,10 @@ pub mod opt_guid_str {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Guid>, D::Error> {
-        let s: Option<&str> = Deserialize::deserialize(d)?;
+        let s: Option<CowStr<'_>> = Deserialize::deserialize(d)?;
         Ok(match s {
             None => None,
-            Some(s) => Some(s.parse().map_err(serde::de::Error::custom)?),
+            Some(CowStr(s)) => Some(s.parse().map_err(serde::de::Error::custom)?),
         })
     }
 }
@@ -87,6 +96,7 @@ pub mod opt_guid_str {
 /// to/from a `base64` encoded string containing a JSON payload.
 /// Make sure to also specify `#[serde(default)]`.
 pub mod opt_base64_json {
+    use crate::CowStr;
     use crate::prelude::*;
     use base64::Engine;
 
@@ -105,12 +115,12 @@ pub mod opt_base64_json {
     pub fn deserialize<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
         d: D,
     ) -> Result<Option<T>, D::Error> {
-        let s: Option<&str> = Deserialize::deserialize(d)?;
+        let s: Option<CowStr<'_>> = Deserialize::deserialize(d)?;
         Ok(match s {
             None => None,
-            Some(s) => {
+            Some(CowStr(s)) => {
                 let s = base64::engine::general_purpose::STANDARD
-                    .decode(s)
+                    .decode(s.as_bytes())
                     .map_err(serde::de::Error::custom)?;
                 Some(serde_json::from_slice(&s).map_err(serde::de::Error::custom)?)
             }
@@ -119,6 +129,7 @@ pub mod opt_base64_json {
 }
 
 pub mod opt_base64_vec {
+    use crate::CowStr;
     use base64::Engine;
     use serde::*;
 
@@ -130,11 +141,11 @@ pub mod opt_base64_vec {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
-        let s: Option<&str> = Deserialize::deserialize(d)?;
+        let s: Option<CowStr<'_>> = Deserialize::deserialize(d)?;
         Ok(match s {
-            Some(s) => Some(
+            Some(CowStr(s)) => Some(
                 base64::engine::general_purpose::STANDARD
-                    .decode(s)
+                    .decode(s.as_bytes())
                     .map_err(de::Error::custom)?,
             ),
             None => None,
@@ -143,6 +154,7 @@ pub mod opt_base64_vec {
 }
 
 pub mod vec_base64_vec {
+    use crate::CowStr;
     use base64::Engine;
     use ser::SerializeSeq;
     use serde::*;
@@ -156,12 +168,12 @@ pub mod vec_base64_vec {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<u8>>, D::Error> {
-        let ss: Vec<&str> = Deserialize::deserialize(d)?;
+        let ss: Vec<CowStr<'_>> = Deserialize::deserialize(d)?;
         let mut vs = Vec::new();
-        for s in ss {
+        for CowStr(s) in ss {
             vs.push(
                 base64::engine::general_purpose::STANDARD
-                    .decode(s)
+                    .decode(s.as_bytes())
                     .map_err(de::Error::custom)?,
             );
         }
@@ -174,6 +186,65 @@ mod test {
     use super::*;
     use guid::Guid;
     use serde::Deserialize;
+    use serde::Serialize;
+    use test_with_tracing::test;
+
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
+    struct Sample {
+        #[serde(with = "base64_vec")]
+        bytes: Vec<u8>,
+        #[serde(with = "as_string")]
+        number: u32,
+        #[serde(default, with = "opt_guid_str")]
+        guid: Option<Guid>,
+        #[serde(default, with = "opt_base64_json")]
+        json: Option<Vec<u32>>,
+        #[serde(default, with = "opt_base64_vec")]
+        optional_bytes: Option<Vec<u8>>,
+        #[serde(with = "vec_base64_vec")]
+        arrays: Vec<Vec<u8>>,
+    }
+
+    fn sample() -> Sample {
+        Sample {
+            bytes: b"foo".to_vec(),
+            number: 42,
+            guid: Some(guid::guid!("12345678-9abc-def0-1234-56789abcdef0")),
+            json: Some(vec![1, 2]),
+            optional_bytes: Some(b"bar".to_vec()),
+            arrays: vec![b"hi".to_vec()],
+        }
+    }
+
+    #[test]
+    fn owned_strings() {
+        let expected = sample();
+        let value = serde_json::to_value(&expected).unwrap();
+        assert_eq!(serde_json::from_value::<Sample>(value).unwrap(), expected);
+    }
+
+    #[test]
+    fn reader_strings() {
+        let expected = sample();
+        let bytes = serde_json::to_vec(&expected).unwrap();
+        assert_eq!(
+            serde_json::from_reader::<_, Sample>(&bytes[..]).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn escaped_strings() {
+        let json = r#"{
+            "bytes": "\u005am9v",
+            "number": "\u00342",
+            "guid": "\u00312345678-9abc-def0-1234-56789abcdef0",
+            "json": "\u0057zEsMl0=",
+            "optional_bytes": "\u0059mFy",
+            "arrays": ["\u0061Gk="]
+        }"#;
+        assert_eq!(serde_json::from_str::<Sample>(json).unwrap(), sample());
+    }
 
     #[test]
     fn opt_guid() {

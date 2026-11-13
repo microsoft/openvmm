@@ -51,6 +51,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::install_dotnet_cli::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
+        ctx.import::<flowey_lib_common::install_azure_cli_extension::Node>();
         ctx.import::<flowey_lib_common::install_git::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
@@ -77,6 +78,9 @@ impl SimpleFlowNode for Node {
                 auto_install: Some(true),
                 ignore_version: Some(false),
                 ..Default::default()
+            });
+            ctx.config(flowey_lib_common::install_azure_cli_extension::Config {
+                auto_install: Some(true),
             });
             if matches!(ctx.backend(), FlowBackend::Github) {
                 let token = ctx.get_gh_context_var().global().token();
@@ -128,6 +132,9 @@ impl SimpleFlowNode for Node {
                 ctx.config(flowey_lib_common::install_azure_cli::Config {
                     auto_install: Some(auto_install),
                     ..Default::default()
+                });
+                ctx.config(flowey_lib_common::install_azure_cli_extension::Config {
+                    auto_install: Some(auto_install),
                 });
                 ctx.config(flowey_lib_common::install_git::Config {
                     auto_install: Some(auto_install),
