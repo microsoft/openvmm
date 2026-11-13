@@ -8116,6 +8116,7 @@ dependencies = [
  "guid",
  "serde",
  "serde_json",
+ "test_with_tracing",
 ]
 
 [[package]]
