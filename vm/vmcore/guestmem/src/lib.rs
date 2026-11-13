@@ -1885,6 +1885,9 @@ impl GuestMemory {
 
     /// Attempts a sequentially-consistent compare exchange of the value at `gpa`.
     ///
+    /// `T` must be 1, 2, 4, 8, or 16 bytes, with an alignment of at least its
+    /// size.
+    ///
     /// Direct accesses to unaligned host addresses are supported where the
     /// platform supports them; otherwise, they return an error.
     pub fn compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownLayout + Copy>(
@@ -1894,7 +1897,7 @@ impl GuestMemory {
         new: T,
     ) -> Result<Result<T, T>, GuestMemoryError> {
         const {
-            assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
+            assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8 | 16));
             assert!(align_of::<T>() >= size_of::<T>());
         };
         let len = size_of_val(&new);
@@ -2861,6 +2864,57 @@ mod tests {
         let addr = SIZE_1MB as u64;
         let result = gm.read_plain::<u8>(addr);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compare_exchange_u128() {
+        const OLD: u128 = 0x0123456789abcdef_fedcba9876543210;
+        const NEW: u128 = 0x1122334455667788_99aabbccddeeff00;
+        let gm = GuestMemory::new("test", create_test_mapping());
+        let addr = PAGE_SIZE64 - 16;
+        gm.write_plain(addr - 16, &OLD).unwrap();
+        gm.write_plain(addr, &OLD).unwrap();
+        gm.write_plain(addr + 16, &OLD).unwrap();
+
+        assert_eq!(gm.compare_exchange(addr, OLD, NEW).unwrap(), Ok(NEW));
+        for current in [NEW ^ 1, NEW ^ (1 << 64)] {
+            assert_eq!(gm.compare_exchange(addr, current, OLD).unwrap(), Err(NEW));
+            assert_eq!(gm.read_plain::<u128>(addr).unwrap(), NEW);
+        }
+        assert_eq!(gm.read_plain::<u128>(addr - 16).unwrap(), OLD);
+        assert_eq!(gm.read_plain::<u128>(addr + 16).unwrap(), OLD);
+        gm.compare_exchange(SIZE_1MB as u64, OLD, NEW).unwrap_err();
+        gm.compare_exchange(4 * SIZE_1MB as u64, OLD, NEW)
+            .unwrap_err();
+    }
+
+    #[test]
+    fn test_compare_exchange_u128_concurrent() {
+        let gm = GuestMemory::allocate(PAGE_SIZE);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let gm = &gm;
+                scope.spawn(move || {
+                    let mut current = 0u128;
+                    for _ in 0..1000 {
+                        loop {
+                            let new = current + (1 << 64) + 1;
+                            match gm.compare_exchange(0, current, new).unwrap() {
+                                Ok(_) => {
+                                    current = new;
+                                    break;
+                                }
+                                Err(actual) => {
+                                    assert_eq!(actual as u64, (actual >> 64) as u64);
+                                    current = actual;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(gm.read_plain::<u128>(0).unwrap(), (4000 << 64) | 4000);
     }
 
     #[test]

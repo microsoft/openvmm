@@ -399,3 +399,43 @@ try_cmpxchg!(pub(crate) try_cmpxchg8, u8, "al", reg_byte, "lock cmpxchg byte ptr
 try_cmpxchg!(pub(crate) try_cmpxchg16, u16, "ax", reg, "lock cmpxchg word ptr [{dest}], {desired:x}");
 try_cmpxchg!(pub(crate) try_cmpxchg32, u32, "eax", reg, "lock cmpxchg dword ptr [{dest}], {desired:e}");
 try_cmpxchg!(pub(crate) try_cmpxchg64, u64, "rax", reg, "lock cmpxchg qword ptr [{dest}], {desired:r}");
+
+/// # Safety
+/// `dest` must be an address that's reserved and can be written to without
+/// violating Rust's aliasing rules.
+pub(crate) unsafe fn try_cmpxchg128(
+    dest: *mut u128,
+    expected: &mut u128,
+    desired: u128,
+) -> Result<bool, Fault> {
+    let low: u64;
+    let high: u64;
+    let result: u64;
+    // SAFETY: caller ensured. Preserve LLVM's reserved RBX in RSI and restore
+    // it on both success and fault recovery (which resumes at label 3).
+    unsafe {
+        core::arch::asm! {
+            "xchg rbx, rsi",
+            "2:",
+            "lock cmpxchg16b [rdi]",
+            "setz cl",
+            "3:",
+            "xchg rbx, rsi",
+            recovery_descriptor!("2b", "3b", "."),
+            in("rdi") dest,
+            inout("rsi") desired as u64 => _,
+            inout("rax") *expected as u64 => low,
+            inout("rdx") (*expected >> 64) as u64 => high,
+            inout("rcx") (desired >> 64) as u64 => result,
+            options(nostack),
+        }
+    }
+    if result as i8 > 0 {
+        Ok(true)
+    } else if result as i8 == 0 {
+        *expected = (u128::from(high) << 64) | u128::from(low);
+        Ok(false)
+    } else {
+        Err(Fault)
+    }
+}

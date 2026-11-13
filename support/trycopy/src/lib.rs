@@ -179,7 +179,7 @@ pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<
 /// Unaligned compare-exchanges are supported where the platform supports them.
 /// Otherwise, they return an error without accessing memory.
 ///
-/// Fails at compile time if the size is not 1, 2, 4, or 8 bytes, or if the type
+/// Fails at compile time if the size is not 1, 2, 4, 8, or 16 bytes, or if the type
 /// is under-aligned.
 ///
 /// # Safety
@@ -191,13 +191,17 @@ pub unsafe fn try_compare_exchange<T: Copy>(
     new: T,
 ) -> Result<Result<T, T>, MemoryError> {
     const {
-        assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
+        assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8 | 16));
         // This `T` must be at least as aligned as the primitive type's natural
         // alignment (which is its size).
         assert!(align_of::<T>() >= size_of::<T>());
     };
-    #[cfg(not(target_arch = "x86_64"))]
-    if !dest.addr().is_multiple_of(size_of::<T>()) {
+    let supports_unaligned = cfg_select! {
+        // cmpxchg16b requires 16-byte alignment.
+        target_arch = "x86_64" => size_of::<T>() <= 8,
+        _ => false,
+    };
+    if !supports_unaligned && !dest.addr().is_multiple_of(size_of::<T>()) {
         return Err(MemoryError {
             offset: 0,
             is_write: true,
@@ -230,6 +234,11 @@ pub unsafe fn try_compare_exchange<T: Copy>(
                 dest.cast(),
                 std::mem::transmute::<&mut T, &mut u64>(&mut current),
                 std::mem::transmute_copy::<T, u64>(&new),
+            ),
+            16 => try_cmpxchg128(
+                dest.cast(),
+                std::mem::transmute::<&mut T, &mut u128>(&mut current),
+                std::mem::transmute_copy::<T, u128>(&new),
             ),
             _ => unreachable!(),
         }
@@ -370,7 +379,6 @@ enum AccessError {
     #[cfg(unix)]
     #[error(transparent)]
     Os(OsAccessError),
-    #[cfg(not(target_arch = "x86_64"))]
     #[error("unaligned {len}-byte atomic access at address {address:#x}")]
     UnalignedAtomicAccess { address: usize, len: usize },
 }
@@ -412,16 +420,9 @@ impl std::fmt::Display for OsAccessError {
 impl MemoryError {
     /// Returns the kind of memory access failure.
     pub fn kind(&self) -> MemoryErrorKind {
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            match self.source {
-                AccessError::UnalignedAtomicAccess { .. } => MemoryErrorKind::UnalignedAtomicAccess,
-                _ => MemoryErrorKind::AccessViolation,
-            }
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            MemoryErrorKind::AccessViolation
+        match self.source {
+            AccessError::UnalignedAtomicAccess { .. } => MemoryErrorKind::UnalignedAtomicAccess,
+            _ => MemoryErrorKind::AccessViolation,
         }
     }
 
@@ -1153,6 +1154,9 @@ mod tests {
             let atomic = try_compare_exchange(guard.cast::<u64>(), 0, 1).unwrap_err();
             assert_eq!(atomic.offset(), 0);
             assert!(atomic.is_write);
+            let atomic = try_compare_exchange(guard.cast::<u128>(), 0, 1).unwrap_err();
+            assert_eq!(atomic.offset(), 0);
+            assert!(atomic.is_write);
         }
     }
 
@@ -1203,13 +1207,23 @@ mod tests {
         check(0x1234u16, 0x5678, 0x9abc);
         check(0x12345678u32, 0x9abcdef0, 0x01234567);
         check(0x0123456789abcdefu64, 0xfedcba9876543210, 0);
+        check(
+            0x0123456789abcdef_fedcba9876543210u128,
+            0x1122334455667788_99aabbccddeeff00,
+            0x1122334455667788_99aabbccddeeff01,
+        );
+        check(
+            0x0123456789abcdef_fedcba9876543210u128,
+            0x1122334455667788_99aabbccddeeff00,
+            0x1122334455667789_99aabbccddeeff00,
+        );
     }
 
     #[test]
     fn test_public_compare_exchange_unaligned() {
         fn check<T: Copy + PartialEq + std::fmt::Debug>(initial: T, new: T) {
             for offset in 1..size_of::<T>() {
-                let mut buffer = [0xa5a5a5a5a5a5a5a5u64; 3];
+                let mut buffer = [u128::from_ne_bytes([0xa5; 16]); 3];
                 let mut expected = buffer;
                 // SAFETY: both ranges are within the exclusively owned buffers.
                 // The raw pointers may be unaligned, but no unaligned references
@@ -1221,8 +1235,18 @@ mod tests {
                     expected_dest.write_unaligned(initial);
 
                     let result = try_compare_exchange(dest, initial, new);
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
+                    let supports_unaligned = cfg_select! {
+                        target_arch = "x86_64" => size_of::<T>() <= 8,
+                        _ => false,
+                    };
+                    if supports_unaligned {
+                        assert_eq!(result.unwrap(), Ok(new));
+                        expected_dest.write_unaligned(new);
+                        assert_eq!(
+                            try_compare_exchange(dest, initial, initial).unwrap(),
+                            Err(new)
+                        );
+                    } else {
                         let error = result.unwrap_err();
                         assert_eq!(error.offset(), 0);
                         assert!(error.is_write);
@@ -1231,15 +1255,6 @@ mod tests {
                             crate::AccessError::UnalignedAtomicAccess { address, len }
                                 if address == dest.addr() && len == size_of::<T>()
                         ));
-                    }
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        assert_eq!(result.unwrap(), Ok(new));
-                        expected_dest.write_unaligned(new);
-                        assert_eq!(
-                            try_compare_exchange(dest, initial, initial).unwrap(),
-                            Err(new)
-                        );
                     }
                     assert_eq!(buffer, expected);
                 }
@@ -1250,6 +1265,10 @@ mod tests {
         check(0x1234u16, 0x5678);
         check(0x12345678u32, 0x9abcdef0);
         check(0x0123456789abcdefu64, 0xfedcba9876543210);
+        check(
+            0x0123456789abcdef_fedcba9876543210u128,
+            0x1122334455667788_99aabbccddeeff00,
+        );
     }
 
     #[derive(Copy, Clone, Debug)]

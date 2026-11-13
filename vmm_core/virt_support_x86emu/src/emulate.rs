@@ -617,8 +617,6 @@ enum Error {
     },
     #[error("failed to access mapped memory")]
     Memory(#[source] GuestMemoryError),
-    #[error("unsupported compare-exchange size ({current} current bytes, {new} new bytes)")]
-    UnsupportedAtomicSize { current: usize, new: usize },
     #[error("compare-exchange spans noncontiguous guest physical pages")]
     NonContiguousAtomicAccess,
 }
@@ -1009,12 +1007,15 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
                         u64::from_ne_bytes(new.try_into().unwrap()),
                     )
                     .map(|r| r.is_ok()),
-                _ => {
-                    return Err(Error::UnsupportedAtomicSize {
-                        current: current.len(),
-                        new: new.len(),
-                    });
-                }
+                (16, 16) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u128::from_ne_bytes(current.try_into().unwrap()),
+                        u128::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                _ => unreachable!("unsupported cmpxchg size"),
             }
             .map_err(Error::Memory)?
         } else {
@@ -1167,9 +1168,7 @@ fn inject_memory_access_fault<T: EmulatorSupport>(result: &Error, support: &mut 
             support.inject_pending_event(event);
             true
         }
-        Error::Memory(_)
-        | Error::UnsupportedAtomicSize { .. }
-        | Error::NonContiguousAtomicAccess => false,
+        Error::Memory(_) | Error::NonContiguousAtomicAccess => false,
     }
 }
 
