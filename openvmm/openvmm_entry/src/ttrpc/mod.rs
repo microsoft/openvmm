@@ -2674,6 +2674,7 @@ async fn build_pcie_topology(
             node,
             root_ports,
             iommu,
+            legacy_pci_config_io,
         } = rc;
         let mut ports = Vec::new();
         for root_port in root_ports {
@@ -2705,7 +2706,7 @@ async fn build_pcie_topology(
         let legacy_pci_config_io = enable_legacy_pci_config_io
             && segment == 0
             && start_bus == 0
-            && end_bus == u32::from(u8::MAX);
+            && legacy_pci_config_io.unwrap_or(end_bus == u32::from(u8::MAX));
         legacy_pci_config_io_for_pcie |= legacy_pci_config_io;
         root_complexes.push(PcieRootComplexConfig {
             index: index as u32,
@@ -4725,6 +4726,33 @@ mod tests {
         assert!(topology.legacy_pci_config_io_for_pcie);
         assert!(topology.root_complexes[0].legacy_pci_config_io);
         assert!(!topology.root_complexes[1].legacy_pci_config_io);
+    }
+
+    #[test]
+    fn pcie_topology_legacy_pci_config_io_override() {
+        let build = |enable, start_bus, end_bus, legacy_pci_config_io| {
+            futures::executor::block_on(build_pcie_topology(
+                vmservice::PcieTopologyConfig {
+                    root_complexes: vec![vmservice::PcieRootComplex {
+                        start_bus,
+                        end_bus,
+                        legacy_pci_config_io,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                &FdRegistry::default(),
+                &IommufdContexts::default(),
+                enable,
+            ))
+            .unwrap()
+            .legacy_pci_config_io_for_pcie
+        };
+
+        assert!(build(true, 0, 7, Some(true)));
+        assert!(!build(true, 0, u8::MAX.into(), Some(false)));
+        assert!(!build(true, 1, 7, Some(true)));
+        assert!(!build(false, 0, 7, Some(true)));
     }
 
     #[test]
