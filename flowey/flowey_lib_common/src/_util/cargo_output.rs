@@ -11,8 +11,15 @@ use std::path::PathBuf;
 pub enum Message {
     #[serde(rename = "compiler-artifact")]
     CompilerArtifact {
+        package_id: String,
         target: Target,
         filenames: Vec<PathBuf>,
+    },
+    #[serde(rename = "build-script-executed")]
+    BuildScriptExecuted {
+        package_id: String,
+        /// The `OUT_DIR` the build script was invoked with.
+        out_dir: PathBuf,
     },
     #[serde(other)]
     Other,
