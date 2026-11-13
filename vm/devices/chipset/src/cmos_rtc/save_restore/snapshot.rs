@@ -8,11 +8,14 @@
 //! A restore keeps each enabled timer's saved deadline, so that its next
 //! interrupt comes at the same VM time as it would have without the
 //! snapshot, and keeps the calendar registers as they were saved. A deadline
-//! that the snapshot's cut passed fires as the RTC starts.
+//! that the snapshot's cut passed fires as the RTC starts. A restore refuses
+//! a guest-visible time outside `CLOCK_TIME_MILLIS`, which the RTC's clock
+//! source cannot hold.
 
 use super::state::SavedState;
 use crate::cmos_rtc::Rtc;
 use crate::cmos_rtc::UPDATE_PERIOD;
+use crate::cmos_rtc::clock::CLOCK_TIME_MILLIS;
 use crate::cmos_rtc::periodic_timer_period;
 use crate::cmos_rtc::spec::CmosReg;
 use crate::cmos_rtc::spec::StatusRegA;
@@ -51,6 +54,12 @@ impl Fields {
         {
             return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                 "inconsistent RTC status C interrupt flags"
+            )));
+        }
+        if !CLOCK_TIME_MILLIS.contains(&state.clock_time_millis) {
+            return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                "RTC clock time of {} ms from the Unix epoch is out of range",
+                state.clock_time_millis
             )));
         }
 

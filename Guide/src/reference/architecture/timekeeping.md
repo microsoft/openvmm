@@ -173,7 +173,10 @@ update deadlines in `VmTime` and the time of the last update cycle, so a
 restore keeps each interrupt's phase and the update-in-progress window.
 A restore rejects a deadline more than its timer's period after the
 restored VM time; a saved state without deadlines arms the enabled
-timers a period after the restore.
+timers a period after the restore. A restore, or the downtime that it
+advances, also rejects a time beyond the calendar's years 0 to 9999 by
+more than the Linux host clock's range of about 292 years, so that the
+`SystemTimeClock` offset cannot overflow.
 
 On Arm, the UEFI time service exposes the supplied local clock through
 `GetTime`/`SetTime`. It retains timezone and daylight fields for readback

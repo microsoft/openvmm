@@ -10,8 +10,11 @@ use super::set_cmos_data;
 use crate::cmos_rtc::Rtc;
 use crate::cmos_rtc::spec::CmosReg;
 use chipset_device::poll_device::PollDevice;
+use local_clock::LocalClockDelta;
+use local_clock::LocalClockTime;
 use local_clock::MockLocalClock;
 use local_clock::MockLocalClockAccessor;
+use local_clock::SystemTimeClock;
 use pal_async::DefaultPool;
 use pal_async::timer::Instant;
 use std::task::Context;
@@ -56,6 +59,42 @@ fn set_vmtime(pool: &mut DefaultPool, keeper: &mut VmTimeKeeper, millis: u64) {
 
 fn poll(rtc: &mut Rtc) {
     rtc.poll_device(&mut Context::from_waker(Waker::noop()));
+}
+
+/// Builds an RTC on the host's clock, as OpenVMM builds it.
+fn new_host_clock_rtc(pool: &mut DefaultPool) -> (VmTimeKeeper, Rtc) {
+    let driver = pool.driver();
+    let keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+    let source = pool.run_until(keeper.builder().build(&driver)).unwrap();
+    let rtc = Rtc::new(
+        Box::new(SystemTimeClock::new(LocalClockDelta::ZERO)),
+        LineInterrupt::detached(),
+        &source,
+        0x32,
+        None,
+        false,
+    );
+    (keeper, rtc)
+}
+
+/// Returns the host's time in milliseconds from the Unix epoch.
+fn host_millis() -> i64 {
+    LocalClockTime::from(std::time::SystemTime::now()).as_millis_since_unix_epoch()
+}
+
+/// Returns the first and the last guest-visible time, in milliseconds from
+/// the Unix epoch, that an RTC restores or advances to: the times that the
+/// guest can write to the calendar registers, from 0000-01-01T00:00:00Z to
+/// the last whole second that jiff represents in UTC, widened on both sides
+/// by the range of the Linux host clock, `KTIME_SEC_MAX` seconds.
+fn clock_time_range() -> (i64, i64) {
+    const KTIME_SEC_MAX: i64 = i64::MAX / 1_000_000_000;
+    let first: jiff::Timestamp = "0000-01-01T00:00:00Z".parse().unwrap();
+    let last: jiff::Timestamp = "9999-12-30T22:00:00Z".parse().unwrap();
+    (
+        first.as_millisecond() - KTIME_SEC_MAX * 1000,
+        last.as_millisecond() + KTIME_SEC_MAX * 1000,
+    )
 }
 
 #[test]
@@ -341,5 +380,145 @@ fn restore_rejects_a_deadline_beyond_its_period_before_mutating_state() {
 
         // A deadline a whole period ahead is valid.
         rtc.restore(at_limit).unwrap();
+    }
+}
+
+#[test]
+fn restore_rejects_a_clock_time_out_of_range_before_mutating_state() {
+    use vmcore::save_restore::RestoreError;
+
+    let (first, last) = clock_time_range();
+    for millis in [i64::MIN, first - 1, last + 1, i64::MAX] {
+        let (mut pool, _keeper, clock, mut rtc) = new_test_rtc();
+        pool.run_until(rtc.stop());
+        let before = rtc.save().unwrap();
+        let mut invalid = rtc.save().unwrap();
+        invalid.clock_time_millis = millis;
+
+        match rtc.restore(invalid).unwrap_err() {
+            RestoreError::InvalidSavedState(error) => {
+                assert!(error.to_string().starts_with("RTC clock time "), "{error}")
+            }
+            error => panic!("unexpected restore error: {error}"),
+        }
+        let after = rtc.save().unwrap();
+        assert_eq!(after.clock_time_millis, before.clock_time_millis);
+        assert_eq!(after.cmos, before.cmos);
+        assert_eq!(after.time_valid, before.time_valid);
+        // The RTC starts with the time that it held before the restore.
+        rtc.start();
+        assert_eq!(
+            clock.get_time().as_millis_since_unix_epoch(),
+            before.clock_time_millis
+        );
+    }
+
+    // The ends of the range restore, and reach the clock as the RTC starts.
+    for millis in [first, last] {
+        let (mut pool, _keeper, clock, mut rtc) = new_test_rtc();
+        pool.run_until(rtc.stop());
+        let mut saved = rtc.save().unwrap();
+        saved.clock_time_millis = millis;
+        rtc.restore(saved).unwrap();
+        rtc.start();
+        assert_eq!(clock.get_time().as_millis_since_unix_epoch(), millis);
+    }
+}
+
+#[test]
+fn restore_bounds_the_clock_time_on_the_host_clock() {
+    use vmcore::save_restore::RestoreError;
+
+    // The host's clock keeps the guest-visible time as an offset from the
+    // host's time, which a time near either end of `i64` overflows.
+    let (first, last) = clock_time_range();
+    let mut pool = DefaultPool::new();
+    let (_keeper, mut rtc) = new_host_clock_rtc(&mut pool);
+    for millis in [i64::MIN, i64::MAX] {
+        pool.run_until(rtc.stop());
+        let mut invalid = rtc.save().unwrap();
+        invalid.clock_time_millis = millis;
+        assert!(matches!(
+            rtc.restore(invalid),
+            Err(RestoreError::InvalidSavedState(_))
+        ));
+        rtc.start();
+        let before = host_millis();
+        let read = rtc.save().unwrap().clock_time_millis;
+        assert!((before..=host_millis()).contains(&read), "{read}");
+    }
+
+    // The clock holds and runs from either end of the range.
+    for millis in [first, last] {
+        pool.run_until(rtc.stop());
+        let mut saved = rtc.save().unwrap();
+        saved.clock_time_millis = millis;
+        let before = host_millis();
+        rtc.restore(saved).unwrap();
+        rtc.start();
+        let read = rtc.save().unwrap().clock_time_millis;
+        assert!(
+            (millis..=millis + (host_millis() - before)).contains(&read),
+            "{read}"
+        );
+    }
+}
+
+#[test]
+fn advance_time_rejects_a_time_out_of_range_before_mutating_state() {
+    let (_, last) = clock_time_range();
+    for stopped in [false, true] {
+        let (mut pool, _keeper, clock, mut rtc) = new_test_rtc();
+        if stopped {
+            pool.run_until(rtc.stop());
+        }
+        let now = clock.get_time().as_millis_since_unix_epoch();
+        let before = rtc.save().unwrap();
+        // A downtime past the end of the range fails and leaves the time as it
+        // was, even when the advanced time fits in an `i64`.
+        for downtime in [i64::MAX - now - 2, last - now + 1] {
+            assert!(
+                pool.run_until(rtc.advance_time(Duration::from_millis(downtime as u64)))
+                    .is_err()
+            );
+            let after = rtc.save().unwrap();
+            assert_eq!(after.clock_time_millis, now);
+            assert_eq!(after.cmos, before.cmos);
+        }
+        if stopped {
+            rtc.start();
+            assert_eq!(clock.get_time().as_millis_since_unix_epoch(), now);
+            pool.run_until(rtc.stop());
+        }
+
+        // A downtime to the end of the range advances the time to it, and no
+        // further.
+        pool.run_until(rtc.advance_time(Duration::from_millis((last - now) as u64)))
+            .unwrap();
+        assert!(
+            pool.run_until(rtc.advance_time(Duration::from_millis(1)))
+                .is_err()
+        );
+        rtc.start();
+        assert_eq!(clock.get_time().as_millis_since_unix_epoch(), last);
+    }
+}
+
+#[test]
+fn advance_time_bounds_the_clock_time_on_the_host_clock() {
+    // A downtime that leaves the host's clock a second short of the end of
+    // `i64` overflows the clock's next read after that second.
+    let mut pool = DefaultPool::new();
+    let (_keeper, mut rtc) = new_host_clock_rtc(&mut pool);
+    for stopped in [false, true] {
+        if stopped {
+            pool.run_until(rtc.stop());
+        }
+        let before = host_millis();
+        let downtime = Duration::from_millis((i64::MAX - before - 1000) as u64);
+        assert!(pool.run_until(rtc.advance_time(downtime)).is_err());
+        rtc.start();
+        let read = rtc.save().unwrap().clock_time_millis;
+        assert!((before..=host_millis()).contains(&read), "{read}");
     }
 }

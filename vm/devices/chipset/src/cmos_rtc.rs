@@ -958,7 +958,10 @@ mod save_restore {
             pub addr: u8,
             #[mesh(2)]
             pub cmos: [u8; 256],
-            /// Guest-visible RTC time at the stopped snapshot boundary.
+            /// Guest-visible RTC time at the stopped snapshot boundary, in
+            /// milliseconds from the Unix epoch. A restore refuses a time
+            /// that the RTC's clock source cannot hold: one outside the
+            /// guest's calendar range, widened by the Linux host clock's.
             #[mesh(3)]
             pub clock_time_millis: i64,
             /// Whether the latched calendar sample is valid.

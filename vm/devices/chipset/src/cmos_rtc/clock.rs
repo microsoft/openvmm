@@ -25,11 +25,26 @@ use anyhow::Context;
 use inspect::Inspect;
 use local_clock::InspectableLocalClock;
 use local_clock::LocalClockTime;
+use std::ops::RangeInclusive;
 use std::time::Duration;
 use vmcore::line_interrupt::LineInterrupt;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeSource;
 use vmcore::vmtime::VmTimerPeriodic;
+
+/// The guest-visible UTC times, in milliseconds from the Unix epoch, that a
+/// restore or an advance sets: the times that the guest can write to the
+/// calendar registers, from 0000-01-01T00:00:00Z to 9999-12-30T22:00:00Z, the
+/// last whole second that jiff represents in UTC, widened on both sides by the
+/// range of the Linux host clock, `KTIME_SEC_MAX` seconds, over which the
+/// guest's time runs with the host's. A clock source that keeps the
+/// guest-visible time as an offset from the host's time cannot overflow that
+/// offset for a time in this range, as it can for one near either end of
+/// `i64`.
+pub(super) const CLOCK_TIME_MILLIS: RangeInclusive<i64> = {
+    const HOST_CLOCK_MILLIS: i64 = i64::MAX / 1_000_000_000 * 1000;
+    -62_167_219_200_000 - HOST_CLOCK_MILLIS..=253_402_207_200_000 + HOST_CLOCK_MILLIS
+};
 
 /// A fallible UTC clock source for the RTC.
 pub trait UtcClockSource: Inspect + Send {
@@ -193,7 +208,8 @@ impl Rtc {
         }
     }
 
-    /// Advances the guest-visible UTC time by `duration`.
+    /// Advances the guest-visible UTC time by `duration`, failing without
+    /// changing it if the advanced time is outside [`CLOCK_TIME_MILLIS`].
     pub(super) fn advance_clock(&mut self, duration: Duration) -> anyhow::Result<()> {
         let delta = i64::try_from(duration.as_millis())
             .context("RTC downtime does not fit in milliseconds")?;
@@ -208,7 +224,8 @@ impl Rtc {
             current
                 .as_millis_since_unix_epoch()
                 .checked_add(delta)
-                .context("RTC time overflow while applying snapshot downtime")?,
+                .filter(|advanced| CLOCK_TIME_MILLIS.contains(advanced))
+                .context("RTC time out of range after applying snapshot downtime")?,
         );
         match &mut self.held {
             // VM time advances by the same downtime before the RTC does, so
