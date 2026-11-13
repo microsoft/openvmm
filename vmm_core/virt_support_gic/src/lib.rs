@@ -1101,7 +1101,9 @@ mod gicd {
                 {
                     let n = (r.0 & 0x7f) / 4;
                     let state = self.state.lock();
-                    let mut pending = state.pending.get(n as usize).copied().unwrap_or(0);
+                    // Include software and edge requests transferred to an LR.
+                    let mut pending = state.pending.get(n as usize).copied().unwrap_or(0)
+                        | state.lr_pending_latch.get(n as usize).copied().unwrap_or(0);
                     let mut asserted = state.asserted.get(n as usize).copied().unwrap_or(0);
                     // Pending readback includes live level-sensitive lines,
                     // independently of whether interrupt delivery is enabled.
