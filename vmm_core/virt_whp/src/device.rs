@@ -9,6 +9,7 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::pci::PciConfigSpace;
 use hv1_hypercall::HvInterruptParameters;
 use hvdef::Vtl;
@@ -444,6 +445,7 @@ impl AssignedPciDevice {
                 .device()
                 .unmap_mmio()
                 .expect("unmap should not fail");
+            self.mmio_enabled = false;
         }
     }
 }
@@ -454,7 +456,16 @@ impl ChangeDeviceState for AssignedPciDevice {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        // TODO
+        // Clear the command register, which turns MMIO off, then return the
+        // power state and BARs to their initial values.
+        let _ = self.pci_cfg_write(
+            cfg_space::HeaderType00::STATUS_COMMAND.0,
+            ByteEnabledDwordWrite::new(0, PciConfigByteEnable::LOW_WORD),
+        );
+        if self.power_state != 3 {
+            self.set_power_state(3);
+        }
+        self.bars = [0; 6];
     }
 }
 
