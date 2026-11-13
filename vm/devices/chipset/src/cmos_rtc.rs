@@ -865,11 +865,13 @@ impl PortIoIntercept for Rtc {
         // We assume all accesses are one byte in size. Attempts to
         // access larger sizes will return a single byte of information
         // (zero-extended to the size of the access).
-        data[0] = match RtcIoPort(io_port) {
+        let value = match RtcIoPort(io_port) {
             RtcIoPort::ADDR => self.state.addr,
             RtcIoPort::DATA => self.get_cmos_byte(self.state.addr),
             _ => return IoResult::Err(IoError::InvalidRegister),
         };
+        data.fill(0);
+        data[0] = value;
 
         IoResult::Ok
     }
@@ -1422,6 +1424,24 @@ mod tests {
                 get_cmos_data(&mut rtc, CmosReg::STATUS_D),
                 default_state.cmos[CmosReg::STATUS_D]
             );
+        }
+    }
+
+    #[test]
+    fn wide_reads_are_zero_extended() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+        set_cmos_data(&mut rtc, CmosReg(0x40), 0x5a);
+
+        // The buffer starts with stale bytes, as a backend's reused I/O buffer
+        // or the guest's register can provide.
+        for len in [2, 4] {
+            for (port, value) in [(RtcIoPort::ADDR.0, 0x40), (RtcIoPort::DATA.0, 0x5a)] {
+                let mut data = vec![0xa5; len];
+                rtc.io_read(port, &mut data).unwrap();
+                let mut expected = vec![0; len];
+                expected[0] = value;
+                assert_eq!(data, expected, "port {port:#x}, {len} bytes");
+            }
         }
     }
 
