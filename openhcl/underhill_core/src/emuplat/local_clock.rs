@@ -35,26 +35,24 @@ impl std::fmt::Debug for UnderhillLocalClock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
             store: _,
-            host_time,
+            host_time: _,
             offset_from_host_time,
         } = self;
 
         f.debug_struct("UnderhillLocalClock")
-            .field("host_time", host_time)
             .field("offset_from_host_time", offset_from_host_time)
             .finish()
     }
 }
 
 impl UnderhillLocalClock {
-    /// Create a new [`UnderhillLocalClock`]. Resolves immediately if provided
-    /// with `saved_state`.
+    /// Create a new [`UnderhillLocalClock`].
     pub async fn new(
         get: guest_emulation_transport::GuestEmulationTransportClient,
         store: Box<dyn NonVolatileStore>,
         saved_state: Option<<Self as SaveRestore>::SavedState>,
     ) -> anyhow::Result<Self> {
-        let host_time = HostSystemTimeAccess::new(get);
+        let host_time = HostSystemTimeAccess::new(get).await;
 
         let mut this = Self {
             store,
@@ -145,18 +143,28 @@ impl LocalClock for UnderhillLocalClock {
 }
 
 mod host_time {
+    use futures::FutureExt;
+    use guest_emulation_transport::api::Time;
     use inspect::Inspect;
     use jiff::Zoned;
     use parking_lot::Mutex;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::time::Duration;
     use std::time::Instant;
 
     /// Encapsulates all the nitty-gritty details of how real time gets fetched
     /// from the Host.
-    #[derive(Debug)]
     pub struct HostSystemTimeAccess {
         get: guest_emulation_transport::GuestEmulationTransportClient,
-        cached_host_time: Mutex<Option<(Instant, Zoned)>>,
+        cached_host_time: Mutex<CachedHostTime>,
+    }
+
+    struct CachedHostTime {
+        last_query: Instant,
+        time: Zoned,
+        /// An outstanding query, and when it was sent.
+        refresh: Option<(Instant, Pin<Box<dyn Future<Output = Time> + Send>>)>,
     }
 
     impl Inspect for HostSystemTimeAccess {
@@ -166,22 +174,29 @@ mod host_time {
                 cached_host_time,
             } = self;
 
-            let mut res = req.respond();
-
-            if let Some((last_query, ref cached_time)) = *cached_host_time.lock() {
-                res.display_debug("since_last_query", &(Instant::now() - last_query))
-                    .display("cached_time", cached_time);
-            }
+            let cached_host_time = cached_host_time.lock();
+            req.respond()
+                .display_debug(
+                    "since_last_query",
+                    &(Instant::now() - cached_host_time.last_query),
+                )
+                .display("cached_time", &cached_host_time.time);
         }
     }
 
     impl HostSystemTimeAccess {
-        pub fn new(
+        pub async fn new(
             get: guest_emulation_transport::GuestEmulationTransportClient,
         ) -> HostSystemTimeAccess {
+            let last_query = Instant::now();
+            let time = get.host_time().await.to_jiff();
             HostSystemTimeAccess {
                 get,
-                cached_host_time: Mutex::new(None),
+                cached_host_time: Mutex::new(CachedHostTime {
+                    last_query,
+                    time,
+                    refresh: None,
+                }),
             }
         }
 
@@ -198,25 +213,67 @@ mod host_time {
             // query).
             //
             // ...but this is fine for now.
+            //
+            // This is called on the VP thread, so don't wait for the host to
+            // respond. Until it does, keep advancing the previous host time.
             let now = Instant::now();
             let mut cached_host_time = self.cached_host_time.lock();
+            let cached_host_time = &mut *cached_host_time;
 
-            match &*cached_host_time {
-                Some((last_query, cached_time))
-                    if now.duration_since(*last_query) < Duration::from_secs(1) =>
-                {
-                    cached_time.clone()
-                }
-                _ => {
-                    // TODO: this block_on really ain't great, but since we're
-                    // not hammering the GET on _each_ access, it's okay for now...
-                    let new_time =
-                        pal_async::local::block_with_io(|_| self.get.host_time()).to_jiff();
-                    let result = new_time.clone();
-                    *cached_host_time = Some((now, new_time));
-                    result
-                }
+            if cached_host_time.refresh.is_none()
+                && now.duration_since(cached_host_time.last_query) >= Duration::from_secs(1)
+            {
+                let get = self.get.clone();
+                cached_host_time.refresh =
+                    Some((now, Box::pin(async move { get.host_time().await })));
             }
+
+            if let Some((sent, refresh)) = &mut cached_host_time.refresh
+                && let Some(time) = refresh.now_or_never()
+            {
+                cached_host_time.last_query = *sent;
+                cached_host_time.time = time.to_jiff();
+                cached_host_time.refresh = None;
+            }
+
+            &cached_host_time.time + now.duration_since(cached_host_time.last_query)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use pal_async::DefaultDriver;
+        use pal_async::async_test;
+        use pal_async::timer::PolledTimer;
+        use test_with_tracing::test;
+
+        #[async_test]
+        async fn stale_time_does_not_wait_for_host(driver: DefaultDriver) {
+            let get = guest_emulation_transport::test_utilities::new_transport_pair(
+                driver.clone(),
+                None,
+                get_protocol::ProtocolVersion::NICKEL_REV2,
+                None,
+                None,
+            )
+            .await;
+            let host_time = HostSystemTimeAccess::new(get.client.clone()).await;
+            let initial = host_time.cached_host_time.lock().time.clone();
+
+            // The host is served by this thread, so it can't respond until the
+            // test yields.
+            host_time.cached_host_time.lock().last_query -= Duration::from_secs(10);
+            assert!(host_time.now() >= &initial + Duration::from_secs(10));
+            assert!(host_time.cached_host_time.lock().refresh.is_some());
+
+            let mut timer = PolledTimer::new(&driver);
+            while host_time.cached_host_time.lock().refresh.is_some() {
+                timer.sleep(Duration::from_millis(10)).await;
+                host_time.now();
+            }
+            // The reply replaces the advanced time.
+            assert!(host_time.now() < &initial + Duration::from_secs(10));
         }
     }
 }
