@@ -188,6 +188,7 @@ fn run_iteration(
         snapshot_tier: String::new(),
         restore_policy: String::new(),
         consumed_config_sections: 0,
+        snapshot_id: guid::Guid::ZERO,
     };
 
     let started = Instant::now();

@@ -358,6 +358,8 @@ impl VmController {
                     }
                     None => 0,
                 },
+                // A microVM capture records no snapshot ID.
+                snapshot_id: guid::Guid::ZERO,
             };
             let saved_state_bytes = mesh::payload::encode(response.saved_state);
             let memory_file = self
