@@ -106,6 +106,11 @@ mod spec {
         _reserved2: u32,
     }
 
+    impl IoApicId {
+        /// The largest value of the 4-bit id field.
+        pub const MAX_ID: u8 = 0xf;
+    }
+
     #[bitfield(u32)]
     pub struct IoApicVersion {
         pub version: u8,
@@ -406,6 +411,7 @@ impl ChipsetDevice for IoApicDevice {
 mod save_restore {
     use super::IoApicDevice;
     use super::spec::IndexRegister;
+    use super::spec::IoApicId;
     use super::spec::RedirectionEntry;
     use thiserror::Error;
     use vmcore::save_restore::RestoreError;
@@ -439,6 +445,10 @@ mod save_restore {
     #[error("wrong number of line levels")]
     struct WrongNumberOfLineLevels;
 
+    #[derive(Error, Debug)]
+    #[error("IOAPIC id {0} does not fit the 4-bit id field of the ID register")]
+    struct IdOutOfRange(u8);
+
     impl SaveRestore for IoApicDevice {
         type SavedState = state::SavedState;
 
@@ -467,6 +477,11 @@ mod save_restore {
                 id,
                 index,
             } = state;
+            // Reading the ID register builds its id field, which panics on an
+            // id of more than 4 bits.
+            if id > IoApicId::MAX_ID {
+                return Err(RestoreError::InvalidSavedState(IdOutOfRange(id).into()));
+            }
             if redirection_entries.len() != self.irqs.len() {
                 return Err(RestoreError::Other(WrongNumberOfRedirectionEntries.into()));
             }
@@ -498,8 +513,12 @@ mod save_restore {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::ioapic::IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS;
+        use crate::ioapic::spec::Register;
         use chipset_device::interrupt::HandleEoi;
         use chipset_device::interrupt::LineInterruptTarget;
+        use chipset_device::io::IoResult;
+        use chipset_device::mmio::MmioIntercept;
         use chipset_resources::ioapic::IOAPIC_NUM_ENTRIES;
         use chipset_resources::ioapic::IoApicRouting;
         use parking_lot::Mutex;
@@ -541,6 +560,33 @@ mod save_restore {
                 .with_trigger_mode_level(level)
                 .with_masked(masked);
             device.write_redirection_register(IRQ * 2, u64::from(entry) as u32);
+        }
+
+        fn select_id_register(device: &mut IoApicDevice) {
+            let index = IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS + Register::INDEX.0;
+            assert!(matches!(
+                device.mmio_write(index, &[IndexRegister::ID.0]),
+                IoResult::Ok
+            ));
+        }
+
+        // Writes the ID register as a guest does: selects it through the index
+        // register, then writes the data register.
+        fn write_id_register(device: &mut IoApicDevice, value: u32) {
+            select_id_register(device);
+            let data = IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS + Register::DATA.0;
+            assert!(matches!(
+                device.mmio_write(data, &value.to_ne_bytes()),
+                IoResult::Ok
+            ));
+        }
+
+        fn read_id_register(device: &mut IoApicDevice) -> u32 {
+            select_id_register(device);
+            let data = IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS + Register::DATA.0;
+            let mut value = [0; 4];
+            assert!(matches!(device.mmio_read(data, &mut value), IoResult::Ok));
+            u32::from_ne_bytes(value)
         }
 
         #[test]
@@ -661,6 +707,50 @@ mod save_restore {
             assert_eq!(after.redirection_entries, before.redirection_entries);
             assert_eq!(after.line_levels, before.line_levels);
             assert!(routing.assertions.lock().is_empty());
+        }
+
+        #[test]
+        fn restore_rejects_an_id_wider_than_the_id_register() {
+            let (mut source, _) = device();
+            set_entry(&mut source, true, false);
+            let state = source.save().expect("save succeeds");
+
+            let (mut restored, routing) = device();
+            write_id_register(&mut restored, 5 << 24);
+            let before = mesh::payload::encode(restored.save().expect("save succeeds"));
+            let routes = routing.routes.lock().clone();
+
+            // The ID register's id field has 4 bits, so 0x10 is the first id
+            // that it cannot hold.
+            for id in [0x10, 0x80, u8::MAX] {
+                let mut invalid = state.clone();
+                invalid.id = id;
+                invalid.index = IndexRegister::VERSION.0;
+                let error = restored.restore(invalid).expect_err("restore must fail");
+
+                assert!(matches!(error, RestoreError::InvalidSavedState(_)));
+                assert_eq!(
+                    mesh::payload::encode(restored.save().expect("save succeeds")),
+                    before
+                );
+                assert_eq!(*routing.routes.lock(), routes);
+                assert_eq!(read_id_register(&mut restored), 5 << 24);
+            }
+        }
+
+        #[test]
+        fn restore_accepts_every_id_that_the_guest_can_write() {
+            for id in 0..=0xf {
+                // Only bits 27:24 of the written value reach the id field.
+                let (mut source, _) = device();
+                write_id_register(&mut source, (u32::from(id) << 24) | 0xf0ff_ffff);
+                let state = source.save().expect("save succeeds");
+                assert_eq!(state.id, id);
+
+                let (mut restored, _) = device();
+                restored.restore(state).expect("restore succeeds");
+                assert_eq!(read_id_register(&mut restored), u32::from(id) << 24);
+            }
         }
 
         #[test]
