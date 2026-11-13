@@ -79,6 +79,9 @@ pub trait CreateMemoryAccess: 'static + Send + Sync {
 /// The size of the MMIO region required for each VPCI device.
 pub const VPCI_RELAY_MMIO_PER_DEVICE: u64 = vpci_client::MMIO_SIZE;
 
+/// The number of pages in the VMBus ring the relay allocates for each device.
+pub const VPCI_RELAY_RING_PAGES: u16 = 20;
+
 /// Size and alignment of the window the mocked TDISP flow programs into a
 /// device BAR so that it can reach the device's registers. Only reserved when
 /// that flow is enabled, and large enough for the BARs the emulated test
@@ -316,10 +319,10 @@ impl VpciRelay {
         Some((MemoryRange::new(mmio_range.start()..base), base))
     }
 
-    /// Adds an allowed device to the list. If one of the hardware ID is `!0`
-    /// then it is treated as a wildcard.
+    /// Adds an allowed device to the list. A field that is `None` matches any
+    /// value.
     ///
-    /// Note that if no devices are on the list, then all devices are allowed.
+    /// Note that if no devices are on the list, then no devices are allowed.
     pub fn add_allowed_device(&mut self, dev: AllowedDevice) {
         self.allowed_devices.push(dev);
     }
@@ -354,14 +357,13 @@ impl VpciRelay {
         chipset: &ChipsetDevices,
         units: &mut StateUnits,
     ) -> anyhow::Result<()> {
-        let mut i = 0;
-        while i < self.devices.len() {
-            if self.devices[i].ready_to_remove {
-                let dev = self.devices.remove(i);
-                dev.remove().await;
-            } else {
-                i += 1;
-            }
+        let removed: Vec<_> = self
+            .devices
+            .iter()
+            .filter_map(|(key, dev)| dev.ready_to_remove.then_some(key))
+            .collect();
+        for key in removed {
+            self.devices.remove(key).remove().await;
         }
         while let Some(bus) = self.new_buses.pop() {
             self.relay_vpci_bus(chipset, units, bus).await?;
@@ -375,12 +377,12 @@ impl VpciRelay {
         state_units: &mut StateUnits,
         offer_info: vmbus_client::OfferInfo,
     ) -> anyhow::Result<()> {
+        let instance_id = offer_info.offer.instance_id;
         let entry = self.devices.vacant_entry();
         if (entry.key() as u64 + 1) * vpci_client::MMIO_SIZE > self.mmio_range.len() {
-            anyhow::bail!("not enough MMIO space left");
+            tracelimit::warn_ratelimited!(%instance_id, "too many VPCI devices, rejecting offer");
+            return Ok(());
         }
-
-        let instance_id = offer_info.offer.instance_id;
 
         let mmio = self.mmio_access.create_memory_access(
             self.mmio_range.start() + (entry.key() as u64) * vpci_client::MMIO_SIZE,
@@ -390,8 +392,8 @@ impl VpciRelay {
             self.driver_source.simple(),
             offer_info,
             OpenParams {
-                ring_pages: 20,
-                ring_offset_in_pages: 10,
+                ring_pages: VPCI_RELAY_RING_PAGES,
+                ring_offset_in_pages: VPCI_RELAY_RING_PAGES / 2,
             },
             self.dma_client.as_ref(),
         )
@@ -410,9 +412,7 @@ impl VpciRelay {
 
         let hw_ids = vpci_device.hw_ids();
 
-        if !self.allowed_devices.is_empty()
-            && !self.allowed_devices.iter().any(|d| d.allows(hw_ids))
-        {
+        if !self.allowed_devices.iter().any(|d| d.allows(hw_ids)) {
             let prog_if = hw_ids.prog_if;
             let sub_class = hw_ids.sub_class;
             let base_class = hw_ids.base_class;

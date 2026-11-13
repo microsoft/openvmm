@@ -74,6 +74,48 @@ Only files corresponding to platforms present in the manifest are emitted.
 The `.idblock` file is the SNP signing payload used by the production signing
 mode described below.
 
+### PCI device policy
+
+OpenHCL's VPCI relay offers the guest only the PCI devices that the image
+allows. An `openhcl` image in the manifest names a device policy file with
+`device_policy`, relative to the manifest:
+
+```json
+"openhcl": {
+    "device_policy": "policies/azure.toml",
+    ...
+}
+```
+
+`igvmfilegen` stores the allowed devices in the measured product policy file
+in the OpenHCL initrd, so the launch measurement covers them. Without a device
+policy, the relay allows no devices.
+
+A device policy names a device catalog, relative to the policy file, and the
+devices it allows. `"*"` allows every device.
+
+```toml
+devices = "devices.toml"
+allowed_pci_devices = ["nvme", "mana"]
+```
+
+The catalog defines each device once. A field that is left out matches any
+value, but a device that a policy allows must set at least one of
+`vendor_id`, `device_id`, `revision_id`, `base_class`, `sub_class`, `prog_if`,
+`sub_vendor_id`, and `sub_system_id`:
+
+```toml
+[nvme]
+base_class = 0x01
+sub_class  = 0x08
+prog_if    = 0x02
+```
+
+Unknown device names or fields fail the build. Most in-tree OpenHCL manifests
+use `vm/loader/manifests/policies/azure.toml`, which allows NVMe, MANA, and the
+Azure Integrated HSM. The SIVM manifests use `sivm.toml`, which also allows a
+GPU.
+
 ## Inspect an IGVM
 
 Dump headers and directives in a human-readable form:

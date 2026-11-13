@@ -1,0 +1,29 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Named PCI devices that the device policies in this folder can allow. Each
+# table defines one device; a field that is left out matches any value.
+
+[nvme]                            # any vendor's NVMe controller
+base_class = 0x01
+sub_class  = 0x08
+prog_if    = 0x02
+
+[mana]                            # Microsoft Azure Network Adapter
+vendor_id  = 0x1414
+device_id  = 0x00ba
+base_class = 0x02
+sub_class  = 0x00
+prog_if    = 0x00
+
+[azure-integrated-hsm]            # Azure Integrated HSM
+vendor_id  = 0x1414
+device_id  = 0xc003
+base_class = 0x10
+sub_class  = 0x00
+prog_if    = 0x00
+
+[nvidia-gpu]                      # NVIDIA GPU 10de:2704 rev a1
+vendor_id   = 0x10de
+device_id   = 0x2704
+revision_id = 0xa1

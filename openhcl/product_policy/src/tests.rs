@@ -27,9 +27,35 @@ fn product_policy_name_returns_variant_tag() {
 #[test]
 fn encode_decode_round_trip_nontrivial_sivm() {
     let policy = ProductPolicy::Sivm(sample_sivm_policy());
-    let bytes = encode_product_policy(&policy);
+    let bytes = encode_product_policy(Some(&policy), &[]);
+    // The encoding is measured, so it must stay the same without devices.
+    assert_eq!(
+        bytes,
+        [
+            0x08, 0x80, 0x98, 0xbd, 0x82, 0xc5, 0xe9, 0x90, 0xa4, 0x4f, 0x12, 0x12, 0x0a, 0x10,
+            0x0a, 0x0e, 0x08, 0x01, 0x10, 0x01, 0x18, 0x01, 0x20, 0x01, 0x2a, 0x04, 0xde, 0xad,
+            0xbe, 0xef,
+        ]
+    );
     let decoded = decode_product_policy(&bytes).unwrap();
-    assert_eq!(decoded, policy);
+    assert_eq!(decoded, MeasuredProductPolicy::new(Some(policy)));
+}
+
+#[test]
+fn encode_decode_round_trip_devices() {
+    let devices = vec![AllowedPciDevice {
+        vendor_id: Some(0x10de),
+        prog_if: Some(0),
+        ..Default::default()
+    }];
+    for policy in [None, Some(ProductPolicy::Sivm(sample_sivm_policy()))] {
+        let bytes = encode_product_policy(policy.as_ref(), &devices);
+        let decoded = decode_product_policy(&bytes).unwrap();
+        assert_eq!(
+            (decoded.raw(), decoded.allowed_pci_devices()),
+            (policy.as_ref(), &devices[..])
+        );
+    }
 }
 
 #[test]
@@ -44,7 +70,7 @@ fn decode_rejects_garbage() {
 #[test]
 fn decode_rejects_truncated() {
     let policy = ProductPolicy::Sivm(sample_sivm_policy());
-    let mut bytes = encode_product_policy(&policy);
+    let mut bytes = encode_product_policy(Some(&policy), &[]);
     bytes.pop();
     assert!(matches!(
         decode_product_policy(&bytes),
@@ -57,7 +83,8 @@ fn decode_rejects_bad_magic() {
     // A well-formed wrapper whose magic header does not match.
     let internal = ProductPolicyInternal {
         magic: 0,
-        policy: ProductPolicy::Sivm(sample_sivm_policy()),
+        policy: Some(ProductPolicy::Sivm(sample_sivm_policy())),
+        allowed_pci_devices: vec![],
     };
     let bytes = mesh_protobuf::encode(internal);
     assert!(matches!(

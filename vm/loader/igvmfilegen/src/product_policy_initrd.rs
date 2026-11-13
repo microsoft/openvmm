@@ -1,32 +1,39 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Append measured product policy to the OpenHCL initrd.
+//! Append measured product policy and allowed PCI devices to the OpenHCL initrd.
 
 use anyhow::Context as _;
 use product_policy::ProductPolicy;
 
-pub fn append(initrd: &mut Vec<u8>, policy: &ProductPolicy) -> anyhow::Result<()> {
+pub fn append(
+    initrd: &mut Vec<u8>,
+    policy: Option<&ProductPolicy>,
+    device_policy: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    let devices = device_policy.map_or(Ok(Vec::new()), load_devices)?;
     let (require_secure_boot, require_vars, require_bcd, custom_uefi_json) = match policy {
-        ProductPolicy::Sivm(p) => (
+        Some(ProductPolicy::Sivm(p)) => (
             p.require_secure_boot,
             p.require_secure_boot_vars,
             p.require_bcd_integrity,
             &p.custom_uefi_json,
         ),
-        ProductPolicy::Cwcow(p) => (
+        Some(ProductPolicy::Cwcow(p)) => (
             p.require_secure_boot,
             p.require_secure_boot_vars,
             p.require_bcd_integrity,
             &p.custom_uefi_json,
         ),
+        None if device_policy.is_none() => return Ok(()),
+        None => (false, false, false, &Vec::new()),
     };
     anyhow::ensure!(
         !(require_secure_boot && (require_vars || require_bcd) && custom_uefi_json.is_empty()),
         "product policy requires non-empty custom_uefi_json"
     );
 
-    let bytes = product_policy::encode_product_policy(policy);
+    let bytes = product_policy::encode_product_policy(policy, &devices);
     initrd_cpio::append_to_initrd(
         initrd,
         product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/'),
@@ -34,6 +41,31 @@ pub fn append(initrd: &mut Vec<u8>, policy: &ProductPolicy) -> anyhow::Result<()
         0o100400,
     )
     .context("failed to append product policy to OpenHCL initrd")
+}
+
+/// Loads the devices that a device policy (see `vm/loader/manifests/policies`)
+/// allows; `"*"` allows every device.
+fn load_devices(path: &std::path::Path) -> anyhow::Result<Vec<product_policy::AllowedPciDevice>> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Policy {
+        devices: std::path::PathBuf,
+        allowed_pci_devices: Vec<String>,
+    }
+    let policy: Policy = toml_edit::de::from_str(&fs_err::read_to_string(path)?)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    let devices_path = path.with_file_name(&policy.devices);
+    let devices: std::collections::BTreeMap<String, product_policy::AllowedPciDevice> =
+        toml_edit::de::from_str(&fs_err::read_to_string(&devices_path)?)
+            .with_context(|| format!("parsing {}", devices_path.display()))?;
+    // An entry with no IDs matches every device; only "*" may produce one.
+    let any = product_policy::AllowedPciDevice::default();
+    let device = |name: &String| match devices.get(name) {
+        _ if name == "*" => Ok(any.clone()),
+        Some(device) if *device != any => Ok(device.clone()),
+        _ => anyhow::bail!("{name:?} isn't defined or sets no IDs in {devices_path:?}"),
+    };
+    policy.allowed_pci_devices.iter().map(device).collect()
 }
 
 #[cfg(test)]
@@ -82,7 +114,7 @@ mod tests {
         initrd_cpio::append_to_initrd(&mut initrd, "init", b"existing init", 0o100400).unwrap();
         initrd_cpio::append_to_initrd(&mut initrd, "extra-layer", b"extra data", 0o100400).unwrap();
         let old_policy = ProductPolicy::Sivm(SivmPolicy::default());
-        append(&mut initrd, &old_policy).unwrap();
+        append(&mut initrd, Some(&old_policy), None).unwrap();
         let original = initrd.clone();
 
         let policy = ProductPolicy::Sivm(SivmPolicy {
@@ -91,7 +123,7 @@ mod tests {
             custom_uefi_json: vec![0xA5; 8192],
             ..Default::default()
         });
-        append(&mut initrd, &policy).unwrap();
+        append(&mut initrd, Some(&policy), None).unwrap();
         assert_eq!(&initrd[..original.len()], &original);
         let files = extract_files(&initrd);
         assert_eq!(files["init"], b"existing init");
@@ -99,7 +131,7 @@ mod tests {
         let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
         assert_eq!(
             product_policy::decode_product_policy(bytes).unwrap(),
-            policy
+            product_policy::MeasuredProductPolicy::new(Some(policy))
         );
     }
 
@@ -110,12 +142,69 @@ mod tests {
             ..Default::default()
         });
         let mut initrd = Vec::new();
-        append(&mut initrd, &policy).unwrap();
+        append(&mut initrd, Some(&policy), None).unwrap();
         let files = extract_files(&initrd);
         let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
         assert_eq!(
             product_policy::decode_product_policy(bytes).unwrap(),
-            policy
+            product_policy::MeasuredProductPolicy::new(Some(policy))
+        );
+    }
+
+    /// The Azure device policy must allow exactly the devices that OpenHCL used
+    /// to allow unconditionally.
+    #[test]
+    fn device_policy_round_trips_through_initrd() {
+        let policies =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests/policies");
+        let mut initrd = Vec::new();
+        append(&mut initrd, None, None).unwrap();
+        assert!(initrd.is_empty());
+        append(&mut Vec::new(), None, Some(&policies.join("sivm.toml"))).unwrap();
+        append(&mut initrd, None, Some(&policies.join("azure.toml"))).unwrap();
+        let files = extract_files(&initrd);
+        let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
+        let policy = product_policy::decode_product_policy(bytes).unwrap();
+        let class = |base_class, sub_class, prog_if| product_policy::AllowedPciDevice {
+            base_class: Some(base_class),
+            sub_class: Some(sub_class),
+            prog_if: Some(prog_if),
+            ..Default::default()
+        };
+        let microsoft = |device_id, base_class| product_policy::AllowedPciDevice {
+            vendor_id: Some(0x1414),
+            device_id: Some(device_id),
+            ..class(base_class, 0, 0)
+        };
+        let azure = [class(1, 8, 2), microsoft(0xba, 2), microsoft(0xc003, 0x10)];
+        assert_eq!(
+            (policy.raw(), policy.allowed_pci_devices()),
+            (None, &azure[..])
+        );
+    }
+
+    /// An empty device policy still writes the policy file, so it replaces an
+    /// allowlist from an earlier layer and OpenHCL allows no devices.
+    #[test]
+    fn empty_device_policy_replaces_previous_allowlist() {
+        let policies =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests/policies");
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.toml");
+        fs_err::write(dir.path().join("devices.toml"), "").unwrap();
+        fs_err::write(
+            &empty,
+            "devices = \"devices.toml\"\nallowed_pci_devices = []\n",
+        )
+        .unwrap();
+        let mut initrd = Vec::new();
+        append(&mut initrd, None, Some(&policies.join("azure.toml"))).unwrap();
+        append(&mut initrd, None, Some(&empty)).unwrap();
+        let files = extract_files(&initrd);
+        let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
+        assert_eq!(
+            product_policy::decode_product_policy(bytes).unwrap(),
+            product_policy::MeasuredProductPolicy::default()
         );
     }
 
@@ -134,7 +223,7 @@ mod tests {
             }),
         ] {
             let mut initrd = vec![1, 2, 3];
-            let error = append(&mut initrd, &policy).unwrap_err();
+            let error = append(&mut initrd, Some(&policy), None).unwrap_err();
             assert!(error.to_string().contains("non-empty custom_uefi_json"));
             assert_eq!(initrd, [1, 2, 3]);
         }
