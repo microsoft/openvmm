@@ -610,7 +610,7 @@ impl<'a> VirtioMmioSlots<'a> {
     fn dma_ranges(&mut self) -> anyhow::Result<&[MemoryRange]> {
         if self.dma_ranges.is_none() {
             self.dma_ranges = Some(
-                loader::linux::microvm::mptable_ram_ranges(
+                loader::linux::mptable_boot::mptable_ram_ranges(
                     self.mem_layout,
                     &reserved_memory_ranges(),
                 )

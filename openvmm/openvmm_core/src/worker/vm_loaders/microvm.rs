@@ -46,7 +46,7 @@ pub fn load_linux_x86_mptable(
     });
     let cmdline = CString::new(cfg.cmdline).map_err(LinuxError::CommandLineNul)?;
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
-    loader::linux::microvm::load_x86_mptable(
+    loader::linux::mptable_boot::load_x86_mptable(
         &mut loader,
         &mut kernel_file,
         initrd_config,
