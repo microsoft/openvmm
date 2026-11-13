@@ -54,6 +54,18 @@ pub fn mshv_snp_available() -> bool {
     }
 }
 
+/// Returns whether MSHV supports partition scrub on this machine.
+pub fn mshv_partition_scrub_available() -> anyhow::Result<bool> {
+    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native))]
+    {
+        virt_mshv::is_partition_scrub_available()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "virt_mshv", guest_is_native)))]
+    {
+        Ok(false)
+    }
+}
+
 #[expect(clippy::allow_attributes, reason = "lots of conditions")]
 #[allow(dead_code)]
 pub(crate) fn parse_bool_param(key: &str, val: &str) -> anyhow::Result<bool> {

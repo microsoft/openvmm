@@ -308,8 +308,11 @@ cargo xflowey vmm-tests-run --target linux-x64 \
 The host must expose VMX or SVM and permit nested virtualization. Petri and
 OpenVMM automatically prefer MSHV when `/dev/mshv` is accessible; otherwise
 they use KVM when `/dev/kvm` is accessible. Use the same command on an MSHV
-host to validate that backend, which requires kernel support for partition
-scrub. A successful KVM run does not validate the MSHV reset path. Inspect
+host to validate that backend. The test requires both `nested_virt` and
+`nested_reset`. Petri probes partition scrub on a temporary MSHV partition
+and skips the test when the kernel does not implement the scrub ioctl.
+Other probe errors fail host discovery rather than silently skipping tests.
+A successful KVM run does not validate the MSHV reset path. Inspect
 the OpenVMM logs in the output directory to confirm the selected backend.
 
 KVM resets nested state through `KVM_SET_NESTED_STATE`, using an inactive VMX

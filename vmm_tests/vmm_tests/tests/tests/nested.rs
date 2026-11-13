@@ -24,7 +24,11 @@ pub(crate) async fn vm_host(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
 
 /// Reboot a nested-enabled Linux guest and verify virtualization remains exposed.
 #[cfg(target_os = "linux")]
-#[vmm_test_macros::vmm_test_with(openvmm, requires(nested_virt), configs(linux_direct_x64))]
+#[vmm_test_macros::vmm_test_with(
+    openvmm,
+    requires(nested_virt, nested_reset),
+    configs(linux_direct_x64)
+)]
 async fn reboot_nested_virt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (mut vm, mut agent) = config
         .with_nested_virt()

@@ -15,12 +15,16 @@ pub mod capabilities {
     /// Support for nested virtualization
     pub const NESTED_VIRT: &str = "nested_virt";
 
+    /// Support for resetting a partition with nested virtualization enabled.
+    pub const NESTED_RESET: &str = "nested_reset";
+
     /// All capability names known to petri, including those defined by
     /// tests.
     pub const KNOWN_CAPABILITIES: &[&str] = &[
         VPCI,
         WINDOWS_PARTITION_RESET,
         NESTED_VIRT,
+        NESTED_RESET,
         "test_disk",
         "edu_initiator",
         "ivshmem_target",
