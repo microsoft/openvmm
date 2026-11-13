@@ -36,10 +36,10 @@ fn imul2() {
     for (left, right, result, rflags) in variations {
         let mut cpu = run_test(
             RFLAGS_MUL_MASK,
-            |asm| asm.imul_2(eax, dword_ptr(rax + 0x10)),
+            |asm| asm.imul_2(eax, dword_ptr(0x100)),
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), left);
-                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
+                cpu.valid_gva = 0x100;
                 cpu.mem_val = right;
             },
         );
@@ -75,9 +75,9 @@ fn imul3() {
     for (left, right, result, rflags) in variations {
         let mut cpu = run_test(
             RFLAGS_MUL_MASK,
-            |asm| asm.imul_3(eax, dword_ptr(rax + 0x10), left),
+            |asm| asm.imul_3(eax, dword_ptr(0x100), left),
             |cpu| {
-                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
+                cpu.valid_gva = 0x100;
                 cpu.mem_val = right;
             },
         );

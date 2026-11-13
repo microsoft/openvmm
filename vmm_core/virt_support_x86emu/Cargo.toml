@@ -22,6 +22,7 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 pal_async.workspace = true
+test_with_tracing.workspace = true
 iced-x86 = { workspace = true, features = ["code_asm"] }
 
 [lints]

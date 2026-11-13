@@ -38,6 +38,7 @@ impl<T: Cpu> Emulator<'_, T> {
             address,
             AlignmentMode::Standard,
             &mut data[..op_size as usize],
+            Op::UPDATES_RESULT,
         )
         .await?;
         let val = u64::from_le_bytes(data);

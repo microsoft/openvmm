@@ -3,12 +3,75 @@
 
 use crate::tests::common::LockTestBehavior;
 use crate::tests::common::run_lockable_test;
+use crate::tests::common::{SingleCellCpu, TestCpu, TestCpuError};
+use futures::FutureExt;
 use iced_x86::code_asm::*;
+use test_with_tracing::test;
 use x86defs::RFlags;
 use x86emu::Cpu;
 use x86emu::Gp;
 
 const RFLAGS_CMPXCHG816B_MASK: RFlags = RFlags::new().with_zero(true);
+
+#[test]
+fn unlocked_mismatch_write_fault_preserves_state() {
+    let instructions: [(fn(&mut CodeAssembler) -> Result<(), IcedError>, usize); 3] = [
+        (|a| a.cmpxchg(qword_ptr(0x100), rbx), 8),
+        (|a| a.cmpxchg8b(qword_ptr(0x100)), 8),
+        (|a| a.cmpxchg16b(xmmword_ptr(0x100)), 16),
+    ];
+    for (instruction, len) in instructions {
+        let mut cpu = SingleCellCpu::<u128>::new(0x8d5.into());
+        cpu.valid_gva = 0x100;
+        cpu.mem_val = 0x1234;
+        cpu.fail_writes = true;
+        cpu.state.gps[Gp::RAX as usize] = 0;
+        cpu.state.gps[Gp::RDX as usize] = 0;
+        let initial = cpu.state.clone();
+        let mut asm = CodeAssembler::new(64).unwrap();
+        instruction(&mut asm).unwrap();
+        let bytes = asm.assemble(0).unwrap();
+        let result = x86emu::Emulator::new(&mut cpu, x86defs::cpuid::Vendor::INTEL, &bytes)
+            .run()
+            .now_or_never()
+            .unwrap();
+        assert!(matches!(
+            *result.unwrap_err(),
+            x86emu::Error::MemoryAccess(0x100, _, TestCpuError::WriteFault),
+        ));
+        assert_eq!(cpu.state, initial);
+        assert_eq!(cpu.mem_val, 0x1234);
+        assert_eq!(cpu.memory_reads, [(0x100, len, true)]);
+    }
+}
+
+#[test]
+fn cmpxchg16b_requires_alignment() {
+    for locked in [false, true] {
+        let mut cpu = SingleCellCpu::<u128>::new(0.into());
+        cpu.valid_gva = 0x108;
+        cpu.mem_val = 0x1234;
+        let initial = cpu.state.clone();
+        let mut asm = CodeAssembler::new(64).unwrap();
+        let assembler = if locked { asm.lock() } else { &mut asm };
+        assembler.cmpxchg16b(xmmword_ptr(0x108)).unwrap();
+        let bytes = asm.assemble(0).unwrap();
+        let result = x86emu::Emulator::new(&mut cpu, x86defs::cpuid::Vendor::INTEL, &bytes)
+            .run()
+            .now_or_never()
+            .unwrap();
+        assert!(matches!(
+            *result.unwrap_err(),
+            x86emu::Error::InstructionException(
+                x86defs::Exception::GENERAL_PROTECTION_FAULT,
+                Some(0),
+                _
+            ),
+        ));
+        assert_eq!(cpu.state, initial);
+        assert_eq!(cpu.mem_val, 0x1234);
+    }
+}
 
 #[test]
 fn cmpxchg8b_equal() {
@@ -41,7 +104,7 @@ fn cmpxchg8b_equal() {
 fn cmpxchg8b_not_equal() {
     let mut cpu = run_lockable_test(
         RFLAGS_CMPXCHG816B_MASK,
-        LockTestBehavior::Succeed,
+        LockTestBehavior::Fail,
         |asm| asm.cmpxchg8b(ptr(0x100)),
         |cpu| {
             cpu.valid_gva = 0x100;
@@ -92,7 +155,7 @@ fn cmpxchg16b_equal() {
 fn cmpxchg16b_not_equal() {
     let mut cpu = run_lockable_test(
         RFLAGS_CMPXCHG816B_MASK,
-        LockTestBehavior::Succeed,
+        LockTestBehavior::Fail,
         |asm| asm.cmpxchg16b(ptr(0x100)),
         |cpu| {
             cpu.valid_gva = 0x100;

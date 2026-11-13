@@ -559,6 +559,7 @@ struct TdxVtl {
 pub struct TdxEmulationCache {
     segs: [Option<SegmentRegister>; 6],
     cr0: Option<u64>,
+    cr4: Option<u64>,
 }
 
 #[derive(Inspect, Default)]
@@ -3038,6 +3039,13 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             .cr0
             .get_or_insert_with(|| self.vp.backing.vtls[self.vtl].cr0.read(&self.vp.runner));
         *reg
+    }
+
+    fn cr4(&mut self) -> u64 {
+        *self
+            .cache
+            .cr4
+            .get_or_insert_with(|| self.vp.backing.vtls[self.vtl].cr4.read(&self.vp.runner))
     }
 
     fn rflags(&mut self) -> RFlags {

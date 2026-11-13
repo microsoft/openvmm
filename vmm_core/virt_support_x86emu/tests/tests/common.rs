@@ -16,6 +16,7 @@ pub struct CpuState {
     pub rflags: RFlags,
 
     pub cr0: u64,
+    pub cr4: u64,
     pub efer: u64,
 }
 
@@ -41,6 +42,7 @@ pub fn long_protected_mode(user_mode: bool) -> CpuState {
         rip: 0,
         rflags: RFlags::at_reset(),
         cr0: x86defs::X64_CR0_PE,
+        cr4: 0,
         efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME,
     }
 }
@@ -75,16 +77,23 @@ impl CpuIo for MockCpu {
         )
     }
 
-    async fn read_io(&self, _vp: VpIndex, _port: u16, _data: &mut [u8]) {
-        todo!()
+    async fn read_io(&self, _vp: VpIndex, port: u16, data: &mut [u8]) {
+        assert_eq!(port, 0x70);
+        data.copy_from_slice(&0x1234_5678u32.to_le_bytes()[..data.len()]);
     }
 
     async fn write_io(&self, _vp: VpIndex, _port: u16, _data: &[u8]) {
         todo!()
     }
 
-    fn fatal_error(&self, _error: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
-        todo!()
+    fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
+        tracing::error!(
+            error = error.as_ref() as &dyn std::error::Error,
+            "fatal error"
+        );
+        virt::VpHaltReason::TripleFault {
+            vtl: hvdef::Vtl::Vtl0,
+        }
     }
 }
 

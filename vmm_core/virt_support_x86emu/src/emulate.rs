@@ -57,6 +57,9 @@ pub trait EmulatorSupport {
     /// Read cr0
     fn cr0(&mut self) -> u64;
 
+    /// Read cr4
+    fn cr4(&mut self) -> u64;
+
     /// Read rflags
     fn rflags(&mut self) -> RFlags;
 
@@ -171,6 +174,10 @@ pub fn emulate_translate_gva<T: TranslateGvaSupport>(
         Ok(crate::translate::TranslateResult { gpa, cache_info: _ }) => Ok(EmuTranslateResult {
             gpa,
             overlay_page: None,
+        }),
+        Err(crate::translate::Error::NonCanonicalAddress) => Err(EmuTranslateError {
+            code: hvdef::hypercall::TranslateGvaResultCode::INTERCEPT,
+            event_info: Some(gpf_event()),
         }),
         Err(err) => Err(EmuTranslateError {
             code: err.into(),
@@ -410,7 +417,7 @@ async fn emulate_core<T: EmulatorSupport>(
                 let phys_ip = match translate_result {
                     Ok(ip) => ip,
                     Err(translate_error) => {
-                        if inject_memory_access_fault(linear_ip, &translate_error, support) {
+                        if inject_memory_access_fault(&translate_error, support) {
                             return Ok(());
                         } else {
                             return Err(EmulationError::InstructionRead(translate_error));
@@ -420,8 +427,8 @@ async fn emulate_core<T: EmulatorSupport>(
 
                 // TODO: fold this access check into the GuestMemory object for
                 // each of the backings, if possible.
-                if let Err(err) = cpu.check_vtl_access(phys_ip, TranslateMode::Execute) {
-                    if inject_memory_access_fault(linear_ip, &err, support) {
+                if let Err(err) = cpu.check_vtl_access(linear_ip, phys_ip, TranslateMode::Execute) {
+                    if inject_memory_access_fault(&err, support) {
                         return Ok(());
                     } else {
                         return Err(EmulationError::InstructionRead(err));
@@ -508,7 +515,7 @@ async fn emulate_core<T: EmulatorSupport>(
                     .inject_pending_event(make_exception_event(exception, error_code, None));
             }
             x86emu::Error::MemoryAccess(addr, kind, err) => {
-                if !inject_memory_access_fault(addr, &err, support) {
+                if !inject_memory_access_fault(&err, support) {
                     return Err(EmulationError::Emulator {
                         bytes: instruction_bytes.to_vec(),
                         error: x86emu::Error::MemoryAccess(addr, kind, err),
@@ -549,7 +556,9 @@ pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
     let mut emu = x86emu::Emulator::new(&mut cpu, vendor, &[]);
 
     match op {
-        EmulatedMemoryOperation::Read(data) => emu.read_memory(segment, gva, alignment, data).await,
+        EmulatedMemoryOperation::Read(data) => {
+            emu.read_memory(segment, gva, alignment, data, false).await
+        }
         EmulatedMemoryOperation::Write(data) => {
             emu.write_memory(segment, gva, alignment, data).await
         }
@@ -597,14 +606,21 @@ enum Error {
         #[source] TranslateGvaError,
         Option<hvdef::HvX64PendingEvent>,
     ),
-    #[error("vtl permissions denied access for gpa {gpa}")]
+    #[error("vtl permissions denied access for gva {gva:#x}, gpa {gpa:#x}")]
     NoVtlAccess {
+        gva: u64,
         gpa: u64,
         intercepting_vtl: hvdef::Vtl,
         denied_flags: HvMapGpaFlags,
     },
     #[error("failed to access mapped memory")]
     Memory(#[source] GuestMemoryError),
+    #[error("unsupported compare-exchange size ({current} current bytes, {new} new bytes)")]
+    UnsupportedAtomicSize { current: usize, new: usize },
+    #[error("compare-exchange spans noncontiguous guest physical pages")]
+    NonContiguousAtomicAccess,
+    #[error("unaligned {len}-byte compare-exchange at GPA {gpa:#x}")]
+    UnalignedAtomicAccess { gpa: u64, len: usize },
 }
 
 /// Result of a gva translation in [`EmulatorCpu`]
@@ -799,32 +815,56 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
         }
     }
 
-    pub fn check_vtl_access(&mut self, gpa: u64, mode: TranslateMode) -> Result<(), Error> {
+    pub fn check_vtl_access(
+        &mut self,
+        gva: u64,
+        gpa: u64,
+        mode: TranslateMode,
+    ) -> Result<(), Error> {
         self.support
             .check_vtl_access(gpa, mode)
             .map_err(|e| match e {
                 EmuCheckVtlAccessError::AccessDenied { vtl, denied_flags } => Error::NoVtlAccess {
+                    gva,
                     gpa,
                     intercepting_vtl: vtl,
                     denied_flags,
                 },
             })
     }
+}
 
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        if let Some(monitor_support) = self.support.monitor_support() {
-            monitor_support.check_write(gpa, bytes)
-        } else {
-            false
+impl<T: EmulatorSupport, U: CpuIo> EmulatorCpu<'_, T, U> {
+    async fn read_physical_memory(&mut self, gpa: u64, bytes: &mut [u8]) -> Result<(), Error> {
+        if Some(gpa & !(HV_PAGE_SIZE - 1)) == self.support.lapic_base_address() {
+            self.support.lapic_read(gpa, bytes);
+        } else if !self
+            .support
+            .monitor_support()
+            .is_some_and(|m| m.check_read(gpa, bytes))
+        {
+            if self.support.is_gpa_mapped(gpa, false) {
+                self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
+            } else {
+                self.dev
+                    .read_mmio(self.support.vp_index(), gpa, bytes)
+                    .await;
+            }
         }
+        Ok(())
     }
 
-    fn check_monitor_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
-        if let Some(monitor_support) = self.support.monitor_support() {
-            monitor_support.check_read(gpa, bytes)
+    async fn write_physical_memory(&mut self, gpa: u64, bytes: &[u8]) -> Result<(), Error> {
+        if Some(gpa & !(HV_PAGE_SIZE - 1)) == self.support.lapic_base_address() {
+            self.support.lapic_write(gpa, bytes);
+        } else if self.support.is_gpa_mapped(gpa, true) {
+            self.gm.write_at(gpa, bytes).map_err(Error::Memory)?;
         } else {
-            false
+            self.dev
+                .write_mmio(self.support.vp_index(), gpa, bytes)
+                .await;
         }
+        Ok(())
     }
 }
 
@@ -836,26 +876,41 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         gva: u64,
         bytes: &mut [u8],
         is_user_mode: bool,
+        is_rmw: bool,
     ) -> Result<(), Self::Error> {
-        let gpa = self.translate_gva(gva, TranslateMode::Read, is_user_mode)?;
-
-        if Some(gpa & !0xfff) == self.support.lapic_base_address() {
-            self.support.lapic_read(gpa, bytes);
-            return Ok(());
-        }
-
-        self.check_vtl_access(gpa, TranslateMode::Read)?;
-
-        if self.check_monitor_read(gpa, bytes) {
-            Ok(())
-        } else if self.support.is_gpa_mapped(gpa, false) {
-            self.gm.read_at(gpa, bytes).map_err(Error::Memory)
+        // Preflight translation and VTL access before reading: MMIO reads may have side effects.
+        // RMW operands need write permissions even during this initial read.
+        // TODO: Preflight GuestMemory backing permissions for every RAM range too,
+        // including write permission for RMW reads, before any data access.
+        let mode = if is_rmw {
+            TranslateMode::Write
         } else {
-            self.dev
-                .read_mmio(self.support.vp_index(), gpa, bytes)
-                .await;
-            Ok(())
+            TranslateMode::Read
+        };
+        let gpa = self.translate_gva(gva, mode, is_user_mode)?;
+        if Some(gpa & !(HV_PAGE_SIZE - 1)) != self.support.lapic_base_address() {
+            self.check_vtl_access(gva, gpa, mode)?;
         }
+        let first_len = bytes
+            .len()
+            .min((HV_PAGE_SIZE - (gva & (HV_PAGE_SIZE - 1))) as usize);
+        let next_gpa = if first_len < bytes.len() {
+            let next_gva = gva.wrapping_add(first_len as u64);
+            let next_gpa = self.translate_gva(next_gva, mode, is_user_mode)?;
+            if Some(next_gpa & !(HV_PAGE_SIZE - 1)) != self.support.lapic_base_address() {
+                self.check_vtl_access(next_gva, next_gpa, mode)?;
+            }
+            Some(next_gpa)
+        } else {
+            None
+        };
+
+        let (first, second) = bytes.split_at_mut(first_len);
+        self.read_physical_memory(gpa, first).await?;
+        if let Some(next_gpa) = next_gpa {
+            self.read_physical_memory(next_gpa, second).await?;
+        }
+        Ok(())
     }
 
     async fn write_memory(
@@ -864,21 +919,33 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         bytes: &[u8],
         is_user_mode: bool,
     ) -> Result<(), Self::Error> {
+        // A translation or VTL fault on any page must leave the entire store
+        // untouched, including MMIO side effects. Keep the translations rather
+        // than walking again after starting the write.
+        // TODO: Preflight GuestMemory backing write permissions for every RAM
+        // range before writing anything.
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
-
-        if Some(gpa & !0xfff) == self.support.lapic_base_address() {
-            self.support.lapic_write(gpa, bytes);
-            return Ok(());
+        if Some(gpa & !(HV_PAGE_SIZE - 1)) != self.support.lapic_base_address() {
+            self.check_vtl_access(gva, gpa, TranslateMode::Write)?;
         }
-
-        self.check_vtl_access(gpa, TranslateMode::Write)?;
-
-        if self.support.is_gpa_mapped(gpa, true) {
-            self.gm.write_at(gpa, bytes).map_err(Error::Memory)?;
+        let first_len = bytes
+            .len()
+            .min((HV_PAGE_SIZE - (gva & (HV_PAGE_SIZE - 1))) as usize);
+        let next_gpa = if first_len < bytes.len() {
+            let next_gva = gva.wrapping_add(first_len as u64);
+            let next_gpa = self.translate_gva(next_gva, TranslateMode::Write, is_user_mode)?;
+            if Some(next_gpa & !(HV_PAGE_SIZE - 1)) != self.support.lapic_base_address() {
+                self.check_vtl_access(next_gva, next_gpa, TranslateMode::Write)?;
+            }
+            Some(next_gpa)
         } else {
-            self.dev
-                .write_mmio(self.support.vp_index(), gpa, bytes)
-                .await;
+            None
+        };
+
+        let (first, second) = bytes.split_at(first_len);
+        self.write_physical_memory(gpa, first).await?;
+        if let Some(next_gpa) = next_gpa {
+            self.write_physical_memory(next_gpa, second).await?;
         }
         Ok(())
     }
@@ -890,12 +957,37 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         new: &[u8],
         is_user_mode: bool,
     ) -> Result<bool, Self::Error> {
+        // Validate write access for the entire operand before attempting any update.
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
-        self.check_vtl_access(gpa, TranslateMode::Write)?;
+        self.check_vtl_access(gva, gpa, TranslateMode::Write)?;
 
-        let success = if self.check_monitor_write(gpa, new) {
+        let offset = (HV_PAGE_SIZE - (gva & (HV_PAGE_SIZE - 1))) as usize;
+        if offset < new.len() {
+            let next_gva = gva.wrapping_add(offset as u64);
+            let next_gpa = self.translate_gva(next_gva, TranslateMode::Write, is_user_mode)?;
+            self.check_vtl_access(next_gva, next_gpa, TranslateMode::Write)?;
+            if gpa.checked_add(offset as u64) != Some(next_gpa) {
+                return Err(Error::NonContiguousAtomicAccess);
+            }
+        }
+
+        // Monitor handling can consume the write; RAM otherwise needs a naturally
+        // aligned atomic compare-exchange, while device MMIO ignores the comparison.
+        let success = if self
+            .support
+            .monitor_support()
+            .is_some_and(|m| m.check_write(gpa, new))
+        {
             true
         } else if self.support.is_gpa_mapped(gpa, true) {
+            // Some architectures cannot support unaligned atomics. Reject them
+            // consistently rather than splitting the access and losing atomicity.
+            if !gpa.is_multiple_of(new.len() as u64) {
+                return Err(Error::UnalignedAtomicAccess {
+                    gpa,
+                    len: new.len(),
+                });
+            }
             match (current.len(), new.len()) {
                 (1, 1) => self
                     .gm
@@ -925,7 +1017,12 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
                         u64::from_ne_bytes(new.try_into().unwrap()),
                     )
                     .map(|r| r.is_ok()),
-                _ => panic!("unsupported cmpxchg size"),
+                _ => {
+                    return Err(Error::UnsupportedAtomicSize {
+                        current: current.len(),
+                        new: new.len(),
+                    });
+                }
             }
             .map_err(Error::Memory)?
         } else {
@@ -961,7 +1058,8 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     }
 
     fn set_gp(&mut self, reg: RegisterIndex, v: u64) {
-        let register_value = self.gp(reg);
+        // self.gp would truncate to the subregister, losing bits that apply_update must preserve.
+        let register_value = self.support.gp(reg.extended_index);
         let updated_register_value = reg.apply_update(register_value, v);
         self.support
             .set_gp(reg.extended_index, updated_register_value);
@@ -985,6 +1083,10 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
 
     fn cr0(&mut self) -> u64 {
         self.support.cr0()
+    }
+
+    fn cr4(&mut self) -> u64 {
+        self.support.cr4()
     }
 
     fn rflags(&mut self) -> RFlags {
@@ -1027,10 +1129,10 @@ pub async fn emulate_io(
         dev.write_io(vp_index, port, &rax.to_ne_bytes()[..len])
             .await;
     } else {
-        // Preserve the high bits of eax but not of rax.
-        let mut value = (*rax as u32).to_ne_bytes();
+        let mut value = rax.to_ne_bytes();
         dev.read_io(vp_index, port, &mut value[..len]).await;
-        *rax = u32::from_ne_bytes(value) as u64;
+        let value = u64::from_ne_bytes(value);
+        *rax = if len == 4 { value as u32 as u64 } else { value };
     }
 }
 
@@ -1040,11 +1142,7 @@ pub async fn emulate_io(
 /// In the case of false being returned, the caller can
 /// return the appropriate error code.
 #[must_use]
-fn inject_memory_access_fault<T: EmulatorSupport>(
-    gva: u64,
-    result: &Error,
-    support: &mut T,
-) -> bool {
+fn inject_memory_access_fault<T: EmulatorSupport>(result: &Error, support: &mut T) -> bool {
     match result {
         Error::Translate(e, event) => {
             tracing::trace!(
@@ -1061,6 +1159,7 @@ fn inject_memory_access_fault<T: EmulatorSupport>(
             false
         }
         Error::NoVtlAccess {
+            gva,
             gpa,
             intercepting_vtl,
             denied_flags,
@@ -1072,11 +1171,14 @@ fn inject_memory_access_fault<T: EmulatorSupport>(
                 "Vtl permissions checking failed"
             );
 
-            let event = vtl_access_event(gva, *gpa, *intercepting_vtl, *denied_flags);
+            let event = vtl_access_event(*gva, *gpa, *intercepting_vtl, *denied_flags);
             support.inject_pending_event(event);
             true
         }
-        Error::Memory(_) => false,
+        Error::Memory(_)
+        | Error::UnsupportedAtomicSize { .. }
+        | Error::NonContiguousAtomicAccess
+        | Error::UnalignedAtomicAccess { .. } => false,
     }
 }
 

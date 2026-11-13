@@ -36,8 +36,8 @@ fn btx<T: BtInstr>(mut instr: T) {
         (0xffff, 0b10, true, -1, 0x1000b, false),
         // Both forms:
         (0xffff, 0b10, true, 2, 0x1000f, false),
-        (0x7fffffffffff, 0b0110, true, 2, 0x80000000000f, true),
-        (0x7ffffffffffff, 0b1010, true, 35, 0x8000000000013, true),
+        (0x7fffffffffdf, 0b0110, true, 2, 0x7fffffffffef, true),
+        (0x7ffffffeffff, 0b1010, true, 35, 0x7fffffff0013, true),
         (0xffff, 0b10, true, 130, 0x1001f, false),
     ];
 

@@ -172,6 +172,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 offset,
                 AlignmentMode::Standard,
                 data,
+                false,
             )
             .await?;
             self.write_io(io_register, data).await?;
@@ -220,6 +221,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 offset,
                 AlignmentMode::Standard,
                 &mut data[..rep.size],
+                false,
             )
             .await?;
 
@@ -278,6 +280,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 si_offset,
                 AlignmentMode::Standard,
                 data,
+                false,
             )
             .await?;
             self.write_memory(Segment::ES, di_offset, AlignmentMode::Standard, data)
@@ -316,6 +319,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 si_offset,
                 AlignmentMode::Standard,
                 &mut data_left[..rep.size],
+                false,
             )
             .await?;
             self.read_memory(
@@ -323,6 +327,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 di_offset,
                 AlignmentMode::Standard,
                 &mut data_right[..rep.size],
+                false,
             )
             .await?;
 
@@ -366,6 +371,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 di_offset,
                 AlignmentMode::Standard,
                 &mut data[..rep.size],
+                false,
             )
             .await?;
 

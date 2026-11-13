@@ -26,6 +26,7 @@ struct CpuState {
     pub rflags: RFlags,
 
     pub cr0: u64,
+    pub cr4: u64,
     pub efer: u64,
 }
 
@@ -37,6 +38,7 @@ impl Cpu for FuzzerCpu {
         _gva: u64,
         bytes: &mut [u8],
         _is_user_mode: bool,
+        _is_rmw: bool,
     ) -> Result<(), Self::Error> {
         for c in bytes.chunks_mut(self.mem_data.len()) {
             c.copy_from_slice(&self.mem_data[..c.len()]);
@@ -102,6 +104,10 @@ impl Cpu for FuzzerCpu {
 
     fn cr0(&mut self) -> u64 {
         self.state.cr0
+    }
+
+    fn cr4(&mut self) -> u64 {
+        self.state.cr4
     }
 
     fn rflags(&mut self) -> RFlags {

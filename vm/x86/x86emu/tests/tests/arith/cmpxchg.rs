@@ -82,11 +82,7 @@ fn cmpxchg() {
     for (left, right, result_mem, result_areg, rflags) in variations {
         let mut cpu = run_lockable_test::<u64>(
             RFLAGS_ARITH_MASK,
-            if left == result_mem {
-                LockTestBehavior::Succeed
-            } else {
-                LockTestBehavior::Fail
-            },
+            LockTestBehavior::Fail,
             |asm| asm.cmpxchg(qword_ptr(0x100), rbx),
             |cpu| {
                 cpu.valid_gva = 0x100;

@@ -139,6 +139,7 @@ pub struct MshvEmulationCache {
     gs: SegmentRegister,
     ss: SegmentRegister,
     cr0: u64,
+    cr4: u64,
     efer: u64,
     rip: u64,
     rflags: RFlags,
@@ -1045,6 +1046,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             HvX64RegisterName::Gs,
             HvX64RegisterName::Ss,
             HvX64RegisterName::Cr0,
+            HvX64RegisterName::Cr4,
             HvX64RegisterName::Efer,
         ];
         let mut values = [FromZeros::new_zeroed(); NAMES.len()];
@@ -1052,7 +1054,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             .get_vp_registers(vtl, NAMES, &mut values)
             .expect("register query should not fail");
 
-        let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
+        let [rsp, es, ds, fs, gs, ss, cr0, cr4, efer] = values;
 
         let header = self
             .runner
@@ -1067,6 +1069,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             gs: from_seg(gs.into()),
             ss: from_seg(ss.into()),
             cr0: cr0.as_u64(),
+            cr4: cr4.as_u64(),
             efer: efer.as_u64(),
             rip: header.rip,
             rflags: header.rflags.into(),
@@ -1160,6 +1163,10 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
 
     fn cr0(&mut self) -> u64 {
         self.cache.cr0
+    }
+
+    fn cr4(&mut self) -> u64 {
+        self.cache.cr4
     }
 
     fn rflags(&mut self) -> RFlags {

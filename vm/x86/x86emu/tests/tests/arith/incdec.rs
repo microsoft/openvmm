@@ -25,6 +25,7 @@ fn incdec(variations: &[(u64, u64)], inc: bool) {
                 }
             },
             |cpu| {
+                cpu.set_gp(Gp::RAX.into(), 0x100);
                 cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = value;
             },
