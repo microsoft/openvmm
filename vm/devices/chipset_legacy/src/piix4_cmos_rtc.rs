@@ -69,9 +69,13 @@ impl Piix4CmosRtc {
 }
 
 impl ChangeDeviceState for Piix4CmosRtc {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        self.inner.start();
+    }
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.inner.stop().await;
+    }
 
     async fn reset(&mut self) {
         self.inner.reset().await;
@@ -348,5 +352,41 @@ mod tests {
             assert_eq!(get_ext_cmos_data(&mut rtc, i), 0);
             assert_eq!(get_ext_cmos_data_shadow(&mut rtc, i), 0);
         }
+    }
+
+    #[test]
+    fn stop_and_start_reach_the_rtc() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut pool = pal_async::DefaultPool::new();
+        let driver = pool.driver();
+        let keeper =
+            vmcore::vmtime::VmTimeKeeper::new(&driver, vmcore::vmtime::VmTime::from_100ns(0));
+        let source = pool.run_until(keeper.builder().build(&driver)).unwrap();
+        let clock = MockLocalClock::new();
+        let clock_access = clock.accessor();
+        let mut rtc = Piix4CmosRtc::new(
+            Box::new(clock),
+            LineInterrupt::detached(),
+            &source,
+            None,
+            false,
+        );
+
+        // The host's clock runs on while the RTC is stopped, but VM time does
+        // not, so a snapshot saves the time at the stop.
+        pool.run_until(rtc.stop());
+        let stopped = clock_access.get_time();
+        clock_access.tick(std::time::Duration::from_secs(5));
+        let saved = rtc.save().unwrap();
+        assert_eq!(
+            saved.inner.clock_time_millis,
+            stopped.as_millis_since_unix_epoch()
+        );
+
+        // Starting the restored RTC sets the clock to the saved time.
+        rtc.restore(saved).unwrap();
+        rtc.start();
+        assert_eq!(clock_access.get_time(), stopped);
     }
 }

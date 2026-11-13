@@ -366,7 +366,9 @@ fails. VM time then runs from the instant at which the TSCs run again, rather
 than from the later start of the VM: the restore anchor on KVM, and on MSHV and
 WHP, which write the TSCs with partition time frozen, the instant at which
 partition time resumes. The time that the restore takes to start the VM thus
-does not shift the emulated devices' timers relative to the TSC.
+does not shift the emulated devices' timers relative to the TSC. The RTC
+keeps its time at the cut, and its alarm, periodic, and update interrupts
+keep their deadlines in VM time, so they keep their phase across a restore.
 Snapshots without the explicit capture-time `maxcpus` opt-in reject a restore
 target. This is not a post-readiness hotplug API and cannot add VPs absent
 from the saved topology.

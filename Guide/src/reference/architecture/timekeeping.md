@@ -126,7 +126,7 @@ API is easiest to call.
 | --- | --- |
 | PIT | `chipset::pit` advances counting elements from elapsed `VmTime` and schedules wakeups for interrupt generation. |
 | ACPI PM timer | Software reads scale `VmTime` to 3.579545 MHz. With PM timer assist, the hypervisor handles reads using its own time source instead. |
-| CMOS RTC | Calendar registers use `LocalClock`; alarm, periodic, and update interrupt scheduling uses `VmTime`. |
+| CMOS RTC | Calendar registers use `LocalClock`; alarm, periodic, and update interrupt scheduling uses `VmTime`. Saved state keeps the interrupt deadlines. |
 | UEFI watchdog | `watchdog_core` receives a `VmTimeAccess`, so its deadline belongs to the software VM timeline. |
 | Software local APIC | `virt_support_apic` counts down using `VmTime`; backend-native APIC emulation instead has backend-owned timer state. |
 | Hyper-V synthetic timers | Deadlines use partition reference time. Native implementations belong to the hypervisor; `hv1_emulator::synic` evaluates them in software. |
@@ -163,6 +163,17 @@ created clock instances do not share guest-written offsets.
 
 RTC dates can advance during a pause while `VmTime`-based interrupt
 machinery is stopped. Periodic interrupt rates do not define wall time.
+
+A snapshot instead keeps the RTC's time at its VM-time cut. While stopped,
+the RTC holds the time that it read as it stopped and runs it with
+`VmTime`, so a save records the time at the cut; a restore, and the
+downtime that it advances, set the clock as the RTC starts, and a plain
+pause sets nothing. The saved state also keeps the alarm, periodic, and
+update deadlines in `VmTime` and the time of the last update cycle, so a
+restore keeps each interrupt's phase and the update-in-progress window.
+A restore rejects a deadline more than its timer's period after the
+restored VM time; a saved state without deadlines arms the enabled
+timers a period after the restore.
 
 On Arm, the UEFI time service exposes the supplied local clock through
 `GetTime`/`SetTime`. It retains timezone and daylight fields for readback

@@ -2,8 +2,19 @@
 // Licensed under the MIT License.
 
 //! The UTC clock source of the RTC: a fallible clock abstraction, calendar
-//! invalidation when no representable time is available, and advancing the
-//! guest-visible time.
+//! invalidation when no representable time is available, advancing the
+//! guest-visible time, and holding it while the RTC is stopped.
+//!
+//! While the RTC is stopped, it holds the guest-visible time rather than
+//! reading its clock source, which runs with the host's clock: the held time
+//! runs with VM time from the moment that the RTC stopped. VM time stops after
+//! the RTC and starts before it, so a saved state records the time at the
+//! snapshot's cut, and a restore sets the clock source only as the RTC starts,
+//! to the restored time plus the downtime that the restore adds and the VM
+//! time that has run since. Neither the time that the host takes to save or
+//! restore, nor the host's time between the restore and the start, reaches
+//! the guest. A pause that no restore, advance, or write follows leaves the
+//! clock source alone, so that the guest's time catches up with the pause.
 
 use super::Rtc;
 use super::RtcMode;
@@ -16,6 +27,7 @@ use local_clock::InspectableLocalClock;
 use local_clock::LocalClockTime;
 use std::time::Duration;
 use vmcore::line_interrupt::LineInterrupt;
+use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeSource;
 use vmcore::vmtime::VmTimerPeriodic;
 
@@ -47,6 +59,31 @@ impl UtcClockSource for LocalClockUtcSource {
     }
 }
 
+/// The guest-visible UTC time that a stopped RTC holds.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct HeldClock {
+    /// The guest-visible UTC time at `vmtime`.
+    utc: LocalClockTime,
+    /// The VM time from which the held time runs.
+    vmtime: VmTime,
+    /// Whether starting the RTC sets its clock source to the held time,
+    /// which a restore, an advance, or a write of the time requires.
+    set_on_start: bool,
+}
+
+impl HeldClock {
+    /// Returns the held time at VM time `now`, or `None` if it overflows.
+    /// VM time before the held time's start counts as its start.
+    fn time_at(&self, now: VmTime) -> Option<LocalClockTime> {
+        let run = now.checked_sub(self.vmtime).unwrap_or(Duration::ZERO);
+        let run = i64::try_from(run.as_millis()).ok()?;
+        self.utc
+            .as_millis_since_unix_epoch()
+            .checked_add(run)
+            .map(LocalClockTime::from_millis_since_unix_epoch)
+    }
+}
+
 impl Rtc {
     /// Creates a CMOS RTC with an injectable, fallible UTC clock source.
     pub fn new_with_mode_and_utc_clock(
@@ -71,8 +108,88 @@ impl Rtc {
             vmtimer_update: VmTimerPeriodic::new(vmtime_source.access("rtc-update")),
 
             last_update_bit_blip: LocalClockTime::from_millis_since_unix_epoch(0),
+            held: None,
 
             state: RtcState::with_mode(initial_cmos, mode),
+        }
+    }
+
+    /// Returns the guest-visible UTC time: the held time while the RTC is
+    /// stopped, and its clock source's time otherwise.
+    pub(super) fn utc_time(&mut self) -> Result<LocalClockTime, UtcClockSourceError> {
+        match self.held {
+            Some(held) => held
+                .time_at(self.vmtime_alarm.now())
+                .ok_or(UtcClockSourceError),
+            None => self.real_time_source.get_time(),
+        }
+    }
+
+    /// Sets the guest-visible UTC time, which a stopped RTC holds until it
+    /// starts.
+    pub(super) fn set_utc_time(&mut self, time: LocalClockTime) {
+        if self.held.is_some() {
+            self.hold_utc_time(time);
+        } else {
+            self.real_time_source.set_time(time);
+        }
+    }
+
+    /// Holds `time` as the guest-visible UTC time at the current VM time,
+    /// to be set in the clock source as the RTC starts.
+    pub(super) fn hold_utc_time(&mut self, time: LocalClockTime) {
+        self.held = Some(HeldClock {
+            utc: time,
+            vmtime: self.vmtime_alarm.now(),
+            set_on_start: true,
+        });
+    }
+
+    /// Holds the guest-visible UTC time as the RTC stops. Without a sample of
+    /// the clock source, the RTC holds nothing and keeps reading the source.
+    pub(super) fn hold_clock(&mut self) {
+        if self.held.is_some() {
+            return;
+        }
+        match self.real_time_source.get_time() {
+            Ok(utc) => {
+                self.held = Some(HeldClock {
+                    utc,
+                    vmtime: self.vmtime_alarm.now(),
+                    set_on_start: false,
+                })
+            }
+            Err(error) => {
+                tracelimit::warn_ratelimited!(?error, "failed to sample RTC UTC clock at stop")
+            }
+        }
+    }
+
+    /// Releases the held time as the RTC starts, setting the clock source to
+    /// it if a restore, an advance, or a write changed it.
+    pub(super) fn release_clock(&mut self) {
+        let Some(held) = self.held.take() else {
+            return;
+        };
+        if !held.set_on_start {
+            return;
+        }
+        let time = held.time_at(self.vmtime_alarm.now()).unwrap_or_else(|| {
+            tracelimit::warn_ratelimited!(
+                ?held,
+                "RTC time overflow while running the held time with VM time"
+            );
+            held.utc
+        });
+        self.real_time_source.set_time(time);
+    }
+
+    /// Runs the held time from the current VM time as the RTC resets, since
+    /// VM time resets before the RTC does.
+    pub(super) fn rebase_held_clock(&mut self) {
+        let now = self.vmtime_alarm.now();
+        if let Some(held) = &mut self.held {
+            held.vmtime = now;
         }
     }
 
@@ -80,16 +197,31 @@ impl Rtc {
     pub(super) fn advance_clock(&mut self, duration: Duration) -> anyhow::Result<()> {
         let delta = i64::try_from(duration.as_millis())
             .context("RTC downtime does not fit in milliseconds")?;
-        let current = self
-            .real_time_source
-            .get_time()
-            .context("failed to sample RTC UTC clock")?;
-        let advanced = current
-            .as_millis_since_unix_epoch()
-            .checked_add(delta)
-            .context("RTC time overflow while applying snapshot downtime")?;
-        self.real_time_source
-            .set_time(LocalClockTime::from_millis_since_unix_epoch(advanced));
+        let current = match self.held {
+            Some(held) => held.utc,
+            None => self
+                .real_time_source
+                .get_time()
+                .context("failed to sample RTC UTC clock")?,
+        };
+        let advanced = LocalClockTime::from_millis_since_unix_epoch(
+            current
+                .as_millis_since_unix_epoch()
+                .checked_add(delta)
+                .context("RTC time overflow while applying snapshot downtime")?,
+        );
+        match &mut self.held {
+            // VM time advances by the same downtime before the RTC does, so
+            // the held time keeps running from the same point of VM time.
+            Some(held) => {
+                *held = HeldClock {
+                    utc: advanced,
+                    vmtime: held.vmtime.wrapping_add(duration),
+                    set_on_start: true,
+                }
+            }
+            None => self.real_time_source.set_time(advanced),
+        }
         self.update_timers();
         self.sync_interrupt_line_level();
         Ok(())
@@ -98,7 +230,7 @@ impl Rtc {
     /// Samples the UTC clock, invalidating the calendar if no sample is
     /// available.
     pub(super) fn sample_utc_clock(&mut self) -> Option<LocalClockTime> {
-        match self.real_time_source.get_time() {
+        match self.utc_time() {
             Ok(real_time) => Some(real_time),
             Err(error) => {
                 tracelimit::warn_ratelimited!(?error, "failed to sample RTC UTC clock");
