@@ -865,7 +865,7 @@ impl MeshInner {
                 )
                 .context("failed to prepare sandboxed Mesh process")?;
                 builder
-                    .apply_sandbox(preparation)
+                    .configure_sandbox_launch(preparation)
                     .context("failed to configure sandboxed Mesh process")?;
             }
 
@@ -932,7 +932,7 @@ impl MeshInner {
                 )
                 .context("failed to prepare sandboxed Mesh process")?;
                 command
-                    .apply_sandbox(preparation)
+                    .configure_sandbox_launch(preparation)
                     .context("failed to configure sandboxed Mesh process")?;
             }
 

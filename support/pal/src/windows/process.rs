@@ -737,8 +737,8 @@ impl<'a> Builder<'a> {
         self
     }
 
-    /// Applies prepared sandbox launch requirements to the new process.
-    pub fn apply_sandbox(
+    /// Configures sandbox launch requirements to take effect during spawn.
+    pub fn configure_sandbox_launch(
         &mut self,
         _config: sandbox::SandboxProcessConfig,
     ) -> io::Result<&mut Self> {

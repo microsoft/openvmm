@@ -231,12 +231,14 @@ impl<'a> Builder<'a> {
         self
     }
 
-    /// Applies prepared sandbox launch requirements to the new process.
+    /// Configures sandbox launch requirements to take effect during spawn.
+    ///
+    /// This does not call [`sandbox::apply`]; the child must do that separately.
     ///
     /// With user namespace self-mapping, explicit [`Self::setuid`] or
     /// [`Self::setgid`] requests are unsupported and cause spawning to fail.
     #[cfg(target_os = "linux")]
-    pub fn apply_sandbox(
+    pub fn configure_sandbox_launch(
         &mut self,
         config: sandbox::SandboxProcessConfig,
     ) -> io::Result<&mut Self> {
@@ -250,9 +252,9 @@ impl<'a> Builder<'a> {
         Ok(self)
     }
 
-    /// Applies prepared sandbox launch requirements to the new process.
+    /// Configures sandbox launch requirements to take effect during spawn.
     #[cfg(not(target_os = "linux"))]
-    pub fn apply_sandbox(
+    pub fn configure_sandbox_launch(
         &mut self,
         _config: sandbox::SandboxProcessConfig,
     ) -> io::Result<&mut Self> {
@@ -436,7 +438,7 @@ mod tests {
         cmd.arg("-c")
             .arg("id -u; id -g; sleep 30")
             .stdout(Stdio::Fd(child_output.as_fd()))
-            .apply_sandbox(sandbox)
+            .configure_sandbox_launch(sandbox)
             .unwrap();
 
         let mut child = cmd.spawn().unwrap();
@@ -512,7 +514,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .set_vfork(vfork)
-                .apply_sandbox(preparation)
+                .configure_sandbox_launch(preparation)
                 .unwrap();
                 assert!(
                     cmd.spawn().unwrap().wait().unwrap().success(),
@@ -585,7 +587,7 @@ mod tests {
             },
         ] {
             let mut cmd = Builder::new("/usr/bin/true");
-            cmd.apply_sandbox(config).unwrap();
+            cmd.configure_sandbox_launch(config).unwrap();
             let error = cmd
                 .spawn()
                 .expect_err("invalid sandbox configuration spawned a child");
@@ -610,7 +612,7 @@ mod tests {
             if let Some(gid) = gid {
                 cmd.setgid(gid);
             }
-            cmd.apply_sandbox(sandbox::SandboxProcessConfig {
+            cmd.configure_sandbox_launch(sandbox::SandboxProcessConfig {
                 linux: sandbox::LinuxPreparation {
                     clone_flags: libc::CLONE_NEWUSER as u64,
                     map_current_user: true,
@@ -670,7 +672,7 @@ mod tests {
         .env("PAL_ALLOWED_FD", ALLOWED_FD.to_string())
         .env("PAL_LEAKED_FD", leaked_fd.as_raw_fd().to_string())
         .dup_fd(receive.as_fd(), ALLOWED_FD)
-        .apply_sandbox(sandbox)
+        .configure_sandbox_launch(sandbox)
         .unwrap();
 
         let mut child = cmd.spawn().unwrap();
