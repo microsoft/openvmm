@@ -203,16 +203,16 @@ impl LoadRegisterLiteral {
         let mut buf = [0_u8; 16];
         let new_val = if self.opc() == 0 {
             // 32-bit load
-            emulate.read_memory(address, &mut buf[..4]).await?;
-            u32::from_ne_bytes(buf[..4].try_into().unwrap()) as u128
+            emulate.read_memory(address, &mut buf[..4], false).await?;
+            u32::from_le_bytes(buf[..4].try_into().unwrap()) as u128
         } else if self.opc() == 1 {
             // 64-bit load
-            emulate.read_memory(address, &mut buf[..8]).await?;
-            u64::from_ne_bytes(buf[..8].try_into().unwrap()) as u128
+            emulate.read_memory(address, &mut buf[..8], false).await?;
+            u64::from_le_bytes(buf[..8].try_into().unwrap()) as u128
         } else if self.opc() == 2 && !self.is_fp_register() {
             // 32-bit sign extend load
-            emulate.read_memory(address, &mut buf[..4]).await?;
-            let original = u32::from_ne_bytes(buf[..4].try_into().unwrap());
+            emulate.read_memory(address, &mut buf[..4], false).await?;
+            let original = u32::from_le_bytes(buf[..4].try_into().unwrap());
             if original & 0x80000000 != 0 {
                 0xffffffff_00000000 | original as u128
             } else {
@@ -220,8 +220,8 @@ impl LoadRegisterLiteral {
             }
         } else if self.opc() == 2 {
             // 128-bit floating point load
-            emulate.read_memory(address, &mut buf[..]).await?;
-            u128::from_ne_bytes(buf[..].try_into().unwrap())
+            emulate.read_memory(address, &mut buf[..], false).await?;
+            u128::from_le_bytes(buf[..].try_into().unwrap())
         } else {
             return Err(Box::new(Error::UnsupportedInstruction(self.0)));
         };
@@ -266,7 +266,8 @@ impl LoadStoreRegister {
             0..=1 => LoadStoreRegisterByteCount::One,
             2..=3 if self.is_fp_register() => LoadStoreRegisterByteCount::FloatingPoint,
             2..=3 => LoadStoreRegisterByteCount::One,
-            4..=7 => LoadStoreRegisterByteCount::Two,
+            4..=5 => LoadStoreRegisterByteCount::Two,
+            6..=7 if !self.is_fp_register() => LoadStoreRegisterByteCount::Two,
             8..=9 => LoadStoreRegisterByteCount::Four,
             10 if !self.is_fp_register() => LoadStoreRegisterByteCount::Four,
             12..=13 => LoadStoreRegisterByteCount::Eight,
@@ -281,12 +282,7 @@ impl LoadStoreRegister {
         &self,
         emulate: &mut EmulatorOperations<T>,
     ) -> Result<(u64, u64), Box<Error<T::Error>>> {
-        let start_address = if self.rn() < 31 {
-            emulate.cpu.x(self.rn())
-        } else {
-            emulate.cpu.sp()
-        };
-        let end_address = match decode_load_store_group(self.0)? {
+        let offset = match decode_load_store_group(self.0)? {
             Aarch64DecodeLoadStoreGroup::UnscaledImmediate
             | Aarch64DecodeLoadStoreGroup::RegisterUnprivileged
             | Aarch64DecodeLoadStoreGroup::RegisterUnscaledImmediate
@@ -299,7 +295,7 @@ impl LoadStoreRegister {
                 } else {
                     unsigned_addr as i32
                 } as i64;
-                (start_address as i64).wrapping_add(signed_addr) as u64
+                signed_addr as u64
             }
             Aarch64DecodeLoadStoreGroup::RegisterUnsignedImmediate => {
                 let size = self.data_size()?;
@@ -311,11 +307,14 @@ impl LoadStoreRegister {
                         LoadStoreRegisterByteCount::Eight => 3,
                         LoadStoreRegisterByteCount::FloatingPoint => 4,
                     };
-                start_address.wrapping_add((self.0 as u64 & 0x3ffc00) >> shift)
+                (self.0 as u64 & 0x3ffc00) >> shift
             }
             Aarch64DecodeLoadStoreGroup::RegisterOffset => {
                 let rm = ((self.0 >> 16) & 0x1f) as u8;
                 let option = (self.0 >> 13) & 0x7;
+                if option & 2 == 0 {
+                    return Err(Box::new(Error::UnsupportedInstruction(self.0)));
+                }
                 let apply_shift = (self.0 & 0x1000) != 0;
                 let offset = if rm == 31 { 0 } else { emulate.cpu.x(rm) };
                 let offset = if (option & 1) != 0 {
@@ -329,12 +328,10 @@ impl LoadStoreRegister {
                     offset & 0xffffffff
                 };
                 // If shift (S bit) is set, offset is in size being fetched instead of bytes.
-                let offset = if apply_shift {
+                if apply_shift {
                     let size = self.data_size()?;
                     match size {
-                        LoadStoreRegisterByteCount::One => {
-                            return Err(Box::new(Error::UnsupportedInstruction(self.0)));
-                        }
+                        LoadStoreRegisterByteCount::One => offset,
                         LoadStoreRegisterByteCount::Two => offset << 1,
                         LoadStoreRegisterByteCount::Four => offset << 2,
                         LoadStoreRegisterByteCount::Eight => offset << 3,
@@ -342,12 +339,12 @@ impl LoadStoreRegister {
                     }
                 } else {
                     offset
-                };
-                start_address.wrapping_add(offset)
+                }
             }
-            _ => panic!("Unsupported opcode"),
+            _ => return Err(Box::new(Error::UnsupportedInstruction(self.0))),
         };
-        Ok((start_address, end_address))
+        let start_address = emulate.base_address(self.rn())?;
+        Ok((start_address, start_address.wrapping_add(offset)))
     }
 
     fn rn(&self) -> u8 {
@@ -364,7 +361,7 @@ impl LoadStoreRegister {
     ) -> Result<(), Box<Error<T::Error>>> {
         let op_group = decode_load_store_group(self.0)?;
         let op = self.size() << 2 | self.opc();
-        if op == 14 {
+        if op == 14 && !self.is_fp_register() {
             match op_group {
                 Aarch64DecodeLoadStoreGroup::UnscaledImmediate
                 | Aarch64DecodeLoadStoreGroup::RegisterUnscaledImmediate
@@ -390,6 +387,21 @@ impl LoadStoreRegister {
         };
         let size = self.data_size()?;
         let register_index = self.rt();
+        let ordered = matches!(op_group, Aarch64DecodeLoadStoreGroup::UnscaledImmediate);
+        // Relaxing this requires the guest's LSE2 capability and effective
+        // memory attributes, which the backend does not currently expose.
+        if ordered && !address.is_multiple_of(1 << self.size()) {
+            return Err(Box::new(Error::InstructionException(
+                aarch64defs::IssDataAbort::new()
+                    .with_dfsc(aarch64defs::FaultStatusCode::ALIGNMENT_FAULT)
+                    .with_wnr(self.opc() == 0)
+                    .into(),
+                address,
+            )));
+        }
+        if ordered && self.opc() == 0 {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+        }
         tracing::trace!(
             ?op_group,
             op,
@@ -451,8 +463,10 @@ impl LoadStoreRegister {
             }
             3 if self.is_fp_register() => {
                 let mut new_val = [0_u8; 16];
-                emulate.read_memory(address, &mut new_val[..]).await?;
-                let new_val = u128::from_ne_bytes(new_val);
+                emulate
+                    .read_memory(address, &mut new_val[..], false)
+                    .await?;
+                let new_val = u128::from_le_bytes(new_val);
                 emulate.cpu.update_q(register_index, new_val);
             }
             1 | 2 | 3 | 5 | 6 | 7 | 9 | 10 | 13 => {
@@ -460,20 +474,20 @@ impl LoadStoreRegister {
                 let mut buf = [0_u8; 8];
                 let new_val = match size {
                     LoadStoreRegisterByteCount::One => {
-                        emulate.read_memory(address, &mut buf[..1]).await?;
-                        u8::from_ne_bytes(buf[..1].try_into().unwrap()) as u64
+                        emulate.read_memory(address, &mut buf[..1], false).await?;
+                        u8::from_le_bytes(buf[..1].try_into().unwrap()) as u64
                     }
                     LoadStoreRegisterByteCount::Two => {
-                        emulate.read_memory(address, &mut buf[..2]).await?;
-                        u16::from_ne_bytes(buf[..2].try_into().unwrap()) as u64
+                        emulate.read_memory(address, &mut buf[..2], false).await?;
+                        u16::from_le_bytes(buf[..2].try_into().unwrap()) as u64
                     }
                     LoadStoreRegisterByteCount::Four => {
-                        emulate.read_memory(address, &mut buf[..4]).await?;
-                        u32::from_ne_bytes(buf[..4].try_into().unwrap()) as u64
+                        emulate.read_memory(address, &mut buf[..4], false).await?;
+                        u32::from_le_bytes(buf[..4].try_into().unwrap()) as u64
                     }
                     LoadStoreRegisterByteCount::Eight => {
-                        emulate.read_memory(address, &mut buf[..]).await?;
-                        u64::from_ne_bytes(buf[..].try_into().unwrap())
+                        emulate.read_memory(address, &mut buf[..], false).await?;
+                        u64::from_le_bytes(buf[..].try_into().unwrap())
                     }
                     _ => return Err(Box::new(Error::UnsupportedInstruction(self.0))),
                 };
@@ -495,6 +509,9 @@ impl LoadStoreRegister {
                 } else {
                     new_val
                 };
+                if ordered {
+                    std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+                }
                 if self.is_fp_register() {
                     emulate.cpu.update_d(register_index, new_val);
                 } else if register_index != 31 {
@@ -595,21 +612,15 @@ impl LoadStoreRegisterPair {
                 return Err(Box::new(Error::UnsupportedInstruction(self.0)));
             }
         };
-        let start_address = if self.rn() != 31 {
-            emulate.cpu.x(self.rn())
-        } else {
-            emulate.cpu.sp()
-        };
-        let end_address = (start_address as i64 + self.imm() * (size_bytes as i64)) as u64;
+        let start_address = emulate.base_address(self.rn())?;
+        let end_address = start_address.wrapping_add_signed(self.imm() * size_bytes as i64);
         let address = if matches!(op_group, Aarch64DecodeLoadStoreGroup::RegisterPairPostIndex) {
             start_address
         } else {
             end_address
         };
         if self.is_load() {
-            // N.B. We could read both values at once, but many of our virtual
-            //      devices' MMIO handlers expect specific sizes, so break the
-            //      operation into two separate accesses.
+            // Pairs are separate element-sized accesses, including for MMIO.
             let mut value = [0_u8; 16];
             let get_val = |val: &[u8]| match size {
                 LoadStoreRegisterByteCount::Four => {
@@ -629,16 +640,12 @@ impl LoadStoreRegisterPair {
                 _ => unreachable!(),
             };
             let val = &mut value[..size_bytes];
-            let val1 = {
-                emulate.read_memory(address, val).await?;
-                get_val(val)
-            };
-            let val2 = {
-                emulate
-                    .read_memory(address + (size_bytes as u64), val)
-                    .await?;
-                get_val(val)
-            };
+            emulate.read_memory(address, val, false).await?;
+            let val1 = get_val(val);
+            emulate
+                .read_memory(address.wrapping_add(size_bytes as u64), val, false)
+                .await?;
+            let val2 = get_val(val);
             if self.is_fp_register() {
                 emulate.cpu.update_q(self.rt(), val1);
             } else if self.rt() != 31 {
@@ -665,23 +672,15 @@ impl LoadStoreRegisterPair {
             } else {
                 0
             };
-            let get_val = |val: u128| match size {
-                LoadStoreRegisterByteCount::Four => {
-                    ((val & 0xffffffff) as u32).to_le_bytes().to_vec()
-                }
-                LoadStoreRegisterByteCount::Eight => {
-                    ((val & 0xffffffff_ffffffff) as u64).to_le_bytes().to_vec()
-                }
-                LoadStoreRegisterByteCount::FloatingPoint => val.to_le_bytes().to_vec(),
-                _ => unreachable!(),
-            };
-            // N.B. We could write both values at once, but many of our virtual
-            //      devices' MMIO handlers expect specific sizes, so break the
-            //      operation into two separate accesses.
-            value[..size_bytes].copy_from_slice(get_val(val1).as_slice());
+            value[..size_bytes].copy_from_slice(&val1.to_le_bytes()[..size_bytes]);
             emulate.write_memory(address, &value[..size_bytes]).await?;
-            value[..size_bytes].copy_from_slice(get_val(val2).as_slice());
-            emulate.write_memory(address, &value[..size_bytes]).await?;
+            value[..size_bytes].copy_from_slice(&val2.to_le_bytes()[..size_bytes]);
+            emulate
+                .write_memory(
+                    address.wrapping_add(size_bytes as u64),
+                    &value[..size_bytes],
+                )
+                .await?;
         }
         if matches!(
             op_group,
@@ -724,14 +723,24 @@ impl LoadStoreAtomic {
     pub async fn emulate<T: Cpu>(
         &self,
         emulate: &mut EmulatorOperations<T>,
-    ) -> Result<(), Box<Error<T::Error>>> {
-        let rn = self.rn();
-        let address = if rn < 31 {
-            emulate.cpu.x(self.rn())
-        } else {
-            emulate.cpu.sp()
-        };
+    ) -> Result<bool, Box<Error<T::Error>>> {
+        // Validate the operand before reading memory or changing register state.
+        let load_only = self.op3_opc() == 12 && self.0 & 0x3fff_fc00 == 0x38bf_c000;
+        if self.0 & 0x0400_0000 != 0 || (self.op3_opc() > 8 && !load_only) {
+            return Err(Box::new(Error::UnsupportedInstruction(self.0)));
+        }
+        let address = emulate.base_address(self.rn())?;
         let size = self.size();
+        if !address.is_multiple_of(size) {
+            // Only naturally aligned acquire and RMW accesses are supported.
+            return Err(Box::new(Error::InstructionException(
+                aarch64defs::IssDataAbort::new()
+                    .with_dfsc(aarch64defs::FaultStatusCode::ALIGNMENT_FAULT)
+                    .with_wnr(!load_only)
+                    .into(),
+                address,
+            )));
+        }
         let size_mask = if size < 8 {
             (1 << (8 * self.size())) - 1
         } else {
@@ -744,11 +753,22 @@ impl LoadStoreAtomic {
         } else {
             0
         };
-        loop {
+        // Retry with fresh data on contention, but give control back after a
+        // bounded number of attempts without advancing PC or updating Rt.
+        for _ in 0..16 {
             let mut value_buf = [0_u8; 8];
-            emulate.read_memory(address, &mut value_buf).await?;
+            emulate
+                .read_memory(address, &mut value_buf[..size as usize], !load_only)
+                .await?;
             let value = u64::from_le_bytes(value_buf);
             let sized_value = value & size_mask;
+            if load_only {
+                std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+                if rt != 31 {
+                    emulate.cpu.update_x(rt, sized_value);
+                }
+                return Ok(true);
+            }
             let new_value = match self.op3_opc() {
                 0 => sized_value.wrapping_add(update_val),
                 1 => sized_value & !update_val,
@@ -771,7 +791,6 @@ impl LoadStoreAtomic {
                 6 => sized_value.max(update_val),
                 7 => sized_value.min(update_val),
                 8 => update_val,
-                12 => value,
                 _ => {
                     return Err(Box::new(Error::UnsupportedLoadStoreInstruction(
                         Aarch64DecodeLoadStoreGroup::Atomic,
@@ -780,17 +799,33 @@ impl LoadStoreAtomic {
                 }
             };
             let new_value = value & !size_mask | new_value & size_mask;
-            if emulate
-                .compare_and_write_memory(address, &value_buf, &new_value.to_le_bytes()[..])
-                .await?
-            {
+            if self.0 & (1 << 22) != 0 {
+                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+            }
+            let mut success = false;
+            emulate
+                .cpu
+                .compare_and_write_memory(
+                    address,
+                    &value_buf[..size as usize],
+                    &new_value.to_le_bytes()[..size as usize],
+                    &mut success,
+                )
+                .await
+                .map_err(|e| {
+                    Error::MemoryAccess(address, crate::emulator::OperationKind::Write, e)
+                })?;
+            if success {
+                if self.0 & (1 << 23) != 0 && rt != 31 {
+                    std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+                }
                 if rt != 31 {
                     emulate.cpu.update_x(rt, sized_value);
                 }
-                break;
+                return Ok(true);
             }
         }
-        Ok(())
+        Ok(false)
     }
 }
 
