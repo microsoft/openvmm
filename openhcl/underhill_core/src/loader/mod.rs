@@ -82,12 +82,12 @@ pub enum Error {
     ExpectedGicV3,
 }
 
-pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
-    loader_defs::paravisor::PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_X64
-} else if cfg!(guest_arch = "aarch64") {
-    loader_defs::paravisor::PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64
-} else {
-    panic!("unsupported guest architecture");
+pub const PV_CONFIG_BASE_PAGE: u64 = cfg_select! {
+    guest_arch = "x86_64" => loader_defs::paravisor::PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_X64,
+    guest_arch = "aarch64" => {
+        loader_defs::paravisor::PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64
+    }
+    _ => compile_error!("unsupported guest architecture"),
 };
 
 /// Additional loader config specified at runtime via underhill launch arguments.
@@ -468,7 +468,6 @@ pub fn write_uefi_config(
     let mut build_madt = true;
     let mut build_srat = true;
 
-    #[cfg(not(guest_arch = "x86_64"))]
     let _ = chipset_capabilities;
 
     // ACPI tables that come from the DevicePlatformSettings
@@ -669,7 +668,6 @@ pub fn write_uefi_config(
 
         #[cfg(guest_arch = "x86_64")]
         flags.set_sgx_memory_enabled(caps.sgx);
-        #[cfg(not(guest_arch = "x86_64"))]
         let _ = caps;
 
         // Frontpage is disabled if either the host requests it, or the openhcl

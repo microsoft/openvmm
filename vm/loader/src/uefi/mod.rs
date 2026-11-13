@@ -6,10 +6,17 @@
 pub mod config;
 pub mod firmware_version;
 
-#[cfg(guest_arch = "aarch64")]
-use aarch64 as arch;
-#[cfg(guest_arch = "x86_64")]
-use x86_64 as arch;
+cfg_select! {
+    guest_arch = "aarch64" => {
+        use aarch64 as arch;
+    }
+    guest_arch = "x86_64" => {
+        use x86_64 as arch;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 
 pub use arch::CONFIG_BLOB_GPA_BASE;
 pub use arch::IMAGE_SIZE;

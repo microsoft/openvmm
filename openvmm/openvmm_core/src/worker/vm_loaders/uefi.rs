@@ -428,20 +428,19 @@ mod tests {
     use uefi_specs::hyperv::firmware_version;
     use uefi_specs::uefi::firmware_volume;
 
+    const FIRMWARE_VOLUME_OFFSET: usize = cfg_select! {
+        guest_arch = "x86_64" => 0,
+        guest_arch = "aarch64" => 0x1000,
+        _ => compile_error!("unsupported guest architecture"),
+    };
+
     fn size24(value: usize) -> [u8; 3] {
         let value = (value as u32).to_le_bytes();
         [value[0], value[1], value[2]]
     }
 
     fn firmware_image(interface: Option<(u16, u16)>) -> Vec<u8> {
-        let mut image = vec![
-            0;
-            if cfg!(guest_arch = "aarch64") {
-                0x1000
-            } else {
-                0
-            }
-        ];
+        let mut image = vec![0; FIRMWARE_VOLUME_OFFSET];
         let mut fv = vec![0xff; 0x1000];
         let fv_length = fv.len() as u64;
         fv[32..40].copy_from_slice(&fv_length.to_le_bytes());
@@ -581,12 +580,8 @@ mod tests {
         assert!(check_firmware_version(&incompatible, true).is_ok());
 
         let mut malformed = firmware_image(Some((1, 0)));
-        let signature_offset = if cfg!(guest_arch = "aarch64") {
-            0x1000
-        } else {
-            0
-        } + size_of::<firmware_volume::FirmwareVolumeHeader>()
-            .next_multiple_of(8)
+        let signature_offset = FIRMWARE_VOLUME_OFFSET
+            + size_of::<firmware_volume::FirmwareVolumeHeader>().next_multiple_of(8)
             + size_of::<firmware_volume::FfsFileHeader>()
             + size_of::<firmware_volume::CommonSectionHeader>();
         malformed[signature_offset] = 0;

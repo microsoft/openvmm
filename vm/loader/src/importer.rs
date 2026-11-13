@@ -3,10 +3,17 @@
 
 //! Common loader image loading traits and types used by all loaders.
 
-#[cfg(guest_arch = "aarch64")]
-pub use Aarch64Register as Register;
-#[cfg(guest_arch = "x86_64")]
-pub use X86Register as Register;
+cfg_select! {
+    guest_arch = "aarch64" => {
+        pub use Aarch64Register as Register;
+    }
+    guest_arch = "x86_64" => {
+        pub use X86Register as Register;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 
 /// The page acceptance used for importing pages into the initial launch context
 /// of the guest.

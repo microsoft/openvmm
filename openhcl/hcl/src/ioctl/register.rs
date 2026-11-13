@@ -25,11 +25,17 @@ use std::os::fd::AsRawFd;
 use thiserror::Error;
 use zerocopy::FromZeros;
 
-#[cfg(guest_arch = "x86_64")]
-type HvArchRegisterName = hvdef::HvX64RegisterName;
-
-#[cfg(guest_arch = "aarch64")]
-type HvArchRegisterName = hvdef::HvArm64RegisterName;
+cfg_select! {
+    guest_arch = "x86_64" => {
+        type HvArchRegisterName = hvdef::HvX64RegisterName;
+    }
+    guest_arch = "aarch64" => {
+        type HvArchRegisterName = hvdef::HvArm64RegisterName;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
@@ -318,18 +324,17 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     {
         let registers: Vec<HvRegisterAssoc> = values.into_iter().map(Into::into).collect();
 
-        #[cfg(guest_arch = "x86_64")]
-        let per_arch = |name| {
-            matches!(
-                name,
-                HvArchRegisterName::CrInterceptControl
-                    | HvArchRegisterName::SevAvicGpa
-                    | HvArchRegisterName::GuestVsmPartitionConfig
-            )
+        let per_arch = cfg_select! {
+            guest_arch = "x86_64" => |name| {
+                matches!(
+                    name,
+                    HvArchRegisterName::CrInterceptControl
+                        | HvArchRegisterName::SevAvicGpa
+                        | HvArchRegisterName::GuestVsmPartitionConfig
+                )
+            },
+            _ => |_: HvArchRegisterName| false,
         };
-
-        #[cfg(guest_arch = "aarch64")]
-        let per_arch = |_: HvArchRegisterName| false;
 
         assert!(registers.iter().all(
             |HvRegisterAssoc {
@@ -427,23 +432,25 @@ impl Hcl {
     pub fn get_privileges_and_features_info(
         &self,
     ) -> Result<hvdef::HvPartitionPrivilege, GetRegError> {
-        #[cfg(guest_arch = "x86_64")]
-        {
-            let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
-            let num = result.eax as u64 | ((result.ebx as u64) << 32);
-            Ok(hvdef::HvPartitionPrivilege::from(num))
-        }
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
+                let num = result.eax as u64 | ((result.ebx as u64) << 32);
+                Ok(hvdef::HvPartitionPrivilege::from(num))
+            }}
+            guest_arch = "aarch64" => {{
+                if self.isolation.is_hardware_isolated() {
+                    return Ok(hvdef::HvPartitionPrivilege::default());
+                }
 
-        #[cfg(guest_arch = "aarch64")]
-        {
-            if self.isolation.is_hardware_isolated() {
-                return Ok(hvdef::HvPartitionPrivilege::default());
-            }
-
-            Ok(hvdef::HvPartitionPrivilege::from(
-                self.get_partition_vtl2_register(HvArchRegisterName::PrivilegesAndFeaturesInfo)?
+                Ok(hvdef::HvPartitionPrivilege::from(
+                    self.get_partition_vtl2_register(
+                        HvArchRegisterName::PrivilegesAndFeaturesInfo,
+                    )?
                     .as_u64(),
-            ))
+                ))
+            }}
+            _ => compile_error!("unsupported guest architecture"),
         }
     }
 
@@ -494,31 +501,32 @@ impl Hcl {
     }
 
     /// Sets the Power Management Timer assist in the hypervisor.
-    #[cfg(guest_arch = "x86_64")]
     pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), SetRegError> {
-        tracing::debug!(?port, "set_pm_timer_assist");
-        if self.isolation.is_hardware_isolated() {
-            if port.is_some() {
-                unimplemented!("set_pm_timer_assist");
-            }
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                tracing::debug!(?port, "set_pm_timer_assist");
+                if self.isolation.is_hardware_isolated() {
+                    if port.is_some() {
+                        unimplemented!("set_pm_timer_assist");
+                    }
+                }
+
+                let val = HvRegisterValue::from(u64::from(match port {
+                    Some(p) => hvdef::HvPmTimerInfo::new()
+                        .with_port(p)
+                        .with_enabled(true)
+                        .with_width_24(false),
+                    None => 0.into(),
+                }));
+
+                self.set_partition_vtl2_register(HvArchRegisterName::PmTimerAssist, val)
+            }}
+            guest_arch = "aarch64" => {{
+                tracing::debug!(?port, "set_pm_timer_assist unimplemented on aarch64");
+                Err(SetRegError::Hypercall(HvError::UnknownRegisterName))
+            }}
+            _ => compile_error!("unsupported guest architecture"),
         }
-
-        let val = HvRegisterValue::from(u64::from(match port {
-            Some(p) => hvdef::HvPmTimerInfo::new()
-                .with_port(p)
-                .with_enabled(true)
-                .with_width_24(false),
-            None => 0.into(),
-        }));
-
-        self.set_partition_vtl2_register(HvArchRegisterName::PmTimerAssist, val)
-    }
-
-    /// Sets the Power Management Timer assist in the hypervisor.
-    #[cfg(guest_arch = "aarch64")]
-    pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), SetRegError> {
-        tracing::debug!(?port, "set_pm_timer_assist unimplemented on aarch64");
-        Err(SetRegError::Hypercall(HvError::UnknownRegisterName))
     }
 
     /// Get the given register on the partition for VTL 2 via hypercall.
@@ -527,11 +535,10 @@ impl Hcl {
         &self,
         name: HvArchRegisterName,
     ) -> Result<HvRegisterValue, GetRegError> {
-        #[cfg(guest_arch = "x86_64")]
-        let per_arch = false;
-
-        #[cfg(guest_arch = "aarch64")]
-        let per_arch = matches!(name, HvArchRegisterName::PrivilegesAndFeaturesInfo);
+        let per_arch = cfg_select! {
+            guest_arch = "aarch64" => matches!(name, HvArchRegisterName::PrivilegesAndFeaturesInfo),
+            _ => false,
+        };
 
         assert!(
             matches!(
@@ -555,11 +562,10 @@ impl Hcl {
         name: HvArchRegisterName,
         value: HvRegisterValue,
     ) -> Result<(), SetRegError> {
-        #[cfg(guest_arch = "x86_64")]
-        let per_arch = matches!(name, HvArchRegisterName::PmTimerAssist);
-
-        #[cfg(guest_arch = "aarch64")]
-        let per_arch = false;
+        let per_arch = cfg_select! {
+            guest_arch = "x86_64" => matches!(name, HvArchRegisterName::PmTimerAssist),
+            _ => false,
+        };
 
         assert!(
             matches!(

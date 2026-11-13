@@ -221,13 +221,12 @@ fn parse_vtl0_vp_context(raw: Vec<u8>) -> Result<VpContext, Error> {
             .read_exact(reg.as_mut_bytes())
             .map_err(|_| Error::InvalidVtl0VpContext)?;
 
-        #[cfg(guest_arch = "x86_64")]
-        let igvm_reg: igvm::registers::X86Register =
-            reg.try_into().map_err(Error::UnsupportedRegister)?;
-
-        #[cfg(guest_arch = "aarch64")]
-        let igvm_reg: igvm::registers::AArch64Register =
-            reg.try_into().map_err(Error::UnsupportedRegister)?;
+        let igvm_reg = cfg_select! {
+            guest_arch = "x86_64" => igvm::registers::X86Register::try_from(reg),
+            guest_arch = "aarch64" => igvm::registers::AArch64Register::try_from(reg),
+            _ => compile_error!("unsupported guest architecture"),
+        }
+        .map_err(Error::UnsupportedRegister)?;
 
         registers.push(igvm_reg.into());
     }

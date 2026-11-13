@@ -12,10 +12,11 @@ use zerocopy::FromBytes;
 const FILE_ALIGNMENT: usize = 8;
 const SECTION_ALIGNMENT: usize = 4;
 const ERASED_BYTE: u8 = 0xff;
-#[cfg(guest_arch = "x86_64")]
-const FIRST_FIRMWARE_VOLUME_OFFSET: usize = 0;
-#[cfg(guest_arch = "aarch64")]
-const FIRST_FIRMWARE_VOLUME_OFFSET: usize = 0x1000;
+const FIRST_FIRMWARE_VOLUME_OFFSET: usize = cfg_select! {
+    guest_arch = "x86_64" => 0,
+    guest_arch = "aarch64" => 0x1000,
+    _ => compile_error!("unsupported guest architecture"),
+};
 
 /// A parsed view of an MSVM firmware version record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,33 +190,34 @@ pub fn find_in_firmware_image(image: &[u8]) -> Result<Option<MsvmFirmwareVersion
     let fv = image
         .get(FIRST_FIRMWARE_VOLUME_OFFSET..)
         .ok_or(Error::VolumeHeader)?;
-    #[cfg(guest_arch = "x86_64")]
-    return find_in_firmware_volume(fv);
-    #[cfg(guest_arch = "aarch64")]
-    {
-        // Locate the record before interpreting its interface version. Older
-        // images have separate PEI/DXE volumes; newer ones combine them.
-        let mut volumes = fv;
-        loop {
-            let header = firmware_volume::FirmwareVolumeHeader::read_from_prefix(volumes)
-                .map_err(|_| Error::VolumeHeader)?
-                .0;
-            let length = usize::try_from(header.fv_length)
-                .ok()
-                .filter(|&length| {
-                    length >= size_of::<firmware_volume::FirmwareVolumeHeader>()
-                        && length <= volumes.len()
-                })
-                .ok_or(Error::VolumeHeader)?;
-            let (fv, remaining) = volumes.split_at(length);
-            if let Some(version) = find_in_firmware_volume(fv)? {
-                return Ok(Some(version));
+    cfg_select! {
+        guest_arch = "x86_64" => find_in_firmware_volume(fv),
+        guest_arch = "aarch64" => {{
+            // Locate the record before interpreting its interface version. Older
+            // images have separate PEI/DXE volumes; newer ones combine them.
+            let mut volumes = fv;
+            loop {
+                let header = firmware_volume::FirmwareVolumeHeader::read_from_prefix(volumes)
+                    .map_err(|_| Error::VolumeHeader)?
+                    .0;
+                let length = usize::try_from(header.fv_length)
+                    .ok()
+                    .filter(|&length| {
+                        length >= size_of::<firmware_volume::FirmwareVolumeHeader>()
+                            && length <= volumes.len()
+                    })
+                    .ok_or(Error::VolumeHeader)?;
+                let (fv, remaining) = volumes.split_at(length);
+                if let Some(version) = find_in_firmware_volume(fv)? {
+                    return Ok(Some(version));
+                }
+                if remaining.is_empty() {
+                    return Ok(None);
+                }
+                volumes = remaining;
             }
-            if remaining.is_empty() {
-                return Ok(None);
-            }
-            volumes = remaining;
-        }
+        }}
+        _ => compile_error!("unsupported guest architecture"),
     }
 }
 
@@ -314,10 +316,7 @@ mod tests {
     }
 
     fn image(split: bool, interface: Option<(u16, u16)>) -> Vec<u8> {
-        #[cfg(guest_arch = "x86_64")]
-        let mut image = Vec::new();
-        #[cfg(guest_arch = "aarch64")]
-        let mut image = vec![0; 0x1000];
+        let mut image = vec![0; FIRST_FIRMWARE_VOLUME_OFFSET];
         if split {
             image.extend(volume(0x1ff000, None));
         }
@@ -351,10 +350,11 @@ mod tests {
 
     #[test]
     fn rejects_malformed_volumes_and_records() {
-        #[cfg(guest_arch = "x86_64")]
-        let layouts = [(false, 0)];
-        #[cfg(guest_arch = "aarch64")]
-        let layouts = [(false, 0x1000), (true, 0x200000)];
+        let layouts = cfg_select! {
+            guest_arch = "x86_64" => [(false, 0)],
+            guest_arch = "aarch64" => [(false, 0x1000), (true, 0x200000)],
+            _ => compile_error!("unsupported guest architecture"),
+        };
         for (split, offset) in layouts {
             let original = image(split, Some((2, 0)));
             let mut malformed = original.clone();

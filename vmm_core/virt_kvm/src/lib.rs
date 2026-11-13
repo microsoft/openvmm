@@ -12,13 +12,18 @@
 mod arch;
 mod gsi;
 mod memory;
-#[cfg(guest_arch = "x86_64")]
-mod snp;
+
+cfg_select! {
+    guest_arch = "x86_64" => {
+        mod snp;
+        pub use snp::SnpError;
+        use snp::SnpLaunchState;
+    }
+    _ => {}
+}
 
 pub use arch::Kvm;
 pub use memory::MemoryError;
-#[cfg(guest_arch = "x86_64")]
-pub use snp::SnpError;
 
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -40,8 +45,6 @@ pub fn is_available() -> Result<bool, KvmError> {
 }
 
 use arch::KvmVpInner;
-#[cfg(guest_arch = "x86_64")]
-use snp::SnpLaunchState;
 use std::sync::atomic::Ordering;
 use virt::VpIndex;
 use vmcore::vmtime::VmTimeAccess;
@@ -214,10 +217,11 @@ impl KvmPartitionInner {
         let Some(vp) = self.vp(vp_index) else { return };
         vp.set_eval(true, Ordering::Relaxed);
 
-        #[cfg(guest_arch = "x86_64")]
-        self.kvm.vp(vp.vp_info().apic_id).force_exit();
-
-        #[cfg(guest_arch = "aarch64")]
-        self.kvm.vp(vp.vp_info().base.vp_index.index()).force_exit();
+        let vp_id = cfg_select! {
+            guest_arch = "x86_64" => vp.vp_info().apic_id,
+            guest_arch = "aarch64" => vp.vp_info().base.vp_index.index(),
+            _ => compile_error!("unsupported guest architecture"),
+        };
+        self.kvm.vp(vp_id).force_exit();
     }
 }
