@@ -10,6 +10,7 @@ mod opcodes;
 
 pub use cpu::AccessCpuState;
 pub use cpu::Cpu;
+pub use cpu::ReadKind;
 pub use emulator::Emulator;
 pub use emulator::Error;
 pub use emulator::InterceptState;

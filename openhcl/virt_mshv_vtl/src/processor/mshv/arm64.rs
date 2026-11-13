@@ -445,6 +445,7 @@ pub struct UhCpuStateCache {
     x18: Option<(u64, bool)>,
 
     cpsr: Option<Cpsr64>,
+    sctlr: Option<aarch64defs::SctlrEl1>,
 }
 
 impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedArm64> {
@@ -605,6 +606,17 @@ impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedAr
 }
 
 impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedArm64> {
+    fn sctlr(&mut self) -> aarch64defs::SctlrEl1 {
+        *self.cache.sctlr.get_or_insert_with(|| {
+            self.vp
+                .runner
+                .get_vp_register(self.vtl, HvArm64RegisterName::SctlrEl1)
+                .expect("register query should not fail")
+                .as_u64()
+                .into()
+        })
+    }
+
     fn vp_index(&self) -> VpIndex {
         self.vp.vp_index()
     }
@@ -739,13 +751,21 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
     ) -> Result<EmuTranslateResult, EmuTranslateError> {
         let mut control_flags = hypercall::TranslateGvaControlFlagsArm64::new();
         match mode {
-            emulate::TranslateMode::Read => control_flags.set_validate_read(true),
-            emulate::TranslateMode::Write => {
+            emulate::TranslateMode::Read | emulate::TranslateMode::ReadUnprivileged => {
+                control_flags.set_validate_read(true)
+            }
+            emulate::TranslateMode::Write | emulate::TranslateMode::WriteUnprivileged => {
                 control_flags.set_validate_read(true);
                 control_flags.set_validate_write(true);
             }
             emulate::TranslateMode::Execute => control_flags.set_validate_execute(true),
         };
+        if matches!(
+            mode,
+            emulate::TranslateMode::ReadUnprivileged | emulate::TranslateMode::WriteUnprivileged
+        ) {
+            control_flags.set_user_access(true);
+        }
 
         // The translation will be used, so set the appropriate page table bits
         // (the access/dirty bit).

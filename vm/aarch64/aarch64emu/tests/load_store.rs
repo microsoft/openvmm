@@ -7,16 +7,27 @@ use aarch64emu::AccessCpuState;
 use aarch64emu::Cpu;
 use aarch64emu::Emulator;
 use aarch64emu::InterceptState;
+use aarch64emu::ReadKind;
 use pal_async::async_test;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use test_with_tracing::test;
 
 #[derive(Debug)]
 pub enum TestCpuError {
     BadAddress,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessKind {
+    Read,
+    Write,
+    ReadWrite,
+    UnprivilegedRead,
+    UnprivilegedWrite,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -26,6 +37,7 @@ pub struct CpuState {
     pc: Arc<AtomicU64>,
     sp: Arc<AtomicU64>,
     cpsr: Arc<AtomicU64>,
+    sctlr: Arc<AtomicU64>,
     instruction: Arc<AtomicU32>,
 }
 
@@ -70,6 +82,13 @@ pub struct SingleCellCpu {
     pub valid_gva: u64,
     pub mem_val: Arc<futures::lock::Mutex<u128>>,
     cpu_state: CpuState,
+    accesses: Vec<(u64, usize, AccessKind)>,
+    comparisons: Vec<usize>,
+    fail_reads: bool,
+    fail_writes: bool,
+    reject_comparisons: bool,
+    instruction_reads: usize,
+    physical_reads: usize,
 }
 
 impl SingleCellCpu {
@@ -84,16 +103,34 @@ impl SingleCellCpu {
 impl Cpu for SingleCellCpu {
     type Error = TestCpuError;
 
-    async fn read_instruction(&mut self, gva: u64, bytes: &mut [u8]) -> Result<(), Self::Error> {
-        if gva == self.cpu_state.pc() && bytes.len() == 4 {
-            bytes.copy_from_slice(self.cpu_state.instruction().to_le_bytes().as_slice());
-            Ok(())
-        } else {
-            Err(TestCpuError::BadAddress)
-        }
+    fn sctlr(&mut self) -> aarch64defs::SctlrEl1 {
+        self.cpu_state.sctlr.load(Ordering::Relaxed).into()
     }
 
-    async fn read_memory(&mut self, gva: u64, bytes: &mut [u8]) -> Result<(), Self::Error> {
+    async fn read_memory(
+        &mut self,
+        gva: u64,
+        bytes: &mut [u8],
+        kind: ReadKind,
+    ) -> Result<(), Self::Error> {
+        let access = match kind {
+            ReadKind::Instruction => {
+                self.instruction_reads += 1;
+                return if gva == self.cpu_state.pc() && bytes.len() == 4 {
+                    bytes.copy_from_slice(&self.cpu_state.instruction().to_le_bytes());
+                    Ok(())
+                } else {
+                    Err(TestCpuError::BadAddress)
+                };
+            }
+            ReadKind::Data => AccessKind::Read,
+            ReadKind::ReadModifyWrite => AccessKind::ReadWrite,
+            ReadKind::Unprivileged => AccessKind::UnprivilegedRead,
+        };
+        self.accesses.push((gva, bytes.len(), access));
+        if self.fail_reads {
+            return Err(TestCpuError::BadAddress);
+        }
         let mem_val = self.mem_val.lock().await;
         let end_mem = self.valid_gva as usize + size_of_val(&*mem_val);
         println!(
@@ -115,14 +152,32 @@ impl Cpu for SingleCellCpu {
 
     async fn read_physical_memory(
         &mut self,
-        _gpa: u64,
-        _bytes: &mut [u8],
+        gpa: u64,
+        bytes: &mut [u8],
         _exec: bool,
     ) -> Result<(), Self::Error> {
-        panic!("Not expected to be used during tests");
+        self.physical_reads += 1;
+        self.read_memory(gpa, bytes, ReadKind::Data).await
     }
 
-    async fn write_memory(&mut self, gva: u64, bytes: &[u8]) -> Result<(), Self::Error> {
+    async fn write_memory(
+        &mut self,
+        gva: u64,
+        bytes: &[u8],
+        unprivileged: bool,
+    ) -> Result<(), Self::Error> {
+        self.accesses.push((
+            gva,
+            bytes.len(),
+            if unprivileged {
+                AccessKind::UnprivilegedWrite
+            } else {
+                AccessKind::Write
+            },
+        ));
+        if self.fail_writes {
+            return Err(TestCpuError::BadAddress);
+        }
         let mut mem_val = self.mem_val.lock().await;
         let end_mem = self.valid_gva as usize + size_of_val(&*mem_val);
         println!(
@@ -144,8 +199,8 @@ impl Cpu for SingleCellCpu {
         }
     }
 
-    async fn write_physical_memory(&mut self, _gpa: u64, _bytes: &[u8]) -> Result<(), Self::Error> {
-        panic!("Not expected to be used during tests");
+    async fn write_physical_memory(&mut self, gpa: u64, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.write_memory(gpa, bytes, false).await
     }
 
     async fn compare_and_write_memory(
@@ -155,6 +210,14 @@ impl Cpu for SingleCellCpu {
         new: &[u8],
         success: &mut bool,
     ) -> Result<(), Self::Error> {
+        self.comparisons.push(current.len());
+        if self.fail_writes {
+            return Err(TestCpuError::BadAddress);
+        }
+        if self.reject_comparisons {
+            *success = false;
+            return Ok(());
+        }
         let mut mem_val = self.mem_val.lock().await;
         if gva == self.valid_gva {
             if &(*mem_val).to_le_bytes().as_ref()[..current.len()] == current {
@@ -1015,17 +1078,280 @@ const fn ldapr(size: u8, rn: u8, rt: u8) -> u32 {
     0x38bfc000 | (size as u32) << 30 | (rn as u32) << 5 | (rt as u32)
 }
 
-//
-// TODO: Add store tests
-//
-// const fn strb(imm9: u16, rn: u8, rt: u8) -> u32 {
-//     if (imm9 & 0xfe00) != 0 {
-//         panic!("Invalid imm9 value");
-//     }
-//     assert!(rn < 32);
-//     assert!(rt < 32);
-//     0x38000c00 | (imm9 as u32) << 12 | (rn as u32) << 5 | (rt as u32)
-// }
+#[async_test]
+async fn pair_stores_use_both_addresses_and_wrap_writeback() {
+    for (opcode, size, fp) in [
+        (0x2900_0440u32, 4, false),
+        (0xa900_0440, 8, false),
+        (0x2d00_0440, 4, true),
+        (0x6d00_0440, 8, true),
+    ] {
+        let mut cpu = SingleCellCpu {
+            valid_gva: 0x100,
+            ..Default::default()
+        };
+        cpu.update_x(2, 0x100);
+        cpu.update_x(0, 0x1122_3344_5566_7788);
+        cpu.update_x(1, 0x99aa_bbcc_ddee_ff00);
+        cpu.update_q(0, 0x1122_3344_5566_7788);
+        cpu.update_q(1, 0x99aa_bbcc_ddee_ff00);
+        let intercept = InterceptState {
+            instruction_bytes: opcode.to_le_bytes(),
+            instruction_byte_count: 4,
+            ..Default::default()
+        };
+        Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+        let value = *cpu.mem_val.lock().await;
+        let mask = if size == 8 {
+            u64::MAX as u128
+        } else {
+            u32::MAX as u128
+        };
+        assert_eq!(
+            value,
+            (0x1122_3344_5566_7788u128 & mask) | ((0x99aa_bbcc_ddee_ff00u128 & mask) << (size * 8)),
+            "fp={fp}"
+        );
+        assert_eq!(
+            cpu.accesses,
+            [
+                (0x100, size, AccessKind::Write),
+                (0x100 + size as u64, size, AccessKind::Write)
+            ]
+        );
+        assert_eq!(cpu.pc(), 4);
+    }
+    let mut cpu = SingleCellCpu::default();
+    cpu.update_x(2, u64::MAX - 7);
+    cpu.update_x(0, 0x1234);
+    cpu.update_x(1, 0x5678);
+    let opcode = 0xa980_8440u32; // stp x0, x1, [x2, #8]!
+    let intercept = InterceptState {
+        instruction_bytes: opcode.to_le_bytes(),
+        instruction_byte_count: 4,
+        ..Default::default()
+    };
+    Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+    assert_eq!(cpu.x(2), 0);
+    assert_eq!(*cpu.mem_val.lock().await, 0x5678_0000_0000_0000_1234);
+}
+
+#[async_test]
+async fn atomics_use_operand_width_and_ldapr_is_read_only() {
+    for size in 0..4 {
+        for load_only in [false, true] {
+            let mut cpu = SingleCellCpu {
+                valid_gva: 0x100,
+                ..Default::default()
+            };
+            cpu.update_x(1, 0x100);
+            cpu.update_x(0, 1);
+            cpu.fail_writes = load_only;
+            *cpu.mem_val.lock().await = 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff;
+            let opcode = if load_only {
+                ldapr(size, 1, 2)
+            } else {
+                ldadd(size, true, true, 0, 1, 2)
+            };
+            let intercept = InterceptState {
+                instruction_bytes: opcode.to_le_bytes(),
+                instruction_byte_count: 4,
+                ..Default::default()
+            };
+            Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+            let len = 1 << size;
+            assert_eq!(
+                cpu.accesses,
+                [(
+                    0x100,
+                    len,
+                    if load_only {
+                        AccessKind::Read
+                    } else {
+                        AccessKind::ReadWrite
+                    }
+                )]
+            );
+            assert_eq!(cpu.comparisons, if load_only { vec![] } else { vec![len] });
+            let mask = u64::MAX >> (64 - len * 8);
+            assert_eq!(cpu.x(2), mask);
+            assert_eq!(
+                *cpu.mem_val.lock().await,
+                if load_only {
+                    u128::MAX
+                } else {
+                    !(mask as u128)
+                }
+            );
+        }
+    }
+}
+
+#[async_test]
+async fn atomic_alignment_and_retry_leave_registers_untouched() {
+    let mut cpu = SingleCellCpu {
+        valid_gva: 0x101,
+        ..Default::default()
+    };
+    cpu.update_x(1, 0x101);
+    cpu.update_x(2, 0xfeed);
+    let intercept = InterceptState {
+        instruction_bytes: ldadd(3, false, false, 0, 1, 2).to_le_bytes(),
+        instruction_byte_count: 4,
+        ..Default::default()
+    };
+    assert!(matches!(
+        *Emulator::new(&mut cpu, &intercept).run().await.unwrap_err(),
+        aarch64emu::Error::InstructionException(_, 0x101)
+    ));
+    assert!(cpu.accesses.is_empty());
+    assert_eq!(cpu.x(2), 0xfeed);
+    assert_eq!(cpu.pc(), 0);
+    cpu.valid_gva = 0x100;
+    cpu.update_x(1, 0x100);
+    cpu.reject_comparisons = true;
+    Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+    assert_eq!(cpu.comparisons.len(), 16);
+    assert_eq!(cpu.x(2), 0xfeed);
+    assert_eq!(cpu.pc(), 0);
+    cpu.reject_comparisons = false;
+    Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+    assert_eq!(cpu.x(2), 0);
+    assert_eq!(cpu.pc(), 4);
+}
+
+#[async_test]
+async fn syndrome_zero_register_still_reads_and_errors_do_not_retry() {
+    for fail in [false, true] {
+        let mut cpu = SingleCellCpu {
+            valid_gva: 0x100,
+            fail_reads: fail,
+            ..Default::default()
+        };
+        let syndrome: aarch64defs::EsrEl2 = aarch64defs::IssDataAbort::new()
+            .with_isv(true)
+            .with_sas(3)
+            .with_sf(true)
+            .with_srt(31)
+            .into();
+        let intercept = InterceptState {
+            gpa: Some(0x100),
+            syndrome: syndrome.with_il(true),
+            ..Default::default()
+        };
+        let result = Emulator::new(&mut cpu, &intercept).run().await;
+        assert_eq!(result.is_err(), fail);
+        assert_eq!(cpu.physical_reads, 1);
+        assert_eq!(cpu.instruction_reads, 0);
+        assert_eq!(cpu.pc(), if fail { 0 } else { 4 });
+    }
+}
+
+#[async_test]
+async fn unprivileged_accesses_and_byte_zero_shift() {
+    for write in [false, true] {
+        let mut cpu = SingleCellCpu {
+            valid_gva: 0x100,
+            ..Default::default()
+        };
+        cpu.update_x(1, 0x100);
+        let opcode = if write {
+            0xf800_0820u32
+        } else {
+            0xf840_0820u32
+        };
+        let intercept = InterceptState {
+            instruction_bytes: opcode.to_le_bytes(),
+            instruction_byte_count: 4,
+            ..Default::default()
+        };
+        Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+        assert_eq!(
+            cpu.accesses,
+            [(
+                0x100,
+                8,
+                if write {
+                    AccessKind::UnprivilegedWrite
+                } else {
+                    AccessKind::UnprivilegedRead
+                }
+            )]
+        );
+    }
+    let mut cpu = SingleCellCpu {
+        valid_gva: 0x100,
+        ..Default::default()
+    };
+    cpu.update_x(1, 0xff);
+    cpu.update_x(2, 1);
+    *cpu.mem_val.lock().await = 0xa5;
+    let opcode = ldrb_reg(OffsetInRegister::Bytes64(2), 1, 0) | 0x1000;
+    let intercept = InterceptState {
+        instruction_bytes: opcode.to_le_bytes(),
+        instruction_byte_count: 4,
+        ..Default::default()
+    };
+    Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+    assert_eq!(cpu.x(0), 0xa5);
+    assert_eq!(cpu.accesses, [(0x100, 1, AccessKind::Read)]);
+    for option in [0, 1, 4, 5] {
+        let opcode = (opcode & !(7 << 13)) | option << 13;
+        let intercept = InterceptState {
+            instruction_bytes: opcode.to_le_bytes(),
+            instruction_byte_count: 4,
+            ..Default::default()
+        };
+        let before = cpu.accesses.len();
+        let pc = cpu.pc();
+        assert!(Emulator::new(&mut cpu, &intercept).run().await.is_err());
+        assert_eq!(cpu.accesses.len(), before);
+        assert_eq!(cpu.pc(), pc);
+    }
+}
+
+#[async_test]
+async fn ordered_unscaled_encodings_transfer_signed_values_and_store_widths() {
+    for (opcode, size, expected) in [
+        (0xd940_0020u32, 8, 0x8877_6655_4433_80ff),
+        (0x9940_0020, 4, 0x4433_80ff),
+        (0x19c0_0020, 1, 0xffff_ffff),
+        (0x59c0_0020, 2, 0xffff_80ff),
+        (0x9980_0020, 4, 0x4433_80ff),
+    ] {
+        let mut cpu = SingleCellCpu {
+            valid_gva: 0x100,
+            ..Default::default()
+        };
+        cpu.update_x(1, 0x100);
+        *cpu.mem_val.lock().await = 0x8877_6655_4433_80ff;
+        let intercept = InterceptState {
+            instruction_bytes: opcode.to_le_bytes(),
+            instruction_byte_count: 4,
+            ..Default::default()
+        };
+        Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+        assert_eq!(cpu.x(0), expected, "{opcode:x}");
+        assert_eq!(cpu.accesses, [(0x100, size, AccessKind::Read)]);
+        assert!(cpu.comparisons.is_empty());
+        assert_eq!(cpu.pc(), 4);
+    }
+    let mut cpu = SingleCellCpu {
+        valid_gva: 0x100,
+        ..Default::default()
+    };
+    cpu.update_x(0, 0x1234_5678);
+    cpu.update_x(1, 0x100);
+    let intercept = InterceptState {
+        instruction_bytes: 0x9900_0020u32.to_le_bytes(),
+        instruction_byte_count: 4,
+        ..Default::default()
+    };
+    Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+    assert_eq!(*cpu.mem_val.lock().await, 0x1234_5678);
+    assert_eq!(cpu.accesses, [(0x100, 4, AccessKind::Write)]);
+    assert_eq!(cpu.pc(), 4);
+}
 
 #[async_test]
 async fn verify_load_register_literal() {
