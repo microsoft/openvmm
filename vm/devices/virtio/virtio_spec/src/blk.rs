@@ -25,6 +25,8 @@ pub const VIRTIO_BLK_F_BLK_SIZE: u32 = 1 << 6;
 pub const VIRTIO_BLK_F_FLUSH: u32 = 1 << 9;
 /// Device exports information on optimal I/O alignment.
 pub const VIRTIO_BLK_F_TOPOLOGY: u32 = 1 << 10;
+/// Device supports multiple request queues.
+pub const VIRTIO_BLK_F_MQ: u32 = 1 << 12;
 /// Device can support discard command.
 pub const VIRTIO_BLK_F_DISCARD: u32 = 1 << 13;
 /// Device can support write zeroes command (not currently advertised).

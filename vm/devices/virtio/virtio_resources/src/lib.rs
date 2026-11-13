@@ -138,6 +138,23 @@ pub mod blk {
         pub disk: Resource<DiskHandleKind>,
         pub read_only: bool,
         pub serial: Option<String>,
+        pub options: VirtioBlkOptions,
+    }
+
+    /// Request queue concurrency for a native virtio-blk device.
+    #[derive(Clone, Copy, MeshPayload)]
+    pub struct VirtioBlkOptions {
+        pub queue_count: u16,
+        pub io_depth: u16,
+    }
+
+    impl Default for VirtioBlkOptions {
+        fn default() -> Self {
+            Self {
+                queue_count: 1,
+                io_depth: 64,
+            }
+        }
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioBlkHandle {

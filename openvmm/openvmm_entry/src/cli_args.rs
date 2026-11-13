@@ -566,9 +566,18 @@ flags:
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port
     `serial=<value>`               1-20 printable ASCII bytes except comma and brackets
+    `num_queues=<count>`           request queues (1-256); overrides --virtio-blk-queues
 "#)]
     #[clap(long = "virtio-blk")]
     pub virtio_blk: Vec<DiskCli>,
+
+    /// Default request queues per native virtio-blk disk (1-256).
+    #[clap(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=256))]
+    pub virtio_blk_queues: u16,
+
+    /// Maximum in-flight requests per native virtio-blk queue.
+    #[clap(long, default_value_t = 64, value_parser = clap::value_parser!(u16).range(1..))]
+    pub virtio_blk_io_depth: u16,
 
     /// Attach a vhost-user device via a Unix socket.
     ///
@@ -2495,6 +2504,7 @@ pub struct DiskCli {
     pub underhill: Option<UnderhillDiskSource>,
     pub pcie_port: Option<String>,
     pub serial: Option<String>,
+    pub num_queues: Option<u16>,
     pub controller: Option<String>,
     pub nsid: Option<u32>,
     pub lun: Option<u8>,
@@ -2549,6 +2559,7 @@ struct DiskArgs {
     uh_nvme: bool,
     pcie_port: Option<String>,
     serial: Option<String>,
+    num_queues: Option<u16>,
     #[kv(key = "on")]
     controller: Option<String>,
     nsid: Option<u32>,
@@ -2573,10 +2584,15 @@ impl FromStr for DiskCli {
         let vtl = args.vtl;
         let pcie_port = args.pcie_port;
         let serial = args.serial;
+        let num_queues = args.num_queues;
         let controller = args.controller;
         let nsid = args.nsid;
         let lun = args.lun;
         let relay = args.relay.map(|r| (r.name, r.location));
+
+        if num_queues.is_some_and(|count| !(1..=256).contains(&count)) {
+            anyhow::bail!("`num_queues` must be between 1 and 256");
+        }
 
         if serial.as_ref().is_some_and(|serial| {
             serial.bytes().any(|byte| {
@@ -2636,6 +2652,7 @@ impl FromStr for DiskCli {
             underhill,
             pcie_port,
             serial,
+            num_queues,
             controller,
             nsid,
             lun,
@@ -4163,6 +4180,43 @@ mod tests {
         assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,vtl2").is_err());
         assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,uh").is_err());
         assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,uh-nvme").is_err());
+    }
+
+    #[test]
+    fn test_parse_virtio_blk_queue_count() {
+        assert_eq!(DiskCli::from_str("mem:1G").unwrap().num_queues, None);
+        for count in [1, 2, 4, 256] {
+            let disk = format!("mem:1G,ro,pcie_port=p0,num_queues={count}");
+            assert_eq!(DiskCli::from_str(&disk).unwrap().num_queues, Some(count));
+        }
+        for count in ["0", "257", "65536", "-1", "", "many"] {
+            let disk = format!("mem:1G,num_queues={count}");
+            assert!(DiskCli::from_str(&disk).is_err(), "{disk}");
+        }
+    }
+
+    #[test]
+    fn test_virtio_blk_per_disk_queue_options() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--virtio-blk-queues",
+            "8",
+            "--virtio-blk",
+            "mem:1G,num_queues=4",
+            "--virtio-blk",
+            "mem:1G,num_queues=1",
+            "--virtio-blk",
+            "mem:1G",
+        ])
+        .unwrap();
+        assert_eq!(opt.virtio_blk_queues, 8);
+        assert_eq!(
+            opt.virtio_blk
+                .iter()
+                .map(|disk| disk.num_queues)
+                .collect::<Vec<_>>(),
+            [Some(4), Some(1), None]
+        );
     }
 
     #[test]

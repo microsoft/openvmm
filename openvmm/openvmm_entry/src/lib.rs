@@ -593,6 +593,7 @@ async fn vm_config_from_command_line(
         underhill,
         ref pcie_port,
         ref serial,
+        num_queues,
         ref controller,
         nsid,
         lun,
@@ -601,6 +602,9 @@ async fn vm_config_from_command_line(
     {
         if serial.is_some() {
             anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
+        if num_queues.is_some() {
+            anyhow::bail!("`num_queues` is only supported by `--virtio-blk`");
         }
         if controller.is_none() && underhill.is_none() && relay.is_none() {
             tracing::warn!(
@@ -701,6 +705,7 @@ async fn vm_config_from_command_line(
         underhill,
         ref pcie_port,
         ref serial,
+        num_queues,
         controller: _,
         nsid: _,
         lun: _,
@@ -709,6 +714,9 @@ async fn vm_config_from_command_line(
     {
         if serial.is_some() {
             anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
+        if num_queues.is_some() {
+            anyhow::bail!("`num_queues` is only supported by `--virtio-blk`");
         }
         let target = if let Some(port) = pcie_port {
             storage_builder::DiskLocation::Named {
@@ -732,6 +740,7 @@ async fn vm_config_from_command_line(
         ref underhill,
         ref pcie_port,
         ref serial,
+        num_queues,
         controller: _,
         nsid: _,
         lun: _,
@@ -749,6 +758,10 @@ async fn vm_config_from_command_line(
                 storage_builder::DiskLocation::VirtioBlk {
                     pcie_port: pcie_port.clone(),
                     serial: serial.clone(),
+                    options: virtio_resources::blk::VirtioBlkOptions {
+                        queue_count: num_queues.unwrap_or(opt.virtio_blk_queues),
+                        io_depth: opt.virtio_blk_io_depth,
+                    },
                 },
                 kind,
                 is_dvd,
