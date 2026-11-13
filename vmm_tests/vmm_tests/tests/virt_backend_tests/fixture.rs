@@ -69,6 +69,11 @@ impl Fixture {
             vtl0_alias_map: None,
             fault_resolver: None,
         })?;
+        // No guest memory is attached, so the partition can be finalized
+        // right away.
+        partition
+            .finalize_memory()
+            .context("failed to finalize partition memory")?;
         let [binder] = binders
             .try_into()
             .ok()
