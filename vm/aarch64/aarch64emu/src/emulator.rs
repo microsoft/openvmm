@@ -235,7 +235,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 .read_physical_memory(gpa, &mut data[..len], false)
                 .await
                 .map_err(|err| Error::MemoryAccess(gpa, OperationKind::Read, err))?;
-            if iss.ar() && reg_index != 31 {
+            if iss.ar() {
                 std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             }
             let mut data = u64::from_le_bytes(data);

@@ -1233,6 +1233,7 @@ async fn syndrome_zero_register_still_reads_and_errors_do_not_retry() {
             .with_sas(3)
             .with_sf(true)
             .with_srt(31)
+            .with_ar(true)
             .into();
         let intercept = InterceptState {
             gpa: Some(0x100),

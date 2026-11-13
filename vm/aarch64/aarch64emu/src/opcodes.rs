@@ -509,7 +509,7 @@ impl LoadStoreRegister {
                 } else {
                     new_val
                 };
-                if ordered && register_index != 31 {
+                if ordered {
                     std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
                 }
                 if self.is_fp_register() {

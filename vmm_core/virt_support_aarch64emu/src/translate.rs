@@ -605,6 +605,7 @@ pub fn translate_gva_to_gpa(
         return Err(Error::Unsupported("FEAT_LPA2 descriptors"));
     }
 
+    let (address, mut page_table) = get_root_page_table(gva, registers, &flags)?;
     let (check_user_access, check_supervisor_access) = match flags.privilege_check {
         TranslatePrivilegeCheck::None => (false, false),
         TranslatePrivilegeCheck::User => (true, false),
@@ -621,6 +622,8 @@ pub fn translate_gva_to_gpa(
         IntermPhysAddrSize::IPA_42_BITS_4_TB => 42,
         IntermPhysAddrSize::IPA_44_BITS_16_TB => 44,
         IntermPhysAddrSize::IPA_48_BITS_256_TB => 48,
+        // With DS=0, IPS=0b110 selects 48-bit output for 4KB/16KB granules.
+        IntermPhysAddrSize::IPA_52_BITS_4_PB if page_table.page_shift != 16 => 48,
         IntermPhysAddrSize::IPA_52_BITS_4_PB | IntermPhysAddrSize::IPA_56_BITS_64_PB => {
             return Err(Error::Unsupported("output addresses wider than 48 bits"));
         }
@@ -647,7 +650,6 @@ pub fn translate_gva_to_gpa(
     let mut is_user_address = true;
     let mut is_writeable_address = true;
     let mut is_executable_address = true;
-    let (address, mut page_table) = get_root_page_table(gva, registers, &walk_context.flags)?;
     loop {
         let level = (3 - page_table.level) as u8;
         page_table = match get_next_page_table(
@@ -1204,7 +1206,7 @@ mod tests {
             ),
             Err(Error::InvalidAddressSize(0)),
         ));
-        registers.tcr.set_ips(IntermPhysAddrSize::IPA_52_BITS_4_PB);
+        registers.tcr.set_ips(IntermPhysAddrSize::IPA_56_BITS_64_PB);
         assert!(matches!(
             translate_gva_to_gpa(
                 &gm,
@@ -1231,6 +1233,51 @@ mod tests {
             ),
             Err(Error::InvalidAddressSize(1)),
         ));
+    }
+
+    #[test]
+    fn ips_52_uses_the_selected_granules_effective_output_size() {
+        for upper in [false, true] {
+            for shift in [12, 14, 16] {
+                let (gm, mut registers, gva, leaf, _) = mapping(shift, 48, upper);
+                registers.tcr.set_ips(IntermPhysAddrSize::IPA_52_BITS_4_PB);
+                // The unselected granule must not determine the output width.
+                if upper {
+                    registers.tcr.set_tg0(TranslationGranule0::TG_64KB);
+                } else {
+                    registers.tcr.set_tg1(TranslationGranule1::TG_64KB);
+                }
+                let walk = || {
+                    translate_gva_to_gpa(
+                        &gm,
+                        gva,
+                        &registers,
+                        flags(TranslateMode::Read, TranslatePrivilegeCheck::User),
+                    )
+                };
+                if shift == 16 {
+                    assert!(matches!(walk(), Err(Error::Unsupported(_))));
+                    continue;
+                }
+                assert_eq!(walk().unwrap(), 0x1000_0000 | (gva & ((1 << shift) - 1)));
+                let original: Pte = gm.read_plain(leaf).unwrap();
+                let last_output = (1u64 << 48) - (1 << shift);
+                gm.write_plain(leaf, &original.with_pfn(last_output >> HV_PAGE_SHIFT))
+                    .unwrap();
+                assert_eq!(walk().unwrap(), last_output | (gva & ((1 << shift) - 1)));
+                gm.write_plain(leaf, &original).unwrap();
+                registers.tcr.set_ds(1);
+                assert!(matches!(
+                    translate_gva_to_gpa(
+                        &gm,
+                        gva,
+                        &registers,
+                        flags(TranslateMode::Read, TranslatePrivilegeCheck::User)
+                    ),
+                    Err(Error::Unsupported(_)),
+                ));
+            }
+        }
     }
 
     /// Helper: set up a 2-level page table walk for a 4KB granule.
