@@ -108,6 +108,8 @@ pub struct HostContext {
     pub execution_environment: ExecutionEnvironment,
     /// Hypervisor backend that OpenVMM will select on this host.
     pub openvmm_hypervisor: Option<OpenVmmHypervisor>,
+    /// Whether MSHV implements partition scrub, required for nested reset.
+    pub mshv_partition_scrub_supported: bool,
 }
 
 impl HostContext {
@@ -153,6 +155,14 @@ impl HostContext {
             _ => None,
         };
 
+        let mshv_partition_scrub_supported = if openvmm_hypervisor == Some(OpenVmmHypervisor::Mshv)
+        {
+            openvmm_hypervisors::mshv_partition_scrub_available()
+                .expect("failed to probe MSHV partition scrub support")
+        } else {
+            false
+        };
+
         let vm_host_info = cfg_select! {
             windows => crate::vm::hyperv::powershell::run_get_vm_host()
                 .await
@@ -186,6 +196,7 @@ impl HostContext {
                 ExecutionEnvironment::Baremetal
             },
             openvmm_hypervisor,
+            mshv_partition_scrub_supported,
         }
     }
 }
@@ -337,6 +348,14 @@ fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'sta
         capabilities.insert(capabilities::NESTED_VIRT);
     }
 
+    if vmm == VmmType::OpenVmm
+        && (context.openvmm_hypervisor == Some(OpenVmmHypervisor::Kvm)
+            || (context.openvmm_hypervisor == Some(OpenVmmHypervisor::Mshv)
+                && context.mshv_partition_scrub_supported))
+    {
+        capabilities.insert(capabilities::NESTED_RESET);
+    }
+
     match std::env::var("PETRI_CAPABILITIES") {
         Ok(env_capabilities) => {
             for capability in env_capabilities.split(',').map(str::trim) {
@@ -391,6 +410,7 @@ mod tests {
             vendor: Vendor::Intel,
             execution_environment: ExecutionEnvironment::Baremetal,
             openvmm_hypervisor: Some(openvmm_hypervisor),
+            mshv_partition_scrub_supported: false,
         }
     }
 
@@ -416,6 +436,31 @@ mod tests {
 
         assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
         assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Hvf)));
+    }
+
+    #[test]
+    fn nested_reset_requires_mshv_partition_scrub() {
+        let requirement = TestRequirement::RequiresCapability {
+            name: capabilities::NESTED_RESET,
+            vmm: VmmType::OpenVmm,
+        };
+        let mut mshv = host_context(OpenVmmHypervisor::Mshv);
+        assert!(!requirement.is_satisfied(&mshv));
+        mshv.mshv_partition_scrub_supported = true;
+        assert!(requirement.is_satisfied(&mshv));
+
+        assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Whp)));
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Hvf)));
+        mshv.openvmm_hypervisor = None;
+        assert!(!requirement.is_satisfied(&mshv));
+        assert!(
+            !TestRequirement::RequiresCapability {
+                name: capabilities::NESTED_RESET,
+                vmm: VmmType::Qemu,
+            }
+            .is_satisfied(&host_context(OpenVmmHypervisor::Kvm))
+        );
     }
 
     #[test]
