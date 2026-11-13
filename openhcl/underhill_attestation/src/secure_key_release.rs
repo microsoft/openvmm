@@ -179,7 +179,7 @@ pub(crate) async fn request_vmgs_encryption_keys(
     vmgs: &Vmgs,
     attestation_vm_config: &AttestationVmConfig,
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
-    boot_tcb_floor: &mut crate::runtime_sealing::BootTcbFloor,
+    boot_runtime_sealing: &mut crate::runtime_sealing::BootRuntimeSealing,
 ) -> Result<VmgsEncryptionKeys, (RequestVmgsEncryptionKeysError, bool)> {
     const TRANSFER_RSA_KEY_BITS: u32 = 2048;
 
@@ -223,7 +223,7 @@ pub(crate) async fn request_vmgs_encryption_keys(
 
     // Capture trusted local metadata before any host response or RSA unwrap
     // failure. Keep the original claims-bound report and boot SVN behavior.
-    boot_tcb_floor.observe(tee_call, &result);
+    boot_runtime_sealing.observe(tee_call, &result);
 
     // Get tenant keys based on attestation results, this might fail.
     match make_igvm_attest_requests(

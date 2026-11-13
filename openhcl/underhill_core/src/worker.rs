@@ -666,7 +666,7 @@ struct UhVmParams {
     servicing_state: Option<servicing::ServicingInitState>,
     /// Whether the state-unit list includes a resealer snapshot.
     restore_hardware_reseal: bool,
-    /// Host-returned servicing bytes do not establish a trusted TCB floor.
+    /// Host-returned servicing bytes do not establish trusted sealing state.
     saved_state_from_host: bool,
     /// Perform boot initialization tasks such as protecting VTL2 memory.
     boot_init: bool,
@@ -2300,7 +2300,7 @@ async fn new_underhill_vm(
                 },
                 agent_data: None,
                 guest_secret_key: None,
-                runtime_tcb_floor: None,
+                runtime_sealing_state: None,
             }
         }
     };
@@ -2338,10 +2338,10 @@ async fn new_underhill_vm(
     // Reuse observations from boot's existing local report calls, including
     // reports obtained before a failed SKR call-out. Do not initialize from
     // VMGS metadata or lazily from the first post-migration report.
-    let runtime_tcb_floor = platform_attestation_data.runtime_tcb_floor.take();
+    let runtime_sealing_state = platform_attestation_data.runtime_sealing_state.take();
     let enrolled = crate::hardware_reseal::should_enable(
         hardware_reseal_enabled,
-        runtime_tcb_floor.is_some(),
+        runtime_sealing_state.is_some(),
         is_restoring.then_some(crate::hardware_reseal::RestoreContext {
             has_saved_state: restore_hardware_reseal,
             from_host: saved_state_from_host,
@@ -2351,15 +2351,15 @@ async fn new_underhill_vm(
         if is_restoring {
             tracelimit::warn_ratelimited!(
                 CVM_ALLOWED,
-                "runtime hardware resealing disabled: no saved runtime TCB floor"
+                "runtime hardware resealing disabled: no saved runtime sealing state"
             );
         } else {
             // Preserve boot's existing hardware recovery behavior, but never
             // enable runtime resealing without successful boot sealing and a
-            // trustworthy source floor.
+            // trustworthy runtime sealing state.
             tracelimit::warn_ratelimited!(
                 CVM_ALLOWED,
-                "runtime hardware resealing disabled: boot sealing or trusted TCB floor unavailable"
+                "runtime hardware resealing disabled: boot sealing or trusted runtime state unavailable"
             );
         }
     }
@@ -2908,7 +2908,7 @@ async fn new_underhill_vm(
             .clone();
         let tee = tee_call.expect("resealing requires a TEE");
         let resealer = if is_restoring {
-            // The normal state-unit restore installs the source floor before
+            // The normal state-unit restore installs trusted sealing state before
             // start. This constructor performs no hardware or VMGS operations.
             crate::hardware_reseal::HardwareReseal::new_for_restore(
                 migration_notification,
@@ -2924,7 +2924,7 @@ async fn new_underhill_vm(
                 vmgs,
                 tee,
                 attestation_vm_config.clone(),
-                runtime_tcb_floor.expect("resealing requires a trusted boot TCB floor"),
+                runtime_sealing_state.expect("resealing requires trusted boot sealing state"),
             )
         };
         Some(

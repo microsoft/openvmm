@@ -324,14 +324,12 @@ pub struct PlatformAttestationData {
     pub agent_data: Option<Vec<u8>>,
     /// The guest secret key.
     pub guest_secret_key: Option<Vec<u8>>,
-    /// Runtime-only floor collected from trusted local boot reports, without
-    /// extra hardware calls. Reports are retained across SKR errors and unlock
-    /// retries, but export requires successful hardware sealing and persistence
-    /// for the active DEK in the successful unlock attempt, including a final
-    /// flush. `None` also means unsupported/disabled sealing, no report, or a
-    /// malformed, incompatible, or lowered observation. In that case runtime
-    /// hardware resealing must stay disabled; do not lazily initialize after an event.
-    pub runtime_tcb_floor: Option<runtime_sealing::RuntimeTcbFloor>,
+    /// Runtime state collected from trusted local boot reports without extra
+    /// hardware calls: an SNP floor or initialized TDX marker. Collection spans
+    /// SKR errors and unlock retries, but export additionally requires durable
+    /// sealing of the active DEK. Invalid reports disable export for this boot.
+    /// `None` must not be replaced by lazy initialization after a worker event.
+    pub runtime_sealing_state: Option<runtime_sealing::RuntimeSealingState>,
 }
 
 /// The attestation type to use.
@@ -364,7 +362,7 @@ async fn try_unlock_vmgs(
     require_hardware_sealing: bool,
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
     key_protector_by_id: &mut KeyProtectorById,
-    boot_tcb_floor: &mut runtime_sealing::BootTcbFloor,
+    boot_runtime_sealing: &mut runtime_sealing::BootRuntimeSealing,
 ) -> Result<UnlockResult, (AttestationErrorInner, bool)> {
     let skr_response = if let Some(tee_call) = tee_call {
         if !require_hardware_sealing {
@@ -376,7 +374,7 @@ async fn try_unlock_vmgs(
                 vmgs,
                 attestation_vm_config,
                 agent_data,
-                boot_tcb_floor,
+                boot_runtime_sealing,
             )
             .await
         } else {
@@ -388,7 +386,7 @@ async fn try_unlock_vmgs(
             let report = tee_call
                 .get_attestation_report(&[0; REPORT_DATA_SIZE])
                 .map_err(|e| (AttestationErrorInner::GetAttestationReport(e), false))?;
-            boot_tcb_floor.observe(tee_call, &report);
+            boot_runtime_sealing.observe(tee_call, &report);
 
             Ok(VmgsEncryptionKeys {
                 ingress_rsa_kek: None,
@@ -799,7 +797,7 @@ pub async fn initialize_platform_security(
             },
             agent_data: Some(agent_data.to_vec()),
             guest_secret_key: None,
-            runtime_tcb_floor: None,
+            runtime_sealing_state: None,
         });
     }
 
@@ -857,7 +855,8 @@ pub async fn initialize_platform_security(
     let mut i = 0;
     // Observe existing reports at their source, independently of SKR success.
     // Never recreate this collector on retry or request a fallback report.
-    let mut boot_tcb_floor = runtime_sealing::BootTcbFloor::new(tee_call, attestation_vm_config);
+    let mut boot_runtime_sealing =
+        runtime_sealing::BootRuntimeSealing::new(tee_call, attestation_vm_config);
 
     let UnlockResult {
         state_refresh_request: state_refresh_request_from_gsp,
@@ -876,7 +875,7 @@ pub async fn initialize_platform_security(
             require_hardware_sealing,
             &mut agent_data,
             &mut key_protector_by_id,
-            &mut boot_tcb_floor,
+            &mut boot_runtime_sealing,
         )
         .await;
 
@@ -917,7 +916,7 @@ pub async fn initialize_platform_security(
         host_attestation_settings,
         agent_data: Some(agent_data.to_vec()),
         guest_secret_key,
-        runtime_tcb_floor: boot_tcb_floor.finish().filter(|_| hardware_sealed),
+        runtime_sealing_state: boot_runtime_sealing.finish().filter(|_| hardware_sealed),
     })
 }
 
@@ -3519,7 +3518,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(result.runtime_tcb_floor.is_some());
+            assert!(result.runtime_sealing_state.is_some());
             assert!(!result.host_attestation_settings.refresh_tpm_seeds);
             assert!(vmgs.encrypted());
             let active_dek = *vmgs.active_encryption_key().unwrap();
@@ -3585,7 +3584,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(result.runtime_tcb_floor.is_some());
+            assert!(result.runtime_sealing_state.is_some());
             assert!(!result.host_attestation_settings.refresh_tpm_seeds);
             assert!(vmgs.encrypted());
             let active_dek = *vmgs.active_encryption_key().unwrap();
@@ -3758,7 +3757,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                assert!(provisioned.runtime_tcb_floor.is_some());
+                assert!(provisioned.runtime_sealing_state.is_some());
                 drop(vmgs);
                 vmgs = Vmgs::open(disk, None).await.unwrap();
             }
@@ -3815,7 +3814,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(provisioned.runtime_tcb_floor.is_some());
+            assert!(provisioned.runtime_sealing_state.is_some());
             let old_dek = *vmgs.active_encryption_key().unwrap();
             let old_protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
             drop(vmgs);
@@ -3839,7 +3838,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(result.runtime_tcb_floor.is_none());
+            assert!(result.runtime_sealing_state.is_none());
             assert!(*tee.derivation_calls.lock() > 0);
             assert_eq!(tee.report_data.lock().len(), 2);
             assert!(vmgs.encrypted());
@@ -4018,7 +4017,7 @@ mod tests {
     fn init_sec_with_retry_reports(
         report_svns: [u64; 2],
     ) -> (
-        Option<runtime_sealing::RuntimeTcbFloor>,
+        Option<runtime_sealing::RuntimeSealingState>,
         [u8; AES_GCM_KEY_LENGTH],
     ) {
         // GET tasks need their own running executor. Keep the local executor
@@ -4061,7 +4060,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(provisioned.runtime_tcb_floor.is_some());
+            assert!(provisioned.runtime_sealing_state.is_some());
             assert_eq!(provision_tee.report_data.lock().len(), 1);
             assert!(vmgs.encrypted());
             assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
@@ -4129,7 +4128,7 @@ mod tests {
             assert_eq!(protector.unseal_key(&keys).unwrap(), active_dek);
             vmgs.unlock_with_encryption_key(&active_dek).await.unwrap();
 
-            (recovered.runtime_tcb_floor, active_dek)
+            (recovered.runtime_sealing_state, active_dek)
         });
         get_thread.join().unwrap();
         result
@@ -4163,7 +4162,8 @@ mod tests {
         tee.inner.tcb_version = 0x1235;
         let protector = floor.create_protector(&tee, &config, &active_dek).unwrap();
         assert!(
-            runtime_sealing::protector_matches(&tee, &config, &protector, &active_dek).unwrap()
+            runtime_sealing::tests::protector_matches(&tee, &config, &protector, &active_dek)
+                .unwrap()
         );
         assert_eq!(&*tee.report_data.lock(), &[[0; REPORT_DATA_SIZE]; 2]);
     }
@@ -4229,9 +4229,9 @@ mod tests {
 
             if malformed {
                 // Collection failure must not make a previously valid boot fail.
-                assert!(result.runtime_tcb_floor.is_none());
+                assert!(result.runtime_sealing_state.is_none());
             } else {
-                let mut floor = result.runtime_tcb_floor.unwrap();
+                let mut floor = result.runtime_sealing_state.unwrap();
                 tee.inner.tcb_version = cached_svn;
                 let err = floor
                     .create_protector(&tee, &config, &active_dek)
@@ -4274,7 +4274,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(first.runtime_tcb_floor.is_some());
+        assert!(first.runtime_sealing_state.is_some());
         assert_eq!(tee.report_data.lock().len(), 1);
         assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
 
@@ -4302,7 +4302,7 @@ mod tests {
             // Both reports retain their SKR claims hashes, not zero report_data.
             assert!(reports.iter().all(|data| *data != [0; REPORT_DATA_SIZE]));
         }
-        let mut floor = recovered.runtime_tcb_floor.unwrap();
+        let mut floor = recovered.runtime_sealing_state.unwrap();
         tee.inner.tcb_version = cached_svn;
         let err = floor.create_protector(&tee, &config, &[0; 32]).unwrap_err();
         assert_eq!(
@@ -4332,7 +4332,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(result.runtime_tcb_floor.is_none());
+        assert!(result.runtime_sealing_state.is_none());
         assert!(tee.report_data.lock().is_empty());
         assert_eq!(*tee.derivation_calls.lock(), 0);
         assert!(!vmgs.encrypted());
