@@ -509,10 +509,7 @@ impl VirtioTransportCore {
         super::saved_state::validate_restore(
             &common,
             &self.device_feature,
-            queue_items
-                .iter()
-                .enumerate()
-                .map(|(i, (q, _))| (i, q.size)),
+            queue_items.iter().enumerate().map(|(i, (q, _))| (i, q)),
             self.queues.len(),
             saved_queue_count,
             crate::MAX_QUEUE_SIZE,

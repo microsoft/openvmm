@@ -5202,6 +5202,124 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn pci_restore_validates_supplied_queue_progress(driver: DefaultDriver) {
+    use vmcore::save_restore::AsyncSaveRestore;
+    use vmcore::save_restore::RestoreError;
+
+    for packed in [false, true] {
+        let test_mem = VirtioTestMemoryAccess::new();
+        let guest = if packed {
+            VirtioTestGuest::new_packed(&driver, &test_mem, 1, 4, true)
+        } else {
+            VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true)
+        };
+        let mut source = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+        guest
+            .setup_pci_device(&mut source, guest.queue_features())
+            .await;
+        source.pci_device.stop().await;
+        for state in [
+            None,
+            Some(QueueState {
+                avail_index: 5,
+                used_index: 0,
+            }),
+            Some(QueueState {
+                avail_index: 1,
+                used_index: 3,
+            }),
+        ] {
+            let mut saved = source.pci_device.save().await.unwrap();
+            saved.queues[0].common.queue_state = state;
+            let mut target = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+            if state.is_none() {
+                target.pci_device.restore(saved).await.unwrap();
+                continue;
+            }
+            let err = target.pci_device.restore(saved).await.unwrap_err();
+            let RestoreError::InvalidSavedState(err) = err else {
+                panic!("unexpected restore error: {err}");
+            };
+            assert!(err.to_string().contains("invalid saved state"));
+            assert_eq!(
+                target.pci_device.save().await.unwrap().common.device_status,
+                0
+            );
+        }
+    }
+}
+
+#[async_test]
+async fn mmio_restore_validates_supplied_queue_progress(driver: DefaultDriver) {
+    use vmcore::save_restore::AsyncSaveRestore;
+    use vmcore::save_restore::RestoreError;
+
+    for packed in [false, true] {
+        let test_mem = VirtioTestMemoryAccess::new();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let create = || {
+            VirtioMmioDevice::new(
+                Box::new(TestDevice::new(
+                    &driver_source,
+                    DeviceTraits {
+                        device_id: VirtioDeviceType::CONSOLE,
+                        device_features: VirtioDeviceFeatures::new()
+                            .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                            .with_bank(1, VIRTIO_F_RING_PACKED),
+                        max_queues: 1,
+                        device_register_length: 0,
+                        ..Default::default()
+                    },
+                    None,
+                )),
+                &driver,
+                GuestMemory::new("queue restore validation", test_mem.clone()),
+                LineInterrupt::detached(),
+                None,
+                0,
+                1,
+            )
+            .unwrap()
+        };
+        let guest = if packed {
+            VirtioTestGuest::new_packed(&driver, &test_mem, 1, 4, true)
+        } else {
+            VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true)
+        };
+        let mut source = create();
+        guest
+            .setup_chipset_device(&mut source, guest.queue_features())
+            .await;
+        source.stop().await;
+        for state in [
+            None,
+            Some(QueueState {
+                avail_index: 5,
+                used_index: 0,
+            }),
+            Some(QueueState {
+                avail_index: 1,
+                used_index: 3,
+            }),
+        ] {
+            let mut saved = source.save().await.unwrap();
+            saved.queues[0].common.queue_state = state;
+            let mut target = create();
+            if state.is_none() {
+                target.restore(saved).await.unwrap();
+                continue;
+            }
+            let err = target.restore(saved).await.unwrap_err();
+            let RestoreError::InvalidSavedState(err) = err else {
+                panic!("unexpected restore error: {err}");
+            };
+            assert!(err.to_string().contains("invalid saved state"));
+            assert_eq!(target.save().await.unwrap().common.device_status, 0);
+        }
+    }
+}
+
+#[async_test]
 async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
     use vmcore::save_restore::AsyncSaveRestore;

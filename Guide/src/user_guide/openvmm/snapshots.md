@@ -191,6 +191,12 @@ OpenVMM snapshots:
 | VMBus serial (host) | VMBus | **No** |
 | Vmbfs | VMBus | **No** |
 
+```admonish warning title="Virtio queue progress"
+When a snapshot includes progress for an active virtio queue, its cursors must
+be valid for the negotiated ring layout and queue size. Invalid progress is
+rejected during restore rather than being discovered when queues restart.
+```
+
 ```admonish tip
 If you are unsure whether your VM configuration supports snapshots, try
 issuing `save-snapshot` to a scratch directory. The save will fail

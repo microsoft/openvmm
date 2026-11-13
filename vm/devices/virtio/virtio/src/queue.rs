@@ -39,6 +39,14 @@ pub(crate) fn read_descriptor<T: IntoBytes + FromBytes + Immutable + KnownLayout
         .map_err(QueueError::Memory)
 }
 
+fn validate_queue_size(queue_size: u16, packed: bool) -> Result<(), QueueError> {
+    // Both layouts cap size at 2^15, but only split queues require a power of two.
+    if queue_size == 0 || queue_size > 1 << 15 || (!packed && !queue_size.is_power_of_two()) {
+        return Err(QueueError::InvalidQueueSize(queue_size));
+    }
+    Ok(())
+}
+
 /// In-flight (consumed-but-not-completed) buffers for a split queue: the
 /// difference of the free-running avail/used head counters.
 ///
@@ -97,6 +105,17 @@ pub struct QueueState {
     pub avail_index: u16,
     #[mesh(2)]
     pub used_index: u16,
+}
+
+impl QueueState {
+    pub(crate) fn in_flight(self, queue_size: u16, packed: bool) -> Result<u16, QueueError> {
+        validate_queue_size(queue_size, packed)?;
+        if packed {
+            packed_in_flight(self.avail_index, self.used_index, queue_size)
+        } else {
+            split_in_flight(self.avail_index, self.used_index, queue_size)
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -240,16 +259,8 @@ impl QueueCoreGetWork {
         params: QueueParams,
         initial_state: Option<QueueState>,
     ) -> Result<Self, QueueError> {
-        // Both ring layouts cap queue size at 2^15 (spec §2.7.1, §2.8.1).
-        if params.size == 0 || params.size > 1 << 15 {
-            return Err(QueueError::InvalidQueueSize(params.size));
-        }
+        validate_queue_size(params.size, features.ring_packed())?;
         let initial_avail = initial_state.map(|s| s.avail_index);
-        // Split queues require power-of-2 sizes (virtio spec §2.7.1).
-        // Packed queues do not (§2.8.10.1).
-        if !features.ring_packed() && !params.size.is_power_of_two() {
-            return Err(QueueError::InvalidQueueSize(params.size));
-        }
         let queue_desc = mem
             .subrange(params.desc_addr, descriptor_offset(params.size), true)
             .map_err(QueueError::Memory)?;
@@ -280,10 +291,7 @@ impl QueueCoreGetWork {
         // in flight, since restore is a host trust boundary.
         let in_flight = match initial_state {
             None => 0,
-            Some(state) if features.ring_packed() => {
-                packed_in_flight(state.avail_index, state.used_index, params.size)?
-            }
-            Some(state) => split_in_flight(state.avail_index, state.used_index, params.size)?,
+            Some(state) => state.in_flight(params.size, features.ring_packed())?,
         };
         Ok(Self {
             queue_desc,
