@@ -31,6 +31,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::MeshPayload;
 use mesh::payload::Protobuf;
+use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::driver::Driver;
@@ -335,6 +336,15 @@ impl TimerState {
 }
 
 /// A time keeper, which tracks the current time and all waiters.
+///
+/// Dropping the future of one of its methods leaves the keeper consistent.
+/// Once a method has asked the time keeping tasks to start, stop, or reset VM
+/// time, that change happens even if the method's future is dropped before it
+/// completes. A stop whose future is dropped stays pending until the next call
+/// to [`stop`](Self::stop), [`start`](Self::start), [`reset`](Self::reset), or
+/// [`restore`](Self::restore), which finishes it first; `stop` then returns
+/// without stopping VM time again. [`save`](Self::save) cannot wait for a
+/// pending stop, so await `stop` again before saving.
 #[derive(Debug, InspectMut)]
 pub struct VmTimeKeeper {
     #[inspect(skip)]
@@ -345,6 +355,11 @@ pub struct VmTimeKeeper {
     builder: VmTimeSourceBuilder,
     #[inspect(skip)]
     time: TimeState,
+    /// The result of a stop that the primary keeper has not yet returned,
+    /// kept here rather than in the stop's future so that dropping that
+    /// future does not lose it. `time` stays started until it arrives.
+    #[inspect(skip)]
+    stopping: Option<PendingRpc<VmTime>>,
 }
 
 // UNSAFETY: Needed to derive SavedStateRoot in the same crate it is declared
@@ -461,6 +476,7 @@ impl VmTimeKeeper {
         });
         Self {
             time,
+            stopping: None,
             req_send,
             builder: VmTimeSourceBuilder { new_send },
             _task: task,
@@ -468,7 +484,16 @@ impl VmTimeKeeper {
     }
 
     /// Saves the time state.
+    ///
+    /// VM time must be stopped. This method cannot wait for a pending stop,
+    /// whose future was dropped before it completed, so it panics instead of
+    /// saving a time that the stop has not reconciled. Await
+    /// [`stop`](Self::stop) again to finish the stop first.
     pub fn save(&self) -> SavedState {
+        assert!(
+            self.stopping.is_none(),
+            "VM time is still stopping; await `stop` before saving"
+        );
         SavedState {
             vmtime: self.time.stop_time().expect("should be stopped"),
         }
@@ -481,6 +506,7 @@ impl VmTimeKeeper {
     }
 
     async fn reset_to(&mut self, vmtime: VmTime) {
+        self.finish_stop().await;
         assert!(!self.time.is_started(), "should be stopped");
         self.time = TimeState::Stopped(vmtime);
         self.req_send
@@ -496,6 +522,7 @@ impl VmTimeKeeper {
 
     /// Starts the timer, so that the current time will increase.
     pub async fn start(&mut self) {
+        self.finish_stop().await;
         let vmtime = self.time.stop_time().expect("should be stopped");
         let timestamp = Timestamp::new(vmtime, Instant::now());
         self.time = TimeState::Started(timestamp);
@@ -506,10 +533,28 @@ impl VmTimeKeeper {
     }
 
     /// Stops the timer, so that the current time will stop increasing.
+    ///
+    /// If a stop whose future was dropped is pending, finishes that stop
+    /// instead of stopping again.
     pub async fn stop(&mut self) {
-        assert!(self.time.is_started(), "should be running");
-        let stop_time = self.req_send.call(KeeperRequest::Stop, ()).await.unwrap();
-        self.time = TimeState::Stopped(stop_time);
+        if self.stopping.is_none() {
+            assert!(self.time.is_started(), "should be running");
+            self.stopping = Some(self.req_send.call(KeeperRequest::Stop, ()));
+        }
+        self.finish_stop().await;
+    }
+
+    /// Finishes a pending stop, if any, by adopting the VM time at which the
+    /// primary keeper stopped VM time.
+    ///
+    /// The stop's result stays in `self.stopping` until it arrives, so that
+    /// dropping this future leaves the stop pending instead of losing it.
+    async fn finish_stop(&mut self) {
+        if let Some(stopping) = &mut self.stopping {
+            let stop_time = stopping.await.unwrap();
+            self.stopping = None;
+            self.time = TimeState::Stopped(stop_time);
+        }
     }
 
     /// Returns a time source builder, which can be used to spawn tasks that
@@ -961,6 +1006,9 @@ impl VmTimerPeriodic {
         }
     }
 }
+
+#[cfg(test)]
+mod cancel_tests;
 
 #[cfg(test)]
 mod tests {
