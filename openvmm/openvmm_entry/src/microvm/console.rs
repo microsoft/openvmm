@@ -763,7 +763,7 @@ pub(super) fn microvm_control_broker_config(
         serial_core::LocalPeerIdentity::UnixUid(pal::unix::effective_user_id());
     #[cfg(windows)]
     let expected_peer_identity = {
-        let sid = pal::windows::security::user_sid::current_process_user_sid()
+        let sid = pal::windows::security::current_process_user_sid()
             .context("failed to resolve the OpenVMM process user SID")?;
         let (bytes, length) = sid.to_fixed_bytes();
         serial_core::LocalPeerIdentity::windows_sid(bytes, length)

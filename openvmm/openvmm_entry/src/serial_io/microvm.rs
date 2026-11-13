@@ -95,7 +95,7 @@ pub fn bind_control_serial(path: &Path) -> io::Result<Resource<SerialBackendHand
         ));
     }
 
-    let user_sid = pal::windows::security::user_sid::current_process_user_sid()?;
+    let user_sid = pal::windows::security::current_process_user_sid()?;
     let descriptor = format!("D:P(A;;GA;;;SY)(A;;GA;;;{})", user_sid.to_string_sid())
         .parse::<LocalSecurityDescriptor>()?;
     let pipe = pal::windows::pipe::new_named_pipe_with_security(

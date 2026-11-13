@@ -205,7 +205,7 @@ impl SerialIo for WindowsPipeSerialBackend {
 
 fn named_pipe_peer_identity(pipe: &File) -> io::Result<LocalPeerIdentity> {
     let process_id = pipe.get_pipe_peer_process_id()?;
-    let sid = pal::windows::security::user_sid::process_user_sid(process_id)?;
+    let sid = pal::windows::security::process_user_sid(process_id)?;
     let (bytes, length) = sid.to_fixed_bytes();
     LocalPeerIdentity::windows_sid(bytes, length)
 }
@@ -289,7 +289,7 @@ mod tests {
     fn named_pipe_reports_the_current_process_identity() {
         let (server, _client) = pal::windows::pipe::bidirectional_pair(false).unwrap();
         let actual = named_pipe_peer_identity(&server).unwrap();
-        let sid = pal::windows::security::user_sid::current_process_user_sid().unwrap();
+        let sid = pal::windows::security::current_process_user_sid().unwrap();
         let (bytes, length) = sid.to_fixed_bytes();
         let expected = LocalPeerIdentity::windows_sid(bytes, length).unwrap();
         assert_eq!(actual, expected);
