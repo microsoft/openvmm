@@ -111,8 +111,8 @@ impl FlowNodeWithConfig for Node {
                 // let the user's environment take precedence over authenticating interactively
                 let gh_token = if !gh_token.is_empty() {
                     match rt.platform().kind() {
-                        FlowPlatformKind::Windows => format!(r#"SET "GITHUB_TOKEN={gh_token}""#),
-                        FlowPlatformKind::Unix => format!(r#"GITHUB_TOKEN="{gh_token}""#),
+                        FlowPlatformKind::Windows => format!(r#"SET "GH_TOKEN={gh_token}""#),
+                        FlowPlatformKind::Unix => format!(r#"GH_TOKEN="{gh_token}""#),
                     }
                 } else {
                     String::new()
