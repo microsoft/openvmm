@@ -141,8 +141,12 @@ impl IntoPipeline for CheckinGatesCli {
                         .gh_set_name("[Optional] OpenVMM Release PR");
                 }
                 PipelineConfig::PatinaNightly => {
+                    let mut triggers = GhPrTriggers::new_draftable();
+                    triggers.branches = branches;
+                    triggers.types.push("labeled".into());
                     pipeline
                         .gh_set_name("OpenVMM Patina Nightly")
+                        .gh_set_pr_triggers(triggers)
                         .gh_add_schedule_trigger(GhScheduleTriggers {
                             cron: "0 19 * * *".into(),
                             timezone: Some("America/Los_Angeles".into()),
@@ -205,6 +209,16 @@ impl IntoPipeline for CheckinGatesCli {
                 job = job.gh_dangerous_override_if(
                     "contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false",
                 );
+            }
+            // Keep patina nightly scheduled/manual runs unconditional; PR runs require the label and a non-draft PR.
+            if patina_nightly {
+                let non_pr_run = "github.event_name != 'pull_request'";
+                let has_patina_label =
+                    "contains(github.event.pull_request.labels.*.name, 'needs-patina')";
+                let ready_for_review = "github.event.pull_request.draft == false";
+                job = job.gh_dangerous_override_if(format!(
+                    "{non_pr_run} || ({has_patina_label} && {ready_for_review})",
+                ));
             }
 
             job
