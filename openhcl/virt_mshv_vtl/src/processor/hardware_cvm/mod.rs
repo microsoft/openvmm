@@ -2852,7 +2852,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             // Process interrupts.
             self.update_synic(vtl, false);
 
-            B::poll_apic(self, vtl, scan_irr[vtl] || *first_scan_irr);
+            B::poll_interrupt_controller(self, vtl, scan_irr[vtl] || *first_scan_irr);
         }
         *first_scan_irr = false;
 

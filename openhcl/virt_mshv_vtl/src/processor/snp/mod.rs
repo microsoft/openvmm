@@ -779,7 +779,7 @@ impl BackingPrivate for SnpBacked {
         this.run_vp_snp(dev).await
     }
 
-    fn poll_apic(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool) {
+    fn poll_interrupt_controller(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool) {
         // TODO: If the APIC is offloaded, we need to process the IRRs
         // from the offloaded page.
 
