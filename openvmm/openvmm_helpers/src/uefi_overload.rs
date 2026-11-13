@@ -24,7 +24,23 @@ pub fn uefi_firmware_token(image: &[u8]) -> anyhow::Result<Option<u64>> {
 }
 
 /// Builds the GED overload image that loads `image` for `token`.
+///
+/// Fails if the image's version record reports a firmware interface the
+/// loader doesn't support.
 pub fn uefi_overload_image(token: u64, image: Vec<u8>) -> anyhow::Result<UefiOverloadImage> {
+    if let Some(version) = loader::uefi::firmware_version::find_in_firmware_image(&image)
+        .context("invalid uefi firmware version record")?
+    {
+        anyhow::ensure!(
+            loader::uefi::firmware_version::interface_is_compatible(
+                version.interface_version_major,
+                version.interface_version_minor
+            ),
+            "incompatible uefi firmware interface version {}.{}",
+            version.interface_version_major,
+            version.interface_version_minor
+        );
+    }
     let layout = loader::uefi::image_layout(&image).context("invalid uefi image")?;
     Ok(UefiOverloadImage {
         token,
