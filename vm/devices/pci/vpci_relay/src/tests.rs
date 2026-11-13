@@ -549,3 +549,44 @@ async fn downlevel_host_never_sees_tdisp_commands(driver: DefaultDriver) {
     assert_eq!(t.relay.lock().tdisp_operations.get(), 0);
     assert_eq!(t.device.tdisp().tdi_state().await, TdispTdiState::Unlocked);
 }
+
+/// Reads the MMIO-enable bit through the relay.
+fn mmio_enabled(relay: &TestRelay) -> bool {
+    Command::from((relay.read(HeaderType00::STATUS_COMMAND.0) & 0xffff) as u16).mmio_enabled()
+}
+
+/// A reset turns MMIO off, as closing the VPCI channel would have.
+#[async_test]
+async fn reset_turns_mmio_off(driver: DefaultDriver) {
+    for tdisp_capable in [false, true] {
+        let mut relay = connect_relay(&driver, tdisp_capable).await;
+        if tdisp_capable {
+            let token = relay.deferred_write(
+                HeaderType00::STATUS_COMMAND.0,
+                command(true),
+                PciConfigByteEnable::LOW_WORD,
+            );
+            relay.drive(token.write_future()).await.unwrap();
+        } else {
+            relay
+                .write(
+                    HeaderType00::STATUS_COMMAND.0,
+                    command(true),
+                    PciConfigByteEnable::LOW_WORD,
+                )
+                .unwrap();
+        }
+        assert!(mmio_enabled(&relay), "tdisp_capable={tdisp_capable}");
+
+        relay.cfg.lock().writes.clear();
+        vmcore::device_state::ChangeDeviceState::reset(relay.relay.get_mut()).await;
+
+        assert!(!mmio_enabled(&relay), "tdisp_capable={tdisp_capable}");
+        assert!(
+            relay
+                .written_offsets()
+                .contains(&HeaderType00::STATUS_COMMAND.0),
+            "tdisp_capable={tdisp_capable}"
+        );
+    }
+}
