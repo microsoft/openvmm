@@ -832,6 +832,40 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
     }
 }
 
+impl<T: EmulatorSupport, U: CpuIo> EmulatorCpu<'_, T, U> {
+    async fn read_physical_memory(&mut self, gpa: u64, bytes: &mut [u8]) -> Result<(), Error> {
+        if Some(gpa & !(HV_PAGE_SIZE - 1)) == self.support.lapic_base_address() {
+            self.support.lapic_read(gpa, bytes);
+        } else if !self
+            .support
+            .monitor_support()
+            .is_some_and(|m| m.check_read(gpa, bytes))
+        {
+            if self.support.is_gpa_mapped(gpa, false) {
+                self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
+            } else {
+                self.dev
+                    .read_mmio(self.support.vp_index(), gpa, bytes)
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn write_physical_memory(&mut self, gpa: u64, bytes: &[u8]) -> Result<(), Error> {
+        if Some(gpa & !(HV_PAGE_SIZE - 1)) == self.support.lapic_base_address() {
+            self.support.lapic_write(gpa, bytes);
+        } else if self.support.is_gpa_mapped(gpa, true) {
+            self.gm.write_at(gpa, bytes).map_err(Error::Memory)?;
+        } else {
+            self.dev
+                .write_mmio(self.support.vp_index(), gpa, bytes)
+                .await;
+        }
+        Ok(())
+    }
+}
+
 impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     type Error = Error;
 
@@ -858,37 +892,21 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         let first_len = bytes
             .len()
             .min((HV_PAGE_SIZE - (gva & (HV_PAGE_SIZE - 1))) as usize);
-        let mut pages = Vec::new();
-        let mut offset = first_len;
-        while offset < bytes.len() {
-            let next_gva = gva.wrapping_add(offset as u64);
+        let next_gpa = if first_len < bytes.len() {
+            let next_gva = gva.wrapping_add(first_len as u64);
             let next_gpa = self.translate_gva(next_gva, mode, is_user_mode)?;
             if Some(next_gpa & !(HV_PAGE_SIZE - 1)) != self.support.lapic_base_address() {
                 self.check_vtl_access(next_gva, next_gpa, mode)?;
             }
-            let len = (bytes.len() - offset).min(HV_PAGE_SIZE as usize);
-            pages.push((next_gpa, len));
-            offset += len;
-        }
+            Some(next_gpa)
+        } else {
+            None
+        };
 
-        // Route each saved range to the local APIC, monitor support, RAM, or MMIO.
-        let mut remaining = bytes;
-        for (gpa, len) in std::iter::once((gpa, first_len)).chain(pages) {
-            let (page, rest) = remaining.split_at_mut(len);
-            if Some(gpa & !(HV_PAGE_SIZE - 1)) == self.support.lapic_base_address() {
-                self.support.lapic_read(gpa, page);
-            } else if !self
-                .support
-                .monitor_support()
-                .is_some_and(|m| m.check_read(gpa, page))
-            {
-                if self.support.is_gpa_mapped(gpa, false) {
-                    self.gm.read_at(gpa, page).map_err(Error::Memory)?;
-                } else {
-                    self.dev.read_mmio(self.support.vp_index(), gpa, page).await;
-                }
-            }
-            remaining = rest;
+        let (first, second) = bytes.split_at_mut(first_len);
+        self.read_physical_memory(gpa, first).await?;
+        if let Some(next_gpa) = next_gpa {
+            self.read_physical_memory(next_gpa, second).await?;
         }
         Ok(())
     }
@@ -911,30 +929,21 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         let first_len = bytes
             .len()
             .min((HV_PAGE_SIZE - (gva & (HV_PAGE_SIZE - 1))) as usize);
-        let mut pages = Vec::new();
-        let mut offset = first_len;
-        while offset < bytes.len() {
-            let next_gva = gva.wrapping_add(offset as u64);
-            let gpa = self.translate_gva(next_gva, TranslateMode::Write, is_user_mode)?;
-            if Some(gpa & !(HV_PAGE_SIZE - 1)) != self.support.lapic_base_address() {
-                self.check_vtl_access(next_gva, gpa, TranslateMode::Write)?;
+        let next_gpa = if first_len < bytes.len() {
+            let next_gva = gva.wrapping_add(first_len as u64);
+            let next_gpa = self.translate_gva(next_gva, TranslateMode::Write, is_user_mode)?;
+            if Some(next_gpa & !(HV_PAGE_SIZE - 1)) != self.support.lapic_base_address() {
+                self.check_vtl_access(next_gva, next_gpa, TranslateMode::Write)?;
             }
-            let len = (bytes.len() - offset).min(HV_PAGE_SIZE as usize);
-            pages.push((gpa, &bytes[offset..offset + len]));
-            offset += len;
-        }
+            Some(next_gpa)
+        } else {
+            None
+        };
 
-        // Write each saved range through its local APIC, RAM, or MMIO backing.
-        for (gpa, bytes) in std::iter::once((gpa, &bytes[..first_len])).chain(pages) {
-            if Some(gpa & !(HV_PAGE_SIZE - 1)) == self.support.lapic_base_address() {
-                self.support.lapic_write(gpa, bytes);
-            } else if self.support.is_gpa_mapped(gpa, true) {
-                self.gm.write_at(gpa, bytes).map_err(Error::Memory)?;
-            } else {
-                self.dev
-                    .write_mmio(self.support.vp_index(), gpa, bytes)
-                    .await;
-            }
+        let (first, second) = bytes.split_at(first_len);
+        self.write_physical_memory(gpa, first).await?;
+        if let Some(next_gpa) = next_gpa {
+            self.write_physical_memory(next_gpa, second).await?;
         }
         Ok(())
     }
@@ -950,15 +959,14 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
         self.check_vtl_access(gva, gpa, TranslateMode::Write)?;
 
-        let mut offset = (HV_PAGE_SIZE - (gva & (HV_PAGE_SIZE - 1))) as usize;
-        while offset < new.len() {
+        let offset = (HV_PAGE_SIZE - (gva & (HV_PAGE_SIZE - 1))) as usize;
+        if offset < new.len() {
             let next_gva = gva.wrapping_add(offset as u64);
             let next_gpa = self.translate_gva(next_gva, TranslateMode::Write, is_user_mode)?;
             self.check_vtl_access(next_gva, next_gpa, TranslateMode::Write)?;
             if gpa.checked_add(offset as u64) != Some(next_gpa) {
                 return Err(Error::NonContiguousAtomicAccess);
             }
-            offset += HV_PAGE_SIZE as usize;
         }
 
         // Monitor handling can consume the write; RAM otherwise needs an atomic
