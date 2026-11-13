@@ -3,8 +3,6 @@
 
 //! This module implements support for KVM on x86_64.
 
-#![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
-
 mod extint;
 mod regs;
 pub(crate) mod snp;

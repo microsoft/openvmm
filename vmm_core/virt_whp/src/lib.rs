@@ -9,9 +9,7 @@
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
-mod apic;
 pub mod device;
-mod emu;
 mod hypercalls;
 mod memory;
 mod regs;
@@ -21,10 +19,25 @@ mod vp;
 mod vp_state;
 mod vtl2;
 
+cfg_select! {
+    guest_arch = "x86_64" => {
+        mod apic;
+        mod emu;
+        use x86defs::cpuid::Vendor;
+        type InitialVpContext = hvdef::hypercall::InitialVpContextX64;
+    }
+    guest_arch = "aarch64" => {
+        pub use aarch64::WHP_PMU_GSIV;
+        use aarch64defs::Vendor;
+        type InitialVpContext = hvdef::hypercall::InitialVpContextArm64;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
+
 use crate::memory::vtl2_mapper::MappingState;
 use crate::memory::vtl2_mapper::ResetMappingState;
-#[cfg(guest_arch = "aarch64")]
-use aarch64defs::Vendor;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hv1_emulator::hv::GlobalHv;
@@ -72,11 +85,6 @@ use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
 use vp_state::WhpVpStateAccess;
-#[cfg(guest_arch = "x86_64")]
-use x86defs::cpuid::Vendor;
-
-#[cfg(guest_arch = "aarch64")]
-pub use aarch64::WHP_PMU_GSIV;
 
 #[derive(Debug)]
 pub struct Whp {
@@ -370,7 +378,6 @@ impl PerVtlRunState {
             hv.reset(prot_access);
         }
 
-        #[cfg(guest_arch = "aarch64")]
         let _ = is_bsp;
 
         *deliverability_notifications = 0.into();
@@ -390,11 +397,6 @@ impl WhpVp {
         }
     }
 }
-
-#[cfg(guest_arch = "x86_64")]
-type InitialVpContext = hvdef::hypercall::InitialVpContextX64;
-#[cfg(guest_arch = "aarch64")]
-type InitialVpContext = hvdef::hypercall::InitialVpContextArm64;
 
 /// Which hypercall is requesting that a VP's initial VTL context be set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -878,18 +880,15 @@ impl virt::Hypervisor for Whp {
     type Error = Error;
 
     fn platform_info(&self) -> virt::PlatformInfo {
-        #[cfg(guest_arch = "x86_64")]
-        {
-            virt::PlatformInfo {}
-        }
-        #[cfg(guest_arch = "aarch64")]
-        {
-            virt::PlatformInfo {
+        cfg_select! {
+            guest_arch = "x86_64" => virt::PlatformInfo {},
+            guest_arch = "aarch64" => virt::PlatformInfo {
                 platform_gsiv: Some(WHP_PMU_GSIV),
                 supports_gic_v3: true,
                 supports_its: false,
                 device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Unsupported,
-            }
+            },
+            _ => compile_error!("unsupported guest architecture"),
         }
     }
 
@@ -987,19 +986,21 @@ impl ProtoPartition for WhpProtoPartition<'_> {
     type ProcessorBinder = WhpProcessorBinder;
     type Error = Error;
 
-    #[cfg(guest_arch = "x86_64")]
     fn max_physical_address_size(&self) -> u8 {
-        virt::x86::max_physical_address_size_from_cpuid(&|eax, ecx| self.vtl0.cpuid(eax, ecx))
-    }
-
-    #[cfg(not(guest_arch = "x86_64"))]
-    fn max_physical_address_size(&self) -> u8 {
-        self.vtl0
-            .whp
-            .physical_address_width()
-            .unwrap()
-            .try_into()
-            .unwrap()
+        cfg_select! {
+            guest_arch = "x86_64" => {
+                virt::x86::max_physical_address_size_from_cpuid(&|eax, ecx| {
+                    self.vtl0.cpuid(eax, ecx)
+                })
+            }
+            _ => self
+                .vtl0
+                .whp
+                .physical_address_width()
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        }
     }
 
     fn supports_memory_fault_resolution(&self) -> bool {

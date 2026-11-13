@@ -412,49 +412,38 @@ async fn vm_config_from_command_line(
         opt.com4.as_ref().is_some_and(|c| c.debugger_mode),
     ];
 
+    let [serial0_name, serial1_name, serial2_name, serial3_name] = cfg_select! {
+        guest_arch = "x86_64" => ["ttyS0", "ttyS1", "ttyS2", "ttyS3"],
+        guest_arch = "aarch64" => ["ttyAMA0", "ttyAMA1", "ttyAMA2", "ttyAMA3"],
+        _ => compile_error!("unsupported guest architecture"),
+    };
     let serial0_cfg = setup_serial(
         "com1",
         opt.com1
             .clone()
             .map_or(SerialConfigCli::Console, |c| c.backend),
-        if cfg!(guest_arch = "x86_64") {
-            "ttyS0"
-        } else {
-            "ttyAMA0"
-        },
+        serial0_name,
     )?;
     let serial1_cfg = setup_serial(
         "com2",
         opt.com2
             .clone()
             .map_or(SerialConfigCli::None, |c| c.backend),
-        if cfg!(guest_arch = "x86_64") {
-            "ttyS1"
-        } else {
-            "ttyAMA1"
-        },
+        serial1_name,
     )?;
     let serial2_cfg = setup_serial(
         "com3",
         opt.com3
             .clone()
             .map_or(SerialConfigCli::None, |c| c.backend),
-        if cfg!(guest_arch = "x86_64") {
-            "ttyS2"
-        } else {
-            "ttyAMA2"
-        },
+        serial2_name,
     )?;
     let serial3_cfg = setup_serial(
         "com4",
         opt.com4
             .clone()
             .map_or(SerialConfigCli::None, |c| c.backend),
-        if cfg!(guest_arch = "x86_64") {
-            "ttyS3"
-        } else {
-            "ttyAMA3"
-        },
+        serial3_name,
     )?;
     let with_vmbus_com1_serial = if let Some(vmbus_com1_cfg) = setup_serial(
         "vmbus_com1",
@@ -945,10 +934,11 @@ async fn vm_config_from_command_line(
         });
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    let arch = MachineArch::Aarch64;
-    #[cfg(guest_arch = "x86_64")]
-    let arch = MachineArch::X86_64;
+    let arch = cfg_select! {
+        guest_arch = "x86_64" => MachineArch::X86_64,
+        guest_arch = "aarch64" => MachineArch::Aarch64,
+        _ => compile_error!("unsupported guest architecture"),
+    };
 
     #[cfg(guest_arch = "x86_64")]
     anyhow::ensure!(
@@ -1681,10 +1671,10 @@ async fn vm_config_from_command_line(
     if let Some(tpm_version) = tpm_version
         && !opt.vtl2
     {
-        let register_layout = if cfg!(guest_arch = "x86_64") {
-            TpmRegisterLayout::IoPort
-        } else {
-            TpmRegisterLayout::Mmio
+        let register_layout = cfg_select! {
+            guest_arch = "x86_64" => TpmRegisterLayout::IoPort,
+            guest_arch = "aarch64" => TpmRegisterLayout::Mmio,
+            _ => compile_error!("unsupported guest architecture"),
         };
 
         let ppi_store =
@@ -2711,10 +2701,10 @@ pub(crate) fn system_page_size() -> u32 {
 }
 
 /// The guest architecture string, derived from the compile-time `guest_arch` cfg.
-pub(crate) const GUEST_ARCH: &str = if cfg!(guest_arch = "x86_64") {
-    "x86_64"
-} else {
-    "aarch64"
+pub(crate) const GUEST_ARCH: &str = cfg_select! {
+    guest_arch = "x86_64" => "x86_64",
+    guest_arch = "aarch64" => "aarch64",
+    _ => compile_error!("unsupported guest architecture"),
 };
 
 /// Open a snapshot directory and validate it against the current VM config.
@@ -2980,10 +2970,10 @@ async fn run_control_inner(
                         listener,
                         req_chan: req_tx,
                         vp_count: vm_config.processor_topology.proc_count,
-                        target_arch: if cfg!(guest_arch = "x86_64") {
-                            debug_worker_defs::TargetArch::X86_64
-                        } else {
-                            debug_worker_defs::TargetArch::Aarch64
+                        target_arch: cfg_select! {
+                            guest_arch = "x86_64" => debug_worker_defs::TargetArch::X86_64,
+                            guest_arch = "aarch64" => debug_worker_defs::TargetArch::Aarch64,
+                            _ => compile_error!("unsupported guest architecture"),
                         },
                     },
                 )

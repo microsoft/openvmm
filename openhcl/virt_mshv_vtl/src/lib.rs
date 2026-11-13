@@ -44,7 +44,9 @@ cfg_select! {
         use processor::cca::CcaBackedShared;
         use safe_intrinsics::read_cntfrq_el0;
     }
-    _ => {}
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
 }
 
 mod processor;
@@ -2530,14 +2532,15 @@ impl UhPartition {
 fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
     // Always get the frequency from the hypervisor. It's believed that, as long
     // as the hypervisor is behaving, it will provide the most precise and accurate frequency.
-    #[cfg(guest_arch = "x86_64")]
-    let hv_frequency = {
-        let msr = MsrDevice::new(0).map_err(Error::OpenMsr)?;
-        msr.read_msr(hvdef::HV_X64_MSR_TSC_FREQUENCY)
-            .map_err(Error::ReadTscFrequency)?
+    let hv_frequency = cfg_select! {
+        guest_arch = "x86_64" => {{
+            let msr = MsrDevice::new(0).map_err(Error::OpenMsr)?;
+            msr.read_msr(hvdef::HV_X64_MSR_TSC_FREQUENCY)
+                .map_err(Error::ReadTscFrequency)?
+        }}
+        guest_arch = "aarch64" => read_cntfrq_el0(),
+        _ => compile_error!("unsupported guest architecture"),
     };
-    #[cfg(guest_arch = "aarch64")]
-    let hv_frequency = read_cntfrq_el0();
 
     // Get the hardware-advertised frequency and validate that the
     // hypervisor frequency is not too far off.

@@ -560,10 +560,11 @@ impl PartitionUnitRunner {
         use hyperv_dump::PartitionStateBuilder;
         use hyperv_dump::ProcessorArch;
 
-        #[cfg(guest_arch = "x86_64")]
-        let arch = ProcessorArch::X64;
-        #[cfg(guest_arch = "aarch64")]
-        let arch = ProcessorArch::Aarch64;
+        let arch = cfg_select! {
+            guest_arch = "x86_64" => ProcessorArch::X64,
+            guest_arch = "aarch64" => ProcessorArch::Aarch64,
+            _ => compile_error!("unsupported guest architecture"),
+        };
 
         let mut builder = PartitionStateBuilder::new(arch);
         builder.set_os_id(self.partition.guest_os_id());

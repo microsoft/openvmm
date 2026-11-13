@@ -153,21 +153,20 @@ fn parse_arch_topology_overrides(
     use vmservice::processor_config::ArchConfig as ProtoArchConfig;
 
     match processor_cfg.and_then(|cfg| cfg.arch_config.as_ref()) {
-        #[cfg(not(guest_arch = "x86_64"))]
         Some(ProtoArchConfig::X86(_)) => {
-            bail!("x86 topology overrides not supported on current arch")
+            cfg_select! {
+                guest_arch = "x86_64" => Ok(None), // No overrides on type currently.
+                _ => bail!("x86 topology overrides not supported on current arch"),
+            }
         }
-        #[cfg(guest_arch = "x86_64")]
-        Some(ProtoArchConfig::X86(_x86cfg)) => {
-            Ok(None) // No overrides on type currently.
-        }
-        #[cfg(not(guest_arch = "aarch64"))]
-        Some(ProtoArchConfig::Aarch64(_)) => {
-            bail!("aarch64 topology overrides not supported on current arch")
-        }
-        #[cfg(guest_arch = "aarch64")]
         Some(ProtoArchConfig::Aarch64(aarch64)) => {
-            Ok(Some(parse_aarch64_topology_overrides(aarch64)?))
+            cfg_select! {
+                guest_arch = "aarch64" => Ok(Some(parse_aarch64_topology_overrides(aarch64)?)),
+                _ => {{
+                    let _ = aarch64;
+                    bail!("aarch64 topology overrides not supported on current arch")
+                }},
+            }
         }
         None => Ok(None),
     }
@@ -1124,10 +1123,11 @@ impl VmService {
         let any_serial_configured = ports.iter().any(|port| port.is_some());
         let com1_configured = ports[0].is_some();
 
-        #[cfg(guest_arch = "aarch64")]
-        let arch = vm_manifest_builder::MachineArch::Aarch64;
-        #[cfg(guest_arch = "x86_64")]
-        let arch = vm_manifest_builder::MachineArch::X86_64;
+        let arch = cfg_select! {
+            guest_arch = "x86_64" => vm_manifest_builder::MachineArch::X86_64,
+            guest_arch = "aarch64" => vm_manifest_builder::MachineArch::Aarch64,
+            _ => compile_error!("unsupported guest architecture"),
+        };
 
         // Build SMBIOS identity for direct Linux or UEFI boot.
         let smbios_requested = req_config.smbios_config.is_some();

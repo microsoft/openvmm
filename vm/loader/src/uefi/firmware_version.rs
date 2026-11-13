@@ -12,10 +12,11 @@ use zerocopy::FromBytes;
 const FILE_ALIGNMENT: usize = 8;
 const SECTION_ALIGNMENT: usize = 4;
 const ERASED_BYTE: u8 = 0xff;
-#[cfg(guest_arch = "x86_64")]
-const FIRST_FIRMWARE_VOLUME_OFFSET: usize = 0;
-#[cfg(guest_arch = "aarch64")]
-const FIRST_FIRMWARE_VOLUME_OFFSET: usize = 0x1000;
+const FIRST_FIRMWARE_VOLUME_OFFSET: usize = cfg_select! {
+    guest_arch = "x86_64" => 0,
+    guest_arch = "aarch64" => 0x1000,
+    _ => compile_error!("unsupported guest architecture"),
+};
 
 /// A parsed view of an MSVM firmware version record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,10 +315,7 @@ mod tests {
     }
 
     fn image(split: bool, interface: Option<(u16, u16)>) -> Vec<u8> {
-        #[cfg(guest_arch = "x86_64")]
-        let mut image = Vec::new();
-        #[cfg(guest_arch = "aarch64")]
-        let mut image = vec![0; 0x1000];
+        let mut image = vec![0; FIRST_FIRMWARE_VOLUME_OFFSET];
         if split {
             image.extend(volume(0x1ff000, None));
         }

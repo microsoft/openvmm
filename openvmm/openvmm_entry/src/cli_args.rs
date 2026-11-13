@@ -3771,75 +3771,75 @@ impl FromStr for VfioDeviceCli {
     }
 }
 
-/// CLI configuration for an SMMUv3 instance.
-///
-/// Syntax: `rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]`.
-/// Both `oas` and `ssidsize` default to `auto`.
-#[cfg(guest_arch = "aarch64")]
-#[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
-pub struct SmmuCli {
-    /// Name of the PCIe root complex this SMMU covers.
-    #[kv(key = "rc")]
-    pub rc_name: String,
-    /// Enable HW-accelerated nested translation (iommufd).
-    #[kv(flag)]
-    pub accel: bool,
-    /// Output address size policy.
-    #[kv(default)]
-    pub oas: SmmuOasCli,
-    /// SubstreamID width policy.
-    #[kv(default)]
-    pub ssidsize: SmmuSsidSizeCli,
-}
+cfg_select! {
+    guest_arch = "aarch64" => {
+        /// CLI configuration for an SMMUv3 instance.
+        ///
+        /// Syntax: `rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]`.
+        /// Both `oas` and `ssidsize` default to `auto`.
+        #[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
+        pub struct SmmuCli {
+            /// Name of the PCIe root complex this SMMU covers.
+            #[kv(key = "rc")]
+            pub rc_name: String,
+            /// Enable HW-accelerated nested translation (iommufd).
+            #[kv(flag)]
+            pub accel: bool,
+            /// Output address size policy.
+            #[kv(default)]
+            pub oas: SmmuOasCli,
+            /// SubstreamID width policy.
+            #[kv(default)]
+            pub ssidsize: SmmuSsidSizeCli,
+        }
 
-/// Output address size (OAS) policy parsed from `--smmu`.
-#[cfg(guest_arch = "aarch64")]
-#[derive(Clone, Copy, Debug, Default)]
-pub enum SmmuOasCli {
-    /// Advertise a fixed default OAS (see the `--smmu` docs for the sizing
-    /// policy and when a larger fixed OAS is required).
-    #[default]
-    Auto,
-    /// Fixed OAS in bits (one of 32, 36, 40, 42, 44, 48, 52).
-    Fixed(u8),
-}
+        /// Output address size (OAS) policy parsed from `--smmu`.
+        #[derive(Clone, Copy, Debug, Default)]
+        pub enum SmmuOasCli {
+            /// Advertise a fixed default OAS (see the `--smmu` docs for the sizing
+            /// policy and when a larger fixed OAS is required).
+            #[default]
+            Auto,
+            /// Fixed OAS in bits (one of 32, 36, 40, 42, 44, 48, 52).
+            Fixed(u8),
+        }
 
-#[cfg(guest_arch = "aarch64")]
-impl FromStr for SmmuOasCli {
-    type Err = anyhow::Error;
+        impl FromStr for SmmuOasCli {
+            type Err = anyhow::Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(if s == "auto" {
-            SmmuOasCli::Auto
-        } else {
-            SmmuOasCli::Fixed(s.parse().context("oas must be 'auto' or a number")?)
-        })
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(if s == "auto" {
+                    SmmuOasCli::Auto
+                } else {
+                    SmmuOasCli::Fixed(s.parse().context("oas must be 'auto' or a number")?)
+                })
+            }
+        }
+
+        /// SubstreamID width (SSIDSIZE) policy parsed from `--smmu`.
+        #[derive(Clone, Copy, Debug, Default)]
+        pub enum SmmuSsidSizeCli {
+            /// Disable substreams in software mode; under acceleration, adopt the
+            /// host's width before device start freezes the capabilities.
+            #[default]
+            Auto,
+            /// Fixed width in bits (0..=20). Zero disables substreams.
+            Fixed(u8),
+        }
+
+        impl FromStr for SmmuSsidSizeCli {
+            type Err = anyhow::Error;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(if s == "auto" {
+                    Self::Auto
+                } else {
+                    Self::Fixed(s.parse().context("ssidsize must be 'auto' or a number")?)
+                })
+            }
+        }
     }
-}
-
-/// SubstreamID width (SSIDSIZE) policy parsed from `--smmu`.
-#[cfg(guest_arch = "aarch64")]
-#[derive(Clone, Copy, Debug, Default)]
-pub enum SmmuSsidSizeCli {
-    /// Disable substreams in software mode; under acceleration, adopt the
-    /// host's width before device start freezes the capabilities.
-    #[default]
-    Auto,
-    /// Fixed width in bits (0..=20). Zero disables substreams.
-    Fixed(u8),
-}
-
-#[cfg(guest_arch = "aarch64")]
-impl FromStr for SmmuSsidSizeCli {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(if s == "auto" {
-            Self::Auto
-        } else {
-            Self::Fixed(s.parse().context("ssidsize must be 'auto' or a number")?)
-        })
-    }
+    _ => {}
 }
 
 /// CLI configuration for an iommufd context.
@@ -3860,12 +3860,10 @@ pub struct IommuCli {
 /// default_value code. As such - to encode the absence of the env-var, an empty
 /// OsString is returned.
 fn default_value_from_arch_env(name: &str) -> OsString {
-    let prefix = if cfg!(guest_arch = "x86_64") {
-        "X86_64"
-    } else if cfg!(guest_arch = "aarch64") {
-        "AARCH64"
-    } else {
-        return Default::default();
+    let prefix = cfg_select! {
+        guest_arch = "x86_64" => "X86_64",
+        guest_arch = "aarch64" => "AARCH64",
+        _ => compile_error!("unsupported guest architecture"),
     };
     let prefixed = format!("{}_{}", prefix, name);
     std::env::var_os(name)

@@ -25,11 +25,17 @@ use std::os::fd::AsRawFd;
 use thiserror::Error;
 use zerocopy::FromZeros;
 
-#[cfg(guest_arch = "x86_64")]
-type HvArchRegisterName = hvdef::HvX64RegisterName;
-
-#[cfg(guest_arch = "aarch64")]
-type HvArchRegisterName = hvdef::HvArm64RegisterName;
+cfg_select! {
+    guest_arch = "x86_64" => {
+        type HvArchRegisterName = hvdef::HvX64RegisterName;
+    }
+    guest_arch = "aarch64" => {
+        type HvArchRegisterName = hvdef::HvArm64RegisterName;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
@@ -318,18 +324,17 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     {
         let registers: Vec<HvRegisterAssoc> = values.into_iter().map(Into::into).collect();
 
-        #[cfg(guest_arch = "x86_64")]
-        let per_arch = |name| {
-            matches!(
-                name,
-                HvArchRegisterName::CrInterceptControl
-                    | HvArchRegisterName::SevAvicGpa
-                    | HvArchRegisterName::GuestVsmPartitionConfig
-            )
+        let per_arch = cfg_select! {
+            guest_arch = "x86_64" => |name| {
+                matches!(
+                    name,
+                    HvArchRegisterName::CrInterceptControl
+                        | HvArchRegisterName::SevAvicGpa
+                        | HvArchRegisterName::GuestVsmPartitionConfig
+                )
+            },
+            _ => |_: HvArchRegisterName| false,
         };
-
-        #[cfg(guest_arch = "aarch64")]
-        let per_arch = |_: HvArchRegisterName| false;
 
         assert!(registers.iter().all(
             |HvRegisterAssoc {
@@ -427,23 +432,25 @@ impl Hcl {
     pub fn get_privileges_and_features_info(
         &self,
     ) -> Result<hvdef::HvPartitionPrivilege, GetRegError> {
-        #[cfg(guest_arch = "x86_64")]
-        {
-            let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
-            let num = result.eax as u64 | ((result.ebx as u64) << 32);
-            Ok(hvdef::HvPartitionPrivilege::from(num))
-        }
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
+                let num = result.eax as u64 | ((result.ebx as u64) << 32);
+                Ok(hvdef::HvPartitionPrivilege::from(num))
+            }}
+            guest_arch = "aarch64" => {{
+                if self.isolation.is_hardware_isolated() {
+                    return Ok(hvdef::HvPartitionPrivilege::default());
+                }
 
-        #[cfg(guest_arch = "aarch64")]
-        {
-            if self.isolation.is_hardware_isolated() {
-                return Ok(hvdef::HvPartitionPrivilege::default());
-            }
-
-            Ok(hvdef::HvPartitionPrivilege::from(
-                self.get_partition_vtl2_register(HvArchRegisterName::PrivilegesAndFeaturesInfo)?
+                Ok(hvdef::HvPartitionPrivilege::from(
+                    self.get_partition_vtl2_register(
+                        HvArchRegisterName::PrivilegesAndFeaturesInfo,
+                    )?
                     .as_u64(),
-            ))
+                ))
+            }}
+            _ => compile_error!("unsupported guest architecture"),
         }
     }
 
@@ -527,11 +534,10 @@ impl Hcl {
         &self,
         name: HvArchRegisterName,
     ) -> Result<HvRegisterValue, GetRegError> {
-        #[cfg(guest_arch = "x86_64")]
-        let per_arch = false;
-
-        #[cfg(guest_arch = "aarch64")]
-        let per_arch = matches!(name, HvArchRegisterName::PrivilegesAndFeaturesInfo);
+        let per_arch = cfg_select! {
+            guest_arch = "aarch64" => matches!(name, HvArchRegisterName::PrivilegesAndFeaturesInfo),
+            _ => false,
+        };
 
         assert!(
             matches!(
@@ -555,11 +561,10 @@ impl Hcl {
         name: HvArchRegisterName,
         value: HvRegisterValue,
     ) -> Result<(), SetRegError> {
-        #[cfg(guest_arch = "x86_64")]
-        let per_arch = matches!(name, HvArchRegisterName::PmTimerAssist);
-
-        #[cfg(guest_arch = "aarch64")]
-        let per_arch = false;
+        let per_arch = cfg_select! {
+            guest_arch = "x86_64" => matches!(name, HvArchRegisterName::PmTimerAssist),
+            _ => false,
+        };
 
         assert!(
             matches!(

@@ -1176,22 +1176,32 @@ impl InitializedVm {
             None
         };
 
-        #[cfg(guest_arch = "aarch64")]
-        let (mut processor_topology, spi_layout) = {
-            let smmu_count = cfg
-                .pcie_root_complexes
-                .iter()
-                .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu { .. })))
-                .count();
-            let result =
-                build_aarch64_topology(&cfg.processor_topology, &platform_info, smmu_count)?;
-            (result.processor_topology, result.spi_layout)
-        };
-        #[cfg(not(guest_arch = "aarch64"))]
-        let mut processor_topology = {
-            let result = build_x86_topology(&cfg.processor_topology)?;
-            result.processor_topology
-        };
+        cfg_select! {
+            guest_arch = "aarch64" => {
+                let (mut processor_topology, spi_layout) = {
+                    let smmu_count = cfg
+                        .pcie_root_complexes
+                        .iter()
+                        .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu { .. })))
+                        .count();
+                    let result = build_aarch64_topology(
+                        &cfg.processor_topology,
+                        &platform_info,
+                        smmu_count,
+                    )?;
+                    (result.processor_topology, result.spi_layout)
+                };
+            }
+            guest_arch = "x86_64" => {
+                let mut processor_topology = {
+                    let result = build_x86_topology(&cfg.processor_topology)?;
+                    result.processor_topology
+                };
+            }
+            _ => {
+                compile_error!("unsupported guest architecture");
+            }
+        }
 
         // Validate NUMA topology and resolve VP-to-vnode assignments.
         let vp_to_vnode = super::numa::resolve_numa_vp_assignment(
@@ -1325,27 +1335,28 @@ impl InitializedVm {
         // Combine the IOMMU RC configs with the MMIO ranges from the layout
         // engine into the resolved per-instance resources. A VM has at most one
         // IOMMU type, so this produces a single `ResolvedIommu`.
-        #[cfg(guest_arch = "x86_64")]
-        let resolved_iommu = match &resolved_layout.iommu_ranges {
-            ResolvedIommuRanges::AmdVi(ranges) => ResolvedIommu::AmdVi(
-                amd_iommu_wiring::resolve_iommu_resources(&cfg.pcie_root_complexes, ranges),
-            ),
-            ResolvedIommuRanges::IntelVtd(ranges) => ResolvedIommu::IntelVtd(
-                intel_vtd_wiring::resolve_vtd_resources(&cfg.pcie_root_complexes, ranges)?,
-            ),
-            _ => ResolvedIommu::None,
-        };
-        #[cfg(guest_arch = "aarch64")]
-        let resolved_iommu = match &resolved_layout.iommu_ranges {
-            ResolvedIommuRanges::Smmu(ranges) => {
-                ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
-                    &cfg.pcie_root_complexes,
-                    ranges,
-                    &spi_layout,
-                    device_assignment_msi_iova_range,
-                ))
-            }
-            _ => ResolvedIommu::None,
+        let resolved_iommu = cfg_select! {
+            guest_arch = "x86_64" => match &resolved_layout.iommu_ranges {
+                ResolvedIommuRanges::AmdVi(ranges) => ResolvedIommu::AmdVi(
+                    amd_iommu_wiring::resolve_iommu_resources(&cfg.pcie_root_complexes, ranges),
+                ),
+                ResolvedIommuRanges::IntelVtd(ranges) => ResolvedIommu::IntelVtd(
+                    intel_vtd_wiring::resolve_vtd_resources(&cfg.pcie_root_complexes, ranges)?,
+                ),
+                _ => ResolvedIommu::None,
+            },
+            guest_arch = "aarch64" => match &resolved_layout.iommu_ranges {
+                ResolvedIommuRanges::Smmu(ranges) => {
+                    ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
+                        &cfg.pcie_root_complexes,
+                        ranges,
+                        &spi_layout,
+                        device_assignment_msi_iova_range,
+                    ))
+                }
+                _ => ResolvedIommu::None,
+            },
+            _ => compile_error!("unsupported guest architecture"),
         };
 
         // Place the alias map at the end of the address space. Newer versions
@@ -2263,40 +2274,40 @@ impl InitializedVm {
                 // When the AMD IOMMU is enabled for this root complex,
                 // reserve device 0 for the IOMMU RCiEP and start root
                 // ports at device 1.
-                #[cfg(guest_arch = "x86_64")]
-                let rc_iommu = rc.iommu.as_ref();
-                #[cfg(guest_arch = "x86_64")]
-                let root_port_start_device: u8 = if matches!(rc_iommu, Some(PcieIommuConfig::AmdVi))
-                {
-                    1
-                } else {
-                    0
-                };
-                #[cfg(not(guest_arch = "x86_64"))]
-                let root_port_start_device: u8 = 0;
+                let (root_port_start_device, reserved_device_numbers): (u8, u32) = cfg_select! {
+                    guest_arch = "x86_64" => {{
+                        let rc_iommu = rc.iommu.as_ref();
+                        let root_port_start_device =
+                            if matches!(rc_iommu, Some(PcieIommuConfig::AmdVi)) {
+                                1
+                            } else {
+                                0
+                            };
 
-                // On the segment-0 root complex covered by an x86 IOMMU, the
-                // phantom southbridge IOAPIC occupies a fixed devfn whose
-                // device number must not be assigned to a root port. The
-                // IOAPIC RID is on bus 0, so only reserve the device number on
-                // the root complex whose bus range includes bus 0; reserving
-                // it on other segment-0 root complexes would wrongly reject
-                // otherwise-valid port counts. Reserve that device number so
-                // that an overly large port count is rejected rather than
-                // silently shadowing the IOAPIC entry.
-                #[cfg(guest_arch = "x86_64")]
-                let reserved_device_numbers: u32 = if rc.segment == 0
-                    && rc.start_bus == 0
-                    && matches!(
-                        rc_iommu,
-                        Some(PcieIommuConfig::AmdVi | PcieIommuConfig::IntelVtd)
-                    ) {
-                    1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
-                } else {
-                    0
+                        // On the segment-0 root complex covered by an x86 IOMMU, the
+                        // phantom southbridge IOAPIC occupies a fixed devfn whose
+                        // device number must not be assigned to a root port. The
+                        // IOAPIC RID is on bus 0, so only reserve the device number on
+                        // the root complex whose bus range includes bus 0; reserving
+                        // it on other segment-0 root complexes would wrongly reject
+                        // otherwise-valid port counts. Reserve that device number so
+                        // that an overly large port count is rejected rather than
+                        // silently shadowing the IOAPIC entry.
+                        let reserved_device_numbers = if rc.segment == 0
+                            && rc.start_bus == 0
+                            && matches!(
+                                rc_iommu,
+                                Some(PcieIommuConfig::AmdVi | PcieIommuConfig::IntelVtd)
+                            ) {
+                            1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
+                        } else {
+                            0
+                        };
+
+                        (root_port_start_device, reserved_device_numbers)
+                    }}
+                    _ => (0, 0),
                 };
-                #[cfg(not(guest_arch = "x86_64"))]
-                let reserved_device_numbers: u32 = 0;
 
                 let root_complex =
                     chipset_builder
@@ -2623,16 +2634,17 @@ impl InitializedVm {
         };
 
         // Collapse the IOMMU setup results into the type-keyed enum.
-        #[cfg(guest_arch = "x86_64")]
-        let iommu_devices = match resolved_iommu {
-            ResolvedIommu::AmdVi(_) => IommuDevices::AmdVi(amd_devices),
-            ResolvedIommu::IntelVtd(_) => IommuDevices::IntelVtd(vtd_devices),
-            ResolvedIommu::None => IommuDevices::None,
-        };
-        #[cfg(guest_arch = "aarch64")]
-        let iommu_devices = match resolved_iommu {
-            ResolvedIommu::Smmu(_) => IommuDevices::Smmu(smmu_devices),
-            ResolvedIommu::None => IommuDevices::None,
+        let iommu_devices = cfg_select! {
+            guest_arch = "x86_64" => match resolved_iommu {
+                ResolvedIommu::AmdVi(_) => IommuDevices::AmdVi(amd_devices),
+                ResolvedIommu::IntelVtd(_) => IommuDevices::IntelVtd(vtd_devices),
+                ResolvedIommu::None => IommuDevices::None,
+            },
+            guest_arch = "aarch64" => match resolved_iommu {
+                ResolvedIommu::Smmu(_) => IommuDevices::Smmu(smmu_devices),
+                ResolvedIommu::None => IommuDevices::None,
+            },
+            _ => compile_error!("unsupported guest architecture"),
         };
 
         // Set up IOAPIC routing. When an x86 IOMMU covers the southbridge

@@ -5,8 +5,17 @@ use crate::Hv1State;
 use crate::WhpProcessor;
 use crate::memory::VtlAccess;
 use crate::vtl2;
-#[cfg(guest_arch = "aarch64")]
-use aarch64 as arch;
+cfg_select! {
+    guest_arch = "aarch64" => {
+        use aarch64 as arch;
+    }
+    guest_arch = "x86_64" => {
+        use x86 as arch;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 use hv1_hypercall::HvRepResult;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PARTITION_ID_SELF;
@@ -22,8 +31,6 @@ use std::iter::zip;
 use std::ops::RangeInclusive;
 use virt::PageVisibility;
 use virt::VpIndex;
-#[cfg(guest_arch = "x86_64")]
-use x86 as arch;
 
 pub(crate) struct WhpHypercallExit<'a, 'b> {
     vp: &'a mut WhpProcessor<'b>,

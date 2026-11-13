@@ -7,15 +7,19 @@
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
-#[cfg(guest_arch = "aarch64")]
-mod aarch64;
-#[cfg(guest_arch = "x86_64")]
-mod x86_64;
-
-#[cfg(guest_arch = "aarch64")]
-use aarch64 as arch;
-#[cfg(guest_arch = "x86_64")]
-use x86_64 as arch;
+cfg_select! {
+    guest_arch = "aarch64" => {
+        mod aarch64;
+        use aarch64 as arch;
+    }
+    guest_arch = "x86_64" => {
+        mod x86_64;
+        use x86_64 as arch;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 
 // irqfd is arch-independent (MSI routing + MSHV_IRQFD), wired up on both
 // x86_64 and aarch64.
