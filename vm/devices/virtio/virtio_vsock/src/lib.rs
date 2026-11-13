@@ -42,6 +42,7 @@ use pal_async::socket::PolledSocket;
 use pal_async::wait::PolledWait;
 use smallvec::SmallVec;
 use spec::VsockConfig;
+use spec::VsockEvent;
 use spec::VsockHeader;
 use std::collections::BTreeSet;
 use std::io::IoSlice;
@@ -75,7 +76,7 @@ const QUEUE_COUNT: usize = 3;
 const RX_QUEUE_INDEX: usize = 0;
 const TX_QUEUE_INDEX: usize = 1;
 const EVENT_QUEUE_INDEX: usize = 2;
-// Include both live connections and resets awaiting guest receive buffers.
+// Include unfinished handshakes and resets awaiting guest receive buffers.
 const MAX_SAVED_CONNECTIONS: usize = 2 * connections::MAX_ACTIVE_CONNECTIONS;
 
 /// Virtio vsock device.
@@ -125,6 +126,7 @@ impl VirtioVsockDevice {
                 rx_ready: FuturesUnordered::new(),
                 write_ready: FuturesUnordered::new(),
                 pending_resets: BTreeSet::new(),
+                transport_reset: None,
                 failed: false,
             }),
             started_queues: [const { None }; QUEUE_COUNT],
@@ -142,6 +144,7 @@ impl VirtioVsockDevice {
         worker.rx_ready = FuturesUnordered::new();
         worker.write_ready = FuturesUnordered::new();
         worker.pending_resets.clear();
+        worker.transport_reset = None;
         worker.failed = false;
     }
 }
@@ -231,10 +234,16 @@ impl VirtioDevice for VirtioVsockDevice {
             let state = VsockWorkerState {
                 rx_queue: self.started_queues[RX_QUEUE_INDEX].take().unwrap(),
                 tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap().fuse(),
-                _event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
+                event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
                 memory: resources.guest_memory.clone(),
             };
 
+            if matches!(
+                self.worker.task().transport_reset,
+                Some(TransportReset::AwaitingAck { .. })
+            ) {
+                state.event_queue.notify_used();
+            }
             self.worker
                 .insert(self.driver.clone(), "virtio-vsock-worker", state);
             self.worker.start();
@@ -253,7 +262,7 @@ impl VirtioDevice for VirtioVsockDevice {
             // individually.
             self.started_queues[RX_QUEUE_INDEX] = Some(state.rx_queue);
             self.started_queues[TX_QUEUE_INDEX] = Some(state.tx_queue.into_inner());
-            self.started_queues[EVENT_QUEUE_INDEX] = Some(state._event_queue);
+            self.started_queues[EVENT_QUEUE_INDEX] = Some(state.event_queue);
         }
 
         // Remove the queue state (drops VirtioQueue).
@@ -301,8 +310,13 @@ mod saved_state {
     pub struct SavedState {
         #[mesh(1)]
         pub guest_cid: u64,
+        /// Unfinished handshakes and pending targeted resets. Older snapshots
+        /// can also contain established connections.
         #[mesh(2)]
         pub connections_to_reset: Vec<SavedConnection>,
+        /// Driver event-queue cursor sampled before publishing an unacknowledged reset.
+        #[mesh(3)]
+        pub pending_event_ack: Option<u16>,
     }
 
     #[derive(Protobuf)]
@@ -342,7 +356,7 @@ impl AsyncSaveRestore for VirtioVsockDevice {
         }
         let connections: BTreeSet<_> = worker
             .connections
-            .keys()
+            .connecting_keys()
             .chain(worker.pending_resets.iter().copied())
             .collect();
         if connections.len() > MAX_SAVED_CONNECTIONS {
@@ -359,6 +373,12 @@ impl AsyncSaveRestore for VirtioVsockDevice {
                     peer_port: key.peer_port,
                 })
                 .collect(),
+            pending_event_ack: match worker.transport_reset {
+                Some(TransportReset::AwaitingAck {
+                    available_cursor, ..
+                }) => Some(available_cursor),
+                _ => None,
+            },
         })
     }
 
@@ -389,7 +409,15 @@ impl AsyncSaveRestore for VirtioVsockDevice {
             })
             .collect();
         self.reset_connections();
-        self.worker.task_mut().pending_resets = pending_resets;
+        let worker = self.worker.task_mut();
+        worker.pending_resets = pending_resets;
+        worker.transport_reset = Some(match state.pending_event_ack {
+            Some(available_cursor) => TransportReset::AwaitingAck {
+                available_cursor,
+                reset_again: true,
+            },
+            None => TransportReset::Pending,
+        });
         Ok(())
     }
 }
@@ -467,9 +495,18 @@ impl PendingFutures {
 struct VsockWorkerState {
     rx_queue: VirtioQueue,
     tx_queue: Fuse<VirtioQueue>,
-    // The event queue is not used by this implementation.
-    _event_queue: VirtioQueue,
+    event_queue: VirtioQueue,
     memory: GuestMemory,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TransportReset {
+    Pending,
+    AwaitingAck {
+        available_cursor: u16,
+        // A snapshot may contain an event already published by an earlier restore.
+        reset_again: bool,
+    },
 }
 
 /// Connection runtime survives queue stop/start, but is discarded on reset or restore.
@@ -480,6 +517,7 @@ struct VsockWorker {
     rx_ready: FuturesUnordered<RxReadyItem>,
     write_ready: FuturesUnordered<WriteReadyItem>,
     pending_resets: BTreeSet<ConnectionKey>,
+    transport_reset: Option<TransportReset>,
     failed: bool,
 }
 
@@ -695,6 +733,30 @@ impl VsockWorker {
         self.pending_resets.remove(&key);
         Ok(true)
     }
+
+    fn publish_transport_reset(&mut self, state: &mut VsockWorkerState) -> anyhow::Result<()> {
+        let Some(work) = state.event_queue.try_next()? else {
+            return Ok(());
+        };
+        let available_cursor = state.event_queue.driver_avail_state()?;
+        let event = VsockEvent {
+            id: u32::from(spec::Event::TRANSPORT_RESET.0).to_le(),
+        };
+        if let Err(err) = work.write_at_offset(0, &state.memory, event.as_bytes()) {
+            state.event_queue.try_complete(work, 0)?;
+            // Its refill must not be mistaken for acknowledgment of a later reset.
+            return Err(err).context("failed to write vsock transport reset event");
+        }
+        state
+            .event_queue
+            .try_complete(work, size_of::<VsockEvent>() as u32)
+            .context("failed to complete vsock transport reset event")?;
+        self.transport_reset = Some(TransportReset::AwaitingAck {
+            available_cursor,
+            reset_again: false,
+        });
+        Ok(())
+    }
 }
 
 impl AsyncRun<VsockWorkerState> for VsockWorker {
@@ -708,7 +770,20 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
         stop.until_stopped(async {
             loop {
                 check.check()?;
-                let has_rx_work = if self.pending_resets.is_empty() {
+                if matches!(self.transport_reset, Some(TransportReset::Pending)) {
+                    if let Err(err) = self.publish_transport_reset(state) {
+                        self.failed = true;
+                        tracelimit::error_ratelimited!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "failed to publish vsock transport reset, stopping worker"
+                        );
+                        return Ok(());
+                    }
+                }
+                let transport_reset = self.transport_reset;
+                let has_rx_work = if transport_reset.is_some() {
+                    false
+                } else if self.pending_resets.is_empty() {
                     match state.rx_queue.try_peek() {
                         Ok(work) => work.is_some(),
                         Err(err) => {
@@ -741,11 +816,33 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     OptionFuture::from(has_rx_work.then(|| self.rx_ready.select_next_some()));
 
                 let mut rx_queue_kick = OptionFuture::from(
-                    (!has_rx_work).then(|| poll_fn(|cx| state.rx_queue.poll_kick(cx)).fuse()),
+                    (!has_rx_work && transport_reset.is_none())
+                        .then(|| poll_fn(|cx| state.rx_queue.poll_kick(cx)).fuse()),
                 );
+                let event_cursor = transport_reset.map(|reset| match reset {
+                    TransportReset::Pending => state.event_queue.queue_state().avail_index,
+                    TransportReset::AwaitingAck { available_cursor, .. } => available_cursor,
+                });
+                let mut event_ready = OptionFuture::from(event_cursor.map(|cursor| {
+                    let queue = &mut state.event_queue;
+                    poll_fn(move |cx| queue.poll_driver_avail_changed(cx, cursor)).fuse()
+                }));
 
                 // Wait for work to do from either host or guest.
                 let result = futures::select! {
+                    event = event_ready => {
+                        match event.unwrap() {
+                            Ok(()) => {
+                                // Linux refills event buffers after processing the reset.
+                                // RX remains gated until actual producer progress is visible.
+                                if let Some(TransportReset::AwaitingAck { reset_again, .. }) = transport_reset {
+                                    self.transport_reset = reset_again.then_some(TransportReset::Pending);
+                                }
+                                Ok(())
+                            }
+                            Err(err) => Err(err).context("failed to wait for vsock event acknowledgment"),
+                        }
+                    }
                     id = self.write_ready.select_next_some() => {
                         let pending = self.connections.handle_write_ready(id);
                         self.queue_pending(pending)

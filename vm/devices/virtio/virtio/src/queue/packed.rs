@@ -94,6 +94,44 @@ impl PackedQueueGetWork {
         self.next_avail_index | (u16::from(self.wrapped_bit) << 15)
     }
 
+    fn is_available_at(&self, cursor: u16) -> Result<bool, QueueError> {
+        let index = cursor & 0x7fff;
+        if index >= self.queue_size {
+            return Err(QueueError::InvalidSavedState {
+                avail_index: cursor,
+                used_index: self.avail_state(),
+                queue_size: self.queue_size,
+            });
+        }
+        let wrapped = cursor & 0x8000 != 0;
+        let flags: DescriptorFlags = self
+            .queue_desc
+            .read_plain(
+                descriptor_offset(index) + std::mem::offset_of!(PackedDescriptor, flags_raw) as u64,
+            )
+            .map_err(QueueError::Memory)?;
+        let available = flags.available() == wrapped && flags.used() != wrapped;
+        if available {
+            atomic::fence(atomic::Ordering::Acquire);
+        }
+        Ok(available)
+    }
+
+    pub fn driver_avail_state(&self) -> Result<u16, QueueError> {
+        let mut cursor = self.avail_state();
+        for _ in 0..self.queue_size {
+            if !self.is_available_at(cursor)? {
+                break;
+            }
+            cursor = if (cursor & 0x7fff) + 1 == self.queue_size {
+                (cursor ^ 0x8000) & 0x8000
+            } else {
+                cursor + 1
+            };
+        }
+        Ok(cursor)
+    }
+
     /// Checks whether a descriptor is available, returning its index.
     ///
     /// This is a lightweight check that does not arm kick notification. When
@@ -120,16 +158,12 @@ impl PackedQueueGetWork {
         Ok(Some(self.next_avail_index))
     }
 
-    /// Arms kick notification so the guest will send a doorbell when new work
-    /// is available. Returns `true` if armed successfully (caller should
-    /// sleep), or `false` if new data arrived during arming (caller should
-    /// retry).
-    pub fn arm_kick(&mut self) -> Result<bool, QueueError> {
+    fn enable_kicks_at(&self, cursor: u16) -> Result<(), QueueError> {
         let enable_event = if self.use_event_index {
             PackedEventSuppression::new()
                 .with_flags(EventSuppressionFlags::DescriptorIndex)
-                .with_offset(self.next_avail_index)
-                .with_wrap(self.wrapped_bit)
+                .with_offset(cursor & 0x7fff)
+                .with_wrap(cursor & 0x8000 != 0)
         } else {
             PackedEventSuppression::new().with_flags(EventSuppressionFlags::Enabled)
         };
@@ -144,12 +178,30 @@ impl PackedQueueGetWork {
             .map_err(QueueError::Memory)?;
         // Ensure the event enable is visible before checking the descriptor.
         atomic::fence(atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Arms kick notification so the guest will send a doorbell when new work
+    /// is available. Returns `true` if armed successfully (caller should
+    /// sleep), or `false` if new data arrived during arming (caller should
+    /// retry).
+    pub fn arm_kick(&mut self) -> Result<bool, QueueError> {
+        self.enable_kicks_at(self.avail_state())?;
         if self.is_available()?.is_some() {
             // New data arrived during arming — suppress kicks and report.
             self.suppress_kicks()?;
             return Ok(false);
         }
 
+        Ok(true)
+    }
+
+    pub fn arm_kick_after(&self, cursor: u16) -> Result<bool, QueueError> {
+        self.enable_kicks_at(cursor)?;
+        if self.is_available_at(cursor)? {
+            self.suppress_kicks()?;
+            return Ok(false);
+        }
         Ok(true)
     }
 

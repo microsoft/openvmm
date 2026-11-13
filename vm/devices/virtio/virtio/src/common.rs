@@ -316,6 +316,36 @@ impl VirtioQueue {
         }
     }
 
+    /// Returns the driver's available-buffer cursor, not the device's consumption
+    /// cursor. Packed queues include the wrap bit. Use with
+    /// [`Self::poll_driver_avail_changed`] to wait for replenishment without
+    /// consuming buffers already on the queue.
+    pub fn driver_avail_state(&self) -> Result<u16, QueueError> {
+        self.core.driver_avail_state()
+    }
+
+    /// Waits for the driver to add buffers after `cursor`, ignoring stale kicks.
+    /// Use a cursor from [`Self::driver_avail_state`], or the device's
+    /// consumption cursor when waiting on an empty queue.
+    pub fn poll_driver_avail_changed(
+        &mut self,
+        cx: &mut Context<'_>,
+        cursor: u16,
+    ) -> Poll<Result<(), QueueError>> {
+        loop {
+            if !self.core.arm_kick_after(cursor)? {
+                return Poll::Ready(Ok(()));
+            }
+            ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
+        }
+    }
+
+    /// Reasserts notification for a previously published used buffer, for
+    /// example when resuming an event whose acknowledgment is still pending.
+    pub fn notify_used(&self) {
+        self.notify_guest.deliver();
+    }
+
     /// Polls until the queue is kicked by the guest, indicating new work may be
     /// available.
     ///

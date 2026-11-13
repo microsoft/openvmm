@@ -108,6 +108,9 @@ struct Connection {
     key: ConnectionKey,
     seq: u64,
     state: ConnectionState,
+    // A published RESPONSE may still be unread while the guest is in connect().
+    // Subsequent guest traffic confirms it no longer needs a targeted restore RST.
+    guest_response_unconfirmed: bool,
     socket: RelaySocket,
     /// Buffer allocation advertised by the peer (guest).
     peer_buf_alloc: u32,
@@ -162,6 +165,7 @@ impl Connection {
             socket,
             recv_buf: None,
             state: ConnectionState::GuestConnecting,
+            guest_response_unconfirmed: true,
             timeout: None,
             send_shutdown: false,
             receive_shutdown: false,
@@ -186,6 +190,7 @@ impl Connection {
                 read_write_count: 0,
                 use_guid: None,
             },
+            guest_response_unconfirmed: false,
             peer_buf_alloc: 0,
             peer_fwd_cnt: 0,
             tx_cnt: Wrapping(0),
@@ -725,9 +730,16 @@ impl ConnectionManager {
         self.remove_connection(key);
     }
 
-    /// Connections already visible to the guest, excluding host-only handshakes.
-    pub fn keys(&self) -> impl Iterator<Item = ConnectionKey> + '_ {
-        self.conns.keys().copied()
+    /// A transport reset does not necessarily terminate a guest's pending
+    /// connect(), so retain targeted resets for unfinished handshakes.
+    pub fn connecting_keys(&self) -> impl Iterator<Item = ConnectionKey> + '_ {
+        self.conns
+            .iter()
+            .filter(|(_, connection)| {
+                connection.state != ConnectionState::Connected
+                    || connection.guest_response_unconfirmed
+            })
+            .map(|(key, _)| *key)
     }
 
     pub fn reset_packet(&self, key: ConnectionKey) -> VsockPacketBuf {
@@ -809,7 +821,8 @@ impl ConnectionManager {
             ));
         }
 
-        let pending = match packet.header.operation() {
+        let operation = packet.header.operation();
+        let pending = match operation {
             Operation::REQUEST => self.handle_request_packet(driver, &packet.header, key)?,
             Operation::RESPONSE => self.handle_response_packet(key, &packet.header)?,
             Operation::RST => {
@@ -836,6 +849,12 @@ impl ConnectionManager {
             }
         };
 
+        if !matches!(operation, Operation::REQUEST | Operation::RST)
+            && let Some(connection) = self.conns.get_mut(&key)
+            && connection.state == ConnectionState::Connected
+        {
+            connection.guest_response_unconfirmed = false;
+        }
         Ok(pending)
     }
 

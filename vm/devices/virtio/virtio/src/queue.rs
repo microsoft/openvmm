@@ -253,6 +253,22 @@ impl QueueCoreGetWork {
         }
     }
 
+    pub fn driver_avail_state(&self) -> Result<u16, QueueError> {
+        match &self.inner {
+            QueueGetWorkInner::Split(split) => split.get_available_index(),
+            QueueGetWorkInner::Packed(packed) => packed.driver_avail_state(),
+        }
+    }
+
+    pub fn arm_kick_after(&mut self, cursor: u16) -> Result<bool, QueueError> {
+        let armed = match &self.inner {
+            QueueGetWorkInner::Split(split) => split.arm_kick_after(cursor)?,
+            QueueGetWorkInner::Packed(packed) => packed.arm_kick_after(cursor)?,
+        };
+        self.armed = armed;
+        Ok(armed)
+    }
+
     pub fn new(
         features: VirtioDeviceFeatures,
         mem: GuestMemory,

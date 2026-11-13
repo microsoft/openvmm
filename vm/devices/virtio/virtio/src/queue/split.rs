@@ -75,7 +75,7 @@ impl SplitQueueGetWork {
             .map_err(QueueError::Memory)
     }
 
-    fn get_available_index(&self) -> Result<u16, QueueError> {
+    pub fn get_available_index(&self) -> Result<u16, QueueError> {
         Ok(self
             .queue_avail
             .read_plain::<u16_le>(spec::AVAIL_OFFSET_IDX)
@@ -109,21 +109,33 @@ impl SplitQueueGetWork {
         Ok(Some(self.last_avail_index & (self.queue_size - 1)))
     }
 
+    fn enable_kicks_at(&self, index: u16) -> Result<(), QueueError> {
+        if self.use_ring_event_index {
+            self.set_available_event(index)?;
+        } else {
+            self.set_used_flags(spec::UsedFlags::new())?;
+        }
+        atomic::fence(atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
     /// Arms kick notification so the guest will send a doorbell when new work
     /// is available. Returns `true` if armed successfully (caller should
     /// sleep), or `false` if new data arrived during arming (caller should
     /// retry).
     pub fn arm_kick(&mut self) -> Result<bool, QueueError> {
-        if self.use_ring_event_index {
-            self.set_available_event(self.last_avail_index)?;
-        } else {
-            self.set_used_flags(spec::UsedFlags::new())?;
-        }
-        // Ensure the available event/used flags are visible before checking
-        // the available index again.
-        atomic::fence(atomic::Ordering::SeqCst);
+        self.enable_kicks_at(self.last_avail_index)?;
         if self.is_available()?.is_some() {
             // New work arrived during arming — suppress kicks again.
+            self.suppress_kicks()?;
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    pub fn arm_kick_after(&self, index: u16) -> Result<bool, QueueError> {
+        self.enable_kicks_at(index)?;
+        if self.get_available_index()? != index {
             self.suppress_kicks()?;
             return Ok(false);
         }

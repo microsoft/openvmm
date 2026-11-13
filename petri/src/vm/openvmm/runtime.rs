@@ -257,6 +257,22 @@ impl PetriVmOpenVmm {
         }
     }
 
+    /// Get the userspace VTL0 vsock relay base path.
+    ///
+    /// Guest connections to port `P` use a host Unix listener at `<base>_P`.
+    pub fn vtl0_vsock_path(&self) -> anyhow::Result<&Path> {
+        #[cfg(target_os = "linux")]
+        anyhow::ensure!(
+            self.inner
+                .resources
+                .properties
+                .vhost_vsock_guest_cid
+                .is_none(),
+            "kernel vhost-vsock does not use a Unix relay"
+        );
+        Ok(&self.inner.resources.vsock_path)
+    }
+
     /// Get the path to the VTL 2 vsock socket, if the VM is configured with OpenHCL.
     pub fn vtl2_vsock_path(&self) -> anyhow::Result<&Path> {
         self.inner

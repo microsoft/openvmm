@@ -191,6 +191,19 @@ OpenVMM snapshots:
 | VMBus serial (host) | VMBus | **No** |
 | Vmbfs | VMBus | **No** |
 
+```admonish note title="Virtio-vsock connections"
+After an actual restore, the userspace vsock device sends
+`VIRTIO_VSOCK_EVENT_TRANSPORT_RESET` on its event queue. A conforming guest
+driver closes established connections but keeps listening sockets usable;
+applications must reconnect. The guest CID must still match the saved
+configuration. Ordinary pause/resume, including saving without restoring,
+does not send this event.
+
+This requires a guest driver that handles and replenishes event-queue buffers.
+Host sockets and buffered stream data are not preserved. Individual connection
+errors still use targeted reset packets rather than resetting the transport.
+```
+
 ```admonish warning title="Virtio queue progress"
 When a snapshot includes progress for an active virtio queue, its cursors must
 be valid for the negotiated ring layout and queue size. Invalid progress is

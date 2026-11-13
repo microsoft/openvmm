@@ -8,7 +8,10 @@ use super::super::ttrpc::launch_openvmm_with_log;
 use super::super::ttrpc::pcie_root_port;
 use super::super::ttrpc::virtio_device;
 use anyhow::Context;
+use futures::AsyncBufReadExt;
+use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
+use futures::io::BufReader;
 use guid::Guid;
 use mesh::CancelContext;
 use openvmm_ttrpc_vmservice as vmservice;
@@ -18,6 +21,7 @@ use pal_async::process::PolledChild;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
 use petri::ResolvedArtifact;
 use petri::TestChild;
@@ -34,19 +38,94 @@ use vmm_test_macros::openvmm_test;
 #[openvmm_test(linux_direct_x64)]
 async fn vsock_save_restore_reconnect_pci(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
 ) -> anyhow::Result<()> {
-    save_restore_reconnect(config, false).await
+    save_restore_reconnect(config, &driver, false).await
 }
 
 #[openvmm_test(linux_direct_x64)]
 async fn vsock_save_restore_reconnect_mmio(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
 ) -> anyhow::Result<()> {
-    save_restore_reconnect(config, true).await
+    save_restore_reconnect(config, &driver, true).await
+}
+
+async fn wait_for_listener_log(
+    agent: &petri::pipette::PipetteClient,
+    driver: &DefaultDriver,
+    expected: &str,
+) -> anyhow::Result<()> {
+    let mut last_log = Vec::new();
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(async {
+            loop {
+                last_log = agent.read_file("/tmp/vsock-reset-listener.log").await?;
+                if std::str::from_utf8(&last_log)?
+                    .lines()
+                    .any(|line| line == expected)
+                {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                PolledTimer::new(driver)
+                    .sleep(Duration::from_millis(10))
+                    .await;
+            }
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "guest listener did not report {expected:?}:\n{}",
+                String::from_utf8_lossy(&last_log),
+            )
+        })?
+}
+
+async fn connect_guest_listener(
+    driver: &DefaultDriver,
+    path: &Path,
+) -> anyhow::Result<PolledSocket<unix_socket::UnixStream>> {
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(async {
+            let mut socket = PolledSocket::connect_unix(driver, path).await?;
+            socket.write_all(b"CONNECT 6300\n").await?;
+            let mut socket = BufReader::new(socket);
+            let mut response = String::new();
+            socket.read_line(&mut response).await?;
+            anyhow::ensure!(
+                response.starts_with("OK "),
+                "vsock connect failed: {response}"
+            );
+            Ok(socket.into_inner())
+        })
+        .await
+        .context("connecting to preserved guest listener timed out")?
+}
+
+async fn echo(
+    stream: &mut PolledSocket<unix_socket::UnixStream>,
+    payload: &[u8],
+) -> anyhow::Result<()> {
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(async {
+            stream.write_all(payload).await?;
+            let mut received = vec![0; payload.len()];
+            stream.read_exact(&mut received).await?;
+            anyhow::ensure!(received == payload, "guest listener echo mismatch");
+            Ok(())
+        })
+        .await
+        .context("guest listener echo timed out")?
 }
 
 async fn save_restore_reconnect(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
+    driver: &DefaultDriver,
     mmio: bool,
 ) -> anyhow::Result<()> {
     let (mut vm, mut agent) = config
@@ -66,6 +145,23 @@ async fn save_restore_reconnect(
     let marker = Guid::new_random().to_string().into_bytes();
     let marker_path = "/tmp/vsock-save-restore-marker";
     agent.write_file(marker_path, marker.as_slice()).await?;
+    agent
+        .write_file("/tmp/vsock-reset-listener.log", &[][..])
+        .await?;
+    let output = agent
+        .command("sh")
+        .args([
+            "-c",
+            "/pipette vsock-listener 6300 </dev/null >/tmp/vsock-reset-listener.log 2>&1 & echo $!",
+        ])
+        .output()
+        .await?;
+    anyhow::ensure!(output.status.success(), "starting guest listener failed");
+    let listener_pid: u32 = std::str::from_utf8(&output.stdout)?.trim().parse()?;
+    wait_for_listener_log(&agent, driver, &format!("listening {listener_pid}")).await?;
+    let path = vm.backend().vtl0_vsock_path()?.to_path_buf();
+    let mut stream = connect_guest_listener(driver, &path).await?;
+    echo(&mut stream, b"before pause").await?;
 
     // Capture alone must leave the original socket usable on resume.
     vm.backend().pause().await?;
@@ -77,8 +173,9 @@ async fn save_restore_reconnect(
         .until_cancelled(agent.ping())
         .await
         .context("original vsock connection did not survive pause/save/resume")??;
+    echo(&mut stream, b"same accepted stream after save/resume").await?;
 
-    for _ in 0..3 {
+    for iteration in 1..=3 {
         vm.backend().pulse_save_restore().await?;
         let disconnect = CancelContext::new()
             .with_timeout(Duration::from_secs(30))
@@ -99,8 +196,33 @@ async fn save_restore_reconnect(
         );
         assert_eq!(agent.read_file(marker_path).await?, marker);
         agent.write_file(marker_path, marker.as_slice()).await?;
+        wait_for_listener_log(&agent, driver, &format!("reset {iteration}")).await?;
+        stream = connect_guest_listener(driver, &path).await?;
+        echo(&mut stream, b"same listener after restore").await?;
+        let log = agent.read_file("/tmp/vsock-reset-listener.log").await?;
+        let log = std::str::from_utf8(&log)?;
+        tracing::info!(
+            listener_pid,
+            iteration,
+            guest_log = log,
+            "guest listener survived transport reset"
+        );
+        anyhow::ensure!(
+            log.lines()
+                .filter(|line| line.starts_with("listening "))
+                .count()
+                == 1,
+            "guest listener was restarted instead of preserved"
+        );
     }
 
+    drop(stream);
+    let stopped = agent
+        .command("kill")
+        .args(["-TERM", &listener_pid.to_string()])
+        .output()
+        .await?;
+    anyhow::ensure!(stopped.status.success(), "stopping guest listener failed");
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -623,7 +745,7 @@ fn launch_snapshot_process(
         .stdout(stdout_write)
         .stderr(stderr_write)
         .spawn()?;
-    let child = TestChild::new(PolledChild::new(driver, child)?);
+    let child = TestChild::new(PolledChild::<std::process::Child>::new(driver, child)?);
     let stdout = driver.spawn(
         "vsock-snapshot-stdout",
         petri::log_task(

@@ -3916,6 +3916,140 @@ async fn verify_normal_then_indirect_succeeds(driver: DefaultDriver) {
 // Peek tests
 // ---------------------------------------------------------------------------
 
+#[async_test]
+async fn driver_avail_progress_ignores_existing_buffers_and_stale_kicks(driver: DefaultDriver) {
+    for packed in [false, true] {
+        for event_idx in [false, true] {
+            let test_mem = VirtioTestMemoryAccess::new();
+            let mut guest = if packed {
+                VirtioTestGuest::new_packed(&driver, &test_mem, 1, 4, event_idx)
+            } else {
+                VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, event_idx)
+            };
+            let event = Event::new();
+            let mut queue = VirtioQueue::new(
+                guest.queue_features(),
+                guest.queue_params(0),
+                guest.mem(),
+                Interrupt::null(),
+                PolledWait::new(&driver, event.clone()).unwrap(),
+                None,
+            )
+            .unwrap();
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            for _ in 0..4 {
+                for _ in 0..4 {
+                    guest.add_to_avail_queue(0);
+                }
+                let work = queue.try_next().unwrap().unwrap();
+                let cursor = queue.driver_avail_state().unwrap();
+                assert_ne!(cursor, queue.queue_state().avail_index);
+                queue.try_complete(work, 4).unwrap();
+                assert!(guest.get_next_completed(0).is_some());
+                let state = queue.queue_state();
+
+                assert!(
+                    queue
+                        .poll_driver_avail_changed(&mut cx, cursor)
+                        .is_pending()
+                );
+                event.signal();
+                assert!(
+                    queue
+                        .poll_driver_avail_changed(&mut cx, cursor)
+                        .is_pending()
+                );
+                assert_eq!(queue.queue_state(), state);
+                if event_idx {
+                    let params = guest.queue_params(0);
+                    if packed {
+                        let suppression: PackedEventSuppression =
+                            guest.mem().read_plain(params.used_addr).unwrap();
+                        assert_eq!(suppression.flags(), EventSuppressionFlags::DescriptorIndex);
+                        assert_eq!(suppression.offset(), cursor & 0x7fff);
+                        assert_eq!(suppression.wrap(), cursor & 0x8000 != 0);
+                    } else {
+                        let requested: u16_le = guest
+                            .mem()
+                            .read_plain(params.used_addr + USED_OFFSET_RING + USED_ELEMENT_SIZE * 4)
+                            .unwrap();
+                        assert_eq!(requested.get(), cursor);
+                    }
+                }
+
+                guest.add_to_avail_queue(0);
+                // Progress must be observed even if a notification was coalesced or lost.
+                assert!(matches!(
+                    queue.poll_driver_avail_changed(&mut cx, cursor),
+                    std::task::Poll::Ready(Ok(())),
+                ));
+                assert_eq!(queue.queue_state(), state);
+                for _ in 0..4 {
+                    let work = queue.try_next().unwrap().unwrap();
+                    queue.try_complete(work, 4).unwrap();
+                    assert!(guest.get_next_completed(0).is_some());
+                }
+                assert!(queue.try_next().unwrap().is_none());
+            }
+            if packed {
+                assert!(matches!(
+                    queue.poll_driver_avail_changed(&mut cx, 4),
+                    std::task::Poll::Ready(Err(QueueError::InvalidSavedState { .. })),
+                ));
+            }
+            let used_addr = guest.queue_params(0).used_addr;
+            *test_mem.failed_write_range.lock() = Some(used_addr..used_addr + 0x1000);
+            assert!(matches!(
+                queue.poll_driver_avail_changed(&mut cx, 0),
+                std::task::Poll::Ready(Err(QueueError::Memory(_))),
+            ));
+        }
+    }
+}
+
+#[async_test]
+async fn split_driver_avail_progress_wraps(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    let VirtioQueueInfo::Split(split) = &mut guest.info else {
+        unreachable!();
+    };
+    split.last_avail_index[0] = u16::MAX;
+    split.last_used_index[0] = u16::MAX;
+    let params = guest.queue_params(0);
+    test_mem.modify_memory_map(params.avail_addr + 2, &u16::MAX.to_le_bytes(), false);
+    test_mem.modify_memory_map(params.used_addr + 2, &u16::MAX.to_le_bytes(), true);
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        params,
+        guest.mem(),
+        Interrupt::null(),
+        PolledWait::new(&driver, Event::new()).unwrap(),
+        Some(QueueState {
+            avail_index: u16::MAX,
+            used_index: u16::MAX,
+        }),
+    )
+    .unwrap();
+    guest.add_to_avail_queue(0);
+    let work = queue.try_next().unwrap().unwrap();
+    let cursor = queue.driver_avail_state().unwrap();
+    assert_eq!(cursor, 0);
+    queue.try_complete(work, 4).unwrap();
+    assert!(guest.get_next_completed(0).is_some());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        queue
+            .poll_driver_avail_changed(&mut cx, cursor)
+            .is_pending()
+    );
+    guest.add_to_avail_queue(0);
+    assert!(matches!(
+        queue.poll_driver_avail_changed(&mut cx, cursor),
+        std::task::Poll::Ready(Ok(())),
+    ));
+}
+
 async fn verify_peek_does_not_advance(mut guest: VirtioTestGuest) {
     let event = Event::new();
     let queue_event = PolledWait::new(&guest.driver(), event.clone()).unwrap();
