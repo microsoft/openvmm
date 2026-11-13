@@ -1013,6 +1013,8 @@ mod tests {
                     controller_task: None,
                     wait_vm_response: Some((mesh::CancelContext::new(), response)),
                     lifecycle: VmLifecycle::Running,
+                    snapshot_saved: false,
+                    memory_backing_file: None,
                     restore_ready_pending: false,
                     rpc_tasks: Vec::new(),
                     transport: ResolvedTransport::Auto,
