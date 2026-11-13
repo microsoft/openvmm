@@ -715,15 +715,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
                 return Ok(());
             }
 
-            let cpsr: Cpsr64 = self
-                .vp
-                .runner
-                .get_vp_register(self.vtl, HvArm64RegisterName::SpsrEl2)
-                .unwrap()
-                .as_u64()
-                .into();
-
-            let flags = if cpsr.el() == 0 {
+            let flags = if self.cpsr().el() == 0 {
                 HvMapGpaFlags::new().with_user_executable(true)
             } else {
                 HvMapGpaFlags::new().with_kernel_executable(true)
