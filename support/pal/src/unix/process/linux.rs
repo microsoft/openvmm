@@ -70,7 +70,7 @@ impl Builder<'_> {
         let sandbox = self.linux_builder.sandbox.as_ref();
         let clone_flags: libc::c_int = sandbox
             .map(|config| {
-                config.clone_flags.try_into().map_err(|_| {
+                config.linux.clone_flags.try_into().map_err(|_| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "sandbox clone flags do not fit in Linux clone flags",
@@ -79,7 +79,7 @@ impl Builder<'_> {
             })
             .transpose()?
             .unwrap_or_default();
-        let map_current_user = sandbox.is_some_and(|config| config.map_current_user);
+        let map_current_user = sandbox.is_some_and(|config| config.linux.map_current_user);
         if map_current_user && clone_flags & libc::CLONE_NEWUSER == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

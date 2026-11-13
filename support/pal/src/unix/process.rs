@@ -246,12 +246,6 @@ impl<'a> Builder<'a> {
                 "sandbox configuration has already been applied",
             ));
         }
-        if config.windows.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Windows sandbox configuration cannot be applied on Linux",
-            ));
-        }
         self.linux_builder.sandbox = Some(config);
         Ok(self)
     }
@@ -433,8 +427,10 @@ mod tests {
         let (output, child_output) = UnixStream::pair().unwrap();
         let mut cmd = Builder::new("/bin/sh");
         let sandbox = sandbox::SandboxProcessConfig {
-            clone_flags: libc::CLONE_NEWUSER as u64,
-            map_current_user: true,
+            linux: sandbox::LinuxPreparation {
+                clone_flags: libc::CLONE_NEWUSER as u64,
+                map_current_user: true,
+            },
             ..Default::default()
         };
         cmd.arg("-c")
@@ -570,11 +566,17 @@ mod tests {
     fn test_rejects_invalid_sandbox_launch() {
         for config in [
             sandbox::SandboxProcessConfig {
-                clone_flags: u64::MAX,
+                linux: sandbox::LinuxPreparation {
+                    clone_flags: u64::MAX,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             sandbox::SandboxProcessConfig {
-                map_current_user: true,
+                linux: sandbox::LinuxPreparation {
+                    map_current_user: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             sandbox::SandboxProcessConfig {
@@ -609,8 +611,10 @@ mod tests {
                 cmd.setgid(gid);
             }
             cmd.apply_sandbox(sandbox::SandboxProcessConfig {
-                clone_flags: libc::CLONE_NEWUSER as u64,
-                map_current_user: true,
+                linux: sandbox::LinuxPreparation {
+                    clone_flags: libc::CLONE_NEWUSER as u64,
+                    map_current_user: true,
+                },
                 ..Default::default()
             })
             .unwrap();

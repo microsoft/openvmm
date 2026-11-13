@@ -75,8 +75,11 @@ mod windows;
 pub mod profiles;
 
 pub use prepare::Identity;
+#[cfg(target_os = "linux")]
+pub use prepare::LinuxPreparation;
 pub use prepare::RawHandle;
 pub use prepare::SandboxProcessConfig;
+#[cfg(windows)]
 pub use prepare::WindowsPreparation;
 pub use prepare::prepare;
 pub use profile::Builder;

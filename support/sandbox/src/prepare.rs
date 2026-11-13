@@ -34,19 +34,25 @@ pub struct RawHandle(pub u64);
 
 /// Per-spawn identity for the worker.
 ///
-/// A default `Identity` retains the control process's host UID/GID. On Linux,
-/// namespace UID/GID 0 map to the spawning process's effective UID/GID.
-/// Custom Unix host identities are not implemented: [`prepare`] rejects any
-/// explicit UID/GID, including 0, even when the debug sandbox escape hatch is
-/// active. These fields are reserved for future host identity provisioning.
-/// Windows AppContainer configuration is reflected in [`WindowsPreparation`].
+/// On Unix, the control process's host UID/GID are retained; custom host
+/// identities are not supported. On Linux, namespace UID/GID 0 map to the
+/// spawning process's effective UID/GID.
+///
+/// On Windows, the AppContainer moniker is reflected in the Windows launch
+/// preparation. The AppContainer field is only available on Windows.
+///
+/// Custom host UID/GID inputs cannot be supplied:
+///
+/// ```compile_fail
+/// let identity = sandbox::Identity {
+///     uid: Some(0),
+///     ..Default::default()
+/// };
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Identity {
-    /// Reserved host-side Unix user ID. Must be `None` until supported.
-    pub uid: Option<u32>,
-    /// Reserved host-side Unix group ID. Must be `None` until supported.
-    pub gid: Option<u32>,
     /// The Windows AppContainer moniker the worker should run under.
+    #[cfg(windows)]
     pub app_container: Option<String>,
 }
 
@@ -58,9 +64,26 @@ pub struct Identity {
 /// process builder.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxProcessConfig {
+    /// Linux namespace creation and current-user mapping requirements.
+    #[cfg(target_os = "linux")]
+    pub linux: LinuxPreparation,
+    /// Windows LPAC construction data. The caller turns this into an
+    /// AppContainer SID, a capability SID array, and a `STARTUPINFOEX`
+    /// attribute list.
+    #[cfg(windows)]
+    pub windows: WindowsPreparation,
+    /// The handles that must remain inheritable across the spawn. Every
+    /// descriptor *not* listed here, or configured as standard I/O by the
+    /// process builder, must be closed before the child is reached.
+    pub inherit_handles: Vec<RawHandle>,
+}
+
+/// Linux-specific launch requirements for a [`SandboxProcessConfig`].
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Default)]
+pub struct LinuxPreparation {
     /// Linux `CLONE_NEW*` flags to pass to the operation that creates the
-    /// child. Zero on non-Linux hosts and when the debug sandbox escape hatch
-    /// is active.
+    /// child. Zero when the debug sandbox escape hatch is active.
     ///
     /// Namespace creation must happen as part of cloning the child so the
     /// worker starts inside its namespaces. The platform process builder also
@@ -71,14 +94,6 @@ pub struct SandboxProcessConfig {
     /// Map user and group ID 0 in the Linux user namespace to the spawning
     /// process's effective user and group IDs.
     pub map_current_user: bool,
-    /// The handles that must remain inheritable across the spawn. Every
-    /// descriptor *not* listed here, or configured as standard I/O by the
-    /// process builder, must be closed before the child is reached.
-    pub inherit_handles: Vec<RawHandle>,
-    /// Windows LPAC construction data, present only when preparing on Windows.
-    /// The caller turns this into an AppContainer SID, a capability SID array,
-    /// and a `STARTUPINFOEX` attribute list. `None` on non-Windows hosts.
-    pub windows: Option<WindowsPreparation>,
 }
 
 /// The Windows-specific half of a [`SandboxProcessConfig`]: the data a caller
@@ -89,6 +104,7 @@ pub struct SandboxProcessConfig {
 /// `DeriveAppContainerSid`, builds the `SID_AND_ATTRIBUTES[]` from the
 /// capability monikers, and sets the mitigation flags below on the
 /// `STARTUPINFOEX` / `SetProcessMitigationPolicy` surface.
+#[cfg(windows)]
 #[derive(Debug, Clone, Default)]
 pub struct WindowsPreparation {
     /// The AppContainer moniker to derive the container SID from. `None` means
@@ -122,10 +138,10 @@ pub struct WindowsPreparation {
 /// * `profile` — the worker's linked policy. On Linux only its launch-relevant
 ///   bits are consulted here (the worker self-applies the rest in
 ///   [`apply`](crate::apply)); on Windows its entire LPAC portion is reflected
-///   into [`WindowsPreparation`].
-/// * `identity` — the per-spawn identity. Unix UID/GID requests are unsupported
-///   and return [`Error::RequiredPrimitiveUnavailable`]; Windows AppContainer
-///   configuration is reflected in [`WindowsPreparation`].
+///   into the Windows launch preparation.
+/// * `identity` — the per-spawn identity. On Windows, its AppContainer
+///   configuration is reflected in the Windows launch preparation. Unix
+///   launches retain the spawning process's host UID/GID.
 /// * `handles` — the handles to keep inheritable. They are echoed into
 ///   [`SandboxProcessConfig::inherit_handles`]; the platform process builder
 ///   closes every other descriptor except its configured standard I/O.
@@ -149,30 +165,25 @@ pub fn prepare(
     identity: &Identity,
     handles: &[RawHandle],
 ) -> Result<SandboxProcessConfig, Error> {
-    if identity.uid.is_some() || identity.gid.is_some() {
-        return Err(Error::RequiredPrimitiveUnavailable(
-            "custom host UID/GID identities are not supported",
-        ));
-    }
+    #[cfg(not(windows))]
+    let _ = identity;
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let _ = profile;
 
-    let mut preparation = SandboxProcessConfig {
-        clone_flags: 0,
-        map_current_user: false,
+    Ok(SandboxProcessConfig {
+        #[cfg(target_os = "linux")]
+        linux: if crate::sandbox_disabled() {
+            LinuxPreparation::default()
+        } else {
+            LinuxPreparation {
+                clone_flags: linux_clone_flags(profile),
+                map_current_user: true,
+            }
+        },
+        #[cfg(windows)]
+        windows: windows_preparation(profile, identity),
         inherit_handles: handles.to_vec(),
-        windows: None,
-    };
-
-    #[cfg(target_os = "linux")]
-    if !crate::sandbox_disabled() {
-        preparation.clone_flags = linux_clone_flags(profile);
-        preparation.map_current_user = true;
-    }
-
-    if cfg!(windows) {
-        preparation.windows = Some(windows_preparation(profile, identity));
-    }
-
-    Ok(preparation)
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -185,9 +196,7 @@ fn linux_clone_flags(profile: &Profile) -> u64 {
 }
 
 /// Reflect the profile's Windows-relevant policy into LPAC construction data.
-///
-/// Kept `cfg`-free so the data path is exercised and type-checked on every
-/// host, even though only a Windows caller acts on it.
+#[cfg(windows)]
 fn windows_preparation(profile: &Profile, identity: &Identity) -> WindowsPreparation {
     let capabilities = profile
         .inner
@@ -212,29 +221,8 @@ fn windows_preparation(profile: &Profile, identity: &Identity) -> WindowsPrepara
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use crate::profile::Capability;
-
-    #[test]
-    fn prepare_rejects_explicit_unix_identities() {
-        let profile = Profile::deny_all().build();
-        for (uid, gid) in [
-            (Some(0), None),
-            (None, Some(0)),
-            (Some(1000), None),
-            (None, Some(1000)),
-            (Some(1000), Some(1000)),
-        ] {
-            let identity = Identity {
-                uid,
-                gid,
-                ..Default::default()
-            };
-            assert!(matches!(
-                prepare(&profile, &identity, &[]),
-                Err(Error::RequiredPrimitiveUnavailable(_))
-            ));
-        }
-    }
 
     #[test]
     fn prepare_preserves_handles_and_self_maps() {
@@ -247,11 +235,11 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             assert_eq!(
-                prep.clone_flags,
+                prep.linux.clone_flags,
                 (libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWNET)
                     as u64
             );
-            assert!(prep.map_current_user);
+            assert!(prep.linux.map_current_user);
         }
     }
 
@@ -294,6 +282,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn windows_preparation_reflects_capabilities_and_hardening() {
         let profile = Profile::deny_all()
@@ -302,10 +291,9 @@ mod tests {
             .build();
         let identity = Identity {
             app_container: Some("worker.net".to_string()),
-            ..Default::default()
         };
 
-        let win = windows_preparation(&profile, &identity);
+        let win = prepare(&profile, &identity, &[]).unwrap().windows;
 
         assert_eq!(win.app_container.as_deref(), Some("worker.net"));
         assert_eq!(win.capabilities, vec!["lpacCom", "registryRead"]);
