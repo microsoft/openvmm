@@ -26,12 +26,14 @@ use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use futures::StreamExt;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerHandle;
 use slab::Slab;
 use std::task::Poll;
 use task_control::TaskControl;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::device_state::InputHookCompletion;
 use vmcore::save_restore::AsyncProtobufSaveRestore;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -129,6 +131,13 @@ impl ChipsetDeviceProxy {
             pci,
             _guest_memory: guest_memory,
         })
+    }
+
+    /// Sends an input hook request to the remote device, and returns a
+    /// completion that waits for its answer.
+    fn input_hook(&self, request: fn(FailableRpc<(), ()>) -> DeviceRequest) -> InputHookCompletion {
+        let call = self.req_send.call_failable(request, ());
+        InputHookCompletion::new(async move { Ok(call.await?) })
     }
 }
 
@@ -275,6 +284,14 @@ impl ChangeDeviceState for ChipsetDeviceProxy {
         self.req_send.send(DeviceRequest::Start)
     }
 
+    fn quiesce_input(&mut self) -> InputHookCompletion {
+        self.input_hook(DeviceRequest::QuiesceInput)
+    }
+
+    fn resume_input(&mut self) -> InputHookCompletion {
+        self.input_hook(DeviceRequest::ResumeInput)
+    }
+
     async fn stop(&mut self) {
         self.req_send
             .call(DeviceRequest::Stop, ())
@@ -317,6 +334,7 @@ impl AsyncProtobufSaveRestore for ChipsetDeviceProxy {
 #[cfg(test)]
 mod tests {
     use super::ChipsetDeviceProxy;
+    use super::PioProxy;
     use crate::RemoteDynamicResolvers;
     use crate::guestmem::GuestMemoryTask;
     use crate::protocol::DeviceInit;
@@ -324,17 +342,25 @@ mod tests {
     use crate::worker::RemoteChipsetDeviceWorker;
     use crate::worker::RemoteChipsetDeviceWorkerParameters;
     use chipset_device::ChipsetDevice;
+    use chipset_device::io::IoResult;
+    use chipset_device::pio::PortIoIntercept;
+    use chipset_device::poll_device::PollDevice;
     use chipset_device_resources::ResolveChipsetDeviceHandleParams;
     use chipset_device_resources::ResolvedChipsetDevice;
+    use futures::future::Either;
     use guestmem::GuestMemory;
     use inspect::InspectMut;
     use mesh::MeshPayload;
     use mesh::payload::Protobuf;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use pal_async::timer::PolledTimer;
     use slab::Slab;
     use std::convert::Infallible;
+    use std::pin::Pin;
+    use std::pin::pin;
     use std::task::Poll;
+    use std::time::Duration;
     use task_control::TaskControl;
     use test_with_tracing::test;
     use vm_resource::IntoResource;
@@ -343,6 +369,7 @@ mod tests {
     use vm_resource::ResourceResolver;
     use vm_resource::kind::ChipsetDeviceHandleKind;
     use vmcore::device_state::ChangeDeviceState;
+    use vmcore::device_state::InputHookCompletion;
     use vmcore::save_restore::AsyncProtobufSaveRestore;
     use vmcore::save_restore::AsyncSaveRestore;
     use vmcore::save_restore::RestoreError;
@@ -366,6 +393,8 @@ mod tests {
         guest_memory: GuestMemory,
         #[inspect(skip)]
         encrypted_guest_memory: GuestMemory,
+        #[inspect(skip)]
+        port_write: Option<mesh::OneshotSender<()>>,
     }
 
     impl TestDevice {
@@ -382,12 +411,51 @@ mod tests {
                 assert_eq!(actual, expected);
             }
         }
+
+        /// Accesses guest memory, and returns a completion that waits for the
+        /// next guest port write.
+        fn input_hook(&mut self) -> InputHookCompletion {
+            self.access_memory();
+            let (send, recv) = mesh::oneshot();
+            self.port_write = Some(send);
+            InputHookCompletion::new(async move {
+                recv.await
+                    .map_err(|_| anyhow::anyhow!("port write signal dropped"))
+            })
+        }
     }
 
-    impl ChipsetDevice for TestDevice {}
+    impl ChipsetDevice for TestDevice {
+        fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
+            Some(self)
+        }
+    }
+
+    impl PortIoIntercept for TestDevice {
+        fn io_read(&mut self, _io_port: u16, data: &mut [u8]) -> IoResult {
+            data.fill(0);
+            IoResult::Ok
+        }
+
+        fn io_write(&mut self, _io_port: u16, _data: &[u8]) -> IoResult {
+            if let Some(port_write) = self.port_write.take() {
+                port_write.send(());
+            }
+            IoResult::Ok
+        }
+    }
 
     impl ChangeDeviceState for TestDevice {
         fn start(&mut self) {}
+
+        fn quiesce_input(&mut self) -> InputHookCompletion {
+            self.input_hook()
+        }
+
+        fn resume_input(&mut self) -> InputHookCompletion {
+            self.input_hook()
+        }
+
         async fn stop(&mut self) {
             self.access_memory();
         }
@@ -456,6 +524,7 @@ mod tests {
                 value: 0,
                 guest_memory: input.guest_memory.clone(),
                 encrypted_guest_memory: input.encrypted_guest_memory.clone(),
+                port_write: None,
             };
             device.access_memory();
             Ok(device.into())
@@ -506,7 +575,7 @@ mod tests {
         .unwrap();
 
         let DeviceInit { mmio, pio, pci } = cap_recv.await.unwrap();
-        assert!(mmio.is_none() && pio.is_none() && pci.is_none());
+        assert!(mmio.is_none() && pci.is_none());
         ChipsetDeviceProxy {
             req_send,
             resp_recv,
@@ -515,7 +584,9 @@ mod tests {
             in_flight_writes: Slab::new(),
             _guest_memory: guest_memory,
             mmio: None,
-            pio: None,
+            pio: pio.map(|_| PioProxy {
+                static_regions: Vec::new(),
+            }),
             pci: None,
         }
     }
@@ -588,6 +659,51 @@ mod tests {
                 .value,
             42
         );
+        stop_worker(&mut proxy).await;
+    }
+
+    /// Runs `hook` on the proxy of a device that completes the hook only after a
+    /// guest port write, and writes to the port while the hook is pending, as a
+    /// vCPU may. This fails after a timeout if the worker stops serving guest
+    /// requests, or the proxy stops completing them, while the hook is pending.
+    async fn input_hook_with_guest_write(
+        driver: &DefaultDriver,
+        proxy: &mut ChipsetDeviceProxy,
+        hook: fn(&mut ChipsetDeviceProxy) -> InputHookCompletion,
+    ) {
+        let mut completion = hook(proxy);
+        let IoResult::Defer(mut write) = proxy.io_write(0, &[1]) else {
+            panic!("proxy port writes are deferred");
+        };
+        let mut written = false;
+        let round_trip = std::future::poll_fn(|cx| {
+            proxy.poll_device(cx);
+            if !written && let Poll::Ready(result) = write.poll_write(cx) {
+                result.unwrap();
+                written = true;
+            }
+            if written {
+                Pin::new(&mut completion).poll(cx)
+            } else {
+                Poll::Pending
+            }
+        });
+        let mut timer = PolledTimer::new(driver);
+        let timeout = timer.sleep(Duration::from_secs(10));
+        match futures::future::select(pin!(round_trip), pin!(timeout)).await {
+            Either::Left((result, _)) => result.unwrap(),
+            Either::Right(_) => panic!("a guest request was not served during an input hook"),
+        }
+    }
+
+    #[async_test]
+    async fn input_hooks_serve_guest_requests(driver: DefaultDriver) {
+        let vmtime = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut proxy = new_proxy(&vmtime, &driver).await;
+
+        input_hook_with_guest_write(&driver, &mut proxy, ChangeDeviceState::quiesce_input).await;
+        input_hook_with_guest_write(&driver, &mut proxy, ChangeDeviceState::resume_input).await;
+
         stop_worker(&mut proxy).await;
     }
 }

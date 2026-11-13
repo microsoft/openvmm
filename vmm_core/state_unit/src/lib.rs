@@ -30,6 +30,9 @@
 
 #![forbid(unsafe_code)]
 
+mod quiesce;
+mod start;
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -39,6 +42,7 @@ use inspect::InspectMut;
 use mesh::MeshPayload;
 use mesh::Receiver;
 use mesh::Sender;
+use mesh::error::RemoteError;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
@@ -62,6 +66,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use thiserror::Error;
 use tracing::Instrument;
+use vmcore::device_state::InputHookCompletion;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -70,10 +75,27 @@ use vmcore::save_restore::SavedStateBlob;
 #[derive(Debug, MeshPayload)]
 pub enum StateRequest {
     /// Start asynchronous operations.
+    ///
+    /// Once this request is delivered, a [`StateRequest::Stop`] may follow
+    /// even if its response is not observed.
     Start(Rpc<(), ()>),
 
     /// Stop asynchronous operations.
+    ///
+    /// The handler must be safe after any delivered start attempt.
     Stop(Rpc<(), ()>),
+
+    /// Stop accepting new host input before a snapshot vCPU boundary.
+    ///
+    /// A [`StateRequest::ResumeInput`] may follow even if this request returns
+    /// an error or its response is not observed.
+    QuiesceInput(FailableRpc<(), ()>),
+
+    /// Resume host input after a failed snapshot transaction.
+    ///
+    /// The handler must be safe whether or not input quiesce completed and
+    /// idempotent across repeated recovery attempts.
+    ResumeInput(FailableRpc<(), ()>),
 
     /// Reset a stopped unit to initial state.
     Reset(FailableRpc<(), ()>),
@@ -100,6 +122,26 @@ pub trait StateUnit: InspectMut {
 
     /// Stop asynchronous processing.
     async fn stop(&mut self);
+
+    /// Stops accepting new host input while preserving runtime state.
+    ///
+    /// This runs synchronously, and the work that it must wait for completes
+    /// in the returned completion, which is awaited before the request is
+    /// answered. [`StateUnit::resume_input`] may be called even if the
+    /// completion fails or is not awaited.
+    fn quiesce_input(&mut self) -> InputHookCompletion {
+        InputHookCompletion::ready()
+    }
+
+    /// Resumes host input after a failed snapshot transaction.
+    ///
+    /// This must be safe whether or not [`StateUnit::quiesce_input`] completed
+    /// and idempotent across repeated recovery attempts. Like that hook, it
+    /// runs synchronously, and its completion is awaited before the request is
+    /// answered.
+    fn resume_input(&mut self) -> InputHookCompletion {
+        InputHookCompletion::ready()
+    }
 
     /// Reset to initial state.
     ///
@@ -166,6 +208,8 @@ impl StateRequest {
 
             StateRequest::Start(_)
             | StateRequest::Stop(_)
+            | StateRequest::QuiesceInput(_)
+            | StateRequest::ResumeInput(_)
             | StateRequest::Reset(_)
             | StateRequest::Save(_)
             | StateRequest::Restore(_) => {
@@ -194,6 +238,8 @@ impl StateRequest {
         match self {
             StateRequest::Start(rpc) => rpc.handle(async |()| unit.start().await).await,
             StateRequest::Stop(rpc) => rpc.handle(async |()| unit.stop().await).await,
+            StateRequest::QuiesceInput(rpc) => complete_input_hook(rpc, unit.quiesce_input()).await,
+            StateRequest::ResumeInput(rpc) => complete_input_hook(rpc, unit.resume_input()).await,
             StateRequest::Reset(rpc) => rpc.handle_failable(async |()| unit.reset().await).await,
             StateRequest::Save(rpc) => rpc.handle_failable(async |()| unit.save().await).await,
             StateRequest::Restore(rpc) => {
@@ -203,6 +249,15 @@ impl StateRequest {
             StateRequest::Inspect(req) => req.inspect(unit),
         }
     }
+}
+
+/// Answers `rpc` once the completion of an input hook finishes.
+///
+/// This is not generic, so that the state requests of every unit type share
+/// it.
+async fn complete_input_hook(rpc: FailableRpc<(), ()>, completion: InputHookCompletion) {
+    let result = completion.await;
+    rpc.complete(result.map_err(RemoteError::new));
 }
 
 /// A set of state units.
@@ -222,6 +277,7 @@ enum State {
     Resetting,
     Saving,
     Restoring,
+    StartUncertain,
 }
 
 #[derive(Debug)]
@@ -486,41 +542,87 @@ impl StateUnits {
         self.running
     }
 
+    fn check_no_terminal_units(&self, op: &'static str) -> Result<(), StateTransitionError> {
+        let inner = self.inner.lock();
+        check(
+            op,
+            inner
+                .units
+                .values()
+                .filter(|unit| matches!(unit.state, State::StartUncertain))
+                .map(|unit| {
+                    (
+                        unit.name.clone(),
+                        Err::<(), _>(anyhow::anyhow!(
+                            "unit is in terminal state {:?}",
+                            unit.state
+                        )),
+                    )
+                }),
+        )
+    }
+
     /// Starts any units that are individually stopped, because they were added
     /// via [`StateUnits::add`] while the VM was running.
     ///
     /// Does nothing if all units are stopped, via [`StateUnits::stop`].
-    pub async fn start_stopped_units(&mut self) {
+    pub async fn start_stopped_units(&mut self) -> anyhow::Result<()> {
         if self.is_running() {
-            self.start().await;
+            self.start().await?;
         }
+        Ok(())
     }
 
     /// Starts all the state units.
-    pub async fn start(&mut self) {
+    ///
+    /// If a unit's task does not answer its start request, the start fails,
+    /// and the units that did start are stopped again. If a unit may still be
+    /// running after that, [`StateUnits::is_running`] returns true, so that
+    /// [`StateUnits::stop`] can stop it.
+    pub async fn start(&mut self) -> anyhow::Result<()> {
         self.restore_allowed = false;
-        self.run_op(
-            "start",
-            None,
-            State::Stopped,
-            State::Starting,
-            State::Running,
-            StateRequest::Start,
-            |_, _| Some(()),
-            |unit| Some(&unit.dependencies),
-        )
-        .await;
-        self.running = true;
+        self.start_with_rollback().await
     }
 
     /// Stops all the state units.
+    ///
+    /// This also stops the units whose start is uncertain.
     pub async fn stop(&mut self) {
+        self.stop_units(false).await
+    }
+
+    /// Stops all the state units before the VM is torn down.
+    ///
+    /// Unlike [`StateUnits::stop`], this does not panic when a unit whose start
+    /// is uncertain does not answer its stop, as when its task has exited. It
+    /// logs the failure and stops the other units, including the units that
+    /// such a unit depends on, since the VM is not run again.
+    pub async fn stop_for_teardown(&mut self) {
+        self.stop_units(true).await
+    }
+
+    async fn stop_units(&mut self, for_teardown: bool) {
         assert!(self.running);
+        // Make units whose start is uncertain receive Stop, then restore their
+        // terminal markers after the ordered operation.
+        let uncertain_ids = {
+            let mut inner = self.inner.lock();
+            inner
+                .units
+                .iter_mut()
+                .filter(|(_, unit)| unit.state == State::StartUncertain)
+                .map(|(&id, unit)| {
+                    unit.state = State::Running;
+                    id
+                })
+                .collect::<Vec<_>>()
+        };
         // Stop units in reverse dependency order so that a dependency is not
         // stopped before its dependant.
         self.run_op(
             "stop",
             None,
+            if for_teardown { &uncertain_ids } else { &[] },
             State::Running,
             State::Stopping,
             State::Stopped,
@@ -529,6 +631,13 @@ impl StateUnits {
             |unit| Some(&unit.dependents),
         )
         .await;
+        let mut inner = self.inner.lock();
+        for id in uncertain_ids {
+            if let Some(unit) = inner.units.get_mut(&id) {
+                assert_eq!(unit.state, State::Stopped);
+                unit.state = State::StartUncertain;
+            }
+        }
         self.running = false;
     }
 
@@ -537,6 +646,7 @@ impl StateUnits {
     /// Panics if running.
     pub async fn reset(&mut self) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("reset")?;
         self.restore_allowed = false;
         // Reset in dependency order so that dependants observe their
         // dependencies' reset state.
@@ -544,6 +654,7 @@ impl StateUnits {
             .run_op(
                 "reset",
                 None,
+                &[],
                 State::Stopped,
                 State::Resetting,
                 State::Stopped,
@@ -563,12 +674,14 @@ impl StateUnits {
     /// Panics if running.
     pub async fn save(&mut self) -> Result<Vec<SavedStateUnit>, StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("save")?;
         // Save can occur in any order since it will not observably mutate
         // state.
         let r = self
             .run_op(
                 "save",
                 None,
+                &[],
                 State::Stopped,
                 State::Saving,
                 State::Stopped,
@@ -601,6 +714,7 @@ impl StateUnits {
         states: Vec<SavedStateUnit>,
     ) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("restore")?;
         if !self.restore_allowed {
             return Err(StateTransitionError {
                 op: "restore",
@@ -644,6 +758,7 @@ impl StateUnits {
             .run_op(
                 "restore",
                 None,
+                &[],
                 State::Stopped,
                 State::Restoring,
                 State::Stopped,
@@ -675,6 +790,10 @@ impl StateUnits {
     /// `unit_ids` is the set of the units whose state should be changed. If
     /// `unit_ids` is `None`, all units change states.
     ///
+    /// `tolerated_ids` is the set of the units whose failure to answer the
+    /// request is logged instead of treated as an unrecoverable unit failure,
+    /// such as the units whose start is uncertain when the VM is torn down.
+    ///
     /// The old state for each unit must be `old_state`. During the operation,
     /// the unit is temporarily places in `interim_state`. When complete, the
     /// unit is placed in `new_state`.
@@ -693,6 +812,7 @@ impl StateUnits {
         &self,
         op: &str,
         unit_ids: Option<&[u64]>,
+        tolerated_ids: &[u64],
         old_state: State,
         interim_state: State,
         new_state: State,
@@ -751,20 +871,12 @@ impl StateUnits {
         let mut inner = self.inner.lock();
         let r = results
             .into_iter()
-            .filter_map(|(name, id, r)| {
-                match r {
-                    Ok(Some(r)) => Some((name, r)),
-                    Ok(None) => None,
-                    Err(err) => {
-                        // If the unit was removed during the operation, then
-                        // ignore the failure. Otherwise, panic because unit
-                        // failure is not recoverable. FUTURE: reconsider this
-                        // position.
-                        if inner.units.contains_key(&id) {
-                            panic!("{:?}", err);
-                        }
-                        None
-                    }
+            .filter_map(|(name, id, r)| match r {
+                Ok(Some(r)) => Some((name, r)),
+                Ok(None) => None,
+                Err(err) => {
+                    inner.unanswered_request(id, tolerated_ids, err);
+                    None
                 }
             })
             .collect();
@@ -807,6 +919,22 @@ impl Inner {
             self.units.iter().map(|(id, unit)| map(*id, unit)).collect()
         };
         ReadySet(Arc::new(units))
+    }
+
+    /// Handles a state change request that unit `id` did not answer.
+    ///
+    /// If the unit is in `tolerated_ids`, log the failure. If the unit was
+    /// removed during the operation, ignore it. Otherwise, panic because unit
+    /// failure is not recoverable. FUTURE: reconsider this position.
+    fn unanswered_request(&self, id: u64, tolerated_ids: &[u64], err: UnitRecvError) {
+        if tolerated_ids.contains(&id) {
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                "unit whose start is uncertain did not answer"
+            );
+        } else if self.units.contains_key(&id) {
+            panic!("{:?}", err);
+        }
     }
 }
 
@@ -1047,6 +1175,9 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod quiesce;
+    mod start;
+
     use super::StateTransitionErrorKind;
     use super::StateUnit;
     use super::StateUnits;
@@ -1219,7 +1350,7 @@ mod tests {
         let state = units.save().await.unwrap();
         units.restore(state).await.unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 2);
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
         let state = units.save().await.unwrap();
         assert!(units.restore(state).await.is_err());
@@ -1293,13 +1424,13 @@ mod tests {
             .add("b")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
 
         let _c = units
             .add("c")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv));
         units.stop().await;
-        units.start().await;
+        units.start().await.unwrap();
 
         units.stop().await;
 
@@ -1347,7 +1478,7 @@ mod tests {
                 )
             })
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         let state = units.save().await.unwrap();
@@ -1457,7 +1588,7 @@ mod tests {
             );
         }
 
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         a.remove().await;
@@ -1467,7 +1598,7 @@ mod tests {
             assert!(inner.units[&c.handle().id.id].dependencies.is_empty());
         }
 
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         // Removing the remaining unit leaves the set empty.
