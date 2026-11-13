@@ -29,10 +29,10 @@ service VM {
 
     // SaveVM captures the VM's memory, device state, and processor state into
     // a new snapshot directory and returns a unique snapshot ID, which is also
-    // stored in the snapshot manifest. The current implementation hard-links
-    // the guest memory backing file into the snapshot, so after a successful
-    // save the VM can't be resumed and should be torn down. Cancelling the
-    // call only stops the caller from waiting; the save may still complete.
+    // stored in the snapshot manifest. The save copies the guest memory
+    // backing file into the snapshot. After a successful save the VM can't be
+    // resumed and should be torn down. Cancelling the call only stops the
+    // caller from waiting; the save may still complete.
     rpc SaveVM(SaveVMRequest) returns (SaveVMResponse);
 
     // RestoreVM creates a VM from a snapshot directory and the supplied device

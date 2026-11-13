@@ -33,7 +33,10 @@ first version 2, which has no magic, keeps artifact digests in fields 9 and 10.
 A microVM snapshot's machine contract carries the NVX time ABI records (the
 time contract and the CPU profile record), and a host-driven standard-machine
 snapshot has no machine contract. Tiered microVM snapshots record capture
-tier, clone/resume policy, and consumed configuration sections.
+tier, clone/resume policy, and consumed configuration sections. Field 18 holds
+the snapshot ID that SaveVM and the command line's `save-snapshot` generate,
+which RestoreVM can require; a microVM capture records the zero ID, which
+stands for none.
 
 The format is a local machine-state contract, not an authenticated container.
 Every snapshot receives the same regular-file, no-follow/no-reparse, bounded

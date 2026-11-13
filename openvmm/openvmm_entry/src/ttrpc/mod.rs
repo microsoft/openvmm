@@ -1969,8 +1969,8 @@ impl VmService {
                 anyhow!(Code::FailedPrecondition).context("SaveVM requires a running or paused VM")
             );
         }
-        // The snapshot shares the VM's memory backing file, so only one
-        // snapshot per VM is allowed.
+        // A saved VM stays paused until it is torn down, so only one snapshot
+        // per VM is allowed.
         if self.snapshot_saved {
             return Err(anyhow!(Code::FailedPrecondition)
                 .context("VM already saved; tear down the VM or restore the snapshot"));
@@ -1989,10 +1989,9 @@ impl VmService {
             .map_err(|err| anyhow!(Code::FailedPrecondition).context(format!("{err:#}")))?;
 
         // The controller pauses the VM and then writes the snapshot, which
-        // hard-links the guest memory backing file. Record that before
-        // awaiting: if this future is dropped (the client cancelled), the
-        // controller still finishes the save, and resuming would then write
-        // guest memory into the snapshot.
+        // copies the guest memory backing file. Record that before awaiting:
+        // if this future is dropped (the client cancelled), the controller
+        // still finishes the save, which leaves the VM paused for teardown.
         self.snapshot_saved = true;
         self.lifecycle = VmLifecycle::Paused;
 
@@ -2006,10 +2005,9 @@ impl VmService {
                 snapshot_id: snapshot_id.to_string(),
             }),
             Err(err) => {
-                // On failure the controller removes the files it created, so
-                // no snapshot references guest memory and the VM may be
-                // resumed. The prechecks above ensure the controller paused
-                // the VM before failing, so the VM stays paused.
+                // On failure nothing is published at the destination, so the
+                // VM may be resumed. The prechecks above ensure the controller
+                // paused the VM before failing, so the VM stays paused.
                 self.snapshot_saved = false;
                 Err(err).context("snapshot failed")
             }

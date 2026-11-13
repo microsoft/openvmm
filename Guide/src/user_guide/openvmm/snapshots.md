@@ -389,13 +389,6 @@ Pass the same boot flags and files that were used at save time (for example
 not run the firmware or kernel loader, but they are used if the restored VM is
 later reset.
 
-```admonish warning
-`memory.bin` is used in place as the restored VM's memory, so running the
-restored VM modifies the snapshot. A snapshot can be restored only once;
-restoring it again would combine modified memory with the original device
-state.
-```
-
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
 the snapshot manifest. If they do not match, OpenVMM will report a

@@ -519,8 +519,8 @@ impl VmController {
         // Reject an existing destination before touching the VM, so a rejected
         // save leaves the VM running. This check is best-effort: the
         // destination could still be created before the snapshot is written.
-        // `write_snapshot` claims it atomically with `create_dir` and never
-        // overwrites existing data, so in that case the save just fails later,
+        // `write_snapshot` publishes the snapshot with a rename that never
+        // replaces an existing path, so in that case the save just fails later,
         // with the VM paused.
         openvmm_helpers::snapshot::check_snapshot_destination(dir)?;
 
