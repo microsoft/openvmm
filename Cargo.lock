@@ -7395,6 +7395,7 @@ dependencies = [
  "fs-err",
  "gptman",
  "guid",
+ "mesh",
  "openvmm_defs",
  "openvmm_helpers",
  "pal_async",
