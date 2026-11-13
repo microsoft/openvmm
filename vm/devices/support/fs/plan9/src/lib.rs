@@ -24,6 +24,7 @@ use std::sync::atomic::Ordering;
 
 const MINIMUM_REQUEST_BUFFER_SIZE: u32 = 4096;
 const MAXIMUM_REQUEST_BUFFER_SIZE: u32 = 256 * 1024;
+const MINIMUM_RESPONSE_BUFFER_SIZE: usize = HEADER_SIZE + size_of::<u32>();
 
 // The maximum size of an IO request (0 means no limit).
 const IO_UNIT: u32 = 0;
@@ -58,8 +59,13 @@ impl Plan9FileSystem {
 
     // Process a message received from virtio.
     pub fn process_message(&self, message: &[u8], response: &mut [u8]) -> lx::Result<usize> {
+        if response.len() < MINIMUM_RESPONSE_BUFFER_SIZE {
+            return Err(Error::EINVAL);
+        }
+
         let mut reader = SliceReader::new(message);
         let header = reader.header()?;
+        reader.limit(header.size as usize)?;
 
         let mut writer = SliceWriter::new(response);
         if let Err(errno) = self.handle_message(&header, reader, &mut writer) {
@@ -402,6 +408,34 @@ mod tests {
 
     const TAG: u16 = 0x1234;
 
+    struct IoFid(Arc<AtomicU32>);
+
+    impl Fid for IoFid {
+        fn read(&self, _offset: u64, _buffer: &mut [u8]) -> lx::Result<u32> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(0)
+        }
+
+        fn read_dir(&self, _offset: u64, _buffer: &mut [u8]) -> lx::Result<u32> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(0)
+        }
+
+        fn write(&self, _offset: u64, buffer: &[u8]) -> lx::Result<u32> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(buffer.len() as u32)
+        }
+
+        fn fsync(&self, _data_only: bool) -> lx::Result<()> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn fid_clone(&self) -> Arc<dyn Fid> {
+            Arc::new(Self(Arc::clone(&self.0)))
+        }
+    }
+
     fn request(message_type: u8, fields: impl FnOnce(&mut SliceWriter<'_>)) -> Vec<u8> {
         let mut request = vec![0; 128];
         let mut writer = SliceWriter::new(&mut request);
@@ -442,6 +476,103 @@ mod tests {
         assert_eq!(header.message_type, MESSAGE_RLERROR);
         assert_eq!(header.tag, TAG);
         assert_eq!(reader.u32().unwrap(), error.value() as u32);
+    }
+
+    #[test]
+    fn invalid_declared_sizes_do_not_dispatch() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = Plan9FileSystem::new(root.path(), false).unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        fs.emplace_fid(1, Arc::new(IoFid(Arc::clone(&calls))))
+            .unwrap();
+        let mut message = request(50, |writer| {
+            writer.u32(1).unwrap();
+            writer.u32(0).unwrap();
+        });
+        for size in (0..HEADER_SIZE as u32).chain([message.len() as u32 + 1, u32::MAX]) {
+            message[..4].copy_from_slice(&size.to_le_bytes());
+            assert_eq!(
+                fs.process_message(&message, &mut [0; 128]),
+                Err(Error::EINVAL)
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn write_respects_declared_boundary() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = Plan9FileSystem::new(root.path(), false).unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        fs.emplace_fid(1, Arc::new(IoFid(Arc::clone(&calls))))
+            .unwrap();
+        let mut message = request(118, |writer| {
+            writer.u32(1).unwrap();
+            writer.u64(0).unwrap();
+            writer.u32(4).unwrap();
+            writer.write(b"data").unwrap();
+        });
+        let size = message.len();
+        for declared_size in HEADER_SIZE..size {
+            message[..4].copy_from_slice(&(declared_size as u32).to_le_bytes());
+            assert_error_reply(&fs, &message, Error::EINVAL);
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+        }
+
+        message[..4].copy_from_slice(&(size as u32).to_le_bytes());
+        message.extend_from_slice(b"trailing descriptor bytes");
+        let mut response = [0; MINIMUM_RESPONSE_BUFFER_SIZE];
+        let size = fs.process_message(&message, &mut response).unwrap();
+        assert_eq!(size, response.len());
+        let mut reader = SliceReader::new(&response);
+        let header = reader.header().unwrap();
+        assert_eq!(header.size as usize, size);
+        assert_eq!(header.message_type, 119);
+        assert_eq!(header.tag, TAG);
+        assert_eq!(reader.u32().unwrap(), 4);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn short_response_buffers_do_not_dispatch() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = Plan9FileSystem::new(root.path(), false).unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        fs.emplace_fid(1, Arc::new(IoFid(Arc::clone(&calls))))
+            .unwrap();
+        for message_type in [116, 40, 50] {
+            let message = request(message_type, |writer| {
+                writer.u32(1).unwrap();
+                if message_type != 50 {
+                    writer.u64(0).unwrap();
+                }
+                writer.u32(0).unwrap();
+            });
+            for capacity in 0..MINIMUM_RESPONSE_BUFFER_SIZE {
+                let mut response = vec![0xcc; capacity];
+                assert_eq!(
+                    fs.process_message(&message, &mut response),
+                    Err(Error::EINVAL)
+                );
+                assert_eq!(response, vec![0xcc; capacity]);
+                assert_eq!(calls.load(Ordering::Relaxed), 0);
+            }
+
+            let mut response = [0; MINIMUM_RESPONSE_BUFFER_SIZE];
+            let size = fs.process_message(&message, &mut response).unwrap();
+            let mut reader = SliceReader::new(&response[..size]);
+            let header = reader.header().unwrap();
+            assert_eq!(header.size as usize, size);
+            assert_eq!(header.message_type, message_type + 1);
+            assert_eq!(header.tag, TAG);
+            if message_type == 50 {
+                assert_eq!(size, HEADER_SIZE);
+            } else {
+                assert_eq!(size, MINIMUM_RESPONSE_BUFFER_SIZE);
+                assert_eq!(reader.u32().unwrap(), 0);
+            }
+            assert_eq!(calls.swap(0, Ordering::Relaxed), 1);
+        }
     }
 
     #[test]
