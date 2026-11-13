@@ -1108,14 +1108,17 @@ impl VmService {
         // Read the manifest and check the snapshot ID before doing any
         // expensive VM construction, so a wrong snapshot fails fast. The rest
         // of the manifest is validated against the VM configuration later.
-        let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(&source_dir)?;
+        let snapshot = openvmm_helpers::snapshot::restore::OpenedSnapshot::open(&source_dir)?;
         openvmm_helpers::snapshot::validate_expectations(
-            &manifest,
+            snapshot.manifest(),
             &openvmm_helpers::snapshot::SnapshotExpectations {
                 snapshot_id: expected_snapshot_id,
             },
         )
         .map_err(|err| anyhow!(Code::FailedPrecondition).context(format!("{err:#}")))?;
+        // Close the snapshot's artifacts, whose handles deny writes on Windows,
+        // before the restore opens memory.bin as the VM's guest memory.
+        let (manifest, state_bytes, _) = snapshot.into_parts();
 
         let (launch, snapshot_id) = self
             .create_standard_vm(

@@ -272,7 +272,7 @@ mod tests {
         );
 
         // The existing snapshot is untouched.
-        let (manifest, state) = read_snapshot(&snap_dir).unwrap();
+        let (manifest, state) = read_snapshot(&snap_dir, first.memory_size_bytes).unwrap();
         assert_eq!(manifest.snapshot_id, OTHER_ID);
         assert_eq!(state, b"first");
         assert!(snap_dir.join("memory.bin").exists());
