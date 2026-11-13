@@ -11,9 +11,22 @@ on:
         default: false
         required: false
         type: boolean
+  pull_request:
+    branches:
+    - main
+    - release/*
+    types:
+    - opened
+    - synchronize
+    - reopened
+    - ready_for_review
+    - labeled
   schedule:
   - cron: 0 19 * * *
     timezone: America/Los_Angeles
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   job0:
     name: xtask fmt (windows)
@@ -23,7 +36,7 @@ jobs:
       id-token: write
     needs:
     - job1
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -135,7 +148,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -260,7 +273,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -605,7 +618,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -764,7 +777,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -1011,7 +1024,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -1236,7 +1249,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -1431,7 +1444,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -1675,7 +1688,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -1937,7 +1950,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -2132,7 +2145,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -2368,7 +2381,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -2626,7 +2639,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -2775,7 +2788,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -2994,7 +3007,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -3212,7 +3225,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -3430,7 +3443,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -3649,7 +3662,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -3867,7 +3880,7 @@ jobs:
     - job3
     - job4
     - job9
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -4082,7 +4095,7 @@ jobs:
     - job10
     - job3
     - job4
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -4318,7 +4331,7 @@ jobs:
     - job10
     - job3
     - job4
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -4550,7 +4563,7 @@ jobs:
     - job3
     - job4
     - job6
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -4772,7 +4785,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -4866,7 +4879,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -4994,7 +5007,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -5090,7 +5103,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -5347,7 +5360,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -5509,7 +5522,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -5726,7 +5739,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -5890,7 +5903,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
@@ -6114,7 +6127,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
     defaults:
       run:
         shell: bash
