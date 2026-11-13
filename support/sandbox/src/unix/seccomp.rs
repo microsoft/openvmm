@@ -26,44 +26,19 @@ const TIOCLINUX: u64 = 0x541C;
 /// `PR_SET_MM` prctl operation. See `include/uapi/linux/prctl.h`.
 const PR_SET_MM: u64 = 35;
 
-/// All `CLONE_NEW*` namespace-creation bits OR'd together. Matches
-/// Docker's default profile mask (`2114060288` = `0x7E020000`).
-///
-/// Individual bits:
-/// - `CLONE_NEWNS`     = 0x0002_0000 (mount)
-/// - `CLONE_NEWCGROUP` = 0x0200_0000
-/// - `CLONE_NEWUTS`    = 0x0400_0000
-/// - `CLONE_NEWIPC`    = 0x0800_0000
-/// - `CLONE_NEWUSER`   = 0x1000_0000
-/// - `CLONE_NEWPID`    = 0x2000_0000
-/// - `CLONE_NEWNET`    = 0x4000_0000
-const CLONE_NEW_MASK: u64 = 0x7E02_0000;
-
-/// The individual `CLONE_NEW*` namespace-creation bits, OR-folding to
-/// [`CLONE_NEW_MASK`]. The denylist filter can't express "any bit in a mask is
+/// The individual `CLONE_NEW*` namespace-creation bits denied by the filter.
+/// The denylist filter can't express "any bit in a mask is
 /// set" with a single masked-equality condition, so it denies `clone` with one
 /// rule per bit (any match ⇒ deny). See [`clone_deny_rules`].
 const CLONE_NEW_BITS: [u64; 7] = [
-    0x0002_0000, // CLONE_NEWNS (mount)
-    0x0200_0000, // CLONE_NEWCGROUP
-    0x0400_0000, // CLONE_NEWUTS
-    0x0800_0000, // CLONE_NEWIPC
-    0x1000_0000, // CLONE_NEWUSER
-    0x2000_0000, // CLONE_NEWPID
-    0x4000_0000, // CLONE_NEWNET
+    libc::CLONE_NEWNS as u64,
+    libc::CLONE_NEWCGROUP as u64,
+    libc::CLONE_NEWUTS as u64,
+    libc::CLONE_NEWIPC as u64,
+    libc::CLONE_NEWUSER as u64,
+    libc::CLONE_NEWPID as u64,
+    libc::CLONE_NEWNET as u64,
 ];
-
-/// Compile-time proof that the per-bit list denied by [`clone_deny_rules`]
-/// covers exactly [`CLONE_NEW_MASK`], so the two representations can't drift.
-const _: () = {
-    let mut folded = 0u64;
-    let mut i = 0;
-    while i < CLONE_NEW_BITS.len() {
-        folded |= CLONE_NEW_BITS[i];
-        i += 1;
-    }
-    assert!(folded == CLONE_NEW_MASK);
-};
 
 /// Resolve the mandatory syscall policy into architecture-native numbers.
 ///
