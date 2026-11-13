@@ -3,6 +3,7 @@
 
 use self::bnic_defs::CQE_RX_TRUNCATED;
 use self::bnic_defs::CQE_TX_GDMA_ERR;
+use self::bnic_defs::CQE_TX_INVALID_OOB;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
 use self::bnic_defs::MANA_LONG_PKT_FMT;
@@ -31,6 +32,7 @@ use anyhow::Context;
 use anyhow::anyhow;
 use gdma_defs::GdmaQueueType;
 use gdma_defs::GdmaReqHdr;
+use gdma_defs::Sge;
 use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use gdma_defs::bnic as bnic_defs;
@@ -57,6 +59,7 @@ use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend_resources::mac_address::MacAddress;
 use slab::Slab;
+use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
@@ -415,6 +418,8 @@ impl BasicNic {
                                     rq_cq_id,
                                     tx_segment_buffer: Vec::new(),
                                     rx_buf_count: 0,
+                                    pending_tx: VecDeque::new(),
+                                    next_tx_id: 0,
                                 },
                             );
                             vport.task.start();
@@ -490,6 +495,19 @@ pub struct TxRxTask {
     rq_cq_id: u32,
     tx_segment_buffer: Vec<TxSegment>,
     rx_buf_count: u32,
+    /// Sends not yet completed to the guest, oldest first.
+    pending_tx: VecDeque<PendingTx>,
+    /// The id the next send gives the backend.
+    next_tx_id: u32,
+}
+
+/// A send whose completion has not been posted yet.
+#[derive(Debug, Clone, Copy)]
+enum PendingTx {
+    /// The backend still has it, under this id.
+    InBackend(u32),
+    /// Finished with this completion type, behind a send the backend still has.
+    Done(u8),
 }
 
 impl InspectTaskMut<TxRxTask> for TxRxState {
@@ -526,8 +544,10 @@ impl TxRxTask {
                         return Poll::Ready(Event::Rqe(wqe_offset, wqe));
                     }
                 }
-                if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
-                    return Poll::Ready(Event::Sqe(wqe));
+                if self.pending_tx.len() < MAX_PENDING_TX {
+                    if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
+                        return Poll::Ready(Event::Sqe(wqe));
+                    }
                 }
                 if self.epqueue.poll_ready(cx, &mut self.pool).is_ready() {
                     return Poll::Ready(Event::Ready);
@@ -580,15 +600,41 @@ impl TxRxTask {
             };
 
         let lso = sqe.header.params.client_oob_in_sgl();
+        // A checksum send gets its header layout from the frame, the way the NIC parses
+        // it; see `checksum_send_headers`. Every other send keeps the driver's `trans_off`.
+        let (l2_len, trans_off) =
+            if !lso && (oob.s_oob.comp_tcp_csum() || oob.s_oob.comp_udp_csum()) {
+                let mut headers = [0; MAX_CHECKSUM_HEADER_LEN];
+                let read = read_frame_prefix(self.pool.guest_memory(), sqe.sgl(), &mut headers);
+                match checksum_send_headers(&headers[..read], &oob.s_oob) {
+                    // An injected tag is not in the frame the backend gets, so the offsets
+                    // are the frame's own: the backend fixes up the IPv4 header at `l2_len`.
+                    Ok(layout) => (layout.l2_len, layout.transport_offset()),
+                    Err(err) => {
+                        // The NIC completes a send whose OOB does not match how it parsed
+                        // the frame with CQE_TX_INVALID_OOB, which costs that packet only.
+                        // Guessing a checksum location instead would have the backend write
+                        // the checksum over whatever bytes sit there.
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            "dropping a checksum send the device cannot offload"
+                        );
+                        self.complete_tx(CQE_TX_INVALID_OOB);
+                        return Ok(());
+                    }
+                }
+            } else {
+                (l2_len as u16, oob.s_oob.trans_off())
+            };
         let mut meta = TxMetadata {
-            id: TxId(0),
+            id: TxId(self.next_tx_id),
             segment_count: sqe.sgl().len().try_into().unwrap(),
             len: total_len.try_into().unwrap(),
             flags: tx_flags(&oob.s_oob, lso),
             l2_len: l2_len as u8,
-            l3_len: oob.s_oob.trans_off().clamp(l2_len as u16, 255) - l2_len as u16,
+            l3_len: trans_off.clamp(l2_len, 255) - l2_len,
             l4_len: 0,
-            transport_header_offset: oob.s_oob.trans_off(),
+            transport_header_offset: trans_off,
             max_segment_size: 0,
             vlan,
         };
@@ -611,7 +657,7 @@ impl TxRxTask {
                     sgl_count = sqe.sgl().len(),
                     "LSO enabled, but only one SGE"
                 );
-                self.post_tx_completion_error();
+                self.complete_tx(CQE_TX_GDMA_ERR);
                 return Ok(());
             }
             if sge0.size > 256 {
@@ -619,7 +665,7 @@ impl TxRxTask {
                     sge0_size = sge0.size,
                     "LSO enabled and SGE[0] size > 256 bytes"
                 );
-                self.post_tx_completion_error();
+                self.complete_tx(CQE_TX_GDMA_ERR);
                 return Ok(());
             }
         }
@@ -641,30 +687,48 @@ impl TxRxTask {
         let (sync, count) = self.epqueue.tx_avail(&mut self.pool, tx_segments)?;
         if sync || count == 0 {
             tracing::trace!("tx sync complete");
-            self.post_tx_completion();
+            self.complete_tx(CQE_TX_OKAY);
+        } else {
+            self.pending_tx
+                .push_back(PendingTx::InBackend(self.next_tx_id));
+            self.next_tx_id = self.next_tx_id.wrapping_add(1);
         }
         Ok(())
     }
 
-    // Possible test improvement: provide proper OOB data for the GDMA error.
-    fn post_tx_completion_error(&mut self) {
-        let tx_oob = ManaTxCompOob {
-            cqe_hdr: ManaCqeHeader::new()
-                .with_client_type(MANA_CQE_COMPLETION)
-                .with_cqe_type(CQE_TX_GDMA_ERR),
-            tx_data_offset: 0,
-            offsets: ManaTxCompOobOffsets::new(),
-            reserved: [0; 12],
-        };
-        self.queues
-            .post_cq(self.sq_cq_id, tx_oob.as_bytes(), self.sq_id, true);
+    /// Completes a send. A TX completion does not say which send it is for: the driver
+    /// matches it to its oldest outstanding send, so it waits behind any earlier send the
+    /// backend still has.
+    fn complete_tx(&mut self, cqe_type: u8) {
+        if self.pending_tx.is_empty() {
+            self.post_tx_completion(cqe_type);
+        } else {
+            self.pending_tx.push_back(PendingTx::Done(cqe_type));
+        }
     }
 
-    fn post_tx_completion(&mut self) {
+    /// Marks the send the backend finished as done, then completes the finished sends at
+    /// the front. The backend may finish sends in any order.
+    fn complete_backend_tx(&mut self, id: TxId) -> anyhow::Result<()> {
+        let send = self
+            .pending_tx
+            .iter_mut()
+            .find(|send| matches!(send, PendingTx::InBackend(pending) if *pending == id.0))
+            .context("tx completion for a send the backend does not have")?;
+        *send = PendingTx::Done(CQE_TX_OKAY);
+        while let Some(&PendingTx::Done(cqe_type)) = self.pending_tx.front() {
+            self.pending_tx.pop_front();
+            self.post_tx_completion(cqe_type);
+        }
+        Ok(())
+    }
+
+    // Possible test improvement: provide proper OOB data for a GDMA error.
+    fn post_tx_completion(&mut self, cqe_type: u8) {
         let tx_oob = ManaTxCompOob {
             cqe_hdr: ManaCqeHeader::new()
                 .with_client_type(MANA_CQE_COMPLETION)
-                .with_cqe_type(CQE_TX_OKAY),
+                .with_cqe_type(cqe_type),
             tx_data_offset: 0,
             offsets: ManaTxCompOobOffsets::new(),
             reserved: [0; 12],
@@ -715,7 +779,7 @@ impl TxRxTask {
         let mut packets = [TxId(0)];
         if self.epqueue.tx_poll(&mut self.pool, &mut packets)? > 0 {
             tracing::trace!("tx async complete");
-            self.post_tx_completion();
+            self.complete_backend_tx(packets[0])?;
         }
 
         Ok(())
@@ -738,6 +802,215 @@ fn tx_flags(s_oob: &ManaTxShortOob, lso: bool) -> TxFlags {
         .with_is_ipv6(s_oob.is_outer_ipv6() && !is_ipv4)
 }
 
+/// The 802.1Q customer tag's EtherType.
+const ETHERTYPE_VLAN: u16 = 0x8100;
+/// The 802.1ad service tag's EtherType, the outer tag of a QinQ stack.
+const ETHERTYPE_QINQ: u16 = 0x88a8;
+const ETHERTYPE_IPV4: u16 = 0x0800;
+const ETHERTYPE_IPV6: u16 = 0x86dd;
+const IP_PROTOCOL_TCP: u8 = 6;
+const IP_PROTOCOL_UDP: u8 = 17;
+/// The length of an in-band 802.1Q or 802.1ad tag.
+const VLAN_TAG_LEN: u16 = 4;
+/// In-band tags a checksum send may carry: a single tag or a QinQ pair.
+const MAX_IN_BAND_TAGS: u16 = 2;
+const TCP_HEADER_MIN_LEN: u16 = 20;
+const TCP_HEADER_MAX_LEN: u16 = 60;
+const UDP_HEADER_LEN: u16 = 8;
+/// IPv4 flags and fragment offset: the MF flag or a nonzero offset marks a fragment.
+const IPV4_MORE_FRAGMENTS_AND_OFFSET: u16 = 0x3fff;
+/// The most sends whose completions may wait at once, behind the oldest send the backend
+/// still has. A driver frees an SQ slot only when it reads that send's completion, so a
+/// guest that keeps posting past it gets no further sends taken until the backend drains.
+const MAX_PENDING_TX: usize = 256;
+
+/// The most header bytes a checksum send can need: Ethernet, two in-band tags, an IPv4
+/// header with every option, and a TCP header with every option. A frame is never read
+/// past this.
+const MAX_CHECKSUM_HEADER_LEN: usize = net_backend::ETHERNET_HEADER_LEN as usize
+    + (MAX_IN_BAND_TAGS * VLAN_TAG_LEN) as usize
+    + 60
+    + TCP_HEADER_MAX_LEN as usize;
+
+/// The header layout of a checksum send, as read from its frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChecksumHeaders {
+    /// The Ethernet header with any in-band tags, as it is in the frame.
+    l2_len: u16,
+    /// The IP header, with IPv4 options.
+    l3_len: u16,
+}
+
+impl ChecksumHeaders {
+    fn transport_offset(&self) -> u16 {
+        self.l2_len + self.l3_len
+    }
+}
+
+/// Why a checksum send cannot be offloaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+enum ChecksumSendError {
+    #[error("the send asks for both a TCP and a UDP checksum")]
+    BothProtocols,
+    #[error("the frame ends inside its headers")]
+    Truncated,
+    #[error("the frame is not IPv4 or IPv6 (EtherType {0:#06x})")]
+    NotIp(u16),
+    #[error("the IP header is malformed")]
+    MalformedIpHeader,
+    #[error("the TCP data offset is below the minimum header length")]
+    MalformedTcpHeader,
+    #[error("the OOB names a different IP version than the frame carries")]
+    IpVersionMismatch,
+    #[error("the frame is an IP fragment")]
+    Fragment,
+    #[error("an IPv6 extension header (next header {0}) precedes the transport header")]
+    Ipv6ExtensionHeader(u8),
+    #[error("the frame carries IP protocol {found}, not the requested {requested}")]
+    ProtocolMismatch { requested: u8, found: u8 },
+    #[error("trans_off {stated} does not match the transport header at {parsed}")]
+    OffsetMismatch { stated: u16, parsed: u16 },
+}
+
+/// Copies the start of a frame described by `sgl` into `buf`, returning how many bytes it
+/// copied. It stops early where the frame ends or a guest address cannot be read, so a
+/// short count means a frame shorter than `buf`.
+fn read_frame_prefix(gm: &GuestMemory, sgl: &[Sge], buf: &mut [u8]) -> usize {
+    let mut copied = 0;
+    for sge in sgl {
+        if copied == buf.len() {
+            break;
+        }
+        let len = (sge.size as usize).min(buf.len() - copied);
+        if gm
+            .read_at(sge.address, &mut buf[copied..copied + len])
+            .is_err()
+        {
+            break;
+        }
+        copied += len;
+    }
+    copied
+}
+
+fn be16(bytes: &[u8], offset: u16) -> Result<u16, ChecksumSendError> {
+    let offset = offset as usize;
+    bytes
+        .get(offset..offset + 2)
+        .map(|b| u16::from_be_bytes([b[0], b[1]]))
+        .ok_or(ChecksumSendError::Truncated)
+}
+
+fn byte_at(bytes: &[u8], offset: u16) -> Result<u8, ChecksumSendError> {
+    bytes
+        .get(offset as usize)
+        .copied()
+        .ok_or(ChecksumSendError::Truncated)
+}
+
+/// Whether an IPv6 next-header value names an extension header (RFC 8200 section 4,
+/// plus the IANA registry's later entries) rather than an upper-layer protocol.
+fn is_ipv6_extension_header(next_header: u8) -> bool {
+    matches!(
+        next_header,
+        0 | 43 | 44 | 50 | 51 | 60 | 135 | 139 | 140 | 253 | 254
+    )
+}
+
+/// Reads the header layout of a TCP or UDP checksum send from the start of its frame, and
+/// checks it against what the OOB asks for.
+///
+/// The NIC parses the frame itself, which is why a driver may leave `trans_off` at 0:
+/// Linux's mana driver does on every UDP checksum send (`mana_start_xmit`), and that
+/// driver works on hardware. So a `trans_off` of 0 means "not stated"; a stated one must
+/// match the parsed offset. A send the device cannot parse into a layout it can checksum
+/// is refused rather than handed to the backend with a guessed checksum location, which
+/// would write the checksum over whatever bytes sit there.
+///
+/// In-band tags are walked (they are in the frame, so they lengthen `l2_len`); a tag
+/// injected from the OOB is not in the frame and changes nothing here. IPv4 options are
+/// counted. IPv6 extension headers are not walked: a send that carries one is refused,
+/// as is any IP fragment, since a fragment's transport checksum covers data the frame
+/// does not hold. Linux's driver only offloads a frame whose transport header follows
+/// the IP header directly (`mana_checksum_info` looks at `protocol`/`nexthdr` alone), so
+/// none of these refusals reaches a send that driver offloads.
+fn checksum_send_headers(
+    frame: &[u8],
+    s_oob: &ManaTxShortOob,
+) -> Result<ChecksumHeaders, ChecksumSendError> {
+    let requested = match (s_oob.comp_tcp_csum(), s_oob.comp_udp_csum()) {
+        (true, false) => IP_PROTOCOL_TCP,
+        (false, true) => IP_PROTOCOL_UDP,
+        _ => return Err(ChecksumSendError::BothProtocols),
+    };
+
+    let mut l2_len = net_backend::ETHERNET_HEADER_LEN as u16;
+    let mut ethertype = be16(frame, l2_len - 2)?;
+    for _ in 0..MAX_IN_BAND_TAGS {
+        if ethertype != ETHERTYPE_VLAN && ethertype != ETHERTYPE_QINQ {
+            break;
+        }
+        ethertype = be16(frame, l2_len + 2)?;
+        l2_len += VLAN_TAG_LEN;
+    }
+
+    let (l3_len, found) = match ethertype {
+        ETHERTYPE_IPV4 => {
+            if s_oob.is_outer_ipv6() {
+                return Err(ChecksumSendError::IpVersionMismatch);
+            }
+            let version_ihl = byte_at(frame, l2_len)?;
+            let l3_len = u16::from(version_ihl & 0xf) * 4;
+            if version_ihl >> 4 != 4 || l3_len < net_backend::IPV4_MIN_HEADER_LEN {
+                return Err(ChecksumSendError::MalformedIpHeader);
+            }
+            if be16(frame, l2_len + 6)? & IPV4_MORE_FRAGMENTS_AND_OFFSET != 0 {
+                return Err(ChecksumSendError::Fragment);
+            }
+            (l3_len, byte_at(frame, l2_len + 9)?)
+        }
+        ETHERTYPE_IPV6 => {
+            if s_oob.is_outer_ipv4() {
+                return Err(ChecksumSendError::IpVersionMismatch);
+            }
+            if byte_at(frame, l2_len)? >> 4 != 6 {
+                return Err(ChecksumSendError::MalformedIpHeader);
+            }
+            let next_header = byte_at(frame, l2_len + 6)?;
+            if is_ipv6_extension_header(next_header) {
+                return Err(ChecksumSendError::Ipv6ExtensionHeader(next_header));
+            }
+            (net_backend::IPV6_MIN_HEADER_LEN, next_header)
+        }
+        other => return Err(ChecksumSendError::NotIp(other)),
+    };
+    if found != requested {
+        return Err(ChecksumSendError::ProtocolMismatch { requested, found });
+    }
+
+    let layout = ChecksumHeaders { l2_len, l3_len };
+    let l4_len = if requested == IP_PROTOCOL_TCP {
+        // The data offset, the high nibble of byte 12, counts the header in 32-bit words.
+        let l4_len = u16::from(byte_at(frame, layout.transport_offset() + 12)? >> 4) * 4;
+        if l4_len < TCP_HEADER_MIN_LEN {
+            return Err(ChecksumSendError::MalformedTcpHeader);
+        }
+        l4_len
+    } else {
+        UDP_HEADER_LEN
+    };
+    // The whole transport header must be in the frame, not just its checksum field.
+    byte_at(frame, layout.transport_offset() + l4_len - 1)?;
+    let stated = s_oob.trans_off();
+    if stated != 0 && stated != layout.transport_offset() {
+        return Err(ChecksumSendError::OffsetMismatch {
+            stated,
+            parsed: layout.transport_offset(),
+        });
+    }
+    Ok(layout)
+}
+
 struct TxRxState;
 
 impl AsyncRun<TxRxTask> for TxRxState {
@@ -754,9 +1027,12 @@ impl AsyncRun<TxRxTask> for TxRxState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dma::DmaRegion;
     use crate::test_helpers as helper;
+    use gdma_defs::CLIENT_OOB_24;
     use gdma_defs::Cqe;
     use gdma_defs::WqDoorbellValue;
+    use gdma_defs::WqeParams;
     use net_backend::TxError;
     use pal_async::DefaultPool;
     use parking_lot::Mutex;
@@ -768,7 +1044,7 @@ mod tests {
         ready_budget: usize,
         ready_processed: usize,
         tx_accepted: usize,
-        tx_done: bool,
+        tx_done: Option<TxId>,
         rx: Option<RxId>,
     }
 
@@ -779,6 +1055,9 @@ mod tests {
         tx_hook: Arc<helper::StopHook>,
         rx_hook: Arc<helper::StopHook>,
         ready_hook: Arc<helper::StopHook>,
+        /// Fires when the task finds the backend not ready, that is, when it has no SQE or
+        /// RQE it will take.
+        idle_hook: Arc<helper::StopHook>,
         synchronous_tx: bool,
     }
 
@@ -786,6 +1065,8 @@ mod tests {
         fn poll_ready(&mut self, _: &mut Context<'_>, _: &mut dyn BufferAccess) -> Poll<()> {
             let mut state = self.state.lock();
             if state.ready_budget == 0 {
+                drop(state);
+                self.idle_hook.fire();
                 return Poll::Pending;
             }
             state.ready_budget -= 1;
@@ -833,7 +1114,10 @@ mod tests {
             let mut state = self.state.lock();
             state.tx_accepted += 1;
             if !self.synchronous_tx {
-                assert!(!std::mem::replace(&mut state.tx_done, true));
+                let TxSegmentType::Head(meta) = &segments[0].ty else {
+                    panic!("the first segment is the head");
+                };
+                assert!(state.tx_done.replace(meta.id).is_none());
             }
             drop(state);
             self.tx_hook.fire();
@@ -845,8 +1129,8 @@ mod tests {
             _: &mut dyn BufferAccess,
             packets: &mut [TxId],
         ) -> Result<usize, TxError> {
-            if std::mem::take(&mut self.state.lock().tx_done) {
-                packets[0] = TxId(0);
+            if let Some(id) = self.state.lock().tx_done.take() {
+                packets[0] = id;
                 Ok(1)
             } else {
                 Ok(0)
@@ -872,6 +1156,8 @@ mod tests {
             rq_cq_id: cq_id,
             tx_segment_buffer: Vec::new(),
             rx_buf_count: 0,
+            pending_tx: VecDeque::new(),
+            next_tx_id: 0,
         }
     }
 
@@ -884,6 +1170,7 @@ mod tests {
             tx_hook: Arc::new(helper::StopHook::default()),
             rx_hook: Arc::new(helper::StopHook::default()),
             ready_hook: Arc::new(helper::StopHook::default()),
+            idle_hook: Arc::new(helper::StopHook::default()),
             synchronous_tx: true,
         }
     }
@@ -893,6 +1180,744 @@ mod tests {
             .gm
             .read_plain(helper::CQ + index * size_of::<Cqe>() as u64)
             .unwrap()
+    }
+
+    /// An Ethernet header with `tags` in-band tags (their EtherTypes, outermost first) ahead of
+    /// `ethertype`.
+    fn eth(tags: &[u16], ethertype: u16) -> Vec<u8> {
+        let mut bytes = vec![0x02, 0, 0, 0, 0, 1, 0x02, 0, 0, 0, 0, 2];
+        for &tag in tags {
+            bytes.extend_from_slice(&tag.to_be_bytes());
+            // The TCI: priority 1, VLAN 0x123.
+            bytes.extend_from_slice(&0x2123u16.to_be_bytes());
+        }
+        bytes.extend_from_slice(&ethertype.to_be_bytes());
+        bytes
+    }
+
+    /// An IPv4 header with `option_words` 32-bit option words, carrying `protocol`, whose
+    /// flags-and-fragment-offset field is `fragment`.
+    fn ipv4(option_words: u8, protocol: u8, fragment: u16) -> Vec<u8> {
+        let mut bytes = vec![0x45 + option_words, 0, 0, 0, 0x12, 0x34];
+        bytes.extend_from_slice(&fragment.to_be_bytes());
+        bytes.extend_from_slice(&[64, protocol, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2]);
+        // Options: a run of NOPs.
+        bytes.extend(std::iter::repeat_n(1, usize::from(option_words) * 4));
+        bytes
+    }
+
+    /// An IPv6 header whose next header is `next_header`.
+    fn ipv6(next_header: u8) -> Vec<u8> {
+        let mut bytes = vec![0x60, 0, 0, 0, 0, 0, next_header, 64];
+        bytes.extend_from_slice(&[0xfd; 32]);
+        bytes
+    }
+
+    /// A TCP header with no options, ports 1234 -> 80.
+    fn tcp() -> Vec<u8> {
+        tcp_with_options(0)
+    }
+
+    /// A TCP header with `option_words` 32-bit option words, ports 1234 -> 80.
+    fn tcp_with_options(option_words: u8) -> Vec<u8> {
+        let mut bytes = vec![
+            0x04,
+            0xd2,
+            0,
+            80,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            (5 + option_words) << 4,
+            0x18,
+            0xff,
+            0xff,
+        ];
+        bytes.extend_from_slice(&[0; 4]);
+        // Options: a run of NOPs.
+        bytes.extend(std::iter::repeat_n(1, usize::from(option_words) * 4));
+        bytes
+    }
+
+    /// A UDP header, ports 1234 -> 53.
+    fn udp() -> Vec<u8> {
+        vec![0x04, 0xd2, 0, 53, 0, 8, 0, 0]
+    }
+
+    fn udp_csum() -> ManaTxShortOob {
+        ManaTxShortOob::new().with_comp_udp_csum(true)
+    }
+
+    fn tcp_csum() -> ManaTxShortOob {
+        ManaTxShortOob::new().with_comp_tcp_csum(true)
+    }
+
+    fn task_with(queues: Arc<Queues>, epqueue: Box<dyn Queue>) -> TxRxTask {
+        let mut task = task(queues, backend());
+        task.epqueue = epqueue;
+        task
+    }
+
+    /// What became of a send: the metadata the backend got, if any, and the completion type.
+    struct SendOutcome {
+        sent: Option<TxMetadata>,
+        cqe_type: u8,
+    }
+
+    /// Sends `frame` through the real `process_sqe` in two SGEs, the first `split` bytes long,
+    /// with a backend standing in for the tap.
+    fn send_frame(s_oob: ManaTxShortOob, frame: &[u8], split: usize) -> SendOutcome {
+        send_frame_with(s_oob, FromZeros::new_zeroed(), frame, split)
+    }
+
+    fn send_frame_with(
+        s_oob: ManaTxShortOob,
+        l_oob: bnic_defs::ManaTxLongOob,
+        frame: &[u8],
+        split: usize,
+    ) -> SendOutcome {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut task = task_with(
+            queues.clone(),
+            Box::new(RecordingQueue { sent: sent.clone() }),
+        );
+        let sqe = send_wqe(&queues, s_oob, l_oob, frame, split, 0x6000);
+        task.process_sqe(sqe).unwrap();
+
+        let cqe = completion(&queues, 0);
+        assert_eq!(cqe.params.owner_count(), 1, "one completion per send");
+        let sent = sent.lock().pop();
+        SendOutcome {
+            sent,
+            cqe_type: cqe_type(&cqe),
+        }
+    }
+
+    fn cqe_type(cqe: &Cqe) -> u8 {
+        ManaTxCompOob::read_from_prefix(&cqe.data)
+            .unwrap()
+            .0
+            .cqe_hdr
+            .cqe_type()
+    }
+
+    /// Writes `frame` to guest memory at `gpa` in two SGEs, the first `split` bytes long, and
+    /// returns a send WQE for it.
+    fn send_wqe(
+        queues: &Queues,
+        s_oob: ManaTxShortOob,
+        l_oob: bnic_defs::ManaTxLongOob,
+        frame: &[u8],
+        split: usize,
+        gpa: u64,
+    ) -> Wqe {
+        let (head, tail) = frame.split_at(split);
+        queues.gm.write_at(gpa, head).unwrap();
+        queues.gm.write_at(gpa + 0x2000, tail).unwrap();
+        let sgl = [
+            frame_sge(gpa, head.len() as u32),
+            frame_sge(gpa + 0x2000, tail.len() as u32),
+        ];
+
+        let mut sqe = Wqe::new_zeroed();
+        sqe.header.params = WqeParams::new()
+            .with_num_sgl_entries(2)
+            .with_inline_client_oob_size(CLIENT_OOB_24);
+        let oob = ManaTxOob {
+            s_oob,
+            l_oob,
+            reserved3: 0,
+            reserved4: 0,
+        };
+        oob.write_to_prefix(&mut sqe.data[..]).unwrap();
+        let sgl_offset = sqe.header.sgl_offset();
+        sgl.write_to_prefix(&mut sqe.data[sgl_offset..]).unwrap();
+        sqe
+    }
+
+    /// A refused send's completion waits behind an earlier send the backend still has: the
+    /// driver frees its oldest outstanding send for each completion it reads.
+    #[test]
+    fn a_refused_send_completes_after_an_earlier_send_in_flight() {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let mut epqueue = backend();
+        epqueue.synchronous_tx = false;
+        let mut task = task(queues.clone(), epqueue);
+        let accepted = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        let refused = [eth(&[], 0x0800), ipv4(0, 6, 0), tcp()].concat();
+        for (frame, gpa) in [(&accepted, 0x6000), (&refused, 0xa000)] {
+            let sqe = send_wqe(&queues, udp_csum(), FromZeros::new_zeroed(), frame, 14, gpa);
+            task.process_sqe(sqe).unwrap();
+        }
+        assert_eq!(
+            completion(&queues, 0).params.owner_count(),
+            0,
+            "nothing completes ahead of the send in flight"
+        );
+
+        task.process_backend().unwrap();
+        assert_eq!(cqe_type(&completion(&queues, 0)), CQE_TX_OKAY);
+        assert_eq!(cqe_type(&completion(&queues, 1)), CQE_TX_INVALID_OOB);
+    }
+
+    /// Refused sends queued behind one the backend still has stop being taken at
+    /// `MAX_PENDING_TX`, and the task takes the rest once the backend completes it.
+    #[test]
+    fn sends_behind_one_in_flight_stop_at_the_completion_backlog_limit() {
+        let mut pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let mut epqueue = backend();
+        epqueue.synchronous_tx = false;
+        epqueue.state.lock().ready_budget = 0;
+        let state = epqueue.state.clone();
+        let idle_hook = epqueue.idle_hook.clone();
+        let mut task = task(queues.clone(), epqueue);
+
+        // Eight pages hold 512 of these 64-byte WQEs, more than the limit.
+        let sq_gpa = 0x8000;
+        let sq_pages = (0..8).map(|i| sq_gpa + i * 0x1000).collect();
+        task.sq_id = queues
+            .alloc_wq(true, DmaRegion::new(sq_pages, 0, 0x8000).unwrap())
+            .unwrap();
+        let accepted = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        let refused = [eth(&[], 0x0800), ipv4(0, 6, 0), tcp()].concat();
+        let sends = MAX_PENDING_TX + 44;
+        let mut tail = 0;
+        for i in 0..sends {
+            let (frame, gpa) = if i == 0 {
+                (&accepted, 0x5000)
+            } else {
+                (&refused, 0x5800)
+            };
+            let sqe = send_wqe(&queues, udp_csum(), FromZeros::new_zeroed(), frame, 14, gpa);
+            let len = sqe.header.total_len();
+            queues
+                .gm
+                .write_at(sq_gpa + tail as u64, &sqe.as_bytes()[..len])
+                .unwrap();
+            tail += len as u32;
+        }
+        queues.doorbell_sq(WqDoorbellValue::new().with_id(task.sq_id).with_tail(tail));
+
+        let control = Arc::new(Mutex::new(TaskControl::new(TxRxState)));
+        control.lock().insert(pool.driver(), "gdma-tx", task);
+        let signal = idle_hook.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        assert_eq!(
+            control.lock().state().unwrap().pending_tx.len(),
+            MAX_PENDING_TX
+        );
+
+        state.lock().ready_budget = 1;
+        let signal = idle_hook.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        assert!(control.lock().state().unwrap().pending_tx.is_empty());
+        assert_eq!(state.lock().tx_accepted, 1);
+    }
+
+    /// A backend that reports a send it was never given must not complete one of the guest's:
+    /// the driver would free its oldest outstanding send for it.
+    #[test]
+    fn a_backend_completion_with_no_send_outstanding_is_refused() {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let epqueue = backend();
+        epqueue.state.lock().tx_done = Some(TxId(0));
+        let mut task = task(queues.clone(), epqueue);
+        assert!(task.process_backend().is_err());
+        assert_eq!(completion(&queues, 0).params.owner_count(), 0);
+    }
+
+    /// Linux's UDP checksum send: `trans_off` left at 0, the IP header split from the
+    /// Ethernet header across SGEs, and an IPv4 option in it.
+    #[test]
+    fn a_udp_checksum_send_without_trans_off_gets_it_from_the_frame() {
+        let frame = [eth(&[], 0x0800), ipv4(1, 17, 0), udp()].concat();
+        for split in [14, 20, 30, frame.len() - 1] {
+            let outcome = send_frame(udp_csum().with_is_outer_ipv4(true), &frame, split);
+            assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+            let meta = outcome.sent.unwrap();
+            assert_eq!(meta.l2_len, 14);
+            assert_eq!(meta.l3_len, 24);
+            assert_eq!(meta.transport_header_offset, 38);
+        }
+    }
+
+    /// The device refuses the send the way the NIC does, and the backend never sees it.
+    #[test]
+    fn a_checksum_send_the_device_cannot_parse_is_refused_per_packet() {
+        // A UDP checksum asked for on a TCP frame.
+        let frame = [eth(&[], 0x0800), ipv4(0, 6, 0), tcp()].concat();
+        let outcome = send_frame(udp_csum(), &frame, 14);
+        assert_eq!(outcome.cqe_type, CQE_TX_INVALID_OOB);
+        assert!(outcome.sent.is_none());
+    }
+
+    /// A send with no checksum asked for is not parsed: its `trans_off` goes through as is,
+    /// whatever the frame holds.
+    #[test]
+    fn a_send_without_a_checksum_keeps_trans_off_and_is_not_parsed() {
+        let frame = [eth(&[], 0x0806), vec![0; 28]].concat();
+        let plain = ManaTxShortOob::new().with_trans_off(7);
+        let outcome = send_frame(plain, &frame, 14);
+        assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+        assert_eq!(outcome.sent.unwrap().transport_header_offset, 7);
+    }
+
+    fn layout(s_oob: ManaTxShortOob, frame: &[u8]) -> Result<(u16, u16), ChecksumSendError> {
+        checksum_send_headers(frame, &s_oob).map(|h| (h.l2_len, h.transport_offset()))
+    }
+
+    #[test]
+    fn checksum_send_layouts_the_device_accepts() {
+        let v4_udp = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        assert_eq!(layout(udp_csum(), &v4_udp), Ok((14, 34)));
+        // IPv4 options, up to the 60-byte maximum.
+        let v4_opts = [eth(&[], 0x0800), ipv4(10, 6, 0), tcp()].concat();
+        assert_eq!(layout(tcp_csum(), &v4_opts), Ok((14, 74)));
+        // Don't Fragment is not a fragment.
+        let v4_df = [eth(&[], 0x0800), ipv4(0, 17, 0x4000), udp()].concat();
+        assert_eq!(layout(udp_csum(), &v4_df), Ok((14, 34)));
+        let v6_tcp = [eth(&[], 0x86dd), ipv6(6), tcp()].concat();
+        assert_eq!(
+            layout(tcp_csum().with_is_outer_ipv6(true), &v6_tcp),
+            Ok((14, 54))
+        );
+        let v6_udp = [eth(&[], 0x86dd), ipv6(17), udp()].concat();
+        assert_eq!(layout(udp_csum(), &v6_udp), Ok((14, 54)));
+    }
+
+    /// An in-band tag is in the frame, so it lengthens the L2 header; QinQ has two.
+    #[test]
+    fn in_band_tags_lengthen_the_l2_header() {
+        let one = [eth(&[0x8100], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        assert_eq!(layout(udp_csum(), &one), Ok((18, 38)));
+        let qinq = [eth(&[0x88a8, 0x8100], 0x86dd), ipv6(6), tcp()].concat();
+        assert_eq!(layout(tcp_csum(), &qinq), Ok((22, 62)));
+        // A third tag is past what the device walks.
+        let three = [
+            eth(&[0x88a8, 0x8100, 0x8100], 0x0800),
+            ipv4(0, 17, 0),
+            udp(),
+        ]
+        .concat();
+        assert_eq!(
+            layout(udp_csum(), &three),
+            Err(ChecksumSendError::NotIp(0x8100))
+        );
+    }
+
+    /// A stated offset must be the one the frame has. This replaces counting any offset short
+    /// of a minimal IP header as omitted: only 0 is.
+    #[test]
+    fn a_stated_trans_off_must_match_the_frame() {
+        let frame = [eth(&[], 0x0800), ipv4(1, 6, 0), tcp()].concat();
+        assert_eq!(layout(tcp_csum().with_trans_off(38), &frame), Ok((14, 38)));
+        for stated in [1, 33, 34, 39] {
+            assert_eq!(
+                layout(tcp_csum().with_trans_off(stated), &frame),
+                Err(ChecksumSendError::OffsetMismatch { stated, parsed: 38 })
+            );
+        }
+    }
+
+    #[test]
+    fn checksum_send_layouts_the_device_refuses() {
+        use ChecksumSendError::*;
+        let v4 = |protocol, fragment| [eth(&[], 0x0800), ipv4(0, protocol, fragment)].concat();
+        let cases: Vec<(ManaTxShortOob, Vec<u8>, ChecksumSendError)> = vec![
+            (
+                udp_csum().with_comp_tcp_csum(true),
+                [v4(17, 0), udp()].concat(),
+                BothProtocols,
+            ),
+            (
+                udp_csum(),
+                [v4(6, 0), tcp()].concat(),
+                ProtocolMismatch {
+                    requested: 17,
+                    found: 6,
+                },
+            ),
+            (
+                tcp_csum(),
+                [eth(&[], 0x86dd), ipv6(17), udp()].concat(),
+                ProtocolMismatch {
+                    requested: 6,
+                    found: 17,
+                },
+            ),
+            // More Fragments, and a later fragment with MF clear.
+            (udp_csum(), [v4(17, 0x2000), udp()].concat(), Fragment),
+            (udp_csum(), [v4(17, 0x00b9), udp()].concat(), Fragment),
+            // Hop-by-hop options and a fragment header ahead of the transport header.
+            (
+                udp_csum(),
+                [eth(&[], 0x86dd), ipv6(0), udp()].concat(),
+                Ipv6ExtensionHeader(0),
+            ),
+            (
+                tcp_csum(),
+                [eth(&[], 0x86dd), ipv6(44), tcp()].concat(),
+                Ipv6ExtensionHeader(44),
+            ),
+            (
+                udp_csum(),
+                [eth(&[], 0x0806), vec![0; 28]].concat(),
+                NotIp(0x0806),
+            ),
+            // An IHL below the minimum, and IPv6 bytes behind an IPv4 EtherType.
+            (
+                udp_csum(),
+                [
+                    eth(&[], 0x0800),
+                    vec![0x44],
+                    ipv4(0, 17, 0)[1..].to_vec(),
+                    udp(),
+                ]
+                .concat(),
+                MalformedIpHeader,
+            ),
+            (
+                udp_csum(),
+                [eth(&[], 0x0800), ipv6(17), udp()].concat(),
+                MalformedIpHeader,
+            ),
+            // The OOB names the other IP version.
+            (
+                udp_csum().with_is_outer_ipv6(true),
+                [v4(17, 0), udp()].concat(),
+                IpVersionMismatch,
+            ),
+            (
+                tcp_csum().with_is_outer_ipv4(true),
+                [eth(&[], 0x86dd), ipv6(6), tcp()].concat(),
+                IpVersionMismatch,
+            ),
+        ];
+        for (s_oob, frame, expected) in cases {
+            assert_eq!(layout(s_oob, &frame), Err(expected), "{frame:02x?}");
+        }
+    }
+
+    /// A frame that ends anywhere inside its headers is refused, whichever header it ends in.
+    #[test]
+    fn a_frame_ending_inside_its_headers_is_refused() {
+        for (s_oob, frame) in [
+            (
+                udp_csum(),
+                [eth(&[0x8100], 0x0800), ipv4(2, 17, 0), udp()].concat(),
+            ),
+            (tcp_csum(), [eth(&[], 0x86dd), ipv6(6), tcp()].concat()),
+        ] {
+            assert!(layout(s_oob, &frame).is_ok());
+            for len in 0..frame.len() {
+                assert_eq!(
+                    layout(s_oob, &frame[..len]),
+                    Err(ChecksumSendError::Truncated),
+                    "length {len}"
+                );
+            }
+        }
+    }
+
+    /// A TCP header is as long as its data offset says, so a frame must hold all of it, and a
+    /// data offset below the minimum header is refused.
+    #[test]
+    fn a_tcp_header_is_as_long_as_its_data_offset() {
+        let frame = [eth(&[], 0x0800), ipv4(0, 6, 0), tcp_with_options(10)].concat();
+        assert_eq!(layout(tcp_csum(), &frame), Ok((14, 34)));
+        for len in [54, frame.len() - 1] {
+            assert_eq!(
+                layout(tcp_csum(), &frame[..len]),
+                Err(ChecksumSendError::Truncated),
+                "length {len}"
+            );
+        }
+        for data_offset in 0..5 {
+            let mut short = frame.clone();
+            short[34 + 12] = data_offset << 4;
+            assert_eq!(
+                layout(tcp_csum(), &short),
+                Err(ChecksumSendError::MalformedTcpHeader)
+            );
+        }
+    }
+
+    /// The largest layout the device accepts, two in-band tags, an IPv4 header and a TCP header
+    /// both with every option, fits in the bytes it reads from the frame.
+    #[test]
+    fn the_largest_checksum_layout_fits_the_frame_prefix() {
+        let frame = [
+            eth(&[0x88a8, 0x8100], 0x0800),
+            ipv4(10, 6, 0),
+            tcp_with_options(10),
+            vec![0xee; 100],
+        ]
+        .concat();
+        let outcome = send_frame(tcp_csum(), &frame, 14);
+        assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+        assert_eq!(outcome.sent.unwrap().transport_header_offset, 82);
+    }
+
+    /// The device never reads past what the largest layout needs, and stops at the frame's end
+    /// or at an address it cannot read.
+    #[test]
+    fn the_frame_prefix_is_bounded_by_the_frame_and_the_buffer() {
+        let gm = GuestMemory::allocate(0x2000);
+        gm.write_at(0x10, &[0xaa; 4]).unwrap();
+        gm.write_at(0x1000, &[0xbb; 0x200]).unwrap();
+        let mut buf = [0; MAX_CHECKSUM_HEADER_LEN];
+        let n = read_frame_prefix(
+            &gm,
+            &[frame_sge(0x10, 4), frame_sge(0x1000, 0x200)],
+            &mut buf,
+        );
+        assert_eq!(n, MAX_CHECKSUM_HEADER_LEN);
+        assert_eq!(&buf[..5], &[0xaa, 0xaa, 0xaa, 0xaa, 0xbb]);
+        let n = read_frame_prefix(&gm, &[frame_sge(0x10, 4), frame_sge(0x1000, 3)], &mut buf);
+        assert_eq!(n, 7);
+        let n = read_frame_prefix(
+            &gm,
+            &[frame_sge(0x10, 4), frame_sge(u64::MAX, 32)],
+            &mut buf,
+        );
+        assert_eq!(n, 4);
+    }
+
+    /// A backend that keeps what it was asked to send, standing in for the tap or the VF.
+    #[derive(InspectMut)]
+    struct RecordingQueue {
+        #[inspect(skip)]
+        sent: Arc<Mutex<Vec<TxMetadata>>>,
+    }
+
+    impl Queue for RecordingQueue {
+        fn poll_ready(&mut self, _cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
+            Poll::Pending
+        }
+
+        fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, _done: &[RxId]) {}
+
+        fn rx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _packets: &mut [RxId],
+        ) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+
+        fn tx_avail(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            segments: &[TxSegment],
+        ) -> anyhow::Result<(bool, usize)> {
+            let TxSegmentType::Head(meta) = &segments[0].ty else {
+                panic!("the first segment is the head");
+            };
+            self.sent.lock().push(meta.clone());
+            Ok((true, segments.len()))
+        }
+
+        fn tx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _done: &mut [TxId],
+        ) -> Result<usize, TxError> {
+            Ok(0)
+        }
+    }
+
+    /// A backend that keeps every send and completes the ones the test names, in the
+    /// order it names them.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct ReorderingQueue {
+        sent: Arc<Mutex<Vec<TxId>>>,
+        complete: Arc<Mutex<VecDeque<TxId>>>,
+    }
+
+    impl Queue for ReorderingQueue {
+        fn poll_ready(&mut self, _cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
+            Poll::Pending
+        }
+
+        fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, _done: &[RxId]) {}
+
+        fn rx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _packets: &mut [RxId],
+        ) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+
+        fn tx_avail(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            segments: &[TxSegment],
+        ) -> anyhow::Result<(bool, usize)> {
+            let TxSegmentType::Head(meta) = &segments[0].ty else {
+                panic!("the first segment is the head");
+            };
+            self.sent.lock().push(meta.id);
+            Ok((false, segments.len()))
+        }
+
+        fn tx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            done: &mut [TxId],
+        ) -> Result<usize, TxError> {
+            let mut complete = self.complete.lock();
+            let mut n = 0;
+            while n < done.len() {
+                let Some(id) = complete.pop_front() else {
+                    break;
+                };
+                done[n] = id;
+                n += 1;
+            }
+            Ok(n)
+        }
+    }
+
+    /// The backend may complete sends out of order. The driver frees its oldest outstanding
+    /// send for each completion it reads, so nothing completes until the oldest send is done.
+    #[test]
+    fn a_later_send_the_backend_completes_first_waits_for_the_earlier_one() {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let complete = Arc::new(Mutex::new(VecDeque::new()));
+        let mut task = task_with(
+            queues.clone(),
+            Box::new(ReorderingQueue {
+                sent: sent.clone(),
+                complete: complete.clone(),
+            }),
+        );
+        let frame = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        for gpa in [0x6000, 0xa000] {
+            let sqe = send_wqe(
+                &queues,
+                udp_csum(),
+                FromZeros::new_zeroed(),
+                &frame,
+                14,
+                gpa,
+            );
+            task.process_sqe(sqe).unwrap();
+        }
+        let ids = sent.lock().clone();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0].0, ids[1].0, "each send has its own id");
+
+        complete.lock().push_back(ids[1]);
+        task.process_backend().unwrap();
+        assert_eq!(
+            completion(&queues, 0).params.owner_count(),
+            0,
+            "the earlier send is still in the backend"
+        );
+
+        complete.lock().push_back(ids[0]);
+        task.process_backend().unwrap();
+        assert_eq!(cqe_type(&completion(&queues, 0)), CQE_TX_OKAY);
+        assert_eq!(cqe_type(&completion(&queues, 1)), CQE_TX_OKAY);
+    }
+
+    /// A completion naming a send the backend never had is an error, not a completion.
+    #[test]
+    fn a_completion_for_an_unknown_send_is_refused() {
+        let pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let complete = Arc::new(Mutex::new(VecDeque::new()));
+        let mut task = task_with(
+            queues.clone(),
+            Box::new(ReorderingQueue {
+                sent: sent.clone(),
+                complete: complete.clone(),
+            }),
+        );
+        let frame = [eth(&[], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        let sqe = send_wqe(
+            &queues,
+            udp_csum(),
+            FromZeros::new_zeroed(),
+            &frame,
+            14,
+            0x6000,
+        );
+        task.process_sqe(sqe).unwrap();
+        let id = sent.lock()[0];
+
+        complete.lock().push_back(TxId(id.0.wrapping_add(1)));
+        assert!(task.process_backend().is_err());
+        assert_eq!(completion(&queues, 0).params.owner_count(), 0);
+    }
+
+    fn frame_sge(address: u64, size: u32) -> Sge {
+        Sge {
+            address,
+            mem_key: 0,
+            size,
+        }
+    }
+
+    /// A tagged IPv4 checksum send as Linux lays it out: the tag in the OOB, none in the
+    /// frame, `trans_off` 34. Byte 18 of the frame is the IP ID's high byte, here 0x60, so
+    /// counting the tag in the frame would read an IPv6 version nibble there.
+    #[test]
+    fn an_injected_tag_is_not_looked_for_in_the_frame() {
+        let mut v4 = ipv4(0, 17, 0);
+        v4[4] = 0x60;
+        let frame = [eth(&[], 0x0800), v4, udp()].concat();
+        let s_oob = udp_csum()
+            .with_is_outer_ipv4(true)
+            .with_pkt_fmt(MANA_LONG_PKT_FMT);
+        let l_oob = bnic_defs::ManaTxLongOob::new()
+            .with_inject_vlan_pri_tag(true)
+            .with_vlan_id(5);
+        for s_oob in [s_oob, s_oob.with_trans_off(34)] {
+            let outcome = send_frame_with(s_oob, l_oob, &frame, 14);
+            assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+            let meta = outcome.sent.unwrap();
+            assert_eq!(meta.vlan.unwrap().vlan_id(), 5);
+            assert_eq!(meta.l2_len, 14);
+            assert_eq!(meta.l3_len, 20);
+            assert_eq!(meta.transport_header_offset, 34);
+        }
+    }
+
+    /// With a tag in the frame and another in the OOB, the IP header follows the in-band
+    /// tag: the backend fixes up the IPv4 header at `l2_len`.
+    #[test]
+    fn an_injected_tag_does_not_move_the_ip_header_of_a_tagged_frame() {
+        let frame = [eth(&[0x8100], 0x0800), ipv4(0, 17, 0), udp()].concat();
+        let s_oob = udp_csum()
+            .with_is_outer_ipv4(true)
+            .with_pkt_fmt(MANA_LONG_PKT_FMT);
+        let l_oob = bnic_defs::ManaTxLongOob::new()
+            .with_inject_vlan_pri_tag(true)
+            .with_vlan_id(5);
+        let outcome = send_frame_with(s_oob, l_oob, &frame, 18);
+        assert_eq!(outcome.cqe_type, CQE_TX_OKAY);
+        let meta = outcome.sent.unwrap();
+        assert_eq!(meta.l2_len, 18);
+        assert_eq!(meta.l3_len, 20);
+        assert_eq!(meta.transport_header_offset, 38);
     }
 
     #[test]
