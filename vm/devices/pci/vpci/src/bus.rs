@@ -236,15 +236,28 @@ impl VpciBus {
         self.eject.clone()
     }
 
-    /// Revokes the VMBus channel and waits for revocation to complete.
+    /// Revokes the VMBus channel, returning a future that completes when the
+    /// revocation does.
+    ///
+    /// The bus records the revocation before this returns, and the returned
+    /// future does not borrow it. Release any lock on the bus before awaiting
+    /// the future: the revocation waits for the VMBus server and for the
+    /// channel to close, and VPs and the bus's state unit can access the bus
+    /// until it is removed.
     ///
     /// If an offer is in progress, the offering task revokes its channel when
     /// the offer completes.
-    pub async fn revoke(&mut self) {
-        if let VpciBusChannelState::Offered { channel } =
-            std::mem::replace(&mut self.channel, VpciBusChannelState::Revoked)
-        {
-            channel.revoke().await;
+    pub fn revoke(&mut self) -> impl Future<Output = ()> + Send + use<> {
+        let channel = match std::mem::replace(&mut self.channel, VpciBusChannelState::Revoked) {
+            VpciBusChannelState::Offered { channel } => Some(channel),
+            VpciBusChannelState::Unoffered
+            | VpciBusChannelState::Offering
+            | VpciBusChannelState::Revoked => None,
+        };
+        async move {
+            if let Some(channel) = channel {
+                channel.revoke().await;
+            }
         }
     }
 }
@@ -538,6 +551,7 @@ mod tests {
     use chipset_device::pci::PciConfigSpace;
     use chipset_device::poll_device::PollDevice;
     use closeable_mutex::CloseableMutex;
+    use guestmem::GuestMemory;
     use guid::Guid;
     use inspect::InspectMut;
     use pal_async::DefaultDriver;
@@ -549,6 +563,10 @@ mod tests {
     use std::task::Context;
     use std::task::Poll;
     use test_with_tracing::test;
+    use vmbus_channel::bus::OfferInput;
+    use vmbus_channel::bus::OfferResources;
+    use vmbus_channel::bus::ParentBus;
+    use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vpci_msi::VpciInterruptMapper;
 
     const BASE_ADDR: u64 = 0x1000_0000;
@@ -993,5 +1011,74 @@ mod tests {
         assert!(rig.device.lock().pending_read.is_none());
         assert!(rig.device.lock().pending_write.is_none());
         assert_eq!(rig.device.lock().writes.len(), writes_before);
+    }
+
+    /// A VMBus that holds each offered channel until the test releases it, so
+    /// that the channel's revocation stays pending until then.
+    #[derive(Clone, Default)]
+    struct HeldChannels(Arc<Mutex<Vec<OfferInput>>>);
+
+    #[async_trait::async_trait]
+    impl ParentBus for HeldChannels {
+        async fn add_child(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
+            self.0.lock().push(request);
+            Ok(OfferResources::new(GuestMemory::empty(), None))
+        }
+
+        fn clone_bus(&self) -> Box<dyn ParentBus> {
+            Box::new(self.clone())
+        }
+
+        fn use_event(&self) -> bool {
+            false
+        }
+    }
+
+    #[async_test]
+    async fn bus_stays_accessible_while_its_channel_is_revoked(driver: DefaultDriver) {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let vmbus = HeldChannels::default();
+        let device = Arc::new(CloseableMutex::new(DeferWriteDevice::new()));
+        let bus = VpciBus::new(
+            &driver_source,
+            VpciBusConfig {
+                instance_id: Guid::new_random(),
+                vtom: None,
+                vnode: None,
+            },
+            device.clone(),
+            &mut ExternallyManagedMmioIntercepts,
+            &vmbus,
+            VpciInterruptMapper::new(TestVpciInterruptController::new()),
+        )
+        .await
+        .unwrap();
+        bus.bus_device.config_space_offset().set(BASE_ADDR);
+        let bus = Arc::new(CloseableMutex::new(bus));
+        let mut offer = vmbus.0.lock().pop().expect("the bus offered its channel");
+
+        // The revocation does not borrow the bus, so it can run as a task of
+        // its own. The bus records it at once.
+        let revoke = driver.spawn("revoke", bus.lock().revoke());
+        assert!(matches!(bus.lock().channel, VpciBusChannelState::Revoked));
+        // The VMBus is asked to rescind the channel...
+        assert!(offer.server_request_recv.recv().await.is_err());
+        // ...but until it releases the channel, the bus still serves VPs.
+        device.lock().read_value = 0x1234_5678;
+        let mut data = [0; 4];
+        assert!(matches!(
+            bus.lock()
+                .supports_mmio()
+                .unwrap()
+                .mmio_read(VpciTestRig::config_addr(0), &mut data),
+            IoResult::Ok
+        ));
+        assert_eq!(u32::from_ne_bytes(data), 0x1234_5678);
+        assert!(!revoke.is_finished());
+
+        drop(offer);
+        revoke.await;
+        // A revoked bus has nothing left to revoke.
+        bus.lock().revoke().await;
     }
 }
