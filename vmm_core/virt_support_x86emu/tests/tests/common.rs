@@ -86,8 +86,14 @@ impl CpuIo for MockCpu {
         todo!()
     }
 
-    fn fatal_error(&self, _error: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
-        todo!()
+    fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
+        tracing::error!(
+            error = error.as_ref() as &dyn std::error::Error,
+            "fatal error"
+        );
+        virt::VpHaltReason::TripleFault {
+            vtl: hvdef::Vtl::Vtl0,
+        }
     }
 }
 

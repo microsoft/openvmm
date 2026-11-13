@@ -615,6 +615,10 @@ enum Error {
     },
     #[error("failed to access mapped memory")]
     Memory(#[source] GuestMemoryError),
+    #[error("unsupported compare-exchange size ({current} current bytes, {new} new bytes)")]
+    UnsupportedAtomicSize { current: usize, new: usize },
+    #[error("compare-exchange spans noncontiguous guest physical pages")]
+    NonContiguousAtomicAccess,
 }
 
 /// Result of a gva translation in [`EmulatorCpu`]
@@ -838,8 +842,10 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         is_user_mode: bool,
         is_rmw: bool,
     ) -> Result<(), Self::Error> {
-        // Preflight every page before reading: MMIO reads may have side effects.
+        // Preflight translation and VTL access before reading: MMIO reads may have side effects.
         // RMW operands need write permissions even during this initial read.
+        // TODO: Preflight GuestMemory backing permissions for every RAM range too,
+        // including write permission for RMW reads, before any data access.
         let mode = if is_rmw {
             TranslateMode::Write
         } else {
@@ -893,9 +899,11 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         bytes: &[u8],
         is_user_mode: bool,
     ) -> Result<(), Self::Error> {
-        // A fault on any page must leave the entire store untouched, including
-        // MMIO side effects. Keep the translations rather than walking again
-        // after starting the write.
+        // A translation or VTL fault on any page must leave the entire store
+        // untouched, including MMIO side effects. Keep the translations rather
+        // than walking again after starting the write.
+        // TODO: Preflight GuestMemory backing write permissions for every RAM
+        // range before writing anything.
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
         if Some(gpa & !(HV_PAGE_SIZE - 1)) != self.support.lapic_base_address() {
             self.check_vtl_access(gva, gpa, TranslateMode::Write)?;
@@ -947,6 +955,9 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             let next_gva = gva.wrapping_add(offset as u64);
             let next_gpa = self.translate_gva(next_gva, TranslateMode::Write, is_user_mode)?;
             self.check_vtl_access(next_gva, next_gpa, TranslateMode::Write)?;
+            if gpa.checked_add(offset as u64) != Some(next_gpa) {
+                return Err(Error::NonContiguousAtomicAccess);
+            }
             offset += HV_PAGE_SIZE as usize;
         }
 
@@ -988,7 +999,12 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
                         u64::from_ne_bytes(new.try_into().unwrap()),
                     )
                     .map(|r| r.is_ok()),
-                _ => panic!("unsupported cmpxchg size"),
+                _ => {
+                    return Err(Error::UnsupportedAtomicSize {
+                        current: current.len(),
+                        new: new.len(),
+                    });
+                }
             }
             .map_err(Error::Memory)?
         } else {
@@ -1141,7 +1157,9 @@ fn inject_memory_access_fault<T: EmulatorSupport>(result: &Error, support: &mut 
             support.inject_pending_event(event);
             true
         }
-        Error::Memory(_) => false,
+        Error::Memory(_)
+        | Error::UnsupportedAtomicSize { .. }
+        | Error::NonContiguousAtomicAccess => false,
     }
 }
 

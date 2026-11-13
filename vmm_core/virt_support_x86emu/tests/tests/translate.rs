@@ -29,6 +29,7 @@ enum MockSupportMode {
     /// Translate the first page, but use the given result for the second page.
     CrossPage {
         code: TranslateGvaResultCode,
+        second_gpa: u64,
         mapped: bool,
         deny_vtl: bool,
     },
@@ -304,7 +305,9 @@ impl EmulatorSupport for MockSupport {
                 gpa: gva,
                 overlay_page: Some(true),
             }),
-            MockSupportMode::CrossPage { code, .. } => {
+            MockSupportMode::CrossPage {
+                code, second_gpa, ..
+            } => {
                 let first_page = self.test_translation.access_gva & !(hvdef::HV_PAGE_SIZE - 1);
                 if gva >= first_page + hvdef::HV_PAGE_SIZE {
                     if code != TranslateGvaResultCode::SUCCESS {
@@ -314,7 +317,7 @@ impl EmulatorSupport for MockSupport {
                         });
                     }
                     Ok(EmuTranslateResult {
-                        gpa: 0x3000 + (gva & (hvdef::HV_PAGE_SIZE - 1)),
+                        gpa: second_gpa + (gva & (hvdef::HV_PAGE_SIZE - 1)),
                         overlay_page: None,
                     })
                 } else {
@@ -328,7 +331,7 @@ impl EmulatorSupport for MockSupport {
     }
 
     fn physical_address(&self) -> Option<u64> {
-        todo!()
+        Some(self.test_translation.translate_to_gpa)
     }
 
     /// The gva translation included in the intercept message header, if valid.
@@ -415,6 +418,7 @@ async fn cross_page_memory_fault() {
                 let mut support = MockSupport::new(
                     MockSupportMode::CrossPage {
                         code,
+                        second_gpa: 0x3000,
                         mapped,
                         deny_vtl: false,
                     },
@@ -488,6 +492,7 @@ async fn cross_page_memory_noncontiguous() {
             let mut support = MockSupport::new(
                 MockSupportMode::CrossPage {
                     code: TranslateGvaResultCode::SUCCESS,
+                    second_gpa: 0x3000,
                     mapped: true,
                     deny_vtl: false,
                 },
@@ -526,12 +531,82 @@ async fn cross_page_memory_noncontiguous() {
 }
 
 #[async_test]
+async fn locked_cross_page_memory() {
+    const VALUE: u64 = 0x123456789abcdef0;
+    for second_gpa in [0x1000, 0x3000] {
+        for bytes_in_first_page in 1..=8 {
+            let gm = GuestMemory::allocate(0x4000);
+            let mut expected = vec![0xa5; 0x4000];
+            gm.write_at(0, &expected).unwrap();
+            let gpa = 0x1000 - bytes_in_first_page;
+            let mut support = MockSupport::new(
+                MockSupportMode::CrossPage {
+                    code: TranslateGvaResultCode::SUCCESS,
+                    second_gpa: second_gpa as u64,
+                    mapped: true,
+                    deny_vtl: false,
+                },
+                MockSupportTranslation {
+                    access_gva: 0x5000 - bytes_in_first_page as u64,
+                    translate_to_gpa: gpa as u64,
+                    access_info: MockAccess::Write(VALUE),
+                },
+                false,
+                &gm,
+            );
+            let mut asm = CodeAssembler::new(64).unwrap();
+            asm.xchg(qword_ptr(rax), rsi).unwrap();
+            support.instruction_bytes = asm.assemble(0).unwrap();
+            let mut registers = support.state.gps;
+            let flags = support.state.rflags;
+            let rip = support.state.rip;
+            let result = emulate(
+                &mut support,
+                &EmulatorMemoryAccess {
+                    gm: &gm,
+                    kx_gm: &gm,
+                    ux_gm: &gm,
+                },
+                &MockCpu,
+            )
+            .await;
+
+            if second_gpa == 0x3000 && bytes_in_first_page < 8 {
+                assert!(matches!(
+                    result,
+                    Err(virt::VpHaltReason::TripleFault { .. })
+                ));
+                assert_eq!(support.state.rip, rip);
+            } else {
+                result.unwrap();
+                let bytes = VALUE.to_le_bytes();
+                expected[gpa..0x1000].copy_from_slice(&bytes[..bytes_in_first_page]);
+                expected[second_gpa..second_gpa + 8 - bytes_in_first_page]
+                    .copy_from_slice(&bytes[bytes_in_first_page..]);
+                registers[Gp::RSI as usize] = u64::from_le_bytes([0xa5; 8]);
+                assert_eq!(
+                    support.state.rip,
+                    rip + support.instruction_bytes.len() as u64
+                );
+            }
+            assert_eq!(support.state.gps, registers);
+            assert_eq!(support.state.rflags, flags);
+            assert!(support.injected_event().is_none());
+            let mut actual = vec![0; expected.len()];
+            gm.read_at(0, &mut actual).unwrap();
+            assert!(actual == expected, "locked write modified the wrong memory");
+        }
+    }
+}
+
+#[async_test]
 async fn second_page_vtl_fault_address() {
     for write in [false, true] {
         let gm = GuestMemory::allocate(0x4000);
         let mut support = MockSupport::new(
             MockSupportMode::CrossPage {
                 code: TranslateGvaResultCode::SUCCESS,
+                second_gpa: 0x3000,
                 mapped: true,
                 deny_vtl: true,
             },
@@ -575,6 +650,79 @@ async fn second_page_vtl_fault_address() {
         let mut memory = [0; 8];
         gm.read_at(0xffd, &mut memory).unwrap();
         assert_eq!(memory, [0; 8]);
+    }
+}
+
+#[async_test]
+async fn cmpxchg16b_ram() {
+    const OLD: u64 = u64::from_le_bytes([0xa5; 8]);
+    const NEW: u64 = 0x123456789abcdef0;
+    for matches in [false, true] {
+        for locked in [false, true] {
+            let gm = GuestMemory::allocate(0x1000);
+            gm.fill_at(0x400, 0xa5, 16).unwrap();
+            let mut support = MockSupport::new(
+                MockSupportMode::Code(TranslateGvaResultCode::SUCCESS),
+                MockSupportTranslation {
+                    access_gva: 0x400,
+                    translate_to_gpa: 0x400,
+                    access_info: MockAccess::Read,
+                },
+                false,
+                &gm,
+            );
+            support.state.gps[Gp::RDI as usize] = 0x400;
+            support.state.gps[Gp::RAX as usize] = if matches { OLD } else { 0 };
+            support.state.gps[Gp::RDX as usize] = if matches { OLD } else { 0 };
+            support.state.gps[Gp::RBX as usize] = NEW;
+            support.state.gps[Gp::RCX as usize] = NEW;
+            let mut asm = CodeAssembler::new(64).unwrap();
+            let assembler = if locked { asm.lock() } else { &mut asm };
+            assembler.cmpxchg16b(xmmword_ptr(rdi)).unwrap();
+            support.instruction_bytes = asm.assemble(0).unwrap();
+            let mut registers = support.state.gps;
+            let mut flags = support.state.rflags;
+            let rip = support.state.rip;
+            let result = emulate(
+                &mut support,
+                &EmulatorMemoryAccess {
+                    gm: &gm,
+                    kx_gm: &gm,
+                    ux_gm: &gm,
+                },
+                &MockCpu,
+            )
+            .await;
+
+            let mut expected = [0xa5; 16];
+            if locked {
+                assert!(matches!(
+                    result,
+                    Err(virt::VpHaltReason::TripleFault { .. })
+                ));
+                assert_eq!(support.state.rip, rip);
+            } else {
+                result.unwrap();
+                if matches {
+                    expected[..8].copy_from_slice(&NEW.to_le_bytes());
+                    expected[8..].copy_from_slice(&NEW.to_le_bytes());
+                } else {
+                    registers[Gp::RAX as usize] = OLD;
+                    registers[Gp::RDX as usize] = OLD;
+                }
+                flags.set_zero(matches);
+                assert_eq!(
+                    support.state.rip,
+                    rip + support.instruction_bytes.len() as u64
+                );
+            }
+            assert_eq!(support.state.gps, registers);
+            assert_eq!(support.state.rflags, flags);
+            assert!(support.injected_event().is_none());
+            let mut actual = [0; 16];
+            gm.read_at(0x400, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+        }
     }
 }
 
