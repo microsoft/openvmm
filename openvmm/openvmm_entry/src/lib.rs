@@ -947,7 +947,8 @@ async fn vm_config_from_command_line(
                 "--amd-iommu and --intel-vtd cannot both be used in the same VM"
             );
 
-            let mut amd_iommu_names: HashSet<&str> = opt.amd_iommu.iter().map(|s| s.as_str()).collect();
+            let mut amd_iommu_names: HashSet<&str> =
+                opt.amd_iommu.iter().map(|s| s.as_str()).collect();
             let mut vtd_names: HashSet<&str> = opt.intel_vtd.iter().map(|s| s.as_str()).collect();
         }
         guest_arch = "aarch64" => {
@@ -1798,11 +1799,12 @@ async fn vm_config_from_command_line(
                 },
             },
         ),
-        guest_arch = "x86_64" =>
+        guest_arch = "x86_64" => {
             openvmm_defs::config::ArchTopologyConfig::X86(openvmm_defs::config::X86TopologyConfig {
                 apic_id_offset: opt.apic_id_offset,
                 x2apic: opt.x2apic,
-            }),
+            })
+        }
         _ => compile_error!("unsupported guest architecture"),
     };
 

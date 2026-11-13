@@ -1473,23 +1473,25 @@ impl VtlPartition {
                 .is_some_and(|_| !offload_enlightenments);
 
         let lapic = cfg_select! {
-            guest_arch = "x86_64" => if user_mode_apic {
-                let x2apic_capable = !matches!(
-                    config.processor_topology.apic_mode(),
-                    vm_topology::processor::x86::ApicMode::XApic
-                );
-                if x2apic_capable {
-                    // Needed to set the x2apic bit.
-                    extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
+            guest_arch = "x86_64" => {
+                if user_mode_apic {
+                    let x2apic_capable = !matches!(
+                        config.processor_topology.apic_mode(),
+                        vm_topology::processor::x86::ApicMode::XApic
+                    );
+                    if x2apic_capable {
+                        // Needed to set the x2apic bit.
+                        extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
+                    }
+                    let lapic = virt_support_apic::LocalApicSet::builder()
+                        .x2apic_capable(x2apic_capable)
+                        .hyperv_enlightenments(config.hv_config.is_some())
+                        .build();
+                    LocalApicKind::Emulated(lapic)
+                } else {
+                    LocalApicKind::Offloaded
                 }
-                let lapic = virt_support_apic::LocalApicSet::builder()
-                    .x2apic_capable(x2apic_capable)
-                    .hyperv_enlightenments(config.hv_config.is_some())
-                    .build();
-                LocalApicKind::Emulated(lapic)
-            } else {
-                LocalApicKind::Offloaded
-            },
+            }
             guest_arch = "aarch64" => LocalApicKind::Offloaded,
             _ => compile_error!("unsupported guest architecture"),
         };
