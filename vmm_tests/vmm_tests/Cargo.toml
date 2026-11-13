@@ -73,7 +73,6 @@ static_assertions.workspace = true
 openvmm_ttrpc_vmservice.workspace = true
 
 mesh_rpc.workspace = true
-prost.workspace = true
 
 tempfile.workspace = true
 serde_json = { workspace = true, features = ["std"] }

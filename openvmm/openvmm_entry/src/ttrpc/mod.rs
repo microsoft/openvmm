@@ -101,7 +101,6 @@ use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use prost::Message;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
 use std::future::Future;
@@ -842,32 +841,11 @@ fn grpc_error(err: anyhow::Error) -> Status {
     } else {
         Code::Unknown
     };
-    let details = err
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<std::io::Error>()?.raw_os_error())
-        .map(|code| prost_types::Any {
-            type_url: "type.googleapis.com/vmservice.NativeError".into(),
-            value: vmservice::NativeError {
-                os: if cfg!(windows) {
-                    vmservice::native_error::Os::Windows
-                } else if cfg!(target_os = "linux") {
-                    vmservice::native_error::Os::Linux
-                } else if cfg!(target_os = "macos") {
-                    vmservice::native_error::Os::Macos
-                } else {
-                    vmservice::native_error::Os::Unspecified
-                } as i32,
-                code,
-            }
-            .encode_to_vec(),
-        })
-        .into_iter()
-        .collect();
     tracing::warn!(?code, error = format!("{:#}", err), "ttrpc request failed");
     Status {
         code: code.into(),
         message: format!("{:#}", err),
-        details,
+        details: vec![],
     }
 }
 
@@ -3357,56 +3335,6 @@ mod tests {
     use vfio_assigned_device_resources::BarAddressConfig;
     #[cfg(target_os = "linux")]
     use vmservice::vfio_bar_address::Source;
-
-    #[test]
-    fn grpc_error_preserves_contextual_io_errors() {
-        for code in [5, 10048, 183] {
-            let error = anyhow::Error::new(std::io::Error::from_raw_os_error(code))
-                .context("resource operation failed");
-            let error = anyhow::Error::new(RemoteError::new(error)).context("RPC failed");
-            let status = grpc_error(error);
-            assert_eq!(status.code, Code::Unknown as i32);
-            assert!(status.message.contains("resource operation failed"));
-            assert_eq!(status.details.len(), 1);
-            assert_eq!(
-                status.details[0].type_url,
-                "type.googleapis.com/vmservice.NativeError"
-            );
-            let detail =
-                vmservice::NativeError::decode(status.details[0].value.as_slice()).unwrap();
-            #[cfg(windows)]
-            assert_eq!(detail.os, vmservice::native_error::Os::Windows as i32);
-            #[cfg(target_os = "linux")]
-            assert_eq!(detail.os, vmservice::native_error::Os::Linux as i32);
-            #[cfg(target_os = "macos")]
-            assert_eq!(detail.os, vmservice::native_error::Os::Macos as i32);
-            assert_eq!(detail.code, code);
-        }
-    }
-
-    #[test]
-    fn grpc_error_without_native_code_uses_existing_status() {
-        let status = grpc_error(anyhow::Error::new(std::io::Error::from(
-            std::io::ErrorKind::PermissionDenied,
-        )));
-        assert_eq!(status.code, Code::Unknown as i32);
-        assert!(status.details.is_empty());
-        for (error, code) in [
-            (
-                anyhow::Error::new(Code::InvalidArgument),
-                Code::InvalidArgument,
-            ),
-            (anyhow::Error::new(CancelReason::Cancelled), Code::Cancelled),
-            (
-                anyhow::Error::new(CancelReason::DeadlineExceeded),
-                Code::DeadlineExceeded,
-            ),
-        ] {
-            let status = grpc_error(error.context("RPC failed"));
-            assert_eq!(status.code, code as i32);
-            assert!(status.details.is_empty());
-        }
-    }
 
     fn service(
         driver: DefaultDriver,
