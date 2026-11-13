@@ -19,6 +19,16 @@
 //!   commands: READ, WRITE, FLUSH, Dataset Management (TRIM), and persistent
 //!   reservation commands.
 //!
+//! # Device state
+//!
+//! - `ChangeDeviceState::stop` suspends the workers without waiting for
+//!   in-flight commands, which stay in flight and complete after `start`. No
+//!   queue is processed while stopped. A controller reset in progress pauses
+//!   and finishes after `start`, or when the device is reset.
+//! - The admin queue does not wait on the disk either: the one admin command
+//!   that asks the backend completes after `start` (see
+//!   `AdminState::held_command`).
+//!
 //! # What it doesn't implement
 //!
 //! Firmware update, admin-level namespace management (create/delete), multi-path
