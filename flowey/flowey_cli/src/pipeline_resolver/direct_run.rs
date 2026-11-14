@@ -80,6 +80,7 @@ fn direct_run_do_work(
         gh_schedule_triggers: _,
         gh_ci_triggers: _,
         gh_pr_triggers: _,
+        gh_merge_group_triggers: _,
         gh_bootstrap_template: _,
     } = pipeline;
 

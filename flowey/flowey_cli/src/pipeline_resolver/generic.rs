@@ -13,6 +13,7 @@ use flowey_core::pipeline::AdoPool;
 use flowey_core::pipeline::AdoPrTriggers;
 use flowey_core::pipeline::AdoScheduleTriggers;
 use flowey_core::pipeline::GhCiTriggers;
+use flowey_core::pipeline::GhMergeGroupTriggers;
 use flowey_core::pipeline::GhPrTriggers;
 use flowey_core::pipeline::GhRunner;
 use flowey_core::pipeline::GhScheduleTriggers;
@@ -45,6 +46,7 @@ pub struct ResolvedPipeline {
     pub gh_schedule_triggers: Vec<GhScheduleTriggers>,
     pub gh_ci_triggers: Option<GhCiTriggers>,
     pub gh_pr_triggers: Option<GhPrTriggers>,
+    pub gh_merge_group_triggers: Option<GhMergeGroupTriggers>,
     pub gh_bootstrap_template: Option<Box<GhBootstrapTemplate>>,
 }
 
@@ -106,6 +108,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         gh_schedule_triggers,
         gh_ci_triggers,
         gh_pr_triggers,
+        gh_merge_group_triggers,
         gh_bootstrap_template,
     } = PipelineFinalized::from_pipeline(pipeline);
 
@@ -294,6 +297,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         gh_schedule_triggers,
         gh_ci_triggers,
         gh_pr_triggers,
+        gh_merge_group_triggers,
         gh_bootstrap_template,
     })
 }

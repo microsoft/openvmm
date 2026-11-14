@@ -50,6 +50,8 @@ const HUGETLB_2MB_OVERCOMMIT_PAGES: u64 = 4096;
 enum PipelineConfig {
     /// Run on all PRs targeting the OpenVMM GitHub repo.
     Pr,
+    /// Validate merge queue combinations without running VMM tests.
+    MergeQueue,
     /// Run on all commits that land in a branch.
     ///
     /// The key difference between the CI and PR pipelines is whether things are
@@ -80,6 +82,11 @@ impl IntoPipeline for CheckinGatesCli {
             local_run_args,
         } = self;
 
+        let merge_queue = matches!(config, PipelineConfig::MergeQueue);
+        if merge_queue && !matches!(backend_hint, PipelineBackendHint::Github) {
+            anyhow::bail!("Merge queue validation requires the GitHub backend");
+        }
+
         let patina_nightly = matches!(config, PipelineConfig::PatinaNightly);
         if patina_nightly && !matches!(backend_hint, PipelineBackendHint::Github) {
             anyhow::bail!("Patina nightly requires the GitHub backend");
@@ -87,7 +94,7 @@ impl IntoPipeline for CheckinGatesCli {
 
         let release = match config {
             PipelineConfig::Ci | PipelineConfig::PrRelease | PipelineConfig::PatinaNightly => true,
-            PipelineConfig::Pr => false,
+            PipelineConfig::Pr | PipelineConfig::MergeQueue => false,
         };
 
         let mut pipeline = Pipeline::new();
@@ -130,6 +137,13 @@ impl IntoPipeline for CheckinGatesCli {
                             exclude_paths: ci_paths_ignore.clone(),
                             ..Default::default()
                         });
+                }
+                PipelineConfig::MergeQueue => {
+                    pipeline
+                        .gh_set_merge_group_triggers(GhMergeGroupTriggers {
+                            types: vec!["checks_requested".into()],
+                        })
+                        .gh_set_name("OpenVMM Merge Queue");
                 }
                 PipelineConfig::PrRelease => {
                     // This workflow is triggered when a specific label is present on a PR.
@@ -281,7 +295,11 @@ impl IntoPipeline for CheckinGatesCli {
         //
         // Combined fmt + clippy on one self-hosted linux machine.
         // Catches the most common failures quickly before fanning out expensive jobs.
-        let quick_check_job = if matches!(config, PipelineConfig::Pr | PipelineConfig::PrRelease) {
+        // The queue must also verify all generated workflows after combining PRs.
+        let quick_check_job = if matches!(
+            config,
+            PipelineConfig::Pr | PipelineConfig::PrRelease | PipelineConfig::MergeQueue
+        ) {
             let job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -327,7 +345,7 @@ impl IntoPipeline for CheckinGatesCli {
                 .finish();
 
             let linux_fmt_job = if let Some(ref qc) = quick_check_job {
-                // PR/PrRelease: linux fmt is handled by the quick-check job
+                // Linux fmt is handled by the quick-check job.
                 qc.clone()
             } else {
                 // CI mode: keep standalone linux fmt job
@@ -1884,8 +1902,10 @@ impl IntoPipeline for CheckinGatesCli {
                 },
             },
         ] {
-            // Skip unsupported jobs on ADO backend
-            if matches!(backend_hint, PipelineBackendHint::Ado) && ado_pool.is_none() {
+            // Compile the test artifacts in the queue, but do not boot VMs.
+            if merge_queue
+                || (matches!(backend_hint, PipelineBackendHint::Ado) && ado_pool.is_none())
+            {
                 continue;
             }
 
@@ -2089,7 +2109,7 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(quick_check.clone());
         }
 
-        if matches!(config, PipelineConfig::Pr)
+        if matches!(config, PipelineConfig::Pr | PipelineConfig::MergeQueue)
             && matches!(backend_hint, PipelineBackendHint::Github)
         {
             // Add a job that depends on all others as a workaround for
