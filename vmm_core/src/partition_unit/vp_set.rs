@@ -4,6 +4,8 @@
 //! Virtual processor state management.
 
 mod boundary;
+#[cfg(guest_arch = "x86_64")]
+mod init_sipi;
 mod prefix;
 #[cfg(guest_arch = "x86_64")]
 mod time_abi;
@@ -86,6 +88,11 @@ trait ControlVp: ProtobufSaveRestore {
     /// Checks the stopped vCPU's LAPIC timer for the time ABI.
     #[cfg(guest_arch = "x86_64")]
     fn check_one_shot_timer(&mut self) -> anyhow::Result<()>;
+
+    /// Checks that the stopped vCPU has no INIT or SIPI that it has not
+    /// accepted yet.
+    #[cfg(guest_arch = "x86_64")]
+    fn check_no_pending_init_sipi(&mut self) -> anyhow::Result<()>;
 
     /// Advances the stopped vCPU's one-shot LAPIC timer for the time ABI.
     #[cfg(guest_arch = "x86_64")]
@@ -191,6 +198,11 @@ where
     #[cfg(guest_arch = "x86_64")]
     fn check_one_shot_timer(&mut self) -> anyhow::Result<()> {
         time_abi::check_one_shot_timer(self.vp)
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn check_no_pending_init_sipi(&mut self) -> anyhow::Result<()> {
+        init_sipi::check_no_pending_init_sipi(self.vp)
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -1175,6 +1187,8 @@ enum StateEvent {
     #[cfg(guest_arch = "x86_64")]
     CheckTimers(mesh::rpc::FailableRpc<(), ()>),
     #[cfg(guest_arch = "x86_64")]
+    CheckInitSipi(mesh::rpc::FailableRpc<(), ()>),
+    #[cfg(guest_arch = "x86_64")]
     AdvanceLapic(mesh::rpc::FailableRpc<time_abi::LapicAdvance, ()>),
     #[cfg(feature = "dump")]
     GetDumpVpState(Rpc<Vtl, anyhow::Result<hyperv_dump::VpState>>),
@@ -1426,6 +1440,10 @@ impl RunnerInner {
             #[cfg(guest_arch = "x86_64")]
             StateEvent::CheckTimers(rpc) => {
                 rpc.handle_failable_sync(|()| vp.check_one_shot_timer())
+            }
+            #[cfg(guest_arch = "x86_64")]
+            StateEvent::CheckInitSipi(rpc) => {
+                rpc.handle_failable_sync(|()| vp.check_no_pending_init_sipi())
             }
             #[cfg(guest_arch = "x86_64")]
             StateEvent::AdvanceLapic(rpc) => {
@@ -1773,6 +1791,11 @@ mod tests {
         }
 
         #[cfg(guest_arch = "x86_64")]
+        fn check_no_pending_init_sipi(&mut self) -> anyhow::Result<()> {
+            unreachable!("unexpected INIT and SIPI check")
+        }
+
+        #[cfg(guest_arch = "x86_64")]
         fn advance_lapic_timer(&mut self, _: time_abi::LapicAdvance) -> anyhow::Result<()> {
             unreachable!("unexpected LAPIC timer advance")
         }
@@ -1854,5 +1877,89 @@ mod tests {
 
         vps.started = true;
         assert!(vps.restore_halt(true).is_err());
+    }
+
+    /// A VP set of `count` VPs, with the runners whose receivers get the VPs'
+    /// events.
+    #[cfg(guest_arch = "x86_64")]
+    fn vp_set(count: u32) -> (VpSet, Vec<VpRunner>) {
+        let (halt, _halt_recv) = Halt::new();
+        let mut vps = VpSet::new([None, None, None], Arc::new(halt), count as usize);
+        let runners = (0..count)
+            .map(|index| {
+                vps.add(TargetVpInfo {
+                    base: vm_topology::processor::VpInfo {
+                        vp_index: VpIndex::new(index),
+                        vnode: 0,
+                    },
+                    apic_id: index,
+                })
+            })
+            .collect();
+        (vps, runners)
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn init_sipi_check_fails_while_the_vps_run_without_asking_them() {
+        let (mut vps, mut runners) = vp_set(2);
+        vps.start();
+        assert!(
+            vps.check_no_pending_init_sipi()
+                .now_or_never()
+                .unwrap()
+                .is_err()
+        );
+        assert!(vps.started);
+        for runner in &mut runners {
+            assert!(matches!(runner.recv.try_recv(), Ok(VpEvent::Start)));
+            assert!(runner.recv.try_recv().is_err());
+        }
+    }
+
+    /// The INIT and SIPI check asks every VP, and fails when one VP refuses,
+    /// naming that VP.
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn init_sipi_check_asks_every_vp_and_names_the_one_that_refuses() {
+        for refusing in [None, Some(0), Some(2)] {
+            let (mut vps, mut runners) = vp_set(3);
+            let mut check = Box::pin(vps.check_no_pending_init_sipi());
+            assert!(check.as_mut().now_or_never().is_none());
+            for (index, runner) in runners.iter_mut().enumerate() {
+                let Ok(VpEvent::State(StateEvent::CheckInitSipi(rpc))) = runner.recv.try_recv()
+                else {
+                    panic!("vp{index} was not asked to check for an INIT or a SIPI");
+                };
+                rpc.complete(if refusing == Some(index) {
+                    Err(mesh::error::RemoteError::new(anyhow::anyhow!("pending")))
+                } else {
+                    Ok(())
+                });
+            }
+            let result = check.as_mut().now_or_never().unwrap();
+            drop(check);
+            match refusing {
+                None => result.unwrap(),
+                Some(index) => assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!("vp{index} pending INIT or SIPI")
+                ),
+            }
+            assert!(!vps.started);
+        }
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn init_sipi_check_fails_when_a_runner_is_gone() {
+        let (mut vps, runners) = vp_set(2);
+        drop(runners);
+        assert!(
+            vps.check_no_pending_init_sipi()
+                .now_or_never()
+                .unwrap()
+                .is_err()
+        );
     }
 }
