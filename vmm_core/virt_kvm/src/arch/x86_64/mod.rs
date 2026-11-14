@@ -16,6 +16,7 @@ mod test_guest;
 mod time_abi;
 mod vm_state;
 mod vp_state;
+mod xsave;
 
 pub(crate) use time_abi::KvmTimeAbi;
 pub(crate) use vp_state::seg_reg;

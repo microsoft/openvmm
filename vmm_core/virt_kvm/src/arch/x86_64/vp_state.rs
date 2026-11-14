@@ -3,6 +3,7 @@
 
 use super::KvmProcessor;
 use super::regs::register_to_msr;
+use super::xsave;
 use crate::KvmError;
 use crate::KvmPartitionInner;
 use hvdef::HvRegisterValue;
@@ -461,10 +462,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn set_xsave(&mut self, value: &vp::Xsave) -> Result<(), Self::Error> {
-        let mut data = [0; 4096];
-        value.write_standard(&mut data, &self.vp.partition.caps);
-        self.kvm().set_xsave(&data)?;
-        Ok(())
+        xsave::restore(&self.kvm(), &self.vp.partition.caps, value)
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
