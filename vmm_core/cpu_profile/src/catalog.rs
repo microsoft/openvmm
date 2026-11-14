@@ -7,6 +7,7 @@
 use crate::canonical;
 use crate::derive::HOST_GENERATION;
 use crate::derive::KnownGeneration;
+use crate::derive::policy_violations;
 use crate::error::ProfileError;
 use crate::error::ProfileErrorCode;
 use crate::pinned::PinnedRecord;
@@ -224,16 +225,28 @@ pub fn is_host_profile_id(id: &str) -> bool {
     )
 }
 
+/// The most violations of the derivation policy that the error of a restore
+/// names, so that a document that breaks it everywhere cannot make an error of
+/// kilobytes.
+const MAX_NAMED_POLICY_VIOLATIONS: usize = 8;
+
 /// Returns the host profile that a snapshot recorded by ID, SHA-256, and
 /// canonical document, for a restore, after checking that the document is
-/// the canonical encoding of a valid host profile with that ID and digest
+/// the canonical encoding of a valid host profile with that ID and digest,
+/// and that it follows the policy that this OpenVMM's derivation applies
 /// (`E_PROFILE_DIGEST`). An ID that does not name a host profile fails with
 /// `E_PROFILE_UNKNOWN`.
 ///
 /// Unlike [`pinned_for_restore`], this decodes and hashes the document: no
-/// constant exists to compare it with. The restore preflight then checks
-/// the destination host with [`check_generation`], and the VM worker
-/// selects the profile for the partition ([`PartitionProfile::host`]).
+/// constant exists to compare it with. The digest only ties the document to
+/// the snapshot's record, which whoever crafts a snapshot writes, so the
+/// policy check is what keeps the document from giving the guest what the
+/// derivation always withholds, such as VMX or SVM. It applies this build's
+/// rules, whatever policy the profile's provenance names, so it also refuses a
+/// host profile that an OpenVMM with another policy derived, if this policy
+/// would change it: such a snapshot needs a recapture. The restore preflight
+/// then checks the destination host with [`check_generation`], and the VM
+/// worker selects the profile for the partition ([`PartitionProfile::host`]).
 pub fn host_profile_for_restore(
     id: &str,
     sha256: &[u8],
@@ -258,6 +271,26 @@ pub fn host_profile_for_restore(
             format!(
                 "the snapshot records CPU profile {id}, but its embedded document is {}",
                 profile.id()
+            ),
+        ));
+    }
+    let violations = policy_violations(&profile);
+    if !violations.is_empty() {
+        let mut named = violations
+            .iter()
+            .take(MAX_NAMED_POLICY_VIOLATIONS)
+            .cloned()
+            .collect::<Vec<_>>();
+        if violations.len() > named.len() {
+            named.push(format!("and {} more", violations.len() - named.len()));
+        }
+        return Err(ProfileError::new(
+            ProfileErrorCode::ProfileDigest,
+            format!(
+                "the snapshot's host CPU profile {id} breaks this OpenVMM's derivation policy, so \
+                 this OpenVMM would not derive it (recapture a snapshot that an OpenVMM with \
+                 another policy captured): {}",
+                named.join("; ")
             ),
         ));
     }
@@ -1145,5 +1178,92 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    /// Returns what a restore makes of `profile`'s document with register
+    /// `register` of CPUID `leaf` and `subleaf` changed by `edit`, recorded
+    /// with the edited document's own digest, as whoever crafts a snapshot can
+    /// record it.
+    fn restore_edited(
+        profile: &CpuProfile,
+        leaf: u32,
+        subleaf: Option<u32>,
+        register: usize,
+        edit: impl FnOnce(u32) -> u32,
+    ) -> Result<CpuProfile, ProfileError> {
+        let mut edited = profile.clone();
+        let entry = edited
+            .cpuid
+            .iter_mut()
+            .find(|entry| entry.key() == (leaf, subleaf))
+            .unwrap();
+        entry.value[register].0 = edit(entry.value[register].0);
+        let document = edited.encode();
+        host_profile_for_restore(edited.id(), &canonical::sha256(&document), &document)
+    }
+
+    /// A snapshot carries its host profile's only copy, and whoever crafts the
+    /// snapshot can record the document's own digest, so a restore holds the
+    /// document to the derivation policy: it refuses a host profile that the
+    /// derivation could not have produced, such as one that gives the guest
+    /// the virtualization extensions that every derived profile clears.
+    #[test]
+    fn restore_refuses_a_host_profile_outside_the_derivation_policy() {
+        use crate::test_support::host_fingerprint;
+        use crate::test_support::milan_whp_entries;
+        let intel = host_profile();
+        let amd =
+            derive::derive_host_profile(&host_fingerprint("whp", milan_whp_entries())).unwrap();
+        for profile in [&intel, &amd] {
+            // What the derivation produced restores unchanged.
+            let restored = restore_edited(profile, 1, None, 0, |eax| eax).unwrap();
+            assert_eq!(&restored, profile);
+        }
+
+        // CPUID.1:ECX[5], VMX, in the profile of either vendor, and
+        // CPUID.0x80000001:ECX[2], SVM, in AMD's.
+        for (profile, leaf, bit, set) in [
+            (&intel, 0x1, 5, "CPUID 0x1 ECX bit 5 is set"),
+            (&amd, 0x1, 5, "CPUID 0x1 ECX bit 5 is set"),
+            (&amd, 0x8000_0001, 2, "CPUID 0x80000001 ECX bit 2 is set"),
+        ] {
+            let restored = restore_edited(profile, leaf, None, 2, |ecx| ecx | 1 << bit);
+            let Err(error) = restored else {
+                panic!("a restore accepted {} with {set}", profile.id());
+            };
+            assert_eq!(error.code, ProfileErrorCode::ProfileDigest, "{error}");
+            assert!(error.message.contains(set), "{error}");
+        }
+    }
+
+    /// The error of a restore names the first violations only, so that a
+    /// document that breaks the policy everywhere makes a short error.
+    #[test]
+    fn restore_names_only_the_first_violations_of_the_policy() {
+        let host = host_profile();
+        let mut edited = host.clone();
+        // Leaves that keep no data, with every bit set: 12 violations.
+        for leaf in [0x5, 0x8, 0x9] {
+            let entry = edited
+                .cpuid
+                .iter_mut()
+                .find(|entry| entry.key() == (leaf, None))
+                .unwrap();
+            entry.value = [crate::Hex32(!0); 4];
+        }
+        let document = edited.encode();
+        let error = host_profile_for_restore(host.id(), &canonical::sha256(&document), &document)
+            .unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileDigest, "{error}");
+        assert_eq!(
+            error.message.matches(", which the policy clears").count(),
+            MAX_NAMED_POLICY_VIOLATIONS,
+            "{error}"
+        );
+        assert!(error.message.ends_with("; and 4 more"), "{error}");
+        assert!(
+            error.message.contains("CPUID 0x5 EAX bits 0, 1, 2, "),
+            "{error}"
+        );
     }
 }
