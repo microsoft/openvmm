@@ -794,7 +794,7 @@ mod tests {
             midr: 0x410fd851,
             registers: Vec::new(),
             counter_hz: 1_000_000_000,
-            backend_usable_gpa_bits: 40,
+            backend_usable_gpa_bits: 39,
         };
         let profile = cpu_profile::aarch64::select("nvidia.n1x.v1", &native).unwrap();
         let available = [0x7de1_ef07_fff3_3eff, 0x0008_7e78_0640_dc3d];
