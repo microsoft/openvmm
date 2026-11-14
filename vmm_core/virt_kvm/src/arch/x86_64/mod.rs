@@ -580,6 +580,13 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             }
         };
 
+        let apic_id_map = self
+            .config
+            .processor_topology
+            .vps_arch()
+            .map(|vp| vp.apic_id)
+            .collect();
+
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             sev: self.sev,
@@ -614,6 +621,9 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
             mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
             synic_ports: Default::default(),
+            software_devices: virt::x86::apic_software_device::ApicSoftwareDevices::new(
+                apic_id_map,
+            ),
         });
 
         let partition = KvmPartition {
@@ -872,11 +882,20 @@ impl Hv1 for KvmPartition {
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
-        None
+        Some(self)
     }
 
     fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
         Ok(self.synic_ports.clone())
+    }
+}
+
+impl virt::DeviceBuilder for KvmPartition {
+    fn build(&self, _vtl: Vtl, device_id: u64) -> Result<Self::Device, Self::Error> {
+        self.inner
+            .software_devices
+            .new_device(self.inner.clone(), device_id)
+            .map_err(KvmError::NewDevice)
     }
 }
 
