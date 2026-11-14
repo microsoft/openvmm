@@ -28,6 +28,7 @@ use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::poll_device::PollDevice;
 use cvm_tracing::CVM_ALLOWED;
@@ -36,6 +37,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use openhcl_tdisp::new_resource_validator;
+use pci_core::spec::cfg_space::Command;
 use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::hwid::HardwareIds;
 use state_unit::StateUnits;
@@ -645,7 +647,6 @@ impl RelayedVpciDevice {
 
         // Detect the MMIO-enable edge on the command register BEFORE issuing
         // the write so we can dispatch the correct TDISP notification.
-        use pci_core::spec::cfg_space::Command;
         let mut current = 0;
         self.device.read_cfg(
             offset,
@@ -715,6 +716,19 @@ impl RelayedVpciDevice {
         );
         self.pending = Some((deferred, fut));
         self.waker.wake_by_ref();
+    }
+
+    /// Finishes the operation in flight and every write queued behind it.
+    ///
+    /// Nothing polls this device while it is stopped, so without this the
+    /// callers waiting on those writes would wait on a completion that never
+    /// comes.
+    async fn finish_pending(&mut self) {
+        while let Some((deferred, fut)) = self.pending.take() {
+            fut.await;
+            deferred.complete();
+            self.drain_queued();
+        }
     }
 
     /// Applies the writes that queued up behind a TDISP operation, in arrival
@@ -845,18 +859,30 @@ impl ChangeDeviceState for RelayedVpciDevice {
     fn start(&mut self) {}
 
     async fn stop(&mut self) {
-        // Nothing polls this device while it is stopped, so finish asynchronous
-        // operations and everything queued behind them here. Otherwise the callers
-        // waiting on those writes would be left waiting on a completion that
-        // never comes.
-        while let Some((deferred, fut)) = self.pending.take() {
-            fut.await;
-            deferred.complete();
-            self.drain_queued();
-        }
+        self.finish_pending().await;
     }
 
-    async fn reset(&mut self) {}
+    async fn reset(&mut self) {
+        // A write can still arrive after `stop`, such as the VPCI channel
+        // turning MMIO off when it closes.
+        self.finish_pending().await;
+
+        // Turn MMIO off, as closing the VPCI channel does. The channel skips the
+        // device while it is being reset, so this is the only place the relayed
+        // device gets this write.
+        let offset = HeaderType00::STATUS_COMMAND.0;
+        let mut current = 0;
+        self.device.read_cfg(
+            offset,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut current),
+        );
+        let command = Command::from((current & 0xffff) as u16).with_mmio_enabled(false);
+        let value =
+            ByteEnabledDwordWrite::new(command.into_bits().into(), PciConfigByteEnable::LOW_WORD);
+        if let CfgWriteOutcome::Started(fut) = self.apply_cfg_write(offset, value) {
+            fut.await;
+        }
+    }
 }
 
 impl SaveRestore for RelayedVpciDevice {
