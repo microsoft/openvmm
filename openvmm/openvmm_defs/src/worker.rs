@@ -21,6 +21,22 @@ pub type SharedMemoryFd = std::os::windows::io::OwnedHandle;
 
 pub const VM_WORKER: WorkerId<VmWorkerParameters> = WorkerId::new("VmWorker");
 
+/// How the VM worker sources guest RAM.
+#[derive(MeshPayload)]
+pub enum GuestRamSource {
+    /// Map this file-backed object as guest RAM. Used for CreateVM with a
+    /// backing file, and for restoring a snapshot in place.
+    MapShared(SharedMemoryFd),
+    /// Populate fresh guest RAM from a snapshot memory file.
+    CopyFrom {
+        /// The snapshot memory file. Only read; never mapped.
+        source: std::fs::File,
+        /// File-backed object to use as guest RAM. When `None`, fresh shared
+        /// memory is allocated.
+        destination: Option<SharedMemoryFd>,
+    },
+}
+
 /// Launch parameters for the VM worker.
 #[derive(MeshPayload)]
 pub struct VmWorkerParameters {
@@ -30,9 +46,9 @@ pub struct VmWorkerParameters {
     pub cfg: Config,
     /// The saved state.
     pub saved_state: Option<ProtobufMessage>,
-    /// File-backed guest RAM handle. When set, guest memory uses this
-    /// fd/handle instead of allocating anonymous memory.
-    pub shared_memory: Option<SharedMemoryFd>,
+    /// How guest RAM is sourced. When `None`, fresh memory is allocated
+    /// according to `cfg`.
+    pub guest_ram: Option<GuestRamSource>,
     /// The VM RPC channel.
     pub rpc: mesh::Receiver<VmRpc>,
     /// The notification channel.

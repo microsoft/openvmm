@@ -770,6 +770,8 @@ async fn test_ttrpc_interface(
         }
         let snapshot_memory_path = tempdir.path().join(format!("snapshot-memory-{i}.bin"));
         let snapshot_path = tempdir.path().join(format!("snapshot-{i}"));
+        let eager_memory_path = tempdir.path().join(format!("eager-memory-{i}.bin"));
+        let second_eager_memory_path = tempdir.path().join(format!("second-eager-memory-{i}.bin"));
         let virtiofs_root = tempdir.path().join(format!("virtiofs-{i}"));
         let hotplug_virtiofs_root = tempdir.path().join(format!("hotplug-virtiofs-{i}"));
         let second_hotplug_virtiofs_root =
@@ -1760,6 +1762,104 @@ async fn test_ttrpc_interface(
                     "RestoreVm with the wrong snapshot ID: {}",
                     err.message
                 );
+
+                let mut unspecified_config = restore_config.clone().unwrap();
+                unspecified_config.memory_config.as_mut().unwrap().source =
+                    Some(vmservice::MemorySource {
+                        kind: Some(vmservice::memory_source::Kind::Snapshot(
+                            vmservice::SnapshotMemorySource {
+                                population: vmservice::SnapshotMemoryPopulation::Unspecified as i32,
+                            },
+                        )),
+                    });
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::RestoreVm,
+                        vmservice::RestoreVmRequest {
+                            source_dir: snapshot_path.to_string_lossy().into_owned(),
+                            config: Some(unspecified_config),
+                            expected_snapshot_id: Some(snapshot_id.clone()),
+                            resume: false,
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::InvalidArgument as i32,
+                    "RestoreVm with unspecified memory population: {}",
+                    err.message
+                );
+
+                // Restore two clones from the snapshot with eager copy. Neither
+                // may modify the snapshot; the shared-in-place restore below
+                // verifies that by resuming the guest from it.
+                let eager_config = |memory_path: &Path| {
+                    let mut config = restore_config.clone().unwrap();
+                    let memory = config.memory_config.as_mut().unwrap();
+                    memory.backing_file_path = Some(memory_path.to_string_lossy().into_owned());
+                    memory.source = Some(vmservice::MemorySource {
+                        kind: Some(vmservice::memory_source::Kind::Snapshot(
+                            vmservice::SnapshotMemorySource {
+                                population: vmservice::SnapshotMemoryPopulation::EagerCopy as i32,
+                            },
+                        )),
+                    });
+                    config
+                };
+                for (memory_path, log_name) in [
+                    (&eager_memory_path, "linux-eager-restored"),
+                    (&second_eager_memory_path, "linux-eager-restored-second"),
+                ] {
+                    let restore_result = client
+                        .call()
+                        .start(
+                            vmservice::Vm::RestoreVm,
+                            vmservice::RestoreVmRequest {
+                                source_dir: snapshot_path.to_string_lossy().into_owned(),
+                                config: Some(eager_config(memory_path)),
+                                expected_snapshot_id: Some(snapshot_id.clone()),
+                                resume: false,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(restore_result.snapshot_id, snapshot_id);
+                    assert_eq!(
+                        std::fs::metadata(memory_path).unwrap().len(),
+                        std::fs::metadata(snapshot_path.join("memory.bin"))
+                            .unwrap()
+                            .len(),
+                        "the eager-copy destination should match the snapshot size"
+                    );
+                    // As below, a restored aarch64 guest can't run yet.
+                    if petri_artifacts_common::tags::MachineArch::host()
+                        == petri_artifacts_common::tags::MachineArch::X86_64
+                    {
+                        let mut shell = SerialShell::new(
+                            &driver,
+                            PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                            params.log_source.log_file(log_name)?,
+                        );
+                        client
+                            .call()
+                            .start(vmservice::Vm::ResumeVm, ())
+                            .await
+                            .unwrap();
+                        shell.run("echo EAGER-$((40+5))", "EAGER-45").await?;
+                        assert!(
+                            !shell.output.contains("Linux version"),
+                            "the eager-copy clone rebooted"
+                        );
+                    }
+                    client
+                        .call()
+                        .start(vmservice::Vm::TeardownVm, ())
+                        .await
+                        .unwrap();
+                }
+
                 let restore_result = client
                     .call()
                     .start(

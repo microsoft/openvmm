@@ -95,6 +95,7 @@ use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::GuestRamSource;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_helpers::config::supports_acpi_power_button;
@@ -3079,7 +3080,7 @@ async fn run_control_inner(
             },
             cfg: vm_config,
             saved_state,
-            shared_memory,
+            guest_ram: shared_memory.map(GuestRamSource::MapShared),
             rpc: rpc_recv,
             notify: notify_send,
         };

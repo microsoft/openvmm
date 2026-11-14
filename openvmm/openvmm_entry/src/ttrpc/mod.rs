@@ -91,6 +91,7 @@ use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::GuestRamSource;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_helpers::config::supports_acpi_power_button;
@@ -746,10 +747,18 @@ struct RestoreParameters {
     /// expectations and the host.
     manifest: openvmm_helpers::snapshot::SnapshotManifest,
     state_bytes: Vec<u8>,
+    population: RestoreMemoryPopulation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestoreMemoryPopulation {
+    SharedInPlace,
+    EagerCopy,
 }
 
 struct PreparedRestore {
-    shared_memory: openvmm_defs::worker::SharedMemoryFd,
+    guest_ram: GuestRamSource,
+    active_memory_backing_file: Option<PathBuf>,
     saved_state: mesh::payload::message::ProtobufMessage,
     snapshot_id: Guid,
 }
@@ -761,11 +770,13 @@ fn prepare_snapshot_restore(
     restore: &RestoreParameters,
     expected_memory_size: u64,
     expected_vp_count: u32,
+    destination_backing_file: Option<&Path>,
 ) -> anyhow::Result<PreparedRestore> {
     let RestoreParameters {
         source_dir,
         manifest,
         state_bytes,
+        population,
     } = restore;
     openvmm_helpers::snapshot::validate_manifest(
         manifest,
@@ -775,10 +786,11 @@ fn prepare_snapshot_restore(
         crate::system_page_size(),
     )?;
 
+    let memory_path = source_dir.join("memory.bin");
     let memory_file = fs_err::OpenOptions::new()
         .read(true)
-        .write(true)
-        .open(source_dir.join("memory.bin"))
+        .write(*population == RestoreMemoryPopulation::SharedInPlace)
+        .open(&memory_path)
         .context("failed to open snapshot memory.bin")?;
     let file_size = memory_file.metadata()?.len();
     if file_size != manifest.memory_size_bytes {
@@ -788,15 +800,88 @@ fn prepare_snapshot_restore(
         )));
     }
 
-    let shared_memory =
-        openvmm_helpers::shared_memory::file_to_shared_memory_fd(memory_file.into())?;
+    let (guest_ram, active_memory_backing_file) = match population {
+        RestoreMemoryPopulation::SharedInPlace => (
+            GuestRamSource::MapShared(openvmm_helpers::shared_memory::file_to_shared_memory_fd(
+                memory_file.into(),
+            )?),
+            Some(memory_path),
+        ),
+        RestoreMemoryPopulation::EagerCopy => {
+            let destination = destination_backing_file
+                .map(|path| {
+                    open_eager_copy_destination(memory_file.file(), path, expected_memory_size)
+                })
+                .transpose()?;
+            (
+                GuestRamSource::CopyFrom {
+                    source: memory_file.into(),
+                    destination,
+                },
+                destination_backing_file.map(Path::to_owned),
+            )
+        }
+    };
     let saved_state =
         mesh::payload::decode(state_bytes).context("failed to decode saved state from snapshot")?;
     Ok(PreparedRestore {
-        shared_memory,
+        guest_ram,
+        active_memory_backing_file,
         saved_state,
         snapshot_id: manifest.snapshot_id,
     })
+}
+
+/// Opens the caller-supplied eager-copy destination and converts it to guest
+/// RAM backing, rejecting it if it is the snapshot memory file itself (by path
+/// or hard link). The comparison uses the opened handles, so a path swapped
+/// after opening cannot alias the snapshot.
+fn open_eager_copy_destination(
+    snapshot_memory: &File,
+    path: &Path,
+    size: u64,
+) -> anyhow::Result<openvmm_defs::worker::SharedMemoryFd> {
+    let destination = openvmm_helpers::shared_memory::open_memory_backing_file_raw(path, size)?;
+    let same = openvmm_helpers::shared_memory::same_open_file(snapshot_memory, &destination)
+        .map_err(|err| {
+            anyhow!(Code::FailedPrecondition).context(format!(
+                "failed to verify that eager-copy destination {} is not the snapshot memory: {err}",
+                path.display()
+            ))
+        })?;
+    if same {
+        return Err(anyhow!(Code::InvalidArgument).context(
+            "eager-copy destination must not be the snapshot memory file or a hard link to it",
+        ));
+    }
+    openvmm_helpers::shared_memory::file_to_shared_memory_fd(destination)
+}
+
+fn parse_restore_memory_population(
+    source: Option<vmservice::MemorySource>,
+) -> anyhow::Result<RestoreMemoryPopulation> {
+    let Some(source) = source else {
+        return Ok(RestoreMemoryPopulation::SharedInPlace);
+    };
+    let vmservice::memory_source::Kind::Snapshot(snapshot) = source
+        .kind
+        .ok_or_else(|| anyhow!(Code::InvalidArgument).context("missing memory source kind"))?;
+    match snapshot.population {
+        value if value == vmservice::SnapshotMemoryPopulation::EagerCopy as i32 => {
+            Ok(RestoreMemoryPopulation::EagerCopy)
+        }
+        value if value == vmservice::SnapshotMemoryPopulation::SharedInPlace as i32 => {
+            Ok(RestoreMemoryPopulation::SharedInPlace)
+        }
+        value if value == vmservice::SnapshotMemoryPopulation::Unspecified as i32 => {
+            Err(anyhow!(Code::InvalidArgument)
+                .context("snapshot memory population must be specified"))
+        }
+        _ => Err(anyhow!(Code::InvalidArgument).context(format!(
+            "invalid snapshot memory population {}",
+            snapshot.population
+        ))),
+    }
 }
 
 impl From<&VmLifecycle> for vmservice::VmState {
@@ -1053,12 +1138,18 @@ impl VmService {
                 })
             })
             .transpose()?;
-        let config = request
+        let mut config = request
             .config
             .ok_or_else(|| anyhow!(Code::InvalidArgument).context("missing configuration"))?;
         if self.vm.is_some() {
             return Err(anyhow!(Code::FailedPrecondition).context("VM already created"));
         }
+        let population = parse_restore_memory_population(
+            config
+                .memory_config
+                .as_mut()
+                .and_then(|memory| memory.source.take()),
+        )?;
 
         // Read the manifest and check the snapshot ID before doing any
         // expensive VM construction, so a wrong snapshot fails fast. The rest
@@ -1079,6 +1170,7 @@ impl VmService {
                     source_dir,
                     manifest,
                     state_bytes,
+                    population,
                 }),
             )
             .await?
@@ -1100,6 +1192,17 @@ impl VmService {
         }
 
         validate_platform_config(&req_config)?;
+
+        // `restore_vm` consumes the memory source before calling here.
+        if req_config
+            .memory_config
+            .as_ref()
+            .is_some_and(|memory| memory.source.is_some())
+        {
+            return Err(
+                anyhow!(Code::InvalidArgument).context("memory source is only valid for RestoreVM")
+            );
+        }
 
         let vmgs = build_vmgs(req_config.vmgs.take()).await?;
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
@@ -1334,9 +1437,13 @@ impl VmService {
             .and_then(|config| config.backing_file_path.as_deref())
             .filter(|path| !path.is_empty())
             .map(PathBuf::from);
-        if restore.is_some() && memory_backing_file.is_some() {
+        if restore
+            .as_ref()
+            .is_some_and(|restore| restore.population == RestoreMemoryPopulation::SharedInPlace)
+            && memory_backing_file.is_some()
+        {
             return Err(anyhow!(Code::InvalidArgument)
-                .context("memory backing file cannot be specified when restoring a snapshot"));
+                .context("memory backing file cannot be specified for shared-in-place restore"));
         }
 
         let (numa, config_mem_size) = if let Some(numa_config) = req_config.numa_config.take() {
@@ -1568,27 +1675,32 @@ impl VmService {
             .await
             .context("spawning vm process failed")?;
 
-        let (shared_memory, saved_state, active_memory_backing_file, snapshot_id) =
+        let (guest_ram, saved_state, active_memory_backing_file, snapshot_id) =
             if let Some(restore) = &restore {
-                let prepared =
-                    prepare_snapshot_restore(restore, config_mem_size, config_proc_count)?;
+                let prepared = prepare_snapshot_restore(
+                    restore,
+                    config_mem_size,
+                    config_proc_count,
+                    memory_backing_file.as_deref(),
+                )?;
                 (
-                    Some(prepared.shared_memory),
+                    Some(prepared.guest_ram),
                     Some(prepared.saved_state),
-                    Some(restore.source_dir.join("memory.bin")),
+                    prepared.active_memory_backing_file,
                     Some(prepared.snapshot_id),
                 )
             } else {
-                let shared_memory = memory_backing_file
+                let guest_ram = memory_backing_file
                     .as_ref()
                     .map(|path| {
                         openvmm_helpers::shared_memory::open_memory_backing_file(
                             path,
                             config_mem_size,
                         )
+                        .map(GuestRamSource::MapShared)
                     })
                     .transpose()?;
-                (shared_memory, None, memory_backing_file, None)
+                (guest_ram, None, memory_backing_file, None)
             };
 
         let worker = vm_host
@@ -1598,7 +1710,7 @@ impl VmService {
                     hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
                     cfg: config,
                     saved_state,
-                    shared_memory,
+                    guest_ram,
                     rpc: recv,
                     notify: notify_send,
                 },
@@ -3387,6 +3499,29 @@ mod tests {
             mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
             force: false,
         }
+    }
+
+    #[test]
+    fn eager_copy_destination_rejects_snapshot_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot_path = dir.path().join("memory.bin");
+        std::fs::write(&snapshot_path, [0xa5; 4096]).unwrap();
+        let snapshot = File::open(&snapshot_path).unwrap();
+        let hard_link = dir.path().join("alias.bin");
+        std::fs::hard_link(&snapshot_path, &hard_link).unwrap();
+
+        for alias in [&snapshot_path, &hard_link] {
+            let err = open_eager_copy_destination(&snapshot, alias, 4096).unwrap_err();
+            assert!(
+                matches!(
+                    err.root_cause().downcast_ref::<Code>(),
+                    Some(Code::InvalidArgument)
+                ),
+                "{err:#}"
+            );
+        }
+        open_eager_copy_destination(&snapshot, &dir.path().join("clone.bin"), 4096).unwrap();
+        assert_eq!(std::fs::read(&snapshot_path).unwrap(), [0xa5; 4096]);
     }
 
     #[test]
