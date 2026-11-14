@@ -36,8 +36,8 @@
 //!   effective CPUID record with the recomputed [`EffectiveCpuid`]. A
 //!   snapshot of a host profile carries the only copy of its document, which
 //!   [`host_profile_for_restore`] decodes and checks against the recorded
-//!   digest, and from which the restoring VM worker's [`PartitionProfile`]
-//!   takes it.
+//!   digest and the derivation's policy, and from which the restoring VM
+//!   worker's [`PartitionProfile`] takes it.
 //! - **Pinned profile verification:** the first use of a pinned profile in a
 //!   process, by [`select`], [`pinned_for_restore`], [`pinned`], or
 //!   [`PartitionProfile::pinned`], verifies its static data before handing it
