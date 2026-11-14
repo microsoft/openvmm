@@ -674,6 +674,12 @@ mod tests {
         let selected = select(crate::AUTO, &n).unwrap();
         assert_eq!(selected.id, "nvidia.n1x.v1");
         selected.validate().unwrap();
+        assert_eq!(
+            crate::canonical::format_digest(&selected.sha256),
+            "sha256:5c819de73c40022de50f199a232c264095fd1d9493ef40e65207b73ff028024a"
+        );
+        assert_eq!(selected.model.mask, 0xff0f_ffd0);
+        assert_eq!(selected.model.value, 0x410f_d850);
         assert_eq!(selected.physical_address_bits, 36);
         assert_eq!(select("nvidia.n1x.v1", &n).unwrap(), selected);
         n.midr = 0x410fd871;
@@ -697,6 +703,13 @@ mod tests {
             select("nvidia.n1x.v1", &n).unwrap_err().code,
             Code::CpuGeneration
         );
+        for midr in [0x510f_d851, 0x410e_d851] {
+            n.midr = midr;
+            assert_eq!(
+                select("nvidia.n1x.v1", &n).unwrap_err().code,
+                Code::CpuGeneration
+            );
+        }
         n.midr = 0x511f0011;
         assert_eq!(select(crate::AUTO, &n).unwrap().id, "qualcomm.oryon-x1.v1");
     }
