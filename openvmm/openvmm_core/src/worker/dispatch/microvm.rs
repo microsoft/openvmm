@@ -359,6 +359,21 @@ impl LoadedVm {
         })?;
         quiesce.complete("capture", "quiesce", Default::default());
 
+        // A VP can hold an INIT or a SIPI that it has not accepted yet: one
+        // that another VP sent it after it stopped, which a save would accept
+        // between reading the VP's registers and the rest of its state, or an
+        // INIT that the VP cannot accept yet, which the saved state cannot
+        // hold. Every VP and unit has stopped, so none can send one after this
+        // check, and the rollback starts them again.
+        #[cfg(guest_arch = "x86_64")]
+        self.inner
+            .partition_unit
+            .check_no_pending_init_sipi()
+            .await
+            .map_err(|error| {
+                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
+            })?;
+
         // The time ABI's capture checks and records: the LAPIC timers, then
         // the capture anchor and records. The PIT checks itself when saved.
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
