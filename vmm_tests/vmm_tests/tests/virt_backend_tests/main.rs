@@ -15,6 +15,8 @@ cfg_select! {
         mod native;
         #[cfg(target_os = "linux")]
         mod registers;
+        #[cfg(target_os = "linux")]
+        mod save;
         mod time;
     }
     _ => {}
