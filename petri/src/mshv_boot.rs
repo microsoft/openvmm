@@ -14,7 +14,7 @@ use petri_artifacts_vmm_test::artifacts::loadable;
 use std::sync::Arc;
 
 /// Either caller-prepared userspace or a base initrd Petri will prepare.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MshvInitrd {
     /// Preserve an already prepared initrd and its entry point.
     Prepared(PetriInitrd),
