@@ -664,11 +664,14 @@ impl Rtc {
                     );
 
                     let elapsed_millis = elapsed.as_millis();
-                    if elapsed_millis > 1000 {
+                    if elapsed_millis >= 1000 {
                         // Update the date/time and note that we set the update bit now.
                         data.set_update(true);
                         self.sync_clock_to_cmos();
-                        self.last_update_bit_blip = now;
+                        // Updates happen at the start of each second.
+                        self.last_update_bit_blip = LocalClockTime::from_millis_since_unix_epoch(
+                            now.as_millis_since_unix_epoch().div_euclid(1000) * 1000,
+                        );
                         tracing::trace!(
                             ?data,
                             ?elapsed,
@@ -1336,6 +1339,8 @@ mod tests {
                     wait_for_edge(&mut rtc, false, time.clone())
                         && wait_for_edge(&mut rtc, true, time.clone())
                 );
+                // wait_for_edge polls every 10ms.
+                assert!(time.get_time().as_millis_since_unix_epoch() % 1000 < 10);
             }
 
             if let Ok(end) = rtc.get_cmos_date_time() {
