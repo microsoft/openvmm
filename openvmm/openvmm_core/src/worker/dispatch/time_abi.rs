@@ -3032,6 +3032,30 @@ mod tests {
             error_code(select(profile.id(), &host, Some(&swapped))),
             ProfileErrorCode::ProfileDigest
         );
+        // A host profile that gives the guest VMX, which the derivation always
+        // clears, recorded with its own digest, as whoever crafts the snapshot
+        // can record it.
+        let [eax, ebx, ecx, edx] = profile.lookup(1, 0);
+        let leaf1 = |ecx: u32| {
+            format!("\"value\":[\"{eax:#010x}\",\"{ebx:#010x}\",\"{ecx:#010x}\",\"{edx:#010x}\"]")
+        };
+        let document = String::from_utf8(profile.encode()).unwrap();
+        assert!(document.contains(&leaf1(ecx)));
+        let crafted = CpuProfile::decode(
+            document
+                .replace(&leaf1(ecx), &leaf1(ecx | 1 << 5))
+                .as_bytes(),
+        )
+        .unwrap();
+        let vmx = host_profile_record(&crafted, TEST_SIGNATURE);
+        let error = select(crafted.id(), &host, Some(&vmx)).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileDigest, "{error}");
+        assert!(
+            error
+                .message
+                .contains("CPUID 0x1 ECX bit 5 is set, which the policy clears"),
+            "{error}"
+        );
         // A pinned profile's snapshot needs no record: its ID selects it.
         let mut pinned_snapshot = swapped.clone();
         pinned_snapshot.id = TEST_PROFILE.to_owned();
