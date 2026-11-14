@@ -5247,6 +5247,7 @@ dependencies = [
  "parking_lot",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "vm_resource",
  "vm_topology",
@@ -5354,6 +5355,7 @@ dependencies = [
  "net_backend",
  "parking_lot",
  "pcap-file",
+ "tracelimit",
  "tracing",
 ]
 

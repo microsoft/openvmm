@@ -5625,7 +5625,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
     ) -> Result<bool, WorkerError> {
         let n = epqueue
             .rx_poll(pool, &mut data.rx_ready)
-            .map_err(WorkerError::Endpoint)?;
+            .map_err(WorkerError::Endpoint)?
+            .len();
 
         if n == 0 {
             return Ok(false);

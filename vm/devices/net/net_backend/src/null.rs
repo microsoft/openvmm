@@ -117,8 +117,8 @@ impl Queue for NullQueue {
         &mut self,
         _pool: &mut dyn BufferAccess,
         _packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
-        Ok(0)
+    ) -> anyhow::Result<Vec<crate::RxBufferCompletion>> {
+        Ok(Vec::new())
     }
 
     fn tx_avail(

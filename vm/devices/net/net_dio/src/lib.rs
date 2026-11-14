@@ -133,8 +133,8 @@ impl Queue for DioQueue {
         &mut self,
         pool: &mut dyn BufferAccess,
         packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
-        let mut n_packets = 0;
+    ) -> anyhow::Result<Vec<net_backend::RxBufferCompletion>> {
+        let mut completions = Vec::new();
         if let Some(nic) = &mut self.nic {
             // Transmit incoming packets to the guest until there are no more available.
             for done_id in packets {
@@ -168,10 +168,10 @@ impl Queue for DioQueue {
                     }
                 };
                 *done_id = id;
-                n_packets += 1;
+                completions.push(net_backend::RxBufferCompletion::single(id));
             }
         }
-        Ok(n_packets)
+        Ok(completions)
     }
 
     fn tx_avail(
