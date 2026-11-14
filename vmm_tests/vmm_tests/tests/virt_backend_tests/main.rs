@@ -11,6 +11,8 @@ cfg_select! {
     ) => {
         mod fixture;
         mod native;
+        #[cfg(target_os = "linux")]
+        mod registers;
         mod time;
     }
     _ => {}
