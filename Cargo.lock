@@ -6560,6 +6560,7 @@ dependencies = [
  "build_rs_guest_arch",
  "fs-err",
  "hypervisor_resources",
+ "kvm",
  "test_with_tracing",
  "virt_mshv",
  "virt_whp",

@@ -311,6 +311,8 @@ they use KVM when `/dev/kvm` is accessible. Use the same command on an MSHV
 host to validate that backend. The test requires both `nested_virt` and
 `nested_reset`. Petri probes partition scrub on a temporary MSHV partition
 and skips the test when the kernel does not implement the scrub ioctl.
+On KVM, Petri requires a positive `KVM_CHECK_EXTENSION(KVM_CAP_NESTED_STATE)`
+result before advertising `nested_reset`; otherwise the test is skipped.
 Other probe errors fail host discovery rather than silently skipping tests.
 A successful KVM run does not validate the MSHV reset path. Inspect
 the OpenVMM logs in the output directory to confirm the selected backend.

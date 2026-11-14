@@ -694,6 +694,7 @@ mod tests {
             execution_environment: ExecutionEnvironment::Baremetal,
             vpci_supported: false,
             openvmm_hypervisor: hypervisor,
+            kvm_nested_state_supported: false,
             mshv_partition_scrub_supported: false,
         }
     }

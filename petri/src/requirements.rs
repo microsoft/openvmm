@@ -111,6 +111,8 @@ pub struct HostContext {
     pub vpci_supported: bool,
     /// Hypervisor backend that OpenVMM will select on this host.
     pub openvmm_hypervisor: Option<OpenVmmHypervisor>,
+    /// Whether KVM supports nested-state ioctls, required for nested reset.
+    pub kvm_nested_state_supported: bool,
     /// Whether MSHV implements partition scrub, required for nested reset.
     pub mshv_partition_scrub_supported: bool,
 }
@@ -167,6 +169,13 @@ impl HostContext {
             None
         };
 
+        let kvm_nested_state_supported = if openvmm_hypervisor == Some(OpenVmmHypervisor::Kvm) {
+            openvmm_hypervisors::kvm_nested_state_available()
+                .expect("failed to probe KVM nested-state support")
+        } else {
+            false
+        };
+
         let mshv_partition_scrub_supported = if openvmm_hypervisor == Some(OpenVmmHypervisor::Mshv)
         {
             openvmm_hypervisors::mshv_partition_scrub_available()
@@ -213,6 +222,7 @@ impl HostContext {
             },
             vpci_supported,
             openvmm_hypervisor,
+            kvm_nested_state_supported,
             mshv_partition_scrub_supported,
         }
     }
@@ -357,7 +367,8 @@ fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'sta
     }
 
     if vmm == VmmType::OpenVmm
-        && (context.openvmm_hypervisor == Some(OpenVmmHypervisor::Kvm)
+        && ((context.openvmm_hypervisor == Some(OpenVmmHypervisor::Kvm)
+            && context.kvm_nested_state_supported)
             || (context.openvmm_hypervisor == Some(OpenVmmHypervisor::Mshv)
                 && context.mshv_partition_scrub_supported))
     {
@@ -419,6 +430,7 @@ mod tests {
             execution_environment: ExecutionEnvironment::Baremetal,
             vpci_supported: false,
             openvmm_hypervisor: Some(openvmm_hypervisor),
+            kvm_nested_state_supported: false,
             mshv_partition_scrub_supported: false,
         }
     }
@@ -458,7 +470,6 @@ mod tests {
         mshv.mshv_partition_scrub_supported = true;
         assert!(requirement.is_satisfied(&mshv));
 
-        assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
         assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Whp)));
         assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Hvf)));
         mshv.openvmm_hypervisor = None;
@@ -470,6 +481,29 @@ mod tests {
             }
             .is_satisfied(&host_context(OpenVmmHypervisor::Kvm))
         );
+    }
+
+    #[test]
+    fn nested_reset_requires_kvm_nested_state() {
+        let requirement = TestRequirement::RequiresCapability {
+            name: capabilities::NESTED_RESET,
+            vmm: VmmType::OpenVmm,
+        };
+        let mut kvm = host_context(OpenVmmHypervisor::Kvm);
+        assert!(
+            TestRequirement::RequiresCapability {
+                name: capabilities::NESTED_VIRT,
+                vmm: VmmType::OpenVmm,
+            }
+            .is_satisfied(&kvm)
+        );
+        assert!(!requirement.is_satisfied(&kvm));
+        kvm.kvm_nested_state_supported = true;
+        assert!(requirement.is_satisfied(&kvm));
+        kvm.openvmm_hypervisor = Some(OpenVmmHypervisor::Mshv);
+        assert!(!requirement.is_satisfied(&kvm));
+        kvm.openvmm_hypervisor = None;
+        assert!(!requirement.is_satisfied(&kvm));
     }
 
     #[test]
