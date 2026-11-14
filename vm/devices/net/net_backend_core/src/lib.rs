@@ -206,6 +206,9 @@ pub struct RxOffloadSupport {
     pub tcpv4_gso: bool,
     /// The guest can receive TCPv6 GSO packets.
     pub tcpv6_gso: bool,
+    /// The backend strips a received 802.1Q tag from the frame and reports it in
+    /// [`RxMetadata::vlan`].
+    pub vlan_strip: bool,
 }
 
 /// The "L4" protocol: the TCP/UDP layer.

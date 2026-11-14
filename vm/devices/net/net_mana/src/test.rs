@@ -7,9 +7,11 @@ use crate::GuestDmaMode;
 use crate::ManaEndpoint;
 use crate::ManaTestConfiguration;
 use crate::QueueStats;
+use async_trait::async_trait;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use gdma::VportConfig;
 use gdma_defs::bnic::ManaQueryDeviceCfgResp;
+use inspect::InspectMut;
 use inspect_counters::Counter;
 use mana_driver::mana::ManaDevice;
 use mesh::CancelContext;
@@ -26,6 +28,9 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::msi::MsiConnection;
 use std::future::poll_fn;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use test_with_tracing::test;
 use user_driver_emulated_mock::DeviceTestMemory;
@@ -542,6 +547,95 @@ async fn test_multi_mixed_packet(driver: DefaultDriver) {
         Some(expected_stats), // Default expected stats
     )
     .await;
+}
+
+/// A loopback endpoint that records whether it was asked for the VLAN tag out of band.
+struct VlanRecordingEndpoint {
+    inner: LoopbackEndpoint,
+    vlan: Arc<AtomicBool>,
+}
+
+impl InspectMut for VlanRecordingEndpoint {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.ignore();
+    }
+}
+
+#[async_trait]
+impl Endpoint for VlanRecordingEndpoint {
+    fn endpoint_type(&self) -> &'static str {
+        "vlan-recording"
+    }
+
+    async fn get_queues(
+        &mut self,
+        config: Vec<QueueConfig>,
+        rss: Option<&net_backend::RssConfig<'_>>,
+        queues: &mut Vec<Box<dyn net_backend::Queue>>,
+    ) -> anyhow::Result<()> {
+        self.vlan
+            .store(config[0].enabled_rx_offloads.vlan_strip, Ordering::Relaxed);
+        self.inner.get_queues(config, rss, queues).await
+    }
+
+    async fn stop(&mut self) {
+        self.inner.stop().await
+    }
+
+    fn is_ordered(&self) -> bool {
+        self.inner.is_ordered()
+    }
+}
+
+/// The guest reads the tag from the completion, so the backend has to take it out of the frame.
+#[async_test]
+async fn test_backend_is_asked_for_the_vlan_tag_out_of_band(driver: DefaultDriver) {
+    let pages = 256; // 1MB
+    let mem = DeviceTestMemory::new(pages * 2, true, "test_vlan_out_of_band");
+    let vlan = Arc::new(AtomicBool::new(false));
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        &msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(VlanRecordingEndpoint {
+                inner: LoopbackEndpoint::new(),
+                vlan: vlan.clone(),
+            }),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
+    let dev_config = ManaQueryDeviceCfgResp {
+        pf_cap_flags1: 0.into(),
+        pf_cap_flags2: 0,
+        pf_cap_flags3: 0,
+        pf_cap_flags4: 0,
+        max_num_vports: 1,
+        reserved: 0,
+        max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: 0,
+    };
+    let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
+    let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
+    let mut endpoint = ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await;
+    let mut queues = Vec::new();
+    endpoint
+        .get_queues(
+            vec![QueueConfig {
+                driver: Box::new(driver.clone()),
+                enabled_rx_offloads: Default::default(),
+            }],
+            None,
+            &mut queues,
+        )
+        .await
+        .unwrap();
+    assert!(vlan.load(Ordering::Relaxed));
 }
 
 #[async_test]
