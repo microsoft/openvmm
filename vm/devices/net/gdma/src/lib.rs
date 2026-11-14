@@ -384,7 +384,27 @@ impl ChangeDeviceState for GdmaDevice {
 
     async fn stop(&mut self) {}
 
-    async fn reset(&mut self) {}
+    async fn reset(&mut self) {
+        let Self {
+            config,
+            msix: _,
+            regmap: _,
+            shmem,
+            destroying_hwc,
+            queues,
+            hwc,
+        } = self;
+        hwc.stop().await;
+        let Devices { bnic } = hwc.task_mut();
+        bnic.reset().await;
+        if hwc.has_state() {
+            hwc.remove();
+        }
+        queues.reset();
+        *shmem = Shmem(FromZeros::new_zeroed());
+        *destroying_hwc = false;
+        config.reset();
+    }
 }
 
 impl ChipsetDevice for GdmaDevice {
@@ -447,5 +467,72 @@ impl PciConfigSpace for GdmaDevice {
 
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         self.config.write_byte_enabled(offset, value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chipset_device::mmio::ExternallyManagedMmioIntercepts;
+    use net_backend::null::NullEndpoint;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use vmcore::vm_task::SingleDriverBackend;
+
+    fn device(driver: DefaultDriver) -> GdmaDevice {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        GdmaDevice::new(
+            &driver_source,
+            GuestMemory::allocate(0x10000),
+            &MsiTarget::disconnected(),
+            vec![VportConfig {
+                mac_address: [0, 1, 2, 3, 4, 5].into(),
+                endpoint: Box::new(NullEndpoint::new()),
+            }],
+            &mut ExternallyManagedMmioIntercepts,
+        )
+    }
+
+    /// Asks the device to establish the HWC and returns the SMC status.
+    fn establish_hwc(device: &mut GdmaDevice) -> u8 {
+        let hdr = SmcProtoHdr::new()
+            .with_msg_type(SmcMessageType::SMC_MSG_TYPE_ESTABLISH_HWC.0)
+            .with_msg_version(SMC_MSG_TYPE_ESTABLISH_HWC_VERSION);
+        device.write_shmem(SHMEM_LEN - 4, u32::from(hdr).as_bytes());
+        SmcProtoHdr::from(device.shmem.0[SHMEM_LEN / 4 - 1]).status()
+    }
+
+    /// More boots than the device has queues of any kind.
+    #[async_test]
+    async fn reset_lets_each_boot_establish_the_hwc(driver: DefaultDriver) {
+        let mut device = device(driver);
+        for boot in 0..129 {
+            assert_eq!(establish_hwc(&mut device), 0, "boot {boot}");
+            device.reset().await;
+        }
+    }
+
+    #[async_test]
+    async fn reset_clears_registers_and_config_space(driver: DefaultDriver) {
+        let mut device = device(driver);
+        assert_eq!(establish_hwc(&mut device), 0);
+        device.destroying_hwc = true;
+        let command = pci_core::spec::cfg_space::HeaderType00::STATUS_COMMAND.0;
+        device
+            .pci_cfg_write(command, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+            .unwrap();
+
+        device.reset().await;
+
+        assert_eq!(device.shmem.0, [0; SHMEM_LEN / 4]);
+        assert!(!device.destroying_hwc);
+        let mut value = 0;
+        device
+            .pci_cfg_read(
+                command,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
+        assert_eq!(value & 2, 0);
     }
 }
