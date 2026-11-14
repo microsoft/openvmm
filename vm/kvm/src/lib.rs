@@ -153,6 +153,15 @@ mod ioctl {
         request_code_readwrite!(KVMIO, 0xba, size_of::<libc::c_ulong>()),
         kvm_sev_cmd
     );
+    // The argument is a `kvm_nested_state` header followed by a state of the
+    // size that its `size` field gives, so the buffer is larger than the
+    // header whose size the request code carries.
+    #[cfg(target_arch = "x86_64")]
+    ioctl_readwrite_bad!(
+        kvm_get_nested_state,
+        request_code_readwrite!(KVMIO, 0xbe, size_of::<kvm_nested_state>()),
+        nested::KvmNestedStateBuffer
+    );
     #[cfg(target_arch = "x86_64")]
     /// # Safety
     ///
@@ -382,6 +391,9 @@ pub enum Error {
     GetVcpuEvents(#[source] nix::Error),
     #[error("SetVcpuEvents")]
     SetVcpuEvents(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("GetNestedState")]
+    GetNestedState(#[source] nix::Error),
     #[error("TranslateGva")]
     TranslateGva(#[source] nix::Error),
     #[error("unknown exit {0:#x}")]
@@ -2052,6 +2064,31 @@ impl<'a> Processor<'a> {
         Ok(events)
     }
 
+    /// Returns the flags and format that head the vCPU's nested state
+    /// (`KVM_GET_NESTED_STATE`, which needs `KVM_CAP_NESTED_STATE`: it fails
+    /// with `EINVAL` on a kernel without it).
+    ///
+    /// Besides the state of a nested guest, AMD's flags report the vCPU's
+    /// global interrupt flag, which no other KVM interface reports; see
+    /// [`NestedStateHeader::global_interrupt_flag`].
+    #[cfg(target_arch = "x86_64")]
+    pub fn nested_state_header(&self) -> Result<NestedStateHeader> {
+        // The buffer holds the largest state that KVM reports, a VMX state
+        // with its shadow VMCS, so that KVM does not fail with E2BIG: a VMX
+        // state that outgrows the buffer is not even given its header.
+        let mut state = nested::KvmNestedStateBuffer::empty();
+        // SAFETY: Calling IOCTL as documented, with a buffer whose `size`
+        // field is its size.
+        unsafe {
+            ioctl::kvm_get_nested_state(self.get().vcpu.as_raw_fd(), &mut state)
+                .map_err(Error::GetNestedState)?;
+        }
+        Ok(NestedStateHeader {
+            flags: state.flags,
+            format: state.format,
+        })
+    }
+
     pub fn translate_gva(&self, gva: u64) -> Result<kvm_translation> {
         let mut translation = kvm_translation {
             linear_address: gva,
@@ -2745,6 +2782,28 @@ pub struct DebugRegisters {
     pub dr7: u64,
 }
 
+/// The flags and format that head a vCPU's nested state
+/// ([`Processor::nested_state_header`]).
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct NestedStateHeader {
+    /// The `KVM_STATE_NESTED_*` flags.
+    pub flags: u16,
+    /// The vendor of the state, `KVM_STATE_NESTED_FORMAT_*`.
+    pub format: u16,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl NestedStateHeader {
+    /// Returns the vCPU's global interrupt flag (GIF), or `None` if the vCPU
+    /// has none, as on Intel (`KVM_STATE_NESTED_FORMAT_VMX`). Only AMD's state
+    /// reports it, in `KVM_STATE_NESTED_GIF_SET`.
+    pub fn global_interrupt_flag(&self) -> Option<bool> {
+        (u32::from(self.format) == KVM_STATE_NESTED_FORMAT_SVM)
+            .then(|| u32::from(self.flags) & KVM_STATE_NESTED_GIF_SET != 0)
+    }
+}
+
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
@@ -2858,6 +2917,39 @@ mod tests {
             assert!(
                 matches!(range.validate(), Err(Error::InvalidMsrFilter(_))),
                 "{range:?}"
+            );
+        }
+    }
+
+    fn nested_state(format: u32, flags: u32) -> NestedStateHeader {
+        NestedStateHeader {
+            flags: flags.try_into().unwrap(),
+            format: format.try_into().unwrap(),
+        }
+    }
+
+    #[test]
+    fn only_amd_nested_state_reports_the_global_interrupt_flag() {
+        let svm = |flags| nested_state(KVM_STATE_NESTED_FORMAT_SVM, flags);
+        assert_eq!(svm(0).global_interrupt_flag(), Some(false));
+        assert_eq!(
+            svm(KVM_STATE_NESTED_GIF_SET).global_interrupt_flag(),
+            Some(true)
+        );
+        // The other flags, which describe a nested guest, say nothing about it.
+        let nested_guest = KVM_STATE_NESTED_GUEST_MODE | KVM_STATE_NESTED_RUN_PENDING;
+        assert_eq!(svm(nested_guest).global_interrupt_flag(), Some(false));
+        assert_eq!(
+            svm(nested_guest | KVM_STATE_NESTED_GIF_SET).global_interrupt_flag(),
+            Some(true)
+        );
+
+        // Intel has no such flag, and its flags are not AMD's.
+        for flags in [0, nested_guest, KVM_STATE_NESTED_GIF_SET] {
+            assert_eq!(
+                nested_state(KVM_STATE_NESTED_FORMAT_VMX, flags).global_interrupt_flag(),
+                None,
+                "flags {flags:#x}"
             );
         }
     }
