@@ -10,6 +10,8 @@ cfg_select! {
         any(target_os = "linux", windows)
     ) => {
         #[cfg(target_os = "linux")]
+        mod activity;
+        #[cfg(target_os = "linux")]
         mod apic;
         mod fixture;
         mod native;
