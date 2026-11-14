@@ -2,8 +2,9 @@
 // Licensed under the MIT License.
 
 //! Partition unit support for snapshots: validating the instantiated VP prefix,
-//! stopping VPs at a deferred I/O boundary for capture, and the NVX time ABI's
-//! LAPIC timer checks and restore advance.
+//! stopping VPs at a deferred I/O boundary for capture, the capture's check for
+//! a VP's pending INIT or SIPI, and the NVX time ABI's LAPIC timer checks and
+//! restore advance.
 
 use super::Error;
 use super::PartitionRequest;
@@ -17,6 +18,8 @@ use mesh::rpc::RpcSend;
 /// Snapshot requests handled by the partition unit runner.
 pub(super) enum SnapshotRequest {
     StopVpsAtIoBoundary(FailableRpc<(mesh::OneshotSender<()>, mesh::OneshotReceiver<()>), ()>),
+    #[cfg(guest_arch = "x86_64")]
+    CheckInitSipi(FailableRpc<(), ()>),
     #[cfg(guest_arch = "x86_64")]
     CheckTimers(FailableRpc<(), ()>),
     #[cfg(guest_arch = "x86_64")]
@@ -81,6 +84,21 @@ impl PartitionUnit {
         Ok(StopGuard(self.req_send.clone()))
     }
 
+    /// Checks that no stopped vCPU has an INIT or a SIPI that it has not
+    /// accepted yet, which a save would accept between reading the vCPU's
+    /// registers and the rest of its state, or lose. A capture fails when one
+    /// does, and the guest can request the snapshot again.
+    #[cfg(guest_arch = "x86_64")]
+    pub async fn check_no_pending_init_sipi(&mut self) -> anyhow::Result<()> {
+        self.req_send
+            .call_failable(
+                |rpc| PartitionRequest::Snapshot(SnapshotRequest::CheckInitSipi(rpc)),
+                (),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Checks the LAPIC timer of every stopped vCPU for the NVX time ABI
     /// (`E_LAPIC_PERIODIC`, `E_LAPIC_TSC_DEADLINE`).
     #[cfg(guest_arch = "x86_64")]
@@ -143,6 +161,11 @@ impl PartitionUnitRunner {
                         .await
                 })
                 .await
+            }
+            #[cfg(guest_arch = "x86_64")]
+            SnapshotRequest::CheckInitSipi(rpc) => {
+                rpc.handle_failable(async |()| self.vp_set.check_no_pending_init_sipi().await)
+                    .await
             }
             #[cfg(guest_arch = "x86_64")]
             SnapshotRequest::CheckTimers(rpc) => {
