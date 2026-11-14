@@ -97,6 +97,11 @@ pub enum KvmError {
     #[cfg(guest_arch = "x86_64")]
     #[error("the time ABI does not support {0}")]
     TimeAbiUnsupported(&'static str),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "the global interrupt flag (GIF) of VP {vp_index} is clear, which a save cannot hold: the guest ran CLGI and has not run STGI"
+    )]
+    GifClear { vp_index: u32 },
 }
 
 #[derive(Inspect)]
