@@ -14,6 +14,8 @@ cfg_select! {
         #[cfg(target_os = "linux")]
         mod apic;
         mod fixture;
+        #[cfg(target_os = "linux")]
+        mod init_sipi;
         mod native;
         #[cfg(target_os = "linux")]
         mod registers;
