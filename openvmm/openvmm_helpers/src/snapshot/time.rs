@@ -949,6 +949,37 @@ pub(super) mod tests {
             code(result(&swapped, "auto", TEST_SIGNATURE)),
             TimeAbiCode::ProfileDigest
         );
+        // A host profile that gives the guest VMX, which the derivation
+        // always clears, recorded with its own digest and the effective CPUID
+        // that it gives, as whoever crafts the snapshot can record them.
+        let [eax, ebx, ecx, edx] = profile.lookup(1, 0);
+        let leaf1 = |ecx: u32| {
+            format!("\"value\":[\"{eax:#010x}\",\"{ebx:#010x}\",\"{ecx:#010x}\",\"{edx:#010x}\"]")
+        };
+        let document = String::from_utf8(profile.encode()).unwrap();
+        assert!(document.contains(&leaf1(ecx)));
+        let crafted = cpu_profile::CpuProfile::decode(
+            document
+                .replace(&leaf1(ecx), &leaf1(ecx | 1 << 5))
+                .as_bytes(),
+        )
+        .unwrap();
+        let mut vmx = contract.clone();
+        *vmx.cpu_profile.as_mut().unwrap() = SnapshotCpuProfile {
+            id: crafted.id().to_owned(),
+            sha256: crafted.digest().to_vec(),
+            profile: crafted.encode(),
+            effective_cpuid: effective_cpuid_record(&test_effective_cpuid(&crafted, 2)),
+            capture_cpu_signature: TEST_SIGNATURE,
+        };
+        let error = result(&vmx, "auto", TEST_SIGNATURE).unwrap_err();
+        assert_eq!(error.code, TimeAbiCode::ProfileDigest, "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("CPUID 0x1 ECX bit 5 is set, which the policy clears"),
+            "{error}"
+        );
     }
 
     #[test]

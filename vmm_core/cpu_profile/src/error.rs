@@ -11,8 +11,9 @@ pub enum ProfileErrorCode {
     /// `E_PROFILE_UNKNOWN`: the profile ID is not pinned in this OpenVMM.
     ProfileUnknown,
     /// `E_PROFILE_DIGEST`: a profile or effective-CPUID record does not
-    /// verify against its digest, does not decode, or disagrees with the
-    /// pinned profile of the same ID.
+    /// verify against its digest, does not decode, disagrees with the
+    /// pinned profile of the same ID, or is a host profile that the
+    /// derivation's policy would change.
     ProfileDigest,
     /// `E_PROFILE_HOST_UNKNOWN`: automatic selection maps the host CPU to no
     /// pinned profile.
