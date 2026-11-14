@@ -585,6 +585,16 @@ impl LoadedVm {
             }
         };
 
+        self.stop().await;
+        let flush_rtc = self.emuplat_servicing.rtc_local_clock.lock().flush();
+        if let Err(err) = flush_rtc.await {
+            tracing::error!(
+                CVM_ALLOWED,
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to flush RTC skew before teardown"
+            );
+        }
+
         // Drain resealing before tearing down any storage transport. Removing
         // the unit closes its request stream; in-flight I/O finishes first.
         if let Some(resealer) = self.hardware_reseal.take() {
@@ -948,6 +958,9 @@ impl LoadedVm {
         mana_keepalive_mode: KeepAliveConfig,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
+
+        let flush_rtc = self.emuplat_servicing.rtc_local_clock.lock().flush();
+        flush_rtc.await.context("RTC skew flush failed")?;
 
         // Save the emulation platform state prior to any network settings so that
         // it can capture any relevant state from the network devices that may be

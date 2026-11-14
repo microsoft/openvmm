@@ -2573,6 +2573,7 @@ async fn new_underhill_vm(
 
     let rtc_time_source = ArcMutexUnderhillLocalClock(Arc::new(Mutex::new(
         UnderhillLocalClock::new(
+            &driver_source.simple(),
             get_client.clone(),
             if let Some(vmgs_client) = vmgs_client.as_ref() {
                 vmgs_client
