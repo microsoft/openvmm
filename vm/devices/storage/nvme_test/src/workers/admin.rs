@@ -7,6 +7,7 @@ use super::IoQueueEntrySizes;
 use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
+use super::refuse_fused;
 use crate::BROADCAST_NSID;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::MAX_NSID;
@@ -642,6 +643,9 @@ impl AdminHandler {
                 }
 
                 let result = match opcode {
+                    // Before the opcode, so a fused command never reaches a
+                    // handler.
+                    _ if let Err(err) = refuse_fused(&command) => Err(err),
                     // Admin commands over PCIe always use PRPs (NVMe Base 2.1
                     // Figure 91), so any other PSDT is an unsupported value.
                     _ if command.cdw0.psdt() != 0 => Err(NvmeError::do_not_retry(
