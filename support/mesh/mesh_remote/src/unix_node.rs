@@ -9,7 +9,9 @@
 //! `SOCK_STREAM` packet is used, and the protocol includes a message size.
 //!
 //! File descriptors are sent between nodes using the `SCM_RIGHTS` functionality
-//! of Unix sockets.
+//! of Unix sockets. One message carries at most
+//! [`protocol::MAX_FDS_PER_MESSAGE`] of them; an event with more sends the
+//! rest ahead of it in `EVENT_FDS` packets.
 
 #![cfg(unix)]
 
@@ -59,6 +61,8 @@ use std::io::IoSlice;
 use std::os::unix::prelude::*;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
 use tracing::instrument;
 use unicycle::FuturesUnordered;
@@ -443,25 +447,13 @@ impl SendEvent for PacketSender {
             }
         };
 
-        // If using SOCK_SEQPACKET, try to send the packet immediately. If this
-        // fails (likely due to EAGAIN), send the packet to the asynchronous
-        // task for deferred processing.
-        //
-        // When SOCK_STREAM is in use, this optimization cannot be tried,
-        // because for stream sockets we may need to issue multiple writes to
-        // send the whole message, and those writes cannot be interleaved
-        // correctly.
+        // Try to send the packet immediately. If that is not possible (see
+        // `try_send_now`) or fails (likely due to EAGAIN), send the packet to
+        // the asynchronous task for deferred processing.
         //
         // N.B. This can lead to out of order messages. The event protocol is
         //      responsible for handling this condition.
-        if !USE_SEQPACKET
-            || unix_socket::send_with_fds(
-                self.socket.socket.lock().get().as_fd(),
-                &[IoSlice::new(&packet)],
-                fds.iter().map(|OsResource::Fd(fd)| fd.as_fd()),
-            )
-            .is_err()
-        {
+        if !self.socket.try_send_now(&packet, &fds) {
             let _ = self
                 .send
                 .unbounded_send(SenderCommand::Send { packet, fds });
@@ -481,7 +473,7 @@ fn serialize_event(event: OutgoingEvent<'_>) -> io::Result<(Vec<u8>, Vec<OsResou
     packet.extend_from_slice(
         protocol::PacketHeader {
             packet_type: protocol::PacketType::EVENT,
-            reserved: [0; 7],
+            ..FromZeros::new_zeroed()
         }
         .as_bytes(),
     );
@@ -634,6 +626,19 @@ enum ReceiveError {
     BadReleaseFds,
     #[error("unknown packet type {0:?}")]
     UnknownPacketType(protocol::PacketType),
+    #[error("file descriptor packet carries no file descriptors")]
+    EmptyEventFds,
+    #[error(
+        "event carries more than {} file descriptors",
+        protocol::MAX_FDS_PER_EVENT
+    )]
+    TooManyFds,
+    #[error("event claims {claimed} file descriptors sent ahead, but {received} arrived")]
+    FdsAheadMismatch { claimed: u32, received: usize },
+    #[error(
+        "connection closed with {0} file descriptors sent ahead of an event that never arrived"
+    )]
+    FdsPendingAtEof(usize),
     #[cfg(target_os = "linux")]
     #[error("memfd file descriptor not sent for large event")]
     MissingMemfd,
@@ -651,10 +656,16 @@ async fn run_receive(
 ) -> Result<(), ReceiveError> {
     let mut buf = vec![0; MAX_PACKET_SIZE];
     let mut fds = Vec::new();
+    // Descriptors from `EVENT_FDS` packets, waiting for their event. Dropped,
+    // and so closed, on every error return.
+    let mut ahead = Vec::new();
     let mut receiver = unix_socket::ScmReceiver::new(protocol::MAX_FDS_PER_MESSAGE);
     loop {
         let len = socket.recv(&mut buf, &mut fds, &mut receiver).await?;
         if len == 0 {
+            if !ahead.is_empty() {
+                return Err(ReceiveError::FdsPendingAtEof(ahead.len()));
+            }
             break;
         }
         if cfg!(target_os = "macos") && !fds.is_empty() {
@@ -679,8 +690,18 @@ async fn run_receive(
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         match header.packet_type {
             protocol::PacketType::EVENT => {
+                take_fds_ahead(&mut ahead, &mut fds, header.fds_ahead)?;
                 local_node.event(remote_id, &buf[size_of_val(&header)..], &mut fds);
                 fds.clear();
+            }
+            protocol::PacketType::EVENT_FDS => {
+                if fds.is_empty() {
+                    return Err(ReceiveError::EmptyEventFds);
+                }
+                if ahead.len() + fds.len() > protocol::MAX_FDS_PER_EVENT {
+                    return Err(ReceiveError::TooManyFds);
+                }
+                ahead.append(&mut fds);
             }
             protocol::PacketType::RELEASE_FDS => {
                 let release_fds = protocol::ReleaseFds::read_from_prefix(buf)
@@ -692,6 +713,9 @@ async fn run_receive(
             }
             #[cfg(target_os = "linux")]
             protocol::PacketType::LARGE_EVENT => {
+                // The memfd is the event's first descriptor, so with a split
+                // event it arrives ahead.
+                take_fds_ahead(&mut ahead, &mut fds, header.fds_ahead)?;
                 if fds.is_empty() {
                     return Err(ReceiveError::MissingMemfd);
                 }
@@ -705,6 +729,27 @@ async fn run_receive(
             }
         }
     }
+    Ok(())
+}
+
+/// Moves the descriptors sent ahead of an event in front of the event's own,
+/// failing if the event does not claim exactly that many or the total is over
+/// the cap.
+fn take_fds_ahead(
+    ahead: &mut Vec<OsResource>,
+    fds: &mut Vec<OsResource>,
+    claimed: u32,
+) -> Result<(), ReceiveError> {
+    if ahead.len() != claimed as usize {
+        return Err(ReceiveError::FdsAheadMismatch {
+            claimed,
+            received: ahead.len(),
+        });
+    }
+    if ahead.len() + fds.len() > protocol::MAX_FDS_PER_EVENT {
+        return Err(ReceiveError::TooManyFds);
+    }
+    fds.splice(..0, ahead.drain(..));
     Ok(())
 }
 
@@ -722,8 +767,8 @@ async fn run_send(
 ) -> io::Result<()> {
     while let Some(command) = recv.next().await {
         match command {
-            SenderCommand::Send { packet, fds } => {
-                match socket.send(&packet, &fds).await {
+            SenderCommand::Send { mut packet, fds } => {
+                match socket.send_packet(&mut packet, &fds).await {
                     Ok(_) => (),
                     Err(err) => {
                         tracing::error!(
@@ -1046,21 +1091,110 @@ fn new_socket_pair() -> Result<(Socket, Socket), io::Error> {
     Socket::pair(socket2::Domain::UNIX, ty, None)
 }
 
-/// An AF_UNIX SOCK_SEQPACKET connection.
+/// An AF_UNIX SOCK_SEQPACKET or SOCK_STREAM connection.
 struct UnixSocket {
     socket: Mutex<PolledSocket<Socket>>,
+    /// True for SOCK_SEQPACKET, whose packet boundaries the kernel keeps. On
+    /// SOCK_STREAM each packet is prefixed with its length.
+    seqpacket: bool,
+    /// Set while the send task is between the `EVENT_FDS` packets of an event
+    /// and the event packet. Only changed with `socket` locked.
+    sending_split_event: AtomicBool,
 }
 
 impl UnixSocket {
     fn new(driver: &dyn SpawnDriver, fd: Socket) -> Self {
+        // Frame by the socket's actual type rather than the platform default.
+        let seqpacket = fd
+            .r#type()
+            .map_or(USE_SEQPACKET, |ty| ty == socket2::Type::SEQPACKET);
         let socket = PolledSocket::new(driver, fd).unwrap();
         UnixSocket {
             socket: Mutex::new(socket),
+            seqpacket,
+            sending_split_event: AtomicBool::new(false),
         }
     }
 
+    /// Sends a whole packet from the calling thread without waiting, for the
+    /// synchronous fast path. Returns false if the caller must hand the packet
+    /// to the send task instead.
+    fn try_send_now(&self, packet: &[u8], fds: &[OsResource]) -> bool {
+        // On SOCK_STREAM a packet may take several writes, which must not
+        // interleave with the send task's. A packet with more descriptors than
+        // one message holds must be split, which only the send task does: two
+        // writers splitting at once would mix their pieces.
+        if !self.seqpacket || fds.len() > protocol::MAX_FDS_PER_MESSAGE {
+            return false;
+        }
+        let socket = self.socket.lock();
+        // The receiver gives the descriptors of `EVENT_FDS` packets to the next
+        // event packet, so no packet may land between them. Relaxed is enough:
+        // the flag only changes with the lock held.
+        if self.sending_split_event.load(Ordering::Relaxed) {
+            return false;
+        }
+        unix_socket::send_with_fds(
+            socket.get().as_fd(),
+            &[IoSlice::new(packet)],
+            fds.iter().map(|OsResource::Fd(fd)| fd.as_fd()),
+        )
+        .is_ok()
+    }
+
+    fn set_sending_split_event(&self, value: bool) {
+        let _socket = self.socket.lock();
+        self.sending_split_event.store(value, Ordering::Relaxed);
+    }
+
+    /// Sends a packet from the send task. An event with more descriptors than
+    /// one message holds sends all but the last chunk in `EVENT_FDS` packets,
+    /// then the event packet with `fds_ahead` set to how many went ahead.
+    ///
+    /// On SOCK_STREAM descriptors arrive with the first byte of their write, and
+    /// the receiver never reads past the end of a packet, so they stay with it.
+    async fn send_packet(&self, packet: &mut [u8], fds: &[OsResource]) -> io::Result<()> {
+        if fds.len() <= protocol::MAX_FDS_PER_MESSAGE {
+            return self.send(packet, fds).await;
+        }
+        if fds.len() > protocol::MAX_FDS_PER_EVENT {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "too many file descriptors for one event ({}, max {})",
+                    fds.len(),
+                    protocol::MAX_FDS_PER_EVENT
+                ),
+            ));
+        }
+        let fds_ahead =
+            (fds.len() - 1) / protocol::MAX_FDS_PER_MESSAGE * protocol::MAX_FDS_PER_MESSAGE;
+        let (ahead, last) = fds.split_at(fds_ahead);
+        let (mut header, _) = protocol::PacketHeader::read_from_prefix(packet)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "packet has no header"))?;
+        header.fds_ahead = fds_ahead as u32;
+        header
+            .write_to_prefix(packet)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "packet has no header"))?;
+        let fds_header = protocol::PacketHeader {
+            packet_type: protocol::PacketType::EVENT_FDS,
+            ..FromZeros::new_zeroed()
+        };
+
+        // Keep the fast path off the socket until the event packet is out. If
+        // a send fails the flag stays set: the connection is going down, and
+        // the receiver would refuse anything else after a partial split.
+        self.set_sending_split_event(true);
+        for chunk in ahead.chunks(protocol::MAX_FDS_PER_MESSAGE) {
+            self.send(fds_header.as_bytes(), chunk).await?;
+        }
+        self.send(packet, last).await?;
+        self.set_sending_split_event(false);
+        Ok(())
+    }
+
     async fn send(&self, msg: &[u8], fds: &[OsResource]) -> io::Result<()> {
-        if USE_SEQPACKET {
+        if self.seqpacket {
             self.send_raw(&mut [IoSlice::new(msg)], fds).await?;
         } else {
             let len = (msg.len() as u32).to_le_bytes();
@@ -1123,7 +1257,7 @@ impl UnixSocket {
         fds: &mut Vec<OsResource>,
         receiver: &mut unix_socket::ScmReceiver,
     ) -> io::Result<usize> {
-        if USE_SEQPACKET {
+        if self.seqpacket {
             self.recv_raw(buf, fds, receiver).await
         } else {
             let mut len = [0; 4];
@@ -1358,5 +1492,661 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         node4.shutdown().await;
+    }
+
+    /// Events whose file descriptors do not fit in one message.
+    ///
+    /// These build connections directly over a socket pair (rather than via
+    /// `UnixNode`) so that both `SOCK_SEQPACKET` and `SOCK_STREAM` framing can
+    /// be exercised on Linux, and so that a raw peer can inject packets.
+    #[cfg(target_os = "linux")]
+    mod many_fds {
+        use crate::unix_node::MAX_SMALL_EVENT_SIZE;
+        use crate::unix_node::SmallTask;
+        use crate::unix_node::UnixSocket;
+        use crate::unix_node::start_connection;
+        use futures::StreamExt;
+        use mesh_channel::Receiver;
+        use mesh_channel::Sender;
+        use mesh_channel::channel;
+        use mesh_node::common::Address;
+        use mesh_node::common::NodeId;
+        use mesh_node::common::PortId;
+        use mesh_node::local_node::Connect;
+        use mesh_node::local_node::LocalNode;
+        use mesh_node::local_node::RemoteNodeHandle;
+        use mesh_node::message::MeshField;
+        use mesh_node::resource::OsResource;
+        use mesh_node::resource::Resource;
+        use mesh_protobuf::Protobuf;
+        use pal_async::DefaultDriver;
+        use pal_async::async_test;
+        use pal_async::task::Spawn;
+        use pal_async::task::Task;
+        use socket2::Domain;
+        use socket2::Socket;
+        use socket2::Type;
+        use std::fs::File;
+        use std::io::ErrorKind;
+        use std::io::IoSlice;
+        use std::io::PipeWriter;
+        use std::io::Write;
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::prelude::*;
+        use std::pin::pin;
+        use std::sync::Arc;
+        use test_with_tracing::test;
+        use unicycle::FuturesUnordered;
+
+        const SOCKET_TYPES: [Type; 2] = [Type::SEQPACKET, Type::STREAM];
+
+        // Wire values, written out rather than taken from `protocol` so these
+        // tests also pin the on-the-wire layout.
+        const EVENT: u8 = 1;
+        const LARGE_EVENT: u8 = 3;
+        const EVENT_FDS: u8 = 4;
+        const MAX_FDS_PER_EVENT: usize = 4096;
+
+        /// Raises the soft open-file limit: some tests hold thousands of
+        /// descriptors at once (sent, in flight, and received), more than the
+        /// common default soft limit of 1024.
+        // UNSAFETY: libc calls to read and set the open-file limit.
+        #[expect(unsafe_code)]
+        fn raise_fd_limit() {
+            const WANT: libc::rlim_t = 65536;
+            // SAFETY: `rlimit` is plain data; a zeroed value is valid.
+            let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+            // SAFETY: passing a valid pointer to an `rlimit`.
+            if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+                return;
+            }
+            let want = WANT.min(limit.rlim_max);
+            if limit.rlim_cur < want {
+                limit.rlim_cur = want;
+                // SAFETY: passing a valid pointer to an initialized `rlimit`.
+                unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
+            }
+        }
+
+        /// Formats an error with its whole source chain, where the transport's
+        /// own failure reason lives.
+        fn error_chain(err: &dyn std::error::Error) -> String {
+            let mut s = err.to_string();
+            let mut source = err.source();
+            while let Some(err) = source {
+                s.push_str(": ");
+                s.push_str(&err.to_string());
+                source = err.source();
+            }
+            s
+        }
+
+        /// The file a descriptor refers to; equal only for the same open file.
+        fn file_id(fd: BorrowedFd<'_>) -> (u64, u64) {
+            let meta = File::from(fd.try_clone_to_owned().unwrap())
+                .metadata()
+                .unwrap();
+            (meta.dev(), meta.ino())
+        }
+
+        /// Makes `n` pipes, each with its own inode. Returns the read ends (to
+        /// send) and the write ends (to keep).
+        fn pipes(n: usize) -> (Vec<OwnedFd>, Vec<PipeWriter>) {
+            (0..n)
+                .map(|_| {
+                    let (r, w) = std::io::pipe().unwrap();
+                    (OwnedFd::from(r), w)
+                })
+                .unzip()
+        }
+
+        /// Asserts that every read end of these pipes has been closed, in the
+        /// receiving node too: a write then fails with EPIPE (pipe(7)).
+        fn assert_read_ends_closed(writers: Vec<PipeWriter>) {
+            for mut w in writers {
+                let err = w.write(b"x").expect_err("a read end is still open");
+                assert_eq!(err.kind(), ErrorKind::BrokenPipe);
+            }
+        }
+
+        struct NoConnect;
+
+        impl Connect for NoConnect {
+            fn connect(&self, _node_id: NodeId, _handle: RemoteNodeHandle) {}
+        }
+
+        fn new_node() -> Arc<LocalNode> {
+            Arc::new(LocalNode::with_id(NodeId::new(), Box::new(NoConnect)))
+        }
+
+        /// Runs the connection tasks that `start_connection` hands off, as
+        /// `UnixNode`'s IO task does.
+        struct TestIo {
+            tasks: Sender<SmallTask>,
+            _task: Task<()>,
+        }
+
+        impl TestIo {
+            fn new(driver: &DefaultDriver) -> Self {
+                let (tasks, mut recv) = channel::<SmallTask>();
+                let task = driver.spawn("test-io", async move {
+                    let mut futs = FuturesUnordered::new();
+                    loop {
+                        futures::select! { // merge semantics
+                            _ = futs.next() => {},
+                            task = recv.select_next_some() => {
+                                futs.push(task.future);
+                            }
+                            complete => break,
+                        }
+                    }
+                });
+                Self { tasks, _task: task }
+            }
+
+            fn connect(
+                &self,
+                driver: &DefaultDriver,
+                node: &Arc<LocalNode>,
+                remote_id: NodeId,
+                socket: Socket,
+            ) {
+                let handle = node.add_remote(remote_id);
+                start_connection(
+                    &self.tasks,
+                    node,
+                    remote_id,
+                    handle,
+                    UnixSocket::new(driver, socket),
+                );
+            }
+        }
+
+        /// Two nodes connected by one socket pair of the given type.
+        struct Pair {
+            a: Arc<LocalNode>,
+            b: Arc<LocalNode>,
+            _io: TestIo,
+        }
+
+        impl Pair {
+            fn new(driver: &DefaultDriver, ty: Type) -> Self {
+                let (sa, sb) = Socket::pair(Domain::UNIX, ty, None).unwrap();
+                let io = TestIo::new(driver);
+                let a = new_node();
+                let b = new_node();
+                io.connect(driver, &a, b.id(), sa);
+                io.connect(driver, &b, a.id(), sb);
+                Self { a, b, _io: io }
+            }
+
+            /// A channel from node `a` to node `b`.
+            fn channel<T: 'static + MeshField + Send>(&self) -> (Sender<T>, Receiver<T>) {
+                let pa = PortId::new();
+                let pb = PortId::new();
+                let send = self.a.add_port(
+                    pa,
+                    Address {
+                        node: self.b.id(),
+                        port: pb,
+                    },
+                );
+                let recv = self.b.add_port(
+                    pb,
+                    Address {
+                        node: self.a.id(),
+                        port: pa,
+                    },
+                );
+                (send.into(), recv.into())
+            }
+        }
+
+        #[derive(Protobuf)]
+        #[mesh(resource = "Resource")]
+        struct FdBatch {
+            seq: u32,
+            payload: Vec<u8>,
+            fds: Vec<OwnedFd>,
+        }
+
+        /// Sends one event carrying `fd_count` descriptors and `payload_len`
+        /// bytes, and checks that the same files arrive in the same order.
+        async fn round_trip(driver: &DefaultDriver, ty: Type, fd_count: usize, payload_len: usize) {
+            let pair = Pair::new(driver, ty);
+            let (send, mut recv) = pair.channel::<FdBatch>();
+            let (readers, _writers) = pipes(fd_count);
+            let ids: Vec<_> = readers.iter().map(|fd| file_id(fd.as_fd())).collect();
+            let payload: Vec<u8> = (0..payload_len).map(|i| i as u8).collect();
+            send.send(FdBatch {
+                seq: 7,
+                payload: payload.clone(),
+                fds: readers,
+            });
+            let got = recv
+                .recv()
+                .await
+                .unwrap_or_else(|err| panic!("{ty:?}, {fd_count} fds: {}", error_chain(&err)));
+            assert_eq!(got.seq, 7);
+            assert!(got.payload == payload, "{ty:?}: payload differs");
+            let got_ids: Vec<_> = got.fds.iter().map(|fd| file_id(fd.as_fd())).collect();
+            assert!(
+                got_ids == ids,
+                "{ty:?}, {fd_count} fds: files differ or are out of order"
+            );
+        }
+
+        async fn round_trip_all(driver: &DefaultDriver, fd_count: usize, payload_len: usize) {
+            raise_fd_limit();
+            for ty in SOCKET_TYPES {
+                round_trip(driver, ty, fd_count, payload_len).await;
+            }
+        }
+
+        #[async_test]
+        async fn fds_0(driver: DefaultDriver) {
+            round_trip_all(&driver, 0, 16).await;
+        }
+
+        #[async_test]
+        async fn fds_1(driver: DefaultDriver) {
+            round_trip_all(&driver, 1, 16).await;
+        }
+
+        #[async_test]
+        async fn fds_64(driver: DefaultDriver) {
+            round_trip_all(&driver, 64, 16).await;
+        }
+
+        #[async_test]
+        async fn fds_65(driver: DefaultDriver) {
+            round_trip_all(&driver, 65, 16).await;
+        }
+
+        #[async_test]
+        async fn fds_128(driver: DefaultDriver) {
+            round_trip_all(&driver, 128, 16).await;
+        }
+
+        #[async_test]
+        async fn fds_254(driver: DefaultDriver) {
+            round_trip_all(&driver, 254, 16).await;
+        }
+
+        #[async_test]
+        async fn fds_600(driver: DefaultDriver) {
+            round_trip_all(&driver, 600, 16).await;
+        }
+
+        /// The most descriptors one message can carry: an event this size is
+        /// too big to send inline, and its memfd counts towards the cap too.
+        #[async_test]
+        async fn fds_at_cap(driver: DefaultDriver) {
+            round_trip_all(&driver, MAX_FDS_PER_EVENT - 1, 16).await;
+        }
+
+        #[async_test]
+        async fn send_refuses_fds_over_cap(driver: DefaultDriver) {
+            raise_fd_limit();
+            for ty in SOCKET_TYPES {
+                let (a, _b) = Socket::pair(Domain::UNIX, ty, None).unwrap();
+                let socket = UnixSocket::new(&driver, a);
+                let (readers, _writers) = pipes(1);
+                let fds: Vec<_> = (0..MAX_FDS_PER_EVENT + 1)
+                    .map(|_| OsResource::Fd(readers[0].try_clone().unwrap()))
+                    .collect();
+                let mut packet = [EVENT, 0, 0, 0, 0, 0, 0, 0];
+                let err = socket
+                    .send_packet(&mut packet, &fds)
+                    .await
+                    .expect_err("sending should have been refused");
+                assert_eq!(err.kind(), ErrorKind::InvalidInput, "{ty:?}: {err}");
+                assert!(
+                    err.to_string()
+                        .contains("too many file descriptors for one event"),
+                    "{ty:?}: {err}"
+                );
+            }
+        }
+
+        /// While the send task is stuck between the pieces of a split event,
+        /// the synchronous fast path must not send, even with room on the
+        /// socket: the receiver would pair the pieces with the wrong event.
+        #[async_test]
+        async fn fast_path_waits_for_split_event(driver: DefaultDriver) {
+            raise_fd_limit();
+            let (a, raw) = Socket::pair(Domain::UNIX, Type::SEQPACKET, None).unwrap();
+            raw.set_nonblocking(true).unwrap();
+            let socket = UnixSocket::new(&driver, a);
+            let mut receiver = unix_socket::ScmReceiver::new(64);
+            let mut buf = [0u8; 64];
+            let mut read_packet = |packets: &mut Vec<(u8, u32, usize)>| -> bool {
+                match receiver.recv(raw.as_fd(), &mut buf) {
+                    Ok(n) => {
+                        assert_eq!(n, 8);
+                        let fds_ahead = u32::from_ne_bytes(buf[4..8].try_into().unwrap());
+                        packets.push((buf[0], fds_ahead, receiver.fds().len()));
+                        true
+                    }
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => false,
+                    Err(err) => panic!("{err}"),
+                }
+            };
+
+            // Fill the socket with fd-less filler packets until it refuses
+            // more, then make room for exactly two.
+            let filler = [EVENT, 0, 0, 0, 0, 0, 0, 0];
+            let mut fillers = 0;
+            while socket.try_send_now(&filler, &[]) {
+                fillers += 1;
+            }
+            let mut packets = Vec::new();
+            assert!(read_packet(&mut packets) && read_packet(&mut packets));
+
+            // A split event of five pieces gets two out, then waits.
+            let (readers, _writers) = pipes(1);
+            let dup = || OsResource::Fd(readers[0].try_clone().unwrap());
+            let fds: Vec<_> = (0..300).map(|_| dup()).collect();
+            let mut packet = [EVENT, 0, 0, 0, 0, 0, 0, 0];
+            let mut split = pin!(socket.send_packet(&mut packet, &fds));
+            assert!(
+                futures::poll!(split.as_mut()).is_pending(),
+                "setup: the split event should not fit"
+            );
+
+            // With room again, the fast path still holds back.
+            assert!(read_packet(&mut packets));
+            assert!(!socket.try_send_now(&filler, &[dup()]));
+
+            while read_packet(&mut packets) {}
+            split.await.unwrap();
+            while read_packet(&mut packets) {}
+
+            let rest: Vec<_> = packets.into_iter().skip(fillers).collect();
+            assert_eq!(
+                rest,
+                [
+                    (EVENT_FDS, 0, 64),
+                    (EVENT_FDS, 0, 64),
+                    (EVENT_FDS, 0, 64),
+                    (EVENT_FDS, 0, 64),
+                    (EVENT, 256, 44),
+                ]
+            );
+        }
+
+        #[async_test]
+        async fn large_event_1_fd(driver: DefaultDriver) {
+            round_trip_all(&driver, 1, MAX_SMALL_EVENT_SIZE + 0x1000).await;
+        }
+
+        #[async_test]
+        async fn large_event_300_fds(driver: DefaultDriver) {
+            round_trip_all(&driver, 300, MAX_SMALL_EVENT_SIZE + 0x1000).await;
+        }
+
+        /// A split event sent by the connection's send task while other
+        /// threads send small events through the synchronous fast path: no
+        /// small event may land between the pieces of a split one.
+        #[async_test]
+        async fn split_events_race_fast_path(driver: DefaultDriver) {
+            const BIG_EVENTS: u32 = 8;
+            const BIG_FDS: usize = 600;
+            const SMALL_EVENTS: u32 = 2000;
+
+            raise_fd_limit();
+            let pair = Pair::new(&driver, Type::SEQPACKET);
+            let (big_send, mut big_recv) = pair.channel::<FdBatch>();
+            let (small_send, mut small_recv) = pair.channel::<FdBatch>();
+            let (big, _big_writers) = pipes(BIG_FDS);
+            let big_ids: Vec<_> = big.iter().map(|fd| file_id(fd.as_fd())).collect();
+            let (small, _small_writers) = pipes(1);
+            let small_ids: Vec<_> = small.iter().map(|fd| file_id(fd.as_fd())).collect();
+
+            let dup = |fds: &[OwnedFd]| -> Vec<OwnedFd> {
+                fds.iter().map(|fd| fd.try_clone().unwrap()).collect()
+            };
+            let big_thread = std::thread::spawn(move || {
+                for seq in 0..BIG_EVENTS {
+                    big_send.send(FdBatch {
+                        seq,
+                        payload: Vec::new(),
+                        fds: dup(&big),
+                    });
+                }
+            });
+            let small_thread = std::thread::spawn(move || {
+                for seq in 0..SMALL_EVENTS {
+                    small_send.send(FdBatch {
+                        seq,
+                        payload: Vec::new(),
+                        fds: dup(&small),
+                    });
+                }
+            });
+
+            let check = async |recv: &mut Receiver<FdBatch>, count: u32, ids: &[(u64, u64)]| {
+                for seq in 0..count {
+                    let got = recv
+                        .recv()
+                        .await
+                        .unwrap_or_else(|err| panic!("event {seq}: {}", error_chain(&err)));
+                    assert_eq!(got.seq, seq);
+                    let got_ids: Vec<_> = got.fds.iter().map(|fd| file_id(fd.as_fd())).collect();
+                    assert!(
+                        got_ids == ids,
+                        "event {seq}: files differ or are out of order"
+                    );
+                }
+            };
+            futures::future::join(
+                check(&mut big_recv, BIG_EVENTS, &big_ids),
+                check(&mut small_recv, SMALL_EVENTS, &small_ids),
+            )
+            .await;
+            big_thread.join().unwrap();
+            small_thread.join().unwrap();
+        }
+
+        /// Sends a header-only packet: the type byte, three reserved bytes,
+        /// then `fds_ahead` as a native-endian u32.
+        fn send_raw_packet(
+            raw: &Socket,
+            ty: Type,
+            packet_type: u8,
+            fds_ahead: u32,
+            fds: &[OwnedFd],
+        ) {
+            let mut header = [0u8; 8];
+            header[0] = packet_type;
+            header[4..].copy_from_slice(&fds_ahead.to_ne_bytes());
+            let len = (header.len() as u32).to_le_bytes();
+            let iov = if ty == Type::SEQPACKET {
+                vec![IoSlice::new(&header)]
+            } else {
+                vec![IoSlice::new(&len), IoSlice::new(&header)]
+            };
+            let total: usize = iov.iter().map(|b| b.len()).sum();
+            let n = unix_socket::send_with_fds(raw.as_fd(), &iov, fds.iter().map(|fd| fd.as_fd()))
+                .unwrap();
+            assert_eq!(n, total);
+        }
+
+        /// A node connected to a raw socket, so tests can send packets a
+        /// well-behaved sender never would.
+        struct RawPeer {
+            raw: Socket,
+            ty: Type,
+            recv: Receiver<u32>,
+            _node: Arc<LocalNode>,
+            _io: TestIo,
+        }
+
+        impl RawPeer {
+            fn new(driver: &DefaultDriver, ty: Type) -> Self {
+                let (s, raw) = Socket::pair(Domain::UNIX, ty, None).unwrap();
+                let io = TestIo::new(driver);
+                let node = new_node();
+                let raw_id = NodeId::new();
+                io.connect(driver, &node, raw_id, s);
+                // A port peered with the raw side: it fails when the
+                // connection does.
+                let port = node.add_port(
+                    PortId::new(),
+                    Address {
+                        node: raw_id,
+                        port: PortId::new(),
+                    },
+                );
+                Self {
+                    raw,
+                    ty,
+                    recv: port.into(),
+                    _node: node,
+                    _io: io,
+                }
+            }
+
+            fn send(&self, packet_type: u8, fds_ahead: u32, fds: &[OwnedFd]) {
+                send_raw_packet(&self.raw, self.ty, packet_type, fds_ahead, fds);
+            }
+
+            /// Waits for the connection to fail and checks why.
+            async fn expect_failure(&mut self, reason: &str) {
+                let err = self
+                    .recv
+                    .recv()
+                    .await
+                    .expect_err("connection should have failed");
+                let chain = error_chain(&err);
+                assert!(
+                    chain.contains(reason),
+                    "{:?}: expected {reason:?}, got: {chain}",
+                    self.ty
+                );
+            }
+        }
+
+        /// Sends `sent` descriptors ahead, then an event of `event_type` that
+        /// claims `claimed` of them.
+        async fn fds_ahead_mismatch(
+            driver: &DefaultDriver,
+            event_type: u8,
+            sent: usize,
+            claimed: u32,
+        ) {
+            for ty in SOCKET_TYPES {
+                let mut peer = RawPeer::new(driver, ty);
+                let (readers, writers) = pipes(sent);
+                if !readers.is_empty() {
+                    peer.send(EVENT_FDS, 0, &readers);
+                }
+                drop(readers);
+                peer.send(event_type, claimed, &[]);
+                peer.expect_failure(&format!(
+                    "event claims {claimed} file descriptors sent ahead, but {sent} arrived"
+                ))
+                .await;
+                assert_read_ends_closed(writers);
+            }
+        }
+
+        #[async_test]
+        async fn refuses_claim_of_more_than_sent(driver: DefaultDriver) {
+            fds_ahead_mismatch(&driver, EVENT, 2, 3).await;
+        }
+
+        #[async_test]
+        async fn refuses_claim_of_fewer_than_sent(driver: DefaultDriver) {
+            fds_ahead_mismatch(&driver, EVENT, 2, 1).await;
+        }
+
+        #[async_test]
+        async fn refuses_unclaimed_fds(driver: DefaultDriver) {
+            fds_ahead_mismatch(&driver, EVENT, 1, 0).await;
+        }
+
+        #[async_test]
+        async fn refuses_claim_with_nothing_ahead(driver: DefaultDriver) {
+            fds_ahead_mismatch(&driver, EVENT, 0, 1).await;
+        }
+
+        #[async_test]
+        async fn refuses_large_event_mismatch(driver: DefaultDriver) {
+            fds_ahead_mismatch(&driver, LARGE_EVENT, 2, 3).await;
+        }
+
+        #[async_test]
+        async fn refuses_empty_fds_packet(driver: DefaultDriver) {
+            for ty in SOCKET_TYPES {
+                let mut peer = RawPeer::new(&driver, ty);
+                peer.send(EVENT_FDS, 0, &[]);
+                peer.expect_failure("carries no file descriptors").await;
+            }
+        }
+
+        #[async_test]
+        async fn refuses_fds_over_cap(driver: DefaultDriver) {
+            raise_fd_limit();
+            for ty in SOCKET_TYPES {
+                let mut peer = RawPeer::new(&driver, ty);
+                let (readers, writers) = pipes(1);
+                // Copies of one descriptor: each arrives as its own new fd.
+                let chunk: Vec<OwnedFd> =
+                    (0..64).map(|_| readers[0].try_clone().unwrap()).collect();
+                drop(readers);
+                // Send from another thread: the blocking socket can fill up,
+                // and the receiving node runs on this one.
+                let raw = peer.raw.try_clone().unwrap();
+                let thread = std::thread::spawn(move || {
+                    for _ in 0..MAX_FDS_PER_EVENT / chunk.len() + 1 {
+                        send_raw_packet(&raw, ty, EVENT_FDS, 0, &chunk);
+                    }
+                });
+                peer.expect_failure(&format!("more than {MAX_FDS_PER_EVENT} file descriptors"))
+                    .await;
+                thread.join().unwrap();
+                assert_read_ends_closed(writers);
+            }
+        }
+
+        #[async_test]
+        async fn refuses_event_packet_fds_over_cap(driver: DefaultDriver) {
+            raise_fd_limit();
+            for ty in SOCKET_TYPES {
+                let mut peer = RawPeer::new(&driver, ty);
+                let (readers, writers) = pipes(1);
+                let chunk: Vec<OwnedFd> =
+                    (0..64).map(|_| readers[0].try_clone().unwrap()).collect();
+                drop(readers);
+                // Exactly the cap goes ahead; only the event's own descriptor
+                // takes the total over it.
+                let raw = peer.raw.try_clone().unwrap();
+                let thread = std::thread::spawn(move || {
+                    for _ in 0..MAX_FDS_PER_EVENT / chunk.len() {
+                        send_raw_packet(&raw, ty, EVENT_FDS, 0, &chunk);
+                    }
+                    send_raw_packet(&raw, ty, EVENT, MAX_FDS_PER_EVENT as u32, &chunk[..1]);
+                });
+                peer.expect_failure(&format!("more than {MAX_FDS_PER_EVENT} file descriptors"))
+                    .await;
+                thread.join().unwrap();
+                assert_read_ends_closed(writers);
+            }
+        }
+
+        #[async_test]
+        async fn closes_pending_fds_when_peer_drops(driver: DefaultDriver) {
+            for ty in SOCKET_TYPES {
+                let mut peer = RawPeer::new(&driver, ty);
+                let (readers, writers) = pipes(2);
+                peer.send(EVENT_FDS, 0, &readers);
+                drop(readers);
+                peer.raw.shutdown(std::net::Shutdown::Write).unwrap();
+                peer.expect_failure("connection closed with 2 file descriptors sent ahead")
+                    .await;
+                assert_read_ends_closed(writers);
+            }
+        }
     }
 }
