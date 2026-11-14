@@ -47,6 +47,13 @@ const MAX_TAP_FRAME_LEN: usize =
 // read buffer to that contract rather than adding overflow detection.
 const TAP_READ_BUFFER_LEN: usize = size_of::<VirtioNetHdr>() + MAX_TAP_FRAME_LEN;
 const MAX_RX_PACKETS_PER_POLL: usize = 64;
+/// The destination and source MAC addresses, which an 802.1Q tag follows.
+const ETHERNET_ADDRESSES_LEN: usize = 12;
+const VLAN_TAG_LEN: usize = 4;
+const ETH_P_8021Q: u16 = 0x8100;
+const ETH_P_8021AD: u16 = 0x88a8;
+const ETH_P_IP: u16 = 0x0800;
+const ETH_P_IPV6: u16 = 0x86dd;
 
 // TODO: These virtio net header types duplicate definitions in virtio_net.
 // Consider extracting a shared `virtio_net_header` crate if more consumers
@@ -389,6 +396,44 @@ impl Queue for TapQueue {
     }
 }
 
+/// The IP version a frame carries, by its EtherType.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IpVersion {
+    V4,
+    V6,
+}
+
+/// Where a frame's IP header starts and which version it is, as the frame says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IpHeader {
+    offset: usize,
+    version: IpVersion,
+}
+
+/// The IP header of a frame, past up to two inline tags, or `None` if the frame does not hold
+/// IP behind them.
+fn ip_header(packet: &[u8]) -> Option<IpHeader> {
+    const MAX_INLINE_TAGS: usize = 2;
+    let mut ethertype_offset = ETHERNET_ADDRESSES_LEN;
+    for _ in 0..=MAX_INLINE_TAGS {
+        let ethertype = packet.get(ethertype_offset..ethertype_offset + 2)?;
+        let version = match u16::from_be_bytes([ethertype[0], ethertype[1]]) {
+            ETH_P_8021Q | ETH_P_8021AD => {
+                ethertype_offset += VLAN_TAG_LEN;
+                continue;
+            }
+            ETH_P_IP => IpVersion::V4,
+            ETH_P_IPV6 => IpVersion::V6,
+            _ => return None,
+        };
+        return Some(IpHeader {
+            offset: ethertype_offset + 2,
+            version,
+        });
+    }
+    None
+}
+
 /// Compute and write the IPv4 header checksum in place.
 ///
 /// The IPv4 header length is derived from the IHL field in the packet itself
@@ -580,16 +625,23 @@ fn fixup_gso_pseudo_header(packet: &mut [u8], l2_len: usize) {
 /// `csum_offset` to the known offset of the checksum field within each protocol
 /// header (16 for TCP, 6 for UDP).
 ///
-/// For TSO, `gso_type` is set based on the `is_ipv4`/`is_ipv6` flags, and
-/// `NEEDS_CSUM` is always set since the kernel requires the checksum to be
+/// For TSO, `gso_type` follows `ip`, the IP version the frame itself carries; only a
+/// frame with no IP behind its tags falls back to the `is_ipv4` flag. A driver that lays a
+/// tag into the frame can leave both version flags clear (Linux's mana and netvsc set them
+/// from `skb->protocol`, which is then the tag's TPID). `NEEDS_CSUM` is always set
+/// since the kernel requires the checksum to be
 /// partially computed when performing segmentation. For USO,
 /// `gso_type` is set to `UDP_L4` and the UDP header length (8) is used.
 ///
 /// If no offload flags are set, an all-zero header is returned, which tells the
 /// TAP device that the packet requires no special handling.
-fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
+fn build_vnet_hdr(meta: &TxMetadata, ip: Option<IpVersion>) -> VirtioNetHdr {
     if meta.flags.offload_tcp_segmentation() {
-        let protocol = if meta.flags.is_ipv4() {
+        let ipv4 = match ip {
+            Some(version) => version == IpVersion::V4,
+            None => meta.flags.is_ipv4(),
+        };
+        let protocol = if ipv4 {
             VirtioNetHdrGsoProtocol::TCPV4
         } else {
             VirtioNetHdrGsoProtocol::TCPV6
@@ -636,6 +688,38 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
     } else {
         VirtioNetHdr::default()
     }
+}
+
+/// Fixes up the IP headers of an outgoing frame for the TAP and returns its virtio net header.
+///
+/// The IP header and its version come from the frame, behind any inline tags: a frontend may
+/// report `meta.l2_len` without a tag the guest laid into the frame, and a driver that lays one
+/// there can leave both IP version flags clear.
+fn prepare_tx_frame(packet: &mut [u8], meta: &TxMetadata) -> VirtioNetHdr {
+    let ip = ip_header(packet);
+    let segmentation =
+        meta.flags.offload_tcp_segmentation() || meta.flags.offload_udp_segmentation();
+    if let Some(IpHeader { offset, version }) = ip {
+        match version {
+            // The virtio net header cannot request IPv4 header checksum offload, so compute it
+            // here. This also covers NDIS LSO frames, where the guest zeroes the checksum: the
+            // host validates the IPv4 header when the frame enters its IP stack or a
+            // br_netfilter bridge, before segmentation, and drops it if the checksum is wrong.
+            IpVersion::V4 if meta.flags.offload_ip_header_checksum() => {
+                fixup_ipv4_header_checksum(packet, offset);
+            }
+            // NDIS LSO guests zero the IPv6 payload length too, and the host's IPv6 input
+            // validation truncates such a frame to its header before segmentation.
+            IpVersion::V6 if segmentation => fixup_ipv6_payload_length(packet, offset),
+            IpVersion::V4 | IpVersion::V6 => {}
+        }
+        // Convert the LSO length-less pseudo-header seed to the full-length form the kernel's
+        // GSO path expects, so segmentation produces correct per-segment checksums.
+        if segmentation {
+            fixup_gso_pseudo_header(packet, offset);
+        }
+    }
+    build_vnet_hdr(meta, ip.map(|ip| ip.version))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -835,6 +919,7 @@ fn parse_vnet_hdr(
 mod tests {
     use super::*;
     use net_backend::TxFlags;
+    use zerocopy::IntoBytes;
 
     fn all_rx_offloads() -> RxOffloadSupport {
         RxOffloadSupport {
@@ -842,6 +927,28 @@ mod tests {
             tcpv4_gso: true,
             tcpv6_gso: true,
         }
+    }
+
+    #[test]
+    fn ip_header_walks_at_most_two_tags() {
+        let frame = |ethertypes: &[u16]| {
+            let mut frame = vec![0; ETHERNET_ADDRESSES_LEN];
+            for ethertype in ethertypes {
+                frame.extend_from_slice(&ethertype.to_be_bytes());
+                frame.extend_from_slice(&[0, 100]);
+            }
+            frame
+        };
+        let (q, ad) = (ETH_P_8021Q, ETH_P_8021AD);
+        let at = |offset, version| Some(IpHeader { offset, version });
+        assert_eq!(ip_header(&frame(&[ETH_P_IP])), at(14, IpVersion::V4));
+        assert_eq!(ip_header(&frame(&[q, ETH_P_IPV6])), at(18, IpVersion::V6));
+        assert_eq!(ip_header(&frame(&[ad, ETH_P_IP])), at(18, IpVersion::V4));
+        assert_eq!(ip_header(&frame(&[ad, q, ETH_P_IP])), at(22, IpVersion::V4));
+        assert_eq!(ip_header(&frame(&[q, q, q, ETH_P_IP])), None);
+        assert_eq!(ip_header(&frame(&[q, 0x88b5])), None);
+        assert_eq!(ip_header(&frame(&[q])[..14]), None);
+        assert_eq!(ip_header(&[]), None);
     }
 
     #[test]
@@ -854,7 +961,7 @@ mod tests {
             l3_len: 20,
             ..Default::default()
         };
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert!(hdr.flags.needs_csum());
         assert!(!hdr.flags.data_valid());
         assert_eq!(hdr.csum_start, 14 + 20);
@@ -876,7 +983,7 @@ mod tests {
             max_segment_size: 1460,
             ..Default::default()
         };
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::TCPV4);
         assert_eq!(hdr.gso_size, 1460);
         assert_eq!(hdr.hdr_len, 14 + 20 + 32);
@@ -886,10 +993,162 @@ mod tests {
         assert_eq!(hdr.csum_offset, 16);
     }
 
+    /// The frame's IP version picks the segmentation type, whatever the flags say; the flags
+    /// decide only for a frame with no IP behind its tags.
+    #[test]
+    fn vnet_hdr_tso_type_follows_the_frame() {
+        let meta = |is_ipv4, is_ipv6| TxMetadata {
+            flags: TxFlags::new()
+                .with_offload_tcp_segmentation(true)
+                .with_offload_tcp_checksum(true)
+                .with_is_ipv4(is_ipv4)
+                .with_is_ipv6(is_ipv6),
+            l2_len: 14,
+            l3_len: 20,
+            l4_len: 20,
+            max_segment_size: 1000,
+            ..Default::default()
+        };
+        let protocol = |meta: TxMetadata, ip| build_vnet_hdr(&meta, ip).gso_type.protocol();
+        for (is_ipv4, is_ipv6) in [(false, false), (true, false), (false, true)] {
+            assert_eq!(
+                protocol(meta(is_ipv4, is_ipv6), Some(IpVersion::V4)),
+                VirtioNetHdrGsoProtocol::TCPV4
+            );
+            assert_eq!(
+                protocol(meta(is_ipv4, is_ipv6), Some(IpVersion::V6)),
+                VirtioNetHdrGsoProtocol::TCPV6
+            );
+        }
+        assert_eq!(
+            protocol(meta(true, false), None),
+            VirtioNetHdrGsoProtocol::TCPV4
+        );
+        assert_eq!(
+            protocol(meta(false, false), None),
+            VirtioNetHdrGsoProtocol::TCPV6
+        );
+    }
+
+    /// A frame with one 802.1Q tag in front of `ethertype`, then `l3` and a 20-byte TCP header
+    /// with 100 bytes of payload.
+    fn tagged_tcp_frame(ethertype: u16, l3: &[u8]) -> Vec<u8> {
+        let mut frame = vec![0; ETHERNET_ADDRESSES_LEN];
+        frame.extend_from_slice(&ETH_P_8021Q.to_be_bytes());
+        frame.extend_from_slice(&[0, 100]);
+        frame.extend_from_slice(&ethertype.to_be_bytes());
+        frame.extend_from_slice(l3);
+        let mut tcp = [0; 20];
+        tcp[12] = 0x50;
+        frame.extend_from_slice(&tcp);
+        frame.extend_from_slice(&[0xab; 100]);
+        frame
+    }
+
+    /// 10.0.0.1 to 10.0.0.2, TCP, with the total length and checksum left zero.
+    fn ipv4_header() -> [u8; 20] {
+        let mut header = [0; 20];
+        header[0] = 0x45;
+        header[8] = 64;
+        header[9] = 6;
+        header[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        header[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        header
+    }
+
+    /// ::1 to ::2, TCP, with the payload length left zero.
+    fn ipv6_header() -> [u8; 40] {
+        let mut header = [0; 40];
+        header[0] = 0x60;
+        header[6] = 6;
+        header[7] = 64;
+        header[23] = 1;
+        header[39] = 2;
+        header
+    }
+
+    /// TCP segmentation metadata whose `l2_len` leaves out the frame's tag.
+    fn tso_meta(flags: TxFlags) -> TxMetadata {
+        TxMetadata {
+            flags: flags
+                .with_offload_tcp_segmentation(true)
+                .with_offload_tcp_checksum(true),
+            l2_len: 14,
+            l3_len: 20,
+            l4_len: 20,
+            max_segment_size: 1000,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prepare_tx_frame_fixes_tagged_ipv4_segmentation() {
+        let mut frame = tagged_tcp_frame(ETH_P_IP, &ipv4_header());
+        let meta = tso_meta(TxFlags::new().with_offload_ip_header_checksum(true));
+        let hdr = prepare_tx_frame(&mut frame, &meta);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::TCPV4);
+        let ip = &frame[18..38];
+        assert_eq!(ip[2..4], 140u16.to_be_bytes());
+        let mut sum: u32 = ip
+            .chunks(2)
+            .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
+            .sum();
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        assert_eq!(sum, 0xffff);
+        // 0x0a00 + 0x0001 + 0x0a00 + 0x0002 + protocol 6 + TCP length 120.
+        assert_eq!(frame[54..56], 0x1481u16.to_be_bytes());
+    }
+
+    #[test]
+    fn prepare_tx_frame_fixes_tagged_ipv6_segmentation() {
+        let mut frame = tagged_tcp_frame(ETH_P_IPV6, &ipv6_header());
+        // The IPv4 checksum request must not touch an IPv6 header.
+        let meta = tso_meta(TxFlags::new().with_offload_ip_header_checksum(true));
+        let hdr = prepare_tx_frame(&mut frame, &meta);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::TCPV6);
+        let mut expected = ipv6_header();
+        expected[4..6].copy_from_slice(&120u16.to_be_bytes());
+        assert_eq!(frame[18..58], expected);
+        // ::1 + ::2 + protocol 6 + TCP length 120.
+        assert_eq!(frame[74..76], 0x0081u16.to_be_bytes());
+    }
+
+    #[test]
+    fn prepare_tx_frame_leaves_what_was_not_asked_for() {
+        let checksum_only = TxMetadata {
+            flags: TxFlags::new()
+                .with_offload_ip_header_checksum(true)
+                .with_offload_tcp_checksum(true),
+            l2_len: 14,
+            l3_len: 40,
+            ..Default::default()
+        };
+        let no_ip_checksum = TxMetadata {
+            flags: TxFlags::new().with_offload_tcp_checksum(true),
+            l2_len: 14,
+            l3_len: 20,
+            ..Default::default()
+        };
+        let not_ip = tso_meta(TxFlags::new().with_is_ipv4(true));
+        for (frame, meta) in [
+            (tagged_tcp_frame(ETH_P_IPV6, &ipv6_header()), checksum_only),
+            (tagged_tcp_frame(ETH_P_IP, &ipv4_header()), no_ip_checksum),
+            (tagged_tcp_frame(0x88b5, &ipv4_header()), not_ip),
+        ] {
+            let mut packet = frame.clone();
+            let hdr = prepare_tx_frame(&mut packet, &meta);
+            assert_eq!(packet, frame);
+            let expected = build_vnet_hdr(&meta, ip_header(&frame).map(|ip| ip.version));
+            assert_eq!(hdr.as_bytes(), expected.as_bytes());
+        }
+    }
+
     #[test]
     fn vnet_hdr_from_tx_metadata_none() {
         let meta = TxMetadata::default();
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert!(!hdr.flags.needs_csum());
         assert!(!hdr.flags.data_valid());
         assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::NONE);
@@ -909,7 +1168,7 @@ mod tests {
             l3_len: 20,
             ..Default::default()
         };
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert!(hdr.flags.needs_csum());
         assert_eq!(hdr.csum_start, 14 + 20);
         assert_eq!(hdr.csum_offset, 6);
@@ -1281,7 +1540,7 @@ mod tests {
             max_segment_size: 1472,
             ..Default::default()
         };
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::UDP_L4);
         assert_eq!(hdr.gso_size, 1472);
         assert_eq!(hdr.hdr_len, 14 + 20 + 8);
