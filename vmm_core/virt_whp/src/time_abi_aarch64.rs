@@ -789,6 +789,27 @@ mod tests {
     }
 
     #[test]
+    fn n1x_profile_maps_to_the_observed_restricted_whp_surface() {
+        let native = cpu_profile::aarch64::Fingerprint {
+            midr: 0x410fd851,
+            registers: Vec::new(),
+            counter_hz: 1_000_000_000,
+            backend_usable_gpa_bits: 40,
+        };
+        let profile = cpu_profile::aarch64::select("nvidia.n1x.v1", &native).unwrap();
+        let available = [0x7de1_ef07_fff3_3eff, 0x0008_7e78_0640_dc3d];
+        let features =
+            profile_features(&profile, abi::WHV_PROCESSOR_FEATURES(available[0])).unwrap();
+        let requested = [features.bank0.0, features.bank1.0];
+        assert_eq!(requested, [0x7de1_ef07_fff0_3eff, 0x0000_0018_0040_dc34]);
+        require_supported_features(requested, available).unwrap();
+        assert_eq!(profile_physical_address_bits(&profile).unwrap(), 36);
+        let mut unavailable = available;
+        unavailable[0] &= !abi::WHV_PROCESSOR_FEATURES::Atomic.0;
+        assert!(require_supported_features(requested, unavailable).is_err());
+    }
+
+    #[test]
     fn feature_banks_are_derived_from_architectural_levels_not_generic_bank_bits() {
         let mut profile = synthetic_profile();
         let features = profile_features(&profile, abi::WHV_PROCESSOR_FEATURES::default()).unwrap();

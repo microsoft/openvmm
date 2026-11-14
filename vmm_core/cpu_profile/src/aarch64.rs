@@ -85,10 +85,13 @@ fn catalog() -> Result<&'static [CatalogEntry], Error> {
     static CATALOG: OnceLock<Result<Vec<CatalogEntry>, Error>> = OnceLock::new();
     CATALOG
         .get_or_init(|| {
-            [include_str!("../profiles/qualcomm.oryon-x1.v1.json")]
-                .into_iter()
-                .map(load_catalog_entry)
-                .collect()
+            [
+                include_str!("../profiles/qualcomm.oryon-x1.v1.json"),
+                include_str!("../profiles/nvidia.n1x.v1.json"),
+            ]
+            .into_iter()
+            .map(load_catalog_entry)
+            .collect()
         })
         .as_ref()
         .map(Vec::as_slice)
@@ -662,6 +665,67 @@ mod tests {
             crate::canonical::format_digest(&auto.sha256),
             "sha256:20960eafb1f3fb34304b876506e4345bd3fcfb626635d9927ac362898854394d"
         );
+    }
+
+    #[test]
+    fn n1x_pinned_policy_matches_only_the_observed_model_class() {
+        let mut n = native();
+        n.midr = 0x410fd851;
+        let selected = select(crate::AUTO, &n).unwrap();
+        assert_eq!(selected.id, "nvidia.n1x.v1");
+        selected.validate().unwrap();
+        assert_eq!(selected.physical_address_bits, 36);
+        assert_eq!(select("nvidia.n1x.v1", &n).unwrap(), selected);
+        n.midr = 0x410fd871;
+        assert_eq!(select(crate::AUTO, &n).unwrap(), selected);
+        assert_eq!(select("nvidia.n1x.v1", &n).unwrap(), selected);
+        // The heterogeneous N1X pair differs only in part-number bit 1.
+        // Ignoring that bit must not admit any of the other 4094 part numbers.
+        for part in 0u64..=0xfff {
+            assert_eq!(
+                selected.model.matches(0x410f0001 | (part << 4)),
+                part == 0xd85 || part == 0xd87,
+                "unexpected model match for part {part:#x}"
+            );
+        }
+        n.midr = 0x410fd861;
+        assert_eq!(
+            select(crate::AUTO, &n).unwrap_err().code,
+            Code::ProfileHostUnknown
+        );
+        assert_eq!(
+            select("nvidia.n1x.v1", &n).unwrap_err().code,
+            Code::CpuGeneration
+        );
+        n.midr = 0x511f0011;
+        assert_eq!(select(crate::AUTO, &n).unwrap().id, "qualcomm.oryon-x1.v1");
+    }
+
+    #[test]
+    fn n1x_policy_does_not_admit_extended_state_or_digest_tampering() {
+        let mut n = native();
+        n.midr = 0x410fd851;
+        let selected = select(crate::AUTO, &n).unwrap();
+        for (register, value) in [
+            (SystemReg::ID_AA64ZFR0_EL1, 1),
+            (SystemReg::ID_AA64SMFR0_EL1, 1),
+        ] {
+            let mut changed = selected.clone();
+            changed
+                .id_registers
+                .iter_mut()
+                .find(|r| r.register == register)
+                .unwrap()
+                .value = value;
+            let changed = changed.identify().unwrap();
+            assert_eq!(
+                changed.validate().unwrap_err().code,
+                Code::ProfileUnsupported
+            );
+        }
+        let mut changed = selected;
+        changed.sha256[0] ^= 1;
+        assert_eq!(changed.validate().unwrap_err().code, Code::ProfileDigest);
     }
 
     #[test]
