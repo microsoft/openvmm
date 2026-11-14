@@ -88,8 +88,6 @@ pub const TPM_DEVICE_MMIO_PORT_DATA: u64 =
     TPM_DEVICE_MMIO_PORT_REGION_BASE_ADDRESS + TPM_DEVICE_IO_PORT_DATA_OFFSET as u64;
 pub const TPM_DEVICE_MMIO_PORT_REGION_SIZE: u64 = 0x8;
 
-const TPM_PAGE_SIZE: usize = 4096;
-
 const SHA_256_OUTPUT_SIZE_BYTES: usize = 32;
 
 /// Use the SNP and TDX-defined report data size for now.
@@ -436,6 +434,13 @@ impl TpmEngine for TpmRefLib {
         }
     }
 
+    fn command_response_buffer_size(&self) -> usize {
+        match self {
+            TpmRefLib::V138(_) => tpm_lib::TPM_V138_BUFFER_SIZE,
+            TpmRefLib::V185(_) => tpm_lib::TPM_V185_BUFFER_SIZE,
+        }
+    }
+
     fn max_nv_index_size(&self) -> u16 {
         match self {
             TpmRefLib::V138(_) => tpm_lib::TPM_V138_MAX_NV_INDEX_SIZE,
@@ -473,7 +478,7 @@ pub struct Tpm {
     tpm_engine_helper: TpmEngineHelper<TpmRefLib>,
 
     // Runtime book-keeping
-    command_buffer: [u8; TPM_PAGE_SIZE],
+    command_buffer: Box<[u8]>,
     #[inspect(rename = "has_pending_nvram", with = "|x| !x.lock().is_empty()")]
     pending_nvram: Arc<Mutex<Vec<u8>>>,
     #[inspect(skip)]
@@ -620,6 +625,7 @@ impl Tpm {
         )
         .map_err(TpmErrorKind::InstantiateTpm)?;
 
+        let command_buffer = vec![0; tpm_engine.command_response_buffer_size()].into_boxed_slice();
         let tpm_engine_helper = TpmEngineHelper::new(tpm_engine);
 
         let io_region = if register_layout == TpmRegisterLayout::IoPort {
@@ -674,7 +680,7 @@ impl Tpm {
 
             tpm_engine_helper,
 
-            command_buffer: [0; TPM_PAGE_SIZE],
+            command_buffer,
             pending_nvram,
             async_ak_cert_request: None,
             waker: None,
@@ -1156,10 +1162,11 @@ impl Tpm {
             let mut update_ppi = true;
             match current_io_command {
                 TpmIoCommand::MAP_SHARED_MEMORY => {
-                    self.control_area.command_size = TPM_PAGE_SIZE as u32;
+                    self.control_area.command_size = self.command_buffer.len() as u32;
                     self.control_area.command_pa = val as u64;
-                    self.control_area.response_size = TPM_PAGE_SIZE as u32;
-                    self.control_area.response_pa = val as u64 + (TPM_PAGE_SIZE as u64);
+                    self.control_area.response_size =
+                        self.tpm_engine_helper.reply_buffer.len() as u32;
+                    self.control_area.response_pa = val as u64 + self.command_buffer.len() as u64;
                     update_ppi = false;
                 }
                 TpmIoCommand::PPI_SET_OPERATION_ARG3_INTEGER2 => {
@@ -2822,6 +2829,70 @@ mod tests {
         .await
     }
 
+    #[async_test]
+    async fn test_versioned_command_response_buffers() {
+        use tpm_protocol::tpm20proto::protocol::SelfTestCmd;
+        use tpm_protocol::tpm20proto::protocol::TpmCommand;
+
+        for (version, buffer_size) in [(TpmVersion::V138, 4096), (TpmVersion::V185, 8192)] {
+            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            assert_eq!(tpm.command_buffer.len(), buffer_size);
+            assert_eq!(tpm.tpm_engine_helper.reply_buffer.len(), buffer_size);
+            assert!(tpm.command_buffer.iter().all(|&byte| byte == 0));
+
+            const COMMAND_ADDRESS: u32 = 0x1000;
+            tpm.io_write(
+                TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
+                &TpmIoCommand::MAP_SHARED_MEMORY.0.to_le_bytes(),
+            )
+            .unwrap();
+            tpm.io_write(
+                TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_DATA_OFFSET,
+                &COMMAND_ADDRESS.to_le_bytes(),
+            )
+            .unwrap();
+            assert_eq!(tpm.control_area.command_size as usize, buffer_size);
+            assert_eq!(tpm.control_area.response_size as usize, buffer_size);
+            assert_eq!(tpm.control_area.command_pa, u64::from(COMMAND_ADDRESS));
+            assert_eq!(
+                tpm.control_area.response_pa,
+                u64::from(COMMAND_ADDRESS) + buffer_size as u64,
+            );
+
+            let command = SelfTestCmd::new(SessionTagEnum::NoSessions.into(), false);
+            let mut command_buffer = vec![0xa5; buffer_size];
+            command_buffer[..size_of::<SelfTestCmd>()].copy_from_slice(command.as_bytes());
+            tpm.rt
+                .mem
+                .write_at(tpm.control_area.command_pa, &command_buffer)
+                .unwrap();
+            let mut reply_buffer = vec![0xa5; buffer_size + 1];
+            tpm.rt
+                .mem
+                .write_at(tpm.control_area.response_pa, &reply_buffer)
+                .unwrap();
+
+            tpm.mmio_write(
+                TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_START as u64,
+                &1u32.to_le_bytes(),
+            )
+            .unwrap();
+
+            assert_eq!(tpm.control_area.start, 0);
+            assert_eq!(tpm.command_buffer[buffer_size - 1], 0xa5);
+            tpm.rt
+                .mem
+                .read_at(tpm.control_area.response_pa, &mut reply_buffer)
+                .unwrap();
+            let (reply, succeeded) =
+                SelfTestCmd::base_validate_reply(&reply_buffer, SessionTagEnum::NoSessions)
+                    .unwrap();
+            assert!(succeeded, "SelfTest failed: {reply:?}");
+            assert_eq!(reply_buffer[buffer_size - 1], 0);
+            assert_eq!(reply_buffer[buffer_size], 0xa5);
+        }
+    }
+
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     enum StoreKind {
         Ppi,
@@ -2983,9 +3054,7 @@ mod tests {
             TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_START as u64,
             &1u32.to_le_bytes(),
         );
-        let reply: ReplyHeader = gm
-            .read_plain(u64::from(COMMAND_ADDRESS) + TPM_PAGE_SIZE as u64)
-            .unwrap();
+        let reply: ReplyHeader = gm.read_plain(tpm.control_area.response_pa).unwrap();
         assert!(
             reply
                 .base_validation(
