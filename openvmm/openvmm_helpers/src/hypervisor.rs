@@ -121,7 +121,43 @@ impl FingerprintBackend<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::cpu_fingerprint;
+    use super::*;
+    use hypervisor_resources::HypervisorProbe;
+
+    struct TypedOnlyProvider;
+
+    impl HypervisorProbe for TypedOnlyProvider {
+        fn name(&self) -> &str {
+            "typed-only-test"
+        }
+
+        fn try_new_resource(&self) -> anyhow::Result<Option<Resource<HypervisorKind>>> {
+            anyhow::bail!("resource construction is not part of this test")
+        }
+
+        fn new_resource(&self, _: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>> {
+            anyhow::bail!("resource construction is not part of this test")
+        }
+
+        fn probe_cpu(
+            &self,
+            _: &[(&str, &str)],
+        ) -> anyhow::Result<cpu_profile::fingerprint::BackendCpuFingerprint> {
+            panic!("the legacy helper must not invoke a typed native probe");
+        }
+    }
+
+    #[test]
+    fn legacy_helper_does_not_probe_then_reject_an_arm_payload() {
+        let backend = FingerprintBackend {
+            probe: &TypedOnlyProvider,
+            params: vec![],
+        };
+        assert_eq!(
+            backend.cpu_fingerprint().unwrap_err().to_string(),
+            "the typed-only-test hypervisor backend does not support CPU fingerprinting"
+        );
+    }
 
     #[test]
     fn fingerprint_rejects_unknown_hypervisor() {

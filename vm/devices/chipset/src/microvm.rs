@@ -10,6 +10,7 @@ use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_write;
+use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_resources::microvm::MicrovmPortbDrain;
@@ -40,6 +41,7 @@ use vmcore::save_restore::NoSavedState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
+use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::save_restore::SavedStateRoot;
 
 const DATA_PORT: u16 = 0xe9;
@@ -853,6 +855,172 @@ impl SaveRestore for MicrovmSnapshotRequest {
 
     fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
         Ok(())
+    }
+}
+
+/// The ARM MMIO frontend of the microVM platform byte channel.
+#[derive(InspectMut)]
+pub struct MicrovmPlatformControl {
+    #[inspect(mut)]
+    portb: MicrovmPortb,
+    #[inspect(mut)]
+    shutdown: MicrovmShutdown,
+    #[inspect(skip)]
+    region: (&'static str, RangeInclusive<u64>),
+    #[inspect(skip)]
+    time_binding: [u8; chipset_resources::microvm_time::ARM64_TIME_BINDING_LEN],
+    time_binding_index: Option<usize>,
+}
+
+impl MicrovmPlatformControl {
+    /// Reuses the byte channel's time source, output ownership and drain.
+    pub fn new(
+        portb: MicrovmPortb,
+        power_request: PowerRequestClient,
+        time_binding: [u8; chipset_resources::microvm_time::ARM64_TIME_BINDING_LEN],
+    ) -> Self {
+        Self {
+            portb,
+            shutdown: MicrovmShutdown::new(power_request),
+            region: (
+                "microvm-platform-control",
+                chipset_resources::microvm::MICROVM_PLATFORM_CONTROL_BASE
+                    ..=chipset_resources::microvm::MICROVM_PLATFORM_CONTROL_BASE
+                        + chipset_resources::microvm::MICROVM_PLATFORM_CONTROL_SIZE
+                        - 1,
+            ),
+            time_binding,
+            time_binding_index: None,
+        }
+    }
+
+    fn offset(address: u64, size: usize) -> Result<u64, IoError> {
+        if !matches!(size, 1 | 2 | 4) {
+            return Err(IoError::InvalidAccessSize);
+        }
+        let offset = address
+            .checked_sub(chipset_resources::microvm::MICROVM_PLATFORM_CONTROL_BASE)
+            .ok_or(IoError::InvalidRegister)?;
+        if !offset.is_multiple_of(size as u64)
+            || offset
+                .checked_add(size as u64)
+                .is_none_or(|end| end > chipset_resources::microvm::MICROVM_PLATFORM_CONTROL_SIZE)
+        {
+            return Err(IoError::InvalidRegister);
+        }
+        Ok(offset)
+    }
+}
+
+impl ChipsetDevice for MicrovmPlatformControl {
+    fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+        Some(self)
+    }
+
+    fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
+        Some(self)
+    }
+}
+
+impl PollDevice for MicrovmPlatformControl {
+    fn poll_device(&mut self, cx: &mut Context<'_>) {
+        self.portb.poll_device(cx);
+    }
+}
+
+impl ChangeDeviceState for MicrovmPlatformControl {
+    fn start(&mut self) {
+        self.portb.start();
+    }
+
+    async fn stop(&mut self) {
+        self.portb.stop().await;
+    }
+
+    async fn reset(&mut self) {
+        self.time_binding_index = None;
+        self.portb.reset().await;
+    }
+}
+
+impl MmioIntercept for MicrovmPlatformControl {
+    fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
+        let offset = match Self::offset(address, data.len()) {
+            Ok(offset) => offset,
+            Err(error) => return IoResult::Err(error),
+        };
+        match offset {
+            0 if self.time_binding_index.is_some() => {
+                data.fill(0);
+                for byte in data {
+                    let Some(index) = self.time_binding_index else {
+                        break;
+                    };
+                    *byte = self.time_binding[index];
+                    self.time_binding_index =
+                        (index + 1 < self.time_binding.len()).then_some(index + 1);
+                }
+                IoResult::Ok
+            }
+            0 => self.portb.io_read(DATA_PORT, data),
+            4 if data.len() == 1 => self.portb.io_read(STATUS_PORT, data),
+            4 => IoResult::Err(IoError::InvalidAccessSize),
+            8 => self.portb.io_read(TIME_WINDOW_PORT, data),
+            12 => self.shutdown.io_read(SHUTDOWN_PORT, data),
+            16 => {
+                data.fill(0xff);
+                IoResult::Ok
+            }
+            _ => IoResult::Err(IoError::InvalidRegister),
+        }
+    }
+
+    fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
+        let offset = match Self::offset(address, data.len()) {
+            Ok(offset) => offset,
+            Err(error) => return IoResult::Err(error),
+        };
+        if data.len() != 1 {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        }
+        match offset {
+            0 => self.portb.io_write(DATA_PORT, data),
+            4 => match data[0] {
+                0xa8 => {
+                    self.time_binding_index = Some(0);
+                    self.portb.generation_id_read_index = None;
+                    self.portb.restore_packet_selected = false;
+                    IoResult::Ok
+                }
+                RESTORE_PACKET_SELECT | GENERATION_ID_SELECT => {
+                    self.time_binding_index = None;
+                    self.portb.io_write(STATUS_PORT, data)
+                }
+                _ => self.portb.io_write(STATUS_PORT, data),
+            },
+            12 => self.shutdown.io_write(SHUTDOWN_PORT, data),
+            16 => {
+                tracelimit::warn_ratelimited!("ARM microVM snapshots are unavailable");
+                IoResult::Err(IoError::InvalidRegister)
+            }
+            _ => IoResult::Err(IoError::InvalidRegister),
+        }
+    }
+
+    fn get_static_regions(&mut self) -> &[(&str, RangeInclusive<u64>)] {
+        std::slice::from_ref(&self.region)
+    }
+}
+
+impl SaveRestore for MicrovmPlatformControl {
+    type SavedState = SavedStateNotSupported;
+
+    fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+        Err(SaveError::NotSupported)
+    }
+
+    fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+        match state {}
     }
 }
 
@@ -1873,6 +2041,206 @@ mod tests {
         correction_bound: Some(66),
         max_error_us: Some(2_000),
     };
+
+    fn platform(portb: MicrovmPortb) -> MicrovmPlatformControl {
+        MicrovmPlatformControl::new(
+            portb,
+            (|_: PowerRequest| {}).into(),
+            std::array::from_fn(|index| index as u8),
+        )
+    }
+
+    const PLATFORM: u64 = chipset_resources::microvm::MICROVM_PLATFORM_CONTROL_BASE;
+
+    #[test]
+    fn platform_mmio_preserves_generation_and_time_records() {
+        let make_portb = || {
+            time_abi_portb(None).with_time_sample_source(Arc::new(FakeSource {
+                host: Some(HOST_FIELDS),
+                samples: Mutex::new(0),
+            }))
+        };
+        let mut pio = make_portb();
+        let mut mmio = platform(make_portb());
+        assert!(mmio.supports_pio().is_none());
+        assert!(matches!(
+            mmio.mmio_write(PLATFORM + 4, &[GENERATION_ID_SELECT]),
+            IoResult::Ok
+        ));
+        assert!(matches!(
+            pio.io_write(STATUS_PORT, &[GENERATION_ID_SELECT]),
+            IoResult::Ok
+        ));
+        for _ in 0..4 {
+            let mut expected = [0; 4];
+            let mut observed = [0; 4];
+            assert!(matches!(
+                pio.io_read(DATA_PORT, &mut expected),
+                IoResult::Ok
+            ));
+            assert!(matches!(
+                mmio.mmio_read(PLATFORM, &mut observed),
+                IoResult::Ok
+            ));
+            assert_eq!(observed, expected);
+        }
+        assert!(matches!(
+            mmio.mmio_write(PLATFORM + 4, &[0xa8]),
+            IoResult::Ok
+        ));
+        assert!(matches!(
+            mmio.mmio_write(PLATFORM + 4, &[TIME_SAMPLE_SELECT]),
+            IoResult::Ok
+        ));
+        assert!(matches!(
+            pio.io_write(STATUS_PORT, &[TIME_SAMPLE_SELECT]),
+            IoResult::Ok
+        ));
+        let mut observed_sample = [0; TIME_SAMPLE_LEN];
+        let mut expected_sample = [0; TIME_SAMPLE_LEN];
+        for (observed, expected) in observed_sample
+            .chunks_mut(4)
+            .zip(expected_sample.chunks_mut(4))
+        {
+            assert!(matches!(
+                mmio.mmio_read(PLATFORM + 8, observed),
+                IoResult::Ok
+            ));
+            assert!(matches!(
+                pio.io_read(TIME_WINDOW_PORT, expected),
+                IoResult::Ok
+            ));
+        }
+        assert_eq!(observed_sample, expected_sample);
+        let mut identity = [0; chipset_resources::microvm_time::ARM64_TIME_BINDING_LEN];
+        for chunk in identity.chunks_mut(4) {
+            assert!(matches!(mmio.mmio_read(PLATFORM, chunk), IoResult::Ok));
+        }
+        assert_eq!(identity, std::array::from_fn(|index| index as u8));
+        let mut exhausted = [0xff; 4];
+        assert!(matches!(
+            mmio.mmio_read(PLATFORM, &mut exhausted),
+            IoResult::Ok
+        ));
+        assert_eq!(exhausted, [0; 4]);
+        assert!(matches!(
+            mmio.mmio_write(PLATFORM + 4, &[0xa8]),
+            IoResult::Ok
+        ));
+        futures::executor::block_on(mmio.reset());
+        assert!(matches!(
+            mmio.mmio_read(PLATFORM, &mut exhausted),
+            IoResult::Ok
+        ));
+        assert_eq!(exhausted, [0; 4]);
+        assert!(matches!(mmio.save(), Err(SaveError::NotSupported)));
+    }
+
+    #[test]
+    fn platform_mmio_checks_register_permissions_widths_and_bounds() {
+        let mut mmio = platform(time_abi_portb(None));
+        for offset in [0, 4, 8, 12, 16] {
+            for size in [0, 1, 2, 3, 4, 8] {
+                let mut data = vec![0; size];
+                let readable = matches!(size, 1 | 2 | 4) && (offset != 4 || size == 1);
+                assert_eq!(
+                    matches!(mmio.mmio_read(PLATFORM + offset, &mut data), IoResult::Ok),
+                    readable,
+                    "read offset={offset} size={size}"
+                );
+                let writable = size == 1 && matches!(offset, 0 | 4 | 12);
+                assert_eq!(
+                    matches!(mmio.mmio_write(PLATFORM + offset, &data), IoResult::Ok),
+                    writable,
+                    "write offset={offset} size={size}"
+                );
+            }
+        }
+        for address in [
+            PLATFORM - 1,
+            PLATFORM + 1,
+            PLATFORM + 2,
+            PLATFORM + 0xfff,
+            PLATFORM + 0x1000,
+            u64::MAX,
+        ] {
+            assert!(matches!(
+                mmio.mmio_read(address, &mut [0; 4]),
+                IoResult::Err(_)
+            ));
+            assert!(matches!(mmio.mmio_write(address, &[0]), IoResult::Err(_)));
+        }
+        assert_eq!(
+            MmioIntercept::get_static_regions(&mut mmio)[0].1,
+            PLATFORM..=PLATFORM + 0xfff
+        );
+    }
+
+    #[test]
+    fn platform_mmio_shutdown_preserves_exact_status() {
+        let codes = Arc::new(Mutex::new(Vec::new()));
+        let captured = codes.clone();
+        let mut mmio = MicrovmPlatformControl::new(
+            time_abi_portb(None),
+            (move |request| {
+                if let PowerRequest::PowerOffWithStatus { code } = request {
+                    captured.lock().push(code);
+                }
+            })
+            .into(),
+            [0; chipset_resources::microvm_time::ARM64_TIME_BINDING_LEN],
+        );
+        for code in [0, 193, 255] {
+            assert!(matches!(
+                mmio.mmio_write(PLATFORM + 12, &[code]),
+                IoResult::Ok
+            ));
+        }
+        assert_eq!(*codes.lock(), [0, 193, 255]);
+        for size in [1, 2, 4] {
+            let mut data = vec![0; size];
+            assert!(matches!(
+                mmio.mmio_read(PLATFORM + 12, &mut data),
+                IoResult::Ok
+            ));
+            assert_eq!(data, vec![0xff; size]);
+        }
+        assert!(matches!(
+            mmio.mmio_write(PLATFORM + 16, &[0]),
+            IoResult::Err(_)
+        ));
+    }
+
+    #[test]
+    fn platform_mmio_exit_drain_waits_for_output_flush_before_eof() {
+        let state = Arc::new(Mutex::new(OutputState::default()));
+        let (requests, receiver) = mesh::channel();
+        let portb = MicrovmPortb::new(
+            Box::new(Connected::new(BufferedOutput(state.clone()))),
+            TEST_GENERATION_ID,
+            test_time_abi(None),
+        )
+        .with_output_drain(Some(receiver));
+        let mut mmio = platform(portb);
+        for byte in b"complete output\n" {
+            assert!(matches!(mmio.mmio_write(PLATFORM, &[*byte]), IoResult::Ok));
+        }
+        let mut drain =
+            Box::pin(requests.call_failable(std::convert::identity, MicrovmPortbDrain::Close));
+        let mut cx = Context::from_waker(Waker::noop());
+        mmio.poll_device(&mut cx);
+        assert!(drain.as_mut().now_or_never().is_none());
+        assert!(!state.lock().closed);
+        state.lock().writable = true;
+        mmio.poll_device(&mut cx);
+        assert_eq!(state.lock().bytes, b"complete output\n");
+        assert!(drain.as_mut().now_or_never().is_none());
+        assert!(!state.lock().closed);
+        state.lock().flushed = true;
+        mmio.poll_device(&mut cx);
+        drain.now_or_never().unwrap().unwrap();
+        assert!(state.lock().closed);
+    }
 
     #[test]
     fn time_abi_portb_cold_boot_offers_time_samples() {
