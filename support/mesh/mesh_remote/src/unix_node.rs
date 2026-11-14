@@ -733,7 +733,8 @@ async fn run_receive(
 }
 
 /// Moves the descriptors sent ahead of an event in front of the event's own,
-/// failing if the event does not claim exactly that many.
+/// failing if the event does not claim exactly that many or the total is over
+/// the cap.
 fn take_fds_ahead(
     ahead: &mut Vec<OsResource>,
     fds: &mut Vec<OsResource>,
@@ -744,6 +745,9 @@ fn take_fds_ahead(
             claimed,
             received: ahead.len(),
         });
+    }
+    if ahead.len() + fds.len() > protocol::MAX_FDS_PER_EVENT {
+        return Err(ReceiveError::TooManyFds);
     }
     fds.splice(..0, ahead.drain(..));
     Ok(())
@@ -2098,6 +2102,31 @@ mod tests {
                     for _ in 0..MAX_FDS_PER_EVENT / chunk.len() + 1 {
                         send_raw_packet(&raw, ty, EVENT_FDS, 0, &chunk);
                     }
+                });
+                peer.expect_failure(&format!("more than {MAX_FDS_PER_EVENT} file descriptors"))
+                    .await;
+                thread.join().unwrap();
+                assert_read_ends_closed(writers);
+            }
+        }
+
+        #[async_test]
+        async fn refuses_event_packet_fds_over_cap(driver: DefaultDriver) {
+            raise_fd_limit();
+            for ty in SOCKET_TYPES {
+                let mut peer = RawPeer::new(&driver, ty);
+                let (readers, writers) = pipes(1);
+                let chunk: Vec<OwnedFd> =
+                    (0..64).map(|_| readers[0].try_clone().unwrap()).collect();
+                drop(readers);
+                // Exactly the cap goes ahead; only the event's own descriptor
+                // takes the total over it.
+                let raw = peer.raw.try_clone().unwrap();
+                let thread = std::thread::spawn(move || {
+                    for _ in 0..MAX_FDS_PER_EVENT / chunk.len() {
+                        send_raw_packet(&raw, ty, EVENT_FDS, 0, &chunk);
+                    }
+                    send_raw_packet(&raw, ty, EVENT, MAX_FDS_PER_EVENT as u32, &chunk[..1]);
                 });
                 peer.expect_failure(&format!("more than {MAX_FDS_PER_EVENT} file descriptors"))
                     .await;
