@@ -74,7 +74,7 @@ pub enum KvmError {
     #[error("host does not support GICv2 or GICv3")]
     NoGic,
     #[error("host does not support required cpu capabilities")]
-    Capabilities(virt::PartitionCapabilitiesError),
+    Capabilities(#[source] virt::PartitionCapabilitiesError),
     #[cfg(guest_arch = "aarch64")]
     #[error("failed to set MPIDR_EL1 for VP {vp_index}")]
     SetMpidr {

@@ -592,21 +592,11 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             self.vm.add_vp(vp_info.apic_id)?;
         }
 
-        let mut caps = if self.config.time_abi.is_some() {
-            // The identity leaves must not make the partition model Hyper-V
-            // or the KVM clock.
-            virt::PartitionCapabilities::from_cpuid(
-                self.config.processor_topology,
-                &mut virt::time_abi::identity::capabilities_cpuid(&mut |function, index| {
-                    cpuid.result(function, index, &[0; 4])
-                }),
-            )
-        } else {
-            virt::PartitionCapabilities::from_cpuid(
-                self.config.processor_topology,
-                &mut |function, index| cpuid.result(function, index, &[0; 4]),
-            )
-        }
+        let mut caps = partition_capabilities(
+            self.config.processor_topology,
+            &cpuid,
+            self.config.time_abi.is_some(),
+        )
         .map_err(KvmError::Capabilities)?;
         let time_abi = match &self.config.time_abi {
             Some(config) => {
@@ -841,6 +831,69 @@ fn strip_psfd_leaf(cpuid: &CpuidLeafSet) -> Option<CpuidLeaf> {
     } else {
         None
     }
+}
+
+/// Returns the capabilities of a partition with `cpuid`, which are those of a
+/// time ABI partition if `time_abi`, or fails if they describe an XSAVE layout
+/// that this backend cannot hold.
+fn partition_capabilities(
+    processor_topology: &ProcessorTopology,
+    cpuid: &CpuidLeafSet,
+    time_abi: bool,
+) -> Result<virt::PartitionCapabilities, virt::PartitionCapabilitiesError> {
+    let mut lookup = |function, index| cpuid.result(function, index, &[0; 4]);
+    let caps = if time_abi {
+        // The identity leaves must not make the partition model Hyper-V or
+        // the KVM clock.
+        virt::PartitionCapabilities::from_cpuid(
+            processor_topology,
+            &mut virt::time_abi::identity::capabilities_cpuid(&mut lookup),
+        )
+    } else {
+        virt::PartitionCapabilities::from_cpuid(processor_topology, &mut lookup)
+    }?;
+    check_xsave_layout(&caps)?;
+    Ok(caps)
+}
+
+/// The length of the buffer of `KVM_GET_XSAVE` and `KVM_SET_XSAVE`.
+const KVM_XSAVE_LEN: u32 = size_of::<kvm::kvm_xsave>() as u32;
+
+/// Checks that this backend can hold the XSAVE layout that `caps` describes.
+/// A host's own CPUID always passes, but a restored CPU profile can describe
+/// any layout.
+///
+/// The backend converts between the compact area of [`virt::x86::vp::Xsave`],
+/// which it builds from `compact_len` in whole words, and the standard area of
+/// `KVM_GET_XSAVE`, which has [`KVM_XSAVE_LEN`] bytes. So each component must
+/// end within the standard area, and the compact area must hold them all in
+/// whole words, or the conversion panics.
+fn check_xsave_layout(
+    caps: &virt::x86::X86PartitionCapabilities,
+) -> Result<(), virt::x86::X86PartitionCapabilitiesError> {
+    use virt::x86::X86PartitionCapabilitiesError as Error;
+
+    let xsave = &caps.xsave;
+    let components = xsave.features | xsave.supervisor_features;
+    let standard = xsave.standard_len_for(components);
+    if standard > KVM_XSAVE_LEN {
+        return Err(Error::XSaveLengthTooLarge {
+            required: standard,
+            supported: KVM_XSAVE_LEN,
+        });
+    }
+    let advertised = xsave.compact_len;
+    let compact = xsave.compact_len_for(components);
+    if advertised < compact || !advertised.is_multiple_of(8) {
+        return Err(Error::XSaveLengthTooSmall {
+            advertised,
+            required: compact
+                .max(advertised)
+                .checked_next_multiple_of(8)
+                .unwrap_or(u32::MAX),
+        });
+    }
+    Ok(())
 }
 
 const VMBUS_BASE_GSI: u32 = virt::irqcon::IRQ_LINES as u32;
@@ -2245,11 +2298,138 @@ impl SignalMsi for KvmPartitionInner {
 
 #[cfg(test)]
 mod tests {
+    use super::check_xsave_layout;
     use super::kvm_recommends_hyperv_apic_msrs;
+    use super::partition_capabilities;
     use hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION;
     use hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES;
     use hvdef::HvEnlightenmentInformation;
     use test_with_tracing::test;
+    use virt::CpuidLeaf;
+    use virt::CpuidLeafSet;
+    use virt::x86::X86PartitionCapabilities;
+    use virt::x86::X86PartitionCapabilitiesError as Error;
+    use vm_topology::processor::TopologyBuilder;
+    use vm_topology::processor::x86::X2ApicState;
+
+    /// Returns the CPUID of a CPU with XSAVE whose components from 2 are
+    /// `(size, offset)`.
+    fn xsave_cpuid(components: &[(u32, u32)]) -> CpuidLeafSet {
+        let mut leaves = vec![
+            CpuidLeaf::new(0, [0xd, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]),
+            CpuidLeaf::new(1, [0, 0, (1 << 26) | (1 << 21), 0]),
+            CpuidLeaf::new(0xd, [(1 << (components.len() + 2)) - 1, 0, u32::MAX, 0]).indexed(0),
+        ];
+        leaves.extend((2..).zip(components).map(|(index, &(size, offset))| {
+            CpuidLeaf::new(0xd, [size, offset, 0, 0]).indexed(index)
+        }));
+        CpuidLeafSet::new(leaves)
+    }
+
+    /// Returns the capabilities that a partition has with the XSAVE layout
+    /// `components`, of a time ABI partition if `time_abi`.
+    fn capabilities(
+        components: &[(u32, u32)],
+        time_abi: bool,
+    ) -> Result<X86PartitionCapabilities, Error> {
+        let topology = TopologyBuilder::new_x86()
+            .x2apic(X2ApicState::Supported)
+            .build(1)
+            .unwrap();
+        partition_capabilities(&topology, &xsave_cpuid(components), time_abi)
+    }
+
+    #[test]
+    fn partitions_hold_the_xsave_layouts_that_cpus_describe() {
+        // No XSAVE components, and a component that ends at the end of KVM's
+        // buffer.
+        for time_abi in [false, true] {
+            for components in [&[][..], &[(64, 4096 - 64)][..]] {
+                capabilities(components, time_abi).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn partitions_hold_the_xsave_layouts_of_the_pinned_profiles() {
+        let topology = TopologyBuilder::new_x86()
+            .x2apic(X2ApicState::Supported)
+            .build(1)
+            .unwrap();
+        for profile in cpu_profile::pinned_profiles() {
+            let effective = virt::time_abi::cpuid::effective_cpuid(profile, &topology).unwrap();
+            let cpuid = virt::time_abi::cpuid::backend_cpuid(&effective);
+            partition_capabilities(&topology, &cpuid, true)
+                .unwrap_or_else(|error| panic!("{}: {error}", profile.id()));
+        }
+    }
+
+    #[test]
+    fn partitions_refuse_the_xsave_layouts_that_kvm_cannot_hold() {
+        for time_abi in [false, true] {
+            // A component that ends past KVM's buffer, or past 2^32 bytes.
+            let error = capabilities(&[(64, 4096 - 63)], time_abi).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::XSaveLengthTooLarge {
+                        required: 4097,
+                        supported: 4096
+                    }
+                ),
+                "{error}"
+            );
+            let error = capabilities(&[(0x100, 0xffff_ff00)], time_abi).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::XSaveLengthTooLarge {
+                        required: u32::MAX,
+                        supported: 4096
+                    }
+                ),
+                "{error}"
+            );
+
+            // A compact length that is not in whole words.
+            let error = capabilities(&[(4, 576)], time_abi).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::XSaveLengthTooSmall {
+                        advertised: 580,
+                        required: 584
+                    }
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn xsave_layout_needs_a_compact_length_that_holds_its_components() {
+        // A compact length that is short of the legacy area and the header,
+        // not in whole words, or short of the components.
+        for (components, compact_len, required) in [
+            (&[][..], 0, 576),
+            (&[][..], 575, 576),
+            (&[][..], 577, 584),
+            (&[][..], u32::MAX, u32::MAX),
+            (&[(64, 576)][..], 632, 640),
+        ] {
+            let mut caps = capabilities(components, false).unwrap();
+            caps.xsave.compact_len = compact_len;
+            let error = check_xsave_layout(&caps).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::XSaveLengthTooSmall { advertised, required: r }
+                        if advertised == compact_len && r == required
+                ),
+                "{error}"
+            );
+        }
+    }
 
     #[test]
     fn only_recommends_apic_msrs_when_kvm_does() {
