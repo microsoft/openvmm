@@ -7,6 +7,7 @@ use super::IoQueueEntrySizes;
 use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
+use super::refuse_fused;
 use crate::BROADCAST_NSID;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::MAX_NSID;
@@ -642,6 +643,9 @@ impl AdminHandler {
                 }
 
                 let result = match opcode {
+                    // Before the opcode, so a fused command never reaches a
+                    // handler.
+                    _ if let Err(err) = refuse_fused(&command) => Err(err),
                     spec::AdminOpcode::IDENTIFY => self
                         .handle_identify(state, &command)
                         .map(|()| Some(Default::default())),

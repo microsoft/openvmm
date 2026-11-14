@@ -24,6 +24,7 @@ use crate::queue::SubmissionQueue;
 use crate::spec;
 use crate::spec::nvm;
 use crate::workers::MAX_DATA_TRANSFER_SIZE;
+use crate::workers::refuse_fused;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -247,19 +248,22 @@ impl IoHandler {
                     if let Some(ns) = state.namespaces.get(&command.nsid) {
                         let ns = ns.clone();
                         let io = Box::pin(async move {
-                            let result = ns
-                                .nvm_command(MAX_DATA_TRANSFER_SIZE, &command)
-                                .await
-                                .unwrap_or_else(|err| {
-                                    tracelimit::warn_ratelimited!(
-                                        error = &err as &dyn std::error::Error,
-                                        cid,
-                                        nsid = command.nsid,
-                                        opcode = ?nvm::NvmOpcode(command.cdw0.opcode()),
-                                        "io error"
-                                    );
-                                    err.into()
-                                });
+                            // After the NSID check and before the namespace,
+                            // so a fused command does no I/O.
+                            let result = match refuse_fused(&command) {
+                                Ok(()) => ns.nvm_command(MAX_DATA_TRANSFER_SIZE, &command).await,
+                                Err(err) => Err(err),
+                            }
+                            .unwrap_or_else(|err| {
+                                tracelimit::warn_ratelimited!(
+                                    error = &err as &dyn std::error::Error,
+                                    cid,
+                                    nsid = command.nsid,
+                                    opcode = ?nvm::NvmOpcode(command.cdw0.opcode()),
+                                    "io error"
+                                );
+                                err.into()
+                            });
                             IoResult {
                                 sq_idx,
                                 cid,

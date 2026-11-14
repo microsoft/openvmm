@@ -941,3 +941,143 @@ async fn test_get_smart_log_page_nsid(driver: DefaultDriver) {
         }
     }
 }
+
+/// An admin command with a non-zero FUSE field fails without running.
+#[async_test]
+async fn test_admin_command_with_fuse_refused(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        FaultConfiguration::new(CellUpdater::new(false).cell()),
+    )
+    .await;
+
+    let identify_gpa = 0x10000;
+    // FUSE 00b last, so the refusals cannot pass by refusing everything.
+    for (slot, fuse) in [0b01, 0b10, 0b11, 0b00].into_iter().enumerate() {
+        gm.fill_at(identify_gpa, 0xa5, PAGE_SIZE64 as usize)
+            .unwrap();
+        let mut command = Command::new_zeroed();
+        command.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
+        command.cdw0.set_cid(slot as u16);
+        command.cdw0.set_fuse(fuse);
+        command.cdw10 = spec::Cdw10Identify::new()
+            .with_cns(spec::Cns::CONTROLLER.0)
+            .into();
+        command.dptr[0] = identify_gpa;
+        let cqe = submit_admin_command(
+            &mut nvmec,
+            &gm,
+            &asq,
+            &acq,
+            &int_controller,
+            driver.clone(),
+            slot as u32,
+            &command,
+        )
+        .await;
+        let id: spec::IdentifyController = gm.read_plain(identify_gpa).unwrap();
+        if fuse == 0 {
+            assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+            assert_eq!(id.vid, crate::VENDOR_ID);
+        } else {
+            assert_eq!(
+                cqe.status.status(),
+                spec::Status::INVALID_FIELD_IN_COMMAND.0,
+                "FUSE {fuse:#04b}"
+            );
+            assert!(cqe.status.dnr(), "FUSE {fuse:#04b}");
+            assert_eq!(id.vid, 0xa5a5, "FUSE {fuse:#04b}: Identify ran");
+        }
+    }
+}
+
+/// An I/O command with a non-zero FUSE field fails without reaching the disk.
+#[async_test]
+async fn test_io_command_with_fuse_refused(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        FaultConfiguration::new(CellUpdater::new(false).cell()),
+    )
+    .await;
+
+    // A new RAM disk reads zeros, so a read that reached it overwrites the
+    // buffer's fill.
+    let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+    nvmec.client().add_namespace(1, disk).await.unwrap();
+    write_msix_table_entry(&mut nvmec, 1, 0xfeed0000, 0x2222, false);
+
+    let io_cq_gpa: u64 = 0x4000;
+    let io_sq_gpa: u64 = 0x5000;
+    let read_buf_gpa: u64 = 0x8000;
+    create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &admin_cq_buf,
+        &admin_sq_buf,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        io_cq_gpa,
+        io_sq_gpa,
+        /* qsize_z = */ 15,
+        /* cq_iv = */ 1,
+    )
+    .await;
+    let io_sq_buf = PrpRange::new(vec![io_sq_gpa], 0, PAGE_SIZE64).unwrap();
+    let io_cq_buf = PrpRange::new(vec![io_cq_gpa], 0, PAGE_SIZE64).unwrap();
+
+    // FUSE 00b last, so the refusals cannot pass by refusing everything.
+    for (slot, fuse) in [0b01, 0b10, 0b11, 0b00].into_iter().enumerate() {
+        gm.fill_at(read_buf_gpa, 0xa5, 512).unwrap();
+        let mut command = Command::new_zeroed();
+        command.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+        command.cdw0.set_cid(slot as u16);
+        command.cdw0.set_fuse(fuse);
+        command.nsid = 1;
+        // One block from LBA 0 (NLB is zero-based).
+        command.dptr[0] = read_buf_gpa;
+        write_command_to_queue(&gm, &io_sq_buf, slot, &command);
+        nvmec
+            .write_bar0(sq_db(1), (slot as u32 + 1).as_bytes())
+            .unwrap();
+        wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x2222).await;
+
+        let cqe = read_completion_from_queue(&gm, &io_cq_buf, slot);
+        let data: [u8; 512] = gm.read_plain(read_buf_gpa).unwrap();
+        if fuse == 0 {
+            assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+            assert_eq!(data, [0; 512]);
+        } else {
+            assert_eq!(
+                cqe.status.status(),
+                spec::Status::INVALID_FIELD_IN_COMMAND.0,
+                "FUSE {fuse:#04b}"
+            );
+            assert!(cqe.status.dnr(), "FUSE {fuse:#04b}");
+            assert_eq!(data, [0xa5; 512], "FUSE {fuse:#04b}: the read ran");
+        }
+    }
+}
