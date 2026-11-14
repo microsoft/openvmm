@@ -111,6 +111,10 @@ pub enum X86PartitionCapabilitiesError {
         "advertised xsave length ({advertised}) too small for features, requires ({required}) bytes"
     )]
     XSaveLengthTooSmall { advertised: u32, required: u32 },
+    #[error(
+        "xsave length ({required}) larger than the hypervisor's xsave buffer ({supported} bytes)"
+    )]
+    XSaveLengthTooLarge { required: u32, supported: u32 },
     #[error("x2apic topology and cpuid mismatch, expected x2apic={expected}, found {found}")]
     X2ApicMismatch { expected: bool, found: bool },
 }
