@@ -483,6 +483,10 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
+        // Refuse the page before any state changes, so that a refusal leaves
+        // the VP's APIC, and the timer that it stopped with, as they were.
+        check_restorable_apic_timer(value.registers().lvt_timer)?;
+
         // The VP's timer is no longer the one that it stopped with.
         self.vp.timer_at_stop = None;
 
@@ -765,8 +769,34 @@ pub(super) fn kvm_lapic_page(registers: &vp::ApicRegisters) -> [u8; 1024] {
     registers.as_page()
 }
 
+/// Refuses an APIC page whose LVT timer entry is unmasked and has a delivery
+/// mode other than Fixed.
+///
+/// `KVM_SET_LAPIC` starts the timer again from the page's counts, and KVM
+/// delivers its expiries through the entry's delivery mode. A timer that has
+/// expired, as a one-shot timer whose current count is 0 has, fires at once:
+/// inside the ioctl when APICv is active, and at the next `KVM_RUN` otherwise.
+/// Most modes other than Fixed would give the restored VP an INIT, a startup
+/// IPI, an NMI, or an SMI, or wake it from halt (remote read), none of which
+/// the saved state holds. A guest cannot write the timer's delivery mode, since
+/// KVM masks its writes to the entry, so a save never holds one, and only a
+/// damaged or crafted saved state does. Lowest priority and ExtINT, which KVM
+/// delivers as a fixed interrupt or ignores, are refused too. A masked entry
+/// delivers nothing until the guest writes it, which clears its delivery mode,
+/// so it is accepted.
+fn check_restorable_apic_timer(lvt_timer: u32) -> Result<(), KvmError> {
+    let lvt = x86defs::apic::Lvt::from(lvt_timer);
+    if !lvt.masked() && lvt.delivery_mode() != x86defs::apic::DeliveryMode::FIXED.0 {
+        return Err(KvmError::InvalidState(
+            "an unmasked APIC timer whose delivery mode is not Fixed",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use super::check_restorable_apic_timer;
     use super::check_restored_efer;
     use super::kvm_lapic_page;
     use crate::KvmError;
@@ -779,6 +809,9 @@ mod tests {
     use x86defs::X64_EFER_NXE;
     use x86defs::X64_EFER_SCE;
     use x86defs::X64_EFER_SVME;
+    use x86defs::apic::DeliveryMode;
+    use x86defs::apic::Lvt;
+    use x86defs::apic::TimerMode;
     use zerocopy::FromZeros;
 
     const VECTOR: u32 = 0x40;
@@ -873,6 +906,40 @@ mod tests {
             );
         }
         assert_eq!(kvm_initial_count(VECTOR, (0, 0), true), 0);
+    }
+
+    #[test]
+    fn an_unmasked_timer_that_is_not_fixed_is_refused() {
+        // KVM masks a guest's writes to the entry, so the guest never sets a
+        // delivery mode, whatever the timer's mode.
+        for timer_mode in [
+            TimerMode::ONE_SHOT,
+            TimerMode::PERIODIC,
+            TimerMode::TSC_DEADLINE,
+        ] {
+            let fixed = Lvt::new()
+                .with_vector(VECTOR as u8)
+                .with_timer_mode(timer_mode.0);
+            assert_eq!(fixed.delivery_mode(), DeliveryMode::FIXED.0);
+            check_restorable_apic_timer(fixed.into()).unwrap();
+            check_restorable_apic_timer(fixed.with_masked(true).into()).unwrap();
+
+            for mode in 1..=7 {
+                let lvt = fixed.with_delivery_mode(mode);
+                assert!(
+                    matches!(
+                        check_restorable_apic_timer(lvt.into()),
+                        Err(KvmError::InvalidState(_))
+                    ),
+                    "timer mode {}, delivery mode {mode}",
+                    timer_mode.0
+                );
+                // A masked entry delivers nothing.
+                check_restorable_apic_timer(lvt.with_masked(true).into()).unwrap();
+            }
+        }
+        // The reset value is masked.
+        check_restorable_apic_timer(MASKED).unwrap();
     }
 }
 

@@ -66,8 +66,9 @@ the partition and bind its single VP before invoking the function. Cases have
 names such as `time::kvm::initial_frozen` and `time::whp::clock_restore`.
 Fixtures default to unenlightened; `hv1: true` enables Hv1, using native
 enlightenment offload on WHP. A contract that only KVM owes, such as its refusal
-of a restored `EFER.SVME` for a guest whose CPUID has no SVM, registers with
-`kvm_only` and has a case for KVM alone.
+of a restored `EFER.SVME` for a guest whose CPUID has no SVM, or of a restored
+APIC timer whose delivery mode is not Fixed, registers with `kvm_only` and has a
+case for KVM alone.
 The clock contracts also have separately named Hv1-enabled cases:
 `initial_frozen_hv1`, `freeze_thaw_hv1`, `reset_clocks_hv1`, and
 `clock_restore_hv1`. These reuse the unenlightened contracts to check reference

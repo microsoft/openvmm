@@ -341,6 +341,16 @@ no expiry while the VP is outside guest mode, so the backend saves a
 timer that had expired at the read as KVM reports it, and a restored
 timer that the guest already took an interrupt from fires once more.
 
+KVM also delivers the expiry of an unmasked timer in the delivery mode
+of its LVT entry, which a guest cannot set, since KVM masks its writes
+to the entry. So the backend refuses to restore a LAPIC state whose
+unmasked timer entry has a delivery mode other than Fixed. Five of the
+seven other modes would give the VP an INIT, a startup IPI, an NMI, or
+an SMI, or wake it from halt, none of which the saved state holds, and
+lowest priority and ExtINT, which KVM delivers as a fixed interrupt or
+ignores, are refused too, since no save holds them either. A masked
+entry delivers nothing, and is accepted.
+
 KVM's synthetic-timer snapshot path saves config/count MSRs, but cannot
 preserve timer adjustment or undelivered expiration-message state.
 
