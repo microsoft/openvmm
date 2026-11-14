@@ -786,14 +786,22 @@ impl<F: AsyncFile> VhdxFile<F> {
     /// Flush all writes to stable storage.
     ///
     /// Commits dirty cache pages to the log task, waits for the WAL
-    /// entry to be written, then flushes to make everything durable:
-    /// user data writes, WAL entries, and apply-task writes.
+    /// entry to be written, then makes payload writes and WAL entries durable.
+    /// Applying metadata to its final offsets can happen later.
     pub async fn flush(&self) -> Result<(), VhdxIoError> {
         self.failed.check()?;
 
         if self.read_only {
             return Err(VhdxIoErrorInner::ReadOnly.into());
         }
+
+        let state = self
+            .log_state
+            .as_ref()
+            .expect("writable file has log_state");
+        // Capture payload durability before waiting for WAL writes, so a
+        // covering flush during that wait can satisfy both requirements.
+        let data_fsn = state.flush_sequencer.current_fsn();
 
         // Stamp all uncommitted deferred entries with the current
         // generation BEFORE commit(). This ensures that entries stamped
@@ -804,22 +812,17 @@ impl<F: AsyncFile> VhdxFile<F> {
 
         let lsn = self.cache.commit().map_err(VhdxIoErrorInner::CommitCache)?;
 
-        let state = self
-            .log_state
-            .as_ref()
-            .expect("writable file has log_state");
-
         // Wait for the log task to write WAL entries through this LSN.
-        state
+        let wal_fsn = state
             .logged_lsn
             .wait_for(lsn)
             .await
             .map_err(VhdxIoErrorInner::Failed)?;
 
-        // Flush everything: user data, WAL entries, applied pages.
+        // An older durable WAL must not suppress a new payload-only flush.
         state
             .flush_sequencer
-            .flush(self.file.as_ref())
+            .flush_through(self.file.as_ref(), data_fsn.max(wal_fsn))
             .await
             .map_err(VhdxIoErrorInner::Flush)?;
 

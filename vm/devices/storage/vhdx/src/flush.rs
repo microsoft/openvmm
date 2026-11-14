@@ -20,6 +20,7 @@
 //! [`VhdxFile::flush()`](crate::open::VhdxFile::flush) (for crash safety).
 
 use crate::AsyncFile;
+use crate::error::PipelineFailed;
 use crate::open::FailureFlag;
 use event_listener::Event;
 use parking_lot::Mutex;
@@ -30,10 +31,9 @@ use std::sync::atomic::Ordering::Release;
 
 /// Tracks flush sequence numbers and coalesces concurrent flush requests.
 ///
-/// Multiple callers can request flushes concurrently. The sequencer ensures
-/// that at most one file flush is in progress at a time. If a flush is
-/// in-flight that will satisfy a caller's FSN, the caller waits for that
-/// flush instead of issuing a redundant one.
+/// Multiple callers can request flushes concurrently. If an in-flight flush
+/// covers a caller's FSN, the caller waits for it instead of issuing a
+/// redundant one. A later FSN can require another concurrent flush.
 ///
 /// FSNs increase monotonically. Each [`flush()`](FlushSequencer::flush) call
 /// is assigned the next FSN. [`flush_through()`](FlushSequencer::flush_through)
@@ -42,6 +42,7 @@ use std::sync::atomic::Ordering::Release;
 /// is logged").
 pub(crate) struct FlushSequencer {
     state: Mutex<FlushState>,
+    completion_event: Event,
     failure_flag: Option<Arc<FailureFlag>>,
 }
 
@@ -69,6 +70,8 @@ struct FlushState {
     /// flush. If a caller needs a higher FSN, it replaces this with a new
     /// flush (the old one continues running but is no longer advertised).
     active_flush: Option<Arc<Flush>>,
+    /// Retained for passive waiters; a configured failure flag makes it permanent.
+    failed: Option<PipelineFailed>,
 }
 
 /// A single in-progress flush operation. Waiters hold an `Arc` clone and
@@ -76,10 +79,35 @@ struct FlushState {
 struct Flush {
     /// The FSN that this flush will satisfy when it completes.
     fsn: Fsn,
-    /// Set to `true` by the flusher after the I/O completes (success or failure).
+    /// Set when the I/O completes or its owner is cancelled.
     done: AtomicBool,
     /// Notified when `done` becomes `true`.
     event: Event,
+}
+
+struct FlushGuard<'a> {
+    sequencer: &'a FlushSequencer,
+    flush: Arc<Flush>,
+}
+
+impl Drop for FlushGuard<'_> {
+    fn drop(&mut self) {
+        {
+            let mut state = self.sequencer.state.lock();
+            if state
+                .active_flush
+                .as_ref()
+                .is_some_and(|p| Arc::ptr_eq(p, &self.flush))
+            {
+                state.active_flush = None;
+            }
+        }
+        // Cancellation also wakes active callers so they can issue a
+        // replacement flush. It must not advance the durable watermark.
+        self.flush.done.store(true, Release);
+        self.flush.event.notify(usize::MAX);
+        self.sequencer.completion_event.notify(usize::MAX);
+    }
 }
 
 impl FlushSequencer {
@@ -90,7 +118,9 @@ impl FlushSequencer {
                 issued_fsn: Fsn::ZERO,
                 completed_fsn: Fsn::ZERO,
                 active_flush: None,
+                failed: None,
             }),
+            completion_event: Event::new(),
             failure_flag: None,
         }
     }
@@ -167,6 +197,23 @@ impl FlushSequencer {
         self.state.lock().completed_fsn
     }
 
+    /// Wait for durability without issuing or reserving a flush.
+    pub async fn wait_for(&self, fsn: Fsn) -> Result<(), PipelineFailed> {
+        loop {
+            let listener = self.completion_event.listen();
+            {
+                let state = self.state.lock();
+                if let Some(error) = &state.failed {
+                    return Err(error.clone());
+                }
+                if state.completed_fsn >= fsn {
+                    return Ok(());
+                }
+            }
+            listener.await;
+        }
+    }
+
     /// Inner workhorse: keep flushing until `completed_fsn >= target_fsn`.
     ///
     /// `target_fsn`:
@@ -188,8 +235,16 @@ impl FlushSequencer {
         // If no active flush covers our target, create one and `break` out
         // of the loop to proceed to the I/O in step 2.
         let my_flush = loop {
+            if let Some(flag) = &self.failure_flag {
+                flag.check().map_err(std::io::Error::other)?;
+            }
             let active = {
                 let mut state = self.state.lock();
+                if self.failure_flag.is_some()
+                    && let Some(error) = &state.failed
+                {
+                    return Err(std::io::Error::other(error.clone()));
+                }
                 let target_fsn = requested_fsn.unwrap_or(Fsn(state.issued_fsn.0 + 1));
                 requested_fsn = Some(target_fsn);
 
@@ -225,28 +280,36 @@ impl FlushSequencer {
         };
 
         // Step 2: perform the actual file flush and update state.
+        let guard = FlushGuard {
+            sequencer: self,
+            flush: my_flush.clone(),
+        };
         let r = file.flush().await;
         let completed_fsn = {
             let mut state = self.state.lock();
-            if r.is_ok() {
-                state.completed_fsn = my_flush.fsn.max(state.completed_fsn);
-            }
-            if state
-                .active_flush
-                .as_ref()
-                .is_some_and(|p| Arc::ptr_eq(p, &my_flush))
-            {
-                state.active_flush = None;
+            match &r {
+                Ok(()) => {
+                    state.completed_fsn = my_flush.fsn.max(state.completed_fsn);
+                    if self.failure_flag.is_none() {
+                        state.failed = None;
+                    }
+                }
+                Err(error) => {
+                    state
+                        .failed
+                        .get_or_insert_with(|| PipelineFailed(error.to_string()));
+                    if let Some(flag) = &self.failure_flag {
+                        flag.set(error);
+                    }
+                }
             }
             state.completed_fsn
         };
-        my_flush.done.store(true, Release);
-        my_flush.event.notify(usize::MAX);
-        r.inspect_err(|e| {
-            if let Some(flag) = &self.failure_flag {
-                flag.set(e);
-            }
-        })?;
+        drop(guard);
+        r?;
+        if let Some(flag) = &self.failure_flag {
+            flag.check().map_err(std::io::Error::other)?;
+        }
         Ok(completed_fsn)
     }
 }
@@ -272,6 +335,7 @@ mod tests {
     use std::borrow::Borrow;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use test_with_tracing::test;
 
     // -- Helper wrappers --
 
@@ -279,6 +343,7 @@ mod tests {
     struct CountingFile {
         inner: InMemoryFile,
         flush_count: AtomicU32,
+        flush_gate: Mutex<Option<mesh::OneshotReceiver<Result<(), std::io::Error>>>>,
     }
 
     impl CountingFile {
@@ -286,11 +351,18 @@ mod tests {
             Self {
                 inner: InMemoryFile::new(0),
                 flush_count: AtomicU32::new(0),
+                flush_gate: Mutex::new(None),
             }
         }
 
         fn flush_count(&self) -> u32 {
             self.flush_count.load(Ordering::Relaxed)
+        }
+
+        fn hold_flush(&self) -> mesh::OneshotSender<Result<(), std::io::Error>> {
+            let (tx, rx) = mesh::oneshot();
+            assert!(self.flush_gate.lock().replace(rx).is_none());
+            tx
         }
     }
 
@@ -315,6 +387,10 @@ mod tests {
 
         async fn flush(&self) -> Result<(), std::io::Error> {
             self.flush_count.fetch_add(1, Ordering::Relaxed);
+            let gate = self.flush_gate.lock().take();
+            if let Some(gate) = gate {
+                gate.await.unwrap()?;
+            }
             self.inner.flush().await
         }
 
@@ -597,5 +673,113 @@ mod tests {
         // Sequential flushes: returned FSN equals completed_fsn.
         let fsn = seq.flush(&file).await.unwrap();
         assert_eq!(fsn, seq.completed_fsn());
+    }
+
+    #[async_test]
+    async fn passive_waiters_do_not_issue_flushes() {
+        let file = CountingFile::new();
+        let seq = FlushSequencer::new();
+        let mut first = std::pin::pin!(seq.wait_for(Fsn::new(1)));
+        let mut second = std::pin::pin!(seq.wait_for(Fsn::new(2)));
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        assert_eq!(file.flush_count(), 0);
+
+        let finish = file.hold_flush();
+        let mut flush = std::pin::pin!(seq.flush(&file));
+        assert!(futures::poll!(&mut flush).is_pending());
+        assert!(futures::poll!(&mut first).is_pending());
+        finish.send(Ok(()));
+        flush.await.unwrap();
+        assert!(matches!(
+            futures::poll!(&mut first),
+            std::task::Poll::Ready(Ok(()))
+        ));
+        assert!(futures::poll!(&mut second).is_pending());
+        seq.flush(&file).await.unwrap();
+        assert!(matches!(
+            futures::poll!(&mut second),
+            std::task::Poll::Ready(Ok(()))
+        ));
+        assert_eq!(file.flush_count(), 2);
+    }
+
+    #[async_test]
+    async fn failed_flush_wakes_active_and_passive_waiters_without_retry() {
+        let file = CountingFile::new();
+        let mut seq = FlushSequencer::new();
+        let failed = Arc::new(FailureFlag::new());
+        seq.set_failure_flag(failed.clone());
+        let finish = file.hold_flush();
+        let mut flush = std::pin::pin!(seq.flush(&file));
+        assert!(futures::poll!(&mut flush).is_pending());
+        let mut active = std::pin::pin!(seq.flush_through(&file, Fsn::new(1)));
+        let mut passive = std::pin::pin!(seq.wait_for(Fsn::new(1)));
+        assert!(futures::poll!(&mut active).is_pending());
+        assert!(futures::poll!(&mut passive).is_pending());
+
+        finish.send(Err(std::io::Error::other("injected flush failure")));
+        assert!(flush.await.is_err());
+        assert!(matches!(
+            futures::poll!(&mut active),
+            std::task::Poll::Ready(Err(_))
+        ));
+        assert!(matches!(
+            futures::poll!(&mut passive),
+            std::task::Poll::Ready(Err(_))
+        ));
+        assert!(failed.check().is_err());
+        assert!(seq.flush(&file).await.is_err());
+        assert_eq!(file.flush_count(), 1);
+        assert_eq!(seq.completed_fsn(), Fsn::ZERO);
+    }
+
+    #[async_test]
+    async fn cancelled_flusher_allows_replacement_without_publishing_durability() {
+        let file = CountingFile::new();
+        let seq = FlushSequencer::new();
+        let finish = file.hold_flush();
+        let mut replacement = std::pin::pin!(seq.flush_through(&file, Fsn::new(1)));
+        let mut passive = std::pin::pin!(seq.wait_for(Fsn::new(1)));
+        {
+            let mut flush = std::pin::pin!(seq.flush(&file));
+            assert!(futures::poll!(&mut flush).is_pending());
+            assert!(futures::poll!(&mut replacement).is_pending());
+            assert!(futures::poll!(&mut passive).is_pending());
+        }
+        assert!(finish.is_closed());
+        assert_eq!(seq.completed_fsn(), Fsn::ZERO);
+        assert!(futures::poll!(&mut passive).is_pending());
+        assert!(matches!(
+            futures::poll!(&mut replacement),
+            std::task::Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(
+            futures::poll!(&mut passive),
+            std::task::Poll::Ready(Ok(()))
+        ));
+        assert_eq!(file.flush_count(), 2);
+    }
+
+    #[async_test]
+    async fn later_flush_completion_does_not_unpoison_pipeline() {
+        let file = CountingFile::new();
+        let mut seq = FlushSequencer::new();
+        seq.set_failure_flag(Arc::new(FailureFlag::new()));
+        let finish_first = file.hold_flush();
+        let mut first = std::pin::pin!(seq.flush(&file));
+        assert!(futures::poll!(&mut first).is_pending());
+        let finish_second = file.hold_flush();
+        let mut second = std::pin::pin!(seq.flush(&file));
+        assert!(futures::poll!(&mut second).is_pending());
+
+        finish_first.send(Err(std::io::Error::other("injected flush failure")));
+        assert!(first.await.is_err());
+        finish_second.send(Ok(()));
+        assert!(second.await.is_err());
+        assert_eq!(seq.completed_fsn(), Fsn::new(2));
+        assert!(seq.wait_for(Fsn::new(2)).await.is_err());
+        assert!(seq.flush(&file).await.is_err());
+        assert_eq!(file.flush_count(), 2);
     }
 }

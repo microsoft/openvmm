@@ -722,9 +722,6 @@ impl<F: AsyncFile> VhdxFile<F> {
                 self.metadata_length,
             )
             .await?;
-        // Apply writes can persist before their WAL entry. Make the new
-        // locator recoverable before any table page can point to it.
-        self.flush().await?;
         self.metadata_table
             .publish_replacement(&self.cache, replacement)
             .await?;
@@ -1406,6 +1403,69 @@ mod tests {
     }
 
     #[async_test]
+    async fn set_parent_does_not_flush_between_staging_and_publication(
+        driver: pal_async::DefaultDriver,
+    ) {
+        use crate::tests::support::CrashTestFile;
+
+        let file = InMemoryFile::new(0);
+        let linkage = Guid::new_random();
+        create::create(
+            &file,
+            &mut CreateParams {
+                disk_size: format::GB1,
+                disk_type: crate::DiskType::Differencing(crate::VhdxParent::new(linkage)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mut image = VhdxFile::open(CrashTestFile::from_durable(file.snapshot()))
+            .writable(&driver)
+            .await
+            .unwrap();
+        image
+            .set_parent(
+                &crate::VhdxParent::new(linkage)
+                    .with_relative_path("warmup.vhdx")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let flushes = image.file.flush_count();
+        let new_path = "new".repeat(8_000);
+        image
+            .set_parent(
+                &crate::VhdxParent::new(linkage)
+                    .with_relative_path(&new_path)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            image.file.flush_count(),
+            flushes + 2,
+            "staged locator data and its table entry should share one WAL barrier"
+        );
+        let snapshot = image.file.durable_snapshot();
+        image.abort().await;
+        let recovered = VhdxFile::open(InMemoryFile::from_snapshot(snapshot))
+            .allow_replay(true)
+            .read_only()
+            .await
+            .unwrap();
+        let parent = recovered
+            .parent_locator()
+            .await
+            .unwrap()
+            .unwrap()
+            .vhdx_parent()
+            .unwrap();
+        assert_eq!(parent.relative_path(), Some(new_path.as_str()));
+        assert_eq!(parent.linkage(), linkage);
+    }
+
+    #[async_test]
     async fn set_parent_rejects_invalid_updates(driver: pal_async::DefaultDriver) {
         let file = InMemoryFile::new(0);
         let linkage = Guid::new_random();
@@ -1524,13 +1584,10 @@ mod tests {
     async fn set_parent_recovers_when_table_page_persists_first(driver: pal_async::DefaultDriver) {
         use crate::tests::support::CrashTestFile;
         use std::borrow::Borrow;
-        use std::sync::atomic::AtomicBool;
-        use std::sync::atomic::Ordering;
 
         struct PartialPersistenceFile {
             inner: CrashTestFile,
             table_offset: u64,
-            publishing: AtomicBool,
             table_written: event_listener::Event,
             crash_snapshot: Mutex<Option<Vec<u8>>>,
         }
@@ -1543,9 +1600,6 @@ mod tests {
             }
 
             async fn read_into(&self, offset: u64, buf: Vec<u8>) -> std::io::Result<Vec<u8>> {
-                if offset == self.table_offset && buf.len() == crate::cache::PAGE_SIZE {
-                    self.publishing.store(true, Ordering::SeqCst);
-                }
                 self.inner.read_into(offset, buf).await
             }
 
@@ -1568,15 +1622,6 @@ mod tests {
             }
 
             async fn flush(&self) -> std::io::Result<()> {
-                // Force the apply task to publish the table page before the
-                // flush covering that publication can complete.
-                if self.publishing.load(Ordering::SeqCst) {
-                    let listener = self.table_written.listen();
-                    let written = self.crash_snapshot.lock().is_some();
-                    if !written {
-                        listener.await;
-                    }
-                }
                 self.inner.flush().await
             }
 
@@ -1609,7 +1654,6 @@ mod tests {
         let file = PartialPersistenceFile {
             inner: CrashTestFile::from_durable(file.snapshot()),
             table_offset: regions.metadata_offset,
-            publishing: AtomicBool::new(false),
             table_written: event_listener::Event::new(),
             crash_snapshot: Mutex::new(None),
         };
@@ -1627,6 +1671,13 @@ mod tests {
             )
             .await
             .unwrap();
+        // Wait for the partial-apply snapshot without blocking the WAL flush
+        // that must precede the table write.
+        let listener = image.file.table_written.listen();
+        let written = image.file.crash_snapshot.lock().is_some();
+        if !written {
+            listener.await;
+        }
         let snapshot = image.file.crash_snapshot.lock().clone().unwrap();
         image.close().await.unwrap();
 
