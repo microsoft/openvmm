@@ -801,6 +801,9 @@ impl DiskIo for LayeredDisk {
         sector: u64,
         fua: bool,
     ) -> Result<(), DiskError> {
+        if self.read_only {
+            return Err(DiskError::ReadOnly);
+        }
         for layer in &self.layers {
             layer.backing.write(buffers, sector, fua, false).await?;
             if !layer.write_through {
@@ -832,6 +835,9 @@ impl DiskIo for LayeredDisk {
     ) -> Result<(), DiskError> {
         if self.unmap_behavior == UnmapBehavior::Ignored {
             return Ok(());
+        }
+        if self.read_only {
+            return Err(DiskError::ReadOnly);
         }
 
         for (layer, next_layer) in self
@@ -1174,6 +1180,46 @@ mod tests {
             assert_eq!(&data[..512], &[expected[0]; 512]);
             assert_eq!(&data[512..1024], &[expected[1]; 512]);
         }
+    }
+
+    #[async_test]
+    async fn test_read_only_refuses_writes() {
+        let bottom = Arc::new(TestLayer::new(8));
+        bottom
+            .sectors
+            .lock()
+            .insert(0, Data(vec![0x5a; 512].into()));
+        let cache = Arc::new(TestLayer::new(8));
+        let layers = vec![
+            LayerConfiguration {
+                layer: DiskLayer::new(cache.clone()),
+                read_cache: true,
+                write_through: false,
+            },
+            LayerConfiguration {
+                layer: DiskLayer::new(bottom),
+                read_cache: false,
+                write_through: false,
+            },
+        ];
+        let disk = LayeredDisk::new(true, layers).await.unwrap();
+        let mut mem = GuestMemory::allocate(512);
+        let buffers = OwnedRequestBuffers::linear(0, 512, true);
+
+        // Reads still populate the read cache.
+        disk.read_vectored(&buffers.buffer(&mem), 0).await.unwrap();
+        assert_eq!(&cache.sectors.lock()[&0].0[..], &[0x5a; 512]);
+
+        mem.inner_buf_mut().unwrap().fill(0xa5);
+        assert!(matches!(
+            disk.write_vectored(&buffers.buffer(&mem), 0, false).await,
+            Err(disk_backend::DiskError::ReadOnly)
+        ));
+        assert!(matches!(
+            disk.unmap(0, 1, false).await,
+            Err(disk_backend::DiskError::ReadOnly)
+        ));
+        assert_eq!(&cache.sectors.lock()[&0].0[..], &[0x5a; 512]);
     }
 
     #[async_test]
