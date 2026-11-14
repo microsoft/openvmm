@@ -486,8 +486,20 @@ generation, because a host profile derives from what the backend supports.
 A snapshot records the profile and the
 effective CPUID. Restore requires the same profile, pinned in this OpenVMM with
 the same digest, or, for a host profile, the snapshot's own copy of it, which
-must be a valid profile, its CPU time bits included, with the recorded digest;
+must be a valid profile, its CPU time bits included, with the recorded digest,
+and must follow the derivation policy of this OpenVMM (`E_PROFILE_DIGEST`);
 a host of the profile's generation; and an identical effective CPUID.
+The derivation policy decides which features a derived profile withholds from
+the guest, virtualization (VMX and SVM) among them. OpenVMM applies the policy's
+rules to a host profile's document and refuses a profile that they would change,
+such as a document that someone edited to give the guest VMX or SVM and recorded
+with its own digest; the error names at most eight of the differences. It
+applies the rules of this build, whatever policy the profile's provenance names,
+so a build whose policy differs from the capturing build's also refuses a host
+profile that the capturing build derived and its own policy would change, such
+as one with a feature that the newer policy withholds. A pinned profile needs no
+such check, because OpenVMM holds it as a constant, and an earlier revision
+stays pinned.
 OpenVMM computes the effective CPUID, including its own leaves and the bits
 it owns, such as the cache topology, so an OpenVMM build that computes it
 differently rejects earlier snapshots with `E_CPU_SURFACE`. That error names
@@ -692,6 +704,8 @@ immediately with a clear error if any active device does not support it.
   the capture, and an OpenVMM build that computes the same effective CPUID.
   A host profile's snapshot, including one of a cold boot whose `auto` fell
   back to a host profile, restores only on a host of the capture host's CPU
-  model and stepping whose backend supports the profile.
-  Snapshots from a build that computes a different effective CPUID must be
-  recaptured.
+  model and stepping whose backend supports the profile, and only on a build
+  whose derivation policy leaves the recorded profile unchanged.
+  Snapshots from a build that computes a different effective CPUID, or, for a
+  host profile, whose policy differs in a way that changes the recorded
+  profile, must be recaptured.
