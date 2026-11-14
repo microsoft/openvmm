@@ -143,6 +143,15 @@ since it cannot tell whether the save would lose the flag. A guest-requested
 capture that fails this way rolls back, so the guest continues, and where GIF
 is clear it can request the capture again once it has executed `STGI`.
 
+A guest-requested capture also fails before it commits, and the source resumes,
+on KVM when a VP holds an INIT or a SIPI that it has not accepted yet. Saving
+the VP would accept an event that another VP sent it after it stopped between
+reading its registers and the rest of its state, so the snapshot would hold the
+registers from before the event and the rest from after it. An INIT that SMM
+blocks stays pending, as one behind a clear GIF does, and the saved state has no
+place for it, so a restore would lose it. The guest can request the snapshot
+again.
+
 While a guest-requested snapshot boundary is held, VM-worker management RPCs
 that can change VM state are rejected rather than queued. This includes memory
 writes, pause/resume, reset, interrupt injection, hotplug, and state dumps.
