@@ -29,8 +29,14 @@ pub trait StateElement<C, V>: Sized + Inspect {
 }
 
 pub trait HvRegisterState<T, const COUNT: usize>: Default {
+    /// Returns the registers that hold this state, in the order in which
+    /// `get_values` and `set_values` pair them with values.
     fn names(&self) -> &'static [T; COUNT];
+    /// Writes this state's value of each register that `names` lists, in that
+    /// order, to `it`.
     fn get_values<'a>(&self, it: impl Iterator<Item = &'a mut HvRegisterValue>);
+    /// Sets this state from the value of each register that `names` lists, in
+    /// that order, which `it` yields.
     fn set_values(&mut self, it: impl Iterator<Item = HvRegisterValue>);
 }
 
