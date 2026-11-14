@@ -33,6 +33,53 @@ use thiserror::Error;
 /// The schema of the fingerprint documents this crate reads and writes.
 pub const SCHEMA: &str = "openvmm-cpu-fingerprint/v1";
 
+/// Architecture-typed result of a backend CPU probe.
+///
+/// The x86 fingerprint document and its canonical encoding are unchanged.
+#[derive(Debug, Clone)]
+pub enum BackendCpuFingerprint {
+    /// Supported CPUID, XSAVE, MSR and time capabilities.
+    X86_64(Box<BackendFingerprint>),
+    /// Native architectural IDs, model and counter frequency.
+    Aarch64(crate::aarch64::Fingerprint),
+}
+
+impl BackendCpuFingerprint {
+    /// Extracts the payload required by the x86 profile/document machinery.
+    pub fn into_x86(self) -> Result<BackendFingerprint, crate::ProfileError> {
+        match self {
+            Self::X86_64(value) => Ok(*value),
+            Self::Aarch64(_) => Err(crate::ProfileError::new(
+                crate::ProfileErrorCode::ProfileUnsupported,
+                "an ARM CPU probe cannot supply an x86 CPU fingerprint document",
+            )),
+        }
+    }
+
+    /// Extracts the native input for ARM CPU catalog selection.
+    pub fn into_aarch64(self) -> Result<crate::aarch64::Fingerprint, crate::ProfileError> {
+        match self {
+            Self::Aarch64(value) => Ok(value),
+            Self::X86_64(_) => Err(crate::ProfileError::new(
+                crate::ProfileErrorCode::ProfileUnsupported,
+                "an x86 CPU probe cannot supply ARM architectural IDs",
+            )),
+        }
+    }
+}
+
+impl From<BackendFingerprint> for BackendCpuFingerprint {
+    fn from(value: BackendFingerprint) -> Self {
+        Self::X86_64(Box::new(value))
+    }
+}
+
+impl From<crate::aarch64::Fingerprint> for BackendCpuFingerprint {
+    fn from(value: crate::aarch64::Fingerprint) -> Self {
+        Self::Aarch64(value)
+    }
+}
+
 /// The index of `IA32_ARCH_CAPABILITIES`.
 pub const IA32_ARCH_CAPABILITIES: u32 = 0x10a;
 
@@ -439,6 +486,38 @@ mod tests {
     use crate::host::HostCpu;
     use crate::host::HostOs;
     use test_with_tracing::test;
+
+    #[test]
+    fn typed_probe_payloads_preserve_x86_documents_and_reject_wrong_isa() {
+        let x86 = backend(false);
+        assert_eq!(
+            BackendCpuFingerprint::from(x86.clone()).into_x86().unwrap(),
+            x86
+        );
+        assert!(BackendCpuFingerprint::from(x86).into_aarch64().is_err());
+        let arm = crate::aarch64::Fingerprint {
+            midr: 0x410f_d030,
+            registers: vec![],
+            counter_hz: 24_000_000,
+            backend_usable_gpa_bits: 39,
+        };
+        assert!(BackendCpuFingerprint::from(arm.clone()).into_x86().is_err());
+        let decoded = BackendCpuFingerprint::from(arm.clone())
+            .into_aarch64()
+            .unwrap();
+        assert_eq!(decoded.midr, arm.midr);
+        assert_eq!(decoded.registers, arm.registers);
+        assert_eq!(decoded.counter_hz, arm.counter_hz);
+        assert_eq!(decoded.backend_usable_gpa_bits, arm.backend_usable_gpa_bits);
+        let original = fingerprint();
+        let document = original.to_json();
+        let mut bridged = original.clone();
+        bridged.backend = BackendCpuFingerprint::from(original.backend)
+            .into_x86()
+            .unwrap();
+        assert_eq!(bridged.to_json(), document);
+        bridged.verify().unwrap();
+    }
 
     fn host() -> HostIdentity {
         HostIdentity {

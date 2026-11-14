@@ -575,6 +575,14 @@ fn reserved_memory_ranges() -> [MemoryRange; 1] {
     )]
 }
 
+pub(super) fn linux_ram_start_address(profile: MachineProfile) -> u64 {
+    if cfg!(guest_arch = "aarch64") && profile == MachineProfile::Standard {
+        1 << 30
+    } else {
+        0
+    }
+}
+
 /// Assigns the fixed virtio-mmio slots of the microVM profile to devices, in
 /// device order.
 pub(super) struct VirtioMmioSlots<'a> {
@@ -585,6 +593,8 @@ pub(super) struct VirtioMmioSlots<'a> {
     mem_layout: &'a MemoryLayout,
     /// The RAM ranges of the e820 map, computed for the first device.
     dma_ranges: Option<Vec<MemoryRange>>,
+    #[cfg(guest_arch = "aarch64")]
+    fixed_devices: Vec<crate::worker::vm_loaders::FixedMmioDevice<'static>>,
 }
 
 impl<'a> VirtioMmioSlots<'a> {
@@ -600,22 +610,35 @@ impl<'a> VirtioMmioSlots<'a> {
             chipset_mmio,
             mem_layout,
             dma_ranges: None,
+            #[cfg(guest_arch = "aarch64")]
+            fixed_devices: Vec::new(),
         }
     }
 
-    /// Returns the guest memory that a microVM device may access with DMA:
-    /// the RAM ranges of the e820 map, which leave out the shared
-    /// interrupt-status page, the ISA hole, and the MMIO aperture. After a
-    /// restore, they include the RAM that the restore adds.
+    /// Returns RAM excluding shared status. The x86 binding additionally
+    /// excludes its ISA hole; ARM does not reserve legacy PC memory.
     fn dma_ranges(&mut self) -> anyhow::Result<&[MemoryRange]> {
         if self.dma_ranges.is_none() {
-            self.dma_ranges = Some(
-                loader::linux::mptable_boot::mptable_ram_ranges(
-                    self.mem_layout,
-                    &reserved_memory_ranges(),
-                )
-                .context("failed to find the RAM ranges of the microVM e820 map")?,
-            );
+            #[cfg(guest_arch = "x86_64")]
+            {
+                self.dma_ranges = Some(
+                    loader::linux::mptable_boot::mptable_ram_ranges(
+                        self.mem_layout,
+                        &reserved_memory_ranges(),
+                    )
+                    .context("failed to find the RAM ranges of the microVM e820 map")?,
+                );
+            }
+            #[cfg(guest_arch = "aarch64")]
+            {
+                self.dma_ranges = Some(
+                    memory_range::subtract_ranges(
+                        self.mem_layout.ram().iter().map(|ram| ram.range),
+                        reserved_memory_ranges(),
+                    )
+                    .collect(),
+                );
+            }
         }
         Ok(self.dma_ranges.as_deref().unwrap_or_default())
     }
@@ -638,6 +661,12 @@ impl<'a> VirtioMmioSlots<'a> {
             &mut self.filesystem_index,
             self.chipset_mmio,
         )?;
+        let irq = if cfg!(guest_arch = "aarch64") {
+            openvmm_defs::microvm::microvm_virtio_slot_index(mmio_start)
+                .context("microVM slot has no ARM interrupt source")?
+        } else {
+            irq
+        };
         let dma_ranges = self
             .dma_ranges()?
             .iter()
@@ -663,7 +692,38 @@ impl<'a> VirtioMmioSlots<'a> {
                 .context("failed to restrict device DMA to RAM")?;
             anyhow::Ok(device)
         })?;
+        #[cfg(guest_arch = "aarch64")]
+        self.fixed_devices
+            .push(crate::worker::vm_loaders::FixedMmioDevice {
+                name: "virtio",
+                compatible: "virtio,mmio",
+                range: MemoryRange::new(mmio_start..mmio_start + mmio_len),
+                interrupt: Some(crate::worker::vm_loaders::FixedGicInterrupt {
+                    intid: *vmm_core::emuplat::gic::SPI_RANGE.start() + irq,
+                    edge_triggered: true,
+                }),
+                dma_coherent: true,
+            });
         Ok(())
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    pub(super) fn into_fixed_devices(
+        mut self,
+    ) -> Vec<crate::worker::vm_loaders::FixedMmioDevice<'static>> {
+        self.fixed_devices
+            .push(crate::worker::vm_loaders::FixedMmioDevice {
+                name: "nvx-platform",
+                compatible: "microsoft,nvx-platform-control-v1",
+                range: MemoryRange::new(
+                    chipset_resources::microvm::MICROVM_PLATFORM_CONTROL_BASE
+                        ..chipset_resources::microvm::MICROVM_PLATFORM_CONTROL_BASE
+                            + chipset_resources::microvm::MICROVM_PLATFORM_CONTROL_SIZE,
+                ),
+                interrupt: None,
+                dma_coherent: false,
+            });
+        self.fixed_devices
     }
 }
 
@@ -833,9 +893,56 @@ pub(super) fn x86_topology_builder(
     }
 }
 
+#[cfg(guest_arch = "aarch64")]
+pub(super) fn build_aarch64_topology(
+    config: &openvmm_defs::config::ProcessorTopologyConfig,
+    platform: &virt::PlatformInfo,
+) -> anyhow::Result<super::Aarch64TopologyResult> {
+    openvmm_defs::microvm::validate_machine_gic_msi(MachineProfile::Microvm, config.arch.as_ref())?;
+    anyhow::ensure!(platform.supports_gic_v3, "ARM microVM requires GICv3");
+    anyhow::ensure!(
+        openvmm_defs::microvm::microvm_processor_count_supported(config.proc_count)
+            && config.enable_smt == Some(false)
+            && config.vps_per_socket == Some(config.proc_count),
+        "ARM microVM requires 1/2/4/8 VPs in one socket without SMT"
+    );
+    anyhow::ensure!(
+        matches!(&config.arch, Some(openvmm_defs::config::ArchTopologyConfig::Aarch64(arch))
+            if matches!(&arch.gic_config, Some(openvmm_defs::config::GicConfig::V3(Some(gic)))
+                if gic.gic_distributor_base == openvmm_defs::microvm::MICROVM_ARM64_GIC_DISTRIBUTOR_BASE
+                    && gic.gic_redistributors_base == openvmm_defs::microvm::MICROVM_ARM64_GIC_REDISTRIBUTORS_BASE)
+                && matches!(arch.pmu_gsiv, openvmm_defs::config::PmuGsivConfig::Disabled)),
+        "ARM microVM requires its fixed GIC geometry and disabled PMU"
+    );
+    let mut builder = vm_topology::processor::TopologyBuilder::new_aarch64(
+        vm_topology::processor::aarch64::Aarch64PlatformConfig {
+            gic_distributor_base: openvmm_defs::microvm::MICROVM_ARM64_GIC_DISTRIBUTOR_BASE,
+            gic_version: vm_topology::processor::aarch64::GicVersion::V3 {
+                redistributors_base: openvmm_defs::microvm::MICROVM_ARM64_GIC_REDISTRIBUTORS_BASE,
+            },
+            gic_msi: vm_topology::processor::aarch64::GicMsiController::None,
+            pmu_gsiv: None,
+            virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
+            gic_nr_irqs: openvmm_defs::config::DEFAULT_GIC_NR_IRQS,
+        },
+    );
+    builder.smt_enabled(false).vps_per_socket(config.proc_count);
+    Ok(super::Aarch64TopologyResult {
+        processor_topology: builder.build(config.proc_count)?,
+        spi_layout: crate::worker::spi_layout::resolve_spi_layout(
+            &crate::worker::spi_layout::SpiLayoutInput {
+                gic_nr_irqs: openvmm_defs::config::DEFAULT_GIC_NR_IRQS,
+                v2m_spi_count: None,
+                smmu_count: 0,
+            },
+        )?,
+    })
+}
+
 // The microVM runs on Linux and Windows hosts alone.
 #[cfg(all(test, any(target_os = "linux", windows)))]
 mod tests {
+    use super::MachineProfile;
     use super::virtio_mmio_config;
     use crate::worker::memory_layout::ChipsetMmioRanges;
     use chipset_device::io::IoResult;
@@ -847,6 +954,7 @@ mod tests {
     use openvmm_defs::microvm::MicrovmSandboxBlockRole;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use test_with_tracing::test;
     use virtio::DeviceTraits;
     use virtio::QueueResources;
     use virtio::VirtioDevice;
@@ -857,6 +965,251 @@ mod tests {
     use vmcore::line_interrupt::LineInterrupt;
     use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vm_task::VmTaskDriverSource;
+
+    #[test]
+    fn fixed_slot_sources_preserve_reserved_holes_and_status_offsets() {
+        for (base, source) in [
+            (0xd000_0000, 0),
+            (0xd000_1000, 1),
+            (0xd000_2000, 2),
+            (0xd000_3000, 3),
+            (0xd000_6000, 6),
+            (0xd000_7000, 7),
+        ] {
+            assert_eq!(
+                openvmm_defs::microvm::microvm_virtio_slot_index(base),
+                Some(source)
+            );
+            assert_eq!(
+                openvmm_defs::microvm::microvm_virtio_status_gpa(base),
+                Some(0x30000 + u64::from(source) * 4)
+            );
+            assert_eq!(
+                openvmm_defs::microvm::microvm_virtio_irq(base),
+                Some(16 + source)
+            );
+        }
+        for base in [0xd000_4000, 0xd000_5000, 0xd000_8000, 0xd000_0001] {
+            assert_eq!(openvmm_defs::microvm::microvm_virtio_slot_index(base), None);
+            assert_eq!(openvmm_defs::microvm::microvm_virtio_status_gpa(base), None);
+        }
+    }
+
+    #[async_test]
+    async fn arm_status_bootstrap_uses_backed_trusted_ram_but_device_dma_still_refuses_it(
+        driver: DefaultDriver,
+    ) {
+        assert_eq!(super::linux_ram_start_address(MachineProfile::Microvm), 0);
+        assert_eq!(
+            super::linux_ram_start_address(MachineProfile::Standard),
+            if cfg!(guest_arch = "aarch64") {
+                1 << 30
+            } else {
+                0
+            }
+        );
+        let layout = super::MemoryLayout::new(
+            1 << 20,
+            &[MemoryRange::new(3 << 30..4 << 30)],
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+        let chipset_mmio = ChipsetMmioRanges {
+            low: MemoryRange::new(3 << 30..4 << 30),
+            high: MemoryRange::EMPTY,
+            vtl2: MemoryRange::EMPTY,
+        };
+        let mut slots = super::VirtioMmioSlots::new(&[], chipset_mmio, &layout);
+        let ranges = slots
+            .dma_ranges()
+            .unwrap()
+            .iter()
+            .map(|r| r.start()..r.end())
+            .collect::<Vec<_>>();
+        let gm = GuestMemory::allocate(1 << 20);
+        let dma = gm.restrict(ranges.clone(), None).unwrap();
+        assert!(dma.read_plain::<u32>(0x30004).is_err());
+        assert!(dma.write_plain(0x30004, &1u32).is_err());
+        dma.write_plain(0x31000, &1u32).unwrap();
+        let (base, len, _, features, mode) =
+            virtio_mmio_config("virtiofs", &[], &mut 0, &mut 0, chipset_mmio).unwrap();
+        let drivers = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let mut device = VirtioMmioDevice::new_with_disabled_features_and_interrupt_mode(
+            Box::new(EveryFeatureDevice),
+            &drivers.simple(),
+            gm.clone(),
+            LineInterrupt::detached(),
+            None,
+            base,
+            len,
+            !features,
+            mode,
+        )
+        .unwrap();
+        device.restrict_dma(ranges).unwrap();
+        assert_eq!(gm.read_plain::<u32>(0x30004).unwrap(), 0);
+        gm.write_plain(0x30004, &3u32).unwrap();
+        let mut observed = [0; 4];
+        assert!(matches!(
+            device.mmio_read(
+                base + u64::from(VirtioMmioRegister::INTERRUPT_STATUS.0),
+                &mut observed
+            ),
+            IoResult::Ok
+        ));
+        assert_eq!(u32::from_le_bytes(observed), 3);
+        assert!(dma.read_plain::<u32>(0x30004).is_err());
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn arm_dma_excludes_only_shared_status_and_mmio_not_the_isa_hole() {
+        let aperture = MemoryRange::new(0xc000_0000..0x1_0000_0000);
+        let layout =
+            vm_topology::memory::MemoryLayout::new(4 << 30, &[aperture], &[], &[], None).unwrap();
+        let mut slots = super::VirtioMmioSlots::new(
+            &[],
+            ChipsetMmioRanges {
+                low: aperture,
+                high: MemoryRange::EMPTY,
+                vtl2: MemoryRange::EMPTY,
+            },
+            &layout,
+        );
+        assert_eq!(
+            slots.dma_ranges().unwrap(),
+            [
+                MemoryRange::new(0..0x30000),
+                MemoryRange::new(0x31000..0xc000_0000),
+                MemoryRange::new(0x1_0000_0000..0x1_4000_0000),
+            ]
+        );
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn arm_dma_pa36_boundary_excludes_aperture_status_and_addresses_above_ram() {
+        let aperture = MemoryRange::new(3 << 30..4 << 30);
+        let limit = 1u64 << 36;
+        let layout =
+            vm_topology::memory::MemoryLayout::new(63 << 30, &[aperture], &[], &[], None).unwrap();
+        let mut slots = super::VirtioMmioSlots::new(
+            &[],
+            ChipsetMmioRanges {
+                low: aperture,
+                high: MemoryRange::EMPTY,
+                vtl2: MemoryRange::EMPTY,
+            },
+            &layout,
+        );
+        let dma = slots.dma_ranges().unwrap();
+        assert_eq!(
+            dma,
+            [
+                MemoryRange::new(0..0x30000),
+                MemoryRange::new(0x31000..3 << 30),
+                MemoryRange::new(4 << 30..limit),
+            ]
+        );
+        let permitted = |start, end| {
+            let request = MemoryRange::new(start..end);
+            dma.iter().any(|range| range.contains(&request))
+        };
+        assert!(permitted(limit - 4096, limit));
+        assert!(permitted(0x31000, 0x32000));
+        for (start, end) in [
+            (limit, limit + 4096),
+            (limit - 4096, limit + 4096),
+            (0x30000, 0x31000),
+            (3 << 30, (3 << 30) + 4096),
+            ((3 << 30) - 4096, (3 << 30) + 4096),
+        ] {
+            assert!(!permitted(start, end));
+        }
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn arm_topology_uses_fixed_gic_mpidrs_and_no_optional_controllers() {
+        let platform = virt::PlatformInfo {
+            platform_gsiv: Some(23),
+            supports_gic_v3: true,
+            supports_its: true,
+            device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Unsupported,
+        };
+        for count in [1, 2, 4, 8] {
+            let config = openvmm_defs::config::ProcessorTopologyConfig {
+                proc_count: count,
+                vps_per_socket: Some(count),
+                enable_smt: Some(false),
+                arch: Some(openvmm_defs::config::ArchTopologyConfig::Aarch64(
+                    openvmm_defs::config::Aarch64TopologyConfig {
+                        gic_config: Some(openvmm_defs::config::GicConfig::V3(Some(
+                            openvmm_defs::config::GicV3Config {
+                                gic_distributor_base:
+                                    openvmm_defs::microvm::MICROVM_ARM64_GIC_DISTRIBUTOR_BASE,
+                                gic_redistributors_base:
+                                    openvmm_defs::microvm::MICROVM_ARM64_GIC_REDISTRIBUTORS_BASE,
+                            },
+                        ))),
+                        pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Disabled,
+                        gic_msi: openvmm_defs::config::GicMsiConfig::Auto,
+                    },
+                )),
+            };
+            let result = super::build_aarch64_topology(&config, &platform).unwrap();
+            let topology = result.processor_topology;
+            assert_eq!(topology.vp_count(), count);
+            assert_eq!(topology.gic_distributor_base(), 0xffff_0000);
+            assert_eq!(topology.virt_timer_ppi(), 20);
+            assert!(topology.pmu_gsiv().is_none());
+            assert!(matches!(
+                topology.gic_msi(),
+                vm_topology::processor::aarch64::GicMsiController::None
+            ));
+            for (index, vp) in topology.vps_arch().enumerate() {
+                assert_eq!(vp.mpidr.aff0() as usize, index);
+                assert_eq!(
+                    (vp.mpidr.aff1(), vp.mpidr.aff2(), vp.mpidr.aff3()),
+                    (0, 0, 0)
+                );
+                assert!(!vp.mpidr.mt());
+                assert_eq!(
+                    vp.gicr,
+                    Some(0xefff_0000 + index as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE)
+                );
+            }
+            let mut unsupported = platform.clone();
+            unsupported.supports_gic_v3 = false;
+            assert!(super::build_aarch64_topology(&config, &unsupported).is_err());
+            for msi in [
+                openvmm_defs::config::GicMsiConfig::Its,
+                openvmm_defs::config::GicMsiConfig::V2m { spi_count: None },
+                openvmm_defs::config::GicMsiConfig::V2m {
+                    spi_count: Some(64),
+                },
+            ] {
+                let mut explicit = openvmm_defs::config::ProcessorTopologyConfig {
+                    proc_count: config.proc_count,
+                    vps_per_socket: config.vps_per_socket,
+                    enable_smt: config.enable_smt,
+                    arch: config.arch.clone(),
+                };
+                let Some(openvmm_defs::config::ArchTopologyConfig::Aarch64(arch)) =
+                    &mut explicit.arch
+                else {
+                    panic!("the fixture must have ARM topology");
+                };
+                arch.gic_msi = msi;
+                let error = super::build_aarch64_topology(&explicit, &platform)
+                    .err()
+                    .expect("the worker must reject explicit MSI");
+                assert!(error.to_string().contains("explicit GIC MSI"));
+            }
+        }
+    }
 
     /// A device that offers every feature, so that its transport offers the
     /// guest exactly the features that the microVM configuration admits.

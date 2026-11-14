@@ -5,7 +5,6 @@
 
 use super::ArchPartition;
 use super::BasicPartitionStateAccess;
-#[cfg(guest_arch = "x86_64")]
 use virt::Partition;
 use virt::PartitionAccessState;
 use virt::PartitionMemoryMapper;
@@ -14,7 +13,6 @@ use virt::PartitionMemoryMapper;
 pub trait MicrovmPartition: Send + Sync {
     /// Returns the NVX time ABI primitives, if the partition was built with a
     /// time ABI configuration.
-    #[cfg(guest_arch = "x86_64")]
     fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend>;
 }
 
@@ -22,7 +20,6 @@ impl<T> MicrovmPartition for T
 where
     T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + PartitionAccessState,
 {
-    #[cfg(guest_arch = "x86_64")]
     fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend> {
         Partition::time_abi(self)
     }

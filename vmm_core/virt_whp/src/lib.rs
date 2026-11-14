@@ -26,6 +26,9 @@ mod regs;
 mod synic;
 #[cfg(guest_arch = "x86_64")]
 mod time_abi;
+#[cfg(guest_arch = "aarch64")]
+#[path = "time_abi_aarch64.rs"]
+mod time_abi;
 #[cfg(guest_arch = "x86_64")]
 mod tsc;
 mod vm_state;
@@ -93,6 +96,8 @@ pub use aarch64::WHP_PMU_GSIV;
 pub use fingerprint::cpu_fingerprint;
 #[cfg(guest_arch = "x86_64")]
 pub use fingerprint::profile_unlisted_cpuid;
+#[cfg(guest_arch = "aarch64")]
+pub use time_abi::native_fingerprint as cpu_fingerprint;
 
 #[derive(Debug)]
 pub struct Whp {
@@ -142,7 +147,6 @@ struct WhpPartitionInner {
     #[inspect(flatten)]
     cpuid_topology: cpu_contract::CpuidTopology,
     /// The NVX time ABI state, for a partition built with it.
-    #[cfg(guest_arch = "x86_64")]
     time_abi: Option<time_abi::WhpTimeAbi>,
     vtl0_alias_map_offset: Option<u64>,
     monitor_page: MonitorPage,
@@ -160,6 +164,8 @@ struct VtlPartition {
     #[inspect(skip)]
     whp: whp::Partition,
     time_frozen: Mutex<bool>,
+    #[cfg(guest_arch = "aarch64")]
+    counter_epoch: std::sync::atomic::AtomicU32,
     #[inspect(skip)]
     vplcs: Vec<Vplc>,
     #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_index(&*x.read()).inspect(req))")]
@@ -185,7 +191,6 @@ struct VtlPartition {
 
     /// The NVX time ABI state this partition was configured with, until the
     /// partition build moves it to [`WhpPartitionInner`].
-    #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     time_abi: Option<time_abi::WhpTimeAbi>,
 }
@@ -663,7 +668,6 @@ impl virt::Partition for WhpPartition {
         virt::InitialVpStateSource::Registers
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend> {
         self.inner.time_abi.as_ref().map(|_| &*self.inner as _)
     }
@@ -840,6 +844,27 @@ impl virt::BindProcessor for WhpProcessorBinder {
                         vp_info.gicr.expect("WHP always uses GICv3"),
                     )
                     .for_op("set GICR base")?;
+                if self.partition.time_abi.is_some() {
+                    for (register, expected) in [
+                        (whp::Register64::MpidrEl1, u64::from(vp_info.mpidr)),
+                        (
+                            whp::Register64::GicrBaseGpa,
+                            vp_info.gicr.expect("WHP always uses GICv3"),
+                        ),
+                    ] {
+                        let actual = vp
+                            .vp
+                            .whp(vtl)
+                            .get_register(register)
+                            .for_op("read ARM CPU/time VP topology")?;
+                        if actual != expected {
+                            return Err(virt::time_abi::TimeAbiError::new(
+                                virt::time_abi::TimeAbiCode::CpuSurface,
+                                format!("ARM VP {} {register:?}: expected={expected:#x}, actual={actual:#x}", self.index.index()),
+                            ).into());
+                        }
+                    }
+                }
             }
         }
 
@@ -916,7 +941,6 @@ pub enum Error {
     NestedVirtIncompatibleWithIsolation,
     #[error("WHP does not support {0:?} isolation")]
     IsolationNotSupported(IsolationType),
-    #[cfg(guest_arch = "x86_64")]
     #[error(transparent)]
     TimeAbi(#[from] virt::time_abi::TimeAbiError),
     #[cfg(guest_arch = "x86_64")]
@@ -1223,7 +1247,6 @@ impl WhpPartitionInner {
 
         #[cfg(guest_arch = "x86_64")]
         let tsc_frequency = vtl0.whp.tsc_frequency().for_op("get tsc frequency")?;
-        #[cfg(guest_arch = "x86_64")]
         let (vtl0, time_abi) = {
             let mut vtl0 = vtl0;
             let time_abi = vtl0.time_abi.take();
@@ -1477,7 +1500,6 @@ impl WhpPartitionInner {
                 Some(time_abi) => time_abi.cpuid_topology(proto_config.processor_topology),
                 None => cpu_contract::CpuidTopology::new(proto_config.processor_topology),
             },
-            #[cfg(guest_arch = "x86_64")]
             time_abi,
             vtl0_alias_map_offset,
             monitor_page: MonitorPage::new(),
@@ -1585,12 +1607,14 @@ impl VtlPartition {
         offload_enlightenments: bool,
         nested_virt: bool,
     ) -> Result<Self, Error> {
+        #[cfg(guest_arch = "aarch64")]
+        time_abi::WhpTimeAbi::validate_partition(config, vtl)?;
         #[cfg(not(guest_arch = "x86_64"))]
         {
             if user_mode_apic {
                 return Err(Error::UnsupportedParameter("user_mode_apic"));
             }
-            if !offload_enlightenments {
+            if !offload_enlightenments && config.time_abi.is_none() {
                 return Err(Error::UnsupportedParameter("no_enlightenments"));
             }
             if nested_virt {
@@ -1639,7 +1663,6 @@ impl VtlPartition {
             ))
             .for_op("set processor count")?;
 
-        #[cfg(guest_arch = "x86_64")]
         let time_abi = config
             .time_abi
             .as_ref()
@@ -1887,11 +1910,20 @@ impl VtlPartition {
             .for_op("set extended vm exits")?;
 
         let whp = whp_config.create().for_op("set up partition")?;
+        #[cfg(guest_arch = "aarch64")]
+        if let Some(time_abi) = &time_abi {
+            time_abi.verify_configuration(&whp)?;
+            time_abi.program_cpu_fields(&whp)?;
+        }
         whp.suspend_time().for_op("suspend partition time")?;
 
         for vp in config.processor_topology.vps() {
             let index = vp.vp_index.index();
             whp.create_vp(index).create().for_op("create vp")?;
+        }
+        #[cfg(guest_arch = "aarch64")]
+        if let Some(time_abi) = &time_abi {
+            time_abi.verify_vp_models(&whp, config.processor_topology.vp_count())?;
         }
 
         let vplcs = config
@@ -1956,6 +1988,8 @@ impl VtlPartition {
         Ok(Self {
             whp,
             time_frozen: Mutex::new(true),
+            #[cfg(guest_arch = "aarch64")]
+            counter_epoch: std::sync::atomic::AtomicU32::new(0),
             vplcs,
             #[cfg(guest_arch = "x86_64")]
             software_devices: virt::x86::apic_software_device::ApicSoftwareDevices::new(
@@ -1967,7 +2001,6 @@ impl VtlPartition {
             hypervisor_enlightened,
             #[cfg(guest_arch = "x86_64")]
             native_cpuid_leaves,
-            #[cfg(guest_arch = "x86_64")]
             time_abi,
         })
     }
@@ -1982,6 +2015,8 @@ impl VtlPartition {
     fn reset_whp(&self) -> Result<(), Error> {
         let mut time_frozen = self.time_frozen.lock();
         self.whp.reset().for_op("reset partition")?;
+        #[cfg(guest_arch = "aarch64")]
+        self.counter_epoch.fetch_add(1, Ordering::Relaxed);
         // WHP reset freezes time until an explicit resume or the first VP run.
         *time_frozen = true;
         Ok(())
@@ -1996,6 +2031,8 @@ impl VtlPartition {
                     .for_op("suspend partition time")
                     .expect("failed to freeze WHP partition time");
             } else {
+                #[cfg(guest_arch = "aarch64")]
+                self.counter_epoch.fetch_add(1, Ordering::Relaxed);
                 self.whp
                     .resume_time()
                     .for_op("resume partition time")

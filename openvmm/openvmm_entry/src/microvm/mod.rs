@@ -42,10 +42,105 @@ pub(crate) use verify::report_time_abi_verification;
 use crate::storage_builder::microvm::MicrovmSandboxBlockSource;
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use net_backend_resources::egress::EgressPolicy;
+use openvmm_defs::config::LinuxDirectBootMode;
+use openvmm_defs::microvm::MachineProfile;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use output::MicrovmOutputDrain;
 use std::path::Path;
 use std::path::PathBuf;
+
+/// Resolves the profile-owned Linux boot description before machine admission.
+pub(crate) fn linux_direct_boot_mode(
+    profile: MachineProfile,
+    standard_mode: LinuxDirectBootMode,
+) -> LinuxDirectBootMode {
+    match profile {
+        MachineProfile::Standard => standard_mode,
+        MachineProfile::Microvm => {
+            #[cfg(guest_arch = "x86_64")]
+            {
+                LinuxDirectBootMode::MpTable
+            }
+            #[cfg(guest_arch = "aarch64")]
+            {
+                LinuxDirectBootMode::DeviceTree
+            }
+        }
+    }
+}
+
+/// Profile-owned topology configuration shared by CLI and RPC construction.
+pub(crate) fn topology_arch() -> openvmm_defs::config::ArchTopologyConfig {
+    #[cfg(guest_arch = "x86_64")]
+    {
+        openvmm_defs::config::ArchTopologyConfig::X86(openvmm_defs::config::X86TopologyConfig {
+            apic_id_offset: 0,
+            x2apic: openvmm_defs::config::X2ApicConfig::Unsupported,
+        })
+    }
+    #[cfg(guest_arch = "aarch64")]
+    {
+        openvmm_defs::config::ArchTopologyConfig::Aarch64(
+            openvmm_defs::config::Aarch64TopologyConfig {
+                gic_config: Some(openvmm_defs::config::GicConfig::V3(Some(
+                    openvmm_defs::config::GicV3Config {
+                        gic_distributor_base:
+                            openvmm_defs::microvm::MICROVM_ARM64_GIC_DISTRIBUTOR_BASE,
+                        gic_redistributors_base:
+                            openvmm_defs::microvm::MICROVM_ARM64_GIC_REDISTRIBUTORS_BASE,
+                    },
+                ))),
+                pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Disabled,
+                gic_msi: openvmm_defs::config::GicMsiConfig::Auto,
+            },
+        )
+    }
+}
+
+/// Installs the architecture frontend over the same platform-control resources.
+pub(crate) fn add_platform_chipset_devices(
+    devices: &mut Vec<vmotherboard::ChipsetDeviceHandle>,
+    portb: chipset_resources::microvm::MicrovmPortbHandle,
+    snapshot_notify: Option<mesh::Sender<MicrovmSnapshotBoundaryRequest>>,
+) {
+    use vm_resource::IntoResource;
+    use vm_resource::ResourceId;
+
+    #[cfg(guest_arch = "x86_64")]
+    {
+        use chipset_resources::microvm::MicrovmPortbHandle;
+        use chipset_resources::microvm::MicrovmShutdownHandle;
+        use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
+
+        devices.extend([
+            vmotherboard::ChipsetDeviceHandle {
+                name: MicrovmPortbHandle::ID.to_owned(),
+                resource: portb.into_resource(),
+            },
+            vmotherboard::ChipsetDeviceHandle {
+                name: MicrovmShutdownHandle::ID.to_owned(),
+                resource: MicrovmShutdownHandle.into_resource(),
+            },
+            vmotherboard::ChipsetDeviceHandle {
+                name: MicrovmSnapshotRequestHandle::ID.to_owned(),
+                resource: MicrovmSnapshotRequestHandle {
+                    notify: snapshot_notify,
+                }
+                .into_resource(),
+            },
+        ]);
+    }
+    #[cfg(guest_arch = "aarch64")]
+    {
+        use chipset_resources::microvm::MicrovmPlatformControlHandle;
+
+        drop(snapshot_notify);
+        devices.push(vmotherboard::ChipsetDeviceHandle {
+            name: MicrovmPlatformControlHandle::ID.to_owned(),
+            resource: MicrovmPlatformControlHandle { portb }.into_resource(),
+        });
+    }
+}
 
 /// The live host side of the microVM filesystem.
 #[derive(Clone, Debug)]
@@ -150,6 +245,7 @@ pub(crate) fn time_abi_chipset(
                 chipset_resources::pit::PitDeviceHandle { time_abi: true }.into_resource();
         }
     }
+
     chipset_resources::microvm::MicrovmPortbTimeAbi {
         generation: restore
             .as_ref()
@@ -157,5 +253,75 @@ pub(crate) fn time_abi_chipset(
         sample_delay_us: hooks.sample_delay_us,
         test_hooks: hooks.active(),
         restore,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::linux_direct_boot_mode;
+    use openvmm_defs::config::LinuxDirectBootMode;
+    use openvmm_defs::microvm::MachineProfile;
+    use test_with_tracing::test;
+
+    #[test]
+    fn resolves_profile_owned_linux_boot_mode() {
+        for requested in [
+            LinuxDirectBootMode::Acpi,
+            LinuxDirectBootMode::DeviceTree,
+            LinuxDirectBootMode::MpTable,
+        ] {
+            assert_eq!(
+                linux_direct_boot_mode(MachineProfile::Standard, requested),
+                requested
+            );
+            #[cfg(guest_arch = "x86_64")]
+            let expected = LinuxDirectBootMode::MpTable;
+            #[cfg(guest_arch = "aarch64")]
+            let expected = LinuxDirectBootMode::DeviceTree;
+            assert_eq!(
+                linux_direct_boot_mode(MachineProfile::Microvm, requested),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn platform_frontend_inventory_uses_existing_profile_resources() {
+        use vm_resource::IntoResource;
+
+        let mut devices = Vec::new();
+        super::add_platform_chipset_devices(
+            &mut devices,
+            chipset_resources::microvm::MicrovmPortbHandle {
+                io: serial_core::resources::DisconnectedSerialBackendHandle.into_resource(),
+                generation_id: [0x3c; 16],
+                output_drain: None,
+                time_abi: chipset_resources::microvm::MicrovmPortbTimeAbi {
+                    generation: 0,
+                    sample_delay_us: 0,
+                    test_hooks: false,
+                    restore: None,
+                },
+            },
+            None,
+        );
+        let ids: Vec<_> = devices
+            .iter()
+            .map(|device| (device.name.as_str(), device.resource.id()))
+            .collect();
+        #[cfg(guest_arch = "x86_64")]
+        assert_eq!(
+            ids,
+            [
+                ("microvm-portb", "microvm-portb"),
+                ("microvm-shutdown", "microvm-shutdown"),
+                ("microvm-snapshot-request", "microvm-snapshot-request"),
+            ]
+        );
+        #[cfg(guest_arch = "aarch64")]
+        assert_eq!(
+            ids,
+            [("microvm-platform-control", "microvm-platform-control")]
+        );
     }
 }

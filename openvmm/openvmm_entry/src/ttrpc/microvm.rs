@@ -223,6 +223,8 @@ impl MicrovmRequest {
             machine_profile == vmservice::vm_config::MachineProfile::Microvm as i32,
             "microVM snapshot restore requires the matching microVM ABI profile"
         );
+        let arch = super::parse_arch_topology_overrides(processor_config.as_ref())?;
+        openvmm_defs::microvm::validate_machine_gic_msi(MachineProfile::Microvm, arch.as_ref())?;
 
         let mut opt = crate::cli_args::microvm_options()?;
         let mut asserted_processor_count = None;
@@ -1590,6 +1592,83 @@ mod tests {
                 selected
             );
         }
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn ttrpc_arm_microvm_rejects_explicit_gic_msi_before_topology_replacement() {
+        use vmservice::processor_aarch64_config::GicMsiConfig;
+        use vmservice::processor_config::ArchConfig;
+
+        for msi in [
+            None,
+            Some(GicMsiConfig::MsiIts(Default::default())),
+            Some(GicMsiConfig::MsiV2m(Default::default())),
+            Some(GicMsiConfig::MsiV2m(vmservice::GicMsiV2mConfig {
+                spi_count: Some(64),
+            })),
+        ] {
+            let result = command_line_view(vmservice::CreateVmRequest {
+                config: Some(vmservice::VmConfig {
+                    machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+                    memory_config: Some(vmservice::MemoryConfig {
+                        memory_mb: 128,
+                        ..Default::default()
+                    }),
+                    boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                        Default::default(),
+                    )),
+                    processor_config: Some(vmservice::ProcessorConfig {
+                        processor_count: 1,
+                        arch_config: Some(ArchConfig::Aarch64(vmservice::ProcessorAarch64Config {
+                            gic_msi_config: msi.clone(),
+                        })),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            if msi.is_some() {
+                assert!(
+                    result
+                        .err()
+                        .expect("explicit MSI must be rejected")
+                        .to_string()
+                        .contains("explicit GIC MSI")
+                );
+            } else {
+                result.unwrap().validate_microvm_options().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn ttrpc_microvm_rejects_topology_for_the_other_architecture() {
+        use vmservice::processor_config::ArchConfig;
+
+        #[cfg(guest_arch = "aarch64")]
+        let arch = ArchConfig::X86(Default::default());
+        #[cfg(guest_arch = "x86_64")]
+        let arch = ArchConfig::Aarch64(Default::default());
+        let result = command_line_view(vmservice::CreateVmRequest {
+            config: Some(vmservice::VmConfig {
+                machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+                processor_config: Some(vmservice::ProcessorConfig {
+                    arch_config: Some(arch),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(
+            result
+                .err()
+                .expect("wrong-architecture topology must be rejected")
+                .to_string()
+                .contains("topology overrides not supported on current arch")
+        );
     }
 
     #[test]

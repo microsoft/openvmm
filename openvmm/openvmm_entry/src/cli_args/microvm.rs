@@ -844,10 +844,25 @@ impl Options {
             return Ok(());
         }
 
-        anyhow::ensure!(
-            cfg!(guest_arch = "x86_64"),
-            "microVM requires an x86-64 guest"
-        );
+        #[cfg(guest_arch = "aarch64")]
+        {
+            anyhow::ensure!(
+                matches!(self.gic_msi, super::GicMsiCli::Auto),
+                "ARM microVM does not support explicit --gic-msi its or v2m"
+            );
+            anyhow::ensure!(
+                self.microvm.snapshot_destination.is_none() && self.restore_snapshot.is_none(),
+                "ARM microVM supports cold boot only; snapshot capture and restore are unavailable"
+            );
+            anyhow::ensure!(
+                self.memory_size() <= 63 * 1024 * 1024 * 1024,
+                "ARM microVM requires at most 63 GiB logical RAM"
+            );
+            anyhow::ensure!(
+                self.microvm.x_time_abi_test_hook.is_empty(),
+                "ARM microVM does not support x86 time ABI test-hook options"
+            );
+        }
         let ramfs_overlay =
             openvmm_defs::microvm::ramfs_overlay_requested(&self.cmdline.join(" "))?;
         if ramfs_overlay {
@@ -1537,16 +1552,66 @@ mod tests {
         assert!(Options::try_parse_from(["openvmm", "--machine", "unknown"]).is_err());
     }
 
-    /// The microVM profile requires an x86-64 guest, so the tests that
-    /// validate microVM options run only for x86-64 guests.
-    #[cfg(not(guest_arch = "x86_64"))]
+    #[cfg(guest_arch = "aarch64")]
     #[test]
-    fn test_microvm_requires_an_x86_64_guest() {
-        let options = Options::try_parse_from(["openvmm", "--machine", "microvm"]).unwrap();
-        assert_eq!(
-            options.validate_microvm_options().unwrap_err().to_string(),
-            "microVM requires an x86-64 guest"
-        );
+    fn test_microvm_arm_rejects_explicit_gic_msi_before_topology_replacement() {
+        for msi in ["auto", "its", "v2m"] {
+            let standard = Options::try_parse_from(["openvmm", "--gic-msi", msi]).unwrap();
+            standard.validate_microvm_options().unwrap();
+            let microvm =
+                Options::try_parse_from(["openvmm", "--machine", "microvm", "--gic-msi", msi])
+                    .unwrap();
+            let result = microvm.validate_microvm_options();
+            if msi == "auto" {
+                result.unwrap();
+            } else {
+                assert!(result.unwrap_err().to_string().contains("--gic-msi"));
+            }
+        }
+        Options::try_parse_from(["openvmm", "--machine", "microvm"])
+            .unwrap()
+            .validate_microvm_options()
+            .unwrap();
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn test_microvm_arm_cold_boot_admission_is_not_an_x86_or_snapshot_bypass() {
+        for profile in ["auto", "host"] {
+            for count in ["1", "2", "4", "8"] {
+                let options = Options::try_parse_from([
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--cpu-profile",
+                    profile,
+                    "--processors",
+                    count,
+                ])
+                .unwrap();
+                options.validate_microvm_options().unwrap();
+            }
+        }
+        for extra in [
+            vec!["--processors", "3"],
+            vec!["--memory", "64G"],
+            vec!["--uefi"],
+            vec!["--device-tree"],
+            vec![
+                "--x-time-abi-verify",
+                "--x-time-abi-test-hook",
+                "host-rate-offset-ppm=1",
+            ],
+        ] {
+            let mut args = vec!["openvmm", "--machine", "microvm"];
+            args.extend(extra);
+            let options = Options::try_parse_from(args).unwrap();
+            assert!(options.validate_microvm_options().is_err());
+        }
+        Options::try_parse_from(["openvmm", "--machine", "microvm", "--x-time-abi-verify"])
+            .unwrap()
+            .validate_microvm_options()
+            .unwrap();
     }
 
     #[cfg(guest_arch = "x86_64")]
