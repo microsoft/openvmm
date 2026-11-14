@@ -1122,6 +1122,9 @@ impl MshvProcessor<'_> {
         dev: &impl CpuIo,
     ) -> Result<(), VpHaltReason> {
         match exit.header.typ {
+            HvMessageType::HvMessageTypeInvalidVpRegisterValue => {
+                Err(handle_invalid_vp_register_exit(self.vpindex, exit, dev))
+            }
             HvMessageType::HvMessageTypeUnrecoverableException => {
                 let info = exit.as_message::<hvdef::HvX64UnrecoverableExceptionMessage>();
                 tracelimit::warn_ratelimited!(

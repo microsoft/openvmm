@@ -16,6 +16,7 @@ use crate::MshvVpRunner;
 use crate::VcpuFdExt;
 use crate::common_synthetic_features;
 use crate::create_vm_with_retry;
+use crate::handle_invalid_vp_register_exit;
 
 use aarch64defs::EsrEl2;
 use aarch64defs::ExceptionClass;
@@ -632,6 +633,9 @@ impl MshvProcessor<'_> {
         dev: &impl CpuIo,
     ) -> Result<(), VpHaltReason> {
         match exit.header.typ {
+            HvMessageType::HvMessageTypeInvalidVpRegisterValue => {
+                return Err(handle_invalid_vp_register_exit(self.vpindex, exit, dev));
+            }
             HvMessageType::HvMessageTypeUnrecoverableException => {
                 return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
             }
