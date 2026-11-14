@@ -7,6 +7,7 @@ use crate::KvmError;
 use crate::KvmPartitionInner;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
+use virt::CpuidLeafSet;
 use virt::VpIndex;
 use virt::state::HvRegisterState;
 use virt::x86::SegmentRegister;
@@ -14,6 +15,8 @@ use virt::x86::TableRegister;
 use virt::x86::vp;
 use virt::x86::vp::AccessVpState;
 use x86defs::SegmentAttributes;
+use x86defs::cpuid::CpuidFunction;
+use x86defs::cpuid::ExtendedVersionAndFeaturesEcx;
 use zerocopy::FromZeros;
 
 /// Per-VP state access for a bound [`KvmProcessor`].
@@ -158,6 +161,28 @@ pub(crate) fn table_reg_from_kvm(reg: kvm::kvm_dtable) -> TableRegister {
     }
 }
 
+/// Refuses a restored EFER that has SVME set when the guest's CPUID has no
+/// SVM, which would give the guest SVM.
+///
+/// KVM checks EFER.SVME against the guest's CPUID only when the guest writes
+/// it, and before Linux 7.3, 6.18.52, and 6.12.112, `KVM_SET_SREGS` takes any
+/// EFER. On an AMD host, the guest could then run SVM instructions, such as
+/// VMRUN, which reach KVM's nested virtualization code, in a partition that
+/// means to keep it closed. A guest never holds the bit without SVM, since KVM
+/// refuses its write, so only a crafted saved state carries it. Refusing it
+/// here, as newer kernels do, does not depend on the host's kernel or vendor.
+fn check_restored_efer(efer: u64, cpuid: &CpuidLeafSet) -> Result<(), KvmError> {
+    // The lookup that KVM does for the guest CPUID's SVM: the first entry for
+    // the function whose index is not significant or is 0.
+    let ecx = cpuid.result(CpuidFunction::ExtendedVersionAndFeatures.0, 0, &[0; 4])[2];
+    if efer & x86defs::X64_EFER_SVME != 0 && !ExtendedVersionAndFeaturesEcx::from(ecx).svm() {
+        return Err(KvmError::InvalidState(
+            "EFER.SVME is set, but the guest CPUID has no SVM",
+        ));
+    }
+    Ok(())
+}
+
 impl AccessVpState for KvmVpStateAccess<'_, '_> {
     type Error = KvmError;
 
@@ -213,6 +238,9 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn set_registers(&mut self, value: &vp::Registers) -> Result<(), Self::Error> {
+        // Refuse the EFER before KVM_SET_REGS changes any register.
+        check_restored_efer(value.efer, &self.vp.partition.cpuid)?;
+
         let regs = kvm::kvm_regs {
             rax: value.rax,
             rbx: value.rbx,
@@ -741,12 +769,63 @@ pub(super) fn kvm_lapic_page(registers: &vp::ApicRegisters) -> [u8; 1024] {
 
 #[cfg(test)]
 mod tests {
+    use super::check_restored_efer;
     use super::kvm_lapic_page;
+    use crate::KvmError;
+    use test_with_tracing::test;
+    use virt::CpuidLeaf;
+    use virt::CpuidLeafSet;
     use virt::x86::vp::ApicRegisters;
+    use x86defs::X64_EFER_LMA;
+    use x86defs::X64_EFER_LME;
+    use x86defs::X64_EFER_NXE;
+    use x86defs::X64_EFER_SCE;
+    use x86defs::X64_EFER_SVME;
     use zerocopy::FromZeros;
 
     const VECTOR: u32 = 0x40;
     const MASKED: u32 = 1 << 16;
+    /// CPUID 0x8000_0001 ECX bit 2.
+    const SVM: u32 = 1 << 2;
+
+    /// Returns CPUID function 0x8000_0001 with `ecx`, which holds SVM.
+    fn extended_features(ecx: u32) -> CpuidLeaf {
+        CpuidLeaf::new(0x8000_0001, [0, 0, ecx, 0])
+    }
+
+    #[test]
+    fn efer_svme_needs_svm_in_the_guest_cpuid() {
+        const LONG_MODE: u64 = X64_EFER_SCE | X64_EFER_LME | X64_EFER_LMA | X64_EFER_NXE;
+
+        // KVM finds SVM in the first entry for the function whose index is not
+        // significant or is 0.
+        for leaf in [extended_features(SVM), extended_features(SVM).indexed(0)] {
+            let cpuid = CpuidLeafSet::new(vec![leaf]);
+            assert!(check_restored_efer(LONG_MODE | X64_EFER_SVME, &cpuid).is_ok());
+        }
+        for (what, leaves) in [
+            ("SVM clear", vec![extended_features(!SVM)]),
+            ("no leaf", vec![]),
+            ("another function", vec![CpuidLeaf::new(1, [0, 0, SVM, 0])]),
+            ("another index", vec![extended_features(SVM).indexed(1)]),
+            (
+                "another register",
+                vec![CpuidLeaf::new(0x8000_0001, [SVM, SVM, 0, SVM])],
+            ),
+        ] {
+            let cpuid = CpuidLeafSet::new(leaves);
+            assert!(
+                matches!(
+                    check_restored_efer(LONG_MODE | X64_EFER_SVME, &cpuid),
+                    Err(KvmError::InvalidState(_))
+                ),
+                "{what}"
+            );
+            // Only SVME is refused.
+            assert!(check_restored_efer(LONG_MODE, &cpuid).is_ok(), "{what}");
+            assert!(check_restored_efer(!X64_EFER_SVME, &cpuid).is_ok(), "{what}");
+        }
+    }
 
     /// Returns the initial count of the page that KVM gets for a timer with
     /// the LVT entry `lvt_timer` and the counts `(initial, current)`, whose

@@ -57,6 +57,7 @@ each native backend and lists the capabilities it requires. For example:
 ```rust,ignore
 backend_test!(clock_restore, requires: [time_control, reset]);
 backend_test!(synic_timers_restore, hv1: true, requires: [time_control, hv1]);
+backend_test!(refuses_restored_efer_svme_without_svm, kvm_only, requires: []);
 ```
 
 Add the function and its declaration in the relevant test module; there is no
@@ -64,7 +65,9 @@ central case enum or registration table to update. Shared helpers construct
 the partition and bind its single VP before invoking the function. Cases have
 names such as `time::kvm::initial_frozen` and `time::whp::clock_restore`.
 Fixtures default to unenlightened; `hv1: true` enables Hv1, using native
-enlightenment offload on WHP.
+enlightenment offload on WHP. A contract that only KVM owes, such as its refusal
+of a restored `EFER.SVME` for a guest whose CPUID has no SVM, registers with
+`kvm_only` and has a case for KVM alone.
 The clock contracts also have separately named Hv1-enabled cases:
 `initial_frozen_hv1`, `freeze_thaw_hv1`, `reset_clocks_hv1`, and
 `clock_restore_hv1`. These reuse the unenlightened contracts to check reference

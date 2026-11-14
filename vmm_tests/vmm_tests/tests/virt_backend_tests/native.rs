@@ -119,6 +119,11 @@ macro_rules! backend_test {
         #[cfg(windows)]
         $crate::native::backend_test!(@backend whp, $test, $hv1, [$($requirement),*]);
     };
+    // A contract that only the KVM backend owes.
+    ($test:ident, kvm_only, requires: [$($requirement:ident),* $(,)?]) => {
+        #[cfg(target_os = "linux")]
+        $crate::native::backend_test!(@backend kvm, $test, false, [$($requirement),*]);
+    };
     (@backend $backend:ident, $test:ident, $hv1:literal, [$($requirement:ident),*]) => {
         petri::multitest!(vec![
             $crate::native::$backend::test(
