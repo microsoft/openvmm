@@ -859,6 +859,9 @@ message SerialConfig {
         bool connect = 3;
     }
     repeated Config ports = 3;
+    // Only emulate configured x86 COM ports.
+    // Off by default. Ignored on ARM64.
+    bool only_configured = 4;
 }
 
 message HVSocketConfig {

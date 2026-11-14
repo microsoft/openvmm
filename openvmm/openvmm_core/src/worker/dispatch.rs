@@ -4496,7 +4496,7 @@ fn add_devices_to_dsdt_x64(
         dsdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
     }
 
-    // Any serial port configured means all are enabled.
+    // Any serial port configured means all are enabled, except omitted ports.
     if serial_uarts {
         for (name, com_port, ddn, uid) in [
             (b"\\_SB.UAR1", ComPort::Com1, b"COM1", 1),
@@ -4506,6 +4506,8 @@ fn add_devices_to_dsdt_x64(
         ]
         .iter()
         .copied()
+        .zip(capabilities.omitted_com_ports.unwrap_or_default())
+        .filter_map(|(uart, omitted)| (!omitted).then_some(uart))
         {
             dsdt.add_uart(name, ddn, uid, com_port.io_port(), com_port.irq().into());
         }
@@ -4646,6 +4648,7 @@ mod uart_tests {
             with_i440bx_host_pci_bridge: false,
             dt_com_ports: [true, true, false, true],
             dt_pl011_uarts: false,
+            omitted_com_ports: None,
         };
         assert_eq!(
             dt_uarts(&capabilities),
