@@ -50,6 +50,10 @@ pub struct SavedState {
     pub(crate) time_offset_seconds: i64,
     #[mesh(12)]
     pub(crate) last_erase_timestamp: u32,
+    #[mesh(13)]
+    pub(crate) abort_pending: bool,
+    #[mesh(14)]
+    pub(crate) last_addition_timestamp: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +72,8 @@ enum SavedStateValidationError {
     EmptyReadResponse,
     #[error("write-end-pending is set outside write state")]
     InvalidWriteEndPending,
+    #[error("abort-pending requires an empty write state")]
+    InvalidAbortPending,
     #[error("SEL count {count} does not match {records} saved records")]
     SelCountMismatch { count: usize, records: usize },
     #[error("SEL count {0} exceeds {SEL_CAPACITY}")]
@@ -108,6 +114,8 @@ impl SaveRestore for IpmiKcs {
             reservation_id: self.sel.reservation_id,
             time_offset_seconds: self.sel.time_offset_seconds,
             last_erase_timestamp: self.sel.last_erase_timestamp,
+            abort_pending: self.transaction.abort_pending,
+            last_addition_timestamp: self.sel.last_addition_timestamp,
         })
     }
 
@@ -117,7 +125,9 @@ impl SaveRestore for IpmiKcs {
 
         self.transaction = restored.transaction;
         self.sel = restored.sel;
-        self.rate_limiter.reset();
+        if let Some(forwarder) = self.forwarder.as_mut() {
+            forwarder.rate_limiter.reset();
+        }
         self.stats = SelStats::default();
         Ok(())
     }
@@ -142,6 +152,8 @@ fn validate_saved_state(state: SavedState) -> Result<RestoredState, SavedStateVa
         reservation_id,
         time_offset_seconds,
         last_erase_timestamp,
+        abort_pending,
+        last_addition_timestamp,
     } = state;
 
     if status & STATUS_IBF != 0 || status & 0x30 != 0 {
@@ -173,6 +185,9 @@ fn validate_saved_state(state: SavedState) -> Result<RestoredState, SavedStateVa
     }
     if write_end_pending && kcs_state != KCS_STATE_WRITE {
         return Err(SavedStateValidationError::InvalidWriteEndPending);
+    }
+    if abort_pending && (kcs_state != KCS_STATE_WRITE || write_end_pending || !request.is_empty()) {
+        return Err(SavedStateValidationError::InvalidAbortPending);
     }
 
     let sel_count =
@@ -227,6 +242,7 @@ fn validate_saved_state(state: SavedState) -> Result<RestoredState, SavedStateVa
         response_len: response.len(),
         response_pos: response_position,
         write_end_pending,
+        abort_pending,
         ..KcsTransaction::default()
     };
     transaction.request[..request.len()].copy_from_slice(&request);
@@ -239,6 +255,7 @@ fn validate_saved_state(state: SavedState) -> Result<RestoredState, SavedStateVa
             next_record_id,
             reservation_id,
             time_offset_seconds,
+            last_addition_timestamp,
             last_erase_timestamp,
         },
     })

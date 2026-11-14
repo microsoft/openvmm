@@ -32,6 +32,8 @@ use std::future::Future;
 use std::future::pending;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use thiserror::Error;
 use underhill_config::Vtl2SettingsErrorInfo;
@@ -351,6 +353,8 @@ pub(crate) mod msg {
         IpmiSel {
             record_id: u16,
             record: [u8; get_protocol::IPMI_SEL_RECORD_SIZE],
+            /// Held until the notification is written to the host or dropped.
+            slot: LocalOnly<super::IpmiSelSlot>,
         },
         /// Report a power state change to the host.
         PowerState(PowerState),
@@ -638,7 +642,30 @@ struct PipeChannels {
 
 enum WriteRequest {
     Message(Vec<u8>),
+    /// A message whose reservation is released once it is written.
+    IpmiSel(Vec<u8>, IpmiSelSlot),
     Flush(Rpc<(), ()>),
+}
+
+/// Reservation for one IPMI SEL notification that has been accepted but not
+/// yet written to the host. Dropping it releases the reservation.
+pub(crate) struct IpmiSelSlot(Arc<AtomicUsize>);
+
+impl IpmiSelSlot {
+    /// Reserves a slot unless `max` notifications are already pending.
+    pub(crate) fn try_reserve(pending: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
+        if pending.fetch_add(1, Ordering::Relaxed) >= max {
+            pending.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        }
+        Some(Self(pending.clone()))
+    }
+}
+
+impl Drop for IpmiSelSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl HostRequestPipeAccess {
@@ -835,6 +862,8 @@ impl<T: RingMem> ProcessLoop<T> {
             Box::new([0; get_protocol::MAX_MESSAGE_SIZE]);
 
         let mut outgoing = Vec::new();
+        // Keeps an IPMI SEL reservation alive until `outgoing` is written.
+        let mut outgoing_slot: Option<IpmiSelSlot> = None;
         loop {
             enum Event {
                 Msg(Msg),
@@ -891,9 +920,14 @@ impl<T: RingMem> ProcessLoop<T> {
                                 return FatalError::FdIo(err);
                             }
                             outgoing.clear();
+                            drop(outgoing_slot.take());
                         }
                         match self.write_recv.recv().await.unwrap() {
                             WriteRequest::Message(message) => outgoing = message,
+                            WriteRequest::IpmiSel(message, slot) => {
+                                outgoing = message;
+                                outgoing_slot = Some(slot);
+                            }
                             WriteRequest::Flush(send) => send.complete(()),
                         }
                     }
@@ -1310,12 +1344,17 @@ impl<T: RingMem> ProcessLoop<T> {
                         .to_vec(),
                 );
             }
-            Msg::IpmiSel { record_id, record } => {
-                self.send_message(
+            Msg::IpmiSel {
+                record_id,
+                record,
+                slot,
+            } => {
+                self.pipe_channels.message_send.send(WriteRequest::IpmiSel(
                     get_protocol::IpmiSelNotification::new(record_id, record)
                         .as_bytes()
                         .to_vec(),
-                );
+                    slot.0,
+                ));
             }
             Msg::ReportRestoreResultToHost(success) => self.report_restore_result_to_host(success),
             Msg::VtlCrashNotification(crash_notification) => {

@@ -38,14 +38,27 @@ use sel::SelState;
 /// Maximum KCS request or response size.
 pub const KCS_MESSAGE_MAX: usize = 64;
 
-/// Trusted wall-clock source used for SEL timestamps and rate limiting.
+/// Error status byte reported after a GET_STATUS/ABORT handshake.
+const KCS_ABORT_STATUS: u8 = 0xff;
+
+/// Wall-clock source used for SEL timestamps.
 ///
 /// Implementations must return UTC seconds since the Unix epoch. Negative
 /// values are accepted so that startup and test clocks can be represented
-/// without lossy conversion.
+/// without lossy conversion. The source may be guest-adjustable (for example,
+/// the platform RTC), so it must not be used to enforce host-facing limits.
 pub trait TrustedClock: Send {
-    /// Returns the current trusted host time in Unix seconds.
+    /// Returns the current wall-clock time in Unix seconds.
     fn unix_seconds(&mut self) -> i64;
+}
+
+/// Guest-independent monotonic time source used to rate-limit SEL forwarding.
+///
+/// Unlike [`TrustedClock`], which may be backed by a guest-adjustable RTC,
+/// this clock must never be affected by guest actions.
+pub trait MonotonicClock: Send {
+    /// Returns elapsed seconds since an arbitrary fixed origin.
+    fn monotonic_seconds(&mut self) -> u64;
 }
 
 /// Diagnostic counters for SEL additions.
@@ -73,6 +86,7 @@ struct KcsTransaction {
     response_len: usize,
     response_pos: usize,
     write_end_pending: bool,
+    abort_pending: bool,
 }
 
 impl Default for KcsTransaction {
@@ -86,6 +100,7 @@ impl Default for KcsTransaction {
             response_len: 0,
             response_pos: 0,
             write_end_pending: false,
+            abort_pending: false,
         }
     }
 }
@@ -111,7 +126,15 @@ impl KcsTransaction {
         self.response_len = 0;
         self.response_pos = 0;
         self.write_end_pending = false;
+        self.abort_pending = false;
     }
+}
+
+/// Best-effort SEL forwarding with a per-second budget.
+struct SelForwarder {
+    sink: Box<dyn SelEventSink>,
+    clock: Box<dyn MonotonicClock>,
+    rate_limiter: RateLimiter,
 }
 
 /// A minimal virtual IPMI BMC exposed through byte-oriented KCS registers.
@@ -119,8 +142,7 @@ pub struct IpmiKcs {
     transaction: KcsTransaction,
     sel: SelState,
     clock: Box<dyn TrustedClock>,
-    sink: Option<Box<dyn SelEventSink>>,
-    rate_limiter: RateLimiter,
+    forwarder: Option<SelForwarder>,
     stats: SelStats,
 }
 
@@ -131,17 +153,30 @@ impl IpmiKcs {
     }
 
     /// Creates a virtual BMC with a best-effort SEL event sink.
-    pub fn with_event_sink(clock: Box<dyn TrustedClock>, sink: Box<dyn SelEventSink>) -> Self {
-        Self::from_parts(clock, Some(sink))
+    ///
+    /// `rate_limit_clock` must be guest-independent so that the guest cannot
+    /// replenish the forwarding budget by adjusting its RTC.
+    pub fn with_event_sink(
+        clock: Box<dyn TrustedClock>,
+        rate_limit_clock: Box<dyn MonotonicClock>,
+        sink: Box<dyn SelEventSink>,
+    ) -> Self {
+        Self::from_parts(
+            clock,
+            Some(SelForwarder {
+                sink,
+                clock: rate_limit_clock,
+                rate_limiter: RateLimiter::default(),
+            }),
+        )
     }
 
-    fn from_parts(clock: Box<dyn TrustedClock>, sink: Option<Box<dyn SelEventSink>>) -> Self {
+    fn from_parts(clock: Box<dyn TrustedClock>, forwarder: Option<SelForwarder>) -> Self {
         Self {
             transaction: KcsTransaction::default(),
             sel: SelState::new(),
             clock,
-            sink,
-            rate_limiter: RateLimiter::default(),
+            forwarder,
             stats: SelStats::default(),
         }
     }
@@ -167,11 +202,13 @@ impl IpmiKcs {
                 self.transaction.request.fill(0);
                 self.transaction.request_len = 0;
                 self.transaction.write_end_pending = false;
+                self.transaction.abort_pending = false;
                 self.transaction.set_state(KCS_STATE_WRITE);
                 self.transaction.stage_dummy();
             }
             KCS_COMMAND_WRITE_END => {
                 self.transaction.write_end_pending = true;
+                self.transaction.abort_pending = false;
                 self.transaction.set_state(KCS_STATE_WRITE);
                 self.transaction.stage_dummy();
             }
@@ -225,6 +262,11 @@ impl IpmiKcs {
     }
 
     fn handle_write_data(&mut self, byte: u8) {
+        if self.transaction.abort_pending {
+            self.complete_abort();
+            return;
+        }
+
         if self.transaction.request_len < KCS_MESSAGE_MAX {
             self.transaction.request[self.transaction.request_len] = byte;
             self.transaction.request_len += 1;
@@ -249,12 +291,25 @@ impl IpmiKcs {
         }
     }
 
+    /// Starts the KCS error-recovery handshake.
+    ///
+    /// The host clears OBF and writes a dummy data byte, which
+    /// [`Self::complete_abort`] answers with the error status byte.
     fn handle_abort(&mut self) {
         self.transaction.clear_buffers();
-        self.transaction.response[0] = 0xff;
+        self.transaction.abort_pending = true;
+        self.transaction.set_state(KCS_STATE_WRITE);
+        self.transaction.stage_dummy();
+    }
+
+    /// Exposes the error status byte in READ state; the host's next
+    /// READ_NEXT returns the interface to IDLE.
+    fn complete_abort(&mut self) {
+        self.transaction.abort_pending = false;
+        self.transaction.response[0] = KCS_ABORT_STATUS;
         self.transaction.response_len = 1;
-        self.transaction.response_pos = 0;
-        self.transaction.data_out = 0;
+        self.transaction.response_pos = 1;
+        self.transaction.data_out = KCS_ABORT_STATUS;
         self.transaction.status |= STATUS_OBF;
         self.transaction.set_state(KCS_STATE_READ);
     }

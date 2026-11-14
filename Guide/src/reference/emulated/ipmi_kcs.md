@@ -37,16 +37,26 @@ these SEL storage commands:
 
 The SEL stores at most 128 records. Reservations are exposed for guest software
 compatibility but are not enforced because the device has one serialized KCS
-requestor and no independent SEL mutators.
+requestor and no independent SEL mutators. Add SEL Entry timestamps records
+except OEM non-timestamped records (types `0xE0`-`0xFF`), whose payload is
+stored unchanged.
+
+The KCS interface supports the standard `GET_STATUS/ABORT` error-recovery
+handshake: after the abort command, the guest clears OBF and writes a dummy
+data byte, reads the error status byte, then issues `READ` to return to idle.
 
 Completed SEL records are retained by the device and forwarded to the host on
-a best-effort basis. Forwarding is limited to 256 records per trusted
-wall-clock second; reaching that limit does not remove records from the SEL.
+a best-effort basis. Forwarding is limited to 256 records per second of VM
+reference time, which the guest cannot adjust; reaching that limit does not
+remove records from the SEL. OpenHCL also bounds the number of SEL
+notifications waiting to be sent to the host and drops records when that bound
+is reached.
 
 ## Servicing
 
-Saved state includes the KCS transaction, SEL records, record allocation state,
-reservation identifier, and guest-selected SEL time offset. Diagnostic
+Saved state includes the KCS transaction (including any in-progress abort
+handshake), SEL records, record allocation state, reservation identifier,
+last-addition timestamp, and guest-selected SEL time offset. Diagnostic
 forwarding counters and rate-limiter state are reset after restore.
 
 See the

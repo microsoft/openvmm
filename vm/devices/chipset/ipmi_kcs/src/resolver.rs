@@ -4,6 +4,7 @@
 //! Resource resolver for the IPMI KCS chipset device.
 
 use crate::IpmiKcs;
+use crate::MonotonicClock;
 use crate::TrustedClock;
 use crate::device::IpmiKcsDevice;
 use async_trait::async_trait;
@@ -23,6 +24,7 @@ use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
+use vmcore::vmtime::VmTimeAccess;
 
 /// Resource resolver for IPMI KCS device handles.
 pub struct IpmiKcsResolver;
@@ -55,10 +57,20 @@ impl TrustedClock for TrustedClockAdapter {
     }
 }
 
+/// VM reference time, which the guest cannot adjust.
+struct VmTimeClock(VmTimeAccess);
+
+impl MonotonicClock for VmTimeClock {
+    fn monotonic_seconds(&mut self) -> u64 {
+        self.0.now().as_100ns() / 10_000_000
+    }
+}
+
 async fn resolve_core(
     resolver: &ResourceResolver,
     event_sink: Resource<IpmiSelEventSinkHandleKind>,
     time_source: Resource<CmosRtcTimeSourceHandleKind>,
+    vmtime: VmTimeAccess,
 ) -> Result<IpmiKcs, ResolveIpmiKcsError> {
     let ResolvedCmosRtcTimeSource(time_source) = resolver
         .resolve(time_source, ())
@@ -71,6 +83,7 @@ async fn resolve_core(
 
     Ok(IpmiKcs::with_event_sink(
         Box::new(TrustedClockAdapter(time_source)),
+        Box::new(VmTimeClock(vmtime)),
         event_sink,
     ))
 }
@@ -84,9 +97,11 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, IpmiKcsDeviceHandleX64> for I
         &self,
         resolver: &ResourceResolver,
         resource: IpmiKcsDeviceHandleX64,
-        _input: ResolveChipsetDeviceHandleParams<'_>,
+        input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let core = resolve_core(resolver, resource.event_sink, resource.time_source).await?;
+        let vmtime = input.vmtime.access(input.device_name);
+        let core =
+            resolve_core(resolver, resource.event_sink, resource.time_source, vmtime).await?;
         Ok(IpmiKcsDevice::new_pio(core).into())
     }
 }
@@ -100,9 +115,11 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, IpmiKcsDeviceHandleAArch64> f
         &self,
         resolver: &ResourceResolver,
         resource: IpmiKcsDeviceHandleAArch64,
-        _input: ResolveChipsetDeviceHandleParams<'_>,
+        input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let core = resolve_core(resolver, resource.event_sink, resource.time_source).await?;
+        let vmtime = input.vmtime.access(input.device_name);
+        let core =
+            resolve_core(resolver, resource.event_sink, resource.time_source, vmtime).await?;
         Ok(IpmiKcsDevice::new_mmio(core).into())
     }
 }
