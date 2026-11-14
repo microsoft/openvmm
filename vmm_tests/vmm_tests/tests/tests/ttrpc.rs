@@ -1193,60 +1193,91 @@ async fn test_ttrpc_interface(
             "memory/processor stats should be unset, not zeroed"
         );
 
-        // Invalid options exercise Consomme update/remove without binding a port.
-        for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
-            for (protocol, host_address, expected_error) in [
-                (99, "", "invalid protocol"),
-                (
-                    vmservice::IpProtocol::Tcp as i32,
-                    "not-an-ip-address",
-                    "invalid host address",
-                ),
-                (
-                    vmservice::IpProtocol::Udp as i32,
-                    "127.0.0.1:8080",
-                    "invalid host address",
-                ),
-            ] {
-                let err = client
-                    .call()
-                    .start(
-                        vmservice::Vm::ModifyResource,
-                        vmservice::ModifyResourceRequest {
-                            r#type: modify_type as i32,
-                            resource: Some(
-                                vmservice::modify_resource_request::Resource::NicConfig(
-                                    vmservice::NicConfig {
-                                        nic_id: consomme_nic_id.clone(),
-                                        mac_address: "00-15-5D-12-12-12".to_string(),
-                                        backend: Some(vmservice::nic_config::Backend::Consomme(
-                                            vmservice::ConsommeBackend {
-                                                cidr: String::new(),
-                                                ports: vec![vmservice::PortConfig {
-                                                    host_port: 8080,
-                                                    guest_port: 80,
-                                                    protocol,
-                                                    host_address: host_address.to_string(),
-                                                }],
-                                                internal_dns: None,
-                                                ..Default::default()
-                                            },
-                                        )),
-                                        ..Default::default()
-                                    },
-                                ),
-                            ),
+        // Builds a Consomme port update or removal for the test NIC.
+        let consomme_port_change =
+            |modify_type: vmservice::ModifyType, protocol: i32, host_address: &str| {
+                vmservice::ModifyResourceRequest {
+                    r#type: modify_type as i32,
+                    resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
+                        vmservice::NicConfig {
+                            nic_id: consomme_nic_id.clone(),
+                            mac_address: "00-15-5D-12-12-12".to_string(),
+                            backend: Some(vmservice::nic_config::Backend::Consomme(
+                                vmservice::ConsommeBackend {
+                                    cidr: String::new(),
+                                    ports: vec![vmservice::PortConfig {
+                                        host_port: 8080,
+                                        guest_port: 80,
+                                        protocol,
+                                        host_address: host_address.to_string(),
+                                    }],
+                                    internal_dns: None,
+                                    ..Default::default()
+                                },
+                            )),
+                            ..Default::default()
                         },
-                    )
-                    .await
-                    .unwrap_err();
-                assert!(
-                    err.message.contains(expected_error),
-                    "expected {expected_error}, got: {}",
-                    err.message
-                );
-            }
+                    )),
+                }
+            };
+
+        // Consomme port changes are serviced by the NIC's queue processing,
+        // which doesn't run while the VM is paused, so they are rejected until
+        // the VM runs. Port validation is exercised once the VM is running.
+        for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
+            let err = client
+                .call()
+                .start(
+                    vmservice::Vm::ModifyResource,
+                    consomme_port_change(modify_type, vmservice::IpProtocol::Tcp as i32, ""),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code,
+                mesh_rpc::service::Code::FailedPrecondition as i32,
+                "consomme port change while paused: {}",
+                err.message
+            );
         }
+
+        // DNS record changes are serviced the same way, so they are rejected
+        // while paused too.
+        let err = client
+            .call()
+            .start(
+                vmservice::Vm::ModifyResource,
+                vmservice::ModifyResourceRequest {
+                    r#type: vmservice::ModifyType::Update as i32,
+                    resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
+                        vmservice::NicConfig {
+                            nic_id: consomme_nic_id.clone(),
+                            backend: Some(vmservice::nic_config::Backend::Consomme(
+                                vmservice::ConsommeBackend {
+                                    operation: Some(
+                                        vmservice::consomme_backend::Operation::AddDnsRecord(
+                                            vmservice::AddDnsRecordRequest {
+                                                name: "host.example".to_string(),
+                                                address: "192.0.2.1".to_string(),
+                                            },
+                                        ),
+                                    ),
+                                    ..Default::default()
+                                },
+                            )),
+                            ..Default::default()
+                        },
+                    )),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            mesh_rpc::service::Code::FailedPrecondition as i32,
+            "consomme DNS record change while paused: {}",
+            err.message
+        );
 
         // On iteration 0, exercise AddPcieDevice/RemovePcieDevice with
         // both a simple virtio device and one with a host backend.
@@ -1593,6 +1624,38 @@ async fn test_ttrpc_interface(
                     .wait_for("job control turned off", 0, SERIAL_BOOT_TIMEOUT)
                     .await?;
 
+                // Invalid options exercise Consomme update/remove without
+                // binding a port.
+                for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
+                    for (protocol, host_address, expected_error) in [
+                        (99, "", "invalid protocol"),
+                        (
+                            vmservice::IpProtocol::Tcp as i32,
+                            "not-an-ip-address",
+                            "invalid host address",
+                        ),
+                        (
+                            vmservice::IpProtocol::Udp as i32,
+                            "127.0.0.1:8080",
+                            "invalid host address",
+                        ),
+                    ] {
+                        let err = client
+                            .call()
+                            .start(
+                                vmservice::Vm::ModifyResource,
+                                consomme_port_change(modify_type, protocol, host_address),
+                            )
+                            .await
+                            .unwrap_err();
+                        assert!(
+                            err.message.contains(expected_error),
+                            "expected {expected_error}, got: {}",
+                            err.message
+                        );
+                    }
+                }
+
                 client
                     .call()
                     .start(vmservice::Vm::PauseVm, ())
@@ -1711,6 +1774,28 @@ async fn test_ttrpc_interface(
                     .start(vmservice::Vm::ResumeVm, ())
                     .await
                     .unwrap_err();
+
+                // The VM is paused after the save, so a port change fails fast
+                // instead of waiting on the stopped NIC, and can't block the
+                // teardown below.
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::ModifyResource,
+                        consomme_port_change(
+                            vmservice::ModifyType::Update,
+                            vmservice::IpProtocol::Tcp as i32,
+                            "",
+                        ),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::FailedPrecondition as i32,
+                    "consomme port change while paused after SaveVm: {}",
+                    err.message
+                );
 
                 client
                     .call()

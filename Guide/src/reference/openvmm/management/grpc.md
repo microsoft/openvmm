@@ -132,6 +132,39 @@ Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
 hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe
 hotplug semantics or a non-VPCI host backend is required.
 
+## Concurrent operations
+
+The server rejects a VM-changing request that conflicts with one already in
+flight, rather than queuing it.
+
+| Operation | Class | While a device or resource change is in flight |
+|---|---|---|
+| `ModifyResource`, `AddPcieDevice`, `RemovePcieDevice`, `AddVpciDevice`, `RemoveVpciDevice` | Shared | Runs alongside it |
+| `PauseVM`, `ResumeVM`, `SaveVM` | Exclusive | Rejected with `ABORTED` |
+| `TeardownVM`, `Quit` | Terminal | Cancels it; the change returns `CANCELLED` |
+
+- A rejected request has no side effects, and the server never retries it.
+- `PauseVM`, `ResumeVM`, `SaveVM`, and `TeardownVM` complete before the server
+  reads its next request, so they never conflict with each other. A request
+  sent meanwhile is read only afterwards, and is then admitted or rejected as
+  above.
+- Cancelling a change stops the server waiting for it. A change the VM has
+  already received still completes, or is discarded when the VM stops; if the
+  VM is blocked on it (for example, on an unresponsive device backend),
+  stopping the VM waits for it.
+- A client that cancels or disconnects does not end the operation early. If a
+  `SaveVM` client cancels, the save may still be writing the snapshot, so
+  device and resource changes and `PauseVM` are rejected with `ABORTED` until
+  `TeardownVM` or until the VM worker stops.
+- `CreateVM`, `RestoreVM`, `WaitVM`, `CapabilitiesVM`, and `PropertiesVM` are
+  not gated. `CreateVM` and `RestoreVM` require that no VM exists, so no change
+  can be in flight.
+- Consomme NIC changes (`ModifyResource` `UPDATE` or `REMOVE` of a Consomme
+  NIC, including ports, DNS records, and virtual addresses) require a running
+  VM and otherwise fail with `FAILED_PRECONDITION`, before the rest of the
+  change is validated, because the NIC processes these changes only while the
+  VM runs.
+
 ## Hvsocket relay listeners
 
 Use `ModifyResource` with `hvsocket_listener` to relay a host Unix socket to a
