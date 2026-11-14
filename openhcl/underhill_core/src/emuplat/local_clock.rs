@@ -146,6 +146,7 @@ mod host_time {
     use futures::FutureExt;
     use guest_emulation_transport::api::Time;
     use inspect::Inspect;
+    use jiff::SignedDuration;
     use jiff::Zoned;
     use parking_lot::Mutex;
     use std::future::Future;
@@ -163,6 +164,8 @@ mod host_time {
     struct CachedHostTime {
         last_query: Instant,
         time: Zoned,
+        /// The latest time returned.
+        latest: Zoned,
         /// An outstanding query, and when it was sent.
         refresh: Option<(Instant, Pin<Box<dyn Future<Output = Time> + Send>>)>,
     }
@@ -194,6 +197,7 @@ mod host_time {
                 get,
                 cached_host_time: Mutex::new(CachedHostTime {
                     last_query,
+                    latest: time.clone(),
                     time,
                     refresh: None,
                 }),
@@ -236,7 +240,19 @@ mod host_time {
                 cached_host_time.refresh = None;
             }
 
-            &cached_host_time.time + now.duration_since(cached_host_time.last_query)
+            let time = &cached_host_time.time + now.duration_since(cached_host_time.last_query);
+
+            // The local clock may run a little ahead of the host between
+            // queries. Rather than moving the time backwards when a reply
+            // corrects it, hold it until the corrected time catches up. Larger
+            // steps back are actual changes to the host time.
+            if time < cached_host_time.latest
+                && cached_host_time.latest.duration_since(&time) < SignedDuration::from_secs(1)
+            {
+                return cached_host_time.latest.clone();
+            }
+            cached_host_time.latest = time.clone();
+            time
         }
     }
 
@@ -274,6 +290,36 @@ mod host_time {
             }
             // The reply replaces the advanced time.
             assert!(host_time.now() < &initial + Duration::from_secs(10));
+        }
+
+        #[async_test]
+        async fn correction_does_not_go_backwards(driver: DefaultDriver) {
+            let get = guest_emulation_transport::test_utilities::new_transport_pair(
+                driver.clone(),
+                None,
+                get_protocol::ProtocolVersion::NICKEL_REV2,
+                None,
+                None,
+            )
+            .await;
+            let host_time = HostSystemTimeAccess::new(get.client.clone()).await;
+
+            // Pretend the local clock ran 800ms ahead of the host over the
+            // last second.
+            {
+                let mut cached_host_time = host_time.cached_host_time.lock();
+                cached_host_time.last_query -= Duration::from_secs(1);
+                cached_host_time.time = &cached_host_time.time - Duration::from_millis(200);
+            }
+            let ahead = host_time.now();
+
+            let mut timer = PolledTimer::new(&driver);
+            while host_time.cached_host_time.lock().refresh.is_some() {
+                timer.sleep(Duration::from_millis(10)).await;
+                assert!(host_time.now() >= ahead);
+            }
+            assert!(host_time.cached_host_time.lock().time < ahead);
+            assert!(host_time.now() >= ahead);
         }
     }
 }
