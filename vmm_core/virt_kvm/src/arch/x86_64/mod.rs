@@ -6,6 +6,7 @@
 mod cpu_contract;
 mod extint;
 mod fingerprint;
+mod gif;
 mod lapic_timer;
 mod regs;
 pub(crate) mod snp;
