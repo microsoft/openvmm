@@ -577,8 +577,7 @@ impl Config {
                 "`unstable(on = ...)` requires OpenVMM configurations",
             ));
         }
-        if matches!(&config.firmware, Firmware::Uefi(UefiGuest::Mshv))
-            && config.vmm != Vmm::OpenVmm
+        if matches!(&config.firmware, Firmware::Uefi(UefiGuest::Mshv)) && config.vmm != Vmm::OpenVmm
         {
             return Err(Error::new(self.span, "mshv requires the OpenVMM backend"));
         }
