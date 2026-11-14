@@ -51,17 +51,23 @@ use thiserror::Error;
 /// have a larger stack.
 fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
     if cfg!(windows) {
-        std::thread::scope(|s| {
-            std::thread::Builder::new()
-                .stack_size(0x400000)
-                .spawn_scoped(s, f)
-                .unwrap()
-                .join()
-                .unwrap()
-        })
+        with_big_stack(f)
     } else {
         f()
     }
+}
+
+/// Runs `f` on a thread with a 4 MiB stack, enough for clap to construct the
+/// `Command` instance for `Options` in debug builds.
+fn with_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(0x400000)
+            .spawn_scoped(s, f)
+            .unwrap()
+            .join()
+            .unwrap()
+    })
 }
 
 /// Parse CLI options, using a thread with a larger stack on Windows to avoid
@@ -74,9 +80,13 @@ pub(crate) fn parse_options() -> Options {
 /// Returns the options of a command line that selects the microVM machine
 /// profile and nothing else, with every other option at its default, which
 /// the management RPC sets from a request.
+///
+/// The management RPC runs on a worker thread, whose default stack of 2 MiB
+/// is too small for clap in debug builds on every host, so the options are
+/// always parsed on a thread with a big stack.
 #[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) fn microvm_options() -> anyhow::Result<Options> {
-    on_big_stack(|| Options::try_parse_from(["openvmm", "--machine", "microvm"]))
+    with_big_stack(|| Options::try_parse_from(["openvmm", "--machine", "microvm"]))
         .context("failed to build the microVM command-line options")
 }
 

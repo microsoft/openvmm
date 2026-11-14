@@ -50,6 +50,14 @@
 //! host that OpenVMM runs on, for `--cpu-profile host`: a development profile
 //! that serves only that host's CPU model and stepping, and that no catalog
 //! pins.
+//!
+//! The policy sets and clears bits and zeroes leaves, so a profile that it
+//! produced is a fixed point of it. A restore uses that to check the host
+//! profile that a snapshot carries, a document as trustworthy as the
+//! snapshot ([`host_profile_for_restore`](crate::host_profile_for_restore)):
+//! it applies the policy's own rules to the profile and refuses a profile that
+//! they would change, so the rules that it checks cannot drift apart from the
+//! derivation's.
 
 use crate::Hex32;
 use crate::Hex64;
@@ -73,7 +81,9 @@ use crate::profile::describe_leaf;
 use crate::profile::pinned_mask;
 use crate::signature::HostCpuSignature;
 use crate::signature::decode_signature;
+use crate::surface::REGISTERS;
 use crate::surface::RegisterClass;
+use crate::surface::bits_phrase;
 use crate::surface::field_value;
 use crate::surface::register_class;
 use crate::vendor::CpuVendor;
@@ -1011,6 +1021,105 @@ fn clear_stateless_features(leaves: &mut Table, xcr0: u64) {
     }
 }
 
+/// Returns every way in which `profile`, a valid profile, falls outside the
+/// derivation's policy on the CPU features that a guest may see, each described
+/// for an error message, or nothing if it follows the policy.
+///
+/// The policy sets and clears bits and zeroes leaves, so a profile that the
+/// derivation produced is a fixed point of it, and a profile follows the
+/// policy exactly when applying it changes nothing. This applies
+/// [`apply_policy`], and [`clear_stateless_features`] with the profile's XCR0,
+/// to the profile's CPUID table and compares the result with the table, and
+/// checks that the XSAVE features stay within [`ALLOWED_XCR0`],
+/// [`ALLOWED_XSS`], and [`ALLOWED_XSAVE_EXTENSIONS`]. Those are the
+/// derivation's own rules, so a rule that it gains refuses a profile that lacks
+/// it.
+///
+/// The check covers what the policy decides, the features, and not the rest of
+/// what a derivation fixes, which is not features or which other checks bound:
+/// the layout of the XSAVE components, the pinned MSRs, and the guest physical
+/// address width are what the destination backend must support, so a profile
+/// cannot claim more than the backend presents
+/// ([`verify_support`](crate::verify_support)); the generation is checked
+/// against the host ([`check_generation`](crate::check_generation)); and the
+/// brand string, whose leaves the policy keeps, and the provenance are only
+/// informative.
+///
+/// The pinned profiles follow the policy, which the tests check, and so does
+/// every host profile that this OpenVMM derives. A host profile that a
+/// snapshot carries can fall outside it, because its document was edited, or
+/// because an OpenVMM whose policy differed derived it.
+pub(crate) fn policy_violations(profile: &CpuProfile) -> Vec<String> {
+    // `apply_policy` leaves out the XSAVE leaf, which the derivation rebuilds
+    // from the hosts' XSAVE information after it.
+    let table: Table = profile
+        .cpuid()
+        .iter()
+        .filter(|entry| entry.leaf.0 != 0xd)
+        .map(|entry| (entry.key(), entry.values()))
+        .collect();
+    let mut violations = match apply_policy(profile.cpu_vendor(), &table) {
+        Ok(mut allowed) => {
+            clear_stateless_features(&mut allowed, profile.xcr0());
+            table_differences(&table, &allowed)
+        }
+        Err(error) => vec![error.to_string()],
+    };
+    for (what, enabled, allowed) in [
+        ("XCR0", profile.xcr0(), ALLOWED_XCR0),
+        ("IA32_XSS", profile.xss(), ALLOWED_XSS),
+        (
+            "CPUID.(0xd,1):EAX",
+            profile.lookup(0xd, 1)[0].into(),
+            ALLOWED_XSAVE_EXTENSIONS.into(),
+        ),
+    ] {
+        if enabled & !allowed != 0 {
+            violations.push(format!(
+                "{what} {enabled:#x} enables {:#x}, beyond the policy's {allowed:#x}",
+                enabled & !allowed
+            ));
+        }
+    }
+    violations
+}
+
+/// Returns each difference between the CPUID `table` of a profile and the
+/// `allowed` table that the derivation's policy makes of it: the bits that the
+/// policy clears and the profile sets, the bits that the policy sets and the
+/// profile does not, and the entries that only one of them has.
+fn table_differences(table: &Table, allowed: &Table) -> Vec<String> {
+    let mut differences = Vec::new();
+    for &key in table.keys().chain(allowed.keys()).collect::<BTreeSet<_>>() {
+        let what = describe_leaf(key.0, key.1);
+        match (table.get(&key), allowed.get(&key)) {
+            (Some(value), Some(want)) => {
+                for (register, name) in REGISTERS.iter().enumerate() {
+                    let set = value[register] & !want[register];
+                    if set != 0 {
+                        differences.push(format!(
+                            "{what} {name} {} set, which the policy clears",
+                            bits_phrase(set.into())
+                        ));
+                    }
+                    let clear = !value[register] & want[register];
+                    if clear != 0 {
+                        differences.push(format!(
+                            "{what} {name} {} clear, which the policy sets",
+                            bits_phrase(clear.into())
+                        ));
+                    }
+                }
+            }
+            (Some(_), None) => differences.push(format!(
+                "{what} is listed, but the policy lists no such entry"
+            )),
+            (None, _) => differences.push(format!("{what} is not listed, but the policy lists it")),
+        }
+    }
+    differences
+}
+
 /// Returns the CPUID brand string leaves `0x80000002..=0x80000004` for
 /// `brand`, padded with zeros.
 fn brand_leaves(brand: &str) -> [[u32; 4]; 3] {
@@ -1490,6 +1599,321 @@ mod tests {
             assert_eq!(supports_host_profiles(&host), served, "{host}");
             assert_eq!(derive_host_profile(&fingerprint).is_ok(), served, "{host}");
         }
+    }
+
+    /// Returns `profile` with register `register` of the entry for `leaf` and
+    /// `subleaf` changed by `edit`, which no validation checks.
+    fn with_register(
+        profile: &CpuProfile,
+        leaf: u32,
+        subleaf: Option<u32>,
+        register: usize,
+        edit: impl FnOnce(u32) -> u32,
+    ) -> CpuProfile {
+        let mut edited = profile.clone();
+        let value = &mut edited
+            .cpuid
+            .iter_mut()
+            .find(|entry| entry.key() == (leaf, subleaf))
+            .unwrap()
+            .value[register]
+            .0;
+        *value = edit(*value);
+        edited
+    }
+
+    /// Returns the fingerprints of the recorded hosts: the hosts of every
+    /// pinned profile, on KVM and WHP, and the recorded AMD and Granite Rapids
+    /// hosts of KVM, MSHV, and WHP, under the kernels and Windows releases that
+    /// they ran.
+    fn recorded_fingerprints() -> Vec<CpuFingerprint> {
+        let mut fingerprints = Vec::new();
+        for pinned in crate::pinned_profiles() {
+            for backend in ["kvm", "whp"] {
+                fingerprints.push(fingerprint(pinned, backend));
+            }
+        }
+        fingerprints.extend([
+            host_fingerprint("whp", milan_whp_entries()),
+            host_fingerprint("kvm", genoa_kvm_entries()),
+            genoa_mshv_fingerprint(),
+            genoa_whp_fingerprint(),
+            host_fingerprint("kvm", turin_kvm_entries()),
+            turin_kvm_linux_6_8_fingerprint(),
+            turin_kvm_linux_7_fingerprint(),
+            turin_whp_fingerprint(),
+            turin_whp_server_2022_fingerprint(),
+            granite_rapids_kvm_fingerprint(),
+            granite_rapids_whp_fingerprint(),
+        ]);
+        fingerprints
+    }
+
+    /// What this derivation produces follows its policy: every pinned profile,
+    /// and every host profile that it derives from a recorded host, Intel's
+    /// and AMD's, on every backend. A restore therefore refuses no snapshot
+    /// that this OpenVMM captured.
+    #[test]
+    fn derived_profiles_follow_the_policy() {
+        for pinned in crate::pinned_profiles() {
+            assert_eq!(
+                policy_violations(pinned),
+                Vec::<String>::new(),
+                "{}",
+                pinned.id()
+            );
+        }
+        for fingerprint in recorded_fingerprints() {
+            let host = derive_host_profile(&fingerprint).unwrap();
+            assert_eq!(
+                policy_violations(&host),
+                Vec::<String>::new(),
+                "{}",
+                host.description()
+            );
+        }
+    }
+
+    /// Whatever a host reports, the host profile that this derivation gives
+    /// for it follows the policy, so that a restore refuses no snapshot that
+    /// this OpenVMM captured, on any host: random bits of a recorded host's
+    /// CPUID, in every leaf but the ones that decide the vendor, the
+    /// generation, and how many leaves a profile lists, derive a profile or
+    /// fail to, and a profile that derives follows the policy.
+    #[test]
+    fn a_derived_host_profile_follows_the_policy_whatever_the_host_reports() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut derived = 0;
+        for recorded in recorded_fingerprints() {
+            for _ in 0..16 {
+                let mut fingerprint = recorded.clone();
+                let mut flipped = Vec::new();
+                for _ in 0..1 + next() % 8 {
+                    let entries = &mut fingerprint.backend.cpuid;
+                    let index = (next() % entries.len() as u64) as usize;
+                    let (leaf, subleaf) = entries[index].key();
+                    let (register, bit) = ((next() % 4) as usize, next() % 32);
+                    if matches!(leaf, 0 | 0xd | 0x8000_0000) || (leaf, register) == (1, 0) {
+                        continue;
+                    }
+                    set(entries, leaf, subleaf, register, |value| value ^ 1 << bit);
+                    flipped.push((describe_leaf(leaf, subleaf), register, bit));
+                }
+                if let Ok(host) = derive_host_profile(&fingerprint) {
+                    derived += 1;
+                    assert_eq!(
+                        policy_violations(&host),
+                        Vec::<String>::new(),
+                        "{} with {flipped:?}",
+                        host.description()
+                    );
+                }
+            }
+        }
+        assert!(derived > 100, "{derived} derived");
+    }
+
+    /// A profile follows the policy only if it gives the guest none of the
+    /// features that the derivation withholds, whatever the hosts offer. These
+    /// are CPUID's bits of virtualization (VMX and SVM), power management and
+    /// thermal control, monitoring and debug, secure enclaves, resource
+    /// director technology, processor trace, control-flow enforcement, key
+    /// locker, hybrid and PCONFIG, architectural LBR, and AVX10, as the
+    /// Intel SDM and the AMD APM define them, and AMD's instruction-based
+    /// sampling, lightweight profiling, and `MONITORX`.
+    #[test]
+    fn a_profile_that_gives_the_guest_a_withheld_feature_is_outside_the_policy() {
+        // Leaf, subleaf, register, bit, and the feature, in the profile of
+        // either vendor.
+        const WITHHELD: [(u32, Option<u32>, usize, u32, &str); 25] = [
+            (0x1, None, 2, 2, "DTES64"),
+            (0x1, None, 2, 3, "MONITOR"),
+            (0x1, None, 2, 4, "DS-CPL"),
+            (0x1, None, 2, 5, "VMX"),
+            (0x1, None, 2, 6, "SMX"),
+            (0x1, None, 2, 7, "EIST"),
+            (0x1, None, 2, 8, "TM2"),
+            (0x1, None, 2, 11, "SDBG"),
+            (0x1, None, 2, 14, "xTPR update control"),
+            (0x1, None, 2, 15, "PDCM"),
+            (0x1, None, 2, 18, "DCA"),
+            (0x1, None, 2, 24, "TSC-deadline"),
+            (0x1, None, 3, 21, "DS"),
+            (0x1, None, 3, 22, "ACPI"),
+            (0x1, None, 3, 29, "TM"),
+            (0x1, None, 3, 31, "PBE"),
+            (0x7, Some(0), 1, 1, "IA32_TSC_ADJUST"),
+            (0x7, Some(0), 1, 2, "SGX"),
+            (0x7, Some(0), 1, 12, "RDT-M"),
+            (0x7, Some(0), 1, 15, "RDT-A"),
+            (0x7, Some(0), 1, 25, "Intel PT"),
+            (0x7, Some(0), 2, 7, "CET shadow stacks"),
+            (0x7, Some(0), 2, 23, "key locker"),
+            (0x7, Some(0), 2, 30, "SGX launch control"),
+            (0x7, Some(0), 3, 20, "CET IBT"),
+        ];
+        const WITHHELD_BY_INTEL: [(u32, Option<u32>, usize, u32, &str); 4] = [
+            (0x7, Some(0), 3, 15, "hybrid"),
+            (0x7, Some(0), 3, 18, "PCONFIG"),
+            (0x7, Some(0), 3, 19, "architectural LBR"),
+            (0x7, Some(1), 3, 19, "AVX10"),
+        ];
+        const WITHHELD_BY_AMD: [(u32, Option<u32>, usize, u32, &str); 6] = [
+            (0x8000_0001, None, 2, 2, "SVM"),
+            (0x8000_0001, None, 2, 10, "IBS"),
+            (0x8000_0001, None, 2, 12, "SKINIT"),
+            (0x8000_0001, None, 2, 13, "watchdog timer"),
+            (0x8000_0001, None, 2, 15, "LWP"),
+            (0x8000_0001, None, 2, 29, "MONITORX"),
+        ];
+        let intel =
+            derive_host_profile(&fingerprint(profile("intel.graniterapids.v1"), "kvm")).unwrap();
+        let amd = derive_host_profile(&host_fingerprint("whp", milan_whp_entries())).unwrap();
+        for (host, withheld) in [
+            (&intel, [&WITHHELD[..], &WITHHELD_BY_INTEL[..]].concat()),
+            (&amd, [&WITHHELD[..], &WITHHELD_BY_AMD[..]].concat()),
+        ] {
+            assert_eq!(policy_violations(host), Vec::<String>::new());
+            for (leaf, subleaf, register, bit, feature) in withheld {
+                let edited = with_register(host, leaf, subleaf, register, |value| {
+                    assert_eq!(value & 1 << bit, 0, "{feature}");
+                    value | 1 << bit
+                });
+                assert_eq!(
+                    policy_violations(&edited),
+                    [format!(
+                        "{} {} bit {bit} is set, which the policy clears",
+                        describe_leaf(leaf, subleaf),
+                        REGISTERS[register]
+                    )],
+                    "{} with {feature}",
+                    host.id()
+                );
+            }
+        }
+    }
+
+    /// The bits that the policy sets, which the time ABI requires, are bits
+    /// that the profile must have: without the hypervisor bit, a guest runs
+    /// as if on hardware.
+    #[test]
+    fn a_profile_that_lacks_a_bit_that_the_policy_sets_is_outside_it() {
+        let host =
+            derive_host_profile(&fingerprint(profile("intel.graniterapids.v1"), "kvm")).unwrap();
+        let edited = with_register(&host, 0x1, None, 2, |ecx| ecx & !(1 << 31));
+        assert_eq!(
+            policy_violations(&edited),
+            ["CPUID 0x1 ECX bit 31 is clear, which the policy sets"]
+        );
+    }
+
+    /// The policy's other parts: the data leaves, the features whose XSAVE
+    /// state is not enabled, the XSAVE state, and PSFD.
+    #[test]
+    fn the_policys_other_parts_are_checked() {
+        let intel =
+            derive_host_profile(&fingerprint(profile("intel.graniterapids.v1"), "kvm")).unwrap();
+        let amd = derive_host_profile(&host_fingerprint("whp", milan_whp_entries())).unwrap();
+
+        // A leaf that keeps no data, Intel PT's, has data, and lists a
+        // subleaf that the policy does not list.
+        let mut pt = with_register(&intel, 0x14, Some(0), 1, |ebx| ebx | 1);
+        assert_eq!(
+            policy_violations(&pt),
+            ["CPUID 0x14.0 EBX bit 0 is set, which the policy clears"]
+        );
+        pt = with_register(&pt, 0x14, Some(0), 0, |eax| eax | 1);
+        pt.cpuid
+            .push(CpuidLeafValue::new(0x14, Some(1), [0; 4], [!0; 4]));
+        assert_eq!(
+            policy_violations(&pt),
+            [
+                "CPUID 0x14.0 EAX bit 0 is set, which the policy clears",
+                "CPUID 0x14.0 EBX bit 0 is set, which the policy clears",
+                "CPUID 0x14.1 is listed, but the policy lists no such entry",
+            ]
+        );
+
+        // The AVX-512 features, without their XSAVE state.
+        let mut no_avx512 = intel.clone();
+        assert_eq!(intel.xcr0() & 7 << 5, 7 << 5);
+        no_avx512.xcr0 = Hex64(intel.xcr0() & !(7 << 5));
+        let violations = policy_violations(&no_avx512);
+        assert!(!violations.is_empty());
+        for violation in &violations {
+            assert!(
+                violation.contains(" set, which the policy clears"),
+                "{violation}"
+            );
+        }
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.starts_with("CPUID 0x7.0 EBX bits 16, ")),
+            "{violations:?}"
+        );
+
+        // XSAVE state beyond the policy's: AMX's TILECFG in XCR0, CET's user
+        // state in IA32_XSS, and XFD in the XSAVE extensions.
+        let mut xsave = intel.clone();
+        xsave.xcr0 = Hex64(intel.xcr0() | 1 << 17);
+        assert_eq!(
+            policy_violations(&xsave),
+            [format!(
+                "XCR0 {:#x} enables 0x20000, beyond the policy's 0x2ff",
+                intel.xcr0() | 1 << 17
+            )]
+        );
+        xsave.xcr0 = intel.xcr0;
+        xsave.xss = Hex64(1 << 11);
+        assert_eq!(
+            policy_violations(&xsave),
+            ["IA32_XSS 0x800 enables 0x800, beyond the policy's 0x0"]
+        );
+        let xfd = with_register(&intel, 0xd, Some(1), 0, |eax| eax | 1 << 4);
+        assert_eq!(
+            policy_violations(&xfd),
+            ["CPUID.(0xd,1):EAX 0x1f enables 0x10, beyond the policy's 0xf"]
+        );
+
+        // PSFD, a bit of SPEC_CTRL, without a control to reach SPEC_CTRL: the
+        // Milan host's WHP offers no control.
+        assert!(!has_spec_ctrl_control(
+            amd.lookup(0x7, 0)[3],
+            amd.lookup(0x8000_0008, 0)[1]
+        ));
+        let psfd = with_register(&amd, 0x8000_0008, None, 1, |ebx| ebx | AMD_PSFD);
+        assert_eq!(
+            policy_violations(&psfd),
+            ["CPUID 0x80000008 EBX bit 28 is set, which the policy clears"]
+        );
+        // With one, it is allowed.
+        let psfd = with_register(&psfd, 0x8000_0008, None, 1, |ebx| ebx | 1 << 14);
+        assert_eq!(policy_violations(&psfd), Vec::<String>::new());
+    }
+
+    /// The vendor decides which AMD rules apply: AMD's features and leaves
+    /// that Intel profiles keep, as the derivation keeps them
+    /// (`the_amd_rules_leave_intel_profiles_unchanged`), stay allowed there,
+    /// and the check refuses them in an AMD profile.
+    #[test]
+    fn the_amd_rules_apply_only_to_amd_profiles() {
+        let intel =
+            derive_host_profile(&fingerprint(profile("intel.alderlake.v1"), "whp")).unwrap();
+        let amd = derive_host_profile(&host_fingerprint("whp", milan_whp_entries())).unwrap();
+        // MONITORX, which AMD profiles clear.
+        let monitorx = |host| with_register(host, 0x8000_0001, None, 2, |ecx| ecx | 1 << 29);
+        assert_eq!(policy_violations(&monitorx(&intel)), Vec::<String>::new());
+        assert_eq!(
+            policy_violations(&monitorx(&amd)),
+            ["CPUID 0x80000001 ECX bit 29 is set, which the policy clears"]
+        );
     }
 
     /// Returns the profile of AMD's Milan generation that `fingerprints`

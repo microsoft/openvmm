@@ -281,8 +281,8 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
     }
 
     // The devices that keep guest-visible time of their own, such as the
-    // RTC's calendar, keep it on host clocks that run while they are stopped,
-    // so only the duration applies to them.
+    // RTC's calendar, hold it while they are stopped and set it as they
+    // start, so only the duration applies to them.
     async fn advance_time(
         &mut self,
         duration: std::time::Duration,

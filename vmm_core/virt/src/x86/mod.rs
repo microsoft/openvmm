@@ -111,6 +111,10 @@ pub enum X86PartitionCapabilitiesError {
         "advertised xsave length ({advertised}) too small for features, requires ({required}) bytes"
     )]
     XSaveLengthTooSmall { advertised: u32, required: u32 },
+    #[error(
+        "xsave length ({required}) larger than the hypervisor's xsave buffer ({supported} bytes)"
+    )]
+    XSaveLengthTooLarge { required: u32, supported: u32 },
     #[error("x2apic topology and cpuid mismatch, expected x2apic={expected}, found {found}")]
     X2ApicMismatch { expected: bool, found: bool },
 }
@@ -321,21 +325,27 @@ impl XsaveCapabilities {
         })
     }
 
+    /// Returns the length of the standard-format XSAVE area that holds the
+    /// components in `xfem`, which saturates at `u32::MAX`.
     pub fn standard_len_for(&self, xfem: u64) -> u32 {
         let mut len = XSAVE_VARIABLE_OFFSET as u32;
         for (_, feature) in self.variable_features(xfem) {
-            len = len.max(feature.offset + feature.len);
+            len = len.max(feature.offset.saturating_add(feature.len));
         }
         len
     }
 
+    /// Returns the length of the compact-format XSAVE area that holds the
+    /// components in `xfem`, which saturates at `u32::MAX`.
     pub fn compact_len_for(&self, xfem: u64) -> u32 {
         let mut len = XSAVE_VARIABLE_OFFSET as u32;
         for (_, feature) in self.variable_features(xfem) {
             if feature.align {
-                len = (len + 63) & !63;
+                // Rounding up must not wrap a saturated length back below
+                // `u32::MAX`.
+                len = len.checked_next_multiple_of(64).unwrap_or(u32::MAX);
             }
-            len += feature.len;
+            len = len.saturating_add(feature.len);
         }
         len
     }
@@ -604,6 +614,134 @@ mod tests {
             assert_eq!(caps.standard_len_for(mask), standard_len);
             assert_eq!(caps.compact_len_for(mask), compact_len);
         }
+    }
+
+    /// Returns the standard and compact XSAVE lengths of components
+    /// `features`, which are numbered from 2.
+    fn xsave_lengths(features: &[XsaveFeature]) -> (u32, u32) {
+        let mut caps = XsaveCapabilities {
+            features: 0,
+            supervisor_features: 0,
+            standard_len: 0,
+            compact_len: 0,
+            feature_info: [XsaveFeature::default(); 63],
+        };
+        for (index, &feature) in (2..).zip(features) {
+            caps.features |= 1 << index;
+            caps.feature_info[index] = feature;
+        }
+        (caps.standard_len_for(!0), caps.compact_len_for(!0))
+    }
+
+    #[test]
+    fn xsave_lengths_saturate_at_the_largest_length() {
+        let feature = |offset, len, align| XsaveFeature { offset, len, align };
+        let base = XSAVE_VARIABLE_OFFSET as u32;
+
+        // A length of 2^32 - 1 fits, and one of 2^32 does not.
+        for len in [u32::MAX - base, u32::MAX - base + 1] {
+            assert_eq!(
+                xsave_lengths(&[feature(base, len, false)]),
+                (u32::MAX, u32::MAX)
+            );
+        }
+        assert_eq!(
+            xsave_lengths(&[feature(u32::MAX - 0x100, 0x100, false)]),
+            (u32::MAX, base + 0x100)
+        );
+        assert_eq!(
+            xsave_lengths(&[feature(u32::MAX - 0x100, 0x101, false)]),
+            (u32::MAX, base + 0x101)
+        );
+
+        // Aligning to 64 bytes does not overflow up to the last multiple
+        // of 64, and past it saturates, as does anything that follows a
+        // saturated length.
+        let last = 0xffff_ffc0;
+        assert_eq!(
+            xsave_lengths(&[feature(base, last - base, false), feature(base, 0x20, true)]),
+            (last, last + 0x20)
+        );
+        assert_eq!(
+            xsave_lengths(&[
+                feature(base, last + 1 - base, false),
+                feature(base, 0x20, true)
+            ]),
+            (last + 1, u32::MAX)
+        );
+        assert_eq!(
+            xsave_lengths(&[
+                feature(base, u32::MAX - base, false),
+                feature(base, 0x20, true),
+                feature(base, 0x20, false)
+            ]),
+            (u32::MAX, u32::MAX)
+        );
+    }
+
+    /// Returns the capabilities of a CPU with XSAVE whose components from 2
+    /// are `(size, offset, align)`, and whose XSAVE area for XCR0 is
+    /// `xsave_len` bytes.
+    fn xsave_capabilities(
+        components: &[(u32, u32, bool)],
+        xsave_len: u32,
+    ) -> Result<X86PartitionCapabilities, X86PartitionCapabilitiesError> {
+        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+            .build(1)
+            .unwrap();
+        let x2apic = topology.apic_mode() != ApicMode::XApic;
+        X86PartitionCapabilities::from_cpuid(
+            &topology,
+            &mut |leaf, subleaf| match (leaf, subleaf) {
+                (0, _) => [0xd, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
+                (1, _) => [0, 0, (1 << 26) | (u32::from(x2apic) << 21), 0],
+                (0xd, 0) => [(1 << (components.len() + 2)) - 1, 0, xsave_len, 0],
+                (0xd, i @ 2..) => components
+                    .get(i as usize - 2)
+                    .map_or([0; 4], |&(size, offset, align)| {
+                        [size, offset, u32::from(align) << 1, 0]
+                    }),
+                _ => [0; 4],
+            },
+        )
+    }
+
+    #[test]
+    fn from_cpuid_saturates_xsave_lengths_that_overflow() {
+        for (components, standard_len, compact_len) in [
+            // A component that ends past 2^32.
+            (vec![(0x100, 0xffff_ff00, false)], u32::MAX, 0x340),
+            // Components whose compact places add up past 2^32.
+            (
+                vec![(0x8000_0000, 0x240, false), (0x8000_0000, 0x240, false)],
+                0x8000_0240,
+                u32::MAX,
+            ),
+            // A component aligned after a length past the last multiple of 64.
+            (
+                vec![(u32::MAX - 0x240 - 31, 0x240, false), (0, 0x240, true)],
+                u32::MAX - 31,
+                u32::MAX,
+            ),
+        ] {
+            let caps = xsave_capabilities(&components, u32::MAX).unwrap();
+            assert_eq!(caps.xsave.standard_len, standard_len, "{components:x?}");
+            assert_eq!(caps.xsave.compact_len, compact_len, "{components:x?}");
+        }
+
+        // The saturated standard length is still compared with the area that
+        // the CPU advertises.
+        let error = xsave_capabilities(&[(0x100, 0xffff_ff00, false)], 0x1000).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                X86PartitionCapabilitiesError::XSaveLengthTooSmall {
+                    advertised: 0x1000,
+                    required: u32::MAX,
+                }
+            ),
+            "{error}"
+        );
     }
 
     #[test]

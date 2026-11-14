@@ -1069,21 +1069,45 @@ impl VmTimerPeriodic {
     /// If the timer is currently running, the timer will be cancelled +
     /// restarted.
     pub fn start(&mut self, period: Duration) {
-        self.cancel();
+        let period = Self::whole_period(period);
+        self.start_at(period, self.vmtime.now().wrapping_add(period));
+    }
 
-        // At least one unit, so that each deadline is after the one before it,
-        // and at most the longest interval that VM time's circular order puts
-        // after a time.
-        let period =
-            duration_from_100ns((period.as_nanos() / 100).clamp(1, i64::MAX as u128) as u64);
-        let time = self.vmtime.now().wrapping_add(period);
-        self.vmtime.set_timeout(time);
-        self.inner = VmTimerPeriodicInner::Running { period }
+    /// Start the timer, configuring it to fire first at `deadline` and then
+    /// every period after it, as a restore resumes a timer at the phase that
+    /// it saved. A `deadline` before now fires at the next poll.
+    ///
+    /// VM time counts the period as [`start`](Self::start) does. If the timer
+    /// is currently running, the timer will be cancelled + restarted.
+    pub fn start_at(&mut self, period: Duration, deadline: VmTime) {
+        self.cancel();
+        self.vmtime.set_timeout(deadline);
+        self.inner = VmTimerPeriodicInner::Running {
+            period: Self::whole_period(period),
+        }
+    }
+
+    /// Returns `period` in whole 100 ns units: at least one unit, so that each
+    /// deadline is after the one before it, and at most the longest interval
+    /// that VM time's circular order puts after a time.
+    fn whole_period(period: Duration) -> Duration {
+        duration_from_100ns((period.as_nanos() / 100).clamp(1, i64::MAX as u128) as u64)
     }
 
     /// Check if the timer is currently running.
     pub fn is_running(&self) -> bool {
         matches!(self.inner, VmTimerPeriodicInner::Running { .. })
+    }
+
+    /// Returns the next deadline of the timer while it runs.
+    ///
+    /// The deadline moves only when a poll fires, so it is before now when
+    /// the timer has not been polled since it passed.
+    pub fn deadline(&self) -> Option<VmTime> {
+        match self.inner {
+            VmTimerPeriodicInner::Stopped => None,
+            VmTimerPeriodicInner::Running { .. } => self.vmtime.get_timeout(),
+        }
     }
 
     /// Polls the timer.
@@ -1299,6 +1323,44 @@ mod tests {
                     assert!(timer.vmtime.get_timeout().unwrap().is_after(now));
                 }
                 keeper.stop().await;
+            });
+        }
+
+        #[test]
+        fn test_start_at_keeps_the_phase_of_the_deadline() {
+            run_bounded("a periodic timer started at a deadline", async |driver| {
+                let keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(25_000));
+                let source = keeper.builder().build(&driver).await.unwrap();
+                let mut timer = VmTimerPeriodic::new(source.access("test"));
+                assert_eq!(timer.deadline(), None);
+                let period = Duration::from_millis(1);
+
+                // The first deadline is the given one, not a period from now.
+                timer.start_at(period, VmTime::from_100ns(28_000));
+                assert_eq!(timer.deadline(), Some(VmTime::from_100ns(28_000)));
+                assert!(
+                    poll_fn(|cx| timer.poll_timeout(cx))
+                        .now_or_never()
+                        .is_none()
+                );
+
+                // A deadline 2.5 periods before now, as a restore resumes a
+                // timer that missed it, fires at once, and the timer then
+                // keeps the deadline's phase.
+                timer.start_at(period, VmTime::from_100ns(0));
+                assert_eq!(
+                    poll_fn(|cx| timer.poll_timeout(cx)).now_or_never(),
+                    Some(VmTime::from_100ns(25_000))
+                );
+                assert_eq!(timer.deadline(), Some(VmTime::from_100ns(30_000)));
+                assert!(
+                    poll_fn(|cx| timer.poll_timeout(cx))
+                        .now_or_never()
+                        .is_none()
+                );
+
+                timer.cancel();
+                assert_eq!(timer.deadline(), None);
             });
         }
 
