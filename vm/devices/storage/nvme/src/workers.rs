@@ -12,6 +12,8 @@ pub use coordinator::NvmeControllerClient;
 pub use coordinator::NvmeWorkers;
 
 use crate::PAGE_SIZE;
+use crate::error::NvmeError;
+use crate::spec;
 use inspect::Inspect;
 
 #[derive(Debug, Copy, Clone, Inspect, Default)]
@@ -21,6 +23,19 @@ pub struct IoQueueEntrySizes {
 }
 
 const MAX_DATA_TRANSFER_SIZE: usize = 256 * 1024;
+
+/// Fails a command whose FUSE field is not 00b with Invalid Field in Command.
+///
+/// Identify Controller reports FUSES 0, so no fused operation is supported
+/// (NVMe Base 2.1 section 3.4.2), and 11b is reserved.
+fn refuse_fused(command: &spec::Command) -> Result<(), NvmeError> {
+    if command.cdw0.fuse() == 0 {
+        return Ok(());
+    }
+    Err(NvmeError::do_not_retry(
+        spec::Status::INVALID_FIELD_IN_COMMAND,
+    ))
+}
 
 const _: () = assert!(
     MAX_DATA_TRANSFER_SIZE.is_power_of_two()
