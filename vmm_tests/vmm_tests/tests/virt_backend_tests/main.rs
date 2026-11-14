@@ -9,6 +9,8 @@ cfg_select! {
         guest_is_native,
         any(target_os = "linux", windows)
     ) => {
+        #[cfg(target_os = "linux")]
+        mod apic;
         mod fixture;
         mod native;
         #[cfg(target_os = "linux")]
