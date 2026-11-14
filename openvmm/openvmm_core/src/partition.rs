@@ -404,6 +404,12 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         self.0.flush_async_requests()
     }
 
+    fn has_pending_init_sipi(
+        &mut self,
+    ) -> Result<bool, <T::StateAccess<'_> as AccessVpState>::Error> {
+        self.0.has_pending_init_sipi()
+    }
+
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         self.0.reset()
     }

@@ -782,6 +782,31 @@ pub trait Processor: InspectMut {
     /// can be saved/restored correctly.
     fn flush_async_requests(&mut self);
 
+    /// Returns whether the stopped VP holds an INIT or a SIPI (x86) that it has
+    /// not accepted yet.
+    ///
+    /// A VP holds one when another VP sent it the event after the VP stopped,
+    /// and a backend may accept the event when it reads the VP's state, which a
+    /// save does after it has read the VP's registers: the saved registers
+    /// would be from before the event, and the rest of the saved state from
+    /// after it. A VP also holds an INIT that it cannot accept yet, such as one
+    /// that SMM or a clear GIF blocks, which the saved state cannot represent.
+    /// A snapshot capture therefore refuses a VP for which this returns `true`,
+    /// and the guest can request the snapshot again.
+    ///
+    /// This does not run the VP. It must leave a pending INIT pending, and may
+    /// accept a pending SIPI, as the VP would before it ran again. A SIPI that
+    /// the VP would drop, because the VP does not wait for one, is not pending.
+    ///
+    /// The default reports none, for a backend that holds no such event once
+    /// [`Self::flush_async_requests`] has run, and for an architecture without
+    /// them.
+    fn has_pending_init_sipi(
+        &mut self,
+    ) -> Result<bool, <Self::StateAccess<'_> as crate::vp::AccessVpState>::Error> {
+        Ok(false)
+    }
+
     /// Returns whether the specified VTL can be inspected on this processor.
     ///
     /// VTL0 is always inspectable.
