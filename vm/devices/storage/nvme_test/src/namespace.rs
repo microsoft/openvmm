@@ -123,6 +123,14 @@ impl Namespace {
         let opcode = nvm::NvmOpcode(command.cdw0.opcode());
         tracing::trace!(nsid = self.nsid, ?opcode, ?command, "nvm command");
 
+        // Identify Controller reports no SGL support (SGLS is 0), so a
+        // command that asks for SGLs (PSDT other than 00b) is refused.
+        if command.cdw0.psdt() != 0 {
+            return Err(NvmeError::do_not_retry(
+                spec::Status::INVALID_FIELD_IN_COMMAND,
+            ));
+        }
+
         match opcode {
             nvm::NvmOpcode::READ => {
                 let cdw10 = nvm::Cdw10ReadWrite::from(command.cdw10);
