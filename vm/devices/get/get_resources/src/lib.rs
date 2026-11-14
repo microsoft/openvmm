@@ -105,6 +105,22 @@ pub mod ged {
         pub enable_hibernation: bool,
         /// SMBIOS identity overrides delivered to the guest firmware.
         pub smbios: smbios_defs::SmbiosConfig,
+        /// VTL0 UEFI images the host can load in response to `LoadFirmware`.
+        pub uefi_overload_images: Vec<UefiOverloadImage>,
+    }
+
+    /// A VTL0 UEFI image the GED writes into guest memory in response to a
+    /// `LoadFirmware` request.
+    #[derive(MeshPayload)]
+    pub struct UefiOverloadImage {
+        /// The `LoadFirmware` token that selects this image.
+        pub token: u64,
+        /// The guest physical address to write the image at.
+        pub base_gpa: u64,
+        /// The entry point's offset from `base_gpa`.
+        pub entry_offset: u64,
+        /// The image bytes.
+        pub image: Vec<u8>,
     }
 
     /// An IPMI SEL notification received from OpenHCL.

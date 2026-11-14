@@ -182,6 +182,19 @@ fn find_in_firmware_volume(fv: &[u8]) -> Result<Option<MsvmFirmwareVersion<'_>>,
     parse_record(record).map(Some)
 }
 
+/// The oldest firmware interface major version the loader supports.
+pub const INTERFACE_MINIMUM_MAJOR: u16 = 1;
+/// The newest firmware interface major version the loader supports.
+pub const INTERFACE_MAXIMUM_MAJOR: u16 = 2;
+/// The oldest firmware interface minor version the loader supports.
+pub const INTERFACE_MINIMUM_MINOR: u16 = 0;
+
+/// Returns whether the loader supports firmware interface `major.minor`.
+pub fn interface_is_compatible(major: u16, minor: u16) -> bool {
+    (INTERFACE_MINIMUM_MAJOR..=INTERFACE_MAXIMUM_MAJOR).contains(&major)
+        && minor.checked_sub(INTERFACE_MINIMUM_MINOR).is_some()
+}
+
 /// Finds and parses the version record in a firmware image.
 ///
 /// `Ok(None)` means the dedicated version FFS file is not present.
@@ -224,6 +237,19 @@ mod tests {
     use super::*;
     use test_with_tracing::test;
     use zerocopy::IntoBytes;
+
+    #[test]
+    fn interface_compatibility() {
+        assert!(interface_is_compatible(1, 0));
+        assert!(interface_is_compatible(1, 1));
+        assert!(!interface_is_compatible(0, 0));
+        assert!(interface_is_compatible(2, 0));
+        assert!(interface_is_compatible(2, 1));
+        assert!(interface_is_compatible(1, u16::MAX));
+        assert!(interface_is_compatible(2, u16::MAX));
+        assert!(!interface_is_compatible(3, 0));
+        assert!(!interface_is_compatible(u16::MAX, 0));
+    }
 
     fn size24(value: usize) -> [u8; 3] {
         let value = (value as u32).to_le_bytes();

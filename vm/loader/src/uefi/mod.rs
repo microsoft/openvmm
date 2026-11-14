@@ -13,7 +13,19 @@ use x86_64 as arch;
 
 pub use arch::CONFIG_BLOB_GPA_BASE;
 pub use arch::IMAGE_SIZE;
+pub use arch::image_layout;
 pub use arch::load;
+
+/// Where `load` places a UEFI image in guest memory and where it starts
+/// executing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageLayout {
+    /// The guest physical address the image is loaded at.
+    pub base_gpa: u64,
+    /// The offset of the entry point from `base_gpa`, or zero where the entry
+    /// point is fixed (aarch64).
+    pub entry_offset: u64,
+}
 
 use thiserror::Error;
 use uefi_specs::uefi::firmware_volume;
@@ -151,64 +163,65 @@ fn pe_get_entry_point_offset(pe32_data: &[u8]) -> Option<u32> {
         // DOS image header is not present, so PE header is at the image base.
         0
     };
+    let nt_headers = pe32_data.get(nt_headers_offset..)?;
 
-    let signature = u32::read_from_prefix(&pe32_data[nt_headers_offset..])
-        .ok()?
-        .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+    let signature = u32::read_from_prefix(nt_headers).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
     // Calculate the entry point relative to the start of the image.
     // AddressOfEntryPoint is common for PE32 & PE32+
     if signature as u16 == TE_IMAGE_HEADER_SIGNATURE {
-        let te = TeImageHeader::read_from_prefix(&pe32_data[nt_headers_offset..])
-            .ok()?
-            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
-        Some(te.address_of_entry_point + size_of_val(&te) as u32 - te.stripped_size as u32)
+        let te = TeImageHeader::read_from_prefix(nt_headers).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+        te.address_of_entry_point
+            .checked_add(size_of_val(&te) as u32)?
+            .checked_sub(te.stripped_size as u32)
     } else if signature == IMAGE_NT_SIGNATURE {
-        let pe = ImageNtHeaders32::read_from_prefix(&pe32_data[nt_headers_offset..])
-            .ok()?
-            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+        let pe = ImageNtHeaders32::read_from_prefix(nt_headers).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         Some(pe.optional_header.address_of_entry_point)
     } else {
         None
     }
 }
 
-/// Get the SEC entry point offset from the firmware base.
+/// Reads a `T` at `offset` in `image`, or `None` if it doesn't fit.
+fn read_at<T: FromBytes>(image: &[u8], offset: u64) -> Option<T> {
+    let data = image.get(usize::try_from(offset).ok()?..)?;
+    Some(T::read_from_prefix(data).ok()?.0) // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+}
+
+/// Get the SEC entry point offset from the firmware base, or `None` if the
+/// image is malformed.
 fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     // Skip to SEC volume start.
     let mut image_offset = SEC_FIRMWARE_VOLUME_OFFSET;
 
     // Expect a firmware volume header for SEC volume.
-    let fvh =
-        firmware_volume::FirmwareVolumeHeader::read_from_prefix(&image[image_offset as usize..])
-            .ok()?
-            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+    let fvh: firmware_volume::FirmwareVolumeHeader = read_at(image, image_offset)?;
     if fvh.signature != firmware_volume::FV_SIGNATURE {
         return None;
     }
 
     // Skip past firmware volume header to beginning of firmware volume.
-    image_offset += fvh.header_length as u64;
+    image_offset = image_offset.checked_add(fvh.header_length as u64)?;
 
     // Find the first SEC CORE file type.
     let mut sec_core_file_header = None;
-    let mut volume_offset = 0;
+    let mut volume_offset: u64 = 0;
     while volume_offset < fvh.fv_length {
-        let new_volume_offset = (volume_offset + 7) & !7;
-        if new_volume_offset > volume_offset {
-            image_offset += new_volume_offset - volume_offset;
-            volume_offset = new_volume_offset;
-        }
-        let fh = firmware_volume::FfsFileHeader::read_from_prefix(&image[image_offset as usize..])
-            .ok()?
-            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+        let new_volume_offset = volume_offset.checked_add(7)? & !7;
+        image_offset = image_offset.checked_add(new_volume_offset - volume_offset)?;
+        volume_offset = new_volume_offset;
+        let fh: firmware_volume::FfsFileHeader = read_at(image, image_offset)?;
         if fh.file_type == firmware_volume::FILETYPE_SECURITY_CORE {
             sec_core_file_header = Some(fh);
             break;
         }
 
-        image_offset += expand_3byte_integer(fh.size);
-        volume_offset += expand_3byte_integer(fh.size);
+        let file_size = expand_3byte_integer(fh.size);
+        if file_size == 0 {
+            return None;
+        }
+        image_offset = image_offset.checked_add(file_size)?;
+        volume_offset = volume_offset.checked_add(file_size)?;
     }
 
     // There should always be a Security Core file.
@@ -216,38 +229,40 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     let sec_core_file_size = expand_3byte_integer(sec_core_file_header.size);
 
     // Move past the firmware file header.
-    image_offset += size_of::<firmware_volume::FfsFileHeader>() as u64;
-    volume_offset += size_of::<firmware_volume::FfsFileHeader>() as u64;
+    let file_header_size = size_of::<firmware_volume::FfsFileHeader>() as u64;
+    image_offset = image_offset.checked_add(file_header_size)?;
+    volume_offset = volume_offset.checked_add(file_header_size)?;
 
     // Loop through the firmware file sections looking for PE section.
+    let section_header_size = size_of::<firmware_volume::CommonSectionHeader>() as u64;
     let mut file_offset = volume_offset;
     while file_offset < sec_core_file_size {
         //
         // Section headers are 8 byte aligned with respect to the beginning of the file stream.
         //
-        let new_file_offset = (file_offset + 3) & !3;
-        if new_file_offset > file_offset {
-            image_offset += new_file_offset - file_offset;
-            file_offset += new_file_offset - file_offset;
-        }
+        let new_file_offset = file_offset.checked_add(3)? & !3;
+        image_offset = image_offset.checked_add(new_file_offset - file_offset)?;
+        file_offset = new_file_offset;
 
-        let sh =
-            firmware_volume::CommonSectionHeader::read_from_prefix(&image[image_offset as usize..])
-                .ok()?
-                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+        let sh: firmware_volume::CommonSectionHeader = read_at(image, image_offset)?;
         if sh.section_type == firmware_volume::SECTION_PE32 {
-            let pe_offset = pe_get_entry_point_offset(
-                &image[image_offset as usize + size_of::<firmware_volume::CommonSectionHeader>()..],
-            )?;
-            image_offset +=
-                size_of::<firmware_volume::CommonSectionHeader>() as u64 + pe_offset as u64;
-            break;
+            let pe_start = usize::try_from(image_offset.checked_add(section_header_size)?).ok()?;
+            let pe_offset = pe_get_entry_point_offset(image.get(pe_start..)?)?;
+            let entry = image_offset
+                .checked_add(section_header_size)?
+                .checked_add(pe_offset as u64)?;
+            return (entry < image.len() as u64).then_some(entry);
         }
-        image_offset += expand_3byte_integer(sh.size);
-        file_offset += expand_3byte_integer(sh.size);
+        let section_size = expand_3byte_integer(sh.size);
+        if section_size == 0 {
+            return None;
+        }
+        image_offset = image_offset.checked_add(section_size)?;
+        file_offset = file_offset.checked_add(section_size)?;
     }
 
-    Some(image_offset)
+    // The Security Core file has no PE section.
+    None
 }
 
 /// Definitions shared by UEFI and the loader when loaded with parameters passed in IGVM format.
@@ -351,6 +366,18 @@ pub mod x86_64 {
     const MISC_PAGES_GPA_BASE: u64 = GDT_GPA_BASE + DEFAULT_GDT_SIZE; // 0x707000
     const MISC_PAGES_SIZE: u64 = HV_PAGE_SIZE * 2;
     pub const CONFIG_BLOB_GPA_BASE: u64 = MISC_PAGES_GPA_BASE + MISC_PAGES_SIZE; // 0x709000
+
+    /// Returns where [`load`] places `image` and its entry point.
+    pub fn image_layout(image: &[u8]) -> Result<super::ImageLayout, Error> {
+        if image.len() != IMAGE_SIZE as usize {
+            return Err(Error::InvalidImageSize);
+        }
+        let entry_offset = get_sec_entry_point_offset(image).ok_or(Error::NoSecEntryPoint)?;
+        Ok(super::ImageLayout {
+            base_gpa: IMAGE_GPA_BASE,
+            entry_offset,
+        })
+    }
 
     /// Load a UEFI image with the provided config type.
     ///
@@ -843,6 +870,20 @@ pub mod aarch64 {
 
     pub const IMAGE_SIZE: u64 = 0x800000;
     pub const CONFIG_BLOB_GPA_BASE: u64 = 0x824000;
+    const IMAGE_GPA_BASE: u64 = 0;
+    const ENTRY_OFFSET: u64 = 0x1000;
+
+    /// Returns where [`load`] places `image` and its entry point.
+    pub fn image_layout(image: &[u8]) -> Result<super::ImageLayout, Error> {
+        if image.len() != IMAGE_SIZE as usize {
+            return Err(Error::InvalidImageSize);
+        }
+        Ok(super::ImageLayout {
+            base_gpa: IMAGE_GPA_BASE,
+            // TODO: report ENTRY_OFFSET once OpenHCL accepts a non-zero offset on aarch64.
+            entry_offset: 0,
+        })
+    }
 
     /// Load a UEFI image with the provided config type.
     ///
@@ -864,7 +905,7 @@ pub mod aarch64 {
         let image_size = (image.len() as u64 + BYTES_2MB - 1) & !(BYTES_2MB - 1);
         importer
             .import_pages(
-                0,
+                IMAGE_GPA_BASE / HV_PAGE_SIZE,
                 image_size / HV_PAGE_SIZE,
                 "uefi-image",
                 BootPageAcceptance::Exclusive,
@@ -931,8 +972,8 @@ pub mod aarch64 {
         import_reg(Aarch64Register::Cpsr(
             Cpsr64::new().with_sp(true).with_el(1).into(),
         ))?;
-        import_reg(Aarch64Register::X0(0x1000))?;
-        import_reg(Aarch64Register::Pc(0x1000))?;
+        import_reg(Aarch64Register::X0(IMAGE_GPA_BASE + ENTRY_OFFSET))?;
+        import_reg(Aarch64Register::Pc(IMAGE_GPA_BASE + ENTRY_OFFSET))?;
         import_reg(Aarch64Register::X1(stack_end))?;
         let platform_type = if hv_enabled {
             loader_defs::uefi::SecPlatformType::HYPERV
@@ -1133,5 +1174,39 @@ pub mod aarch64 {
         }
 
         buffer
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SEC_FIRMWARE_VOLUME_OFFSET;
+    use super::get_sec_entry_point_offset;
+    use test_with_tracing::test;
+    use uefi_specs::uefi::firmware_volume;
+
+    const IMAGE_SIZE: usize = 0x600000;
+    const FV_HEADER_LENGTH: u16 = 56;
+
+    /// An image whose SEC volume has one non-SEC file of `file_size` bytes.
+    fn image_with_file(file_size: u32) -> Vec<u8> {
+        let mut image = vec![0; IMAGE_SIZE];
+        let fv = SEC_FIRMWARE_VOLUME_OFFSET as usize;
+        image[fv + 32..fv + 40].copy_from_slice(&0x20000u64.to_le_bytes());
+        image[fv + 40..fv + 44].copy_from_slice(&firmware_volume::FV_SIGNATURE.to_le_bytes());
+        image[fv + 48..fv + 50].copy_from_slice(&FV_HEADER_LENGTH.to_le_bytes());
+        let file = fv + FV_HEADER_LENGTH as usize;
+        image[file + 18] = firmware_volume::FILETYPE_SECURITY_CORE.wrapping_add(1);
+        image[file + 20..file + 23].copy_from_slice(&file_size.to_le_bytes()[..3]);
+        image
+    }
+
+    #[test]
+    fn sec_entry_point_rejects_file_past_image_end() {
+        assert_eq!(get_sec_entry_point_offset(&image_with_file(0x1fff0)), None);
+    }
+
+    #[test]
+    fn sec_entry_point_rejects_zero_size_file() {
+        assert_eq!(get_sec_entry_point_offset(&image_with_file(0)), None);
     }
 }

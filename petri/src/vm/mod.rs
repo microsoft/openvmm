@@ -1725,6 +1725,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Serve `firmware` for OpenHCL's `LoadFirmware` overload requests, under
+    /// the token from its version record and OpenHCL 1.8's legacy token.
+    pub fn with_uefi_overload_firmware(
+        mut self,
+        firmware: ResolvedArtifact<impl IsLoadable>,
+    ) -> Self {
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("UEFI overload firmware is only supported for OpenHCL firmware.")
+            .uefi_overload_firmware = Some(firmware.erase());
+        self
+    }
+
     /// Enable confidential filtering, even if the VM is not confidential.
     pub fn with_confidential_filtering(self) -> Self {
         if !self.config.firmware.is_openhcl() {
@@ -3134,6 +3148,9 @@ pub struct OpenHclConfig {
     pub vtl2_base_address_type: Option<Vtl2BaseAddressType>,
     /// VTL2 settings
     pub vtl2_settings: Option<Vtl2Settings>,
+    /// UEFI image the host serves for `LoadFirmware` overload requests
+    /// (OpenVMM only).
+    pub uefi_overload_firmware: Option<ResolvedArtifact>,
 }
 
 impl OpenHclConfig {
@@ -3189,6 +3206,7 @@ impl Default for OpenHclConfig {
             log_levels: OpenvmmLogConfig::TestDefault,
             vtl2_base_address_type: None,
             vtl2_settings: None,
+            uefi_overload_firmware: None,
         }
     }
 }

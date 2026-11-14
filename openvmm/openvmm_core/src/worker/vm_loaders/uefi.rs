@@ -7,6 +7,10 @@ use hvdef::HV_PAGE_SIZE;
 use loader::importer::Register;
 use loader::uefi::IMAGE_SIZE;
 use loader::uefi::config;
+use loader::uefi::firmware_version::INTERFACE_MAXIMUM_MAJOR;
+use loader::uefi::firmware_version::INTERFACE_MINIMUM_MAJOR;
+use loader::uefi::firmware_version::INTERFACE_MINIMUM_MINOR;
+use loader::uefi::firmware_version::interface_is_compatible;
 use openvmm_defs::config::UefiConsoleMode;
 use std::io::Read;
 use std::io::Seek;
@@ -77,17 +81,6 @@ pub struct UefiLoadSettings {
     pub force_firmware_version: bool,
 }
 
-const FIRMWARE_INTERFACE_MINIMUM_MAJOR: u16 = 1;
-const FIRMWARE_INTERFACE_MAXIMUM_MAJOR: u16 = 2;
-const FIRMWARE_INTERFACE_MINIMUM_MINOR: u16 = 0;
-
-fn firmware_interface_is_compatible(major: u16, minor: u16) -> bool {
-    (FIRMWARE_INTERFACE_MINIMUM_MAJOR..=FIRMWARE_INTERFACE_MAXIMUM_MAJOR).contains(&major)
-        && minor
-            .checked_sub(FIRMWARE_INTERFACE_MINIMUM_MINOR)
-            .is_some()
-}
-
 fn check_firmware_version(image: &[u8], force: bool) -> Result<(), Error> {
     let version = match loader::uefi::firmware_version::find_in_firmware_image(image) {
         Ok(Some(version)) => version,
@@ -130,7 +123,7 @@ fn check_firmware_version(image: &[u8], force: bool) -> Result<(), Error> {
         "UEFI firmware version record"
     );
 
-    if !firmware_interface_is_compatible(
+    if !interface_is_compatible(
         version.interface_version_major,
         version.interface_version_minor,
     ) {
@@ -142,9 +135,7 @@ fn check_firmware_version(image: &[u8], force: bool) -> Result<(), Error> {
                 ),
                 required_interface = format_args!(
                     "major {}..={}, minor {}+",
-                    FIRMWARE_INTERFACE_MINIMUM_MAJOR,
-                    FIRMWARE_INTERFACE_MAXIMUM_MAJOR,
-                    FIRMWARE_INTERFACE_MINIMUM_MINOR
+                    INTERFACE_MINIMUM_MAJOR, INTERFACE_MAXIMUM_MAJOR, INTERFACE_MINIMUM_MINOR
                 ),
                 "UEFI firmware interface is incompatible; continuing because force_firmware_version is set"
             );
@@ -152,9 +143,9 @@ fn check_firmware_version(image: &[u8], force: bool) -> Result<(), Error> {
             return Err(Error::IncompatibleFirmwareVersion {
                 actual_major: version.interface_version_major,
                 actual_minor: version.interface_version_minor,
-                minimum_major: FIRMWARE_INTERFACE_MINIMUM_MAJOR,
-                maximum_major: FIRMWARE_INTERFACE_MAXIMUM_MAJOR,
-                minimum_minor: FIRMWARE_INTERFACE_MINIMUM_MINOR,
+                minimum_major: INTERFACE_MINIMUM_MAJOR,
+                maximum_major: INTERFACE_MAXIMUM_MAJOR,
+                minimum_minor: INTERFACE_MINIMUM_MINOR,
             });
         }
     }
@@ -546,19 +537,6 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.complete().len() > baseline);
-    }
-
-    #[test]
-    fn firmware_interface_compatibility() {
-        assert!(firmware_interface_is_compatible(1, 0));
-        assert!(firmware_interface_is_compatible(1, 1));
-        assert!(!firmware_interface_is_compatible(0, 0));
-        assert!(firmware_interface_is_compatible(2, 0));
-        assert!(firmware_interface_is_compatible(2, 1));
-        assert!(firmware_interface_is_compatible(1, u16::MAX));
-        assert!(firmware_interface_is_compatible(2, u16::MAX));
-        assert!(!firmware_interface_is_compatible(3, 0));
-        assert!(!firmware_interface_is_compatible(u16::MAX, 0));
     }
 
     #[test]

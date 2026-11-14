@@ -1967,9 +1967,11 @@ pub struct LoadFirmwareResponse {
     pub message_header: HeaderHostResponse,
     pub status: LoadFirmwareStatus,
     /// Offset from the firmware image base to the firmware entry point (SEC
-    /// entry on x64), computed by the host. Valid only when `status` is
-    /// [`LoadFirmwareStatus::SUCCESS`]; the guest/paravisor programs VTL0's RIP
-    /// to `image_base + entry_point_image_offset`.
+    /// entry on x64; zero on aarch64, where the entry point is fixed),
+    /// computed by the host. Valid only when `status` is
+    /// [`LoadFirmwareStatus::SUCCESS`]; the guest/paravisor programs VTL0's
+    /// entry point to `image_base + entry_point_image_offset`. Zero leaves the
+    /// entry point unchanged.
     pub entry_point_image_offset: u64,
 }
 
