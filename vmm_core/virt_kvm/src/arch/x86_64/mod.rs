@@ -9,6 +9,7 @@ mod cpu_contract;
 mod extint;
 mod fingerprint;
 mod gif;
+mod init_sipi;
 mod lapic_timer;
 mod regs;
 pub(crate) mod snp;
@@ -2158,6 +2159,10 @@ impl<'p> Processor for KvmProcessor<'p> {
     }
 
     fn flush_async_requests(&mut self) {}
+
+    fn has_pending_init_sipi(&mut self) -> Result<bool, KvmError> {
+        init_sipi::has_pending_init_sipi(&self.kvm)
+    }
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         let vp_info = self.inner.vp_info;

@@ -13,6 +13,8 @@ mod apic;
     any(target_os = "linux", windows)
 ))]
 mod fixture;
+#[cfg(all(guest_arch = "x86_64", guest_is_native, target_os = "linux"))]
+mod init_sipi;
 #[cfg(all(
     guest_arch = "x86_64",
     guest_is_native,
