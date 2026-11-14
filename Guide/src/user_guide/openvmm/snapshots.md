@@ -131,6 +131,18 @@ and, once automatic-RAM publication has tried to create its staging link, of
 the complete directory; otherwise, it terminates the source instead.
 ```
 
+A save fails, before it publishes anything, when a vCPU holds state that the
+saved state cannot represent. A KVM vCPU of an AMD host whose global interrupt
+flag (GIF) is clear is one: the saved state has no GIF, so a restore would run
+the vCPU with GIF set, deliver at once the interrupts and NMIs that the guest
+held off, and lose an INIT that KVM held latched behind the flag. Only a guest
+with SVM can clear GIF, but a KVM that uses virtual GIF and predates Linux 7.1
+also runs the `CLGI` of a guest without it. A save also fails for such a vCPU
+whose GIF KVM cannot report, as a kernel without `KVM_GET_NESTED_STATE` cannot,
+since it cannot tell whether the save would lose the flag. A guest-requested
+capture that fails this way rolls back, so the guest continues, and where GIF
+is clear it can request the capture again once it has executed `STGI`.
+
 While a guest-requested snapshot boundary is held, VM-worker management RPCs
 that can change VM state are rejected rather than queued. This includes memory
 writes, pause/resume, reset, interrupt injection, hotplug, and state dumps.
