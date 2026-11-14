@@ -137,7 +137,7 @@ impl Worker {
 
     pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
         self.rpc
-            .call_failable(VmRpc::RemovePcieDevice, port_name)
+            .call_failable(VmRpc::RemovePcieDevice, (port_name, false))
             .await?;
         Ok(())
     }

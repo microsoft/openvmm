@@ -477,17 +477,37 @@ impl GenericPcieRootComplex {
         root_port.port.hotplug_add_device(device_name, device)
     }
 
+    /// Ask the guest to release the device on a named port (orderly removal).
+    ///
+    /// Returns a receiver signalled once the guest has turned slot power and the power
+    /// indicator off; see `PcieDownstreamPort::request_hotplug_remove_device`.
+    pub fn request_hotplug_remove_device(
+        &mut self,
+        port_name: &str,
+    ) -> anyhow::Result<mesh::OneshotReceiver<()>> {
+        self.hotplug_root_port(port_name)?
+            .request_hotplug_remove_device()
+    }
+
     /// Hot-remove the device from a named port.
-    pub fn hotplug_remove_device(&mut self, port_name: &str) -> anyhow::Result<()> {
-        let root_port = self
-            .devices
+    ///
+    /// `orderly` re-checks, under this lock, that the guest still has the slot powered
+    /// off; see `PcieDownstreamPort::hotplug_remove_device`.
+    pub fn hotplug_remove_device(&mut self, port_name: &str, orderly: bool) -> anyhow::Result<()> {
+        self.hotplug_root_port(port_name)?
+            .hotplug_remove_device(orderly)
+    }
+
+    fn hotplug_root_port(&mut self, port_name: &str) -> anyhow::Result<&mut PcieDownstreamPort> {
+        self.devices
             .iter_mut()
             .find_map(|(_, d)| match d {
-                BusDevice::RootPort { name, port } if name.as_ref() == port_name => Some(port),
+                BusDevice::RootPort { name, port } if name.as_ref() == port_name => {
+                    Some(&mut port.port)
+                }
                 BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
             })
-            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
-        root_port.port.hotplug_remove_device()
+            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))
     }
 
     /// Attach a Root Complex Integrated Endpoint (RCiEP) at the given

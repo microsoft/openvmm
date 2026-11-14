@@ -1977,7 +1977,10 @@ impl VmService {
             .as_ref()
             .context("VM not created yet")?
             .worker_rpc
-            .call_failable(VmRpc::RemovePcieDevice, request.port_name);
+            .call_failable(
+                VmRpc::RemovePcieDevice,
+                (request.port_name, request.orderly),
+            );
         Ok(async move { recv.await.map_err(anyhow::Error::from) })
     }
 
@@ -2684,13 +2687,20 @@ async fn build_pcie_topology(
                 devfn,
                 acs_capabilities_supported,
                 pasid,
+                attention_button,
+                eject_timeout_ms,
             } = root_port;
             ports.push(PciePortConfig {
                 name: port_name.clone(),
                 devfn: devfn
                     .map(|d| d.try_into().context("devfn out of range"))
                     .transpose()?,
-                hotplug,
+                hotplug: crate::cli_args::parse_pcie_hotplug(
+                    hotplug,
+                    attention_button,
+                    eject_timeout_ms,
+                )
+                .with_context(|| format!("root port '{port_name}'"))?,
                 acs_capabilities_supported: acs_capabilities_supported
                     .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                     .transpose()?,
@@ -2811,13 +2821,20 @@ fn walk_pcie_attachment(
                     devfn,
                     acs_capabilities_supported,
                     pasid,
+                    attention_button,
+                    eject_timeout_ms,
                 } = downstream;
                 ports.push(PciePortConfig {
                     name: downstream_name.clone(),
                     devfn: devfn
                         .map(|d| d.try_into().context("devfn out of range"))
                         .transpose()?,
-                    hotplug,
+                    hotplug: crate::cli_args::parse_pcie_switch_hotplug(
+                        hotplug,
+                        attention_button,
+                        eject_timeout_ms,
+                    )
+                    .with_context(|| format!("switch downstream port '{downstream_name}'"))?,
                     acs_capabilities_supported: acs_capabilities_supported
                         .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                         .transpose()?,
@@ -4641,6 +4658,76 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn pcie_topology_maps_the_attention_button() {
+        use openvmm_defs::config::PcieHotplugConfig;
+
+        let build = |root_port: vmservice::PciePort| {
+            futures::executor::block_on(build_pcie_topology(
+                vmservice::PcieTopologyConfig {
+                    root_complexes: vec![vmservice::PcieRootComplex {
+                        name: "rc0".into(),
+                        root_ports: vec![root_port],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                &FdRegistry::default(),
+                &IommufdContexts::default(),
+                false,
+            ))
+        };
+        let port = |hotplug, attention_button, eject_timeout_ms| vmservice::PciePort {
+            name: "rp".into(),
+            hotplug,
+            attention_button,
+            eject_timeout_ms,
+            ..Default::default()
+        };
+        let hotplug_of = |built: BuiltPcieTopology| built.root_complexes[0].ports[0].hotplug;
+
+        assert_eq!(hotplug_of(build(port(false, false, None)).unwrap()), None);
+        assert_eq!(
+            hotplug_of(build(port(true, false, None)).unwrap()),
+            Some(PcieHotplugConfig::default())
+        );
+        assert_eq!(
+            hotplug_of(build(port(true, true, Some(15000))).unwrap()),
+            Some(PcieHotplugConfig {
+                attention_button: Some(Duration::from_millis(15000)),
+            })
+        );
+        // A button without a timeout gets the default; no button without hotplug.
+        assert_eq!(
+            hotplug_of(build(port(true, true, None)).unwrap()),
+            Some(PcieHotplugConfig {
+                attention_button: Some(openvmm_defs::config::PCIE_DEFAULT_EJECT_TIMEOUT),
+            })
+        );
+        assert!(build(port(true, false, Some(15000))).is_err());
+        assert!(build(port(false, true, Some(15000))).is_err());
+        // ttrpc is capped like the command line.
+        assert!(build(port(true, true, Some(300_001))).is_err());
+
+        // Switch downstream ports refuse the button: nothing can press it there.
+        let switch = vmservice::PciePort {
+            name: "rp".into(),
+            attached: Some(vmservice::PcieAttachment {
+                kind: Some(vmservice::pcie_attachment::Kind::Switch(
+                    vmservice::PcieSwitch {
+                        name: "sw".into(),
+                        downstream_ports: vec![vmservice::PciePort {
+                            name: "dp".into(),
+                            ..port(true, true, Some(15000))
+                        }],
+                    },
+                )),
+            }),
+            ..Default::default()
+        };
+        assert!(build(switch).is_err());
     }
 
     #[test]

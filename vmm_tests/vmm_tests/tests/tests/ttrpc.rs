@@ -854,6 +854,8 @@ async fn test_ttrpc_interface(
                         acs_capabilities_supported: Some(1),
                         devfn: None,
                         pasid: false,
+                        attention_button: false,
+                        eject_timeout_ms: None,
                     },
                     vmservice::PciePort {
                         name: "sw0-dp1".to_string(),
@@ -862,6 +864,8 @@ async fn test_ttrpc_interface(
                         devfn: None,
                         acs_capabilities_supported: None,
                         pasid: false,
+                        attention_button: false,
+                        eject_timeout_ms: None,
                     },
                 ],
             };
@@ -1271,6 +1275,7 @@ async fn test_ttrpc_interface(
                     vmservice::Vm::RemovePcieDevice,
                     vmservice::RemovePcieDeviceRequest {
                         port_name: "rphp".to_string(),
+                        orderly: false,
                     },
                 )
                 .await
@@ -1296,6 +1301,7 @@ async fn test_ttrpc_interface(
                     vmservice::Vm::RemovePcieDevice,
                     vmservice::RemovePcieDeviceRequest {
                         port_name: "rphp".to_string(),
+                        orderly: false,
                     },
                 )
                 .await
@@ -1341,6 +1347,7 @@ async fn test_ttrpc_interface(
                     vmservice::Vm::RemovePcieDevice,
                     vmservice::RemovePcieDeviceRequest {
                         port_name: "rphp".to_string(),
+                        orderly: false,
                     },
                 )
                 .await
@@ -1370,6 +1377,7 @@ async fn test_ttrpc_interface(
                     vmservice::Vm::RemovePcieDevice,
                     vmservice::RemovePcieDeviceRequest {
                         port_name: "rphp".to_string(),
+                        orderly: false,
                     },
                 )
                 .await
@@ -2339,6 +2347,8 @@ fn pcie_root_port(
         devfn: None,
         acs_capabilities_supported: None,
         pasid: false,
+        attention_button: false,
+        eject_timeout_ms: None,
     }
 }
 

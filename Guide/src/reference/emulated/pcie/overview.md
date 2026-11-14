@@ -56,6 +56,43 @@ everything via config space registers and MSI.
    presence and link active are cleared, changed bits are set,
    and MSI fires.
 
+### Orderly removal
+
+The removal above is a surprise removal: the card disappears while the
+guest driver may still be using it. A driver whose teardown talks to the
+device (for example a reset that polls a status register) then reads all
+ones and can hang.
+
+A root port created with `attention_button` supports the standard usage
+model instead (PCIe Base Spec §6.7). An orderly `RemovePcieDevice`
+presses the attention button and leaves the device attached. The guest
+stops its driver and powers the slot off through Slot Control (Power
+Controller Control set, Power Indicator off); only then is the device
+detached. If that does not happen within the port's `eject_timeout_ms`
+(15 seconds unless the port sets one), the call fails and the device
+stays attached and usable. The caller decides what happens next: retry the
+orderly removal, or remove it with `orderly` unset, which is the surprise
+removal.
+
+Whether a request presses the button follows what the guest shows in Slot
+Control and Slot Status. A retry waits again without pressing while the
+earlier press is still unread or the power indicator blinks, since a
+second press inside the guest's five-second window cancels the removal. A
+retry presses again when the guest acknowledged the earlier press and left
+the indicator alone: the guest dropped that press (Linux ignores one while
+it is still powering the slot on or off). A first request is refused while
+the power indicator blinks, because the guest is busy with the slot, for
+example powering on a card just hot-added into it.
+
+While an orderly removal is pending, state transitions and further hotplug
+requests wait for it like for any pending removal (see below), so a reset
+or stop issued meanwhile can take up to `eject_timeout_ms` longer. A reset
+therefore never interrupts the guest's half of the removal; it runs once
+the removal has finished or timed out, and clears any press the guest has
+not acted on. Hot-adding into such a port also
+presses the button, because a powered-off slot has no link for the guest to
+notice.
+
 ### Runtime API
 
 Hot-add and hot-remove are triggered via

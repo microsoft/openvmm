@@ -14,6 +14,8 @@ use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
 use pci_core::spec::caps::pci_express::MaxEndEndTlpPrefixes;
 use pcie::GenericPciePortDefinition;
 use pcie::PciePortSettings;
+use std::collections::HashMap;
+use std::time::Duration;
 
 /// Builds port PCIe settings from manifest flags.
 ///
@@ -24,6 +26,9 @@ use pcie::PciePortSettings;
 /// work for both switch and root ports.
 fn build_port_settings(port_cfg: &PciePortConfig) -> PciePortSettings {
     PciePortSettings {
+        attention_button: port_cfg
+            .hotplug
+            .is_some_and(|hotplug| hotplug.attention_button.is_some()),
         acs_capabilities_supported: port_cfg
             .acs_capabilities_supported
             .unwrap_or(DEFAULT_ACS_CAP_MASK),
@@ -43,9 +48,26 @@ pub(super) fn build_port_definition(port_cfg: &PciePortConfig) -> GenericPciePor
     GenericPciePortDefinition {
         name: port_cfg.name.as_str().into(),
         devfn: port_cfg.devfn,
-        hotplug: port_cfg.hotplug,
+        hotplug: port_cfg.hotplug.is_some(),
         settings,
     }
+}
+
+/// Maps each root port configured for orderly removal to its eject timeout.
+///
+/// Root ports only: runtime hot-add and hot-remove reach root-complex ports, and the
+/// command line refuses `attention_button` on switch downstream ports.
+pub(super) fn eject_timeouts(
+    root_complexes: &[PcieRootComplexConfig],
+) -> HashMap<String, Duration> {
+    root_complexes
+        .iter()
+        .flat_map(|rc| &rc.ports)
+        .filter_map(|port| {
+            let timeout = port.hotplug?.attention_button?;
+            Some((port.name.clone(), timeout))
+        })
+        .collect()
 }
 
 /// Validates that the configured PCIe root complexes form a consistent
@@ -89,6 +111,7 @@ pub(super) fn validate_pcie_root_complexes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openvmm_defs::config::PcieHotplugConfig;
     use openvmm_defs::config::PcieMmioRangeConfig;
     fn rc(name: &str, segment: u16, start_bus: u8, end_bus: u8) -> PcieRootComplexConfig {
         PcieRootComplexConfig {
@@ -106,6 +129,50 @@ mod tests {
             vnode: None,
             preserve_bars: false,
         }
+    }
+
+    fn port(name: &str, hotplug: Option<PcieHotplugConfig>) -> PciePortConfig {
+        PciePortConfig {
+            name: name.into(),
+            devfn: None,
+            hotplug,
+            acs_capabilities_supported: None,
+            cxl: false,
+            pasid: false,
+        }
+    }
+
+    #[test]
+    fn attention_button_follows_the_hotplug_config() {
+        let button = Some(PcieHotplugConfig {
+            attention_button: Some(Duration::from_secs(15)),
+        });
+        for hotplug in [None, Some(PcieHotplugConfig::default()), button] {
+            let definition = build_port_definition(&port("rp0", hotplug));
+            assert_eq!(definition.hotplug, hotplug.is_some());
+            assert_eq!(
+                definition.settings.attention_button,
+                hotplug.is_some_and(|h| h.attention_button.is_some())
+            );
+        }
+    }
+
+    #[test]
+    fn eject_timeouts_list_only_attention_button_ports() {
+        let mut rc0 = rc("rc0", 0, 0, 4);
+        rc0.ports = vec![
+            port("plain", None),
+            port("hotplug", Some(PcieHotplugConfig::default())),
+            port(
+                "button",
+                Some(PcieHotplugConfig {
+                    attention_button: Some(Duration::from_millis(1500)),
+                }),
+            ),
+        ];
+        let timeouts = eject_timeouts(&[rc0]);
+        assert_eq!(timeouts.len(), 1);
+        assert_eq!(timeouts["button"], Duration::from_millis(1500));
     }
 
     #[test]

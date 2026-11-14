@@ -284,6 +284,29 @@ pub struct PcieRootComplexConfig {
     pub preserve_bars: bool,
 }
 
+/// Hotplug capabilities for a PCIe port.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, MeshPayload)]
+pub struct PcieHotplugConfig {
+    /// Enables attention button ejection (orderly removal) with the supplied maximum wait
+    /// for the guest to power the slot off.
+    pub attention_button: Option<std::time::Duration>,
+}
+
+/// How long an orderly removal waits for the guest to power the slot off when the port
+/// names no timeout of its own.
+///
+/// Linux pciehp waits 5 s after a button press so the press can be cancelled, then unbinds
+/// the driver and powers the slot off; a Linux guest releases a virtio NIC in about 7 s.
+/// 15 s is about twice that. Callers with a different deadline set `eject_timeout_ms`.
+pub const PCIE_DEFAULT_EJECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The longest eject timeout a port may set.
+///
+/// While an orderly removal waits, the worker defers state changes (stop, reset, save,
+/// restart) and further hotplug requests, so the timeout also bounds how long a stuck guest
+/// can block them. Uncapped, a `u32` of milliseconds would allow 49 days.
+pub const PCIE_MAX_EJECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Configuration for a single PCIe port — either a root-complex root port or a
 /// switch downstream port.
 #[derive(Debug, MeshPayload)]
@@ -300,7 +323,7 @@ pub struct PciePortConfig {
     /// ports.
     pub devfn: Option<u8>,
     /// Enables PCIe hotplug capabilities for this port.
-    pub hotplug: bool,
+    pub hotplug: Option<PcieHotplugConfig>,
     /// Optional ACS capability bitmask to expose on this port.
     pub acs_capabilities_supported: Option<u16>,
     /// Marks this port as CXL-capable.

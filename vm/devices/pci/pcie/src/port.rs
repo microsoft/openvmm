@@ -64,6 +64,10 @@ fn validate_cxl_component_register_access(offset: u64, len: usize) -> Result<(),
 /// capabilities does not require changing every constructor signature.
 #[derive(Debug, Default, Clone)]
 pub struct PciePortSettings {
+    /// Enables attention button ejection on a hotplug port: Attention Button, Power
+    /// Controller and Power Indicator are advertised, and the port supports orderly removal
+    /// through `PcieDownstreamPort::request_hotplug_remove_device`. Ignored without hotplug.
+    pub attention_button: bool,
     /// ACS capability bits to advertise on this port. `0` means the ACS
     /// extended capability is not present.
     pub acs_capabilities_supported: u16,
@@ -378,6 +382,9 @@ impl PcieDownstreamPort {
         if hotplug {
             let slot_num = slot_number.unwrap_or(0);
             pcie_cap = pcie_cap.with_hotplug_support(slot_num);
+            if settings.attention_button {
+                pcie_cap = pcie_cap.with_attention_button();
+            }
         }
 
         if let Some(max_prefixes) = settings.tlp_prefixing_supported {
@@ -906,20 +913,62 @@ impl PcieDownstreamPort {
         Ok(())
     }
 
-    /// Hot-remove the device from this port at runtime.
-    pub fn hotplug_remove_device(&mut self) -> anyhow::Result<()> {
-        let is_hotplug_capable = self
+    /// Ask the guest to release the device on this port, keeping the endpoint reachable.
+    ///
+    /// Presses the attention button unless the guest still holds or is acting on an earlier
+    /// press (see [`PciExpressCapability::request_hotplug_eject`] for the decision), and
+    /// sends the hot-plug MSI if that raised the interrupt condition. The device stays
+    /// attached so that a guest driver whose teardown still talks to it (Linux virtio_pci's
+    /// reset polls the device status) can finish. Detach with
+    /// [`Self::hotplug_remove_device`] once the returned receiver fires.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the port is empty, lacks a PCIe capability, or cannot start ejection
+    /// (see [`pci_core::capabilities::pci_express::PcieEjectError`]).
+    pub fn request_hotplug_remove_device(&mut self) -> anyhow::Result<mesh::OneshotReceiver<()>> {
+        if self.link.is_none() {
+            bail!("port '{}' is empty", self.name);
+        }
+        let completion = self
             .cfg_space
             .capabilities()
             .iter()
             .find_map(|cap| cap.as_pci_express())
-            .is_some_and(|pcie| pcie.slot_capabilities().hot_plug_capable());
+            .ok_or_else(|| anyhow::anyhow!("port '{}' has no PCIe capability", self.name))?
+            .request_hotplug_eject()?;
+        // A press while another event is still unacknowledged raises no second MSI, and a
+        // press while the guest has the interrupt masked is delivered when it unmasks.
+        self.notify_hotplug(HotplugNotifyCause::Event);
+        Ok(completion)
+    }
 
-        if !is_hotplug_capable {
+    /// Hot-remove the device from this port at runtime.
+    ///
+    /// With `orderly`, the caller has waited for the receiver from
+    /// [`Self::request_hotplug_remove_device`]; slot power and the power indicator are
+    /// checked again here, under the same lock that disconnects the endpoint, because the
+    /// guest can power the slot back on after signalling (a reboot, or a removal it
+    /// cancelled). A slot found powered again leaves the device attached and fails.
+    /// Without `orderly` this is a surprise removal, whatever state the slot is in.
+    pub fn hotplug_remove_device(&mut self, orderly: bool) -> anyhow::Result<()> {
+        let pcie = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express());
+
+        if !pcie.is_some_and(|pcie| pcie.slot_capabilities().hot_plug_capable()) {
             bail!("port '{}' is not hotplug capable", self.name);
         }
         if self.link.is_none() {
             bail!("port '{}' is empty", self.name);
+        }
+        if orderly && !pcie.is_some_and(|pcie| pcie.hotplug_eject_complete()) {
+            bail!(
+                "PCIe slot controls changed before removal on port '{}'; device remains attached",
+                self.name
+            );
         }
 
         self.link = None;
@@ -972,6 +1021,7 @@ mod tests {
             None,
             &msi_target,
             PciePortSettings {
+                attention_button: false,
                 acs_capabilities_supported: 0,
                 cxl_flex_bus_port_capability: Some(
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
@@ -1564,6 +1614,7 @@ mod tests {
             None,
             &msi_target,
             PciePortSettings {
+                attention_button: false,
                 acs_capabilities_supported: 0,
                 cxl_flex_bus_port_capability: Some(
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
@@ -1643,6 +1694,15 @@ mod tests {
         PcieDownstreamPort,
         pci_core::test_helpers::TestPciInterruptController,
     ) {
+        hotplug_port_with_msi_settings(PciePortSettings::default())
+    }
+
+    fn hotplug_port_with_msi_settings(
+        settings: PciePortSettings,
+    ) -> (
+        PcieDownstreamPort,
+        pci_core::test_helpers::TestPciInterruptController,
+    ) {
         use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
         let hardware_ids = HardwareIds {
             vendor_id: 0x1234,
@@ -1664,7 +1724,7 @@ mod tests {
             false,
             Some(1),
             &msi_conn.target(),
-            PciePortSettings::default(),
+            settings,
             None,
             None,
         );
@@ -1749,7 +1809,7 @@ mod tests {
         assert_eq!(msi_count(&controller), 1);
 
         // The guest has not acknowledged the add yet, so the remove finds the condition high.
-        port.hotplug_remove_device().unwrap();
+        port.hotplug_remove_device(false).unwrap();
         assert_eq!(
             msi_count(&controller),
             0,
@@ -1787,5 +1847,239 @@ mod tests {
             0,
             "the interrupt for the pending add already went out before the save"
         );
+    }
+
+    // --- Orderly removal through the attention button ---
+
+    /// Slot Control: Attention Button Pressed Enable; Power Indicator Control (bits 9:8) on
+    /// and off; Power Controller Control (bit 10) set = power off.
+    const ABPE: u32 = 1 << 0;
+    const PWR_IND_ON: u32 = 0b01 << 8;
+    const PWR_IND_OFF: u32 = 0b11 << 8;
+    /// Power indicator blinking: Linux's five-second countdown after a press it acted on,
+    /// and its power-on in board_added.
+    const PWR_IND_BLINK: u32 = 0b10 << 8;
+    const PWR_OFF: u32 = 1 << 10;
+    /// Slot Status (high half): Attention Button Pressed, RW1C.
+    const ABP: u32 = 1 << 16;
+
+    /// What Linux pciehp enables on a port with an attention button (pciehp_hpc.c
+    /// pcie_enable_notification): the button and link events, never presence.
+    const LINUX_NOTIFY: u32 = HPIE | ABPE | DLLSCE;
+
+    fn attention_port() -> (
+        PcieDownstreamPort,
+        pci_core::test_helpers::TestPciInterruptController,
+    ) {
+        hotplug_port_with_msi_settings(PciePortSettings {
+            attention_button: true,
+            ..Default::default()
+        })
+    }
+
+    fn slot_dword(port: &PcieDownstreamPort) -> u32 {
+        port.cfg_space.read_u32(SLOT_CTL_STS)
+    }
+
+    fn poll_ready(completion: &mut mesh::OneshotReceiver<()>) -> Option<bool> {
+        match Future::poll(
+            std::pin::Pin::new(completion),
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        ) {
+            std::task::Poll::Pending => None,
+            std::task::Poll::Ready(r) => Some(r.is_ok()),
+        }
+    }
+
+    /// Hot-add a card and play the guest through powering it on, as Linux does after the
+    /// button press it gets for a card in a powered-off attention slot.
+    fn attention_port_with_powered_card() -> (
+        PcieDownstreamPort,
+        pci_core::test_helpers::TestPciInterruptController,
+    ) {
+        let (mut port, controller) = attention_port();
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_OFF | PWR_IND_OFF);
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        assert_eq!(
+            msi_count(&controller),
+            1,
+            "a card in a powered-off attention slot is announced by the button"
+        );
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_ON | ABP | PDC | DLLSC);
+        // Powering on raised the link in the same write that acknowledged the press, so the
+        // condition never fell and there is no new rise to signal; Linux's MSI handler
+        // re-reads Slot Status and finds the DLLSC.
+        assert_eq!(msi_count(&controller), 0);
+        assert_eq!(
+            slot_dword(&port) & DLLSC,
+            DLLSC,
+            "link up with power is reported"
+        );
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_ON | DLLSC);
+        assert_eq!(msi_count(&controller), 0);
+        (port, controller)
+    }
+
+    #[test]
+    fn orderly_remove_keeps_the_device_until_the_guest_powers_the_slot_off() {
+        let (mut port, controller) = attention_port_with_powered_card();
+        let mut completion = port.request_hotplug_remove_device().unwrap();
+        assert_eq!(
+            msi_count(&controller),
+            1,
+            "the button press interrupts the guest"
+        );
+        assert!(
+            port.link.is_some(),
+            "the endpoint stays reachable for driver teardown"
+        );
+        assert_eq!(slot_dword(&port) & ABP, ABP);
+        assert_eq!(slot_dword(&port) & PDC, 0, "presence did not change");
+        assert_eq!(poll_ready(&mut completion), None);
+
+        // Guest acknowledges the press, waits, unbinds its driver, powers off, then turns
+        // the indicator off (Linux pciehp_ctrl.c remove_board).
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_ON | ABP);
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_ON | PWR_OFF);
+        assert_eq!(
+            msi_count(&controller),
+            1,
+            "the link going down with power is an enabled DLLSC event"
+        );
+        assert_eq!(
+            poll_ready(&mut completion),
+            None,
+            "the indicator is still on"
+        );
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_OFF | PWR_OFF | DLLSC);
+        assert_eq!(poll_ready(&mut completion), Some(true));
+        assert!(port.link.is_some(), "signalling is not detaching");
+
+        port.hotplug_remove_device(true).unwrap();
+        assert!(port.link.is_none());
+        assert_eq!(
+            slot_dword(&port) & PDC,
+            PDC,
+            "the physical removal is reported"
+        );
+    }
+
+    #[test]
+    fn orderly_detach_is_refused_when_the_guest_powered_the_slot_again() {
+        let (mut port, _controller) = attention_port_with_powered_card();
+        let mut completion = port.request_hotplug_remove_device().unwrap();
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_OFF | PWR_OFF | ABP);
+        assert_eq!(poll_ready(&mut completion), Some(true));
+        // The guest reboots or changes its mind before the host detaches.
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_ON);
+        let err = port.hotplug_remove_device(true).unwrap_err();
+        assert!(err.to_string().contains("device remains attached"), "{err}");
+        assert!(port.link.is_some());
+        // A surprise removal still works whatever the slot state.
+        port.hotplug_remove_device(false).unwrap();
+        assert!(port.link.is_none());
+    }
+
+    #[test]
+    fn orderly_remove_retry_neither_presses_nor_interrupts_again() {
+        let (mut port, controller) = attention_port_with_powered_card();
+        drop(port.request_hotplug_remove_device().unwrap());
+        assert_eq!(msi_count(&controller), 1);
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_BLINK | ABP);
+        for _ in 0..3 {
+            drop(port.request_hotplug_remove_device().unwrap());
+        }
+        assert_eq!(
+            msi_count(&controller),
+            0,
+            "a second press would cancel the guest's pending power-off"
+        );
+        assert_eq!(slot_dword(&port) & ABP, 0);
+    }
+
+    #[test]
+    fn orderly_remove_presses_again_after_the_guest_dropped_the_press() {
+        let (mut port, controller) = attention_port_with_powered_card();
+        drop(port.request_hotplug_remove_device().unwrap());
+        assert_eq!(msi_count(&controller), 1);
+        // The guest acknowledged the press but dropped it (Linux pciehp in POWERON or
+        // POWEROFF): the indicator stays on and nothing will power the slot off.
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_ON | ABP);
+        drop(port.request_hotplug_remove_device().unwrap());
+        assert_eq!(
+            msi_count(&controller),
+            1,
+            "the new press interrupts the guest once"
+        );
+        assert_eq!(slot_dword(&port) & ABP, ABP);
+    }
+
+    #[test]
+    fn orderly_remove_refuses_while_the_guest_powers_a_new_card_on() {
+        let (mut port, controller) = attention_port();
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_OFF | PWR_IND_OFF);
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        assert_eq!(msi_count(&controller), 1);
+        // Linux counts down five seconds before powering the new card on, blinking.
+        guest_slot_write(
+            &mut port,
+            LINUX_NOTIFY | PWR_OFF | PWR_IND_BLINK | ABP | PDC,
+        );
+        let err = port.request_hotplug_remove_device().unwrap_err();
+        assert!(err.to_string().contains("busy"), "{err}");
+        assert_eq!(
+            slot_dword(&port) & ABP,
+            0,
+            "a press would cancel the hot-add"
+        );
+        assert_eq!(msi_count(&controller), 0);
+        assert!(port.link.is_some());
+    }
+
+    #[test]
+    fn orderly_remove_refuses_a_guest_that_cannot_hear_the_button() {
+        let (mut port, controller) = attention_port();
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        // A guest that powered the slot but never enabled hot-plug notification (firmware,
+        // or an OS without native hotplug).
+        guest_slot_write(&mut port, PWR_IND_ON | ABP | PDC);
+        assert_eq!(msi_count(&controller), 0);
+        let err = port.request_hotplug_remove_device().unwrap_err();
+        assert!(err.to_string().contains("not enabled"), "{err}");
+        assert_eq!(slot_dword(&port) & ABP, 0, "no press nobody can hear");
+        assert!(port.link.is_some());
+    }
+
+    #[test]
+    fn orderly_remove_on_a_port_without_a_button_is_refused_and_surprise_still_works() {
+        let (mut port, _controller) = hotplug_port_with_msi();
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        let err = port.request_hotplug_remove_device().unwrap_err();
+        assert!(err.to_string().contains("attention button"), "{err}");
+        port.hotplug_remove_device(false).unwrap();
+        assert!(port.link.is_none());
+    }
+
+    #[test]
+    fn restore_mid_eject_does_not_press_again() {
+        let (mut port, controller) = attention_port_with_powered_card();
+        drop(port.request_hotplug_remove_device().unwrap());
+        assert_eq!(msi_count(&controller), 1);
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_BLINK | ABP);
+
+        let saved = port.cfg_space.save().expect("save should succeed");
+        port.cfg_space
+            .restore(saved)
+            .expect("restore should succeed");
+        let mut retry = port.request_hotplug_remove_device().unwrap();
+        assert_eq!(msi_count(&controller), 0);
+        assert_eq!(slot_dword(&port) & ABP, 0);
+        guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_OFF | PWR_OFF);
+        assert_eq!(poll_ready(&mut retry), Some(true));
+        port.hotplug_remove_device(true).unwrap();
     }
 }

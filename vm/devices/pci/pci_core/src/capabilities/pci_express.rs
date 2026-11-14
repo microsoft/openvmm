@@ -20,10 +20,38 @@ use std::sync::Arc;
 /// FLR bit is the 28th bit in the Device Capabilities register (0 indexed).
 pub const PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK: u32 = 1 << 28;
 
+/// Power Indicator Control value for "on" (PCIe Base 7.5.3.10).
+const POWER_INDICATOR_ON: u16 = 0b01;
+/// Power Indicator Control value for "off" (PCIe Base 7.5.3.10).
+const POWER_INDICATOR_OFF: u16 = 0b11;
+/// Power Indicator Control value for "blink" (PCIe Base 7.5.3.10).
+const POWER_INDICATOR_BLINK: u16 = 0b10;
+
 /// Callback interface for handling Function Level Reset (FLR) events.
 pub trait FlrHandler: Send + Sync + Inspect {
     /// Called when Function Level Reset is initiated.
     fn initiate_flr(&self);
+}
+
+/// Failure to start orderly PCIe ejection.
+#[derive(Debug, thiserror::Error)]
+pub enum PcieEjectError {
+    /// The port does not implement hotplug.
+    #[error("port is not hotplug capable")]
+    NotHotplugCapable,
+    /// The port does not advertise attention button ejection.
+    #[error("port does not support attention button ejection")]
+    AttentionButtonUnsupported,
+    /// No endpoint is physically present.
+    #[error("slot is empty")]
+    EmptySlot,
+    /// Required guest hotplug interrupts are disabled.
+    #[error("guest has not enabled orderly PCIe ejection")]
+    InterruptDisabled,
+    /// The guest is in the middle of a hot-plug operation on this slot (power indicator
+    /// blinking), so a press now would cancel that operation instead of ejecting.
+    #[error("guest is busy with this slot (power indicator blinking)")]
+    GuestBusy,
 }
 
 /// Why the hot-plug interrupt condition is being re-evaluated.
@@ -50,6 +78,20 @@ struct PciExpressState {
     /// Hot-plug interrupts sent because a guest write raised the condition, i.e. for an event
     /// that arrived while the guest had the interrupt (or that event's enable) off.
     hotplug_msi_on_guest_write: u64,
+    /// An attention button press was sent for an orderly removal that has not finished.
+    ///
+    /// Read together with the guest-visible slot state on a retry (see
+    /// [`PciExpressCapability::request_hotplug_eject`]): while the press is still pending or
+    /// the guest is counting down, a retry must not press again, because in Linux pciehp a
+    /// second press while the power indicator blinks cancels the pending power-off
+    /// (pciehp_handle_button_press, BLINKINGOFF_STATE).
+    eject_requested: bool,
+    /// Signalled when the guest has turned slot power and the power indicator off.
+    ///
+    /// Not saved: the waiter lives in the removal task, which never spans a save (the
+    /// worker defers save and restart while a removal is pending).
+    #[inspect(skip)]
+    eject_completion: Option<mesh::OneshotSender<()>>,
 }
 
 #[derive(Debug, Inspect)]
@@ -71,6 +113,8 @@ impl PciExpressState {
             hotplug_notify_level: false,
             hotplug_msi_on_event: 0,
             hotplug_msi_on_guest_write: 0,
+            eject_requested: false,
+            eject_completion: None,
         }
     }
 
@@ -82,10 +126,39 @@ impl PciExpressState {
             // Lifetime counters, kept across reset.
             hotplug_msi_on_event: _,
             hotplug_msi_on_guest_write: _,
+            eject_requested,
+            eject_completion,
         } = self;
         *registers = PciExpressRegisters::new();
         // The reset cleared Slot Control and Slot Status, so the condition is false.
         *hotplug_notify_level = false;
+        // A reset guest no longer runs the driver that was asked to eject, so the request
+        // is void. Dropping the sender fails the waiter, which then reports an error
+        // instead of detaching a device the rebooted guest may already be probing again.
+        *eject_requested = false;
+        *eject_completion = None;
+    }
+
+    /// Forget an orderly removal request: the card is gone, so there is nothing left to
+    /// eject, and a stale Attention Button Pressed would make the guest act on the next
+    /// card put into this slot.
+    fn clear_eject_request(&mut self) {
+        self.eject_requested = false;
+        self.eject_completion = None;
+        self.registers
+            .slot_status_events
+            .set_attention_button_pressed(false);
+    }
+
+    /// Slot power and the power indicator are both off: the guest finished its side of an
+    /// orderly removal and the endpoint can be detached without it noticing.
+    ///
+    /// Both are required: Linux writes Power Controller Control off first and the indicator
+    /// off about a second later (pciehp_ctrl.c remove_board), so power alone would detach a
+    /// little early.
+    fn slot_powered_off(&self) -> bool {
+        self.registers.slot_control.power_controller_control()
+            && self.registers.slot_control.power_indicator_control() == POWER_INDICATOR_OFF
     }
 
     /// The hot-plug interrupt condition of PCIe Base 6.7.3.4 for the current registers.
@@ -129,7 +202,14 @@ impl PciExpressState {
         pci_express::LinkStatus::new()
             .with_current_link_speed(LinkSpeed::Speed32_0GtS)
             .with_negotiated_link_width(LinkWidth::X16)
-            .with_data_link_layer_link_active(self.presence_detect_state)
+            // A powered-off slot has no link even with a card in it. This is what lets the
+            // guest see the link go down when it powers a slot off (and up when it powers
+            // it on again). Power Controller Control reads 0 on a port without a power
+            // controller, so those ports keep following presence alone.
+            .with_data_link_layer_link_active(
+                self.presence_detect_state
+                    && !self.registers.slot_control.power_controller_control(),
+            )
     }
 }
 
@@ -252,6 +332,7 @@ impl PciExpressCapability {
     fn handle_slot_control_status_write(&mut self, val: ByteEnabledDwordWrite) {
         // Slot Control (2 bytes) + Slot Status (2 bytes)
         let mut state = self.state.lock();
+        let link_was_active = state.link_status().data_link_layer_link_active();
 
         let new_slot_control = pci_express::SlotControl::from_bits(
             val.merge_low(state.registers.slot_control.into_bits()),
@@ -266,6 +347,32 @@ impl PciExpressCapability {
             state.registers.slot_status_events.into_bits()
                 & !(written_status.into_bits() & self.slot_status_rw1c_mask()),
         );
+
+        // Powering a populated slot off or on changes the link, and a link change is an
+        // event the guest asked to hear about through Data Link Layer State Changed. Set it
+        // after the RW1C clear above so a write that both acknowledges the old event and
+        // flips power keeps the new one. The port's cfg_write re-evaluates the interrupt
+        // condition right after this, so an enabled event raises its MSI there.
+        if link_was_active != state.link_status().data_link_layer_link_active()
+            && self
+                .link_capabilities
+                .data_link_layer_link_active_reporting()
+        {
+            state
+                .registers
+                .slot_status_events
+                .set_data_link_layer_state_changed(true);
+        }
+
+        // The guest's half of an orderly removal is this write: it powers the slot off
+        // after unbinding its driver (Linux pciehp_ctrl.c remove_board). Detaching needs the
+        // device unit stopped, which is async, so this only signals the waiter.
+        if state.slot_powered_off() {
+            state.eject_requested = false;
+            if let Some(completion) = state.eject_completion.take() {
+                completion.send(());
+            }
+        }
     }
 
     fn slot_control_writable_mask(&self) -> u16 {
@@ -492,6 +599,35 @@ impl PciExpressCapability {
         self
     }
 
+    /// Enables attention button, power controller and power indicator support.
+    ///
+    /// This is the PCIe Base 6.7 "standard usage model" for orderly removal: the host
+    /// presses the button, the guest stops its driver and powers the slot off, and only
+    /// then is the card pulled. Opt-in, because a guest honouring the model waits five
+    /// seconds after a press before acting (Linux pciehp_ctrl.c pciehp_handle_button_press),
+    /// on hot-add as well as on removal. Ports without it keep surprise semantics.
+    ///
+    /// Hot-Plug Surprise stays advertised: the host can still pull a card without asking
+    /// (a caller's fallback, or a guest that never answers), and the guest must keep
+    /// tolerating that.
+    ///
+    /// # Panics
+    ///
+    /// Panics if hotplug support has not been configured.
+    pub fn with_attention_button(mut self) -> Self {
+        assert!(self.slot_capabilities.hot_plug_capable());
+        self.slot_capabilities = self
+            .slot_capabilities
+            .with_attention_button_present(true)
+            .with_power_controller_present(true)
+            .with_power_indicator_present(true);
+        // Start in the state reset() produces: an empty slot is off.
+        let mut state = self.state.lock();
+        self.apply_reset_power_state(&mut state);
+        drop(state);
+        self
+    }
+
     /// Enable TLP prefixing support for this PCIe capability.
     ///
     /// This configures the appropriate registers to indicate that the function supports
@@ -514,6 +650,36 @@ impl PciExpressCapability {
     pub fn set_presence_detect_state(&self, present: bool) {
         let mut state = self.state.lock();
         state.presence_detect_state = present;
+        if !present {
+            state.clear_eject_request();
+        }
+        // A card attached at build time is powered from the start, as reset() would leave
+        // it. Without this a static card on an attention-button port would sit in a slot
+        // that reports power off and link down until the first reset, and a guest with
+        // native hotplug would treat it as needing a power-on (a five-second button wait).
+        self.apply_reset_power_state(&mut state);
+    }
+
+    /// Power Controller and Power Indicator as they come out of reset: following presence,
+    /// and only where the capability is advertised. See [`PciCapability::reset`].
+    fn apply_reset_power_state(&self, state: &mut PciExpressState) {
+        let present = state.presence_detect_state;
+        if self.slot_capabilities.power_controller_present() {
+            state
+                .registers
+                .slot_control
+                .set_power_controller_control(!present);
+        }
+        if self.slot_capabilities.power_indicator_present() {
+            state
+                .registers
+                .slot_control
+                .set_power_indicator_control(if present {
+                    POWER_INDICATOR_ON
+                } else {
+                    POWER_INDICATOR_OFF
+                });
+        }
     }
 
     /// Set the RW1C changed bits in Slot Status to signal a hotplug event.
@@ -547,16 +713,133 @@ impl PciExpressCapability {
         if state.presence_detect_state == present {
             return;
         }
+        let link_was_active = state.link_status().data_link_layer_link_active();
         state.presence_detect_state = present;
+        if !present {
+            state.clear_eject_request();
+        }
+
+        // A card inserted into a powered-off slot on an attention-button port also presses
+        // the button. Linux pciehp enables Attention Button Pressed instead of Presence
+        // Detect Changed when the port has a button (pciehp_hpc.c pcie_enable_notification),
+        // and the link cannot come up in an unpowered slot, so without the press the guest
+        // hears nothing.
+        if present
+            && self.slot_capabilities.attention_button_present()
+            && state.registers.slot_control.power_controller_control()
+        {
+            state
+                .registers
+                .slot_status_events
+                .set_attention_button_pressed(true);
+        }
 
         state
             .registers
             .slot_status_events
             .set_presence_detect_changed(true);
-        state
+        // Only a real link change is reported: inserting into a powered-off slot leaves
+        // the link down, and the guest raises it itself when it powers the slot on.
+        if link_was_active != state.link_status().data_link_layer_link_active() {
+            state
+                .registers
+                .slot_status_events
+                .set_data_link_layer_state_changed(true);
+        }
+    }
+
+    /// Requests orderly ejection without changing physical presence.
+    ///
+    /// Whether to press the attention button is decided from what the guest shows, not
+    /// from whether a press was sent before:
+    ///
+    /// * An earlier press still unacknowledged (Attention Button Pressed set) or a guest
+    ///   counting down (power indicator blinking): only the waiter is replaced. A second
+    ///   press within the guest's five-second window cancels the removal (Linux pciehp_ctrl.c
+    ///   pciehp_handle_button_press, BLINKINGOFF_STATE).
+    /// * An earlier press acknowledged with the indicator not blinking: the guest dropped it
+    ///   (pciehp ignores a press in POWERON_STATE and POWEROFF_STATE, acknowledging it all the
+    ///   same), so the button is pressed again. Trusting the old press instead would leave
+    ///   every retry waiting on a removal that never started, until a VM reset.
+    /// * No earlier press and the indicator blinking: the guest is busy with this slot (a
+    ///   hot-add countdown or power-on), so the request fails with
+    ///   [`PcieEjectError::GuestBusy`]. A press then would cancel the guest's operation.
+    /// * Otherwise the button is pressed.
+    ///
+    /// The one window this cannot see is a guest between acknowledging a press and setting
+    /// the indicator to blink (pciehp's interrupt handler, then its thread). A retry lands
+    /// only after the caller's eject timeout, long after that window.
+    ///
+    /// The caller re-evaluates the hot-plug interrupt condition afterwards to send the MSI.
+    ///
+    /// # Returns
+    ///
+    /// A receiver signalled when slot power and the power indicator are off. It is ready
+    /// at once if both already are. Reset or physical removal fails a pending receiver.
+    ///
+    /// # Errors
+    ///
+    /// [`PcieEjectError`] if hotplug or attention button support is missing, the slot is
+    /// empty, the guest is busy with the slot, or a new press is needed while the guest has
+    /// Attention Button Pressed Enable off. A press the guest cannot hear would only run out
+    /// the caller's timeout.
+    pub fn request_hotplug_eject(&self) -> Result<mesh::OneshotReceiver<()>, PcieEjectError> {
+        if !self.slot_capabilities.hot_plug_capable() {
+            return Err(PcieEjectError::NotHotplugCapable);
+        }
+        if !self.slot_capabilities.attention_button_present() {
+            return Err(PcieEjectError::AttentionButtonUnsupported);
+        }
+        let mut state = self.state.lock();
+        if !state.presence_detect_state {
+            return Err(PcieEjectError::EmptySlot);
+        }
+        let (send, recv) = mesh::oneshot();
+        if state.slot_powered_off() {
+            send.send(());
+            return Ok(recv);
+        }
+        let control = state.registers.slot_control;
+        let blinking = control.power_indicator_control() == POWER_INDICATOR_BLINK;
+        let press_unread = state
             .registers
             .slot_status_events
-            .set_data_link_layer_state_changed(true);
+            .attention_button_pressed();
+        // The guest has the earlier press or is acting on it: wait again, press nothing.
+        let rearm_only = state.eject_requested && (press_unread || blinking);
+        if !rearm_only {
+            if blinking {
+                return Err(PcieEjectError::GuestBusy);
+            }
+            // Attention Button Pressed Enable alone decides whether the guest listens.
+            // Hot-Plug Interrupt Enable only selects interrupt over polling: pciehp in poll
+            // mode leaves it off and still reads the press (pciehp_hpc.c
+            // pcie_enable_notification). Without an interrupt the MSI is simply not sent.
+            if !control.attention_button_pressed_enable() {
+                return Err(PcieEjectError::InterruptDisabled);
+            }
+            state
+                .registers
+                .slot_status_events
+                .set_attention_button_pressed(true);
+            state.eject_requested = true;
+        }
+        state.eject_completion = Some(send);
+        Ok(recv)
+    }
+
+    /// Whether slot power and the power indicator are both off.
+    ///
+    /// The detach path re-checks this under the same lock that disconnects the endpoint:
+    /// the guest may have powered the slot back on between the completion signal and the
+    /// detach (a cancelled removal, or a reboot that re-enabled the slot).
+    pub fn hotplug_eject_complete(&self) -> bool {
+        self.state.lock().slot_powered_off()
+    }
+
+    /// Whether an orderly removal request is pending (button pressed, slot not yet off).
+    pub fn hotplug_eject_requested(&self) -> bool {
+        self.state.lock().eject_requested
     }
 
     /// Returns whether the hot plug interrupt is enabled in Slot Control.
@@ -841,6 +1124,13 @@ impl PciCapability for PciExpressCapability {
     fn reset(&mut self) {
         let mut state = self.state.lock();
         state.reset_registers();
+        // PCIe Base 7.5.3.10 leaves the reset value of Power Controller Control to the
+        // implementation. Follow presence: a populated slot comes out of reset powered so
+        // firmware and the booting guest can use the card, an empty one comes out off so a
+        // later insertion waits for the guest to power it. Each control is touched only when
+        // its capability is advertised; a port without a power controller must keep reading
+        // 0 there, or its link would report down.
+        self.apply_reset_power_state(&mut state);
     }
 
     fn as_pci_express(&self) -> Option<&PciExpressCapability> {
@@ -879,6 +1169,14 @@ mod save_restore {
             pub device_control_2: u16,
             #[mesh(7)]
             pub link_control_2: u16,
+            /// An attention button press is outstanding. Saved so a restored VM does not
+            /// press again on a retry, which would cancel the guest's pending removal.
+            ///
+            /// Optional so a blob saved before the field existed restores: it reads as
+            /// `None`, which lands on the cold default (no request), the state that blob's
+            /// VM had, since it could not request an orderly removal at all.
+            #[mesh(8)]
+            pub eject_requested: Option<bool>,
         }
     }
 
@@ -894,6 +1192,9 @@ mod save_restore {
                 hotplug_notify_level: _,
                 hotplug_msi_on_event: _,
                 hotplug_msi_on_guest_write: _,
+                eject_requested,
+                // The waiter belongs to a removal task, which a save never spans.
+                eject_completion: _,
             } = &*state;
             let PciExpressRegisters {
                 device_control,
@@ -912,6 +1213,7 @@ mod save_restore {
                 root_control: root_control.into_bits(),
                 device_control_2: device_control_2.into_bits(),
                 link_control_2: link_control_2.into_bits(),
+                eject_requested: Some(*eject_requested),
             })
         }
 
@@ -924,15 +1226,31 @@ mod save_restore {
                 root_control,
                 device_control_2,
                 link_control_2,
+                eject_requested: saved_eject_requested,
             } = saved;
             let mut state = self.state.lock();
             let PciExpressState {
                 registers,
-                presence_detect_state: _,
+                presence_detect_state,
                 hotplug_notify_level,
                 hotplug_msi_on_event: _,
                 hotplug_msi_on_guest_write: _,
+                eject_requested,
+                eject_completion,
             } = &mut *state;
+            // Presence is not saved: it comes from the topology the restored VM was built
+            // with, which holds only statically attached devices. A request for a card that
+            // is not there after restore is dropped together with its button event.
+            *eject_completion = None;
+            *eject_requested = saved_eject_requested.unwrap_or(false)
+                && *presence_detect_state
+                && self.slot_capabilities.attention_button_present();
+            let mut slot_status_events = pci_express::SlotStatus::from_bits(
+                slot_status_events & self.slot_status_rw1c_mask(),
+            );
+            if !*presence_detect_state {
+                slot_status_events.set_attention_button_pressed(false);
+            }
             *registers = PciExpressRegisters {
                 device_control: pci_express::DeviceControl::from_bits(
                     device_control & self.device_control_writable_mask(),
@@ -943,9 +1261,7 @@ mod save_restore {
                 slot_control: pci_express::SlotControl::from_bits(
                     slot_control & self.slot_control_writable_mask(),
                 ),
-                slot_status_events: pci_express::SlotStatus::from_bits(
-                    slot_status_events & self.slot_status_rw1c_mask(),
-                ),
+                slot_status_events,
                 root_control: pci_express::RootControl::from_bits(
                     root_control & self.root_control_writable_mask(),
                 ),
@@ -2095,5 +2411,471 @@ mod tests {
         assert_eq!(saved.device_control, 0x2810);
         assert_eq!(saved.link_control, 0);
         assert_eq!(saved.slot_status_events, 0);
+    }
+
+    // --- Orderly removal (attention button, power controller, power indicator) ---
+    //
+    // Offset 0x18 of the capability is the Slot Control (low 16 bits) / Slot Status (high 16
+    // bits) dword; offset 0x10 holds Link Status in its high 16 bits.
+
+    fn eject_control() -> pci_express::SlotControl {
+        pci_express::SlotControl::new()
+            .with_hot_plug_interrupt_enable(true)
+            .with_attention_button_pressed_enable(true)
+            .with_power_indicator_control(0b01)
+    }
+
+    fn attention_port(port_type: DevicePortType) -> PciExpressCapability {
+        let cap = PciExpressCapability::new(port_type, None)
+            .with_hotplug_support(1)
+            .with_attention_button();
+        cap.set_presence_detect_state(true);
+        cap
+    }
+
+    fn slot_status(cap: &PciExpressCapability) -> pci_express::SlotStatus {
+        pci_express::SlotStatus::from_bits((read_cap_u32(cap, 0x18) >> 16) as u16)
+    }
+
+    fn link_active(cap: &PciExpressCapability) -> bool {
+        pci_express::LinkStatus::from_bits((read_cap_u32(cap, 0x10) >> 16) as u16)
+            .data_link_layer_link_active()
+    }
+
+    fn poll_eject(
+        completion: &mut mesh::OneshotReceiver<()>,
+    ) -> std::task::Poll<Result<(), mesh::RecvError>> {
+        Future::poll(
+            std::pin::Pin::new(completion),
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        )
+    }
+
+    const ABP_CLEAR: u32 = 1 << 16;
+
+    /// Slot Control as Linux leaves it during the five-second countdown that follows a
+    /// press it acted on (pciehp_handle_button_press): the power indicator blinks.
+    fn counting_down() -> pci_express::SlotControl {
+        eject_control().with_power_indicator_control(0b10)
+    }
+
+    #[test]
+    fn orderly_eject_presses_the_button_and_completes_only_when_power_and_indicator_are_off() {
+        for port_type in [
+            DevicePortType::RootPort,
+            DevicePortType::DownstreamSwitchPort,
+        ] {
+            let mut cap = attention_port(port_type);
+            write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+            let mut completion = cap.request_hotplug_eject().unwrap();
+            assert!(poll_eject(&mut completion).is_pending());
+            let status = slot_status(&cap);
+            assert!(
+                status.attention_button_pressed(),
+                "the request presses the button"
+            );
+            assert!(
+                !status.presence_detect_changed(),
+                "an orderly request is not a removal: presence is untouched"
+            );
+            assert_eq!(status.presence_detect_state(), 1);
+            assert!(
+                link_active(&cap),
+                "the card stays reachable while the guest tears down"
+            );
+
+            // The guest acknowledges the press: still nothing to detach.
+            write_cap_u32(
+                &mut cap,
+                0x18,
+                u32::from(eject_control().into_bits()) | ABP_CLEAR,
+            );
+            assert!(poll_eject(&mut completion).is_pending());
+
+            // Power off first (Linux remove_board), indicator still on: not done yet.
+            let power_off = eject_control().with_power_controller_control(true);
+            write_cap_u32(&mut cap, 0x18, u32::from(power_off.into_bits()));
+            assert!(poll_eject(&mut completion).is_pending());
+            assert!(!link_active(&cap), "an unpowered slot has no link");
+            assert!(
+                slot_status(&cap).data_link_layer_state_changed(),
+                "powering the slot off is a link change the guest can be told about"
+            );
+
+            // Indicator off: the guest is done.
+            write_cap_u32(
+                &mut cap,
+                0x18,
+                u32::from(power_off.with_power_indicator_control(0b11).into_bits()),
+            );
+            assert!(matches!(
+                poll_eject(&mut completion),
+                std::task::Poll::Ready(Ok(()))
+            ));
+            assert!(cap.hotplug_eject_complete());
+            assert!(!cap.hotplug_eject_requested());
+            assert!(
+                cap.state.lock().presence_detect_state,
+                "detaching is the caller's step"
+            );
+        }
+    }
+
+    #[test]
+    fn orderly_eject_retry_does_not_press_the_button_again() {
+        // A second press inside the guest's five-second window cancels the removal in
+        // Linux pciehp, so a retried request must only re-arm the waiter.
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        drop(cap.request_hotplug_eject().unwrap());
+        write_cap_u32(
+            &mut cap,
+            0x18,
+            u32::from(counting_down().into_bits()) | ABP_CLEAR,
+        );
+        let mut retry = cap.request_hotplug_eject().unwrap();
+        assert!(poll_eject(&mut retry).is_pending());
+        assert!(
+            !slot_status(&cap).attention_button_pressed(),
+            "the retry must not press again"
+        );
+        write_cap_u32(
+            &mut cap,
+            0x18,
+            u32::from(
+                eject_control()
+                    .with_power_controller_control(true)
+                    .with_power_indicator_control(0b11)
+                    .into_bits(),
+            ),
+        );
+        assert!(matches!(
+            poll_eject(&mut retry),
+            std::task::Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn orderly_eject_retry_needs_no_enabled_interrupt() {
+        // A retry during the countdown presses nothing, so it does not depend on which
+        // hot-plug interrupts the guest has enabled at that moment.
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        drop(cap.request_hotplug_eject().unwrap());
+        let masked = counting_down()
+            .with_hot_plug_interrupt_enable(false)
+            .with_attention_button_pressed_enable(false);
+        write_cap_u32(&mut cap, 0x18, u32::from(masked.into_bits()) | ABP_CLEAR);
+        assert!(cap.request_hotplug_eject().is_ok());
+        assert!(!slot_status(&cap).attention_button_pressed());
+    }
+
+    #[test]
+    fn orderly_eject_presses_again_when_the_guest_dropped_the_press() {
+        // Linux acts on a press only in ON_STATE or OFF_STATE and drops it in POWERON and
+        // POWEROFF (pciehp_handle_button_press), acknowledging Attention Button Pressed all
+        // the same. The indicator then stays on and nothing will ever power the slot off,
+        // so a retry must press again rather than wait on a removal that never started.
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        drop(cap.request_hotplug_eject().unwrap());
+        write_cap_u32(
+            &mut cap,
+            0x18,
+            u32::from(eject_control().into_bits()) | ABP_CLEAR,
+        );
+        assert!(!slot_status(&cap).attention_button_pressed());
+        let mut retry = cap.request_hotplug_eject().unwrap();
+        assert!(poll_eject(&mut retry).is_pending());
+        assert!(
+            slot_status(&cap).attention_button_pressed(),
+            "a dropped press is pressed again"
+        );
+        assert!(cap.hotplug_eject_requested());
+    }
+
+    #[test]
+    fn orderly_eject_retry_before_the_guest_acknowledged_does_not_press_again() {
+        // The first press is still pending in Slot Status: the guest has not read it yet,
+        // so it will still act on it.
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        drop(cap.request_hotplug_eject().unwrap());
+        let mut retry = cap.request_hotplug_eject().unwrap();
+        assert!(poll_eject(&mut retry).is_pending());
+        assert!(slot_status(&cap).attention_button_pressed());
+        assert!(cap.hotplug_eject_requested());
+    }
+
+    #[test]
+    fn orderly_eject_refuses_a_new_press_while_the_guest_is_busy() {
+        // A blinking indicator means the guest is counting down to a power change or
+        // carrying one out (pciehp blinks in BLINKINGON/BLINKINGOFF and while powering on
+        // in board_added). A press then cancels the countdown or is dropped, so it is
+        // refused.
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(&mut cap, 0x18, u32::from(counting_down().into_bits()));
+        assert!(matches!(
+            cap.request_hotplug_eject(),
+            Err(PcieEjectError::GuestBusy)
+        ));
+        assert!(!cap.hotplug_eject_requested());
+        assert!(!slot_status(&cap).attention_button_pressed());
+    }
+
+    #[test]
+    fn orderly_eject_in_poll_mode_needs_only_the_button_enable() {
+        // pciehp in poll mode enables Attention Button Pressed but not Hot-Plug Interrupt
+        // Enable (pciehp_hpc.c pcie_enable_notification) and reads Slot Status on a timer,
+        // so it still hears the press.
+        let mut cap = attention_port(DevicePortType::RootPort);
+        let polled = eject_control().with_hot_plug_interrupt_enable(false);
+        write_cap_u32(&mut cap, 0x18, u32::from(polled.into_bits()));
+        let mut completion = cap.request_hotplug_eject().unwrap();
+        assert!(poll_eject(&mut completion).is_pending());
+        assert!(slot_status(&cap).attention_button_pressed());
+    }
+
+    #[test]
+    fn orderly_eject_refuses_what_it_cannot_do() {
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+        assert!(matches!(
+            cap.request_hotplug_eject(),
+            Err(PcieEjectError::NotHotplugCapable)
+        ));
+        let cap = cap.with_hotplug_support(1);
+        assert!(matches!(
+            cap.request_hotplug_eject(),
+            Err(PcieEjectError::AttentionButtonUnsupported)
+        ));
+        let cap = cap.with_attention_button();
+        assert!(matches!(
+            cap.request_hotplug_eject(),
+            Err(PcieEjectError::EmptySlot)
+        ));
+        cap.set_presence_detect_state(true);
+        // A powered (reset) slot whose guest never enabled the button interrupt: a press
+        // nobody hears would only run out the caller's timeout.
+        let mut cap = cap;
+        cap.reset();
+        assert!(matches!(
+            cap.request_hotplug_eject(),
+            Err(PcieEjectError::InterruptDisabled)
+        ));
+        assert!(!cap.hotplug_eject_requested());
+        assert!(!slot_status(&cap).attention_button_pressed());
+    }
+
+    #[test]
+    fn orderly_eject_of_an_already_off_slot_completes_at_once() {
+        // A slot the guest already powered off needs no round trip.
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(
+            &mut cap,
+            0x18,
+            u32::from(
+                pci_express::SlotControl::new()
+                    .with_power_controller_control(true)
+                    .with_power_indicator_control(0b11)
+                    .into_bits(),
+            ),
+        );
+        let mut completion = cap.request_hotplug_eject().unwrap();
+        assert!(matches!(
+            poll_eject(&mut completion),
+            std::task::Poll::Ready(Ok(()))
+        ));
+        assert!(!slot_status(&cap).attention_button_pressed());
+    }
+
+    #[test]
+    fn reset_cancels_a_pending_eject() {
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        let mut completion = cap.request_hotplug_eject().unwrap();
+        cap.reset();
+        assert!(matches!(
+            poll_eject(&mut completion),
+            std::task::Poll::Ready(Err(_))
+        ));
+        assert!(!cap.hotplug_eject_requested());
+        assert!(!slot_status(&cap).attention_button_pressed());
+        assert!(
+            link_active(&cap),
+            "a populated slot comes out of reset powered"
+        );
+    }
+
+    #[test]
+    fn physical_removal_clears_the_eject_request_and_its_button_event() {
+        for hotplug_event in [false, true] {
+            let mut cap = attention_port(DevicePortType::RootPort);
+            write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+            let mut completion = cap.request_hotplug_eject().unwrap();
+            if hotplug_event {
+                cap.set_hotplug_state(false);
+            } else {
+                cap.set_presence_detect_state(false);
+            }
+            assert!(matches!(
+                poll_eject(&mut completion),
+                std::task::Poll::Ready(Err(_))
+            ));
+            assert!(!cap.hotplug_eject_requested());
+            assert!(
+                !slot_status(&cap).attention_button_pressed(),
+                "a stale press would eject the next card put into the slot"
+            );
+        }
+    }
+
+    #[test]
+    fn hot_add_into_a_powered_off_attention_slot_presses_the_button() {
+        // Linux enables Attention Button Pressed instead of Presence Detect Changed on a
+        // port with a button, and an unpowered slot has no link, so the press is the only
+        // thing that tells it a card arrived.
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None)
+            .with_hotplug_support(1)
+            .with_attention_button();
+        assert!(
+            cap.state
+                .lock()
+                .registers
+                .slot_control
+                .power_controller_control()
+        );
+        cap.set_hotplug_state(true);
+        let status = slot_status(&cap);
+        assert!(status.attention_button_pressed());
+        assert!(status.presence_detect_changed());
+        assert!(
+            !status.data_link_layer_state_changed(),
+            "the link stays down until the guest powers the slot"
+        );
+        assert!(!link_active(&cap));
+    }
+
+    #[test]
+    fn hot_add_without_attention_button_is_unchanged() {
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None).with_hotplug_support(1);
+        cap.set_hotplug_state(true);
+        let status = slot_status(&cap);
+        assert!(!status.attention_button_pressed());
+        assert!(status.presence_detect_changed());
+        assert!(status.data_link_layer_state_changed());
+        assert!(link_active(&cap));
+    }
+
+    #[test]
+    fn reset_power_controls_follow_capabilities_and_presence() {
+        for port_type in [
+            DevicePortType::RootPort,
+            DevicePortType::DownstreamSwitchPort,
+        ] {
+            for power_controller in [false, true] {
+                for power_indicator in [false, true] {
+                    let mut cap =
+                        PciExpressCapability::new(port_type, None).with_hotplug_support(1);
+                    cap.slot_capabilities = cap
+                        .slot_capabilities
+                        .with_power_controller_present(power_controller)
+                        .with_power_indicator_present(power_indicator);
+                    for present in [false, true] {
+                        cap.set_presence_detect_state(present);
+                        cap.reset();
+                        let control =
+                            pci_express::SlotControl::from_bits(read_cap_u32(&cap, 0x18) as u16);
+                        assert_eq!(
+                            control.power_controller_control(),
+                            power_controller && !present
+                        );
+                        let expected_indicator = match (power_indicator, present) {
+                            (false, _) => 0,
+                            (true, true) => 0b01,
+                            (true, false) => 0b11,
+                        };
+                        assert_eq!(control.power_indicator_control(), expected_indicator);
+                        // A port without a power controller keeps following presence.
+                        assert_eq!(link_active(&cap), present);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn save_restore_mid_eject_keeps_the_request_without_a_second_press() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        drop(cap.request_hotplug_eject().unwrap());
+        write_cap_u32(
+            &mut cap,
+            0x18,
+            u32::from(counting_down().into_bits()) | ABP_CLEAR,
+        );
+        let saved = cap.save().unwrap();
+        assert_eq!(saved.eject_requested, Some(true));
+
+        let mut restored = PciExpressCapability::new(DevicePortType::RootPort, None)
+            .with_hotplug_support(1)
+            .with_attention_button();
+        restored.set_presence_detect_state(true);
+        restored.restore(saved).unwrap();
+        assert!(restored.hotplug_eject_requested());
+        let mut retry = restored.request_hotplug_eject().unwrap();
+        assert!(poll_eject(&mut retry).is_pending());
+        assert!(
+            !slot_status(&restored).attention_button_pressed(),
+            "the restored request must not press again"
+        );
+    }
+
+    #[test]
+    fn restore_of_a_blob_without_the_eject_field_lands_on_no_request() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(&mut cap, 0x18, u32::from(counting_down().into_bits()));
+        let mut saved = cap.save().unwrap();
+        // What a blob from a build without orderly removal decodes to.
+        saved.eject_requested = None;
+
+        let mut restored = attention_port(DevicePortType::RootPort);
+        restored.restore(saved).unwrap();
+        assert!(!restored.hotplug_eject_requested());
+    }
+
+    #[test]
+    fn restore_drops_an_eject_request_for_an_empty_slot() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = attention_port(DevicePortType::RootPort);
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        drop(cap.request_hotplug_eject().unwrap());
+        let saved = cap.save().unwrap();
+        assert_eq!(saved.eject_requested, Some(true));
+
+        // Hot-added cards are not part of the topology a restored VM is built from.
+        let mut restored = PciExpressCapability::new(DevicePortType::RootPort, None)
+            .with_hotplug_support(1)
+            .with_attention_button();
+        restored.restore(saved).unwrap();
+        assert!(!restored.hotplug_eject_requested());
+        assert!(!slot_status(&restored).attention_button_pressed());
+    }
+
+    #[test]
+    fn a_card_attached_at_build_time_is_powered_on_an_attention_port() {
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None)
+            .with_hotplug_support(1)
+            .with_attention_button();
+        cap.set_presence_detect_state(true);
+        let control = pci_express::SlotControl::from_bits(read_cap_u32(&cap, 0x18) as u16);
+        assert!(!control.power_controller_control());
+        assert_eq!(control.power_indicator_control(), 0b01);
+        assert!(link_active(&cap));
+        assert!(!slot_status(&cap).attention_button_pressed());
     }
 }

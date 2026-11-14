@@ -15,6 +15,7 @@ use self::device_removal::DeviceRemovalState;
 use self::device_removal::VPCI_EJECT_GRACE_PERIOD;
 use self::device_removal::VpciEjectResult;
 use self::device_removal::can_run_during_device_removal;
+use self::device_removal::settle_orderly_pcie_removal;
 use self::device_removal::wait_for_vpci_eject;
 use crate::emuplat;
 use crate::partition::BindHvliteVp;
@@ -109,11 +110,13 @@ use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Duration;
 use tpm_resources::TpmVersion;
 use virt::ProtoPartition;
 use virt::VpIndex;
@@ -948,12 +951,62 @@ struct LoadedVmInner {
     /// Each holds the port's live bus-range handle, read at ACPI-build time
     /// (after PCI resource assignment) to derive the device bus.
     generic_initiator_sources: Vec<GenericInitiatorSource>,
-    pcie_hotplug_devices: Vec<(
-        String,
-        vmotherboard::DynamicDeviceUnit,
-        Arc<closeable_mutex::CloseableMutex<chipset_device_resources::ErasedChipsetDevice>>,
-    )>,
+    pcie_hotplug_devices: Vec<PcieHotplugEntry>,
+    /// Eject timeout of each root port configured with `attention_button`, the only
+    /// ports that accept an orderly removal.
+    pcie_eject_timeouts: HashMap<String, Duration>,
     dynamic_vpci_devices: Vec<DynamicVpciDeviceEntry>,
+}
+
+/// An orderly PCIe removal waiting for the guest to power its slot off.
+struct PendingPcieEject {
+    rc: Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>,
+    completion: mesh::OneshotReceiver<()>,
+    timeout: Duration,
+}
+
+/// Finishes an orderly removal: detaches and tears the device down once the guest has
+/// powered the slot off. Otherwise the device stays attached, goes back to the tracked list
+/// through `requeue`, and the error says why (see [`settle_orderly_pcie_removal`]).
+async fn finish_orderly_pcie_removal(
+    driver: &(impl pal_async::driver::Driver + ?Sized),
+    entry: PcieHotplugEntry,
+    eject: PendingPcieEject,
+    requeue: &mesh::Sender<PcieHotplugEntry>,
+) -> anyhow::Result<()> {
+    let PendingPcieEject {
+        rc,
+        completion,
+        timeout,
+    } = eject;
+    let port = entry.port_name.clone();
+    let PcieHotplugEntry {
+        port_name: _,
+        unit,
+        device,
+    } = settle_orderly_pcie_removal(
+        driver,
+        entry,
+        &port,
+        completion,
+        timeout,
+        || rc.lock().hotplug_remove_device(&port, true),
+        requeue,
+    )
+    .await?;
+    unit.remove().await;
+    drop(device);
+    Ok(())
+}
+
+/// A device hot-added to a PCIe port.
+struct PcieHotplugEntry {
+    /// The root port the device is attached to.
+    port_name: String,
+    /// The device's state unit, removed when the device is.
+    unit: vmotherboard::DynamicDeviceUnit,
+    /// Keeps the device alive: the port holds only a weak reference.
+    device: Arc<closeable_mutex::CloseableMutex<chipset_device_resources::ErasedChipsetDevice>>,
 }
 
 /// Helper to determine the x86 IOMMU shared state for a given root complex.
@@ -2377,6 +2430,7 @@ impl InitializedVm {
 
             (pcie_host_bridges, pcie_root_complexes)
         };
+        let pcie_eject_timeouts = pcie_topology::eject_timeouts(&cfg.pcie_root_complexes);
 
         // Build a port-name→(segment, bus_range) map covering all ports in
         // the PCIe topology (root complex ports and switch downstream ports).
@@ -2388,8 +2442,7 @@ impl InitializedVm {
             bus_range: pci_core::bus_range::AssignedBusRange,
             rc_idx: usize,
         }
-        let mut port_info: std::collections::HashMap<Arc<str>, PortInfo> =
-            std::collections::HashMap::new();
+        let mut port_info: HashMap<Arc<str>, PortInfo> = HashMap::new();
         for (rc_idx, (hb, rc)) in pcie_host_bridges
             .iter()
             .zip(pcie_root_complexes.iter())
@@ -3229,6 +3282,7 @@ impl InitializedVm {
                 pcie_root_complexes,
                 generic_initiator_sources,
                 pcie_hotplug_devices: Vec::new(),
+                pcie_eject_timeouts,
                 dynamic_vpci_devices: Vec::new(),
             },
         };
@@ -3777,6 +3831,12 @@ impl LoadedVm {
         });
         let mut worker_rpc = worker_rpc_recv;
         let mut device_removal = DeviceRemovalState::default();
+        // An orderly PCIe removal that timed out (or that the guest voided) leaves the
+        // device attached. Its removal task owns the entry by then, so it hands it back
+        // here, and the loop re-tracks it when the task's completion arrives as
+        // Event::DeviceRemoved. The send happens before the task completes, so the entry
+        // is always queued by the time the loop looks.
+        let (pcie_requeue_send, mut pcie_requeue_recv) = mesh::channel::<PcieHotplugEntry>();
         let mut deferred = VecDeque::new();
 
         loop {
@@ -3806,7 +3866,11 @@ impl LoadedVm {
             }
 
             match event {
-                Event::DeviceRemoved => {}
+                Event::DeviceRemoved => {
+                    while let Ok(entry) = pcie_requeue_recv.try_recv() {
+                        self.inner.pcie_hotplug_devices.push(entry);
+                    }
+                }
                 Event::WorkerRpc(Err(_)) => break,
                 Event::WorkerRpc(Ok(message)) => match message {
                     WorkerRpc::Stop => break,
@@ -4070,7 +4134,11 @@ impl LoadedVm {
                             let weak_dev: std::sync::Weak<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>> = Arc::downgrade(&(device.clone() as Arc<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>>));
                             let bus_device = Box::new(WeakMutexPciBusDevice(weak_dev));
 
-                            self.inner.pcie_hotplug_devices.push((port_name.clone(), unit, device));
+                            self.inner.pcie_hotplug_devices.push(PcieHotplugEntry {
+                                port_name: port_name.clone(),
+                                unit,
+                                device,
+                            });
 
                             // Start the device unit before firing the hotplug
                             // MSI. The guest may begin probing config space
@@ -4085,7 +4153,8 @@ impl LoadedVm {
                                 bus_device,
                             ) {
                                 // Clean up the device unit on failure
-                                let (_, unit, _) = self.inner.pcie_hotplug_devices.pop().unwrap();
+                                let PcieHotplugEntry { unit, .. } =
+                                    self.inner.pcie_hotplug_devices.pop().unwrap();
                                 device_removal.start(driver, unit.remove());
                                 return Err(e);
                             }
@@ -4094,40 +4163,40 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::RemovePcieDevice(rpc) => {
-                        let (port_name, response) = rpc.split();
-                        let device = (|| {
-                            // Only allow removing dynamically hot-added devices.
-                            // Statically-attached devices don't have a tracked unit
-                            // and removing them would leave their state unit/MMIO
-                            // registrations running.
-                            let idx = self.inner.pcie_hotplug_devices.iter()
-                                .position(|(name, _, _)| name == &port_name)
-                                .ok_or_else(|| anyhow::anyhow!(
-                                    "no hot-added device on port '{}' (only dynamically added devices can be hot-removed)",
-                                    port_name
-                                ))?;
-
-                            // Find the root complex containing the target port
-                            let rc = self.inner.pcie_root_complexes.iter()
-                                .find(|rc| {
-                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
-                                })
-                                .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
-
-                            rc.lock().hotplug_remove_device(&port_name)?;
-
-                            // Remove and stop the device unit
-                            let (_, unit, device) = self.inner.pcie_hotplug_devices.remove(idx);
-                            anyhow::Ok((unit, device))
-                        })();
-                        match device {
-                            Ok((unit, device)) => device_removal.start(driver, async move {
+                        let ((port_name, orderly), response) = rpc.split();
+                        let (entry, eject) = match self.prepare_pcie_removal(&port_name, orderly) {
+                            Ok(prepared) => prepared,
+                            Err(error) => {
+                                response.complete(Err(RemoteError::new(error)));
+                                continue;
+                            }
+                        };
+                        let Some(eject) = eject else {
+                            // Surprise removal: the port already detached the device.
+                            let PcieHotplugEntry {
+                                port_name: _,
+                                unit,
+                                device,
+                            } = entry;
+                            device_removal.start(driver, async move {
                                 unit.remove().await;
                                 drop(device);
                                 response.complete(Ok(()));
-                            }),
-                            Err(error) => response.complete(Err(RemoteError::new(error))),
-                        }
+                            });
+                            continue;
+                        };
+                        // Orderly removal: the device stays attached and reachable while
+                        // the guest unbinds its driver. The wait runs in the removal task, so
+                        // the loop keeps serving halt events and diagnostics; other VM RPCs
+                        // are deferred until it ends, as for any pending removal.
+                        let device_driver = self.inner.driver_source.simple();
+                        let requeue = pcie_requeue_send.clone();
+                        device_removal.start(driver, async move {
+                            let result =
+                                finish_orderly_pcie_removal(&device_driver, entry, eject, &requeue)
+                                    .await;
+                            response.complete(result.map_err(RemoteError::new));
+                        });
                     }
                     VmRpc::AddVpciDevice(rpc) => {
                         rpc.handle_failable(async |(instance_id, resource)| {
@@ -4248,6 +4317,11 @@ impl LoadedVm {
         }
 
         device_removal.drain().await;
+        // A removal that ended without detaching handed its device back; tear it down
+        // with the others rather than dropping a still-registered unit.
+        while let Ok(entry) = pcie_requeue_recv.try_recv() {
+            self.inner.pcie_hotplug_devices.push(entry);
+        }
         self.pause().await;
         self.teardown_chipset_devices().await;
         self.inner.partition_unit.teardown().await;
@@ -4256,8 +4330,77 @@ impl LoadedVm {
         }
     }
 
+    /// Takes the hot-added device on `port_name` out of the tracked list and starts its
+    /// removal: a surprise removal detaches it at once, an orderly one presses the port's
+    /// attention button and returns what to wait on. On error nothing has changed.
+    fn prepare_pcie_removal(
+        &mut self,
+        port_name: &str,
+        orderly: bool,
+    ) -> anyhow::Result<(PcieHotplugEntry, Option<PendingPcieEject>)> {
+        // Only allow removing dynamically hot-added devices. Statically-attached devices
+        // don't have a tracked unit and removing them would leave their state unit/MMIO
+        // registrations running.
+        let idx = self
+            .inner
+            .pcie_hotplug_devices
+            .iter()
+            .position(|entry| entry.port_name == port_name)
+            .with_context(|| {
+                format!(
+                    "no hot-added device on port '{port_name}' \
+                     (only dynamically added devices can be hot-removed)"
+                )
+            })?;
+        let rc = self
+            .inner
+            .pcie_root_complexes
+            .iter()
+            .find(|rc| {
+                rc.lock()
+                    .downstream_ports()
+                    .iter()
+                    .any(|p| p.name.as_ref() == port_name)
+            })
+            .with_context(|| format!("port '{port_name}' not found in any root complex"))?
+            .clone();
+
+        if !orderly {
+            rc.lock().hotplug_remove_device(port_name, false)?;
+            return Ok((self.inner.pcie_hotplug_devices.remove(idx), None));
+        }
+        // A stopped guest cannot answer the button, so an orderly request would only run
+        // out its timeout.
+        anyhow::ensure!(
+            self.running,
+            "orderly PCIe removal on port '{port_name}' requires a running VM"
+        );
+        let timeout = *self
+            .inner
+            .pcie_eject_timeouts
+            .get(port_name)
+            .with_context(|| {
+                format!(
+                    "port '{port_name}' is not configured for orderly removal \
+                     (attention_button)"
+                )
+            })?;
+        let completion = rc.lock().request_hotplug_remove_device(port_name)?;
+        let eject = PendingPcieEject {
+            rc,
+            completion,
+            timeout,
+        };
+        Ok((self.inner.pcie_hotplug_devices.remove(idx), Some(eject)))
+    }
+
     async fn teardown_chipset_devices(&mut self) {
-        while let Some((_, unit, device)) = self.inner.pcie_hotplug_devices.pop() {
+        while let Some(PcieHotplugEntry {
+            port_name: _,
+            unit,
+            device,
+        }) = self.inner.pcie_hotplug_devices.pop()
+        {
             unit.remove().await;
             drop(device);
         }
