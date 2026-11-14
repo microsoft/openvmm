@@ -22,6 +22,66 @@ pub(crate) async fn vm_host(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
     Ok(())
 }
 
+/// Reboot a nested-enabled Linux guest and verify virtualization remains exposed.
+#[cfg(target_os = "linux")]
+#[vmm_test_macros::vmm_test_with(
+    openvmm,
+    requires(nested_virt, nested_reset),
+    configs(linux_direct_x64)
+)]
+async fn reboot_nested_virt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (mut vm, mut agent) = config
+        .with_nested_virt()
+        .with_no_vmbus()
+        .with_processor_topology(petri::ProcessorTopology {
+            vp_count: 2,
+            ..Default::default()
+        })
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+
+    let mut previous_boot_id = None;
+    for boot in 0..=3 {
+        agent.ping().await?;
+        let shell = agent.unix_shell();
+        let boot_id = shell.read_file("/proc/sys/kernel/random/boot_id").await?;
+        anyhow::ensure!(
+            previous_boot_id.as_ref() != Some(&boot_id),
+            "boot {boot}: guest did not reboot"
+        );
+        previous_boot_id = Some(boot_id);
+
+        let cpuinfo = shell.read_file("/proc/cpuinfo").await?;
+        let flags: Vec<_> = cpuinfo
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(name, _)| name.trim() == "flags")
+            .map(|(_, flags)| flags)
+            .collect();
+        anyhow::ensure!(
+            flags.len() == 2,
+            "boot {boot}: expected flags for 2 CPUs, found {}",
+            flags.len()
+        );
+        anyhow::ensure!(
+            flags.iter().all(|flags| flags
+                .split_whitespace()
+                .any(|flag| matches!(flag, "vmx" | "svm"))),
+            "boot {boot}: nested virtualization is not exposed on every CPU"
+        );
+
+        if boot != 3 {
+            agent.reboot().await?;
+            agent = vm.wait_for_reset().await?;
+        }
+    }
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[vmm_test_macros::vmm_test(
     qemu_linux_direct_aarch64,

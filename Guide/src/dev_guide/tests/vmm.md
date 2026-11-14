@@ -290,6 +290,40 @@ Hyper-V Administrators group.
 
 To see all available options: `cargo xflowey vmm-tests-run --help`.
 
+### Nested-enabled Linux reboot on KVM or MSHV
+
+The `nested::openvmm_linux_x64_reboot_nested_virt` test boots a two-VP Linux
+guest with nested virtualization enabled and VMBus disabled. It reboots the
+guest three times, checking agent connectivity, a changed Linux boot ID, and
+VMX or SVM exposure on both VPs after each reboot. It does not launch an L2 VM.
+
+Run just this test from the repository root on an x86-64 Linux KVM host:
+
+```bash
+cargo xflowey vmm-tests-run --target linux-x64 \
+  --filter 'test(nested::openvmm_linux_x64_reboot_nested_virt)' \
+  --dir /tmp/ov-nested-reboot
+```
+
+The host must expose VMX or SVM and permit nested virtualization. Petri and
+OpenVMM automatically prefer MSHV when `/dev/mshv` is accessible; otherwise
+they use KVM when `/dev/kvm` is accessible. Use the same command on an MSHV
+host to validate that backend. The test requires both `nested_virt` and
+`nested_reset`. Petri probes partition scrub on a temporary MSHV partition
+and skips the test when the kernel does not implement the scrub ioctl.
+On KVM, Petri requires a positive `KVM_CHECK_EXTENSION(KVM_CAP_NESTED_STATE)`
+result before advertising `nested_reset`; otherwise the test is skipped.
+Other probe errors fail host discovery rather than silently skipping tests.
+A successful KVM run does not validate the MSHV reset path. Inspect
+the OpenVMM logs in the output directory to confirm the selected backend.
+
+KVM resets nested state through `KVM_SET_NESTED_STATE`, using an inactive VMX
+state or an inactive SVM state with GIF set. This requires
+`KVM_CAP_NESTED_STATE`; nested-state snapshot save/restore remains unsupported.
+
+Add `--build-only` to compile the test and prepare artifacts without running
+the VM.
+
 ### Lazy Fetch (Default)
 
 By default, VHD/ISO disk images are streamed on demand via HTTP and cached

@@ -246,6 +246,22 @@ pub fn is_available() -> Result<bool, Error> {
     }
 }
 
+/// Probes partition scrub support using a temporary, non-isolated partition.
+/// Only an unimplemented scrub ioctl is treated as unsupported.
+pub fn is_partition_scrub_available() -> anyhow::Result<bool> {
+    use anyhow::Context as _;
+
+    let hv = LinuxMshv::new().context("open MSHV for partition scrub probe")?;
+    let vmfd = hv
+        .mshv
+        .create_vm()
+        .context("create scrub probe partition")?;
+    vmfd.initialize()
+        .context("initialize scrub probe partition")?;
+    let _vp = vmfd.create_vcpu(0).context("create scrub probe VP")?;
+    scrub_partition(&vmfd).context("scrub probe partition")
+}
+
 /// Returns whether MSHV can create SEV-SNP partitions on this machine.
 /// This function currently probes SNP availability by attempting to create
 /// a temporary SNP partition.
