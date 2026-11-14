@@ -141,6 +141,7 @@ use tracing::Instrument;
 use tracing::instrument;
 use uevent::UeventListener;
 use underhill_attestation::AttestationType;
+use underhill_attestation::verify_init_data;
 use underhill_confidentiality::confidential_debug_enabled;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
@@ -515,6 +516,7 @@ impl UnderhillVmWorker {
         let dps = read_device_platform_settings(&get_client)
             .instrument(tracing::info_span!("init/dps", CVM_ALLOWED))
             .await?;
+        // Parsing the dps will parse the vtl2_settings including the attested settings
 
         // Build the thread pool now that we know the IO ring size to use.
         let threadpool = {
@@ -1566,6 +1568,33 @@ async fn new_underhill_vm(
         bootloader_fdt_parser::IsolationType::Snp => virt::IsolationType::Snp,
         bootloader_fdt_parser::IsolationType::Tdx => virt::IsolationType::Tdx,
     };
+    // Validate the hash of the attested settings payload against the value
+    // recorded in the hardware attestation report.
+    if let Some(attested_settings) = dps
+        .general
+        .vtl2_settings
+        .as_ref()
+        .and_then(|s| s.fixed.attested_settings.as_ref())
+    {
+        tracing::info!(
+            version = attested_settings.version,
+            init_data_hash = ?attested_settings.init_data_hash,
+            "received attested settings from Base fixed settings"
+        );
+        if let Some(init_data_hash) = attested_settings.init_data_hash {
+            let attestation_type = match isolation {
+                virt::IsolationType::Snp => AttestationType::Snp,
+                virt::IsolationType::Tdx => AttestationType::Tdx,
+                _ => AttestationType::Host,
+            };
+            verify_init_data(init_data_hash, attestation_type)
+                .context("failed to verify init data")?;
+        }
+    } else {
+        tracing::info!(
+            "attested_settings is missing. This fallback is acceptable because the init data hash is optional for non-isolated VMs or when attestation is not required."
+        );
+    }
 
     let hardware_isolated = isolation.is_hardware_isolated();
 
