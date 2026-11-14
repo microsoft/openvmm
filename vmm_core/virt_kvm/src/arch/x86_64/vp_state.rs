@@ -380,6 +380,10 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             ));
         }
 
+        // Likewise, reject an injected soft exception before changing any
+        // activity state.
+        check_restorable_interruption(pending_interruption)?;
+
         let state = match mp_state {
             vp::MpState::Running => kvm::KVM_MP_STATE_RUNNABLE,
             vp::MpState::WaitForSipi => kvm::KVM_MP_STATE_INIT_RECEIVED,
@@ -750,6 +754,34 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 }
 
+/// Refuses an injected soft exception, #BP or #OF, which KVM cannot restore.
+///
+/// A soft exception needs the length of the instruction that raised it to be
+/// delivered, which `KVM_SET_VCPU_EVENTS` does not carry. So
+/// `KVM_GET_VCPU_EVENTS` never reports one as injected, and leaves the guest to
+/// raise it again when it runs that instruction again, and a save never holds
+/// one. `KVM_SET_VCPU_EVENTS` still accepts one, but the VP would deliver it
+/// with a length that the saved state does not give, and its next save would
+/// not show it, so only a damaged or crafted saved state holds one, and the
+/// restore refuses it.
+fn check_restorable_interruption(
+    pending_interruption: Option<vp::PendingInterruption>,
+) -> Result<(), KvmError> {
+    match pending_interruption {
+        Some(vp::PendingInterruption::Exception { vector, .. })
+            if matches!(
+                x86defs::Exception(vector),
+                x86defs::Exception::BREAKPOINT | x86defs::Exception::OVERFLOW
+            ) =>
+        {
+            Err(KvmError::InvalidState(
+                "an injected #BP or #OF, which KVM cannot restore",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Returns the page that `KVM_SET_LAPIC` takes for `registers`.
 ///
 /// KVM starts a counting timer from the page's current count, so it fires an
@@ -805,6 +837,7 @@ fn check_restorable_apic_timer(lvt_timer: u32) -> Result<(), KvmError> {
 #[cfg(test)]
 mod tests {
     use super::check_restorable_apic_timer;
+    use super::check_restorable_interruption;
     use super::check_restored_efer;
     use super::kvm_lapic_page;
     use crate::KvmError;
@@ -812,6 +845,7 @@ mod tests {
     use virt::CpuidLeaf;
     use virt::CpuidLeafSet;
     use virt::x86::vp::ApicRegisters;
+    use virt::x86::vp::PendingInterruption;
     use x86defs::X64_EFER_LMA;
     use x86defs::X64_EFER_LME;
     use x86defs::X64_EFER_NXE;
@@ -951,6 +985,38 @@ mod tests {
         }
         // The reset value is masked.
         check_restorable_apic_timer(MASKED).unwrap();
+    }
+
+    #[test]
+    fn restore_of_an_injected_soft_exception_is_refused() {
+        // KVM never reports an injected #BP or #OF, with an error code or
+        // without one.
+        for vector in 0..=u8::MAX {
+            for error_code in [None, Some(0)] {
+                let result = check_restorable_interruption(Some(PendingInterruption::Exception {
+                    vector,
+                    error_code,
+                }));
+                if matches!(vector, 3 | 4) {
+                    assert!(
+                        matches!(result, Err(KvmError::InvalidState(_))),
+                        "vector {vector}, error code {error_code:?}"
+                    );
+                } else {
+                    assert!(result.is_ok(), "vector {vector}, error code {error_code:?}");
+                }
+            }
+        }
+
+        // Only an exception can be soft, whatever the vector.
+        for pending_interruption in [
+            None,
+            Some(PendingInterruption::Interrupt { vector: 3 }),
+            Some(PendingInterruption::Interrupt { vector: 4 }),
+            Some(PendingInterruption::Nmi),
+        ] {
+            check_restorable_interruption(pending_interruption).unwrap();
+        }
     }
 }
 
