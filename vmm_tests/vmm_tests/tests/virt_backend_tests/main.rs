@@ -19,6 +19,8 @@ mod fixture;
 mod native;
 #[cfg(all(guest_arch = "x86_64", guest_is_native, target_os = "linux"))]
 mod registers;
+#[cfg(all(guest_arch = "x86_64", guest_is_native, target_os = "linux"))]
+mod save;
 #[cfg(all(
     guest_arch = "x86_64",
     guest_is_native,
