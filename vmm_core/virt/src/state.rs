@@ -62,6 +62,9 @@ mod macros {
     /// equal to its reset state (which is useful to validate that a partition's
     /// initial state is equal to its reset state).
     ///
+    /// A backend can refuse a save of a state that its pieces cannot hold by
+    /// overriding `check_saveable`, which the generated `save_all` calls first.
+    ///
     /// The intent is that the partition types implement these traits to get and
     /// set individual pieces of state.
     macro_rules! state_trait {
@@ -79,6 +82,19 @@ mod macros {
                 /// Commits any state changes made with the `set_*` methods.
                 fn commit(&mut self) -> Result<(), Self::Error>;
 
+                /// Checks that the state can be saved: that the elements that
+                /// a save reads hold all of it. A backend refuses a state that
+                /// they cannot hold, so that a save fails instead of saving
+                /// a state that a restore would not reproduce.
+                ///
+                /// [`Self::save_all`] calls this before it reads any element,
+                /// so the check must not change the state, and a refusal
+                /// leaves the state unread. By default, every state can be
+                /// saved.
+                fn check_saveable(&mut self) -> Result<(), Self::Error> {
+                    Ok(())
+                }
+
                 $(
                 /// Gets the specified state.
                 fn $get(&mut self) -> Result<$ty, Self::Error>;
@@ -89,6 +105,7 @@ mod macros {
                 /// Save all state that can be restored by a call to restore.
                 #[allow(unused_mut)]
                 fn save_all(&mut self) -> Result<$save_state, $crate::state::StateError<Self::Error>> {
+                    self.check_saveable().map_err(|err| $crate::state::StateError{phase: "save check", err})?;
                     let mut save_state = $save_state::default();
                     $(
                         if <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
@@ -168,4 +185,124 @@ mod macros {
     }
 
     pub(crate) use state_trait;
+}
+
+#[cfg(test)]
+// The test state's trait has the methods that no test calls.
+#[expect(dead_code)]
+mod tests {
+    use super::StateElement;
+    use super::state_trait;
+    use inspect::Inspect;
+    use mesh_protobuf::Protobuf;
+    use std::fmt::Error;
+
+    pub struct Caps;
+    pub struct Vp;
+
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+    #[mesh(package = "virt.test")]
+    pub struct Number {
+        #[mesh(1)]
+        value: u32,
+    }
+
+    impl StateElement<Caps, Vp> for Number {
+        fn is_present(_caps: &Caps) -> bool {
+            true
+        }
+
+        fn at_reset(_caps: &Caps, _vp: &Vp) -> Self {
+            Self { value: 0 }
+        }
+    }
+
+    state_trait! {
+        "Test state",
+        AccessTestState,
+        Caps,
+        Vp,
+        TestSavedState,
+        "virt.test",
+        (1, "number", number, set_number, Number),
+    }
+
+    /// A state that every save accepts, which records the elements that a
+    /// save reads.
+    #[derive(Default)]
+    struct Plain {
+        reads: Vec<&'static str>,
+    }
+
+    impl AccessTestState for Plain {
+        type Error = Error;
+
+        fn caps(&self) -> &Caps {
+            &Caps
+        }
+
+        fn commit(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn number(&mut self) -> Result<Number, Error> {
+            self.reads.push("number");
+            Ok(Number { value: 7 })
+        }
+
+        fn set_number(&mut self, _value: &Number) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    /// A state that refuses every save, which records its check.
+    #[derive(Default)]
+    struct Refusing(Plain);
+
+    impl AccessTestState for Refusing {
+        type Error = Error;
+
+        fn caps(&self) -> &Caps {
+            self.0.caps()
+        }
+
+        fn commit(&mut self) -> Result<(), Error> {
+            self.0.commit()
+        }
+
+        fn check_saveable(&mut self) -> Result<(), Error> {
+            self.0.reads.push("check_saveable");
+            Err(Error)
+        }
+
+        fn number(&mut self) -> Result<Number, Error> {
+            self.0.number()
+        }
+
+        fn set_number(&mut self, value: &Number) -> Result<(), Error> {
+            self.0.set_number(value)
+        }
+    }
+
+    #[test]
+    fn a_save_accepts_a_state_by_default() {
+        let mut state = Plain::default();
+        let saved = state.save_all().unwrap();
+        assert_eq!(
+            saved,
+            TestSavedState {
+                number: Some(Number { value: 7 })
+            }
+        );
+        assert_eq!(state.reads, ["number"]);
+    }
+
+    #[test]
+    fn a_refused_save_reads_nothing() {
+        let mut state = Refusing::default();
+        let err = state.save_all().unwrap_err();
+        assert_eq!(err.phase, "save check");
+        assert!(std::error::Error::source(&err).is_some_and(|err| err.is::<Error>()));
+        assert_eq!(state.0.reads, ["check_saveable"]);
+    }
 }
