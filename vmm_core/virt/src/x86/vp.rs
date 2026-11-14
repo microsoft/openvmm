@@ -1443,6 +1443,12 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Mtrrs {
     }
 }
 
+/// The virtual MSRs of a VP.
+///
+/// The saved state holds IA32_SYSENTER_ESP (MSR 0x175) in field 3 and
+/// IA32_SYSENTER_EIP (MSR 0x176) in field 4, in the order of their MSR
+/// numbers. KVM, MSHV, and WHP have always saved them there, so existing saved
+/// states restore only while the fields keep their numbers.
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
@@ -1453,9 +1459,9 @@ pub struct VirtualMsrs {
     #[mesh(2)]
     pub sysenter_cs: u64,
     #[mesh(3)]
-    pub sysenter_eip: u64,
-    #[mesh(4)]
     pub sysenter_esp: u64,
+    #[mesh(4)]
+    pub sysenter_eip: u64,
     #[mesh(5)]
     pub star: u64,
     #[mesh(6)]
@@ -1484,8 +1490,8 @@ impl HvRegisterState<HvX64RegisterName, 8> for VirtualMsrs {
         for (dest, src) in it.zip([
             self.kernel_gs_base,
             self.sysenter_cs,
-            self.sysenter_eip,
             self.sysenter_esp,
+            self.sysenter_eip,
             self.star,
             self.lstar,
             self.cstar,
@@ -1499,8 +1505,8 @@ impl HvRegisterState<HvX64RegisterName, 8> for VirtualMsrs {
         for (src, dest) in it.zip([
             &mut self.kernel_gs_base,
             &mut self.sysenter_cs,
-            &mut self.sysenter_eip,
             &mut self.sysenter_esp,
+            &mut self.sysenter_eip,
             &mut self.star,
             &mut self.lstar,
             &mut self.cstar,
@@ -1520,8 +1526,8 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for VirtualMsrs {
         Self {
             kernel_gs_base: 0,
             sysenter_cs: 0,
-            sysenter_eip: 0,
             sysenter_esp: 0,
+            sysenter_eip: 0,
             star: 0,
             lstar: 0,
             cstar: 0,
@@ -2151,5 +2157,120 @@ mod tests {
         };
         assert_eq!(without_tsc.take_one_shot_timer().unwrap().saved_tsc, None);
         assert_eq!(VpSavedState::default().take_one_shot_timer(), None);
+    }
+
+    // Distinct values, so that a mix-up of two registers shows.
+    const REGISTERS: [(HvX64RegisterName, u64); 8] = [
+        (HvX64RegisterName::KernelGsBase, 0x10),
+        (HvX64RegisterName::SysenterCs, 0x20),
+        (HvX64RegisterName::SysenterEip, 0x1111),
+        (HvX64RegisterName::SysenterEsp, 0x2222),
+        (HvX64RegisterName::Star, 0x30),
+        (HvX64RegisterName::Lstar, 0x40),
+        (HvX64RegisterName::Cstar, 0x50),
+        (HvX64RegisterName::Sfmask, 0x60),
+    ];
+
+    /// The virtual MSRs that hold the values of `REGISTERS`.
+    fn virtual_msrs() -> VirtualMsrs {
+        VirtualMsrs {
+            kernel_gs_base: 0x10,
+            sysenter_cs: 0x20,
+            sysenter_eip: 0x1111,
+            sysenter_esp: 0x2222,
+            star: 0x30,
+            lstar: 0x40,
+            cstar: 0x50,
+            sfmask: 0x60,
+        }
+    }
+
+    #[test]
+    fn virtual_msrs_write_each_register_from_its_own_field() {
+        let msrs = virtual_msrs();
+        let mut values = [HvRegisterValue::from(0u64); 8];
+        msrs.get_values(values.iter_mut());
+        let written = msrs
+            .names()
+            .iter()
+            .copied()
+            .zip(values.map(|value| value.as_u64()))
+            .collect::<Vec<_>>();
+        assert_eq!(written.len(), REGISTERS.len());
+        for register in REGISTERS {
+            assert!(
+                written.contains(&register),
+                "{register:?} is not written: {written:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn virtual_msrs_read_each_register_into_its_own_field() {
+        let mut msrs = VirtualMsrs::default();
+        let values = msrs
+            .names()
+            .iter()
+            .map(|name| {
+                let (_, value) = REGISTERS
+                    .iter()
+                    .find(|(register, _)| register == name)
+                    .expect("the test holds every register of the virtual MSRs");
+                HvRegisterValue::from(*value)
+            })
+            .collect::<Vec<_>>();
+        msrs.set_values(values.into_iter());
+        assert_eq!(msrs, virtual_msrs());
+    }
+
+    /// The saved fields of a `VirtualMsrs` named for the MSRs that they hold,
+    /// as the saved states of KVM, MSHV, and WHP have always had them:
+    /// IA32_SYSENTER_ESP (0x175) in field 3 and IA32_SYSENTER_EIP (0x176) in
+    /// field 4.
+    #[derive(Debug, PartialEq, Protobuf)]
+    struct SavedMsrs {
+        #[mesh(1)]
+        kernel_gs_base: u64,
+        #[mesh(2)]
+        ia32_sysenter_cs: u64,
+        #[mesh(3)]
+        ia32_sysenter_esp: u64,
+        #[mesh(4)]
+        ia32_sysenter_eip: u64,
+        #[mesh(5)]
+        star: u64,
+        #[mesh(6)]
+        lstar: u64,
+        #[mesh(7)]
+        cstar: u64,
+        #[mesh(8)]
+        sfmask: u64,
+    }
+
+    fn saved_msrs() -> SavedMsrs {
+        SavedMsrs {
+            kernel_gs_base: 0x10,
+            ia32_sysenter_cs: 0x20,
+            ia32_sysenter_esp: 0x2222,
+            ia32_sysenter_eip: 0x1111,
+            star: 0x30,
+            lstar: 0x40,
+            cstar: 0x50,
+            sfmask: 0x60,
+        }
+    }
+
+    #[test]
+    fn virtual_msrs_keep_the_layout_of_earlier_saved_states() {
+        // A saved state of an earlier release restores to the right registers,
+        // and a release that restores this one's saved state does as well.
+        assert_eq!(
+            mesh_protobuf::decode::<VirtualMsrs>(&mesh_protobuf::encode(saved_msrs())).unwrap(),
+            virtual_msrs()
+        );
+        assert_eq!(
+            mesh_protobuf::decode::<SavedMsrs>(&mesh_protobuf::encode(virtual_msrs())).unwrap(),
+            saved_msrs()
+        );
     }
 }
