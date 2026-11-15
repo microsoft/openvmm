@@ -44,6 +44,7 @@ async fn test_icmp_connection_limit_rejects_and_recovers(driver: DefaultDriver) 
         IcmpConnection {
             socket: Some(socket),
             guest_mac: EthernetAddress([0, 0, 0, 0, 0, 1]),
+            echoes: PendingEchoes::random(),
             stats: Default::default(),
             last_activity: Instant::now() - 2 * timeout,
         },
@@ -73,6 +74,7 @@ fn insert_flows(consomme: &mut Consomme, driver: &DefaultDriver, count: usize) {
             IcmpConnection {
                 socket: Some(PolledSocket::new(driver, socket).unwrap()),
                 guest_mac: EthernetAddress([0, 0, 0, 0, 0, 1]),
+                echoes: PendingEchoes::random(),
                 stats: Default::default(),
                 last_activity: Instant::now(),
             },

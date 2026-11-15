@@ -59,6 +59,7 @@ use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::Icmpv4Message;
 use smoltcp::wire::Icmpv6Message;
 use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IpAddress;
@@ -786,6 +787,9 @@ pub enum DropReason {
     /// The ethertype is unknown.
     #[error("unsupported ip protocol {0}")]
     UnsupportedIpProtocol(IpProtocol),
+    /// The ICMPv4 message cannot be relayed: only echo requests are.
+    #[error("unsupported icmpv4 message type {0}")]
+    UnsupportedIcmpv4(Icmpv4Message),
     /// The ICMPv6 message type is unsupported.
     #[error("unsupported icmpv6 message type {0}")]
     UnsupportedIcmpv6(Icmpv6Message),
