@@ -32,7 +32,11 @@
 //!   profile, the filter also denies HWCR and DE_CFG, which OpenVMM serves
 //!   with the time ABI's fixed values
 //!   ([`AMD_CONFIG_MSRS`](virt::time_abi::msr::AMD_CONFIG_MSRS)) instead of
-//!   KVM's own (HWCR reading 0).
+//!   KVM's own (HWCR reading 0), and AMD's legacy performance counters
+//!   ([`AMD_LEGACY_PMU_MSRS`]), which raise #GP: the CPU time bits give the
+//!   guest no PMU, but a KVM whose virtual PMU is on serves the counters to
+//!   any AMD guest whatever its CPUID says, and keeps their state in the
+//!   vCPU, which a snapshot does not hold.
 //! - **Invariant TSC.** With `"Hv#1"` and `AccessTscInvariantControls` in
 //!   CPUID, KVM (Linux 6.3 and later) hides the invariant-TSC bit of CPUID
 //!   `0x80000007` until its own copy of `HV_X64_MSR_TSC_INVARIANT_CONTROL` is
@@ -128,6 +132,22 @@ fn is_hidden_msr(msr: u32) -> bool {
             .any(|range| range.contains(&msr))
 }
 
+/// AMD's legacy performance counters, which a time ABI partition with an AMD
+/// CPU profile hides: `PerfEvtSel0` through `PerfEvtSel3`
+/// (`0xc0010000..=0xc0010003`) and `PerfCtr0` through `PerfCtr3`
+/// (`0xc0010004..=0xc0010007`).
+///
+/// A guest has no PMU: the CPU time bits clear CPUID leaf `0xa`, and the
+/// profiles clear `PerfCtrExtCore`. A KVM whose virtual PMU is on, as on a
+/// bare-metal AMD host, still serves these four counters to every AMD guest,
+/// whatever its CPUID says, and keeps their values in the vCPU, where no
+/// element of the saved state reaches them, so a restore would drop a guest's
+/// programming. Where the virtual PMU is off, KVM reads them as 0 and ignores
+/// writes. They raise #GP instead, as an MSR that the guest's CPU lacks does;
+/// Linux finds no counter and uses its software events only.
+pub(crate) const AMD_LEGACY_PMU_MSRS: RangeInclusive<u32> =
+    x86defs::X86X_AMD_MSR_PERF_EVT_SEL0..=x86defs::X86X_AMD_MSR_PERF_CTR3;
+
 /// Pairing attempts before an anchor fails: an attempt only misses
 /// [`MAX_ANCHOR_PAIRING_NS`] when the thread is interrupted between the two
 /// TSC reads around the host sample.
@@ -152,15 +172,20 @@ pub(crate) fn identity_msr_filter() -> [kvm::MsrFilterRange; 7] {
 /// Returns the MSR filter ranges of a time ABI partition whose CPU profile is
 /// of `vendor`: [`identity_msr_filter`], and for AMD also AMD's
 /// configuration MSRs ([`AMD_CONFIG_MSRS`]), which KVM would otherwise
-/// serve itself (HWCR reading 0, and DE_CFG reading what the VMM last set).
+/// serve itself (HWCR reading 0, and DE_CFG reading what the VMM last set),
+/// and its legacy performance counters ([`AMD_LEGACY_PMU_MSRS`]).
 pub(crate) fn time_abi_msr_filter(vendor: CpuVendor) -> Vec<kvm::MsrFilterRange> {
     let mut ranges = identity_msr_filter().to_vec();
-    if vendor == CpuVendor::Amd {
-        ranges.extend(
-            AMD_CONFIG_MSRS
-                .iter()
-                .map(|&(msr, _)| kvm::MsrFilterRange::deny(msr..=msr)),
-        );
+    match vendor {
+        CpuVendor::Amd => {
+            ranges.extend(
+                AMD_CONFIG_MSRS
+                    .iter()
+                    .map(|&(msr, _)| kvm::MsrFilterRange::deny(msr..=msr)),
+            );
+            ranges.push(kvm::MsrFilterRange::deny(AMD_LEGACY_PMU_MSRS));
+        }
+        CpuVendor::Intel => {}
     }
     ranges
 }
@@ -368,7 +393,9 @@ pub(crate) struct KvmTimeAbi {
     /// profile ([`profile_arch_capabilities`]).
     arch_capabilities: Option<u64>,
     /// Whether the CPU profile is AMD's, so that OpenVMM serves AMD's
-    /// configuration MSRs, which [`time_abi_msr_filter`] routes to it.
+    /// configuration MSRs, which [`time_abi_msr_filter`] routes to it, and
+    /// raises #GP for AMD's legacy performance counters, which it routes
+    /// there too.
     amd_config_msrs: bool,
 }
 
@@ -445,10 +472,17 @@ impl KvmTimeAbi {
             })
     }
 
+    /// Whether a guest access to `msr` raises #GP: an MSR that every time ABI
+    /// partition hides ([`is_hidden_msr`]), or AMD's legacy performance
+    /// counters under an AMD CPU profile.
+    fn hides_msr(&self, msr: u32) -> bool {
+        is_hidden_msr(msr) || (self.amd_config_msrs && AMD_LEGACY_PMU_MSRS.contains(&msr))
+    }
+
     /// Handles a guest read of `msr` that exited to user space. `None` means
     /// the MSR is not the time ABI's.
     pub(crate) fn read_msr(&self, vp: VpIndex, msr: u32) -> Option<Result<u64, MsrError>> {
-        if is_hidden_msr(msr) {
+        if self.hides_msr(msr) {
             tracelimit::info_ratelimited!(vp = vp.index(), msr, "hidden MSR read raises #GP");
             return Some(Err(MsrError::InvalidAccess));
         }
@@ -472,7 +506,7 @@ impl KvmTimeAbi {
         msr: u32,
         value: u64,
     ) -> Option<Result<(), MsrError>> {
-        if is_hidden_msr(msr) {
+        if self.hides_msr(msr) {
             tracelimit::info_ratelimited!(
                 vp = vp.index(),
                 msr,
@@ -778,7 +812,11 @@ mod tests {
             (0x118, 0x11b),
             (0x11e, 0x11e),
         ];
-        let amd = [(0xc001_0015, 0xc001_0015), (0xc001_1029, 0xc001_1029)];
+        let amd = [
+            (0xc001_0015, 0xc001_0015),
+            (0xc001_1029, 0xc001_1029),
+            (0xc001_0000, 0xc001_0007),
+        ];
         assert_eq!(
             identity_msr_filter().to_vec(),
             time_abi_msr_filter(CpuVendor::Intel)
@@ -1243,10 +1281,21 @@ mod tests {
             assert_eq!(write(msr, 0), Some(Err(())), "{msr:#x}");
         }
         // Other unknown MSRs keep their existing handling, and so do AMD's
-        // configuration MSRs under an Intel profile, which the filter does
-        // not route here.
-        for msr in [0x87, 0x8b, 0x117, 0x11c, 0x11f, 0xc001_0015, 0xc001_1029] {
+        // configuration MSRs and legacy performance counters under an Intel
+        // profile, which the filter does not route here.
+        for msr in [
+            0x87,
+            0x8b,
+            0x117,
+            0x11c,
+            0x11f,
+            0xc001_0000,
+            0xc001_0007,
+            0xc001_0015,
+            0xc001_1029,
+        ] {
             assert_eq!(read(msr), None, "{msr:#x}");
+            assert_eq!(write(msr, 0), None, "{msr:#x}");
         }
         assert_eq!(write(0x4000_0200, 0), None);
         // The invariant TSC control is guest state in the shared handler.
@@ -1272,6 +1321,34 @@ mod tests {
         assert_eq!(read(MSR_VP_INDEX), Some(Ok(1)));
         assert_eq!(read(MSR_IA32_TSC_ADJUST), Some(Err(())));
         assert_eq!(read(0xc001_0010), None);
+    }
+
+    /// Under an AMD profile, the filter routes AMD's legacy performance
+    /// counters to OpenVMM, which raises #GP, and nothing around them.
+    #[test]
+    fn msr_exits_hide_the_legacy_pmu_under_an_amd_profile() {
+        let time_abi = time_abi(Arc::new(TimeAbiMsrs::new()), CpuVendor::Amd);
+        let vp = VpIndex::new(0);
+        let read = |msr| outcome(time_abi.read_msr(vp, msr));
+        let write = |msr, value| outcome(time_abi.write_msr(vp, msr, value));
+        // PerfEvtSel0-3 and PerfCtr0-3, whatever a guest writes.
+        for msr in 0xc001_0000..=0xc001_0007 {
+            assert_eq!(read(msr), Some(Err(())), "{msr:#x}");
+            assert_eq!(write(msr, 0), Some(Err(())), "{msr:#x}");
+            assert_eq!(write(msr, 0x0053_0076), Some(Err(())), "{msr:#x}");
+        }
+        // The registers on both sides of them are not hidden: PERF_CTL0, the
+        // first of the extended core counters, and the system configuration.
+        for msr in [
+            0xbfff_ffff,
+            0xc000_ffff,
+            0xc001_0008,
+            0xc001_0010,
+            0xc001_0200,
+        ] {
+            assert_eq!(read(msr), None, "{msr:#x}");
+            assert_eq!(write(msr, 0), None, "{msr:#x}");
+        }
     }
 }
 
