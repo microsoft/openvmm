@@ -30,6 +30,8 @@ use std::net::Shutdown;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use test_with_tracing::test;
 
@@ -2010,6 +2012,86 @@ async fn test_tcp_published_port_resets_unadmitted_host_peers(driver: DefaultDri
                 ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
             ) => {}
         other => panic!("refused connection returned {other:?}"),
+    }
+}
+
+/// Records that a task was woken.
+struct WakeFlag(AtomicBool);
+
+impl std::task::Wake for WakeFlag {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Test that a listener publishing a guest port resets every connection of a
+/// peer that it does not admit, with no wakeup but its own.
+///
+/// A poll that accepts a connection leaves the listener's readiness set but
+/// registers no wakeup for it, so the listener must ask to be polled again:
+/// otherwise the connections behind the first wait for an unrelated wakeup,
+/// and the peer sees its connection complete and then hang.
+#[pal_async::async_test]
+async fn test_tcp_published_port_resets_queued_connections_without_other_wakeups(
+    driver: DefaultDriver,
+) {
+    const CONNECTIONS: u64 = 3;
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver.clone());
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+    consomme
+        .access(&mut client)
+        .bind_tcp_port_with_admission(
+            socket,
+            7804,
+            InboundAdmission::PrivateNetwork { host: false },
+        )
+        .expect("bind should succeed");
+    // All the connections wait in the listener's backlog before its first
+    // poll, so the first poll finds more than the one that it accepts.
+    let mut connectors: Vec<_> = (0..CONNECTIONS)
+        .map(|_| std::net::TcpStream::connect(host_addr).unwrap())
+        .collect();
+
+    // Poll as an executor does: when the task was woken.
+    let woken = Arc::new(WakeFlag(AtomicBool::new(true)));
+    let waker = std::task::Waker::from(woken.clone());
+    let mut cx = Context::from_waker(&waker);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if woken.0.swap(false, Ordering::SeqCst) {
+            consomme.access(&mut client).poll(&mut cx);
+        }
+        let refused = consomme.tcp.aggregate_stats.connections_refused.get();
+        if refused == CONNECTIONS {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "reset {refused} of {CONNECTIONS} queued connections before nothing woke the endpoint"
+        );
+        pal_async::timer::PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(10))
+            .await;
+    }
+    assert!(consomme.tcp.connections.is_empty());
+    for connector in &mut connectors {
+        connector
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        match io::Read::read(connector, &mut [0; 1]) {
+            Ok(0) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+                ) => {}
+            other => panic!("refused connection returned {other:?}"),
+        }
     }
 }
 
