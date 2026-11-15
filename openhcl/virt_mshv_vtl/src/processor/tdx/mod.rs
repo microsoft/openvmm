@@ -4211,6 +4211,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         Ok(())
     }
 
+    fn spec_ctrl(&mut self) -> Result<vp::SpecCtrl, Self::Error> {
+        Err(vp_state::Error::Unimplemented("spec_ctrl"))
+    }
+
+    fn set_spec_ctrl(&mut self, _value: &vp::SpecCtrl) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("spec_ctrl"))
+    }
+
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
         Err(vp_state::Error::Unimplemented("cet"))
     }

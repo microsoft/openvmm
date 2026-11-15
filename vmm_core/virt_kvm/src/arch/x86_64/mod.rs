@@ -225,6 +225,9 @@ impl virt::Hypervisor for Kvm {
         // Query which MCE capability bits this host allows us to set so that
         // bind() can advertise CMCI to the guest where supported (Intel).
         let supported_mce_cap = self.kvm.supported_mce_cap()?;
+        // The MSRs that KVM can save and restore for a vCPU, which are the
+        // ones that the host has.
+        let msr_index_list = self.kvm.msr_index_list()?;
         // Determine the CPU vendor from CPUID leaf 0.
         let vendor = supported_cpuid
             .iter()
@@ -504,6 +507,7 @@ impl virt::Hypervisor for Kvm {
             cpuid: cpuid_entries,
             nested_virt,
             supported_mce_cap,
+            msr_index_list,
             cpu_surface,
         })
     }
@@ -520,6 +524,9 @@ pub struct KvmProtoPartition<'a> {
     /// MCE capability bits (`IA32_MCG_CAP`) the host allows setting, from
     /// `KVM_X86_GET_MCE_CAP_SUPPORTED`.
     supported_mce_cap: u64,
+    /// The MSRs that KVM can save and restore for a vCPU, from
+    /// `KVM_GET_MSR_INDEX_LIST`.
+    msr_index_list: Vec<u32>,
     /// The CPU surface KVM supports, for the time ABI's CPU profile.
     cpu_surface: Option<virt::time_abi::surface::SupportedCpuSurface>,
 }
@@ -633,6 +640,10 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         caps.can_freeze_time = false;
         caps.nested_virt = self.nested_virt;
+        // KVM can save SPEC_CTRL only if the host has it, and cannot read an
+        // SNP guest's from its encrypted VMSA.
+        caps.spec_ctrl &=
+            self.sev.is_none() && self.msr_index_list.contains(&x86defs::X86X_MSR_SPEC_CTRL);
 
         let mut gsi_routing = GsiRouting::new();
 

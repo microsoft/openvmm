@@ -1659,6 +1659,49 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for TscDeadline {
     }
 }
 
+/// The architectural IA32_SPEC_CTRL MSR, which holds the guest's speculation
+/// controls: IBRS, STIBP, SSBD, and those that later processors added.
+///
+/// The guest can write it only if its CPUID enumerates a control of the MSR,
+/// which [`X86PartitionCapabilities::spec_ctrl`] records, so the saved state
+/// holds it only then. A VP that never saw a write holds 0, the reset value.
+#[repr(C)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+pub struct SpecCtrl {
+    #[mesh(1)]
+    #[inspect(hex)]
+    pub value: u64,
+}
+
+impl HvRegisterState<HvX64RegisterName, 1> for SpecCtrl {
+    fn names(&self) -> &'static [HvX64RegisterName; 1] {
+        &[HvX64RegisterName::SpecCtrl]
+    }
+
+    fn get_values<'a>(&self, it: impl Iterator<Item = &'a mut HvRegisterValue>) {
+        for (dest, src) in it.zip([self.value]) {
+            *dest = src.into();
+        }
+    }
+
+    fn set_values(&mut self, it: impl Iterator<Item = HvRegisterValue>) {
+        for (src, dest) in it.zip([&mut self.value]) {
+            *dest = src.as_u64();
+        }
+    }
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for SpecCtrl {
+    fn is_present(caps: &X86PartitionCapabilities) -> bool {
+        caps.spec_ctrl
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self::default()
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
@@ -1990,6 +2033,23 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for NestedState {
     }
 }
 
+// A VP state element is one field of the saved state, an `Option<T>` under a
+// field number of its own. A saved state from a build that predates an element
+// has no such field, so restoring it sets nothing and the VP keeps its reset
+// value, as it did before the element existed; and a build that predates the
+// element ignores the field. Neither needs a version, so never change or
+// reuse a field number.
+//
+// To add an element for state that only some guests can have, such as an MSR
+// that a CPUID feature enumerates:
+// - take the next free number below 100;
+// - make `StateElement::is_present` follow a capability of
+//   `X86PartitionCapabilities` that `from_cpuid` derives from the guest's
+//   CPUID, so that a save holds the element only for a guest that can have
+//   changed it;
+// - implement the element's two accessors in every backend, which clears the
+//   capability if it cannot access the state, and document in the Guide's
+//   snapshot format how an older state and an older reader treat the element.
 state_trait! {
     "Per-VP state",
     AccessVpState,
@@ -2015,6 +2075,7 @@ state_trait! {
     (14, "tsc_aux", tsc_aux, set_tsc_aux, TscAux),
     // The deadline must be restored after APIC mode and guest TSC.
     (15, "tsc_deadline", tsc_deadline, set_tsc_deadline, TscDeadline),
+    (16, "spec_ctrl", spec_ctrl, set_spec_ctrl, SpecCtrl),
 
     // Synic state
     (100, "synic", synic_msrs, set_synic_msrs, SyntheticMsrs),
@@ -2271,6 +2332,64 @@ mod tests {
         assert_eq!(
             mesh_protobuf::decode::<SavedMsrs>(&mesh_protobuf::encode(virtual_msrs())).unwrap(),
             saved_msrs()
+        );
+    }
+
+    /// The saved state of a build that predates the SPEC_CTRL element, which
+    /// has none of its field, shown here with two of the other elements.
+    #[derive(Debug, PartialEq, Protobuf)]
+    struct EarlierVpSavedState {
+        #[mesh(11)]
+        tsc: Option<Tsc>,
+        #[mesh(14)]
+        tsc_aux: Option<TscAux>,
+    }
+
+    #[test]
+    fn spec_ctrl_needs_no_version_to_coexist_with_earlier_builds() {
+        let earlier = || EarlierVpSavedState {
+            tsc: Some(Tsc { value: 7 }),
+            tsc_aux: Some(TscAux { value: 3 }),
+        };
+        let current = |spec_ctrl| VpSavedState {
+            tsc: Some(Tsc { value: 7 }),
+            tsc_aux: Some(TscAux { value: 3 }),
+            spec_ctrl,
+            ..Default::default()
+        };
+
+        // A saved state of an earlier build holds no SPEC_CTRL, so restoring
+        // it sets none.
+        assert_eq!(
+            mesh_protobuf::decode::<VpSavedState>(&mesh_protobuf::encode(earlier())).unwrap(),
+            current(None)
+        );
+        // An earlier build reads the saved state of this one and ignores the
+        // element.
+        assert_eq!(
+            mesh_protobuf::decode::<EarlierVpSavedState>(&mesh_protobuf::encode(current(Some(
+                SpecCtrl { value: 5 }
+            ))))
+            .unwrap(),
+            earlier()
+        );
+
+        // The element is field 16 of the saved state, a message with the value
+        // in its field 1: bytes that every build that holds it reads, and
+        // that no later change may alter.
+        assert_eq!(
+            mesh_protobuf::encode(VpSavedState {
+                spec_ctrl: Some(SpecCtrl { value: 5 }),
+                ..Default::default()
+            }),
+            [0x82, 0x01, 0x02, 0x08, 0x05]
+        );
+        assert_eq!(
+            mesh_protobuf::decode::<VpSavedState>(&[0x82, 0x01, 0x02, 0x08, 0x05]).unwrap(),
+            VpSavedState {
+                spec_ctrl: Some(SpecCtrl { value: 5 }),
+                ..Default::default()
+            }
         );
     }
 }

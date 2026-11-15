@@ -1666,6 +1666,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         self.set_register_state(value)
     }
 
+    fn spec_ctrl(&mut self) -> Result<vp::SpecCtrl, Self::Error> {
+        Err(vp_state::Error::Unimplemented("spec_ctrl"))
+    }
+
+    fn set_spec_ctrl(&mut self, _value: &vp::SpecCtrl) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("spec_ctrl"))
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }
