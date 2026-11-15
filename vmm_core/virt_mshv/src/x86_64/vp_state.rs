@@ -261,6 +261,11 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn set_activity(&mut self, value: &vp::Activity) -> Result<(), Self::Error> {
+        // MSHV holds one pending NMI, in the APIC page, so it cannot restore a
+        // count of them. Refuse it before changing any state.
+        if value.nmi_pending_count.is_some() {
+            return Err(ErrorInner::UnsupportedState("nmi_pending_count").into());
+        }
         self.set_register_state(value)?;
         // The NMI pending bit is not part of the register state; it must
         // be set via the APIC page.
