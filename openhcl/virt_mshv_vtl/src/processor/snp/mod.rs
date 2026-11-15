@@ -2776,8 +2776,13 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             interrupt_shadow: _,     // TODO SNP
             pending_event: _,        // TODO SNP
             pending_interruption: _, // TODO SNP
-            nmi_pending_count: _,
+            nmi_pending_count,
         } = value;
+        // This backend holds at most one pending NMI, so it cannot restore a
+        // count of them. Refuse it before changing any state.
+        if nmi_pending_count.is_some() {
+            return Err(vp_state::Error::Unimplemented("nmi_pending_count"));
+        }
         let lapic = &mut self.vp.backing.cvm.lapics[self.vtl];
         lapic.activity = mp_state;
         lapic.nmi_pending = nmi_pending;

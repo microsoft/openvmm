@@ -254,7 +254,10 @@ one. A snapshot that an earlier OpenVMM captured holds no count, and
 restoring it gives the VP the one pending NMI that it always did. An earlier
 OpenVMM ignores the count in a later snapshot, so the guest loses an NMI,
 silently. The snapshot has no version for this; see [Fields of an
-element](../../dev_guide/snapshot_format.md#fields-of-an-element).
+element](../../dev_guide/snapshot_format.md#fields-of-an-element). A backend
+that holds at most one pending NMI refuses a snapshot that holds two, which only
+a damaged or crafted snapshot of another backend does, since a restore requires
+the backend that captured the snapshot.
 
 For a tiered microVM restore, and for a restore that replaces the network
 policy of a snapshot without a tier, OpenVMM starts device workers with
