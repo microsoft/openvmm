@@ -96,6 +96,10 @@ pub struct X86PartitionCapabilities {
     /// state. Like [`Self::debug_ctl`], no CPUID bit decides it, so a backend
     /// that can access the MSRs sets it.
     pub misc_msrs: bool,
+    /// The backend holds the guest's machine-check state in the VP's saved
+    /// state. Like [`Self::debug_ctl`], no CPUID bit decides it, so a backend
+    /// that can access the registers sets it.
+    pub machine_check: bool,
     /// Architectural TSC-deadline state is available. Backends without access
     /// to this MSR must clear this even if guest CPUID advertises the feature.
     pub tsc_deadline: bool,
@@ -166,6 +170,7 @@ impl X86PartitionCapabilities {
             umwait_control: false,
             debug_ctl: false,
             misc_msrs: false,
+            machine_check: false,
             tsc_deadline: false,
             vtom: None,
             physical_address_width: max_physical_address_size_from_cpuid(&mut *f),
@@ -992,6 +997,7 @@ mod tests {
         let caps = capabilities_with_leaf7_ecx(0xd, !0);
         assert!(!caps.debug_ctl);
         assert!(!caps.misc_msrs);
+        assert!(!caps.machine_check);
     }
 }
 

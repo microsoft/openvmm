@@ -652,6 +652,14 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         super::msr_state::set_misc_msrs(&self.kvm(), value)
     }
 
+    fn machine_check(&mut self) -> Result<vp::MachineCheck, Self::Error> {
+        super::machine_check::save(&self.kvm())
+    }
+
+    fn set_machine_check(&mut self, value: &vp::MachineCheck) -> Result<(), Self::Error> {
+        super::machine_check::restore(&self.kvm(), value, self.vp.partition.mce_cmci_supported)
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }

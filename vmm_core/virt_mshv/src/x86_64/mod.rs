@@ -531,6 +531,7 @@ impl MshvPartitionInner {
             umwait_control: false,
             debug_ctl: false,
             misc_msrs: false,
+            machine_check: false,
             // MSHV does not reliably deliver TSC deadline events to direct-boot
             // guests. Fall back to the LAPIC count-mode clockevent.
             tsc_deadline: false,
