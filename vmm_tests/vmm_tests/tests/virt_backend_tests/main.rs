@@ -16,6 +16,7 @@ cfg_select! {
         mod fixture;
         #[cfg(target_os = "linux")]
         mod init_sipi;
+        mod msr_state;
         mod native;
         #[cfg(target_os = "linux")]
         mod registers;
