@@ -62,6 +62,14 @@ access them, have cases of their own in `msr_state.rs`:
 saves it, changes the VP, and restores it, and two that check that a reset
 returns the feature MSRs and the machine-check state to what a new VP holds.
 MSHV and WHP do not hold these elements, so these cases report ignored there.
+A restore refuses a saved state that holds an element that the partition lacks,
+such as SynIC state for a partition without Hyper-V enlightenments: it fails
+with an error that names the element, before it changes any state.
+`refuses_unsupported_cpu_state` and `refuses_unsupported_vm_state`, in
+`unsupported_state.rs`, restore crafted saved states that hold such an element,
+one at a time, and check this. The first also checks that the registers keep
+their values, and tries `IA32_SPEC_CTRL` and the MSRs above in addition to SynIC
+state, skipping each that the fixture's partition holds.
 
 The contract functions operate on the public `virt` interfaces. Each function
 has an adjacent `backend_test!` declaration that registers it with Petri for
