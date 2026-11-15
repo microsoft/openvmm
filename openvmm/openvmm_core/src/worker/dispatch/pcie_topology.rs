@@ -8,6 +8,7 @@
 //! root complexes form a consistent bus-number topology before the VM is built.
 
 use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+use openvmm_defs::config::PCIE_MAX_EJECT_TIMEOUT;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;
@@ -57,17 +58,31 @@ pub(super) fn build_port_definition(port_cfg: &PciePortConfig) -> GenericPciePor
 ///
 /// Root ports only: runtime hot-add and hot-remove reach root-complex ports, and the
 /// command line refuses `attention_button` on switch downstream ports.
+///
+/// A timeout above [`PCIE_MAX_EJECT_TIMEOUT`] is refused, not clamped, as the command line
+/// and ttrpc parsers do: a pending removal defers stop, reset and save, so the cap must hold
+/// for every caller that builds a [`PciePortConfig`], not only those going through a parser.
 pub(super) fn eject_timeouts(
     root_complexes: &[PcieRootComplexConfig],
-) -> HashMap<String, Duration> {
-    root_complexes
-        .iter()
-        .flat_map(|rc| &rc.ports)
-        .filter_map(|port| {
-            let timeout = port.hotplug?.attention_button?;
-            Some((port.name.clone(), timeout))
-        })
-        .collect()
+) -> anyhow::Result<HashMap<String, Duration>> {
+    let mut timeouts = HashMap::new();
+    for rc in root_complexes {
+        for port in &rc.ports {
+            let Some(timeout) = port.hotplug.and_then(|hotplug| hotplug.attention_button) else {
+                continue;
+            };
+            anyhow::ensure!(
+                timeout <= PCIE_MAX_EJECT_TIMEOUT,
+                "invalid PCIe root port '{}' on '{}': eject timeout {} ms exceeds the maximum of {} ms",
+                port.name,
+                rc.name,
+                timeout.as_millis(),
+                PCIE_MAX_EJECT_TIMEOUT.as_millis(),
+            );
+            timeouts.insert(port.name.clone(), timeout);
+        }
+    }
+    Ok(timeouts)
 }
 
 /// Validates that the configured PCIe root complexes form a consistent
@@ -170,9 +185,31 @@ mod tests {
                 }),
             ),
         ];
-        let timeouts = eject_timeouts(&[rc0]);
+        let timeouts = eject_timeouts(&[rc0]).unwrap();
         assert_eq!(timeouts.len(), 1);
         assert_eq!(timeouts["button"], Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn eject_timeouts_refuse_a_timeout_above_the_maximum() {
+        let button = |timeout| {
+            Some(PcieHotplugConfig {
+                attention_button: Some(timeout),
+            })
+        };
+        let mut rc0 = rc("rc0", 0, 0, 4);
+        rc0.ports = vec![port("max", button(PCIE_MAX_EJECT_TIMEOUT))];
+        assert_eq!(
+            eject_timeouts(std::slice::from_ref(&rc0)).unwrap()["max"],
+            PCIE_MAX_EJECT_TIMEOUT
+        );
+
+        rc0.ports.push(port(
+            "long",
+            button(PCIE_MAX_EJECT_TIMEOUT + Duration::from_millis(1)),
+        ));
+        let err = eject_timeouts(&[rc0]).unwrap_err().to_string();
+        assert!(err.contains("'long'") && err.contains("exceeds"), "{err}");
     }
 
     #[test]

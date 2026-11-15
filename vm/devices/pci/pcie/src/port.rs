@@ -915,8 +915,8 @@ impl PcieDownstreamPort {
 
     /// Ask the guest to release the device on this port, keeping the endpoint reachable.
     ///
-    /// Presses the attention button unless the guest still holds or is acting on an earlier
-    /// press (see [`PciExpressCapability::request_hotplug_eject`] for the decision), and
+    /// Presses the attention button unless the guest still holds, may be about to act on,
+    /// or is acting on an earlier press (see [`PciExpressCapability::request_hotplug_eject`] for the decision), and
     /// sends the hot-plug MSI if that raised the interrupt condition. The device stays
     /// attached so that a guest driver whose teardown still talks to it (Linux virtio_pci's
     /// reset polls the device status) can finish. Detach with
@@ -2006,6 +2006,11 @@ mod tests {
         // The guest acknowledged the press but dropped it (Linux pciehp in POWERON or
         // POWEROFF): the indicator stays on and nothing will power the slot off.
         guest_slot_write(&mut port, LINUX_NOTIFY | PWR_IND_ON | ABP);
+        // The first retry cannot tell that from a guest between pciehp_isr and
+        // pciehp_handle_button_press, so it only waits again.
+        drop(port.request_hotplug_remove_device().unwrap());
+        assert_eq!(msi_count(&controller), 0);
+        assert_eq!(slot_dword(&port) & ABP, 0);
         drop(port.request_hotplug_remove_device().unwrap());
         assert_eq!(
             msi_count(&controller),

@@ -86,6 +86,15 @@ struct PciExpressState {
     /// second press while the power indicator blinks cancels the pending power-off
     /// (pciehp_handle_button_press, BLINKINGOFF_STATE).
     eject_requested: bool,
+    /// A retry found the earlier press acknowledged with the power indicator not blinking
+    /// and only re-armed the waiter; the next retry that finds the same state presses again.
+    ///
+    /// pciehp acknowledges Attention Button Pressed in its hard interrupt handler
+    /// (pciehp_isr) and only later, in its thread, starts the countdown and the blink
+    /// (pciehp_handle_button_press), so one such sighting may be a press the guest is
+    /// about to act on. Cleared whenever the request ends or the guest blinks. Implies
+    /// `eject_requested`.
+    eject_rearmed_without_blink: bool,
     /// Signalled when the guest has turned slot power and the power indicator off.
     ///
     /// Not saved: the waiter lives in the removal task, which never spans a save (the
@@ -114,6 +123,7 @@ impl PciExpressState {
             hotplug_msi_on_event: 0,
             hotplug_msi_on_guest_write: 0,
             eject_requested: false,
+            eject_rearmed_without_blink: false,
             eject_completion: None,
         }
     }
@@ -127,6 +137,7 @@ impl PciExpressState {
             hotplug_msi_on_event: _,
             hotplug_msi_on_guest_write: _,
             eject_requested,
+            eject_rearmed_without_blink,
             eject_completion,
         } = self;
         *registers = PciExpressRegisters::new();
@@ -136,6 +147,7 @@ impl PciExpressState {
         // is void. Dropping the sender fails the waiter, which then reports an error
         // instead of detaching a device the rebooted guest may already be probing again.
         *eject_requested = false;
+        *eject_rearmed_without_blink = false;
         *eject_completion = None;
     }
 
@@ -144,6 +156,7 @@ impl PciExpressState {
     /// card put into this slot.
     fn clear_eject_request(&mut self) {
         self.eject_requested = false;
+        self.eject_rearmed_without_blink = false;
         self.eject_completion = None;
         self.registers
             .slot_status_events
@@ -369,9 +382,15 @@ impl PciExpressCapability {
         // device unit stopped, which is async, so this only signals the waiter.
         if state.slot_powered_off() {
             state.eject_requested = false;
+            state.eject_rearmed_without_blink = false;
             if let Some(completion) = state.eject_completion.take() {
                 completion.send(());
             }
+        }
+        // A blinking guest acted on the press, so a later stop without power-off (a
+        // cancelled countdown) starts the re-arm-once rule over.
+        if state.registers.slot_control.power_indicator_control() == POWER_INDICATOR_BLINK {
+            state.eject_rearmed_without_blink = false;
         }
     }
 
@@ -757,18 +776,23 @@ impl PciExpressCapability {
     ///   counting down (power indicator blinking): only the waiter is replaced. A second
     ///   press within the guest's five-second window cancels the removal (Linux pciehp_ctrl.c
     ///   pciehp_handle_button_press, BLINKINGOFF_STATE).
-    /// * An earlier press acknowledged with the indicator not blinking: the guest dropped it
-    ///   (pciehp ignores a press in POWERON_STATE and POWEROFF_STATE, acknowledging it all the
-    ///   same), so the button is pressed again. Trusting the old press instead would leave
-    ///   every retry waiting on a removal that never started, until a VM reset.
+    /// * An earlier press acknowledged with the indicator not blinking, seen by a retry for
+    ///   the first time: only the waiter is replaced. pciehp acknowledges the press in its
+    ///   hard interrupt handler (pciehp_isr) and starts blinking only later in its thread
+    ///   (pciehp_handle_button_press), so the guest may be about to act on it.
+    /// * The same state seen by the next retry as well: the guest dropped the press (pciehp
+    ///   ignores one in POWERON_STATE and POWEROFF_STATE, acknowledging it all the same), so
+    ///   the button is pressed again. Trusting the old press for good would leave every retry
+    ///   waiting on a removal that never started, until a VM reset. A dropped press thus
+    ///   costs two retries.
     /// * No earlier press and the indicator blinking: the guest is busy with this slot (a
     ///   hot-add countdown or power-on), so the request fails with
     ///   [`PcieEjectError::GuestBusy`]. A press then would cancel the guest's operation.
     /// * Otherwise the button is pressed.
     ///
-    /// The one window this cannot see is a guest between acknowledging a press and setting
-    /// the indicator to blink (pciehp's interrupt handler, then its thread). A retry lands
-    /// only after the caller's eject timeout, long after that window.
+    /// The decision needs no clock: however short the caller's eject timeout, a press the
+    /// guest acknowledged is pressed again only after two retries in a row found it neither
+    /// pending nor blinking.
     ///
     /// The caller re-evaluates the hot-plug interrupt condition afterwards to send the MSI.
     ///
@@ -796,6 +820,7 @@ impl PciExpressCapability {
         }
         let (send, recv) = mesh::oneshot();
         if state.slot_powered_off() {
+            state.eject_rearmed_without_blink = false;
             send.send(());
             return Ok(recv);
         }
@@ -806,8 +831,16 @@ impl PciExpressCapability {
             .slot_status_events
             .attention_button_pressed();
         // The guest has the earlier press or is acting on it: wait again, press nothing.
-        let rearm_only = state.eject_requested && (press_unread || blinking);
-        if !rearm_only {
+        let guest_has_press = state.eject_requested && (press_unread || blinking);
+        // The guest acknowledged the earlier press but has not started blinking: the first
+        // retry to see that waits once more, in case the guest is about to act on it.
+        let first_unblinking_retry = state.eject_requested
+            && !press_unread
+            && !blinking
+            && !state.eject_rearmed_without_blink;
+        if guest_has_press || first_unblinking_retry {
+            state.eject_rearmed_without_blink = first_unblinking_retry;
+        } else {
             if blinking {
                 return Err(PcieEjectError::GuestBusy);
             }
@@ -823,6 +856,7 @@ impl PciExpressCapability {
                 .slot_status_events
                 .set_attention_button_pressed(true);
             state.eject_requested = true;
+            state.eject_rearmed_without_blink = false;
         }
         state.eject_completion = Some(send);
         Ok(recv)
@@ -1177,6 +1211,11 @@ mod save_restore {
             /// VM had, since it could not request an orderly removal at all.
             #[mesh(8)]
             pub eject_requested: Option<bool>,
+            /// A retry already re-armed once on an acknowledged press with the indicator not
+            /// blinking, so the next such retry presses again. `None` (a blob without the
+            /// field) restores as not re-armed, which costs at most one extra retry.
+            #[mesh(9)]
+            pub eject_rearmed_without_blink: Option<bool>,
         }
     }
 
@@ -1193,6 +1232,7 @@ mod save_restore {
                 hotplug_msi_on_event: _,
                 hotplug_msi_on_guest_write: _,
                 eject_requested,
+                eject_rearmed_without_blink,
                 // The waiter belongs to a removal task, which a save never spans.
                 eject_completion: _,
             } = &*state;
@@ -1214,6 +1254,7 @@ mod save_restore {
                 device_control_2: device_control_2.into_bits(),
                 link_control_2: link_control_2.into_bits(),
                 eject_requested: Some(*eject_requested),
+                eject_rearmed_without_blink: Some(*eject_rearmed_without_blink),
             })
         }
 
@@ -1227,6 +1268,7 @@ mod save_restore {
                 device_control_2,
                 link_control_2,
                 eject_requested: saved_eject_requested,
+                eject_rearmed_without_blink: saved_eject_rearmed_without_blink,
             } = saved;
             let mut state = self.state.lock();
             let PciExpressState {
@@ -1236,6 +1278,7 @@ mod save_restore {
                 hotplug_msi_on_event: _,
                 hotplug_msi_on_guest_write: _,
                 eject_requested,
+                eject_rearmed_without_blink,
                 eject_completion,
             } = &mut *state;
             // Presence is not saved: it comes from the topology the restored VM was built
@@ -1245,6 +1288,8 @@ mod save_restore {
             *eject_requested = saved_eject_requested.unwrap_or(false)
                 && *presence_detect_state
                 && self.slot_capabilities.attention_button_present();
+            *eject_rearmed_without_blink =
+                saved_eject_rearmed_without_blink.unwrap_or(false) && *eject_requested;
             let mut slot_status_events = pci_express::SlotStatus::from_bits(
                 slot_status_events & self.slot_status_rw1c_mask(),
             );
@@ -2570,12 +2615,14 @@ mod tests {
         assert!(!slot_status(&cap).attention_button_pressed());
     }
 
-    #[test]
-    fn orderly_eject_presses_again_when_the_guest_dropped_the_press() {
-        // Linux acts on a press only in ON_STATE or OFF_STATE and drops it in POWERON and
-        // POWEROFF (pciehp_handle_button_press), acknowledging Attention Button Pressed all
-        // the same. The indicator then stays on and nothing will ever power the slot off,
-        // so a retry must press again rather than wait on a removal that never started.
+    fn rearmed(cap: &PciExpressCapability) -> bool {
+        cap.state.lock().eject_rearmed_without_blink
+    }
+
+    /// A port whose guest acknowledged the first press and left the indicator on, as Linux
+    /// does between pciehp_isr and pciehp_handle_button_press, or for good when it drops
+    /// the press.
+    fn acknowledged_unblinking_press() -> PciExpressCapability {
         let mut cap = attention_port(DevicePortType::RootPort);
         write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
         drop(cap.request_hotplug_eject().unwrap());
@@ -2585,13 +2632,163 @@ mod tests {
             u32::from(eject_control().into_bits()) | ABP_CLEAR,
         );
         assert!(!slot_status(&cap).attention_button_pressed());
+        cap
+    }
+
+    #[test]
+    fn orderly_eject_first_unblinking_retry_only_rearms() {
+        // pciehp acknowledges the press in its hard interrupt handler (pciehp_isr) and
+        // blinks only later in its thread (pciehp_handle_button_press). A press in that gap
+        // would land in BLINKINGOFF_STATE and cancel the removal, however short the retry
+        // timeout was.
+        let cap = acknowledged_unblinking_press();
+        let mut retry = cap.request_hotplug_eject().unwrap();
+        assert!(poll_eject(&mut retry).is_pending());
+        assert!(
+            !slot_status(&cap).attention_button_pressed(),
+            "the first retry must not press again"
+        );
+        assert!(rearmed(&cap));
+        assert!(cap.hotplug_eject_requested());
+    }
+
+    #[test]
+    fn orderly_eject_second_unblinking_retry_presses_again() {
+        // Linux acts on a press only in ON_STATE or OFF_STATE and drops it in POWERON and
+        // POWEROFF (pciehp_handle_button_press), acknowledging Attention Button Pressed all
+        // the same. The indicator then stays on and nothing will ever power the slot off,
+        // so a second retry finding that state presses again rather than wait on a removal
+        // that never started.
+        let cap = acknowledged_unblinking_press();
+        drop(cap.request_hotplug_eject().unwrap());
         let mut retry = cap.request_hotplug_eject().unwrap();
         assert!(poll_eject(&mut retry).is_pending());
         assert!(
             slot_status(&cap).attention_button_pressed(),
             "a dropped press is pressed again"
         );
+        assert!(!rearmed(&cap), "a fresh press starts the rule over");
         assert!(cap.hotplug_eject_requested());
+    }
+
+    #[test]
+    fn orderly_eject_retry_after_the_guest_started_blinking_does_not_press() {
+        let mut cap = acknowledged_unblinking_press();
+        drop(cap.request_hotplug_eject().unwrap());
+        assert!(rearmed(&cap));
+        // The guest reaches pciehp_handle_button_press and starts its countdown.
+        write_cap_u32(&mut cap, 0x18, u32::from(counting_down().into_bits()));
+        assert!(
+            !rearmed(&cap),
+            "blinking shows the guest acted on the press"
+        );
+        drop(cap.request_hotplug_eject().unwrap());
+        assert!(!slot_status(&cap).attention_button_pressed());
+        assert!(!rearmed(&cap));
+
+        // The countdown is cancelled and the indicator goes back on: the rule starts over,
+        // so the next retry again only re-arms.
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        drop(cap.request_hotplug_eject().unwrap());
+        assert!(!slot_status(&cap).attention_button_pressed());
+        assert!(rearmed(&cap));
+    }
+
+    #[test]
+    fn orderly_eject_rearm_ends_with_the_request() {
+        // Completion.
+        let mut cap = acknowledged_unblinking_press();
+        let mut retry = cap.request_hotplug_eject().unwrap();
+        assert!(rearmed(&cap));
+        write_cap_u32(
+            &mut cap,
+            0x18,
+            u32::from(
+                eject_control()
+                    .with_power_controller_control(true)
+                    .with_power_indicator_control(0b11)
+                    .into_bits(),
+            ),
+        );
+        assert!(matches!(
+            poll_eject(&mut retry),
+            std::task::Poll::Ready(Ok(()))
+        ));
+        assert!(!rearmed(&cap));
+
+        // Reset.
+        let mut cap = acknowledged_unblinking_press();
+        drop(cap.request_hotplug_eject().unwrap());
+        assert!(rearmed(&cap));
+        cap.reset();
+        assert!(!rearmed(&cap));
+
+        // Physical removal, by hotplug event and by presence.
+        for hotplug_event in [false, true] {
+            let cap = acknowledged_unblinking_press();
+            drop(cap.request_hotplug_eject().unwrap());
+            assert!(rearmed(&cap));
+            if hotplug_event {
+                cap.set_hotplug_state(false);
+            } else {
+                cap.set_presence_detect_state(false);
+            }
+            assert!(!rearmed(&cap));
+        }
+    }
+
+    #[test]
+    fn save_restore_keeps_the_rearm() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = acknowledged_unblinking_press();
+        drop(cap.request_hotplug_eject().unwrap());
+        let saved = cap.save().unwrap();
+        assert_eq!(saved.eject_rearmed_without_blink, Some(true));
+
+        let mut restored = attention_port(DevicePortType::RootPort);
+        restored.restore(saved).unwrap();
+        assert!(rearmed(&restored));
+        drop(restored.request_hotplug_eject().unwrap());
+        assert!(
+            slot_status(&restored).attention_button_pressed(),
+            "the restored VM's next retry is the second one"
+        );
+    }
+
+    #[test]
+    fn restore_of_a_blob_without_the_rearm_field_lands_on_not_rearmed() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = acknowledged_unblinking_press();
+        drop(cap.request_hotplug_eject().unwrap());
+        let mut saved = cap.save().unwrap();
+        saved.eject_rearmed_without_blink = None;
+
+        let mut restored = attention_port(DevicePortType::RootPort);
+        restored.restore(saved).unwrap();
+        assert!(restored.hotplug_eject_requested());
+        assert!(!rearmed(&restored));
+        drop(restored.request_hotplug_eject().unwrap());
+        assert!(!slot_status(&restored).attention_button_pressed());
+        assert!(rearmed(&restored));
+    }
+
+    #[test]
+    fn restore_drops_the_rearm_for_an_empty_slot() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = acknowledged_unblinking_press();
+        drop(cap.request_hotplug_eject().unwrap());
+        let saved = cap.save().unwrap();
+        assert_eq!(saved.eject_rearmed_without_blink, Some(true));
+
+        let mut restored = PciExpressCapability::new(DevicePortType::RootPort, None)
+            .with_hotplug_support(1)
+            .with_attention_button();
+        restored.restore(saved).unwrap();
+        assert!(!restored.hotplug_eject_requested());
+        assert!(!rearmed(&restored));
     }
 
     #[test]

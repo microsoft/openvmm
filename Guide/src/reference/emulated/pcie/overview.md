@@ -77,10 +77,14 @@ removal.
 Whether a request presses the button follows what the guest shows in Slot
 Control and Slot Status. A retry waits again without pressing while the
 earlier press is still unread or the power indicator blinks, since a
-second press inside the guest's five-second window cancels the removal. A
-retry presses again when the guest acknowledged the earlier press and left
-the indicator alone: the guest dropped that press (Linux ignores one while
-it is still powering the slot on or off). A first request is refused while
+second press inside the guest's five-second window cancels the removal.
+When the guest acknowledged the earlier press and left the indicator alone,
+the first retry to see that still only waits again: Linux acknowledges the
+press in its interrupt handler and starts blinking only later, so the guest
+may be about to act on it. A second retry that finds the same state presses
+again, since the guest dropped that press (Linux ignores one while it is
+still powering the slot on or off). A dropped press therefore takes two
+retries to be pressed again. A first request is refused while
 the power indicator blinks, because the guest is busy with the slot, for
 example powering on a card just hot-added into it.
 

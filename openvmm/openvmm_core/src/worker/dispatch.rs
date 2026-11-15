@@ -2255,6 +2255,7 @@ impl InitializedVm {
         }
         let mut deferred_msi_conns: Vec<DeferredMsiConn> = Vec::new();
 
+        let pcie_eject_timeouts = pcie_topology::eject_timeouts(&cfg.pcie_root_complexes)?;
         let (mut pcie_host_bridges, pcie_root_complexes) = {
             pcie_topology::validate_pcie_root_complexes(&cfg.pcie_root_complexes)?;
             let mut pcie_host_bridges = Vec::new();
@@ -2430,7 +2431,6 @@ impl InitializedVm {
 
             (pcie_host_bridges, pcie_root_complexes)
         };
-        let pcie_eject_timeouts = pcie_topology::eject_timeouts(&cfg.pcie_root_complexes);
 
         // Build a port-name→(segment, bus_range) map covering all ports in
         // the PCIe topology (root complex ports and switch downstream ports).

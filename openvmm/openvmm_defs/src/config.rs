@@ -304,7 +304,8 @@ pub const PCIE_DEFAULT_EJECT_TIMEOUT: std::time::Duration = std::time::Duration:
 ///
 /// While an orderly removal waits, the worker defers state changes (stop, reset, save,
 /// restart) and further hotplug requests, so the timeout also bounds how long a stuck guest
-/// can block them. Uncapped, a `u32` of milliseconds would allow 49 days.
+/// can block them. Uncapped, a `u32` of milliseconds would allow 49 days. The worker
+/// refuses a configuration with a longer timeout.
 pub const PCIE_MAX_EJECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Configuration for a single PCIe port — either a root-complex root port or a
