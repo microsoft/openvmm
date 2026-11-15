@@ -1825,6 +1825,76 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for MiscMsrs {
     }
 }
 
+/// The registers of one machine-check error-reporting bank.
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+#[inspect(hex)]
+pub struct MachineCheckBank {
+    /// `IA32_MCi_CTL`.
+    #[mesh(1)]
+    pub ctl: u64,
+    /// `IA32_MCi_STATUS`.
+    #[mesh(2)]
+    pub status: u64,
+    /// `IA32_MCi_ADDR`.
+    #[mesh(3)]
+    pub addr: u64,
+    /// `IA32_MCi_MISC`.
+    #[mesh(4)]
+    pub misc: u64,
+    /// `IA32_MCi_CTL2`, the corrected-error (CMCI) control, which is 0 on a VP
+    /// that has no CMCI.
+    #[mesh(5)]
+    pub ctl2: u64,
+}
+
+/// The machine-check state of a VP: `IA32_MCG_STATUS`, `IA32_MCG_CTL`, and the
+/// registers of each error-reporting bank.
+///
+/// A backend that lets the guest write these registers holds them in the VP,
+/// and [`X86PartitionCapabilities::machine_check`] records that the saved state
+/// holds them. The state lists the banks in the order of their numbers, as many
+/// as the VP has, which its `IA32_MCG_CAP` gives. A restore sets the banks that
+/// the state lists, puts the VP's other banks back at the state that the
+/// backend gave them when it bound the VP, and refuses a state that lists more
+/// banks than the VP has. The state at reset lists none, so it resets every
+/// bank.
+#[derive(Default, Debug, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+pub struct MachineCheck {
+    /// `IA32_MCG_STATUS`.
+    #[mesh(1)]
+    #[inspect(hex)]
+    pub status: u64,
+    /// `IA32_MCG_CTL`, which is 0 on a VP whose `IA32_MCG_CAP` lacks
+    /// `MCG_CTL_P`.
+    #[mesh(2)]
+    #[inspect(hex)]
+    pub ctl: u64,
+    /// The error-reporting banks.
+    #[mesh(3)]
+    #[inspect(iter_by_index)]
+    pub banks: Vec<MachineCheckBank>,
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for MachineCheck {
+    fn is_present(caps: &X86PartitionCapabilities) -> bool {
+        caps.machine_check
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self::default()
+    }
+
+    // The banks that a backend gives a new VP are not the same on every host:
+    // KVM enables every error of every bank only on the hosts that ask it to
+    // advertise CMCI, which are Intel's. The state at reset lists no bank, so
+    // it cannot say which.
+    fn can_compare(_caps: &X86PartitionCapabilities) -> bool {
+        false
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
@@ -2207,6 +2277,7 @@ state_trait! {
     (17, "umwait_control", umwait_control, set_umwait_control, UmwaitControl),
     (18, "debug_ctl", debug_ctl, set_debug_ctl, DebugCtl),
     (19, "misc_msrs", misc_msrs, set_misc_msrs, MiscMsrs),
+    (20, "machine_check", machine_check, set_machine_check, MachineCheck),
 
     // Synic state
     (100, "synic", synic_msrs, set_synic_msrs, SyntheticMsrs),
@@ -2524,6 +2595,20 @@ mod tests {
         );
     }
 
+    fn machine_check_state() -> MachineCheck {
+        MachineCheck {
+            status: 1,
+            ctl: 2,
+            banks: vec![MachineCheckBank {
+                ctl: 3,
+                status: 4,
+                addr: 5,
+                misc: 6,
+                ctl2: 7,
+            }],
+        }
+    }
+
     #[test]
     fn the_msr_elements_need_no_version_to_coexist_with_earlier_builds() {
         let earlier = || EarlierVpSavedState {
@@ -2540,6 +2625,7 @@ mod tests {
                 misc_features_enables: 2,
                 power_ctl: 3,
             }),
+            machine_check: Some(machine_check_state()),
             ..Default::default()
         };
 
@@ -2567,7 +2653,8 @@ mod tests {
 
         // Each element is a message in a field of the saved state, which these
         // bytes pin: every build that holds the element reads them, and no
-        // later change may alter them.
+        // later change may alter them. The machine-check state's banks are
+        // the repeated field 3.
         for (state, bytes) in [
             (
                 VpSavedState {
@@ -2593,6 +2680,16 @@ mod tests {
                     ..Default::default()
                 },
                 &[0x9a, 0x01, 0x06, 0x08, 0x01, 0x10, 0x02, 0x18, 0x03],
+            ),
+            (
+                VpSavedState {
+                    machine_check: Some(machine_check_state()),
+                    ..Default::default()
+                },
+                &[
+                    0xa2, 0x01, 0x10, 0x08, 0x01, 0x10, 0x02, 0x1a, 0x0a, 0x08, 0x03, 0x10, 0x04,
+                    0x18, 0x05, 0x20, 0x06, 0x28, 0x07,
+                ],
             ),
         ] {
             assert_eq!(mesh_protobuf::encode(state), bytes);
