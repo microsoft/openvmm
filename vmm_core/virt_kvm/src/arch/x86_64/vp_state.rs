@@ -196,11 +196,11 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn check_saveable(&mut self) -> Result<(), Self::Error> {
-        super::gif::check(
-            &self.vp.partition.caps.vendor,
-            self.vp.vpindex.index(),
-            || self.kvm().nested_state_header(),
-        )
+        let vp_index = self.vp.vpindex.index();
+        super::gif::check(&self.vp.partition.caps.vendor, vp_index, || {
+            self.kvm().nested_state_header()
+        })?;
+        super::smm::check(vp_index, &self.kvm().get_vcpu_events()?.smi)
     }
 
     fn registers(&mut self) -> Result<vp::Registers, Self::Error> {

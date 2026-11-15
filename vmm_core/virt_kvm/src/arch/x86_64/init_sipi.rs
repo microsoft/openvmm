@@ -12,9 +12,9 @@
 //!
 //! KVM also holds an INIT that the VP cannot accept yet, because SMM or a clear
 //! GIF blocks it, until the guest leaves that state. The saved state cannot
-//! represent a latched INIT, so a restore would lose it. The save's own check
-//! of the GIF (see `gif`) refuses a clear one whether or not an INIT is
-//! latched, but nothing else notices an INIT that SMM blocks.
+//! represent a latched INIT, so a restore would lose it. The save's own checks
+//! of the GIF (see `gif`) and of SMM (see `smm`) refuse a VP in either state
+//! whether or not an INIT is latched.
 
 use crate::KvmError;
 

@@ -152,6 +152,23 @@ blocks stays pending, as one behind a clear GIF does, and the saved state has no
 place for it, so a restore would lose it. The guest can request the snapshot
 again.
 
+A save on KVM also fails for a vCPU that is in system management mode (SMM) or
+has a system management interrupt (SMI) pending, which a guest can cause by
+sending an interrupt with the SMI delivery mode: an IPI, an I/O APIC entry, or a
+device's MSI. The saved state holds neither, so a restore would lose the SMI, or
+run the registers of the SMM handler outside SMM and never return to the code
+that the SMI interrupted. A guest-requested capture that fails this way rolls
+back, so the guest continues and takes the SMI as it would have without the
+capture.
+
+OpenVMM maps guest RAM only in KVM's normal address space, and none in its SMM
+address space. With RAM mapped that way, KVM could not save the state that an
+SMI interrupts when a vCPU took the SMI: on Linux 6.18.57, `KVM_RUN` failed with
+`EIO`, and so did the next `KVM_GET_VCPU_EVENTS`, which is how KVM marks a VM
+dead. A guest that sends an SMI therefore ends its own VM, and the refusal keeps
+a capture from restoring a VM that would have ended. Mapping memory for SMM
+would change that, and this paragraph with it.
+
 While a guest-requested snapshot boundary is held, VM-worker management RPCs
 that can change VM state are rejected rather than queued. This includes memory
 writes, pause/resume, reset, interrupt injection, hotplug, and state dumps.
