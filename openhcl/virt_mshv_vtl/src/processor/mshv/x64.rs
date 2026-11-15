@@ -1537,6 +1537,11 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
     }
 
     fn set_activity(&mut self, value: &vp::Activity) -> Result<(), Self::Error> {
+        // This backend holds at most one pending NMI, so it cannot restore a
+        // count of them. Refuse it before changing any state.
+        if value.nmi_pending_count.is_some() {
+            return Err(vp_state::Error::Unimplemented("nmi_pending_count"));
+        }
         self.set_register_state(value)?;
 
         // TODO: Set the NMI pending bit via the APIC.

@@ -211,6 +211,11 @@ impl WhpProcessor<'_> {
     }
 
     pub(crate) fn restore_activity(&mut self, vtl: Vtl, value: &vp::Activity) -> Result<(), Error> {
+        // WHP holds one pending NMI, so it cannot restore a count of them.
+        // Refuse it before changing any state.
+        if value.nmi_pending_count.is_some() {
+            return Err(Error::UnsupportedState("nmi_pending_count"));
+        }
         match self.vp.partition.vtlp(vtl).lapic {
             LocalApicKind::Emulated(_) => {
                 let lapic = self.state.vtls[vtl].lapic.as_mut().unwrap();

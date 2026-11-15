@@ -3956,8 +3956,13 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             interrupt_shadow,
             pending_event: _,        // TODO TDX
             pending_interruption: _, // TODO TDX
-            nmi_pending_count: _,
+            nmi_pending_count,
         } = value;
+        // This backend holds at most one pending NMI, so it cannot restore a
+        // count of them. Refuse it before changing any state.
+        if nmi_pending_count.is_some() {
+            return Err(vp_state::Error::Unimplemented("nmi_pending_count"));
+        }
         self.vp.backing.cvm.lapics[self.vtl].activity = mp_state;
         self.vp.backing.cvm.lapics[self.vtl].nmi_pending = nmi_pending;
         let interruptibility = Interruptibility::new()
