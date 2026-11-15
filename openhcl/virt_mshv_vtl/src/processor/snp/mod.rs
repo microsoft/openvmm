@@ -2764,6 +2764,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             interrupt_shadow: false,    // TODO SNP
             pending_event: None,        // TODO SNP
             pending_interruption: None, // TODO SNP
+            nmi_pending_count: None,
         })
     }
 
@@ -2775,6 +2776,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             interrupt_shadow: _,     // TODO SNP
             pending_event: _,        // TODO SNP
             pending_interruption: _, // TODO SNP
+            nmi_pending_count: _,
         } = value;
         let lapic = &mut self.vp.backing.cvm.lapics[self.vtl];
         lapic.activity = mp_state;
