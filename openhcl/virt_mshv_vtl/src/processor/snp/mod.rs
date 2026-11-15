@@ -2952,6 +2952,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Ok(())
     }
 
+    fn spec_ctrl(&mut self) -> Result<vp::SpecCtrl, Self::Error> {
+        Err(vp_state::Error::Unimplemented("spec_ctrl"))
+    }
+
+    fn set_spec_ctrl(&mut self, _value: &vp::SpecCtrl) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("spec_ctrl"))
+    }
+
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         Ok(vp::Cet { scet: vmsa.s_cet() })

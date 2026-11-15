@@ -535,6 +535,18 @@ profile. Their error thus names every violation of each, leads with the code
 of the first that fails, in that order, and goes on with the failures of the
 others.
 
+A snapshot also holds the guest's speculation controls, `IA32_SPEC_CTRL`, when
+the profile's CPUID enumerates IBRS, STIBP, or SSBD, so that a restore gives
+the guest the controls that it had enabled instead of clearing them until it
+next writes the MSR. Of the pinned profiles only `intel.skylake-sp.v1` and
+`intel.alderlake.v1` enumerate a control; the others hide them, and a guest of
+a profile that hides them has no such state. KVM, MSHV, and WHP save and restore
+the MSR, KVM only on a host that has it. A snapshot that an earlier OpenVMM
+captured holds no value, and an earlier OpenVMM ignores one in a later
+snapshot: either way the restored guest starts with the controls clear, as
+every restored guest did, until it writes the MSR again. The snapshot has no
+version for this; see [VP state elements](../../dev_guide/snapshot_format.md#vp-state-elements).
+
 Restore also requires:
 
 - a snapshot of the same time ABI version (`E_MANIFEST_TIME`);
