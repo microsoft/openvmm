@@ -1702,6 +1702,129 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for SpecCtrl {
     }
 }
 
+/// The architectural IA32_UMWAIT_CONTROL MSR, which holds the longest that
+/// `UMWAIT` and `TPAUSE` may wait, in bits 31:2, and in bit 0 whether they may
+/// not enter the C0.2 state.
+///
+/// The guest can write it only if its CPUID enumerates WAITPKG, which
+/// [`X86PartitionCapabilities::umwait_control`] records, so the saved state
+/// holds it only then. Linux writes it on every CPU at boot. A VP that never
+/// saw a write holds 0, the reset value.
+#[repr(C)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+pub struct UmwaitControl {
+    #[mesh(1)]
+    #[inspect(hex)]
+    pub value: u64,
+}
+
+impl HvRegisterState<HvX64RegisterName, 1> for UmwaitControl {
+    fn names(&self) -> &'static [HvX64RegisterName; 1] {
+        &[HvX64RegisterName::UmwaitControl]
+    }
+
+    fn get_values<'a>(&self, it: impl Iterator<Item = &'a mut HvRegisterValue>) {
+        for (dest, src) in it.zip([self.value]) {
+            *dest = src.into();
+        }
+    }
+
+    fn set_values(&mut self, it: impl Iterator<Item = HvRegisterValue>) {
+        for (src, dest) in it.zip([&mut self.value]) {
+            *dest = src.as_u64();
+        }
+    }
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for UmwaitControl {
+    fn is_present(caps: &X86PartitionCapabilities) -> bool {
+        caps.umwait_control
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self::default()
+    }
+}
+
+/// The architectural IA32_DEBUGCTL MSR, which holds the guest's debugging
+/// controls: last-branch recording, branch single-stepping, bus-lock detection,
+/// and the controls that later processors added.
+///
+/// A backend drops the controls that it does not virtualize, so the VP holds
+/// only those that it kept, and the saved state holds what the VP does. A VP
+/// that never saw a write holds 0, the reset value.
+#[repr(C)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+pub struct DebugCtl {
+    #[mesh(1)]
+    #[inspect(hex)]
+    pub value: u64,
+}
+
+impl HvRegisterState<HvX64RegisterName, 1> for DebugCtl {
+    fn names(&self) -> &'static [HvX64RegisterName; 1] {
+        &[HvX64RegisterName::DebugCtl]
+    }
+
+    fn get_values<'a>(&self, it: impl Iterator<Item = &'a mut HvRegisterValue>) {
+        for (dest, src) in it.zip([self.value]) {
+            *dest = src.into();
+        }
+    }
+
+    fn set_values(&mut self, it: impl Iterator<Item = HvRegisterValue>) {
+        for (src, dest) in it.zip([&mut self.value]) {
+            *dest = src.as_u64();
+        }
+    }
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for DebugCtl {
+    fn is_present(caps: &X86PartitionCapabilities) -> bool {
+        caps.debug_ctl
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self::default()
+    }
+}
+
+/// The feature and power controls that a guest can write on any CPU, which a
+/// backend that lets the guest write them keeps in the VP:
+/// `IA32_MISC_ENABLE`, `MSR_MISC_FEATURES_ENABLES` (CPUID faulting), and
+/// `IA32_POWER_CTL`.
+///
+/// [`X86PartitionCapabilities::misc_msrs`] records that the backend holds them.
+/// A VP that never saw a write holds the reset value of each: `IA32_MISC_ENABLE`
+/// as [`x86defs::MISC_ENABLE_DEFAULT`] gives it, and 0 for the others.
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+#[inspect(hex)]
+pub struct MiscMsrs {
+    #[mesh(1)]
+    pub misc_enable: u64,
+    #[mesh(2)]
+    pub misc_features_enables: u64,
+    #[mesh(3)]
+    pub power_ctl: u64,
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for MiscMsrs {
+    fn is_present(caps: &X86PartitionCapabilities) -> bool {
+        caps.misc_msrs
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self {
+            misc_enable: x86defs::MISC_ENABLE_DEFAULT.into(),
+            misc_features_enables: 0,
+            power_ctl: 0,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
@@ -2046,10 +2169,15 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for NestedState {
 // - make `StateElement::is_present` follow a capability of
 //   `X86PartitionCapabilities` that `from_cpuid` derives from the guest's
 //   CPUID, so that a save holds the element only for a guest that can have
-//   changed it;
+//   changed it, or, for state that every guest can have, that `from_cpuid`
+//   leaves clear for a backend that can access the state to set;
 // - implement the element's two accessors in every backend, which clears the
 //   capability if it cannot access the state, and document in the Guide's
-//   snapshot format how an older state and an older reader treat the element.
+//   snapshot format how an older state and an older reader treat the element;
+// - a backend that can access the state on some hosts only sets or clears the
+//   capability for the host: the KVM backend clears it for an MSR that the
+//   host's `KVM_GET_MSR_INDEX_LIST` lacks, unless every host's KVM has the MSR
+//   and only some list it, as for `IA32_DEBUGCTL`.
 state_trait! {
     "Per-VP state",
     AccessVpState,
@@ -2076,6 +2204,9 @@ state_trait! {
     // The deadline must be restored after APIC mode and guest TSC.
     (15, "tsc_deadline", tsc_deadline, set_tsc_deadline, TscDeadline),
     (16, "spec_ctrl", spec_ctrl, set_spec_ctrl, SpecCtrl),
+    (17, "umwait_control", umwait_control, set_umwait_control, UmwaitControl),
+    (18, "debug_ctl", debug_ctl, set_debug_ctl, DebugCtl),
+    (19, "misc_msrs", misc_msrs, set_misc_msrs, MiscMsrs),
 
     // Synic state
     (100, "synic", synic_msrs, set_synic_msrs, SyntheticMsrs),
@@ -2391,5 +2522,84 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn the_msr_elements_need_no_version_to_coexist_with_earlier_builds() {
+        let earlier = || EarlierVpSavedState {
+            tsc: Some(Tsc { value: 7 }),
+            tsc_aux: Some(TscAux { value: 3 }),
+        };
+        let current = || VpSavedState {
+            tsc: Some(Tsc { value: 7 }),
+            tsc_aux: Some(TscAux { value: 3 }),
+            umwait_control: Some(UmwaitControl { value: 5 }),
+            debug_ctl: Some(DebugCtl { value: 5 }),
+            misc_msrs: Some(MiscMsrs {
+                misc_enable: 1,
+                misc_features_enables: 2,
+                power_ctl: 3,
+            }),
+            ..Default::default()
+        };
+
+        // A saved state of an earlier build holds none of the elements, so
+        // restoring it sets none of them.
+        assert_eq!(
+            mesh_protobuf::decode::<VpSavedState>(&mesh_protobuf::encode(earlier())).unwrap(),
+            VpSavedState {
+                tsc: Some(Tsc { value: 7 }),
+                tsc_aux: Some(TscAux { value: 3 }),
+                ..Default::default()
+            }
+        );
+        // An earlier build reads the saved state of this one and ignores them.
+        assert_eq!(
+            mesh_protobuf::decode::<EarlierVpSavedState>(&mesh_protobuf::encode(current()))
+                .unwrap(),
+            earlier()
+        );
+        // This build reads its own.
+        assert_eq!(
+            mesh_protobuf::decode::<VpSavedState>(&mesh_protobuf::encode(current())).unwrap(),
+            current()
+        );
+
+        // Each element is a message in a field of the saved state, which these
+        // bytes pin: every build that holds the element reads them, and no
+        // later change may alter them.
+        for (state, bytes) in [
+            (
+                VpSavedState {
+                    umwait_control: Some(UmwaitControl { value: 5 }),
+                    ..Default::default()
+                },
+                &[0x8a, 0x01, 0x02, 0x08, 0x05][..],
+            ),
+            (
+                VpSavedState {
+                    debug_ctl: Some(DebugCtl { value: 5 }),
+                    ..Default::default()
+                },
+                &[0x92, 0x01, 0x02, 0x08, 0x05],
+            ),
+            (
+                VpSavedState {
+                    misc_msrs: Some(MiscMsrs {
+                        misc_enable: 1,
+                        misc_features_enables: 2,
+                        power_ctl: 3,
+                    }),
+                    ..Default::default()
+                },
+                &[0x9a, 0x01, 0x06, 0x08, 0x01, 0x10, 0x02, 0x18, 0x03],
+            ),
+        ] {
+            assert_eq!(mesh_protobuf::encode(state), bytes);
+            assert_eq!(
+                mesh_protobuf::encode(mesh_protobuf::decode::<VpSavedState>(bytes).unwrap()),
+                bytes
+            );
+        }
     }
 }

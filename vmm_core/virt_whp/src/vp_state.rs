@@ -238,6 +238,30 @@ mod x86 {
             self.run.vp.set_register_state(self.vtl, value)
         }
 
+        fn umwait_control(&mut self) -> Result<vp::UmwaitControl, Self::Error> {
+            Err(Error::UnsupportedState("umwait_control"))
+        }
+
+        fn set_umwait_control(&mut self, _value: &vp::UmwaitControl) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedState("umwait_control"))
+        }
+
+        fn debug_ctl(&mut self) -> Result<vp::DebugCtl, Self::Error> {
+            Err(Error::UnsupportedState("debug_ctl"))
+        }
+
+        fn set_debug_ctl(&mut self, _value: &vp::DebugCtl) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedState("debug_ctl"))
+        }
+
+        fn misc_msrs(&mut self) -> Result<vp::MiscMsrs, Self::Error> {
+            Err(Error::UnsupportedState("misc_msrs"))
+        }
+
+        fn set_misc_msrs(&mut self, _value: &vp::MiscMsrs) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedState("misc_msrs"))
+        }
+
         fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
             match self.run.state.vtls[self.vtl].hv {
                 Some(_) => {

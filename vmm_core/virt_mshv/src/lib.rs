@@ -959,6 +959,9 @@ enum ErrorInner {
     RunVpSignal(#[source] io::Error),
     #[error("operation not supported")]
     NotSupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("saving or restoring {0} is not supported by MSHV")]
+    UnsupportedState(&'static str),
     #[error("create_vm failed")]
     CreateVMFailed(#[source] KernelError),
     #[error("failed to initialize VM")]

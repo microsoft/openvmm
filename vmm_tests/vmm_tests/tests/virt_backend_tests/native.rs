@@ -19,6 +19,9 @@ pub(crate) struct Capabilities {
     pub(crate) deadline: bool,
     pub(crate) hv1: bool,
     pub(crate) spec_ctrl: bool,
+    pub(crate) umwait_control: bool,
+    pub(crate) debug_ctl: bool,
+    pub(crate) misc_msrs: bool,
 }
 
 // Probe the same enlightenment configuration used by the test, including
@@ -38,6 +41,9 @@ where
             deadline: partition.caps().tsc_deadline,
             hv1: partition.caps().hv1,
             spec_ctrl: partition.caps().spec_ctrl,
+            umwait_control: partition.caps().umwait_control,
+            debug_ctl: partition.caps().debug_ctl,
+            misc_msrs: partition.caps().misc_msrs,
         })
     })
 }
