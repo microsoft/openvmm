@@ -13,6 +13,9 @@ use thiserror::Error;
 pub trait StateElement<C, V>: Sized + Inspect + PartialEq {
     /// Returns whether this state is present for the partition, based on the
     /// partition capabilities.
+    ///
+    /// A restore refuses a saved state that holds an element that is not
+    /// present.
     fn is_present(caps: &C) -> bool;
 
     /// Returns the value at VM reset.
@@ -56,12 +59,22 @@ pub trait HvRegisterState<T, const COUNT: usize>: Default {
     fn set_values(&mut self, it: impl Iterator<Item = HvRegisterValue>);
 }
 
+/// An error from saving, restoring, or resetting state.
 #[derive(Debug, Error)]
-#[error("state access error, phase {phase}")]
-pub struct StateError<T: 'static + Debug + std::error::Error> {
-    pub(crate) phase: &'static str,
-    #[source]
-    pub(crate) err: T,
+pub enum StateError<T: 'static + Debug + std::error::Error> {
+    /// The partition failed to access the state, in `phase`.
+    #[error("state access error, phase {phase}")]
+    Access {
+        phase: &'static str,
+        #[source]
+        err: T,
+    },
+    /// A restore refused a saved state that holds `element`, which the
+    /// partition does not have, before it changed any state.
+    #[error(
+        "state access error, phase restore check: the saved state has {element:?}, which the partition does not support"
+    )]
+    Unsupported { element: &'static str },
 }
 
 mod macros {
@@ -80,6 +93,11 @@ mod macros {
     ///
     /// A backend can refuse a save of a state that its pieces cannot hold by
     /// overriding `check_saveable`, which the generated `save_all` calls first.
+    ///
+    /// The generated `restore_all` refuses a saved state that holds a piece
+    /// that is missing for the partition, before it sets any piece, since a
+    /// saved state is external input and its pieces are no proof of what the
+    /// partition supports.
     ///
     /// The intent is that the partition types implement these traits to get and
     /// set individual pieces of state.
@@ -121,11 +139,11 @@ mod macros {
                 /// Save all state that can be restored by a call to restore.
                 #[allow(unused_mut)]
                 fn save_all(&mut self) -> Result<$save_state, $crate::state::StateError<Self::Error>> {
-                    self.check_saveable().map_err(|err| $crate::state::StateError{phase: "save check", err})?;
+                    self.check_saveable().map_err(|err| $crate::state::StateError::Access{phase: "save check", err})?;
                     let mut save_state = $save_state::default();
                     $(
                         if <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
-                            save_state.$get = Some(self.$get().map_err(|err| $crate::state::StateError{phase: concat!("save ", stringify!($id)), err})?);
+                            save_state.$get = Some(self.$get().map_err(|err| $crate::state::StateError::Access{phase: concat!("save ", stringify!($id)), err})?);
                         }
                     )*
 
@@ -134,6 +152,13 @@ mod macros {
 
                 /// Restore state elements saved in save state.
                 ///
+                /// A saved state can hold an element that the partition does
+                /// not have, as a decoded snapshot of another partition can.
+                /// This checks every element of the saved state first, and
+                /// fails without setting or committing anything if the
+                /// partition lacks one. It does not undo the elements that it
+                /// has set when a setter fails.
+                ///
                 /// A debug build reads each element back after it sets it, and
                 /// asserts that the state that it reads is the one that it set,
                 /// up to the normalization that the element's `restore_eq`
@@ -141,10 +166,14 @@ mod macros {
                 #[allow(unused_variables)]
                 fn restore_all(&mut self, state: &$save_state) -> Result<(), $crate::state::StateError<Self::Error>> {
                     $(
+                        if state.$get.is_some() && !<$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
+                            return Err($crate::state::StateError::Unsupported{element: $id});
+                        }
+                    )*
+
+                    $(
                         if let Some(value) = state.$get.as_ref() {
-                            // TODO: assert good or not?
-                            assert!(<$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()));
-                            self.$set(value).map_err(|err| $crate::state::StateError{phase: concat!("restore ", stringify!($id)), err})?;
+                            self.$set(value).map_err(|err| $crate::state::StateError::Access{phase: concat!("restore ", stringify!($id)), err})?;
                             if cfg!(debug_assertions) {
                                 if <$ty as $crate::state::StateElement<$caps, $vp>>::can_compare(self.caps()) {
                                     let restored = self.$get().expect($id);
@@ -159,14 +188,14 @@ mod macros {
                         }
                     )*
 
-                    self.commit().map_err(|err| $crate::state::StateError{phase: "commit restore", err})
+                    self.commit().map_err(|err| $crate::state::StateError::Access{phase: "commit restore", err})
                 }
 
                 /// Resets all the state elements to their initial state (after machine reset).
                 fn reset_all(&mut self, vp_info: &$vp) -> Result<(), $crate::state::StateError<Self::Error>> {
                     $(
                         if <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
-                            self.$set(&<$ty as $crate::state::StateElement<$caps, $vp>>::at_reset(self.caps(), vp_info)).map_err(|err| $crate::state::StateError{phase: concat!("reset ", stringify!($id)), err})?;
+                            self.$set(&<$ty as $crate::state::StateElement<$caps, $vp>>::at_reset(self.caps(), vp_info)).map_err(|err| $crate::state::StateError::Access{phase: concat!("reset ", stringify!($id)), err})?;
                         }
                     )*
 
@@ -219,6 +248,7 @@ mod macros {
 #[expect(dead_code)]
 mod tests {
     use super::StateElement;
+    use super::StateError;
     use super::state_trait;
     use inspect::Inspect;
     use mesh_protobuf::Protobuf;
@@ -441,7 +471,13 @@ mod tests {
     fn a_refused_save_reads_nothing() {
         let mut state = Refusing::default();
         let err = state.save_all().unwrap_err();
-        assert_eq!(err.phase, "save check");
+        assert!(matches!(
+            err,
+            StateError::Access {
+                phase: "save check",
+                ..
+            }
+        ));
         assert!(std::error::Error::source(&err).is_some_and(|err| err.is::<Error>()));
         assert_eq!(state.0.reads, ["check_saveable"]);
     }
@@ -601,5 +637,132 @@ mod tests {
             assert_eq!(partition.sets, ["always", "extra"]);
             assert_eq!(partition.extra, Extra { value: 6 });
         }
+    }
+
+    /// An element that the test partition does not have.
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+    #[mesh(package = "virt.test")]
+    pub struct Absent {
+        #[mesh(1)]
+        value: u32,
+    }
+
+    impl StateElement<Caps, Vp> for Absent {
+        fn is_present(_caps: &Caps) -> bool {
+            false
+        }
+
+        fn at_reset(_caps: &Caps, _vp: &Vp) -> Self {
+            Self { value: 0 }
+        }
+    }
+
+    state_trait! {
+        "Test state with an element that the partition lacks",
+        AccessRestoreState,
+        Caps,
+        Vp,
+        RestoreSavedState,
+        "virt.test",
+        (1, "number", number, set_number, Number),
+        (2, "absent", absent, set_absent, Absent),
+    }
+
+    /// A state that records each change that a restore makes.
+    #[derive(Default)]
+    struct Recording {
+        number: u32,
+        fail_set_number: bool,
+        changes: Vec<&'static str>,
+    }
+
+    impl AccessRestoreState for Recording {
+        type Error = Error;
+
+        fn caps(&self) -> &Caps {
+            &Caps
+        }
+
+        fn commit(&mut self) -> Result<(), Error> {
+            self.changes.push("commit");
+            Ok(())
+        }
+
+        fn number(&mut self) -> Result<Number, Error> {
+            Ok(Number { value: self.number })
+        }
+
+        fn set_number(&mut self, value: &Number) -> Result<(), Error> {
+            if self.fail_set_number {
+                return Err(Error);
+            }
+            self.changes.push("set_number");
+            self.number = value.value;
+            Ok(())
+        }
+
+        fn absent(&mut self) -> Result<Absent, Error> {
+            Err(Error)
+        }
+
+        fn set_absent(&mut self, _value: &Absent) -> Result<(), Error> {
+            self.changes.push("set_absent");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_restore_refuses_an_absent_element_before_it_changes_anything() {
+        let mut state = Recording {
+            number: 7,
+            ..Default::default()
+        };
+        // The number comes first in the restore order, so a restore that
+        // checked the elements one by one would have set it.
+        let err = state
+            .restore_all(&RestoreSavedState {
+                number: Some(Number { value: 1 }),
+                absent: Some(Absent { value: 2 }),
+            })
+            .unwrap_err();
+        assert_eq!(state.changes, Vec::<&str>::new());
+        assert_eq!(state.number, 7);
+        assert!(matches!(err, StateError::Unsupported { element: "absent" }));
+        let message = err.to_string();
+        assert!(
+            message.contains("restore check") && message.contains("absent"),
+            "{message}"
+        );
+        assert!(std::error::Error::source(&err).is_none());
+    }
+
+    #[test]
+    fn a_restore_sets_the_elements_that_the_partition_has() {
+        let mut state = Recording::default();
+        state
+            .restore_all(&RestoreSavedState {
+                number: Some(Number { value: 3 }),
+                absent: None,
+            })
+            .unwrap();
+        assert_eq!(state.changes, ["set_number", "commit"]);
+        assert_eq!(state.number, 3);
+    }
+
+    #[test]
+    fn a_failed_restore_keeps_the_error_of_the_backend() {
+        let mut state = Recording {
+            fail_set_number: true,
+            ..Default::default()
+        };
+        let err = state
+            .restore_all(&RestoreSavedState {
+                number: Some(Number { value: 3 }),
+                absent: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, StateError::Access { .. }));
+        assert!(std::error::Error::source(&err).is_some_and(|err| err.is::<Error>()));
+        assert_eq!(state.changes, Vec::<&str>::new());
     }
 }

@@ -2572,7 +2572,11 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for NestedState {
 // - a backend that can access the state on some hosts only sets or clears the
 //   capability for the host: the KVM backend clears it for an MSR that the
 //   host's `KVM_GET_MSR_INDEX_LIST` lacks, unless every host's KVM has the MSR
-//   and only some list it, as for `IA32_DEBUGCTL`.
+//   and only some list it, as for `IA32_DEBUGCTL`;
+// - a restore into a partition for which `is_present` is false refuses a saved
+//   state that holds the element, before it sets any element, so a capability
+//   that a backend clears for a host also decides which hosts can restore a
+//   snapshot that holds the element.
 state_trait! {
     "Per-VP state",
     AccessVpState,

@@ -289,7 +289,14 @@ clear their capabilities.
 A saved state restores only into a partition that has every element that it
 holds. A destination whose backend lacks one, such as a host whose KVM does not
 list `IA32_UMWAIT_CONTROL`, cannot give the guest the value that it saved, and
-`restore_all` does not drop the element: it stops on an assertion.
+`restore_all` does not drop the element: it checks every element of the saved
+state against the partition before it sets any of them, and refuses the restore
+with an error, in the phase `restore check`, that names the first element that
+the partition lacks. The refusal changes none of that VP's state, and the
+restore of the VM state checks its elements the same way. A snapshot reaches it
+only when it was edited or when the destination's backend cannot access an MSR
+that the capturing host's could, since a restore requires the backend and the
+CPU generation of the capture.
 
 A restore of the machine-check state sets the banks that the saved state lists
 and puts the VP's other banks back as `bind` left them: with every error enabled
