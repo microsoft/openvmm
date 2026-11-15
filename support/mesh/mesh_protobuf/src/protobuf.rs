@@ -32,7 +32,7 @@ const fn varint_size(n: u64) -> usize {
     if n == 0 {
         1
     } else {
-        let bits = 64 - n.leading_zeros() as usize;
+        let bits = n.bit_width() as usize;
         (((bits - 1) / 7) + 1) & 0xff
     }
 }
@@ -44,14 +44,15 @@ pub(crate) fn read_varint(v: &mut &[u8]) -> Result<u64> {
     loop {
         let (b, rest) = v.split_first().ok_or(DecodeError::EofVarInt)?;
         *v = rest;
+        // Only one payload bit fits in the tenth byte of a u64 varint.
+        if shift == 63 && *b > 1 {
+            return Err(DecodeError::VarIntTooBig.into());
+        }
         r |= (*b as u64 & 0x7f) << shift;
         if *b & 0x80 == 0 {
             break;
         }
         shift += 7;
-        if shift > 63 {
-            return Err(DecodeError::VarIntTooBig.into());
-        }
     }
     Ok(r)
 }
@@ -710,7 +711,8 @@ impl<'a, 'b, R> MessageReader<'a, 'b, R> {
                 Value::Fixed32(u32::from_le_bytes(n.try_into().unwrap()))
             }
             6 => {
-                let num_resources = read_varint(&mut self.data)? as u32;
+                let num_resources = u32::try_from(read_varint(&mut self.data)?)
+                    .map_err(|_| DecodeError::InvalidResourceRange)?;
                 let len = read_varint(&mut self.data)?;
 
                 if self.resources.len() < num_resources as usize {
@@ -975,7 +977,23 @@ mod tests {
 
     use super::*;
     use crate::buffer;
+    use core::error::Error as _;
     use std::eprintln;
+    use test_with_tracing::test;
+
+    fn assert_decode_error<T>(result: Result<T>, expected: &DecodeError) {
+        let error = result.err().expect("invalid wire data must fail");
+        let actual = error
+            .source()
+            .unwrap()
+            .downcast_ref::<DecodeError>()
+            .unwrap();
+        assert_eq!(
+            core::mem::discriminant(actual),
+            core::mem::discriminant(expected),
+            "{actual:?}"
+        );
+    }
 
     #[test]
     fn test_zigzag() {
@@ -1015,6 +1033,128 @@ mod tests {
             assert_eq!(a, read_varint(&mut b).unwrap());
             assert!(b.is_empty());
         }
+    }
+
+    #[test]
+    fn varint_size_bit_boundaries() {
+        assert_eq!(varint_size(0), 1);
+        for bit in 0..u64::BITS {
+            let value = 1u64 << bit;
+            for value in [value - 1, value, value.saturating_add(1), u64::MAX] {
+                let mut encoded = Vec::with_capacity(10);
+                buffer::write_with(&mut encoded, |mut buf| write_varint(&mut buf, value));
+                assert_eq!(varint_size(value), encoded.len(), "{value:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_varint_bounds() {
+        let mut overlong_zero = &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00][..];
+        assert_eq!(read_varint(&mut overlong_zero).unwrap(), 0);
+        assert!(overlong_zero.is_empty());
+
+        let cases: &[(&[u8], DecodeError)] = &[
+            (&[], DecodeError::EofVarInt),
+            (&[0x80], DecodeError::EofVarInt),
+            (&[0x80; 10], DecodeError::VarIntTooBig),
+            (
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02],
+                DecodeError::VarIntTooBig,
+            ),
+        ];
+        for (data, expected) in cases {
+            assert_decode_error(read_varint(&mut &data[..]), expected);
+        }
+    }
+
+    #[test]
+    fn test_truncated_fields() {
+        let cases: &[(&[u8], DecodeError)] = &[
+            (&[0x08], DecodeError::EofVarInt),
+            (&[0x09, 0, 0, 0, 0, 0, 0, 0], DecodeError::EofFixed64),
+            (&[0x0a, 3, 1, 2], DecodeError::EofByteArray),
+            (&[0x0d, 0, 0, 0], DecodeError::EofFixed32),
+            (&[0x0b], DecodeError::UnknownWireType(3)),
+        ];
+        for (data, expected) in cases {
+            let mut resources = [];
+            let state = DecodeState::<()>::new(&mut resources);
+            assert_decode_error(
+                MessageReader::new(data, &state).into_iter().next().unwrap(),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn test_resource_count_bounds() {
+        for count in [3, 1u64 << 32, (1u64 << 32) + 1] {
+            let mut data = Vec::with_capacity(12);
+            data.push(0x0e);
+            buffer::write_with(&mut data, |mut buffer| {
+                write_varint(&mut buffer, count);
+                write_varint(&mut buffer, 0);
+            });
+            let mut resources = [Some(10u32), Some(20u32)];
+            let state = DecodeState::new(&mut resources);
+            assert_decode_error(
+                MessageReader::new(&data, &state)
+                    .into_iter()
+                    .next()
+                    .unwrap(),
+                &DecodeError::InvalidResourceRange,
+            );
+            assert_eq!(state.resource(0).unwrap(), 10);
+            assert_eq!(state.resource(1).unwrap(), 20);
+        }
+    }
+
+    #[test]
+    fn test_nested_resource_isolation() {
+        let mut resources = [Some(10u32), Some(20u32)];
+        let state = DecodeState::new(&mut resources);
+        let mut fields = MessageReader::new(&[0x0e, 1, 2, 0x0f, 0x0f, 0x17], &state).into_iter();
+        let (number, field) = fields.next().unwrap().unwrap();
+        assert_eq!(number, 1);
+        let mut child = field.message().unwrap().into_iter();
+        assert_eq!(child.next().unwrap().unwrap().1.resource().unwrap(), 10);
+        assert_decode_error(child.next().unwrap(), &DecodeError::MissingResource);
+        assert!(child.next().is_none());
+        let (number, field) = fields.next().unwrap().unwrap();
+        assert_eq!(number, 2);
+        assert_eq!(field.resource().unwrap(), 20);
+        assert!(fields.next().is_none());
+        assert_decode_error(state.resource(0), &DecodeError::MissingResource);
+        assert_decode_error(state.resource(1), &DecodeError::MissingResource);
+    }
+
+    #[test]
+    fn test_packed_field_boundaries() {
+        let mut packed = PackedReader {
+            data: &[1, 0, 0, 0, 2, 0, 0, 0],
+        };
+        assert_eq!(packed.fixed32().unwrap(), Some(1));
+        assert_eq!(packed.fixed32().unwrap(), Some(2));
+        assert_eq!(packed.fixed32().unwrap(), None);
+        let mut packed = PackedReader { data: &[1, 2, 3] };
+        assert_decode_error(packed.fixed32(), &DecodeError::EofFixed32);
+
+        let mut packed = PackedReader {
+            data: &[0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11],
+        };
+        assert_eq!(packed.fixed64().unwrap(), Some(0x1122334455667788));
+        assert_eq!(packed.fixed64().unwrap(), None);
+        let mut packed = PackedReader { data: &[0; 7] };
+        assert_decode_error(packed.fixed64(), &DecodeError::EofFixed64);
+
+        let mut packed = PackedReader {
+            data: &[0, 1, 2, 0x80],
+        };
+        assert_eq!(packed.svarint().unwrap(), Some(0));
+        assert_eq!(packed.svarint().unwrap(), Some(-1));
+        assert_eq!(packed.svarint().unwrap(), Some(1));
+        assert_decode_error(packed.svarint(), &DecodeError::EofVarInt);
     }
 
     #[test]

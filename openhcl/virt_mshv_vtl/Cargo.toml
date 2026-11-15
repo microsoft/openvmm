@@ -44,7 +44,6 @@ user_driver.workspace = true
 anyhow.workspace = true
 bitfield-struct.workspace = true
 bitvec = { workspace = true, features = ["std", "atomic"] }
-cfg-if.workspace = true
 fs-err.workspace = true
 libc.workspace = true
 parking_lot.workspace = true

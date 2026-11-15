@@ -14,7 +14,7 @@ derive = ["inspect_derive"]
 # alloc = []
 
 # Add inspect for some types in `std`.
-std = []
+std = ["dep:parking_lot"]
 
 # Add support for initiating inspections.
 initiate = ["dep:mesh", "dep:base64", "dep:thiserror"]
@@ -36,7 +36,7 @@ arbitrary = { workspace = true, optional = true, features = ["derive"] }
 base64 = { workspace = true, optional = true }
 bitfield-struct.workspace = true
 filepath = { workspace = true, optional = true }
-parking_lot.workspace = true
+parking_lot = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]

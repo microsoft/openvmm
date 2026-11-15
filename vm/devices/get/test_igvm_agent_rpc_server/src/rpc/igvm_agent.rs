@@ -10,10 +10,10 @@
 //! names do not match any known pattern.
 //!
 //! **Naming convention** – Hyper-V VM names are capped at 100 characters
-//! (see `petri::vm::make_vm_safe_name`).  The prefix added by the test
-//! macro can consume ~85 characters on the worst-case image name, leaving
-//! only ~15 characters for the test function name.  Keep test function
-//! names short (≤ 15 chars) so the distinctive part is never truncated.
+//! (see `make_vm_safe_name`).  Longer names retain only the first
+//! 96 characters followed by a four-character hash.  Include the module
+//! prefix when checking lengths: the Windows CVM `cvm_guest` names are
+//! 94 characters in `multiarch::tpm` and 97 in `multiarch::tpm138`.
 
 use get_resources::ged::IgvmAttestTestConfig;
 use guid::Guid;
@@ -85,10 +85,10 @@ fn registry() -> &'static Mutex<AgentRegistry> {
 /// though they may require different plans.  Enumerating every
 /// combination ensures each VM is mapped unambiguously.
 ///
-/// Hyper-V truncates VM names to 100 characters, and the test macro
-/// prefix can consume ~85 characters on worst-case image names.  Keep
-/// `{test_fn}` names short (<= 15 characters) so the distinctive part
-/// is never truncated.
+/// Petri strips the crate name from the module path, leaving prefixes such
+/// as `multiarch::tpm::` and `multiarch::tpm138::`.  Names over 100 characters
+/// are truncated to 96 characters plus a four-character hash.  Keep
+/// `{test_fn}` short enough that the full pattern survives this conversion.
 ///
 /// When adding a new image or isolation variant for an existing test
 /// function, add a corresponding entry here.
@@ -96,6 +96,30 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
     /// (substring, config) pairs — order does not matter since each
     /// pattern is unique.
     const KNOWN_TEST_CONFIGS: &[(&str, IgvmAttestTestConfig)] = &[
+        (
+            "ubuntu_2504_server_x64_vbs_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
         (
             "ubuntu_2504_server_x64_ak_cert_retry",
             IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
@@ -448,4 +472,83 @@ pub fn process_igvm_attest(
         return Err(TestAgentFacadeError::InvalidRequest);
     }
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use test_with_tracing::test;
+
+    // Mirror petri/src/vm/mod.rs::make_vm_safe_name, which is private, without
+    // pulling the VMM test framework into this RPC server's unit tests.
+    fn make_vm_safe_name(name: &str) -> String {
+        if name.len() <= 100 {
+            name.to_owned()
+        } else {
+            let mut hasher = DefaultHasher::new();
+            name.hash(&mut hasher);
+            format!("{}{:04x}", &name[..96], hasher.finish() & 0xffff)
+        }
+    }
+
+    #[test]
+    fn resolve_cvm_guest_config() {
+        // vmm_test_macros::ResolvedConfig::name_prefix adds the backend,
+        // firmware, arch, image and isolation before the function name.
+        // petri::test::Test::name strips only the crate name, not these modules.
+        for (module, extra_len) in [("multiarch::tpm", 0), ("multiarch::tpm138", 3)] {
+            for (image, base_len) in [
+                ("ubuntu_2504_server_x64", 76),
+                ("windows_datacenter_core_2025_x64_prepped", 94),
+            ] {
+                for isolation in ["vbs", "snp", "tdx"] {
+                    let full_name =
+                        format!("{module}::hyperv_openhcl_uefi_x64_{image}_{isolation}_cvm_guest");
+                    assert_eq!(full_name.len(), base_len + extra_len, "{full_name}");
+                    let vm_name = make_vm_safe_name(&full_name);
+                    // All 12 real names fit, including the 97-character
+                    // Windows tpm138 names: 96..=100 must NOT be truncated.
+                    assert_eq!(vm_name, full_name);
+                    assert!(
+                        matches!(
+                            resolve_test_config(&vm_name),
+                            Some(IgvmAgentTestSetting::TestConfig(
+                                IgvmAttestTestConfig::AkCertNoRenewal
+                            ))
+                        ),
+                        "{vm_name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_truncated_windows_cvm_guest_config() {
+        for isolation in ["vbs", "snp", "tdx"] {
+            let full_name = format!(
+                "multiarch::tpm::hyperv_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_{isolation}_cvm_guest"
+            );
+            // Synthetic suffix exercises truncation; the actual cvm_guest
+            // names above do not need it. The 94-character pattern survives
+            // in the 96-character prefix, followed by the four-character hash.
+            let extended_name = format!("{full_name}_variant");
+            assert_eq!(extended_name.len(), 102);
+            let vm_name = make_vm_safe_name(&extended_name);
+            assert_eq!(vm_name.len(), 100);
+            assert_eq!(&vm_name[..96], &extended_name[..96]);
+            assert!(vm_name[96..].bytes().all(|b| b.is_ascii_hexdigit()));
+            assert!(
+                matches!(
+                    resolve_test_config(&vm_name),
+                    Some(IgvmAgentTestSetting::TestConfig(
+                        IgvmAttestTestConfig::AkCertNoRenewal
+                    ))
+                ),
+                "{vm_name}"
+            );
+        }
+    }
 }

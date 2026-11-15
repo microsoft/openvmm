@@ -4,12 +4,11 @@
 use crate::Xtask;
 use anyhow::Context;
 use clap::Parser;
-use clap::ValueEnum;
+use petri_artifacts_vmm_test::ErasedVmmTestImage;
+use petri_artifacts_vmm_test::parse_vmm_test_image;
+use petri_artifacts_vmm_test::vmm_test_images;
 use std::path::PathBuf;
 use std::process::Command;
-use vmm_test_images::CONTAINER;
-use vmm_test_images::KnownTestArtifacts;
-use vmm_test_images::STORAGE_ACCOUNT;
 
 /// Download an image from Azure Blob Storage.
 ///
@@ -20,8 +19,8 @@ pub struct DownloadImageTask {
     #[clap(short, long, default_value = "images")]
     output_folder: PathBuf,
     /// The test artifacts to download.
-    #[clap(long)]
-    artifacts: Vec<KnownTestArtifacts>,
+    #[clap(long, value_parser = parse_vmm_test_image)]
+    artifacts: Vec<ErasedVmmTestImage>,
     /// Redownload images even if the file already exists.
     #[clap(short, long)]
     force: bool,
@@ -30,7 +29,7 @@ pub struct DownloadImageTask {
 impl Xtask for DownloadImageTask {
     fn run(mut self, _ctx: crate::XtaskCtx) -> anyhow::Result<()> {
         if self.artifacts.is_empty() {
-            self.artifacts = KnownTestArtifacts::value_variants().to_vec();
+            self.artifacts = vmm_test_images().to_vec();
         }
 
         let filenames = self
@@ -46,7 +45,7 @@ impl Xtask for DownloadImageTask {
         let vhd_list = filenames.join(";");
         run_azcopy_command(&[
             "copy",
-            &format!("https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/*"),
+            &petri_artifacts_vmm_test::artifacts::blob_storage_url(),
             self.output_folder.to_str().unwrap(),
             "--include-path",
             &vhd_list,

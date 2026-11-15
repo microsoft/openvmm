@@ -29,7 +29,7 @@ use thiserror::Error;
 //
 // TODO: delay encoding like in mesh::Message. This requires splitting some of
 // the encoding traits up to remove the resource type.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ProtobufMessage(Vec<u8>);
 
 impl ProtobufMessage {
@@ -81,7 +81,7 @@ impl<R> MessageDecode<'_, ProtobufMessage, R> for ProtobufMessageEncoding {
 /// A protobuf message and the associated protobuf type URL.
 ///
 /// This has the encoding of `google.protobuf.Any`.
-#[derive(Protobuf)]
+#[derive(Clone, Protobuf)]
 pub struct ProtobufAny {
     #[mesh(1)]
     type_url: String, // FUTURE: avoid allocation here

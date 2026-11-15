@@ -554,7 +554,7 @@ mod tests {
             .until_cancelled(
                 client
                     .call()
-                    .deadline(Some(Deadline::now() + Duration::from_secs(60)))
+                    .deadline(Some(Deadline::now() + Duration::from_mins(1)))
                     .start_raw("service", "method", vec![]),
             )
             .await

@@ -96,6 +96,7 @@ impl std::iter::FusedIterator for ProcessorSetIter<'_> {}
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     // Values taken from the Hypervisor Functional Specification
@@ -108,5 +109,28 @@ mod test {
         assert_eq!(iter.next(), Some(5));
         assert_eq!(iter.next(), Some(130));
         assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn processor_set_empty_masks_and_boundary_bits() {
+        let set = ProcessorSet::from_processor_masks(
+            (1 << 0) | (1 << 1) | (1 << 63),
+            &[0, 1 | (1 << 63), 1 | (1 << 63)],
+        )
+        .unwrap();
+        let mut iter = set.into_iter();
+        assert_eq!(iter.next(), Some(64));
+        assert_eq!(iter.next(), Some(127));
+        assert_eq!(iter.next(), Some(4032));
+        assert_eq!(iter.next(), Some(4095));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+
+        for set in [
+            ProcessorSet::from_processor_masks(0, &[]).unwrap(),
+            ProcessorSet::from_processor_masks(u64::MAX, &[0; 64]).unwrap(),
+        ] {
+            assert_eq!(set.into_iter().next(), None);
+        }
     }
 }

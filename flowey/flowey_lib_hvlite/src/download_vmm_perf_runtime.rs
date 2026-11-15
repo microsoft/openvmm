@@ -14,13 +14,15 @@ use std::path::Path;
 
 // Update the version and all hashes together when refreshing the archives
 // published to the public VMM.Perf runtime source below.
-const VMM_PERF_RUNTIME_VERSION: &str = "20260906.1";
+const VMM_PERF_RUNTIME_VERSION: &str = "20261112.3";
 const VMM_PERF_RUNTIME_LINUX_X64_SHA256: &str =
-    "815d473b8a3e85f073fd31b0edb6510370d3f5aa21bf8a385c02fbbbe9018834";
+    "d0c4e272ef3056d4bdf055f8a5417b26e22823ee09a57cc12b67fb06b8d34efa";
 const VMM_PERF_RUNTIME_LINUX_ARM64_SHA256: &str =
-    "2b0a650caa8ebc9515a884aa6d93ec4d9ba9e8972b1bce5eac36f9c3d15e3f79";
+    "3421cd194af262b217b364c2405108aaf841160d8eb3616f296ecbd7410c5d2a";
 const VMM_PERF_RUNTIME_WINDOWS_X64_SHA256: &str =
-    "bf348a4c3e8a1dc5ad0f9714a70d8916bb0c944affdfb264196ff013802c5327";
+    "75b76f3c8c3af4db0d8e1053c18472696ad61e75cda04351f553a7ea070ae07d";
+const VMM_PERF_RUNTIME_WINDOWS_ARM64_SHA256: &str =
+    "a97fd8bfe2a0690c8e3fc717013164227923505efef9dd0695b8c21d01c26cba";
 
 flowey_request! {
     pub enum Request {
@@ -148,6 +150,10 @@ fn runtime_archive_info(
         (FlowPlatform::Windows, CommonArch::X86_64) => {
             Ok(("vmm-perf-win-x64.zip", VMM_PERF_RUNTIME_WINDOWS_X64_SHA256))
         }
+        (FlowPlatform::Windows, CommonArch::Aarch64) => Ok((
+            "vmm-perf-win-arm64.zip",
+            VMM_PERF_RUNTIME_WINDOWS_ARM64_SHA256,
+        )),
         _ => anyhow::bail!("no VMM.Perf runtime archive for {arch:?} on {platform:?}"),
     }
 }

@@ -10,7 +10,6 @@ use flowey_lib_hvlite::common::CommonArch;
 use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonProfile;
 use flowey_lib_hvlite::common::CommonTriple;
-use flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -34,23 +33,6 @@ impl VmmPerfTargetCli {
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy)]
-enum VmmPerfProfileCli {
-    BootTime,
-    Fio,
-    Iperf3,
-}
-
-impl From<VmmPerfProfileCli> for VmmPerfProfile {
-    fn from(value: VmmPerfProfileCli) -> Self {
-        match value {
-            VmmPerfProfileCli::BootTime => Self::BootTime,
-            VmmPerfProfileCli::Fio => Self::Fio,
-            VmmPerfProfileCli::Iperf3 => Self::Iperf3,
-        }
-    }
-}
-
 /// Build and run VMM.Perf without the Petri/nextest test harness.
 #[derive(clap::Args)]
 pub struct VmmPerfCli {
@@ -58,9 +40,9 @@ pub struct VmmPerfCli {
     #[clap(long, value_enum)]
     target: Option<VmmPerfTargetCli>,
 
-    /// Run only the selected profile. May be repeated; defaults to all profiles.
-    #[clap(long, value_enum)]
-    profile: Vec<VmmPerfProfileCli>,
+    /// Run only the selected profile variant. May be repeated.
+    #[clap(long, value_name = "PROFILE[:MODIFIER...]")]
+    profile: Vec<String>,
 
     /// Root directory for benchmark scratch files and results.
     #[clap(long)]
@@ -143,9 +125,9 @@ impl IntoPipeline for VmmPerfCli {
         let vm_sizes_json = serialize_vm_sizes(&vmm_perf_vm_sizes)?;
         let parameters_json = serialize_parameters(&vmm_perf_parameter)?;
         let profiles = if profile.is_empty() {
-            VmmPerfProfile::all()
+            flowey_lib_hvlite::run_vmm_perf::default_profiles()
         } else {
-            profile.into_iter().map(Into::into).collect()
+            profile
         };
         let root_dir = std::path::absolute(
             dir.unwrap_or_else(|| crate::repo_root().join("target").join("vmm_perf")),

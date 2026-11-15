@@ -69,19 +69,18 @@ impl SimpleFlowNode for Node {
 
             move |rt| {
                 let check = rt.read(check);
-                if check.is_none() {
+                let Some(check) = check else {
                     return Ok(());
-                }
+                };
 
-                let check = check.unwrap();
                 if match check {
-                    BinOrEnv::Bin(bin) => {
-                        check_install(rt, &bin)
-                    }
+                    BinOrEnv::Bin(bin) => check_install(rt, &bin),
                     BinOrEnv::Env(env, expected) => {
                         check_env(rt, &env, &expected)
                     }
-                }.is_err() {
+                }
+                .is_err()
+                {
                     let args = std::env::args().collect::<Vec<_>>().join(" ");
                     anyhow::bail!("To ensure installed dependencies are available on your $PATH, please restart your shell, and re-run: `{args}`");
                 }

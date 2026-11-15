@@ -10,11 +10,12 @@ use crate::dns_resolver::DnsRequestInternal;
 use crate::dns_resolver::DnsResponse;
 use mesh_channel_core::Sender;
 
-cfg_if::cfg_if! {
-    if #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))] {
+cfg_select! {
+    any(target_os = "macos", all(target_os = "linux", target_env = "gnu")) => {
         mod glibc;
         use glibc::handle_dns_query;
-    } else {
+    }
+    _ => {
         mod musl;
         use musl::handle_dns_query;
     }

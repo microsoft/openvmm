@@ -890,7 +890,7 @@ impl VpSet {
                     .call(|x| VpEvent::State(StateEvent::Save(x)), ())
                     .await
                     .map_err(|err| SaveError::Other(RunnerGoneError(err).into()))
-                    .and_then(|x| x)
+                    .flatten()
                     .map_err(|err| SaveError::ChildError(format!("vp{index}"), Box::new(err)))?;
                 Ok((VpIndex::new(index as u32), data))
             })
@@ -915,7 +915,7 @@ impl VpSet {
                         .call(|x| VpEvent::State(StateEvent::Restore(x)), data)
                         .await
                         .map_err(|err| RestoreError::Other(RunnerGoneError(err).into()))
-                        .and_then(|x| x)
+                        .flatten()
                         .map_err(|err| {
                             RestoreError::ChildError(
                                 format!("vp{}", vp_index.index()),
@@ -1301,7 +1301,8 @@ impl VpRunner {
                                 }
                                 Ok(StopReason::Cancel) => {
                                     tracing::debug!("run cancelled internally");
-                                    cancelled_by_user = Some(false);
+                                    // An internal cancellation must not override an explicit request.
+                                    cancelled_by_user.get_or_insert(false);
                                 }
                                 Err(halt_reason) => {
                                     tracing::debug!("VP halted");
@@ -1625,4 +1626,122 @@ pub fn block_on_vp<F: Future>(partition: Arc<dyn RequestYield>, vp: VpIndex, fut
         let mut cx = Context::from_waker(&waker);
         fut.poll_unpin(&mut cx)
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    struct TestVp {
+        completed: mesh::OneshotReceiver<()>,
+    }
+
+    impl ProtobufSaveRestore for TestVp {
+        fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
+            unreachable!("unexpected state save")
+        }
+
+        fn restore(&mut self, _: SavedStateBlob) -> Result<(), RestoreError> {
+            unreachable!("unexpected state restore")
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl ControlVp for TestVp {
+        async fn run_vp(
+            &mut self,
+            _: &[Option<GuestMemory>; NUM_VTLS],
+            mut stop: StopVp<'_>,
+        ) -> Result<StopReason, HaltReason> {
+            match stop.until_stop(&mut self.completed).await {
+                Ok(completed) => {
+                    completed.unwrap();
+                    Ok(StopReason::Cancel)
+                }
+                Err(stopped) => Ok(StopReason::OnRequest(stopped)),
+            }
+        }
+
+        fn inspect_vp(&mut self, _: &[Option<GuestMemory>; NUM_VTLS], _: inspect::Request<'_>) {
+            unreachable!("unexpected VP inspection")
+        }
+
+        fn set_initial_regs(
+            &mut self,
+            _: Vtl,
+            _: &InitialRegs,
+            _: RegistersToSet,
+        ) -> Result<(), RegisterSetError> {
+            unreachable!("unexpected register initialization")
+        }
+
+        fn reset(&mut self) -> anyhow::Result<()> {
+            unreachable!("unexpected VP reset")
+        }
+
+        fn scrub(&mut self, _: Vtl) -> anyhow::Result<()> {
+            unreachable!("unexpected VP scrub")
+        }
+
+        #[cfg(feature = "gdb")]
+        fn debug(&mut self) -> &mut dyn DebugVp {
+            unreachable!("unexpected VP debugging")
+        }
+
+        #[cfg(feature = "dump")]
+        fn get_dump_vp_state(&mut self, _: Vtl) -> anyhow::Result<hyperv_dump::VpState> {
+            unreachable!("unexpected VP dump")
+        }
+    }
+
+    fn run_cancellation(internal: bool, external: bool) -> RunCancelled {
+        let (control_send, recv) = mesh::channel();
+        let (done_send, _done_recv) = mesh::oneshot();
+        let (cancel_send, cancel_recv) = mesh::channel();
+        let (halt, _halt_recv) = Halt::new();
+        let mut runner = VpRunner {
+            recv,
+            _done: done_send,
+            cancel_send,
+            cancel_recv,
+            inner: RunnerInner {
+                vp: VpIndex::new(0),
+                inner: Arc::new(Inner {
+                    halt: Arc::new(halt),
+                    vtl_guest_memory: [None, None, None],
+                }),
+                state: VpState::Stopped,
+            },
+        };
+        control_send.send(VpEvent::Start);
+        let mut canceller = runner.canceller();
+        let (completed_send, completed) = mesh::oneshot();
+        let mut vp = TestVp { completed };
+        let mut run = pin!(runner.run_inner(&mut vp));
+        assert!(run.as_mut().now_or_never().is_none());
+
+        if internal {
+            completed_send.send(());
+        }
+        if external {
+            canceller.cancel();
+        }
+        run.now_or_never().unwrap().unwrap_err()
+    }
+
+    #[test]
+    fn explicit_cancellation_wins_over_internal_cancellation() {
+        assert!(run_cancellation(true, true).is_user_cancelled());
+    }
+
+    #[test]
+    fn internal_cancellation_without_explicit_request() {
+        assert!(!run_cancellation(true, false).is_user_cancelled());
+    }
+
+    #[test]
+    fn explicit_cancellation_stops_pending_run() {
+        assert!(run_cancellation(false, true).is_user_cancelled());
+    }
 }

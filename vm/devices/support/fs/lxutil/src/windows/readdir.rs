@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::fs;
+use super::VolumeState;
 use super::macros::impl_directory_information;
 use super::util;
 use crate::windows::path;
@@ -10,6 +10,7 @@ use bitfield_struct::bitfield;
 use pal::windows::UnicodeString;
 use pal::windows::UnicodeStringRef;
 use std::ffi;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::io::OwnedHandle;
@@ -204,6 +205,8 @@ struct CachedDirEntry {
     inode_nr: u64,
     name: lx::LxString,
     file_type: u8,
+    // Sandbox decision from the same enumeration snapshot as the entry.
+    visible: bool,
 }
 
 /// Information about a directory entry read from the filesystem.
@@ -212,6 +215,7 @@ struct DirEntryInfo {
     pub inode_nr: u64,
     pub name: lx::LxString,
     pub file_type: u8,
+    pub visible: bool,
 }
 
 /// Trait for reading directory entries, enabling mock implementations for testing.
@@ -320,6 +324,7 @@ impl DirEntryCursor {
                 inode_nr: entry.inode_nr,
                 name: entry.name.clone(),
                 file_type: entry.file_type,
+                visible: entry.visible,
             });
 
             next_offset += 1;
@@ -393,7 +398,7 @@ impl DirectoryEnumerator {
     pub fn read_dir<F>(
         &mut self,
         handle: &OwnedHandle,
-        fs_context: &fs::FsContext,
+        state: &VolumeState,
         offset: &mut lx::off_t,
         callback: &mut F,
     ) -> lx::Result<()>
@@ -403,20 +408,19 @@ impl DirectoryEnumerator {
         let requested_offset = *offset as u64;
 
         // Ensure cache is populated for the requested offset.
-        self.ensure_cache_populated(handle, fs_context, requested_offset)?;
+        self.ensure_cache_populated(handle, state, requested_offset)?;
 
         // Serve entries from cache.
+        let mut emitted = false;
         loop {
-            let entries = self.cursor.entries_from(requested_offset);
-
-            if entries.is_empty() && self.cursor.needs_more(requested_offset) {
-                // Need to fetch more entries - refill the cache.
-                self.refill_cache(handle, fs_context, requested_offset)?;
-                continue;
-            }
+            let entries = self.cursor.entries_from(*offset as u64);
 
             // Serve cached entries to the callback.
             for entry in entries.iter() {
+                if !entry.visible {
+                    *offset = entry.offset as lx::off_t;
+                    continue;
+                }
                 let dir_entry = lx::DirEntry {
                     name: entry.name.clone(),
                     inode_nr: entry.inode_nr,
@@ -426,6 +430,7 @@ impl DirectoryEnumerator {
 
                 let result = callback(dir_entry)?;
                 if result {
+                    emitted = true;
                     // Update offset to this entry's offset (which points to the next entry).
                     *offset = entry.offset as lx::off_t;
                 } else {
@@ -433,7 +438,12 @@ impl DirectoryEnumerator {
                     return Ok(());
                 }
             }
-            break;
+            if emitted || !self.cursor.needs_more(*offset as u64) {
+                break;
+            }
+            // A filtered-only window is not EOF. Keep raw entry offsets so
+            // filtering does not change seek/continuation cookies.
+            self.refill_cache(handle, state, *offset as u64)?;
         }
 
         Ok(())
@@ -443,7 +453,7 @@ impl DirectoryEnumerator {
     fn ensure_cache_populated(
         &mut self,
         handle: &OwnedHandle,
-        fs_context: &fs::FsContext,
+        state: &VolumeState,
         offset: u64,
     ) -> lx::Result<()> {
         // Check if cache is valid.
@@ -468,7 +478,7 @@ impl DirectoryEnumerator {
         let mut source = WindowsDirEntrySource {
             enumerator: self,
             handle,
-            fs_context,
+            state,
         };
 
         // Save cursor state and populate.
@@ -482,7 +492,7 @@ impl DirectoryEnumerator {
     fn refill_cache(
         &mut self,
         handle: &OwnedHandle,
-        fs_context: &fs::FsContext,
+        state: &VolumeState,
         offset: u64,
     ) -> lx::Result<()> {
         // Re-check.
@@ -493,7 +503,7 @@ impl DirectoryEnumerator {
         let mut source = WindowsDirEntrySource {
             enumerator: self,
             handle,
-            fs_context,
+            state,
         };
 
         // Save cursor state and populate (always sequential when refilling).
@@ -825,7 +835,7 @@ impl Drop for DirectoryEnumerator {
 struct WindowsDirEntrySource<'a> {
     enumerator: &'a mut DirectoryEnumerator,
     handle: &'a OwnedHandle,
-    fs_context: &'a fs::FsContext,
+    state: &'a VolumeState,
 }
 
 impl DirEntrySource for WindowsDirEntrySource<'_> {
@@ -873,7 +883,11 @@ impl DirEntrySource for WindowsDirEntrySource<'_> {
                     self.enumerator.next_read_index += 1;
 
                     // Determine the file type.
-                    let entry_type = if !self.fs_context.compatibility_flags.server_reparse_points()
+                    let entry_type = if !self
+                        .state
+                        .fs_context
+                        .compatibility_flags
+                        .server_reparse_points()
                         && file_info.file_attributes & W32Fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
                     {
                         util::reparse_tag_to_file_type(file_info.reparse_tag)
@@ -886,10 +900,26 @@ impl DirEntrySource for WindowsDirEntrySource<'_> {
                     // Unescape the LX path.
                     let file_name = path::unescape_path(file_info.file_name.as_slice())?;
 
+                    // Cache the policy decision from the enumeration snapshot,
+                    // without reopening or querying each child.
+                    let visible = if self.state.options.sandbox {
+                        let name = ffi::OsString::from_wide(file_info.file_name.as_slice());
+                        match self.state.check_sandbox_name(&name).and_then(|()| {
+                            self.state
+                                .check_sandbox_attributes(file_info.file_attributes)
+                        }) {
+                            Ok(()) => true,
+                            Err(err) if err == lx::Error::EACCES => false,
+                            Err(err) => return Err(err),
+                        }
+                    } else {
+                        true
+                    };
                     let entry_info = DirEntryInfo {
                         inode_nr: file_info.file_id as u64,
                         name: file_name,
                         file_type: entry_type,
+                        visible,
                     };
 
                     let should_continue = callback(entry_info)?;
@@ -932,11 +962,13 @@ mod tests {
                     inode_nr: 0,
                     name: ".".into(),
                     file_type: lx::DT_DIR,
+                    visible: true,
                 },
                 DirEntryInfo {
                     inode_nr: 0,
                     name: "..".into(),
                     file_type: lx::DT_DIR,
+                    visible: true,
                 },
             ];
             for i in 0..n {
@@ -944,6 +976,7 @@ mod tests {
                     inode_nr: 100 + i as u64,
                     name: format!("file_{}", i).into(),
                     file_type: lx::DT_REG,
+                    visible: true,
                 });
             }
             Self::new(entries)
@@ -980,6 +1013,7 @@ mod tests {
             inode_nr: 0,
             name: ".".into(),
             file_type: lx::DT_DIR,
+            visible: true,
         });
         cursor.window_start = 0;
 
@@ -994,6 +1028,7 @@ mod tests {
             inode_nr: 100,
             name: "file".into(),
             file_type: lx::DT_REG,
+            visible: true,
         });
         cursor.window_start = 10;
 
@@ -1011,18 +1046,21 @@ mod tests {
                 inode_nr: 100,
                 name: "a".into(),
                 file_type: lx::DT_REG,
+                visible: true,
             },
             CachedDirEntry {
                 offset: 7,
                 inode_nr: 101,
                 name: "b".into(),
                 file_type: lx::DT_REG,
+                visible: true,
             },
             CachedDirEntry {
                 offset: 8,
                 inode_nr: 102,
                 name: "c".into(),
                 file_type: lx::DT_REG,
+                visible: true,
             },
         ]);
 
@@ -1057,18 +1095,21 @@ mod tests {
                 inode_nr: 0,
                 name: ".".into(),
                 file_type: lx::DT_DIR,
+                visible: true,
             },
             CachedDirEntry {
                 offset: 2,
                 inode_nr: 0,
                 name: "..".into(),
                 file_type: lx::DT_DIR,
+                visible: true,
             },
             CachedDirEntry {
                 offset: 3,
                 inode_nr: 100,
                 name: "file".into(),
                 file_type: lx::DT_REG,
+                visible: true,
             },
         ]);
 
@@ -1093,12 +1134,14 @@ mod tests {
                 inode_nr: 0,
                 name: ".".into(),
                 file_type: lx::DT_DIR,
+                visible: true,
             },
             CachedDirEntry {
                 offset: 2,
                 inode_nr: 100,
                 name: "file".into(),
                 file_type: lx::DT_REG,
+                visible: true,
             },
         ]);
 
@@ -1117,18 +1160,21 @@ mod tests {
                 inode_nr: 0,
                 name: ".".into(),
                 file_type: lx::DT_DIR,
+                visible: true,
             },
             CachedDirEntry {
                 offset: 2,
                 inode_nr: 0,
                 name: "..".into(),
                 file_type: lx::DT_DIR,
+                visible: true,
             },
             CachedDirEntry {
                 offset: 3,
                 inode_nr: 100,
                 name: "file".into(),
                 file_type: lx::DT_REG,
+                visible: true,
             },
         ]);
 
@@ -1149,6 +1195,7 @@ mod tests {
             inode_nr: 100,
             name: "file".into(),
             file_type: lx::DT_REG,
+            visible: true,
         });
 
         assert!(cursor.entries_from(1).is_empty());
@@ -1164,6 +1211,7 @@ mod tests {
             inode_nr: 100,
             name: "file".into(),
             file_type: lx::DT_REG,
+            visible: true,
         });
 
         assert!(!cursor.needs_more(0));
@@ -1180,6 +1228,7 @@ mod tests {
             inode_nr: 100,
             name: "file".into(),
             file_type: lx::DT_REG,
+            visible: true,
         });
 
         // At offset 1, we're past all cached entries
@@ -1196,12 +1245,14 @@ mod tests {
                 inode_nr: 100,
                 name: "a".into(),
                 file_type: lx::DT_REG,
+                visible: true,
             },
             CachedDirEntry {
                 offset: 2,
                 inode_nr: 101,
                 name: "b".into(),
                 file_type: lx::DT_REG,
+                visible: true,
             },
         ]);
 
@@ -1221,6 +1272,7 @@ mod tests {
             inode_nr: 100,
             name: "file".into(),
             file_type: lx::DT_REG,
+            visible: true,
         });
         cursor.window_start = 10;
         cursor.host_consumed = 50;
@@ -1322,16 +1374,19 @@ mod tests {
                 inode_nr: 999, // This should be preserved (unlike in file.rs where it was zeroed)
                 name: ".".into(),
                 file_type: lx::DT_DIR,
+                visible: true,
             },
             DirEntryInfo {
                 inode_nr: 888,
                 name: "..".into(),
                 file_type: lx::DT_DIR,
+                visible: true,
             },
             DirEntryInfo {
                 inode_nr: 100,
                 name: "file".into(),
                 file_type: lx::DT_REG,
+                visible: true,
             },
         ]);
 

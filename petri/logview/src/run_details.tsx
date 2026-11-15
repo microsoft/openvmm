@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import "./styles/common.css";
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { SortingState } from "@tanstack/react-table";
 import { TestResult } from "./data_defs";
 import { Menu } from "./menu";
@@ -12,6 +12,8 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchRunDetails } from "./utils/fetch_runs_data";
 import { parseRunKey } from "./data_defs";
 import { SearchInput } from "./search";
+import { fetchProcessedLog } from "./utils/fetch_logs_data";
+import { usePrefetchQueue } from "./utils/prefetch";
 import {
   createColumns,
   defaultSorting,
@@ -27,13 +29,43 @@ export function RunDetails(): React.JSX.Element {
   // Fetch the relevant data
   const { data: runDetails, isSuccess } = useQuery({
     queryKey: ["runDetails", runId],
-    queryFn: (context) => fetchRunDetails(runId, context.client),
+    queryFn: ({ signal }) => fetchRunDetails(runId, signal),
     staleTime: Infinity, // never goes stale
     gcTime: Infinity,
   });
 
+  const prefetchQueue = usePrefetchQueue(runId);
+  const warmLog = useCallback(
+    (test: TestResult, priority = false) => {
+      const [architecture, ...parts] = test.name.split("/");
+      const remainder = parts.join("/");
+      prefetchQueue.add(
+        {
+          queryKey: ["petriLog", runId, architecture, remainder],
+          queryFn: (signal, foregroundSignal) =>
+            fetchProcessedLog(runId, architecture, remainder, {
+              signal,
+              background: true,
+              foregroundSignal,
+            }),
+        },
+        priority,
+      );
+    },
+    [prefetchQueue, runId],
+  );
+
+  useEffect(() => {
+    for (const test of runDetails?.tests ?? []) {
+      if (test.status === "failed") warmLog(test);
+    }
+  }, [runDetails, warmLog]);
+
   // Define columns for the test results table
-  const columns = useMemo(() => createColumns(runId), [runId]);
+  const columns = useMemo(
+    () => createColumns(runId, (test) => warmLog(test, true)),
+    [runId, warmLog],
+  );
 
   // Conditional AND wildcard search
   const filteredTests = useMemo(

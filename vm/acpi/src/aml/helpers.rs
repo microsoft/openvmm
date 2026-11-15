@@ -3,6 +3,9 @@
 
 //! Utilities for encoding various types into ACPI Machine Language (AML).
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 pub fn encode_name(name: &[u8]) -> Vec<u8> {
     let mut encoded_name: Vec<u8> = Vec::new();
     let mut segments: Vec<[u8; 4]> = Vec::new();

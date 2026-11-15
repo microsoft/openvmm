@@ -60,6 +60,16 @@ impl SimpleFlowNode for Node {
             }
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
             move |rt| {
+                let mut extra_args = Vec::new();
+                // vtpm_util unconditionally enables the TPM's OpenSSL backend.
+                if matches!(
+                    target.operating_system,
+                    target_lexicon::OperatingSystem::Windows
+                        | target_lexicon::OperatingSystem::Darwin(_)
+                ) {
+                    extra_args.extend(["--exclude", "vtpm_util"]);
+                }
+
                 let target = target.to_string();
                 let profile = match profile {
                     CommonProfile::Release => "release",
@@ -68,7 +78,7 @@ impl SimpleFlowNode for Node {
 
                 let path = rt.read(openvmm_repo_path);
                 rt.sh.change_dir(path);
-                flowey::shell_cmd!(rt, "cargo test --locked --doc --workspace --no-fail-fast --target {target} --profile {profile}").run()?;
+                flowey::shell_cmd!(rt, "cargo test --locked --doc --workspace --no-fail-fast --target {target} --profile {profile} {extra_args...}").run()?;
 
                 Ok(())
             }

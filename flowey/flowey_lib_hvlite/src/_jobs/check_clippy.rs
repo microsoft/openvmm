@@ -127,10 +127,7 @@ impl SimpleFlowNode for Node {
             xtask: v,
         });
 
-        let profile = match profile {
-            CommonProfile::Release => CargoBuildProfile::Release,
-            CommonProfile::Debug => CargoBuildProfile::Debug,
-        };
+        let profile: CargoBuildProfile = profile.into();
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
@@ -170,6 +167,15 @@ impl SimpleFlowNode for Node {
                     exclude.extend(
                         ["openssl_kdf", "vmgs_lib", "disk_crypt", "igvmfilegen"].map(|x| x.into()),
                     );
+                }
+
+                // vtpm_util unconditionally enables the TPM's OpenSSL backend.
+                if matches!(
+                    target.operating_system,
+                    target_lexicon::OperatingSystem::Windows
+                        | target_lexicon::OperatingSystem::Darwin(_)
+                ) {
+                    exclude.push("vtpm_util".into());
                 }
 
                 Ok(Some(exclude))

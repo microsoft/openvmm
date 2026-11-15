@@ -4,6 +4,7 @@
 use crate::uefi::Splashes;
 use crate::uefi::splash;
 use core::num::NonZeroU8;
+use core::time::Duration;
 use uefi::boot;
 use uefi::cstr16;
 use uefi::println;
@@ -22,7 +23,7 @@ pub fn run_tests() {
             $test_fn();
             splash_seq = splash_seq.wrapping_shl(1);
             splash::draw_splash(Splashes(NonZeroU8::new(splash_seq).unwrap()));
-            boot::stall(1000000); // stall for 1 seconds
+            boot::stall(Duration::from_secs(1));
         }};
     }
 
@@ -43,7 +44,7 @@ fn test_global_alloc() {
 
 fn test_watchdog() {
     boot::set_watchdog_timer(5, 0xdeadbeef, None).unwrap();
-    boot::stall(1000000 * 6); // stall for 6 seconds
+    boot::stall(Duration::from_secs(6));
     panic!("watchdog should've expired, but we're still running!")
 }
 

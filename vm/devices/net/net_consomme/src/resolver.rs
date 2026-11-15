@@ -48,11 +48,30 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
     ) -> Result<Self::Output, Self::Error> {
         let mut state = ConsommeParams::new().map_err(ResolveConsommeError::Consomme)?;
         state.client_mac.0 = input.mac_address.to_bytes();
+        state.internal_dns = resource.internal_dns;
         if let Some(cidr) = &resource.cidr {
             state
                 .set_cidr(cidr)
                 .map_err(ResolveConsommeError::InvalidCidr)?;
         }
+        let params = resource.params;
+        if let Some(client_ip) = params.client_ip {
+            state.client_ip = client_ip;
+        }
+        if let Some(gateway_ip) = params.gateway_ip {
+            state.gateway_ip = gateway_ip;
+        }
+        if let Some(net_mask) = params.net_mask {
+            state.net_mask = net_mask;
+        }
+        if let Some(client_ip_ipv6) = params.client_ip_ipv6 {
+            if client_ip_ipv6.is_unicast_link_local() {
+                state.client_ip_ipv6 = Some(client_ip_ipv6);
+            } else {
+                state.client_ip_ipv6_routable = Some(client_ip_ipv6);
+            }
+        }
+        state.allow_host_local_access = params.allow_host_local_access;
         let port_forwards: Vec<PortForwardConfig> = resource
             .ports
             .into_iter()

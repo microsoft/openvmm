@@ -1,15 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Command-line utility for interacting with a physical TPM during guest attestation tests.
-//! Supports reading the AK certificate NV index and producing attestation reports with
-//! optional user-provided payloads.
+//! In-guest command-line probe for TPM and attestation integration tests.
+//!
+//! The utility sends TPM 2.0 commands through `/dev/tpmrm0` or `/dev/tpm0` on
+//! Unix and TPM Base Services on Windows. Its subcommands read and verify the
+//! AK certificate, submit guest input and decode an IGVM attestation report,
+//! and define, write, or verify arbitrary owner-authorized NV indices.
+//!
+//! Petri normally copies this executable into a VM and invokes it through
+//! Pipette to validate the guest-visible vTPM and OpenHCL attestation contract.
+//! It can also be run manually inside a guest with `tpm_guest_tests <command>`;
+//! failures and comparison mismatches produce a nonzero exit status.
 
 mod report;
 mod tpm;
 
 use std::error::Error;
 use std::io;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -54,6 +63,7 @@ const AK_CERT_RETRY_DELAY_MS: u64 = 1000;
 struct Config {
     ak_cert: bool,
     ak_cert_expected: Option<Vec<u8>>,
+    ak_cert_output_file: Option<PathBuf>,
     ak_cert_retry_attempts: u32,
     report: bool,
     user_data: Option<Vec<u8>>,
@@ -122,6 +132,10 @@ struct AkCertArgs {
     /// Expected AK certificate contents (hex)
     #[arg(long, value_name = "HEX", conflicts_with = "expected_data")]
     expected_data_hex: Option<String>,
+
+    /// Save the complete AK certificate NV contents, including padding
+    #[arg(long, value_name = "PATH")]
+    output_file: Option<PathBuf>,
 
     /// Retry AK certificate comparison up to COUNT times
     #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(u32).range(1..))]
@@ -210,11 +224,14 @@ fn run(config: &Config) -> Result<(), Box<dyn Error>> {
     let mut helper = tpm.into_engine_helper();
 
     if config.ak_cert {
-        handle_ak_cert(
+        let data = handle_ak_cert(
             &mut helper,
             config.ak_cert_expected.as_deref(),
             config.ak_cert_retry_attempts,
         )?;
+        if let Some(path) = &config.ak_cert_output_file {
+            std::fs::write(path, data)?;
+        }
     }
 
     if config.report {
@@ -245,7 +262,7 @@ fn handle_ak_cert<E: TpmEngine>(
     helper: &mut TpmEngineHelper<E>,
     expected: Option<&[u8]>,
     retry_attempts: u32,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Vec<u8>, Box<dyn Error>> {
     for attempt in 0..=retry_attempts {
         if attempt > 0 {
             println!(
@@ -284,14 +301,14 @@ fn handle_ak_cert<E: TpmEngine>(
                     "AK certificate matches expected value ({} bytes).",
                     data.len()
                 );
-                return Ok(());
+                return Ok(data);
             }
 
             if attempt == retry_attempts {
                 return Err("AK certificate contents did not match expected value".into());
             }
         } else {
-            return Ok(());
+            return Ok(data);
         }
     }
 
@@ -304,6 +321,7 @@ fn config_from_cli(cli: Cli) -> Result<Config, String> {
     match cli.command {
         Command::AkCert(args) => {
             config.ak_cert = true;
+            config.ak_cert_output_file = args.output_file;
 
             if let Some(data) = args.expected_data {
                 config.ak_cert_expected = Some(data.into_bytes());
@@ -916,5 +934,18 @@ mod tests {
         .expect("parse CLI");
         let config = config_from_cli(cli).expect("build config");
         assert_eq!(config.ak_cert_expected.as_deref(), Some(&b"AB"[..]));
+    }
+
+    #[test]
+    fn cli_ak_cert_output_file_parses() {
+        let cli =
+            Cli::try_parse_from(["tpm_guest_tests", "ak_cert", "--output-file", "ak-cert.bin"])
+                .expect("parse CLI");
+        let config = config_from_cli(cli).expect("build config");
+        assert_eq!(
+            config.ak_cert_output_file,
+            Some(PathBuf::from("ak-cert.bin"))
+        );
+        assert!(config.ak_cert_expected.is_none());
     }
 }

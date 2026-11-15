@@ -15,7 +15,6 @@ use chipset_device::pio::RegisterPortIoIntercept;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use std::num::Wrapping;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
 
@@ -176,6 +175,8 @@ impl PortIoIntercept for DualPic {
             SECONDARY_PIC_ELCR_PORT => self.pics[1].elcr,
             _ => return IoResult::Err(IoError::InvalidRegister),
         };
+        // A poll read acknowledges an interrupt, which can change the outputs.
+        self.sync_outputs();
         IoResult::Ok
     }
 
@@ -320,11 +321,10 @@ impl Pic {
     fn ready_vec(&self) -> u8 {
         // Restrict to interrupts with higher priority than the highest priority
         // IRQ already being serviced.
-        let isr = Wrapping(self.isr);
-        let highest_isr = isr & -isr;
-        let higher_not_isr = highest_isr - Wrapping(1);
+        let highest_isr = self.isr.isolate_lowest_one();
+        let higher_not_isr = highest_isr.wrapping_sub(1);
         // Restrict to requested interrupts that are not masked.
-        self.irr() & !self.imr & higher_not_isr.0
+        self.irr() & !self.imr & higher_not_isr
     }
 
     fn interrupt_pending(&self) -> bool {
@@ -332,13 +332,7 @@ impl Pic {
     }
 
     fn pending_line(&self) -> Option<u8> {
-        let m = self.ready_vec();
-        if m != 0 {
-            // Find the highest priority IRQ
-            Some(m.trailing_zeros() as u8)
-        } else {
-            None
-        }
+        self.ready_vec().lowest_one().map(|n| n as u8)
     }
 
     fn acknowledge_interrupt(&mut self, stats: &mut DualPicStats) -> (bool, u8) {
@@ -375,7 +369,7 @@ impl Pic {
         let bit = match n {
             Some(level) => 1 << level,
             // On non-specific EOIs, find the highest priority interrupt in service
-            None => self.isr & self.isr.wrapping_neg(),
+            None => self.isr.isolate_lowest_one(),
         };
 
         self.isr &= !bit;
@@ -596,6 +590,8 @@ mod save_restore {
             pub elcr: u8,
             #[mesh(7)]
             pub line_low_latch: u8,
+            #[mesh(8)]
+            pub lines: Option<u8>,
         }
 
         #[derive(Protobuf)]
@@ -630,6 +626,7 @@ mod save_restore {
                 isr,
                 elcr,
                 line_low_latch,
+                lines,
             } = self;
             pic.init = match init {
                 state::SavedInitStage::Uninitialized => InitStage::Uninitialized,
@@ -647,6 +644,9 @@ mod save_restore {
             pic.isr = isr;
             pic.elcr = elcr;
             pic.line_low_latch = line_low_latch;
+            if let Some(lines) = lines {
+                pic.lines = lines;
+            }
             Ok(())
         }
 
@@ -659,7 +659,7 @@ mod save_restore {
                 ocw3,
                 isr,
                 elcr,
-                lines: _,
+                lines,
                 line_low_latch,
             } = pic;
             Self {
@@ -676,6 +676,7 @@ mod save_restore {
                 isr,
                 elcr,
                 line_low_latch,
+                lines: Some(lines),
             }
         }
     }
@@ -699,14 +700,114 @@ mod save_restore {
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let state::SavedState { primary, secondary } = state;
+            let has_inputs = primary.lines.is_some() && secondary.lines.is_some();
             primary
                 .restore(&mut self.pics[0])
                 .map_err(|err| RestoreError::Other(err.into()))?;
             secondary
                 .restore(&mut self.pics[1])
                 .map_err(|err| RestoreError::Other(err.into()))?;
-            self.sync_outputs();
+            if has_inputs {
+                // Restore the cascade's input history without recognizing a
+                // transition. Subsequent input changes use normal recognition.
+                self.ready.set_level(self.pics[0].interrupt_pending());
+            } else {
+                self.sync_outputs();
+            }
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::tests::create_pic;
+        use super::super::*;
+        use super::*;
+        use pal_async::async_test;
+        use test_with_tracing::test;
+        use vmcore::save_restore::SavedStateBlob;
+
+        fn consume_cascade(pic: &mut DualPic) {
+            pic.set_irq(11, true);
+            pic.io_write(PRIMARY_PIC_COMMAND_PORT, &[0x0c]).unwrap();
+            let mut data = [0];
+            pic.io_read(PRIMARY_PIC_COMMAND_PORT, &mut data).unwrap();
+            assert_eq!(data[0], 0x82);
+            assert!(pic.pics[1].interrupt_pending());
+            assert_eq!(pic.pics[0].line_low_latch & 4, 0);
+        }
+
+        #[async_test]
+        async fn restore_preserves_consumed_cascade_on_fresh_and_reset_destinations() {
+            let (_, mut source) = create_pic();
+            consume_cascade(&mut source);
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let (ready, mut destination) = create_pic();
+                if reset {
+                    destination.set_irq(9, true);
+                    destination.reset().await;
+                }
+                destination.restore(saved.parse().unwrap()).unwrap();
+                assert_eq!(destination.pics[0].lines & 4, 4);
+                assert_eq!(destination.pics[0].irr() & 4, 0);
+                assert_eq!(destination.pics[0].line_low_latch & 4, 0);
+                assert!(!ready());
+
+                // Saving again before updating inputs must preserve the history.
+                let saved_again = SavedStateBlob::new(destination.save().unwrap());
+                destination.reset().await;
+                destination.restore(saved_again.parse().unwrap()).unwrap();
+                for n in (0..16).filter(|&n| n != 2) {
+                    destination.set_irq(n, n == 11);
+                    assert_eq!(destination.pics[0].irr() & 4, 0);
+                    assert_eq!(destination.pics[0].line_low_latch & 4, 0);
+                }
+
+                // EOI the primary before acknowledging the secondary: ISR2
+                // must not be hiding a manufactured request.
+                destination
+                    .io_write(PRIMARY_PIC_COMMAND_PORT, &[0x62])
+                    .unwrap();
+                assert!(!ready());
+                destination.set_irq(11, false);
+                assert_ne!(destination.pics[0].line_low_latch & 4, 0);
+                destination.set_irq(11, true);
+                assert!(ready());
+            }
+        }
+
+        #[test]
+        fn restored_inputs_preserve_pending_outputs_and_recognize_changes() {
+            for irq in [1, 11] {
+                for history in [false, true] {
+                    for current in [false, true] {
+                        let (_, mut source) = create_pic();
+                        source.set_irq(irq, history);
+                        let saved = SavedStateBlob::new(source.save().unwrap());
+                        let (ready, mut destination) = create_pic();
+                        destination.restore(saved.parse().unwrap()).unwrap();
+                        assert_eq!(ready(), history, "restore must establish the output");
+                        destination.set_irq(irq, current);
+                        assert_eq!(ready(), current);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn legacy_restore_retains_provisional_cascade_behavior() {
+            let (_, mut source) = create_pic();
+            consume_cascade(&mut source);
+            let mut saved = source.save().unwrap();
+            saved.primary.lines = None;
+            saved.secondary.lines = None;
+            let saved = SavedStateBlob::new(saved);
+            let (_, mut destination) = create_pic();
+            destination.restore(saved.parse().unwrap()).unwrap();
+            assert_ne!(destination.pics[0].line_low_latch & 4, 0);
+            destination.set_irq(11, true);
+            assert_ne!(destination.pics[0].irr() & 4, 0);
         }
     }
 }
@@ -716,11 +817,30 @@ mod tests {
     use super::*;
     use chipset_device::pio::ExternallyManagedPortIoIntercepts;
     use chipset_device::pio::PortIoIntercept;
+    use test_with_tracing::test;
     use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
 
     const IV_BASE: u8 = 0x30;
 
-    fn create_pic() -> (impl Fn() -> bool, DualPic) {
+    #[test]
+    fn priority_masks_and_non_specific_eoi() {
+        let mut pic = Pic::new(true);
+        pic.lines = u8::MAX;
+        pic.line_low_latch = u8::MAX;
+        for isr in 0..=u8::MAX {
+            pic.isr = isr;
+            let first = (0..8).find(|&irq| isr & (1 << irq) != 0);
+            let expected = ((1u16 << first.unwrap_or(8)) - 1) as u8;
+            assert_eq!(pic.ready_vec(), expected, "ISR {isr:#x}");
+            assert_eq!(pic.pending_line(), (expected != 0).then_some(0));
+
+            pic.eoi(None);
+            let serviced = first.map_or(0, |irq| 1 << irq);
+            assert_eq!(pic.isr, isr & !serviced, "ISR {isr:#x}");
+        }
+    }
+
+    pub(super) fn create_pic() -> (impl Fn() -> bool, DualPic) {
         let ready = TestLineInterruptTarget::new_arc();
         let mut pic = DualPic::new(
             LineInterrupt::new_with_target("ready", ready.clone(), 0),
@@ -774,6 +894,46 @@ mod tests {
         let (ready, pic) = create_pic();
         assert!(matches!(pic.pics[0].init, InitStage::Initialized));
         assert!(matches!(pic.pics[1].init, InitStage::Initialized));
+        assert!(!ready());
+    }
+
+    #[test]
+    fn test_poll_read_primary_lowers_ready() {
+        let (ready, mut pic) = create_pic();
+        pic.set_irq(1, true);
+        pic.io_write(PRIMARY_PIC_COMMAND_PORT, &[0x0c]).unwrap(); // OCW3: poll
+        assert!(ready());
+
+        let mut data = [0];
+        pic.io_read(PRIMARY_PIC_COMMAND_PORT, &mut data).unwrap();
+        assert_eq!(data[0], 0x81);
+        assert_eq!(pic.pics[0].isr, 1 << 1);
+        assert!(!pic.pics[0].interrupt_pending());
+        assert!(!ready());
+    }
+
+    #[test]
+    fn test_poll_read_secondary_lowers_cascade() {
+        let (ready, mut pic) = create_pic();
+        let cascade = 1 << PIC_CHAIN_COMMUNICATION_IRQ;
+        pic.set_irq(9, true);
+        assert!(ready());
+
+        pic.io_write(PRIMARY_PIC_COMMAND_PORT, &[0x0c]).unwrap(); // OCW3: poll
+        let mut data = [0];
+        pic.io_read(PRIMARY_PIC_COMMAND_PORT, &mut data).unwrap();
+        assert_eq!(data[0], 0x80 | PIC_CHAIN_COMMUNICATION_IRQ);
+
+        pic.io_write(SECONDARY_PIC_COMMAND_PORT, &[0x0c]).unwrap(); // OCW3: poll
+        assert_ne!(pic.pics[0].lines & cascade, 0);
+        assert_eq!(pic.pics[0].line_low_latch & cascade, 0);
+
+        pic.io_read(SECONDARY_PIC_COMMAND_PORT, &mut data).unwrap();
+        assert_eq!(data[0], 0x81);
+        assert_eq!(pic.pics[1].isr, 1 << 1);
+        assert!(!pic.pics[1].interrupt_pending());
+        assert_eq!(pic.pics[0].lines & cascade, 0);
+        assert_ne!(pic.pics[0].line_low_latch & cascade, 0);
         assert!(!ready());
     }
 

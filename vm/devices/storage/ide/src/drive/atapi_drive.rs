@@ -261,6 +261,15 @@ impl AtapiDrive {
     pub fn reset(&mut self) {
         tracing::debug!(path = ?self.disk_path, "drive reset");
         self.state = AtapiDriveState::new();
+        // Drop a command still in flight BEFORE clearing, the way the hard drive's
+        // reset does: the sense slot is written when the SCSI future COMPLETES, so
+        // one left behind here would refill what the clear is about to empty.
+        self.io = None;
+        // A reset ends the nexus, so the state scoped to it goes with the register
+        // state: the tray lock, the sense slot and any queued medium event. Without
+        // this the next initiator's first eject is refused by a decision it never
+        // made.
+        self.scsi_disk.clear_nexus_state();
     }
 
     pub fn pio_read(&mut self, data: &mut [u8]) {
@@ -665,6 +674,11 @@ impl AtapiDrive {
     fn handle_soft_reset(&mut self, reset_dev: bool) {
         tracing::debug!(path = ?self.disk_path, "Command Soft Reset");
         self.state.buffer = None;
+        // DEVICE RESET is the one reset that does not run through `reset()`, and it
+        // ends the nexus just the same - including dropping any command in flight,
+        // which would otherwise write its result in after the clear.
+        self.io = None;
+        self.scsi_disk.clear_nexus_state();
 
         self.state.regs.reset_signature(reset_dev);
         self.state.regs.error = ErrorReg::new().with_amnf_ili_default(true);

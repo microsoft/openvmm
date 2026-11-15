@@ -6,6 +6,7 @@
 use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::_util::group_by;
 
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
@@ -45,12 +46,12 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        for Request {
-            target,
-            profile,
-            vmm_perf,
-        } in requests
-        {
+        let requests = group_by(
+            requests
+                .into_iter()
+                .map(|r| ((r.target, r.profile), r.vmm_perf)),
+        );
+        for ((target, profile), vmm_perf) in requests {
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "vmm_perf".into(),
                 out_name: "vmm_perf".into(),
@@ -80,7 +81,7 @@ impl FlowNode for Node {
                         }
                         _ => unreachable!(),
                     };
-                    rt.write(vmm_perf, &output);
+                    rt.write_all(vmm_perf, &output);
                 }
             });
         }

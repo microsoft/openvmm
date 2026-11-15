@@ -18,11 +18,13 @@
 //       anything else on this file though.
 #![warn(missing_docs)]
 
+use crate::usb::UsbBackend;
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
-use cxl_spec::spec::CfmwsWindowRestrictions;
+use cxl_spec::CfmwsWindowRestrictions;
 use guid::Guid;
+use net_backend_resources::mac_address::MacAddress;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::PcatBootDevice;
@@ -249,6 +251,7 @@ Examples:
 
     /// Restore VM from a snapshot directory (implies file-backed memory from
     /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
+    /// The same boot and device flags used at save time must also be supplied.
     #[clap(
         long,
         value_name = "DIR",
@@ -563,6 +566,7 @@ flags:
 
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port
+    `serial=<value>`               1-20 printable ASCII bytes except comma and brackets
 "#)]
     #[clap(long = "virtio-blk")]
     pub virtio_blk: Vec<DiskCli>,
@@ -608,6 +612,10 @@ options:
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
+    /// Prefix a virtio NIC with `rx_gso:` to advertise guest TCP segmentation
+    /// offload. This is disabled by default until mergeable receive buffers are
+    /// supported.
     ///
     /// For consomme, forward host ports into the guest with `hostfwd=`:
     ///   --net consomme:hostfwd=tcp::3389-:3389
@@ -660,13 +668,13 @@ options:
 
     /// configure SMMUv3 IOMMU for an aarch64 PCIe root complex (repeatable).
     ///
-    /// Syntax: `rc=<name>[,accel][,oas=auto|N]`.
+    /// Syntax: `rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]`.
     #[cfg(guest_arch = "aarch64")]
     #[clap(long, value_name = "SMMU_CONFIG")]
     pub smmu: Vec<SmmuCli>,
 
     /// COM1 binding, optionally prefixed with `debugger-mode:` (see below)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     ///
     /// Prefix the binding with `debugger-mode:` to run this COM port in
     /// debugger mode for WinDbg kernel debugging over serial (KD), e.g.
@@ -680,25 +688,25 @@ options:
     pub com1: Option<ComSerialConfigCli>,
 
     /// COM2 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com2: Option<ComSerialConfigCli>,
 
     /// COM3 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com3: Option<ComSerialConfigCli>,
 
     /// COM4 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<ComSerialConfigCli>,
 
-    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
 
-    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
@@ -706,29 +714,45 @@ options:
     #[clap(long)]
     pub serial_tx_only: bool,
 
-    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none))
+    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none))
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
-    /// boot UEFI firmware
-    #[clap(long, short = 'e')]
-    pub uefi: bool,
+    /// boot UEFI firmware, optionally configured with comma-separated options
+    #[clap(
+        long,
+        short = 'e',
+        value_name = "OPTIONS",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    pub uefi: Option<UefiCli>,
 
-    /// UEFI firmware file
-    #[clap(long, requires("uefi"), conflicts_with("igvm"), value_name = "FILE", default_value = default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE"))]
-    pub uefi_firmware: OptionalPathBuf,
+    /// UEFI firmware file (deprecated; use --uefi firmware=FILE)
+    #[clap(
+        long = "uefi-firmware",
+        hide = true,
+        requires("uefi"),
+        conflicts_with("igvm"),
+        value_name = "FILE"
+    )]
+    pub deprecated_uefi_firmware: Option<PathBuf>,
 
-    /// enable UEFI debugging on COM1
-    #[clap(long, requires("uefi"))]
-    pub uefi_debug: bool,
+    /// enable UEFI debugging on COM1 (deprecated; use --uefi debug)
+    #[clap(long = "uefi-debug", hide = true, requires("uefi"))]
+    pub deprecated_uefi_debug: bool,
 
-    /// enable memory protections in UEFI
-    #[clap(long, requires("uefi"))]
-    pub uefi_enable_memory_protections: bool,
+    /// enable memory protections in UEFI (deprecated; use --uefi enable_memory_protections)
+    #[clap(long = "uefi-enable-memory-protections", hide = true, requires("uefi"))]
+    pub deprecated_uefi_enable_memory_protections: bool,
 
-    /// force UEFI to bounce-buffer all DMA traffic
-    #[clap(long, requires("uefi"))]
-    pub uefi_force_dma_bounce: bool,
+    /// force UEFI to bounce-buffer all DMA traffic (deprecated; use --uefi force_dma_bounce)
+    #[clap(long = "uefi-force-dma-bounce", hide = true, requires("uefi"))]
+    pub deprecated_uefi_force_dma_bounce: bool,
+
+    /// continue with invalid UEFI firmware version information (deprecated; use --uefi force_firmware_version)
+    #[clap(long = "uefi-force-firmware-version", hide = true, requires("uefi"))]
+    pub deprecated_uefi_force_firmware_version: bool,
 
     /// set PCAT boot order as comma-separated string of boot device types
     /// (e.g: floppy,hdd,optical,net).
@@ -751,18 +775,19 @@ options:
     #[clap(long, requires("pcat"), value_name = "FILE")]
     pub pcat_firmware: Option<PathBuf>,
 
-    /// boot IGVM file
-    #[clap(long, conflicts_with("kernel"), value_name = "FILE")]
-    pub igvm: Option<PathBuf>,
-
-    /// select the chipset and device personality for a non-VTL2 IGVM
+    /// boot an IGVM with required firmware and personality options
     #[clap(
         long,
-        requires("igvm"),
-        conflicts_with_all = ["vtl2", "uefi", "pcat"],
-        value_enum
+        conflicts_with_all = ["kernel", "pcat"],
+        value_name = "OPTIONS",
+        long_help = r#"Boot an IGVM file.
+
+Syntax: --igvm firmware=<FILE>,personality=<openhcl|uefi|linux-direct>
+
+Both firmware and personality are required; neither has a default.
+The openhcl personality requires explicit --hv --vtl2."#
     )]
-    pub igvm_personality: Option<IgvmPersonalityCli>,
+    pub igvm: Option<IgvmCli>,
 
     /// specify igvm vtl2 relocation type
     /// (absolute=\<addr\>, disable, auto=\<filesize,or memory size\>, vtl2=\<filesize,or memory size\>,)
@@ -794,7 +819,7 @@ options:
     #[clap(long, value_name = "[pcie_port=PORT:]tag,root_path")]
     pub virtio_fs_shmem: Vec<FsArgs>,
 
-    /// add a virtio_fs device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | auto)
+    /// add a virtio_fs device under the selected bus (auto | mmio | pci | pcie:port | vpci)
     #[clap(long, value_name = "BUS", default_value = "auto")]
     pub virtio_fs_bus: VirtioBusCli,
 
@@ -809,7 +834,7 @@ options:
     #[clap(long)]
     pub virtio_rng: bool,
 
-    /// add a virtio-rng device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | vpci | auto)
+    /// add a virtio-rng device under the selected bus (auto | mmio | pci | pcie:port | vpci)
     #[clap(long, value_name = "BUS", default_value = "auto")]
     pub virtio_rng_bus: VirtioBusCli,
 
@@ -817,11 +842,21 @@ options:
     #[clap(long, value_name = "PORT", requires("virtio_rng"))]
     pub virtio_rng_pcie_port: Option<String>,
 
+    /// add a virtio real-time clock device, optionally configured with
+    /// comma-separated options (bus=auto|mmio|pci|pcie:PORT|vpci)
+    #[clap(
+        long,
+        value_name = "OPTIONS",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    pub virtio_rtc: Option<VirtioRtcCli>,
+
     /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |
     /// file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> |
-    /// term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long)]
     pub virtio_console: Option<SerialConfigCli>,
 
@@ -829,7 +864,7 @@ options:
     #[clap(long, value_name = "PORT", requires("virtio_console"))]
     pub virtio_console_pcie_port: Option<String>,
 
-    /// select the bus for virtio vsock devices (pci | mmio)
+    /// select the bus for virtio vsock devices (pci | pcie\[:port\] | mmio)
     #[clap(long, value_name = "BUS", value_parser = parse_virtio_vsock_bus)]
     pub virtio_vsock_bus: Option<VirtioBusCli>,
 
@@ -854,6 +889,7 @@ options:
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
     #[clap(long)]
     pub virtio_net: Vec<NicConfigCli>,
 
@@ -915,9 +951,9 @@ Examples:
     #[clap(long, value_name = "PATH")]
     pub device: Vec<String>,
 
-    /// instead of showing the frontpage the VM will shutdown instead
-    #[clap(long, requires("uefi"))]
-    pub disable_frontpage: bool,
+    /// instead of showing the frontpage the VM will shutdown instead (deprecated; use --uefi disable_frontpage)
+    #[clap(long = "disable-frontpage", hide = true, requires("uefi"))]
+    pub deprecated_disable_frontpage: bool,
 
     /// add a vtpm device, optionally selecting version 138 or 185 (default: 185)
     #[clap(
@@ -1007,6 +1043,7 @@ flags:
     ///
     /// Prefix with `pcie_port=<port_name>:` to expose the nic over emulated PCIe
     /// at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 
@@ -1031,7 +1068,7 @@ flags:
     /// own hypervisor.
     ///
     /// Only supported on x86_64, and only by backends that support nested
-    /// virtualization (currently WHP and KVM). Requires host support.
+    /// virtualization (currently WHP, KVM, and MSHV). Requires host support.
     #[clap(long)]
     pub nested_virt: bool,
 
@@ -1160,9 +1197,9 @@ flags:
     #[clap(long)]
     pub hibernation: bool,
 
-    /// set the uefi console mode
-    #[clap(long)]
-    pub uefi_console_mode: Option<UefiConsoleModeCli>,
+    /// set the UEFI console mode (deprecated; use --uefi console=MODE)
+    #[clap(long = "uefi-console-mode", hide = true, requires("uefi"))]
+    pub deprecated_uefi_console_mode: Option<UefiConsoleModeCli>,
 
     /// set the EFI diagnostics log level
     #[clap(long_help = r#"
@@ -1173,12 +1210,12 @@ options:
     info                           info (ERROR, WARN, and INFO)
     full                           full (all log levels)
 "#)]
-    #[clap(long, requires("uefi"))]
-    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+    #[clap(long = "efi-diagnostics-log-level", hide = true, requires("uefi"))]
+    pub deprecated_efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
 
-    /// Perform a default boot even if boot entries exist and fail
-    #[clap(long)]
-    pub default_boot_always_attempt: bool,
+    /// Perform a default boot even if boot entries exist and fail (deprecated; use --uefi default_boot_always_attempt)
+    #[clap(long = "default-boot-always-attempt", hide = true)]
+    pub deprecated_default_boot_always_attempt: bool,
 
     /// Enable AMD IOMMU (AMD-Vi) emulation on specified root complexes.
     /// Repeat for each root complex that should have an IOMMU, e.g.:
@@ -1355,6 +1392,45 @@ Options:
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_remote: Vec<PcieRemoteCli>,
 
+    // TODO: Unhide both USB options once USB emulation is ready for use.
+    /// Attach an emulated xHCI USB controller to a PCIe port (repeatable).
+    #[clap(long, hide = true, value_name = "PORT_NAME", conflicts_with("pcat"))]
+    pub usb_xhci: Vec<UsbXhciCli>,
+
+    /// Attach a device backend to an xHCI USB controller (repeatable).
+    #[clap(
+        long,
+        hide = true,
+        value_name = "SPEC",
+        requires("usb_xhci"),
+        long_help = r#"Attach an initial USB device to a controller declared with --usb-xhci.
+
+Syntax: KIND[,on=PCIE_PORT][,connector=N][,OPTION=VALUE,...]
+
+With one controller, on defaults to its PCIe port; otherwise on is required.
+Connectors are one-based and optional. Explicit numbers are reserved first;
+omitted connectors use the first free number in command-line order.
+An empty controller needs no --usb-device options.
+
+Kinds: mock-loopback, mock-hid, mock-storage, mock-mutt, mock-supermutt,
+       winusb, winusb-all.
+
+The first four mocks accept vid=ID,pid=ID,serial=STRING overrides.
+IDs accept decimal or 0x-prefixed hexadecimal values.
+mock-storage also accepts blocks=N in 512-byte logical blocks.
+mock-supermutt accepts no device-specific options.
+winusb requires instance_id=ID, a Windows PnP instance ID.
+winusb-all selects eligible present devices at startup and assigns free
+connectors. It accepts optional on=PCIE_PORT, but no connector.
+
+Examples:
+    --usb-xhci rc0rp0 --usb-device mock-hid --usb-device mock-storage
+    --usb-device mock-storage,on=rc0rp0,connector=2,blocks=65536
+    --usb-device 'winusb,instance_id=USB\DEVICE\INSTANCE'
+    --usb-device winusb-all"#
+    )]
+    pub usb_device: Vec<UsbDeviceCli>,
+
     /// Assign a host PCI device to the guest via VFIO (Linux only)
     #[clap(long_help = r#"
 Assign a host PCI device to the guest via Linux VFIO.
@@ -1394,6 +1470,41 @@ Syntax: id=<name>
 }
 
 impl Options {
+    /// Returns the structured UEFI configuration with deprecated options merged in.
+    pub fn effective_uefi(&self) -> anyhow::Result<Option<UefiCli>> {
+        let mut uefi = match &self.uefi {
+            Some(uefi) => uefi.clone(),
+            None => return Ok(None),
+        };
+
+        if let Some(firmware) = &self.deprecated_uefi_firmware {
+            if uefi.firmware.is_some() {
+                anyhow::bail!("--uefi firmware=... conflicts with --uefi-firmware");
+            }
+            uefi.firmware = Some(firmware.clone());
+        }
+        if let Some(console) = self.deprecated_uefi_console_mode {
+            if uefi.console.is_some() {
+                anyhow::bail!("--uefi console=... conflicts with --uefi-console-mode");
+            }
+            uefi.console = Some(console);
+        }
+        if let Some(diagnostics) = self.deprecated_efi_diagnostics_log_level {
+            if uefi.diagnostics.is_some() {
+                anyhow::bail!("--uefi diagnostics=... conflicts with --efi-diagnostics-log-level");
+            }
+            uefi.diagnostics = Some(diagnostics);
+        }
+
+        uefi.debug |= self.deprecated_uefi_debug;
+        uefi.enable_memory_protections |= self.deprecated_uefi_enable_memory_protections;
+        uefi.force_dma_bounce |= self.deprecated_uefi_force_dma_bounce;
+        uefi.force_firmware_version |= self.deprecated_uefi_force_firmware_version;
+        uefi.disable_frontpage |= self.deprecated_disable_frontpage;
+        uefi.default_boot_always_attempt |= self.deprecated_default_boot_always_attempt;
+        Ok(Some(uefi))
+    }
+
     /// Returns the effective guest RAM size.
     pub fn memory_size(&self) -> u64 {
         self.memory.size.map(|m| m.0).unwrap_or(DEFAULT_MEMORY_SIZE)
@@ -1460,12 +1571,15 @@ impl Options {
             anyhow::bail!("--snp-restricted-injection requires --hypervisor mshv");
         }
         if self.snp_restricted_injection
-            && (self.uefi || self.pcat || self.igvm.is_some() || self.restore_snapshot.is_some())
+            && (self.uefi.is_some()
+                || self.pcat
+                || self.igvm.is_some()
+                || self.restore_snapshot.is_some())
         {
             anyhow::bail!("--snp-restricted-injection requires Linux direct boot");
         }
         if matches!(self.isolation, Some(IsolationCli::Snp)) {
-            if self.uefi {
+            if self.uefi.is_some() {
                 anyhow::bail!("SNP isolation currently only supports Linux direct boot");
             }
             if self.memory.hugepages
@@ -1482,11 +1596,62 @@ impl Options {
 
     /// Validates IGVM personality selection.
     pub fn validate_igvm_options(&self) -> anyhow::Result<()> {
-        if self.igvm.is_some() && !self.vtl2 && self.igvm_personality.is_none() {
-            anyhow::bail!("--igvm-personality is required for non-VTL2 IGVM boots");
+        let Some(igvm) = &self.igvm else {
+            return Ok(());
+        };
+        match igvm.personality {
+            IgvmPersonalityCli::Openhcl => {
+                anyhow::ensure!(
+                    self.hv && self.vtl2,
+                    "--igvm personality=openhcl requires --hv --vtl2"
+                );
+            }
+            IgvmPersonalityCli::Uefi | IgvmPersonalityCli::LinuxDirect => {
+                anyhow::ensure!(
+                    !self.vtl2,
+                    "--vtl2 requires --igvm personality=openhcl for IGVM boots"
+                );
+                anyhow::ensure!(
+                    self.uefi.is_none(),
+                    "--uefi is only supported with --igvm personality=openhcl"
+                );
+            }
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, PartialEq, vmm_cli::KeyValueArgs)]
+pub struct IgvmCli {
+    pub firmware: PathBuf,
+    pub personality: IgvmPersonalityCli,
+}
+
+#[derive(Clone, Debug, Default, vmm_cli::KeyValueArgs)]
+pub struct UefiCli {
+    pub firmware: Option<PathBuf>,
+    #[kv(flag)]
+    pub debug: bool,
+    #[kv(flag)]
+    pub enable_memory_protections: bool,
+    #[kv(flag)]
+    pub force_dma_bounce: bool,
+    #[kv(flag)]
+    pub force_firmware_version: bool,
+    #[kv(flag)]
+    pub disable_frontpage: bool,
+    pub console: Option<UefiConsoleModeCli>,
+    pub diagnostics: Option<EfiDiagnosticsLogLevelCli>,
+    #[kv(flag)]
+    pub default_boot_always_attempt: bool,
+}
+
+/// Options for `--virtio-rtc`.
+#[derive(Clone, Debug, PartialEq, Eq, vmm_cli::KeyValueArgs)]
+pub struct VirtioRtcCli {
+    /// Bus to attach the device to (auto | mmio | pci | pcie:PORT | vpci).
+    #[kv(default = VirtioBusCli::Auto)]
+    pub bus: VirtioBusCli,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1577,18 +1742,52 @@ fn parse_guest_power_action(s: &str) -> Result<GuestPowerAction, String> {
     }
 }
 
-#[derive(Copy, Clone, clap::ValueEnum)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VirtioBusCli {
     Auto,
     Mmio,
     Pci,
+    Pcie(String),
     Vpci,
 }
 
+impl FromStr for VirtioBusCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_virtio_bus(value, false)
+    }
+}
+
+fn parse_virtio_bus(value: &str, ignore_case: bool) -> Result<VirtioBusCli, String> {
+    let eq = |value: &str, expected: &str| {
+        if ignore_case {
+            value.eq_ignore_ascii_case(expected)
+        } else {
+            value == expected
+        }
+    };
+
+    match value.split_once(':') {
+        None if eq(value, "auto") => Ok(VirtioBusCli::Auto),
+        None if eq(value, "mmio") => Ok(VirtioBusCli::Mmio),
+        None if eq(value, "pci") => Ok(VirtioBusCli::Pci),
+        None if eq(value, "vpci") => Ok(VirtioBusCli::Vpci),
+        Some((bus, port)) if eq(bus, "pcie") && !port.is_empty() && !port.contains(':') => {
+            Ok(VirtioBusCli::Pcie(port.to_string()))
+        }
+        _ => Err("expected auto, mmio, pci, pcie:<port>, or vpci".to_string()),
+    }
+}
+
 fn parse_virtio_vsock_bus(value: &str) -> Result<VirtioBusCli, String> {
-    match VirtioBusCli::from_str(value, true) {
-        Ok(bus @ (VirtioBusCli::Mmio | VirtioBusCli::Pci)) => Ok(bus),
-        _ => Err("expected mmio or pci".to_string()),
+    if value.eq_ignore_ascii_case("pcie") {
+        return Ok(VirtioBusCli::Pcie("vsock".to_string()));
+    }
+
+    match parse_virtio_bus(value, true) {
+        Ok(bus @ (VirtioBusCli::Mmio | VirtioBusCli::Pci | VirtioBusCli::Pcie(_))) => Ok(bus),
+        _ => Err("expected mmio, pci, pcie, or pcie:<port>".to_string()),
     }
 }
 
@@ -2136,6 +2335,13 @@ impl FromStr for DiskCliKind {
                     Self::parse_autocache(arg, std::env::var("OPENVMM_AUTO_CACHE_PATH"))?
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
+                "delay" => {
+                    let (delay_ms, kind) = arg.split_once(':').context("expected delay_ms:kind")?;
+                    DiskCliKind::DelayDiskWrapper {
+                        delay_ms: delay_ms.parse().context("invalid disk delay")?,
+                        disk: Box::new(kind.parse()?),
+                    }
+                }
                 "file" => {
                     let FileOpts {
                         path,
@@ -2261,14 +2467,14 @@ impl FromStr for RpcCli {
 #[derive(Clone)]
 pub struct VmgsCli {
     pub kind: DiskCliKind,
-    pub provision: ProvisionVmgs,
+    pub provision: ProvisionCondition,
 }
 
 #[derive(Copy, Clone)]
-pub enum ProvisionVmgs {
+pub enum ProvisionCondition {
     OnEmpty,
     OnFailure,
-    True,
+    Single,
 }
 
 impl FromStr for VmgsCli {
@@ -2282,9 +2488,9 @@ impl FromStr for VmgsCli {
         let kind = kind.parse()?;
 
         let provision = match opt {
-            None => ProvisionVmgs::OnEmpty,
-            Some("fmt-on-fail") => ProvisionVmgs::OnFailure,
-            Some("fmt") => ProvisionVmgs::True,
+            None => ProvisionCondition::OnEmpty,
+            Some("fmt-on-fail") => ProvisionCondition::OnFailure,
+            Some("fmt") => ProvisionCondition::Single,
             Some(opt) => anyhow::bail!("unknown option: '{opt}'"),
         };
 
@@ -2328,6 +2534,7 @@ pub struct DiskCli {
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
     pub pcie_port: Option<String>,
+    pub serial: Option<String>,
     pub controller: Option<String>,
     pub nsid: Option<u32>,
     pub lun: Option<u8>,
@@ -2381,6 +2588,7 @@ struct DiskArgs {
     #[kv(flag, key = "uh-nvme")]
     uh_nvme: bool,
     pcie_port: Option<String>,
+    serial: Option<String>,
     #[kv(key = "on")]
     controller: Option<String>,
     nsid: Option<u32>,
@@ -2404,10 +2612,19 @@ impl FromStr for DiskCli {
         let is_dvd = args.dvd;
         let vtl = args.vtl;
         let pcie_port = args.pcie_port;
+        let serial = args.serial;
         let controller = args.controller;
         let nsid = args.nsid;
         let lun = args.lun;
         let relay = args.relay.map(|r| (r.name, r.location));
+
+        if serial.as_ref().is_some_and(|serial| {
+            serial.bytes().any(|byte| {
+                !(byte.is_ascii_graphic() || byte == b' ') || matches!(byte, b'[' | b']')
+            })
+        }) {
+            anyhow::bail!("`serial` must contain only printable ASCII characters and no brackets");
+        }
 
         if underhill.is_some() && vtl != DeviceVtl::Vtl0 {
             anyhow::bail!("`uh` or `uh-nvme` is incompatible with `vtl2`");
@@ -2458,6 +2675,7 @@ impl FromStr for DiskCli {
             is_dvd,
             underhill,
             pcie_port,
+            serial,
             controller,
             nsid,
             lun,
@@ -2694,10 +2912,11 @@ impl FromStr for ComSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
     None,
+    Null,
     Console,
     NewConsole(Option<PathBuf>, Option<String>),
     Stderr,
@@ -2720,6 +2939,7 @@ impl FromStr for SerialConfigCli {
 
         let ret = match first_key {
             "none" => SerialConfigCli::None,
+            "null" => SerialConfigCli::Null,
             "console" => SerialConfigCli::Console,
             "stderr" => SerialConfigCli::Stderr,
             "file" => match first_value {
@@ -2737,16 +2957,13 @@ impl FromStr for SerialConfigCli {
                 SerialConfigCli::NewConsole(first_value.map(|p| p.into()), window_name)
             }
             "listen" => match first_value {
-                Some(path) => {
-                    if let Some(tcp) = path.strip_prefix("tcp:") {
-                        let addr = tcp
-                            .parse()
-                            .map_err(|err| format!("invalid tcp address: {err}"))?;
-                        SerialConfigCli::Tcp(addr)
-                    } else {
-                        SerialConfigCli::Pipe(path.into())
-                    }
+                Some(path) if let Some(tcp) = path.strip_prefix("tcp:") => {
+                    let addr = tcp
+                        .parse()
+                        .map_err(|err| format!("invalid tcp address: {err}"))?;
+                    SerialConfigCli::Tcp(addr)
                 }
+                Some(path) => SerialConfigCli::Pipe(path.into()),
                 None => Err(
                     "invalid serial configuration: listen requires a value of tcp:addr or pipe",
                 )?,
@@ -2932,7 +3149,10 @@ impl FromStr for EndpointConfigCli {
 pub struct NicConfigCli {
     pub vtl: DeviceVtl,
     pub endpoint: EndpointConfigCli,
+    /// MAC address to expose to the guest. A random address is used if omitted.
+    pub mac_address: Option<MacAddress>,
     pub max_queues: Option<u16>,
+    pub enable_rx_gso: bool,
     pub underhill: bool,
     pub pcie_port: Option<String>,
 }
@@ -2942,7 +3162,9 @@ impl FromStr for NicConfigCli {
 
     fn from_str(mut s: &str) -> Result<Self, Self::Err> {
         let mut vtl = DeviceVtl::Vtl0;
+        let mut mac_address = None;
         let mut max_queues = None;
+        let mut enable_rx_gso = false;
         let mut underhill = false;
         let mut pcie_port = None;
         while let Some((opt, rest)) = s.split_once(':') {
@@ -2950,6 +3172,9 @@ impl FromStr for NicConfigCli {
                 match opt {
                     "queues" => {
                         max_queues = Some(val.parse().map_err(|_| "failed to parse queue count")?);
+                    }
+                    "mac" => {
+                        mac_address = Some(val.parse().map_err(|_| "failed to parse MAC address")?);
                     }
                     "pcie_port" => {
                         if val.is_empty() {
@@ -2965,6 +3190,7 @@ impl FromStr for NicConfigCli {
                         vtl = DeviceVtl::Vtl2;
                     }
                     "uh" => underhill = true,
+                    "rx_gso" => enable_rx_gso = true,
                     _ => break,
                 }
             }
@@ -2983,7 +3209,9 @@ impl FromStr for NicConfigCli {
         Ok(NicConfigCli {
             vtl,
             endpoint,
+            mac_address,
             max_queues,
+            enable_rx_gso,
             underhill,
             pcie_port,
         })
@@ -3106,8 +3334,20 @@ pub enum IsolationCli {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, ValueEnum)]
 pub enum IgvmPersonalityCli {
+    /// OpenHCL paravisor hosted in VTL2.
+    Openhcl,
+    /// UEFI firmware loaded directly from the IGVM.
     Uefi,
+    /// Linux kernel loaded directly from the IGVM.
     LinuxDirect,
+}
+
+impl FromStr for IgvmPersonalityCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(value, false)
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -3152,12 +3392,28 @@ pub enum UefiConsoleModeCli {
     None,
 }
 
+impl FromStr for UefiConsoleModeCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(value, false)
+    }
+}
+
 #[derive(Copy, Clone, Debug, Default, ValueEnum)]
 pub enum EfiDiagnosticsLogLevelCli {
     #[default]
     Default,
     Info,
     Full,
+}
+
+impl FromStr for EfiDiagnosticsLogLevelCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(value, false)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3444,6 +3700,215 @@ pub struct PcieGenericInitiatorCli {
     pub node: u32,
 }
 
+/// CLI configuration for an emulated xHCI controller.
+#[derive(Clone, Debug, PartialEq, vmm_cli::KeyValueArgs)]
+pub struct UsbXhciCli {
+    /// Name of the PCIe port used by the controller.
+    #[kv(positional)]
+    pub port_name: String,
+}
+
+/// USB vendor or product ID in decimal or hexadecimal notation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsbIdCli(pub u16);
+
+impl FromStr for UsbIdCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self(
+            if let Some(hex) = value
+                .strip_prefix("0x")
+                .or_else(|| value.strip_prefix("0X"))
+            {
+                u16::from_str_radix(hex, 16).context("invalid hexadecimal USB ID")?
+            } else {
+                value.parse().context("invalid decimal USB ID")?
+            },
+        ))
+    }
+}
+
+/// A validated, one-based physical USB connector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsbConnectorCli(u8);
+
+impl UsbConnectorCli {
+    /// The user-supplied one-based connector number.
+    pub fn number(self) -> u8 {
+        self.0
+    }
+}
+
+impl FromStr for UsbConnectorCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let connector = value.parse()?;
+        anyhow::ensure!(connector != 0, "USB connector numbers are one-based");
+        Ok(Self(connector))
+    }
+}
+
+/// Optional placement overrides for a single USB device.
+#[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
+pub struct UsbDeviceLocationCli {
+    /// Controller's PCIe port; omitted when the sole controller should be selected.
+    pub on: Option<String>,
+    /// One-based USB connector; omitted to select the first free connector.
+    pub connector: Option<UsbConnectorCli>,
+}
+
+/// A concrete attachment or an automatic device-discovery request.
+#[derive(Clone, Debug)]
+pub enum UsbDeviceCli {
+    /// Attach one typed device with optional controller and connector overrides.
+    Device {
+        /// Controller and connector selection.
+        location: UsbDeviceLocationCli,
+        /// Backend-specific configuration.
+        backend: UsbBackend,
+    },
+    /// Discover WinUSB devices and attach them to free connectors.
+    WinUsbAll {
+        /// Controller's PCIe port; omitted when the sole controller should be selected.
+        on: Option<String>,
+    },
+}
+
+impl UsbDeviceCli {
+    /// Explicit controller PCIe port, or none when it should be inferred.
+    pub fn controller_pcie_port(&self) -> Option<&str> {
+        match self {
+            Self::Device { location, .. } => location.on.as_deref(),
+            Self::WinUsbAll { on } => on.as_deref(),
+        }
+    }
+}
+
+/// Connector selection and optional identity overrides shared by mock devices.
+#[derive(vmm_cli::KeyValueArgs)]
+struct UsbMockArgs {
+    /// Optional controller PCIe port and USB connector overrides.
+    #[kv(flatten)]
+    location: UsbDeviceLocationCli,
+    /// Optional USB vendor ID override.
+    vid: Option<UsbIdCli>,
+    /// Optional USB product ID override.
+    pid: Option<UsbIdCli>,
+    /// Optional serial-number override.
+    serial: Option<String>,
+}
+
+impl UsbMockArgs {
+    fn into_parts(
+        self,
+    ) -> (
+        UsbDeviceLocationCli,
+        usb_config_resources::UsbIdentityConfig,
+    ) {
+        (
+            self.location,
+            usb_config_resources::UsbIdentityConfig {
+                vendor_id: self.vid.map(|id| id.0),
+                product_id: self.pid.map(|id| id.0),
+                serial_number: self.serial,
+            },
+        )
+    }
+}
+
+/// Mock-storage arguments, including an optional capacity override.
+#[derive(vmm_cli::KeyValueArgs)]
+struct UsbStorageArgs {
+    /// Connector selection and optional device identity overrides.
+    #[kv(flatten)]
+    mock: UsbMockArgs,
+    /// Optional capacity in 512-byte logical blocks.
+    blocks: Option<u64>,
+}
+
+/// Explicit host-device selection for the `winusb` kind.
+#[derive(vmm_cli::KeyValueArgs)]
+struct UsbWinUsbArgs {
+    /// Optional controller PCIe port and USB connector overrides.
+    #[kv(flatten)]
+    location: UsbDeviceLocationCli,
+    /// Windows PnP instance ID of the host device to select.
+    instance_id: String,
+}
+
+/// Startup discovery arguments for the `winusb-all` kind.
+#[derive(vmm_cli::KeyValueArgs)]
+struct UsbWinUsbAllArgs {
+    /// Controller's PCIe port; omitted when the sole controller should be selected.
+    on: Option<String>,
+}
+
+impl FromStr for UsbDeviceCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        use usb_config_resources::*;
+        let (kind, options) = value.split_once(',').unwrap_or((value, ""));
+        let (location, backend) = match kind {
+            "mock-loopback" => {
+                let args: UsbMockArgs = options.parse()?;
+                let (location, identity) = args.into_parts();
+                (
+                    location,
+                    UsbBackend::Loopback(MockLoopbackConfig { identity }),
+                )
+            }
+            "mock-hid" => {
+                let args: UsbMockArgs = options.parse()?;
+                let (location, identity) = args.into_parts();
+                (location, UsbBackend::Hid(MockHidConfig { identity }))
+            }
+            "mock-storage" => {
+                let args: UsbStorageArgs = options.parse()?;
+                anyhow::ensure!(
+                    args.blocks != Some(0),
+                    "mock-storage blocks must be greater than zero"
+                );
+                let (location, identity) = args.mock.into_parts();
+                (
+                    location,
+                    UsbBackend::Storage(MockStorageConfig {
+                        identity,
+                        block_count: args.blocks,
+                    }),
+                )
+            }
+            "mock-mutt" => {
+                let args: UsbMockArgs = options.parse()?;
+                let (location, identity) = args.into_parts();
+                (location, UsbBackend::Mutt(MockMuttConfig { identity }))
+            }
+            "mock-supermutt" => (options.parse()?, UsbBackend::SuperMutt(MockSuperMuttConfig)),
+            "winusb" => {
+                let args: UsbWinUsbArgs = options.parse()?;
+                anyhow::ensure!(
+                    !args.instance_id.trim().is_empty() && !args.instance_id.contains('\0'),
+                    "WinUSB instance IDs must be nonempty and contain no NUL characters"
+                );
+                (
+                    args.location,
+                    UsbBackend::WinUsb(WinUsbConfig {
+                        instance_id: args.instance_id,
+                    }),
+                )
+            }
+            "winusb-all" => {
+                let args: UsbWinUsbAllArgs = options.parse()?;
+                return Ok(Self::WinUsbAll { on: args.on });
+            }
+            _ => anyhow::bail!("unknown USB device kind {kind:?}"),
+        };
+        Ok(Self::Device { location, backend })
+    }
+}
+
 /// CLI configuration for a PCIe remote device.
 #[derive(Clone, Debug, PartialEq, vmm_cli::KeyValueArgs)]
 pub struct PcieRemoteCli {
@@ -3557,7 +4022,8 @@ impl FromStr for VfioDeviceCli {
 
 /// CLI configuration for an SMMUv3 instance.
 ///
-/// Syntax: `rc=<name>[,accel][,oas=auto|N]`. `oas` defaults to `auto`.
+/// Syntax: `rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]`.
+/// Both `oas` and `ssidsize` default to `auto`.
 #[cfg(guest_arch = "aarch64")]
 #[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
 pub struct SmmuCli {
@@ -3570,6 +4036,9 @@ pub struct SmmuCli {
     /// Output address size policy.
     #[kv(default)]
     pub oas: SmmuOasCli,
+    /// SubstreamID width policy.
+    #[kv(default)]
+    pub ssidsize: SmmuSsidSizeCli,
 }
 
 /// Output address size (OAS) policy parsed from `--smmu`.
@@ -3593,6 +4062,31 @@ impl FromStr for SmmuOasCli {
             SmmuOasCli::Auto
         } else {
             SmmuOasCli::Fixed(s.parse().context("oas must be 'auto' or a number")?)
+        })
+    }
+}
+
+/// SubstreamID width (SSIDSIZE) policy parsed from `--smmu`.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Clone, Copy, Debug, Default)]
+pub enum SmmuSsidSizeCli {
+    /// Disable substreams in software mode; under acceleration, adopt the
+    /// host's width before device start freezes the capabilities.
+    #[default]
+    Auto,
+    /// Fixed width in bits (0..=20). Zero disables substreams.
+    Fixed(u8),
+}
+
+#[cfg(guest_arch = "aarch64")]
+impl FromStr for SmmuSsidSizeCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(if s == "auto" {
+            Self::Auto
+        } else {
+            Self::Fixed(s.parse().context("ssidsize must be 'auto' or a number")?)
         })
     }
 }
@@ -3626,6 +4120,10 @@ fn default_value_from_arch_env(name: &str) -> OsString {
     std::env::var_os(name)
         .or_else(|| std::env::var_os(prefixed))
         .unwrap_or_default()
+}
+
+pub fn default_uefi_firmware() -> Option<PathBuf> {
+    OptionalPathBuf::from(default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE").as_os_str()).0
 }
 
 /// Workaround to use `Option<PathBuf>` alongside [`default_value_from_arch_env`]
@@ -3750,6 +4248,162 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    #[test]
+    fn vmgs_provision_conditions() {
+        for (option, expected) in [
+            ("", ProvisionCondition::OnEmpty),
+            (",fmt-on-fail", ProvisionCondition::OnFailure),
+            (",fmt", ProvisionCondition::Single),
+        ] {
+            let vmgs: VmgsCli = format!("mem:VMGS_DEFAULT{option}").parse().unwrap();
+            assert!(matches!(
+                (vmgs.provision, expected),
+                (ProvisionCondition::OnEmpty, ProvisionCondition::OnEmpty)
+                    | (ProvisionCondition::OnFailure, ProvisionCondition::OnFailure)
+                    | (ProvisionCondition::Single, ProvisionCondition::Single)
+            ));
+        }
+    }
+
+    /// Controller arguments contain one PCIe port name and no device-specific options.
+    #[test]
+    fn test_parse_usb_controller() {
+        let controller = UsbXhciCli::from_str("rc0rp0").unwrap();
+        assert_eq!(controller.port_name, "rc0rp0");
+        assert!(UsbXhciCli::from_str("").is_err());
+        assert!(UsbXhciCli::from_str("rc0rp0,connector=1").is_err());
+    }
+
+    /// Bare mock kinds select the right variant and leave optional fields unset.
+    #[test]
+    fn test_parse_usb_mock_defaults() {
+        for kind in [
+            "mock-loopback",
+            "mock-hid",
+            "mock-storage",
+            "mock-mutt",
+            "mock-supermutt",
+        ] {
+            let UsbDeviceCli::Device { location, backend } = UsbDeviceCli::from_str(kind).unwrap()
+            else {
+                panic!("expected a device for {kind}");
+            };
+            assert_eq!(location.on, None);
+            assert_eq!(location.connector, None);
+            let identity = match (kind, backend) {
+                ("mock-loopback", UsbBackend::Loopback(config)) => config.identity,
+                ("mock-hid", UsbBackend::Hid(config)) => config.identity,
+                ("mock-storage", UsbBackend::Storage(config)) => {
+                    assert_eq!(config.block_count, None);
+                    config.identity
+                }
+                ("mock-mutt", UsbBackend::Mutt(config)) => config.identity,
+                ("mock-supermutt", UsbBackend::SuperMutt(_)) => continue,
+                _ => panic!("wrong backend variant for {kind}"),
+            };
+            assert_eq!(identity, usb_config_resources::UsbIdentityConfig::default());
+        }
+    }
+
+    /// Mock placement and identity overrides retain their parsed values for each kind.
+    #[test]
+    fn test_parse_usb_mock_overrides() {
+        for kind in ["mock-loopback", "mock-hid", "mock-storage", "mock-mutt"] {
+            let capacity = if kind == "mock-storage" {
+                ",blocks=4096"
+            } else {
+                ""
+            };
+            let selection = format!(
+                "{kind},on=usb0,connector=7,vid=0x1234,pid=65535,serial=SERIAL42{capacity}"
+            );
+            let UsbDeviceCli::Device { location, backend } =
+                UsbDeviceCli::from_str(&selection).unwrap()
+            else {
+                panic!("expected a device for {kind}");
+            };
+            assert_eq!(location.on.as_deref(), Some("usb0"));
+            assert_eq!(location.connector.map(UsbConnectorCli::number), Some(7));
+            let identity = match (kind, backend) {
+                ("mock-loopback", UsbBackend::Loopback(config)) => config.identity,
+                ("mock-hid", UsbBackend::Hid(config)) => config.identity,
+                ("mock-storage", UsbBackend::Storage(config)) => {
+                    assert_eq!(config.block_count, Some(4096));
+                    config.identity
+                }
+                ("mock-mutt", UsbBackend::Mutt(config)) => config.identity,
+                _ => panic!("wrong backend variant for {kind}"),
+            };
+            assert_eq!(identity.vendor_id, Some(0x1234));
+            assert_eq!(identity.product_id, Some(65535));
+            assert_eq!(identity.serial_number.as_deref(), Some("SERIAL42"));
+        }
+    }
+
+    /// Host-device IDs and optional placement remain distinct from discovery requests.
+    #[test]
+    fn test_parse_usb_host_selections() {
+        for (selection, expected_pcie_port, expected_connector) in [
+            (r"winusb,instance_id=USB\A&B C", None, None),
+            (
+                r"winusb,on=usb0,connector=3,instance_id=USB\A&B C",
+                Some("usb0"),
+                Some(3),
+            ),
+        ] {
+            let UsbDeviceCli::Device {
+                location,
+                backend: UsbBackend::WinUsb(config),
+            } = UsbDeviceCli::from_str(selection).unwrap()
+            else {
+                panic!("expected explicit WinUSB selection");
+            };
+            assert_eq!(location.on.as_deref(), expected_pcie_port);
+            assert_eq!(
+                location.connector.map(UsbConnectorCli::number),
+                expected_connector
+            );
+            assert_eq!(config.instance_id, r"USB\A&B C");
+        }
+        for (selection, expected_pcie_port) in
+            [("winusb-all", None), ("winusb-all,on=usb1", Some("usb1"))]
+        {
+            let UsbDeviceCli::WinUsbAll { on } = UsbDeviceCli::from_str(selection).unwrap() else {
+                panic!("expected WinUSB discovery request");
+            };
+            assert_eq!(on.as_deref(), expected_pcie_port);
+        }
+    }
+
+    /// Reject malformed values, repeated fields, and options belonging to another kind.
+    #[test]
+    fn test_parse_usb_invalid_options() {
+        for selection in [
+            "",
+            "unknown",
+            "usb0:hid",
+            "mock-hid,connector=0",
+            "mock-hid,connector=256",
+            "mock-hid,vid=0x10000",
+            "mock-hid,pid=bad",
+            "mock-hid,on=usb0,on=usb1",
+            "mock-hid,blocks=1",
+            "mock-hid,serial=",
+            "mock-storage,blocks=0",
+            "mock-supermutt,vid=1",
+            "winusb",
+            "winusb,instance_id=",
+            "winusb,instance_id=USB\0INSTANCE",
+            "winusb,instance_id=USB,serial=x",
+            "winusb-all,connector=1",
+        ] {
+            assert!(
+                UsbDeviceCli::from_str(selection).is_err(),
+                "accepted {selection:?}"
+            );
+        }
+    }
 
     /// `--version` reports the resolved build identity rather than clap's
     /// default, which would be the parser crate's own name and version.
@@ -4104,6 +4758,10 @@ mod tests {
             SerialConfigCli::None
         );
         assert_eq!(
+            SerialConfigCli::from_str("null").unwrap(),
+            SerialConfigCli::Null
+        );
+        assert_eq!(
             SerialConfigCli::from_str("console").unwrap(),
             SerialConfigCli::Console
         );
@@ -4172,6 +4830,8 @@ mod tests {
         assert!(SerialConfigCli::from_str("unknown").is_err());
         assert!(SerialConfigCli::from_str("file").is_err());
         assert!(SerialConfigCli::from_str("listen").is_err());
+        assert!(SerialConfigCli::from_str("listen=tcp:").is_err());
+        assert!(SerialConfigCli::from_str("listen=tcp:invalid").is_err());
     }
 
     #[test]
@@ -4331,10 +4991,19 @@ mod tests {
         // Test basic endpoint
         let config = NicConfigCli::from_str("none").unwrap();
         assert_eq!(config.vtl, DeviceVtl::Vtl0);
+        assert!(config.mac_address.is_none());
         assert!(config.max_queues.is_none());
+        assert!(!config.enable_rx_gso);
         assert!(!config.underhill);
         assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        let config = NicConfigCli::from_str("rx_gso:tap:tap0").unwrap();
+        assert!(config.enable_rx_gso);
+        assert!(matches!(
+            config.endpoint,
+            EndpointConfigCli::Tap { ref name } if name == "tap0"
+        ));
 
         // Test with vtl2
         let config = NicConfigCli::from_str("vtl2:none").unwrap();
@@ -4346,6 +5015,14 @@ mod tests {
         let config = NicConfigCli::from_str("queues=4:none").unwrap();
         assert_eq!(config.max_queues, Some(4));
         assert!(config.pcie_port.is_none());
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with explicit MAC address
+        let config = NicConfigCli::from_str("mac=00-15-5d-12-12-13:none").unwrap();
+        assert_eq!(
+            config.mac_address,
+            Some(MacAddress::new([0x00, 0x15, 0x5d, 0x12, 0x12, 0x13]))
+        );
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with underhill
@@ -4361,6 +5038,7 @@ mod tests {
 
         // Test error cases
         assert!(NicConfigCli::from_str("queues=invalid:none").is_err());
+        assert!(NicConfigCli::from_str("mac=invalid:none").is_err());
         assert!(NicConfigCli::from_str("uh:vtl2:none").is_err()); // uh incompatible with vtl2
         assert!(NicConfigCli::from_str("pcie_port=rp0:vtl2:none").is_err());
         assert!(NicConfigCli::from_str("uh:pcie_port=rp0:none").is_err());
@@ -5548,82 +6226,175 @@ mod tests {
     }
 
     #[test]
-    fn test_igvm_personality_required_without_vtl2() {
-        let opt = Options::try_parse_from(["openvmm", "--igvm", "guest.igvm"]).unwrap();
-        assert_eq!(
-            opt.validate_igvm_options().unwrap_err().to_string(),
-            "--igvm-personality is required for non-VTL2 IGVM boots"
-        );
+    fn test_igvm_requires_firmware_and_personality() {
+        for (options, missing) in [
+            ("firmware=guest.igvm", "personality"),
+            ("personality=openhcl", "firmware"),
+        ] {
+            for extra in [vec![], vec!["--hv", "--vtl2"]] {
+                let mut args = vec!["openvmm", "--igvm", options];
+                args.extend(extra);
+                let err = Options::try_parse_from(args).err().unwrap();
+                assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+                assert!(err.to_string().contains(missing));
+                assert!(err.to_string().contains("required"));
+            }
+        }
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        opt.validate_igvm_options().unwrap();
     }
 
     #[test]
     fn test_igvm_personality_values() {
         for (value, expected) in [
+            ("openhcl", IgvmPersonalityCli::Openhcl),
             ("uefi", IgvmPersonalityCli::Uefi),
             ("linux-direct", IgvmPersonalityCli::LinuxDirect),
         ] {
-            let opt = Options::try_parse_from([
-                "openvmm",
-                "--igvm",
-                "guest.igvm",
-                "--igvm-personality",
-                value,
-            ])
-            .unwrap();
+            let options = format!("firmware=guest.igvm,personality={value}");
+            let mut args = vec!["openvmm", "--igvm", &options];
+            if expected == IgvmPersonalityCli::Openhcl {
+                args.extend(["--hv", "--vtl2"]);
+            }
+            let opt = Options::try_parse_from(args).unwrap();
             opt.validate_igvm_options().unwrap();
-            assert_eq!(opt.igvm_personality, Some(expected));
-        }
-
-        assert!(
-            Options::try_parse_from([
-                "openvmm",
-                "--igvm",
-                "guest.igvm",
-                "--igvm-personality",
-                "pcat",
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn test_vtl2_igvm_keeps_implicit_hcl_personality() {
-        let opt =
-            Options::try_parse_from(["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"]).unwrap();
-        opt.validate_igvm_options().unwrap();
-        assert_eq!(opt.igvm_personality, None);
-    }
-
-    #[test]
-    fn test_igvm_personality_conflicts_with_vtl2() {
-        assert!(
-            Options::try_parse_from([
-                "openvmm",
-                "--igvm",
-                "guest.igvm",
-                "--hv",
-                "--vtl2",
-                "--igvm-personality",
-                "linux-direct",
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn test_igvm_personality_conflicts_with_external_firmware() {
-        for firmware in ["--uefi", "--pcat"] {
-            assert!(
-                Options::try_parse_from([
-                    "openvmm",
-                    "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
-                    firmware,
-                ])
-                .is_err()
+            assert_eq!(
+                opt.igvm,
+                Some(IgvmCli {
+                    firmware: PathBuf::from("guest.igvm"),
+                    personality: expected,
+                })
             );
+        }
+    }
+
+    #[test]
+    fn test_igvm_options_accept_reordered_keys_and_windows_paths() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            r"personality=uefi,firmware=C:\VM Images\guest=1.igvm",
+        ])
+        .unwrap();
+        assert_eq!(
+            opt.igvm,
+            Some(IgvmCli {
+                firmware: PathBuf::from(r"C:\VM Images\guest=1.igvm"),
+                personality: IgvmPersonalityCli::Uefi,
+            })
+        );
+    }
+
+    #[test]
+    fn test_igvm_options_reject_invalid_values() {
+        for options in [
+            "",
+            "guest.igvm",
+            "firmware=,personality=uefi",
+            "firmware=guest.igvm,personality=",
+            "firmware=guest.igvm,personality=pcat",
+            "firmware=guest.igvm,personality=UEFI",
+            "firmware=guest.igvm,personality=uefi,unknown=on",
+            "firmware=guest.igvm,firmware=other.igvm,personality=uefi",
+            "firmware=guest.igvm,personality=uefi,personality=linux-direct",
+        ] {
+            let err = Options::try_parse_from(["openvmm", "--igvm", options])
+                .err()
+                .unwrap();
+            assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn test_igvm_rejects_separate_personality_flag() {
+        let err = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            "firmware=guest.igvm,personality=uefi",
+            "--igvm-personality",
+            "uefi",
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn test_openhcl_igvm_personality() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            "firmware=guest.igvm,personality=openhcl",
+            "--hv",
+            "--vtl2",
+        ])
+        .unwrap();
+        opt.validate_igvm_options().unwrap();
+        assert_eq!(
+            opt.igvm.as_ref().unwrap().personality,
+            IgvmPersonalityCli::Openhcl
+        );
+        assert!(opt.effective_uefi().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_openhcl_igvm_requires_explicit_vtl2_and_hv() {
+        for extra in [vec![], vec!["--hv"], vec!["--vtl2"]] {
+            let mut args = vec![
+                "openvmm",
+                "--igvm",
+                "firmware=guest.igvm,personality=openhcl",
+            ];
+            args.extend(extra);
+            match Options::try_parse_from(args) {
+                Ok(opt) => assert_eq!(
+                    opt.validate_igvm_options().unwrap_err().to_string(),
+                    "--igvm personality=openhcl requires --hv --vtl2"
+                ),
+                Err(err) => {
+                    assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+                    assert!(err.to_string().contains("--hv"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_non_openhcl_igvm_personalities_reject_vtl2_and_uefi() {
+        for personality in ["uefi", "linux-direct"] {
+            let options = format!("firmware=guest.igvm,personality={personality}");
+            for extra in [vec!["--uefi"], vec!["--hv", "--vtl2"]] {
+                let mut args = vec!["openvmm", "--igvm", &options];
+                args.extend(extra);
+                let opt = Options::try_parse_from(args).unwrap();
+                assert!(opt.validate_igvm_options().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn test_openhcl_igvm_accepts_uefi_settings() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            "firmware=guest.igvm,personality=openhcl",
+            "--hv",
+            "--vtl2",
+            "--uefi",
+            "console=com1,disable_frontpage",
+        ])
+        .unwrap();
+        opt.validate_igvm_options().unwrap();
+        let uefi = opt.effective_uefi().unwrap().unwrap();
+        assert!(matches!(uefi.console, Some(UefiConsoleModeCli::Com1)));
+        assert!(uefi.disable_frontpage);
+    }
+
+    #[test]
+    fn test_igvm_personality_conflicts_with_pcat() {
+        for personality in ["openhcl", "uefi", "linux-direct"] {
+            let options = format!("firmware=guest.igvm,personality={personality}");
+            assert!(Options::try_parse_from(["openvmm", "--igvm", &options, "--pcat"]).is_err());
         }
     }
 
@@ -5643,7 +6414,7 @@ mod tests {
 
         let opt = Options::try_parse_from(["openvmm", "--tpm", "--uefi"]).unwrap();
         assert_eq!(opt.tpm, Some(TpmVersionCli::V185));
-        assert!(opt.uefi);
+        assert!(opt.uefi.is_some());
 
         let opt = Options::try_parse_from(["openvmm", "--tpm", "138"]).unwrap();
         assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
@@ -5655,6 +6426,57 @@ mod tests {
         assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
 
         assert!(Options::try_parse_from(["openvmm", "--tpm", "137"]).is_err());
+    }
+
+    #[test]
+    fn test_uefi_options() {
+        let options = Options::try_parse_from(["openvmm", "--uefi"]).unwrap();
+        assert!(options.effective_uefi().unwrap().is_some());
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--uefi",
+            "firmware=foo/bar,debug,force_firmware_version,console=com1,diagnostics=full",
+        ])
+        .unwrap();
+        let uefi = options.effective_uefi().unwrap().unwrap();
+        assert_eq!(uefi.firmware, Some("foo/bar".into()));
+        assert!(uefi.debug);
+        assert!(uefi.force_firmware_version);
+        assert!(matches!(uefi.console, Some(UefiConsoleModeCli::Com1)));
+        assert!(matches!(
+            uefi.diagnostics,
+            Some(EfiDiagnosticsLogLevelCli::Full)
+        ));
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--uefi",
+            "--uefi-firmware",
+            "legacy.fd",
+            "--uefi-debug",
+        ])
+        .unwrap();
+        let uefi = options.effective_uefi().unwrap().unwrap();
+        assert_eq!(uefi.firmware, Some("legacy.fd".into()));
+        assert!(uefi.debug);
+
+        assert!(Options::try_parse_from(["openvmm", "--uefi", "unknown"]).is_err());
+        let options = Options::try_parse_from(["openvmm", "--uefi", "debug=on"]).unwrap();
+        assert!(options.effective_uefi().unwrap().unwrap().debug);
+        let options = Options::try_parse_from(["openvmm", "--uefi", "debug=off"]).unwrap();
+        assert!(!options.effective_uefi().unwrap().unwrap().debug);
+        assert!(Options::try_parse_from(["openvmm", "--uefi", "debug,debug"]).is_err());
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--uefi",
+            "firmware=new.fd",
+            "--uefi-firmware",
+            "legacy.fd",
+        ])
+        .unwrap();
+        assert!(options.effective_uefi().is_err());
     }
 
     #[test]
@@ -5835,6 +6657,10 @@ mod tests {
         let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-vhost-cid", "3"]).unwrap();
         assert_eq!(opt.virtio_vsock_vhost_cid, Some(3));
 
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-vsock-path", "/tmp/vsock"]).unwrap();
+        assert_eq!(opt.virtio_vsock_path.as_deref(), Some("/tmp/vsock"));
+
         assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-vhost-cid", "2"]).is_err());
         assert!(
             Options::try_parse_from([
@@ -5851,13 +6677,70 @@ mod tests {
     #[test]
     fn test_virtio_vsock_bus_cli() {
         let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "mmio"]).unwrap();
-        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Mmio)));
+        assert_eq!(opt.virtio_vsock_bus, Some(VirtioBusCli::Mmio));
 
         let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pci"]).unwrap();
-        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Pci)));
+        assert_eq!(opt.virtio_vsock_bus, Some(VirtioBusCli::Pci));
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie"]).unwrap();
+        assert_eq!(
+            opt.virtio_vsock_bus,
+            Some(VirtioBusCli::Pcie("vsock".to_string()))
+        );
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie:custom"]).unwrap();
+        assert_eq!(
+            opt.virtio_vsock_bus,
+            Some(VirtioBusCli::Pcie("custom".to_string()))
+        );
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "PCIE:custom"]).unwrap();
+        assert_eq!(
+            opt.virtio_vsock_bus,
+            Some(VirtioBusCli::Pcie("custom".to_string()))
+        );
 
         assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "auto"]).is_err());
         assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "vpci"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie:"]).is_err());
+        assert!(
+            Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie:custom:extra"])
+                .is_err()
+        );
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-rng", "--virtio-rng-bus", "pcie:custom"])
+                .unwrap();
+        assert_eq!(opt.virtio_rng_bus, VirtioBusCli::Pcie("custom".to_string()));
+    }
+
+    #[test]
+    fn test_virtio_rtc_cli() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(opt.virtio_rtc.is_none());
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-rtc", "--processors", "2"]).unwrap();
+        assert_eq!(
+            opt.virtio_rtc,
+            Some(VirtioRtcCli {
+                bus: VirtioBusCli::Auto
+            })
+        );
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-rtc", "bus=pcie:rp0"]).unwrap();
+        assert_eq!(
+            opt.virtio_rtc,
+            Some(VirtioRtcCli {
+                bus: VirtioBusCli::Pcie("rp0".to_string())
+            })
+        );
+
+        for value in ["mmio", "bus", "bus=", "bus=pcie:", "bus=pcie:rp0,bus=mmio"] {
+            assert!(Options::try_parse_from(["openvmm", "--virtio-rtc", value]).is_err());
+        }
     }
 
     #[test]
@@ -5910,6 +6793,17 @@ mod tests {
         let d = DiskCli::from_str("file:disk.vhd,on=nvme0").unwrap();
         assert_eq!(d.controller.as_deref(), Some("nvme0"));
         assert_eq!(d.nsid, None);
+    }
+
+    #[test]
+    fn test_disk_cli_serial() {
+        let d = DiskCli::from_str("file:disk.vhd,serial=DATA-DISK").unwrap();
+        assert_eq!(d.serial.as_deref(), Some("DATA-DISK"));
+        assert!(DiskCli::from_str("file:disk.vhd,serial=").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=DATA[1]").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=DATA,DISK").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=DATA\u{1f}DISK").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=non-ascii-\u{e9}").is_err());
     }
 
     #[test]
@@ -6144,17 +7038,19 @@ mod tests {
     #[cfg(guest_arch = "aarch64")]
     #[test]
     fn test_smmu_cli_from_str() {
-        // Minimal: only rc=, oas defaults to auto, accel off.
+        // Minimal: only rc=, sizing policies default to auto, accel off.
         let s = SmmuCli::from_str("rc=pcie0").unwrap();
         assert_eq!(s.rc_name, "pcie0");
         assert!(!s.accel);
         assert!(matches!(s.oas, SmmuOasCli::Auto));
+        assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Auto));
 
         // accel flag.
         let s = SmmuCli::from_str("rc=pcie0,accel").unwrap();
         assert_eq!(s.rc_name, "pcie0");
         assert!(s.accel);
         assert!(matches!(s.oas, SmmuOasCli::Auto));
+        assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Auto));
 
         // Explicit oas=auto.
         let s = SmmuCli::from_str("rc=pcie0,oas=auto").unwrap();
@@ -6165,10 +7061,11 @@ mod tests {
         assert!(matches!(s.oas, SmmuOasCli::Fixed(52)));
 
         // All keys/flags together, order independent.
-        let s = SmmuCli::from_str("oas=48,accel,rc=pcie1").unwrap();
+        let s = SmmuCli::from_str("ssidsize=12,oas=48,accel,rc=pcie1").unwrap();
         assert_eq!(s.rc_name, "pcie1");
         assert!(s.accel);
         assert!(matches!(s.oas, SmmuOasCli::Fixed(48)));
+        assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Fixed(12)));
 
         // Missing required rc=.
         assert!(SmmuCli::from_str("accel").is_err());
@@ -6188,5 +7085,29 @@ mod tests {
 
         // Unknown flag.
         assert!(SmmuCli::from_str("rc=pcie0,turbo").is_err());
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn test_smmu_cli_ssidsize() {
+        for accel in ["", ",accel"] {
+            let s = SmmuCli::from_str(&format!("rc=pcie0,ssidsize=auto{accel}")).unwrap();
+            assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Auto));
+
+            // Device configuration validates supported widths, not the parser.
+            for bits in [0, 14, 20, 21, 255] {
+                let s = SmmuCli::from_str(&format!("rc=pcie0,ssidsize={bits}{accel}")).unwrap();
+                assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Fixed(n) if n == bits));
+            }
+        }
+
+        for value in ["256", "-1", "1.5", "", "big", "AUTO"] {
+            assert!(
+                SmmuCli::from_str(&format!("rc=pcie0,ssidsize={value}")).is_err(),
+                "accepted invalid ssidsize={value}"
+            );
+        }
+        assert!(SmmuCli::from_str("ssidsize=12").is_err());
+        assert!(SmmuCli::from_str("rc=pcie0,ssidsize=auto,ssidsize=12").is_err());
     }
 }

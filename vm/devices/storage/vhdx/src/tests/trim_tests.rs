@@ -465,7 +465,7 @@ async fn trim_fixed_disk_file_space_noop(driver: DefaultDriver) {
     let mut params = CreateParams {
         disk_size: 4 * MB1,
         block_size: MB1 as u32,
-        is_fully_allocated: true,
+        disk_type: crate::DiskType::Fixed,
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();
@@ -490,7 +490,7 @@ async fn trim_fixed_disk_make_transparent_allowed(driver: DefaultDriver) {
     let mut params = CreateParams {
         disk_size: 4 * MB1,
         block_size: MB1 as u32,
-        is_fully_allocated: true,
+        disk_type: crate::DiskType::Fixed,
         ..Default::default()
     };
     create::create(&file, &mut params).await.unwrap();

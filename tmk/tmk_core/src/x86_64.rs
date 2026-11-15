@@ -14,23 +14,31 @@ use x86defs::RFlags;
 
 #[cfg(minimal_rt)]
 mod entry {
-    core::arch::global_asm! {
-        ".globl _start",
-        "_start:",
-        "mov r12, rsi",
-        "lea rsp, {STACK_SIZE} + {stack}[rip]",
-        "lea rdx, _DYNAMIC[rip]",
-        "lea rdi, __ehdr_start[rip]",
-        "mov rsi, rdi",
-        "call {relocate}",
-        "call {arch_init}",
-        "mov rdi, r12",
-        "jmp {entry}",
-        relocate = sym minimal_rt::reloc::relocate,
-        stack = sym STACK,
-        STACK_SIZE = const STACK_SIZE,
-        entry = sym crate::entry,
-        arch_init = sym super::arch_init,
+    /// # Safety
+    /// Must be entered with the TMK start input in RSI and the image identity mapped.
+    // TODO: Use extern "custom" once supported by the minimum Rust version.
+    // SAFETY: This architecture's minimal_rt entry point is the TMK payload's sole `_start`.
+    #[unsafe(no_mangle)]
+    // SAFETY: Assembly preserves RSI and initializes the stack before calling Rust;
+    // it transfers control to the TMK entry point without returning.
+    #[unsafe(naked)]
+    unsafe extern "C" fn _start() -> ! {
+        core::arch::naked_asm!(
+            "mov r12, rsi",
+            "lea rsp, {STACK_SIZE} + {stack}[rip]",
+            "lea rdx, _DYNAMIC[rip]",
+            "lea rdi, __ehdr_start[rip]",
+            "mov rsi, rdi",
+            "call {relocate}",
+            "call {arch_init}",
+            "mov rdi, r12",
+            "jmp {entry}",
+            relocate = sym minimal_rt::reloc::relocate,
+            stack = sym STACK,
+            STACK_SIZE = const STACK_SIZE,
+            entry = sym crate::entry,
+            arch_init = sym super::arch_init,
+        );
     }
 
     const STACK_SIZE: usize = 65536;
@@ -38,49 +46,58 @@ mod entry {
     struct Stack([u8; STACK_SIZE]);
     static mut STACK: Stack = Stack([0; STACK_SIZE]);
 
-    core::arch::global_asm! {
-        ".globl isr_common",
-        "isr_common:",
-        "push rbp",
-        "push r11",
-        "push r10",
-        "push r9",
-        "push r8",
-        "push rdi",
-        "push rsi",
-        "push rdx",
-        "push rcx",
-        "push rax",
-        "mov rbp, rsp",
-        "mov rdi, rbp",
-        "and rsp, 0xfffffffffffffff0", // align to 16 bytes
-        "call {isr_handler}",
-        "test al, al", // check if there's an error code on the stack
-        "mov rsp, rbp",
-        "pop rax",
-        "pop rcx",
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "pop r8",
-        "pop r9",
-        "pop r10",
-        "pop r11",
-        "pop rbp",
-        "jz 2f",
-        "add rsp, 8", // pop the vector
-        "2:",
-        "add rsp, 8", // pop the error code or vector
-        "iretq",
+    /// # Safety
+    /// Must be entered from an interrupt stub with the vector and CPU frame on the stack.
+    // TODO: Use extern "custom" once supported by the minimum Rust version.
+    // SAFETY: Assembly owns the interrupt stack, saves/restores the interrupted
+    // registers, and returns through the CPU's interrupt frame with IRETQ.
+    #[unsafe(naked)]
+    unsafe extern "C" fn isr_common() -> ! {
+        core::arch::naked_asm!(
+            "push rbp",
+            "push r11",
+            "push r10",
+            "push r9",
+            "push r8",
+            "push rdi",
+            "push rsi",
+            "push rdx",
+            "push rcx",
+            "push rax",
+            "mov rbp, rsp",
+            "mov rdi, rbp",
+            "and rsp, 0xfffffffffffffff0", // align to 16 bytes
+            "call {isr_handler}",
+            "test al, al", // check if there's an error code on the stack
+            "mov rsp, rbp",
+            "pop rax",
+            "pop rcx",
+            "pop rdx",
+            "pop rsi",
+            "pop rdi",
+            "pop r8",
+            "pop r9",
+            "pop r10",
+            "pop r11",
+            "pop rbp",
+            "jz 2f",
+            "add rsp, 8", // pop the vector
+            "2:",
+            "add rsp, 8", // pop the error code or vector
+            "iretq",
+            isr_handler = sym super::isr_handler,
+        );
+    }
 
+    core::arch::global_asm! {
         // Define the 256 interrupt entry points. Repeat 256 times.
         ".globl {isr0}",
         "{isr0}:",
         ".rept 256",
         ".byte 0x68", ".long \\+",                  // push vector
-        ".byte 0xe9", ".long isr_common - . - 4",   // jmp isr_common
+        ".byte 0xe9", ".long {isr_common} - . - 4", // jmp isr_common
         ".endr",
-        isr_handler = sym super::isr_handler,
+        isr_common = sym isr_common,
         isr0 = sym super::ISR0,
     }
 }

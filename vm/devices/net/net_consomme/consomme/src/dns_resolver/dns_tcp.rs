@@ -617,13 +617,46 @@ mod tests {
                 // Exactly one answer.
                 assert_eq!(u16::from_be_bytes([buf[2 + 6], buf[2 + 7]]), 1);
                 // The A record RDATA appears in the response.
-                assert!(buf[2..2 + resp_len].windows(4).any(|w| w == [10, 0, 0, 9]));
+                assert!(
+                    buf[2..2 + resp_len]
+                        .array_windows::<4>()
+                        .any(|w| w == &[10, 0, 0, 9])
+                );
             }
             other => panic!("expected static response, got {other:?}"),
         }
 
         // The query was answered locally, not submitted to the backend.
         assert!(!handler.is_in_flight());
+    }
+
+    #[test]
+    fn static_aaaa_query_answered_over_tcp_without_data() {
+        let mut dns = DnsResolver::new_for_test(Arc::new(EchoBackend));
+        let mut handler = DnsTcpHandler::new(test_flow());
+        dns.add_static_record(StaticDnsRecord::A([10, 0, 0, 9]), "static.example")
+            .unwrap();
+
+        let query = build_query(0x4242, "static.example", DnsQueryType::Aaaa);
+        let msg = make_tcp_dns_message(&query);
+        assert_eq!(handler.ingest(&[&msg], &mut dns).unwrap(), msg.len());
+        assert!(!handler.is_in_flight());
+
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let mut buf = vec![0u8; 256];
+        match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
+            Poll::Ready(Ok(n)) => {
+                assert_eq!(n, query.len() + 2);
+                assert_eq!(u16::from_be_bytes([buf[0], buf[1]]) as usize, query.len());
+                let response = &buf[2..n];
+                assert_eq!(&response[..2], &query[..2]);
+                assert_eq!(&response[2..4], &[0x85, 0x80]);
+                assert_eq!(&response[4..6], &[0, 1]);
+                assert_eq!(&response[6..12], &[0; 6]);
+                assert_eq!(&response[12..], &query[12..]);
+            }
+            other => panic!("expected empty NOERROR response, got {other:?}"),
+        }
     }
 
     #[test]

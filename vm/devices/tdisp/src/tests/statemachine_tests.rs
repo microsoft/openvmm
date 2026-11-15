@@ -214,6 +214,26 @@ fn test_attestation_report_from_unlocked_fails_and_resets_to_unlocked() {
 }
 
 #[test]
+fn test_guest_device_id_report_from_unlocked_succeeds() {
+    let mut mock = new_machine();
+
+    // GuestDeviceId identifies the device rather than describing attestation
+    // state, so it is exempt from the Locked/Run requirement that every other
+    // report type is subject to.
+    let report = mock
+        .machine
+        .request_attestation_report(TdispReportType::GuestDeviceId)
+        .unwrap();
+    assert!(!report.is_empty());
+    // The exemption must not disturb the state machine or trigger an unbind.
+    assert_eq!(mock.machine.state(), TdispTdiState::Unlocked);
+    assert_eq!(
+        *mock.last_call.lock(),
+        Some(LastCall::GetDeviceReport(TdispReportType::GuestDeviceId))
+    );
+}
+
+#[test]
 fn test_attestation_report_invalid_type_from_locked_returns_error_without_state_change() {
     let mut mock = new_machine();
     mock.machine.request_lock_device_resources().unwrap();

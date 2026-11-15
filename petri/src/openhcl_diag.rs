@@ -103,6 +103,10 @@ impl OpenHclDiagHandler {
         client.crash(pid).await
     }
 
+    pub(crate) async fn dump_saved_state(&self) -> anyhow::Result<Vec<u8>> {
+        self.diag_client().await?.dump_saved_state().await
+    }
+
     pub async fn inspect(
         &self,
         path: impl Into<String>,

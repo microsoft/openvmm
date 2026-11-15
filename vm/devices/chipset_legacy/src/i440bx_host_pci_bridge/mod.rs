@@ -103,12 +103,7 @@ impl HostPciBridge {
         };
 
         if !is_restoring {
-            // Hard code VGA decoding to on. We don't support the register used to
-            // control this, and the BIOS doesn't try to set it.
-            dev.rt
-                .adjust_gpa_range
-                .adjust_gpa_range(MemoryRange::new(0xa0000..0xc0000), GpaState::Mmio);
-
+            dev.enable_vga_decoding();
             dev.adjust_bios_override_ranges(dev.state.pam_reg1, dev.state.pam_reg2, true);
         }
 
@@ -117,6 +112,14 @@ impl HostPciBridge {
 }
 
 impl HostPciBridge {
+    // Hard code VGA decoding to on. We don't support the register used to
+    // control this, and the BIOS doesn't try to set it.
+    fn enable_vga_decoding(&mut self) {
+        self.rt
+            .adjust_gpa_range
+            .adjust_gpa_range(MemoryRange::new(0xa0000..0xc0000), GpaState::Mmio);
+    }
+
     // This routine is called when the PAM (physical address management) PCI
     // configuration registers are modified.
     //
@@ -465,6 +468,10 @@ mod save_restore {
                 smm_config_word,
             };
 
+            // Construction skips the VGA aperture when restoring, so reapply it
+            // here along with the PAM ranges in case the backing memory was
+            // freshly mapped as RAM.
+            self.enable_vga_decoding();
             self.adjust_bios_override_ranges(pam_reg1, pam_reg2, true);
 
             self.cfg_space.restore(cfg_space)?;

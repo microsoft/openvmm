@@ -6,6 +6,7 @@
 use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::_util::group_by;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeSet;
 
@@ -36,7 +37,7 @@ pub enum OpenvmmOutput {
         #[serde(rename = "openvmm")]
         bin: PathBuf,
         #[serde(rename = "openvmm.dbg")]
-        dbg: PathBuf,
+        dbg: Option<PathBuf>,
     },
 }
 
@@ -60,6 +61,10 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+        let requests = group_by(requests.into_iter().map(|r| (r.params, r.openvmm)));
+        if requests.is_empty() {
+            return Ok(());
+        }
         let mut pre_build_deps = Vec::new();
 
         // TODO: install build tools for other platforms
@@ -67,23 +72,24 @@ impl FlowNode for Node {
             ctx.platform(),
             FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
         ) {
+            let mut package_names = crate::common::openssl_dev_packages(ctx.platform())?;
+            package_names.push("pkg-config".into());
             pre_build_deps.push(ctx.reqv(|v| {
                 flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec!["libssl-dev".into(), "pkg-config".into()],
+                    package_names,
                     done: v,
                 }
             }));
         }
 
-        for Request {
-            params:
-                OpenvmmBuildParams {
-                    profile,
-                    target,
-                    features,
-                },
-            openvmm: openvmm_bin,
-        } in requests
+        for (
+            OpenvmmBuildParams {
+                profile,
+                target,
+                features,
+            },
+            openvmm_bin,
+        ) in requests
         {
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm".into(),
@@ -118,15 +124,12 @@ impl FlowNode for Node {
                             OpenvmmOutput::WindowsBin { exe, pdb }
                         }
                         crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                            OpenvmmOutput::LinuxBin {
-                                bin,
-                                dbg: dbg.unwrap(),
-                            }
+                            OpenvmmOutput::LinuxBin { bin, dbg }
                         }
                         _ => unreachable!(),
                     };
 
-                    rt.write(openvmm_bin, &output);
+                    rt.write_all(openvmm_bin, &output);
                 }
             });
         }

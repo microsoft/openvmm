@@ -23,7 +23,6 @@ vmsocket.workspace = true
 underhill_confidentiality = { workspace = true, features = ["std"] }
 
 anyhow.workspace = true
-cfg-if.workspace = true
 fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true

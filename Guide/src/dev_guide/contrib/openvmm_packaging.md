@@ -73,18 +73,7 @@ provenance attestation for either archive.
 
 ## Build requirements
 
-The distribution build requires:
-
-- the Rust toolchain required by the workspace;
-- a C compiler and linker;
-- glibc development headers;
-- Linux UAPI headers;
-- OpenSSL development headers;
-- `pkg-config`;
-- a Protocol Buffers compiler providing `protoc`.
-
-These map to the following distribution packages, which is what
-OpenVMM's release validation job installs:
+In addition to the Rust toolchain required by the workspace, the distribution build requires the following packages:
 
 | Requirement | Debian / Ubuntu | Fedora |
 | --- | --- | --- |
@@ -92,7 +81,7 @@ OpenVMM's release validation job installs:
 | Linux UAPI headers | `linux-libc-dev` | `kernel-headers` |
 | OpenSSL development headers | `libssl-dev` | `openssl-devel` |
 | `pkg-config` | `pkg-config` | `pkgconf-pkg-config` |
-| `protoc` | `protobuf-compiler` | `protobuf-compiler` |
+| `protoc` | `protobuf-compiler`, `libprotobuf-dev` | `protobuf-compiler` |
 
 Building with the optional `tpm` feature additionally requires CMake, provided
 by the `cmake` package on both Debian / Ubuntu and Fedora.

@@ -135,7 +135,9 @@ impl PollDevice for GuestWatchdogServices {
 impl ChangeDeviceState for GuestWatchdogServices {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.watchdog.finish_timeout_action().await;
+    }
 
     async fn reset(&mut self) {
         self.watchdog.reset();
@@ -241,5 +243,212 @@ mod save_restore {
             self.watchdog.restore(inner)?;
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GuestWatchdogServices;
+    use super::WatchdogRegister;
+    use chipset_device::pio::ControlPortIoIntercept;
+    use chipset_device::pio::PortIoIntercept;
+    use chipset_device::poll_device::PollDevice;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::future::Future;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Waker;
+    use test_with_tracing::test;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::vmtime::SavedState as VmTimeSavedState;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
+    use watchdog_core::platform::WatchdogCallback;
+    use watchdog_core::platform::WatchdogPlatform;
+
+    /// A platform whose timeout action waits for a permit.
+    struct GatedPlatform {
+        permit: mesh::Receiver<()>,
+        completed: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl WatchdogPlatform for GatedPlatform {
+        async fn on_timeout(&mut self) {
+            self.permit.recv().await.unwrap();
+            self.completed.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn read_and_clear_boot_status(&mut self) -> bool {
+            false
+        }
+
+        fn add_callback(&mut self, _callback: Box<dyn WatchdogCallback>) {}
+    }
+
+    struct TestPorts(Option<u16>);
+
+    impl ControlPortIoIntercept for TestPorts {
+        fn region_name(&self) -> &str {
+            "watchdog-test"
+        }
+
+        fn map(&mut self, addr: u16) {
+            self.0 = Some(addr);
+        }
+
+        fn unmap(&mut self) {
+            self.0 = None;
+        }
+
+        fn addr(&self) -> Option<u16> {
+            self.0
+        }
+
+        fn len(&self) -> u16 {
+            8
+        }
+
+        fn offset_of(&self, addr: u16) -> Option<u16> {
+            let offset = addr.checked_sub(self.0?)?;
+            (offset < self.len()).then_some(offset)
+        }
+    }
+
+    async fn new_device(
+        driver: &DefaultDriver,
+        platform: Box<dyn WatchdogPlatform>,
+        is_restoring: bool,
+    ) -> (GuestWatchdogServices, VmTimeKeeper) {
+        let keeper = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
+        let vmtime = keeper.builder().build(driver).await.unwrap();
+        let device = GuestWatchdogServices::new(
+            vmtime.access("guest-watchdog"),
+            platform,
+            Box::new(TestPorts(Some(0x1000))),
+            is_restoring,
+        )
+        .await;
+        (device, keeper)
+    }
+
+    fn write_register(device: &mut GuestWatchdogServices, reg: WatchdogRegister, value: u32) {
+        device.io_write(0x1000, &reg.0.to_ne_bytes()).unwrap();
+        device.io_write(0x1004, &value.to_ne_bytes()).unwrap();
+    }
+
+    fn read_register(device: &mut GuestWatchdogServices, reg: WatchdogRegister) -> u32 {
+        device.io_write(0x1000, &reg.0.to_ne_bytes()).unwrap();
+        let mut data = [0; 4];
+        device.io_read(0x1004, &mut data).unwrap();
+        u32::from_ne_bytes(data)
+    }
+
+    async fn advance_to(keeper: &mut VmTimeKeeper, secs: u64) {
+        keeper
+            .restore(VmTimeSavedState::from_vmtime(VmTime::from_100ns(
+                secs * 10_000_000,
+            )))
+            .await;
+    }
+
+    #[async_test]
+    async fn stopped_timeout_restores_without_replay_and_can_be_rearmed(driver: DefaultDriver) {
+        let (permit, permit_recv) = mesh::channel();
+        let completed = Arc::new(AtomicUsize::new(0));
+        let (mut device, mut keeper) = new_device(
+            &driver,
+            Box::new(GatedPlatform {
+                permit: permit_recv,
+                completed: completed.clone(),
+            }),
+            false,
+        )
+        .await;
+        device.start();
+        write_register(&mut device, WatchdogRegister::WATCHDOG_COUNT, 3);
+        write_register(&mut device, WatchdogRegister::WATCHDOG_CONFIG, 0b11);
+        advance_to(&mut keeper, 4).await;
+        device.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert_eq!(
+            read_register(&mut device, WatchdogRegister::WATCHDOG_CONFIG) & 0b11,
+            0
+        );
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
+
+        {
+            let mut stop = pin!(device.stop());
+            assert!(
+                stop.as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            assert_eq!(completed.load(Ordering::SeqCst), 0);
+            permit.send(());
+            stop.await;
+        }
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        let saved = device.save().unwrap();
+        device.reset().await;
+        assert_eq!(
+            read_register(&mut device, WatchdogRegister::WATCHDOG_CONFIG) & 0b11,
+            0
+        );
+        drop(device);
+        drop(keeper);
+
+        let (permit, permit_recv) = mesh::channel();
+        let (mut restored, mut keeper) = new_device(
+            &driver,
+            Box::new(GatedPlatform {
+                permit: permit_recv,
+                completed: completed.clone(),
+            }),
+            true,
+        )
+        .await;
+        restored.restore(saved).unwrap();
+        restored.start();
+        advance_to(&mut keeper, 20).await;
+        restored.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            read_register(&mut restored, WatchdogRegister::WATCHDOG_CONFIG) & 0b11,
+            0
+        );
+        assert_eq!(
+            read_register(&mut restored, WatchdogRegister::WATCHDOG_COUNT),
+            3
+        );
+
+        permit.send(());
+        write_register(&mut restored, WatchdogRegister::WATCHDOG_CONFIG, 0b11);
+        assert_eq!(
+            read_register(&mut restored, WatchdogRegister::WATCHDOG_COUNT),
+            3
+        );
+        advance_to(&mut keeper, 22).await;
+        restored.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            read_register(&mut restored, WatchdogRegister::WATCHDOG_CONFIG) & 0b11,
+            0b11
+        );
+        advance_to(&mut keeper, 24).await;
+        restored.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            read_register(&mut restored, WatchdogRegister::WATCHDOG_CONFIG) & 0b11,
+            0
+        );
+        advance_to(&mut keeper, 40).await;
+        restored.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
+        restored.stop().await;
     }
 }

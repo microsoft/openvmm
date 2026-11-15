@@ -994,11 +994,11 @@ impl hv1_emulator::VtlProtectAccess for UntrustedSynicVtlProts<'_> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
         self.0
-            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
             .map_err(|_| HvError::OperationFailed)
     }
 
@@ -4192,6 +4192,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         Err(vp_state::Error::Unimplemented("tsc"))
     }
 
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
+    }
+
+    fn set_tsc_deadline(&mut self, _value: &vp::TscDeadline) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
+    }
+
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {
         Ok(vp::TscAux {
             value: self.vp.backing.vtls[self.vtl].private_regs.msr_tsc_aux,
@@ -4281,9 +4289,7 @@ fn top_vector(reg: &[ApicRegisterValue; 8]) -> u8 {
     reg.iter()
         .enumerate()
         .rev()
-        .find_map(|(i, r)| {
-            (r.value != 0).then(|| (i as u32 * 32 + (31 - r.value.leading_zeros())) as u8)
-        })
+        .find_map(|(i, r)| r.value.highest_one().map(|bit| (i as u32 * 32 + bit) as u8))
         .unwrap_or(0)
 }
 

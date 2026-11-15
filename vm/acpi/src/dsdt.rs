@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 pub use crate::aml::*;
+use alloc::vec;
+use alloc::vec::Vec;
 use memory_range::MemoryRange;
 use x86defs::apic::APIC_BASE_ADDRESS;
 use zerocopy::FromBytes;
@@ -124,6 +126,48 @@ impl Dsdt {
         obj.append_to_vec(&mut self.objects);
     }
 
+    /// Add a power button driven by a dedicated, level-triggered, active-high
+    /// global system interrupt (GSI), with a 32-bit write-one-to-clear status
+    /// register at `mmio_base`.
+    ///
+    /// ```text
+    /// Device (\_SB.OVPB)
+    /// {
+    ///     Name (_HID, "ACPI0013")
+    ///     Name (_UID, 0)
+    ///     Name (_CRS, ResourceTemplate ()
+    ///     {
+    ///         Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { <GSI> }
+    ///     })
+    ///     Device (MRES)
+    ///     {
+    ///         Name (_HID, EisaId ("PNP0C02"))
+    ///         Name (_CRS, ResourceTemplate ()
+    ///         {
+    ///             Memory32Fixed (ReadWrite, <mmio_base>, 4)
+    ///         })
+    ///     }
+    ///     OperationRegion (PREG, SystemMemory, <mmio_base>, 4)
+    ///     Field (PREG, DWordAcc, NoLock, Preserve) { PEND, 32 }
+    ///     Device (PBTN)
+    ///     {
+    ///         Name (_HID, EisaId ("PNP0C0C"))
+    ///         Name (_UID, 0)
+    ///     }
+    ///     Method (_EVT, 1, Serialized)
+    ///     {
+    ///         If (PEND)
+    ///         {
+    ///             Store (One, PEND)
+    ///             Notify (PBTN, 0x80)
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub fn add_power_button(&mut self, gsi: u32, mmio_base: u32) {
+        self.add_object(&crate::power_button::device(gsi, mmio_base));
+    }
+
     /// Add an APIC device to the DSDT with the following ASL code:
     /// ```text
     /// Device(\_SB.APIC)
@@ -142,7 +186,11 @@ impl Dsdt {
         apic.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0003")));
         let mut apic_crs = CurrentResourceSettings::new();
         apic_crs.add_resource(&Memory32Fixed::new(APIC_BASE_ADDRESS, 0x1000, true));
-        apic_crs.add_resource(&Memory32Fixed::new(0xfec00000, 0x1000, true));
+        apic_crs.add_resource(&Memory32Fixed::new(
+            acpi_spec::hyperv::IOAPIC_BASE_ADDRESS,
+            0x1000,
+            true,
+        ));
         apic.add_object(&apic_crs);
         self.add_object(&apic);
     }
@@ -163,14 +211,39 @@ impl Dsdt {
     /// }
     /// ```
     pub fn add_uart(&mut self, name: &[u8], ddn: &[u8], uid: u64, io_base: u16, irq: u32) {
+        self.add_uart_resource(name, ddn, uid, io_base, irq, false);
+    }
+
+    /// Adds a 16550A UART with an edge-triggered, active-high, shared IRQ.
+    ///
+    /// Use this for chipsets where multiple COM ports share a line. The
+    /// existing [`Self::add_uart`] keeps its exclusive-IRQ resource contract.
+    pub fn add_uart_shared(&mut self, name: &[u8], ddn: &[u8], uid: u64, io_base: u16, irq: u32) {
+        self.add_uart_resource(name, ddn, uid, io_base, irq, true);
+    }
+
+    fn add_uart_resource(
+        &mut self,
+        name: &[u8],
+        ddn: &[u8],
+        uid: u64,
+        io_base: u16,
+        irq: u32,
+        shared: bool,
+    ) {
         let mut uart = Device::new(name);
         uart.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0501")));
         uart.add_object(&NamedString::new(b"_DDN", ddn));
         uart.add_object(&NamedInteger::new(b"_UID", uid));
         let mut uart_crs = CurrentResourceSettings::new();
-        uart_crs.add_resource(&IoPort::new(io_base, io_base, 8));
+        uart_crs.add_resource(&IoPort::new(
+            io_base,
+            io_base,
+            x86defs::serial::COM_REGISTER_COUNT,
+        ));
         let mut intr = Interrupt::new(irq);
         intr.is_edge_triggered = true;
+        intr.is_shared = shared;
         uart_crs.add_resource(&intr);
         uart.add_object(&uart_crs);
         self.add_object(&uart);
@@ -409,6 +482,7 @@ impl Dsdt {
 mod tests {
     use super::*;
     use crate::aml::test_helpers::verify_expected_bytes;
+    use alloc::format;
 
     pub fn verify_header(bytes: &[u8]) {
         assert!(bytes.len() >= 36);

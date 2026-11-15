@@ -30,9 +30,13 @@ pub enum LinuxTestKernelVersion {
     /// Published **aarch64-only**. Beyond the ARM CCA host bits it is built
     /// for, it also enables the P2PDMA / vfio-dmabuf / iommufd config
     /// (`CONFIG_PCI_P2PDMA`, `CONFIG_VFIO_PCI_DMABUF`, `CONFIG_IOMMUFD`,
-    /// `CONFIG_ARM_SMMU_V3`) that the incubator's VFIO device-assignment tests
+    /// `CONFIG_ARM_SMMU_V3`) that the emulator VFIO device-assignment tests
     /// need to exercise device-BAR P2P DMA, which predate the 6.18 test kernel.
     CcaV15,
+    /// The x86_64-only SEV-SNP guest kernel used by the SNP Linux-direct IGVM.
+    SnpGuest,
+    /// Module-free x86_64 mshv root kernel, distinct from the child test kernel.
+    MshvTest,
 }
 
 impl LinuxTestKernelVersion {
@@ -43,16 +47,20 @@ impl LinuxTestKernelVersion {
             Self::Linux6_1 => "6.1",
             Self::Linux6_18 => "6.18",
             Self::CcaV15 => "cca-v15",
+            Self::SnpGuest => "snp-guest",
+            Self::MshvTest => "mshv-test",
         }
     }
 
     /// Whether this kernel version is published for the given architecture.
     ///
-    /// Most versions ship for both architectures; `cca-v15` is aarch64-only.
+    /// Most versions ship for both architectures; `cca-v15` is aarch64-only
+    /// and `snp-guest` and `mshv-test` are x86_64-only.
     pub fn is_available_for(self, arch: CommonArch) -> bool {
         match self {
             Self::Linux6_1 | Self::Linux6_18 => true,
             Self::CcaV15 => matches!(arch, CommonArch::Aarch64),
+            Self::SnpGuest | Self::MshvTest => matches!(arch, CommonArch::X86_64),
         }
     }
 }
@@ -93,19 +101,24 @@ pub const DEFAULT_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
     LinuxTestKernelVersion::Linux6_18;
 
 /// The Linux test kernel used as the **L1 host image** for the aarch64 QEMU-TCG
-/// incubator. Unlike [`DEFAULT_LINUX_TEST_KERNEL_VERSION`], this must ship the
-/// P2PDMA / vfio-dmabuf / iommufd config
-/// ([`LinuxTestKernelVersion::CcaV15`], Linux 7.2.0-rc1) so incubator VFIO
+/// emulated tests. Unlike [`DEFAULT_LINUX_TEST_KERNEL_VERSION`], this must ship
+/// the P2PDMA / vfio-dmabuf / iommufd config
+/// ([`LinuxTestKernelVersion::CcaV15`], Linux 7.2.0-rc1) so emulated VFIO
 /// device-assignment tests can exercise device-BAR peer-to-peer DMA. Aarch64
-/// only (the incubator is aarch64-only).
-pub const INCUBATOR_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
-    LinuxTestKernelVersion::CcaV15;
+/// only.
+pub const CCA_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion = LinuxTestKernelVersion::CcaV15;
+
+/// The x86_64 SEV-SNP guest kernel used by the SNP Linux-direct IGVM.
+pub const SNP_GUEST_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
+    LinuxTestKernelVersion::SnpGuest;
 
 flowey_config! {
     /// Config for the resolve_openvmm_test_linux_kernel node.
     pub struct Config {
         /// Specify version of the github release to pull from
         pub version: Option<String>,
+        /// Override the mshv-test release independently of other test kernels.
+        pub mshv_version: Option<String>,
         /// Use locally downloaded openvmm-test-linux contents, keyed by
         /// (architecture, kernel version)
         pub local_paths: BTreeMap<(CommonArch, LinuxTestKernelVersion), ConfigVar<PathBuf>>,
@@ -142,6 +155,7 @@ impl FlowNodeWithConfig for Node {
     ) -> anyhow::Result<()> {
         let Config {
             version,
+            mshv_version,
             local_paths,
         } = config;
         let mut deps: BTreeMap<
@@ -172,7 +186,7 @@ impl FlowNodeWithConfig for Node {
             anyhow::bail!("Cannot specify both Version and LocalPath requests");
         }
 
-        if version.is_none() && local_paths.is_empty() {
+        if version.is_none() && mshv_version.is_none() && local_paths.is_empty() {
             anyhow::bail!("Must specify a Version or LocalPath request");
         }
 
@@ -216,38 +230,45 @@ impl FlowNodeWithConfig for Node {
         // archive), so dedupe download + extract on `(arch, kver)`.
         let needed_archives: BTreeSet<(CommonArch, LinuxTestKernelVersion)> =
             deps.keys().map(|(_, arch, kver)| (*arch, *kver)).collect();
-
         let mut archives = BTreeMap::new();
         for (arch, kver) in needed_archives {
-            let version = version.clone().expect("local requests handled above");
+            let version = if kver == LinuxTestKernelVersion::MshvTest {
+                mshv_version.as_ref().or(version.as_ref())
+            } else {
+                version.as_ref()
+            }
+            .with_context(|| format!("missing openvmm-test-linux version for {kver:?}"))?
+            .clone();
             let arch_str = match arch {
                 CommonArch::X86_64 => "x86_64",
                 CommonArch::Aarch64 => "aarch64",
             };
             let kver_str = kver.artifact_tag();
             let archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm-deps".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                repo_name: crate::common::OPENVMM_DEPS_GITHUB_REPO.into(),
                 needs_auth: false,
                 tag: version.clone(),
                 file_name: format!("openvmm-test-linux-{kver_str}.{arch_str}.{version}.tar.gz"),
                 path: v,
             });
-            archives.insert((arch, kver), archive);
+            archives.insert((arch, kver), (archive, version));
         }
 
         let persistent_dir = ctx.persistent_dir();
 
         ctx.emit_rust_step("unpack openvmm-test-linux archives", |ctx| {
             let persistent_dir = persistent_dir.claim(ctx);
-            let archives = archives.claim(ctx);
+            let archives: BTreeMap<_, _> = archives
+                .into_iter()
+                .map(|(key, (archive, version))| (key, (archive.claim(ctx), version)))
+                .collect();
             let deps = deps.claim(ctx);
-            let version = version.clone().expect("local requests handled above");
             move |rt| {
                 let persistent_dir = persistent_dir.map(|d| rt.read(d));
 
                 let mut extract_dirs = BTreeMap::new();
-                for (key, archive) in archives {
+                for (key, (archive, version)) in archives {
                     let file = rt.read(archive);
                     let dir = flowey_lib_common::_util::extract::extract_tar_gz_if_new(
                         rt,
@@ -259,7 +280,14 @@ impl FlowNodeWithConfig for Node {
                 }
 
                 for ((file, arch, kver), vars) in deps {
-                    let path = extract_dirs[&(arch, kver)].join(file.filename(arch));
+                    let path = extract_dirs
+                        .get(&(arch, kver))
+                        .with_context(|| {
+                            format!(
+                                "missing extracted openvmm-test-linux archive for {arch:?} {kver:?}"
+                            )
+                        })?
+                        .join(file.filename(arch));
                     rt.write_all(vars, &path)
                 }
 

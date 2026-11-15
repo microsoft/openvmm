@@ -158,7 +158,7 @@ impl UefiDevice {
             }
         };
 
-        tracing::debug!("get_time: {:?}", vm_time);
+        tracing::trace!("get_time: {:?}", vm_time);
         self.gm.write_plain(gpa, &vm_time)
     }
 

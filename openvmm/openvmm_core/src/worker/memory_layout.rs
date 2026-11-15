@@ -19,8 +19,8 @@
 use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
 use anyhow::Context;
 use anyhow::bail;
-use cxl_spec::spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
-use cxl_spec::spec::CXL_HPA_ALIGNMENT;
+use cxl_spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::CXL_HPA_ALIGNMENT;
 use memory_range::MemoryRange;
 use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
@@ -673,6 +673,7 @@ mod tests {
             segment: 0,
             start_bus: 0,
             end_bus: 0,
+            legacy_pci_config_io: false,
             low_mmio,
             high_mmio,
             ports: Vec::new(),
@@ -802,6 +803,7 @@ mod tests {
                 segment: 0,
                 start_bus: 0,
                 end_bus: 15,
+                legacy_pci_config_io: false,
                 low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
@@ -816,6 +818,7 @@ mod tests {
                 segment: 0,
                 start_bus: 16,
                 end_bus: 31,
+                legacy_pci_config_io: false,
                 low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
@@ -854,6 +857,7 @@ mod tests {
             segment: 0,
             start_bus: 0,
             end_bus: 255,
+            legacy_pci_config_io: false,
             low_mmio: PcieMmioRangeConfig::Dynamic { size: 64 * MB },
             high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
             ports: Vec::new(),

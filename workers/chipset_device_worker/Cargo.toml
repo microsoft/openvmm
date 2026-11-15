@@ -24,7 +24,11 @@ parking_lot.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 slab.workspace = true
+task_control.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

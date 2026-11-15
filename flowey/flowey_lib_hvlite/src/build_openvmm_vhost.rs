@@ -6,8 +6,9 @@
 use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::_util::group_by;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OpenvmmVhostBuildParams {
     pub profile: CommonProfile,
     pub target: CommonTriple,
@@ -16,7 +17,7 @@ pub struct OpenvmmVhostBuildParams {
 #[derive(Serialize, Deserialize)]
 pub struct OpenvmmVhostOutput {
     pub bin: PathBuf,
-    pub dbg: PathBuf,
+    pub dbg: Option<PathBuf>,
 }
 
 impl Artifact for OpenvmmVhostOutput {}
@@ -38,11 +39,8 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        for Request {
-            params: OpenvmmVhostBuildParams { profile, target },
-            openvmm_vhost: openvmm_vhost_bin,
-        } in requests
-        {
+        let requests = group_by(requests.into_iter().map(|r| (r.params, r.openvmm_vhost)));
+        for (OpenvmmVhostBuildParams { profile, target }, openvmm_vhost_bin) in requests {
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm_vhost".into(),
                 out_name: "openvmm_vhost".into(),
@@ -62,15 +60,12 @@ impl FlowNode for Node {
                 move |rt| {
                     let output = match rt.read(output) {
                         crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                            OpenvmmVhostOutput {
-                                bin,
-                                dbg: dbg.unwrap(),
-                            }
+                            OpenvmmVhostOutput { bin, dbg }
                         }
                         _ => unreachable!("openvmm_vhost is Linux-only"),
                     };
 
-                    rt.write(openvmm_vhost_bin, &output);
+                    rt.write_all(openvmm_vhost_bin, &output);
                 }
             });
         }

@@ -2,17 +2,16 @@
 # Licensed under the MIT License.
 
 [package]
-name = "cxl_spec"
+name = "cxl"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-bitfield-struct.workspace = true
 chipset_device.workspace = true
+cxl_spec.workspace = true
 inspect.workspace = true
 mesh.workspace = true
-open_enum.workspace = true
 pci_resources.workspace = true
 pci_core.workspace = true
 thiserror.workspace = true

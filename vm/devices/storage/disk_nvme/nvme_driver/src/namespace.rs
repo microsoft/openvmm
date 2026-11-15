@@ -19,6 +19,7 @@ use pal_async::task::Spawn;
 use parking_lot::Mutex;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -82,7 +83,7 @@ pub struct Namespace {
     reservation_capabilities: nvm::ReservationCapabilities,
     controller_identify: Arc<spec::IdentifyController>,
     #[inspect(skip)]
-    issuers: Arc<IoIssuers>,
+    issuers: Weak<IoIssuers>,
 }
 
 #[derive(Debug, Inspect)]
@@ -203,7 +204,7 @@ impl Namespace {
             preferred_deallocate_granularity,
             reservation_capabilities,
             controller_identify,
-            issuers: io_issuers.clone(),
+            issuers: Arc::downgrade(io_issuers),
         })
     }
 
@@ -241,8 +242,14 @@ impl Namespace {
         Ok(())
     }
 
-    async fn issuer(&self, cpu: u32) -> Result<&Issuer, RequestError> {
-        self.issuers.get(cpu).await
+    async fn issuer(&self, cpu: u32) -> Result<Arc<Issuer>, RequestError> {
+        let issuers =
+            self.issuers
+                .upgrade()
+                .ok_or(RequestError::Gone(mesh::rpc::RpcError::Channel(
+                    mesh::RecvError::Closed,
+                )))?;
+        issuers.get(cpu).await
     }
 
     /// Reads from the namespace.

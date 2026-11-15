@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use guestmem::LockedPages;
+use guestmem::UserLockedPages;
 use parking_lot::RwLock;
 use safeatomic::AtomicSliceOps;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use vmcore::interrupt::Interrupt;
 
 pub(crate) struct ChannelBitmap {
-    interrupt_page: LockedPages,
+    interrupt_page: UserLockedPages,
     channel_table: RwLock<Vec<Option<Interrupt>>>,
 }
 
@@ -21,7 +21,7 @@ const INTERRUPT_PAGE_SIZE: usize = 2048;
 /// shared interrupt arrives.
 impl ChannelBitmap {
     /// Creates a new `ChannelBitmap`.
-    pub fn new(interrupt_page: LockedPages) -> Self {
+    pub fn new(interrupt_page: UserLockedPages) -> Self {
         Self {
             interrupt_page,
             channel_table: RwLock::new(vec![None; crate::channels::MAX_CHANNELS]),
@@ -121,8 +121,7 @@ impl<'a> AtomicBitmap<'a> {
             let mut value = word.swap(0, Ordering::SeqCst);
 
             // Scan the current word.
-            while value != 0 {
-                let index = value.trailing_zeros();
+            while let Some(index) = value.lowest_one() {
                 value &= !(1u64 << index);
                 let index = word_index * BITS_PER_WORD + (index as usize);
                 callback(index);
@@ -134,6 +133,21 @@ impl<'a> AtomicBitmap<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn scan_preserves_bit_order_and_clears_boundary_bits() {
+        let bits = [
+            AtomicU64::new(1 | (1 << 63)),
+            AtomicU64::new(0),
+            AtomicU64::new(1 | (1 << 63)),
+        ];
+        let bitmap = AtomicBitmap::new(&bits);
+        let mut indices = Vec::new();
+        bitmap.scan_and_clear(|index| indices.push(index));
+        assert_eq!(indices, [0, 63, 128, 191]);
+        bitmap.scan_and_clear(|_| panic!("bitmap was not cleared"));
+    }
 
     #[test]
     fn test_atomic_bitmap() {

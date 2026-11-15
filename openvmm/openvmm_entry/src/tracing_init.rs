@@ -4,14 +4,26 @@
 use anyhow::Context as _;
 use anyhow::anyhow;
 use std::io::IsTerminal;
+use tracing_subscriber::Layer as _;
+use tracing_subscriber::filter::FilterFn;
+use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;
 use tracing_subscriber::fmt::time::uptime;
+
+const PERF_TARGET: &str = "openvmm::perf";
+const PERF_TARGET_PREFIX: &str = "openvmm::perf::";
 
 #[cfg(windows)]
 const OPENVMM_PROVIDER_GUID: guid::Guid = guid::guid!("22bc55fe-2116-5adc-12fb-3fadfd7e360c");
 #[cfg(windows)]
 const OPENVMM_KEYWORD_TRACE_LEVEL: u64 = 0x1;
+
+/// Keeps optional tracing exporters alive until process shutdown.
+pub struct TracingGuard {
+    #[cfg(feature = "otel")]
+    _otel: Option<otel_tracing::TracerProviderGuard>,
+}
 
 /// Reads an environment variable, falling back to a legacy variable (replacing
 /// "OPENVMM_" with "HVLITE_") if the original is not set.
@@ -24,8 +36,18 @@ fn legacy_openvmm_env(name: &str) -> Result<String, std::env::VarError> {
     })
 }
 
+fn exclude_perf_targets() -> FilterFn<fn(&tracing::Metadata<'_>) -> bool> {
+    fn enabled(metadata: &tracing::Metadata<'_>) -> bool {
+        let target = metadata.target();
+
+        target != PERF_TARGET && !target.starts_with(PERF_TARGET_PREFIX)
+    }
+
+    filter_fn(enabled)
+}
+
 /// Enables tracing output to stderr.
-pub fn enable_tracing() -> anyhow::Result<()> {
+pub fn enable_tracing() -> anyhow::Result<TracingGuard> {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -72,11 +94,25 @@ pub fn enable_tracing() -> anyhow::Result<()> {
         .with_span_events(span_events)
         .fmt_fields(tracing_helpers::formatter::FieldFormatter)
         .log_internal_errors(true)
-        .with_writer(writer);
+        .with_writer(writer)
+        .with_filter(exclude_perf_targets());
 
     let sub = tracing_subscriber::Registry::default()
         .with(fmt_layer)
         .with(filter);
+
+    #[cfg(feature = "otel")]
+    let (sub, otel_guard) = {
+        let (otel_layer, otel_guard) = if env_bool(std::env::var("OPENVMM_OTEL")) {
+            let build_info = openvmm_build_info::get();
+            let (layer, guard) = otel_tracing::init_native_layer("openvmm", build_info.version())
+                .context("failed to initialize OpenTelemetry tracing")?;
+            (Some(layer), Some(guard))
+        } else {
+            (None, None)
+        };
+        (sub.with(otel_layer), otel_guard)
+    };
 
     // Enable an ETW layer on Windows.
     // TODO: include the process name and maybe a VM ID?
@@ -95,5 +131,8 @@ pub fn enable_tracing() -> anyhow::Result<()> {
     sub.try_init()
         .map_err(|e| anyhow!(e).context("failed to enable tracing"))?;
 
-    Ok(())
+    Ok(TracingGuard {
+        #[cfg(feature = "otel")]
+        _otel: otel_guard,
+    })
 }

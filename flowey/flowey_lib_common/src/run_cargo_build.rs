@@ -23,6 +23,15 @@ pub enum CargoBuildProfile {
 }
 
 impl CargoBuildProfile {
+    /// The profile name passed to Cargo's `--profile` option.
+    pub fn as_cargo_profile(&self) -> &str {
+        match self {
+            Self::Debug => "dev",
+            Self::Release => "release",
+            Self::Custom(profile) => profile,
+        }
+    }
+
     pub fn from_release(value: bool) -> Self {
         match value {
             true => CargoBuildProfile::Release,
@@ -141,6 +150,13 @@ flowey_request! {
         /// (e.g: to allow for some ambient packages / dependencies to get
         /// installed).
         pub pre_build_deps: Vec<ReadVar<SideEffect>>,
+        /// Capture non-JSON stdout lines separately from Cargo messages.
+        ///
+        /// When `None`, all stdout must be valid JSON. JSON object lines are
+        /// always validated, even when text capture is enabled.
+        /// Only text emitted by this invocation is captured; Cargo does not
+        /// replay compiler stdout for cached crates.
+        pub non_json_output: Option<WriteVar<Vec<String>>>,
         pub output: WriteVar<CargoBuildOutput>,
     }
 }
@@ -170,6 +186,7 @@ impl FlowNode for Node {
             extra_env,
             config,
             pre_build_deps,
+            non_json_output,
             output,
         } in requests
         {
@@ -186,11 +203,12 @@ impl FlowNode for Node {
                 let in_folder = in_folder.claim(ctx);
                 let output = output.claim(ctx);
                 let extra_env = extra_env.claim(ctx);
+                let non_json_output = non_json_output.claim(ctx);
                 move |rt| {
                     let rust_toolchain = rt.read(rust_toolchain);
                     let flags = rt.read(flags);
                     let in_folder = rt.read(in_folder);
-                    let with_env = rt.read(extra_env).unwrap_or_default();
+                    let mut with_env = rt.read(extra_env).unwrap_or_default();
 
                     let crate::cfg_cargo_common_flags::Flags {
                         locked,
@@ -198,11 +216,7 @@ impl FlowNode for Node {
                         no_incremental,
                     } = flags;
 
-                    let cargo_profile = match &profile {
-                        CargoBuildProfile::Debug => "dev",
-                        CargoBuildProfile::Release => "release",
-                        CargoBuildProfile::Custom(s) => s,
-                    };
+                    let cargo_profile = profile.as_cargo_profile();
 
                     // would be nice to use +{toolchain} syntax instead, but that
                     // doesn't work on windows via xshell for some reason...
@@ -212,68 +226,33 @@ impl FlowNode for Node {
                         "cargo"
                     };
 
-                    // FIXME: this flow is vestigial from a time when this node
-                    // would return `CargoBuildCommand` back to the caller.
-                    //
-                    // this should be replaced with a easier to read + maintain
-                    // `xshell` invocation
-                    let cmd = CargoBuildCommand {
-                        argv0: argv0.into(),
-                        params: {
-                            let mut v = Vec::new();
-                            if let Some(rust_toolchain) = &rust_toolchain {
-                                v.push("run".into());
-                                v.push(rust_toolchain.into());
-                                v.push("cargo".into());
-                            }
-                            v.push("build".into());
-                            v.push("--message-format=json-render-diagnostics".into());
-                            if verbose {
-                                v.push("--verbose".into());
-                            }
-                            if locked {
-                                v.push("--locked".into());
-                            }
-                            v.push("-p".into());
-                            v.push(crate_name.clone());
-                            v.extend(features.to_cargo_arg_strings());
-                            if let Some(target) = &target {
-                                v.push("--target".into());
-                                v.push(target.to_string());
-                            }
-                            v.push("--profile".into());
-                            v.push(cargo_profile.into());
-                            v.extend(config.iter().flat_map(|x| ["--config", x]).map(Into::into));
-                            match output_kind {
-                                CargoCrateType::Bin => {
-                                    v.push("--bin".into());
-                                    v.push(out_name.clone());
-                                }
-                                CargoCrateType::StaticLib | CargoCrateType::DynamicLib => {
-                                    v.push("--lib".into());
-                                }
-                            }
-                            v
-                        },
-                        with_env,
-                        cargo_work_dir: in_folder.clone(),
-                        out_name,
-                        crate_type: output_kind,
-                    };
-
-                    let CargoBuildCommand {
-                        argv0,
-                        params,
-                        mut with_env,
-                        cargo_work_dir,
-                        out_name,
-                        crate_type,
-                    } = cmd;
-
                     let out_dir = rt.sh.current_dir();
-
-                    rt.sh.change_dir(cargo_work_dir);
-                    let mut cmd = flowey::shell_cmd!(rt, "{argv0} {params...}");
+                    let _dir = rt.sh.push_dir(&in_folder);
+                    let mut cmd = flowey::shell_cmd!(rt, "{argv0}");
+                    if let Some(rust_toolchain) = &rust_toolchain {
+                        cmd = cmd.args(["run", rust_toolchain, "cargo"]);
+                    }
+                    cmd = cmd.args(["build", "--message-format=json-render-diagnostics"]);
+                    if verbose {
+                        cmd = cmd.arg("--verbose");
+                    }
+                    if locked {
+                        cmd = cmd.arg("--locked");
+                    }
+                    cmd = cmd
+                        .args(["-p", &crate_name])
+                        .args(features.to_cargo_arg_strings());
+                    if let Some(target) = &target {
+                        cmd = cmd.args(["--target", &target.to_string()]);
+                    }
+                    cmd = cmd.args(["--profile", cargo_profile]);
+                    for config in config {
+                        cmd = cmd.args(["--config", &config]);
+                    }
+                    cmd = match output_kind {
+                        CargoCrateType::Bin => cmd.args(["--bin", &out_name]),
+                        CargoCrateType::StaticLib | CargoCrateType::DynamicLib => cmd.arg("--lib"),
+                    };
                     if no_incremental {
                         with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
                     } else if matches!(rt.backend(), FlowBackend::Local) {
@@ -295,17 +274,16 @@ impl FlowNode for Node {
                             .concat()
                     );
                     let json = cmd.read()?;
-                    let messages: Vec<cargo_output::Message> =
-                        serde_json::Deserializer::from_str(&json)
-                            .into_iter()
-                            .collect::<Result<_, _>>()
-                            .context("failed to deserialize cargo output")?;
+                    let (messages, text) = parse_cargo_output(&json, non_json_output.is_some())?;
 
-                    rt.sh.change_dir(out_dir.clone());
+                    drop(_dir);
 
                     let build_output =
-                        rename_output(&messages, &crate_name, &out_name, crate_type, &out_dir)?;
+                        rename_output(&messages, &crate_name, &out_name, output_kind, &out_dir)?;
 
+                    if let Some(non_json_output) = non_json_output {
+                        rt.write(non_json_output, &text);
+                    }
                     rt.write(output, &build_output);
 
                     Ok(())
@@ -317,13 +295,33 @@ impl FlowNode for Node {
     }
 }
 
-struct CargoBuildCommand {
-    argv0: String,
-    params: Vec<String>,
-    with_env: BTreeMap<String, String>,
-    cargo_work_dir: PathBuf,
-    out_name: String,
-    crate_type: CargoCrateType,
+fn parse_cargo_output(
+    output: &str,
+    capture_text: bool,
+) -> anyhow::Result<(Vec<cargo_output::Message>, Vec<String>)> {
+    if !capture_text {
+        let messages = serde_json::Deserializer::from_str(output)
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .context("failed to deserialize cargo output")?;
+        return Ok((messages, Vec::new()));
+    }
+
+    let mut messages = Vec::new();
+    let mut text = Vec::new();
+    for (index, line) in output.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.trim_start().starts_with('{') {
+            messages.push(serde_json::from_str(line).with_context(|| {
+                format!("failed to deserialize cargo output at line {}", index + 1)
+            })?);
+        } else {
+            text.push(line.to_owned());
+        }
+    }
+    Ok((messages, text))
 }
 
 fn rename_output(
@@ -458,4 +456,69 @@ fn rename_output(
     };
 
     Ok(expected_output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn captures_text_interleaved_with_cargo_messages() {
+        let output = concat!(
+            "{\"reason\":\"build-script-executed\"}\r\n",
+            "example::first\r\n",
+            "<example::Type as example::Trait>::method\r\n",
+            "\r\n",
+            "{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"example\",",
+            "\"kind\":[\"lib\"]},\"filenames\":[\"example.rlib\"]}\r\n",
+            "example::last\r\n",
+            "{\"reason\":\"build-finished\",\"success\":true}\r\n",
+        );
+        let (messages, text) = parse_cargo_output(output, true).unwrap();
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(
+            &messages[1],
+            cargo_output::Message::CompilerArtifact { target, filenames }
+                if target.name == "example" && filenames == &[PathBuf::from("example.rlib")]
+        ));
+        assert_eq!(
+            text,
+            [
+                "example::first",
+                "<example::Type as example::Trait>::method",
+                "example::last",
+            ]
+        );
+    }
+
+    #[test]
+    fn text_capture_does_not_hide_malformed_json() {
+        let err = parse_cargo_output("example::first\n{\"reason\":", true).unwrap_err();
+        assert!(err.to_string().contains("at line 2"));
+        assert!(parse_cargo_output("{\"reason\":\"compiler-artifact\"}", true).is_err());
+    }
+
+    #[test]
+    fn text_capture_is_opt_in() {
+        assert!(parse_cargo_output("example::first\n", false).is_err());
+        for capture_text in [false, true] {
+            let (messages, text) = parse_cargo_output(
+                "{\"reason\":\"build-finished\",\"success\":true}\n",
+                capture_text,
+            )
+            .unwrap();
+            assert_eq!(messages.len(), 1);
+            assert!(text.is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_output_has_no_messages_or_text() {
+        for capture_text in [false, true] {
+            let (messages, text) = parse_cargo_output(" \r\n\n", capture_text).unwrap();
+            assert!(messages.is_empty());
+            assert!(text.is_empty());
+        }
+    }
 }

@@ -202,14 +202,12 @@ fn referenced_descriptors<'a>(
         queue: &mut VecDeque<&'a TopLevelDescriptor<'a>>,
     ) {
         match field_type.kind {
-            FieldKind::Message(tld) => {
-                if let MessageDescription::Internal(tld) = tld() {
-                    if descriptors
-                        .insert((tld.package, tld.message.name), tld)
-                        .is_none()
-                    {
-                        queue.push_back(tld);
-                    }
+            FieldKind::Message(tld) if let MessageDescription::Internal(tld) = tld() => {
+                if descriptors
+                    .insert((tld.package, tld.message.name), tld)
+                    .is_none()
+                {
+                    queue.push_back(tld);
                 }
             }
             FieldKind::Tuple(tys) => {
@@ -222,7 +220,10 @@ fn referenced_descriptors<'a>(
                     process_field_type(ty, descriptors, queue);
                 }
             }
-            FieldKind::Builtin(_) | FieldKind::Local(_) | FieldKind::External { .. } => {}
+            FieldKind::Builtin(_)
+            | FieldKind::Local(_)
+            | FieldKind::External { .. }
+            | FieldKind::Message(_) => {}
         }
     }
 

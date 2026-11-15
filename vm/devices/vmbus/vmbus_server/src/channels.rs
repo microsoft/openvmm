@@ -1877,6 +1877,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let key = offer.key();
         let confidential_ring_buffer = offer.flags.confidential_ring_buffer();
         let confidential_external_memory = offer.flags.confidential_external_memory();
+        let offer_order = offer.offer_order;
         let channel = Channel {
             info: None,
             offer,
@@ -1899,7 +1900,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 .send_offer(channel, info);
         }
 
-        tracing::info!(?offer_id, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
+        tracing::info!(?offer_id, ?offer_order, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
         Ok(offer_id)
     }
 
@@ -4021,6 +4022,7 @@ impl<N: Notifier> MessageSender<'_, N> {
         tracing::info!(
             channel_id = msg.channel_id.0,
             connection_id = msg.connection_id,
+            offer_order = ?channel.offer.offer_order,
             key = %channel.offer.key(),
             "sending offer to guest"
         );

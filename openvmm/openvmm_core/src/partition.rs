@@ -121,6 +121,8 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
 }
 
 pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
+    fn freeze_time(&self);
+    fn thaw_time(&self);
     fn save(&self) -> anyhow::Result<VmSavedState>;
     fn restore(&self, state: VmSavedState) -> anyhow::Result<()>;
     fn reset(&self) -> anyhow::Result<()>;
@@ -130,6 +132,18 @@ pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
 }
 
 impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
+    fn freeze_time(&self) {
+        if let Some(time) = self.supports_time_control() {
+            time.freeze_time();
+        }
+    }
+
+    fn thaw_time(&self) {
+        if let Some(time) = self.supports_time_control() {
+            time.thaw_time();
+        }
+    }
+
     fn save(&self) -> anyhow::Result<VmSavedState> {
         let vm = self
             .access_state(Vtl::Vtl0)
@@ -285,6 +299,14 @@ pub struct WrappedPartition {
 impl VmPartition for WrappedPartition {
     fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
         self.initial_vp_state_source
+    }
+
+    fn freeze_time(&mut self) {
+        self.partition.freeze_time()
+    }
+
+    fn thaw_time(&mut self) {
+        self.partition.thaw_time()
     }
 
     fn reset(&mut self) -> anyhow::Result<()> {

@@ -8,7 +8,6 @@ use vmcore::save_restore::ProtobufSaveRestore;
 
 mod hdm_cap;
 mod registers;
-pub mod spec;
 /// Reusable in-memory register blocks for unit tests.
 pub mod test_helper;
 
@@ -24,7 +23,7 @@ pub trait CxlComponentRegister: Send + Sync + Inspect + ProtobufSaveRestore {
     fn label(&self) -> &str;
 
     /// Returns the register block type.
-    fn register_type(&self) -> crate::spec::CxlComponentRegisterType;
+    fn register_type(&self) -> cxl_spec::CxlComponentRegisterType;
 
     /// Returns the CXL capability ID for this register block.
     fn capability_id(&self) -> u16;

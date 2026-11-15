@@ -15,8 +15,10 @@ mod translate;
 
 pub use emulator::HostSmmuCaps;
 pub use emulator::SmmuConfig;
+pub use emulator::SmmuConfigError;
 pub use emulator::SmmuDevice;
 pub use emulator::SmmuOasPolicy;
+pub use emulator::SmmuSsidPolicy;
 pub use shared::AccelRegistration;
 pub use shared::AcceleratedStreamBackend;
 pub use shared::Invalidate;

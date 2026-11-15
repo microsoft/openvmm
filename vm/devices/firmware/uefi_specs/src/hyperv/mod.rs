@@ -13,6 +13,7 @@ pub mod boot_bios_log;
 pub mod common;
 pub mod crypto;
 pub mod debug_level;
+pub mod firmware_version;
 pub mod nvram;
 pub mod time;
 

@@ -307,11 +307,9 @@ impl<'a> WhpProcessor<'a> {
                             if let Some(next_ref_time) = next_ref_time {
                                 // Convert from reference timer basis to vmtime basis via
                                 // difference of programmed timer and current reference time.
-                                const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
                                 let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                                let ref_duration = std::time::Duration::new(
-                                    ref_diff / NUM_100NS_IN_SEC,
-                                    (ref_diff % NUM_100NS_IN_SEC) as u32 * 100,
+                                let ref_duration = std::time::Duration::from_nanos_u128(
+                                    u128::from(ref_diff) * 100,
                                 );
                                 let timeout = self.state.vmtime.now().wrapping_add(ref_duration);
                                 self.state.vmtime.set_timeout_if_before(timeout);
@@ -1113,13 +1111,9 @@ mod x86 {
                             match self.vp.partition.isolation {
                                 virt::IsolationType::None => {}
                                 virt::IsolationType::Vbs => {
-                                    // Eax report paravisor present if VTL2 enabled.
-                                    // TODO: Should Underhill be handling this?
-                                    if self.vp.partition.vtl2.is_some()
-                                        && self.state.active_vtl != Vtl::Vtl2
-                                    {
-                                        default[0] |= 1;
-                                    }
+                                    // Paravisor-present selects GHCB/TDVMCALL interfaces,
+                                    // which VBS does not implement. Match Hyper-V.
+                                    default[0] &= !1;
 
                                     // Ebx report vbs isolated type.
                                     default[1] |= 1;
@@ -1327,6 +1321,9 @@ mod x86 {
                     | x86defs::X86X_AMD_MSR_HW_CFG
                     | x86defs::X86X_AMD_MSR_IGNNE
                     | x86defs::X86X_AMD_MSR_NB_CFG
+                    // Discarded for the same reason the reads return zero; see
+                    // the read path.
+                    | x86defs::X86X_AMD_MSR_LS_CFG..=x86defs::X86X_AMD_MSR_EX_CFG
                         if self.vp.partition.caps.vendor.is_amd_compatible() =>
                     {
                         Ok(())
@@ -1417,6 +1414,18 @@ mod x86 {
                     | x86defs::X86X_AMD_MSR_IGNNE
                     | x86defs::X86X_AMD_MSR_NB_CFG
                     | x86defs::X86X_AMD_MSR_OSVW_ID_LENGTH..=x86defs::X86X_AMD_MSR_OSVW_ID_STATUS
+                    // The implementation-specific unit configuration registers,
+                    // LS_CFG through EX_CFG. These hold chicken bits that a
+                    // guest cannot act on, so like the AMD configuration MSRs
+                    // above they read as zero rather than faulting.
+                    //
+                    // Windows accesses EX_CFG (0xc001102c) while initializing
+                    // the processor on family 17h. Returning MsrError::Unknown
+                    // injects a #GP on a kernel system thread, which bugchecks
+                    // the guest with SYSTEM_THREAD_EXCEPTION_NOT_HANDLED before
+                    // it finishes booting. KVM ignores the same MSR for the
+                    // same reason; see MSR_F15H_EX_CFG in msr-index.h.
+                    | x86defs::X86X_AMD_MSR_LS_CFG..=x86defs::X86X_AMD_MSR_EX_CFG
                         if self.vp.partition.caps.vendor.is_amd_compatible() =>
                     {
                         Ok(0)
@@ -1763,6 +1772,9 @@ mod aarch64 {
         pub(crate) fn flush_apic(&mut self, _vtl: Vtl) {}
 
         fn get_x(&self, n: u8) -> u64 {
+            if n >= 31 {
+                return 0; // XZR
+            }
             let mut value = [Default::default()];
             self.current_whp()
                 .get_registers(
@@ -1776,6 +1788,9 @@ mod aarch64 {
         }
 
         fn set_x(&self, n: u8, v: u64) {
+            if n >= 31 {
+                return;
+            }
             let value = [whp::abi::WHV_REGISTER_VALUE(v.into())];
             self.current_whp()
                 .set_registers(

@@ -13,5 +13,8 @@ base64.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

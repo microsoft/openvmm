@@ -20,6 +20,9 @@ mod protocol;
 pub mod resolver;
 pub mod single_file_backing;
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -32,6 +35,7 @@ use vmbus_channel::bus::OfferParams;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmbus_ring::RingMem;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
@@ -87,7 +91,8 @@ impl SimpleVmbusDevice for VmbfsDevice {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(runner.process(self)).await
+        let check = stop.check_handle()?;
+        stop.until_stopped(runner.process(self, &check)).await?
     }
 
     fn supports_save_restore(
@@ -101,10 +106,10 @@ impl SimpleVmbusDevice for VmbfsDevice {
 
 #[doc(hidden)] // used as an associated type in a trait but not part of the public API
 #[derive(InspectMut)]
-pub struct VmbfsChannel {
+pub struct VmbfsChannel<M: RingMem = GpadlRingMem> {
     state: State,
     #[inspect(mut)]
-    pipe: vmbus_async::pipe::MessagePipe<GpadlRingMem>,
+    pipe: vmbus_async::pipe::MessagePipe<M>,
     // A scratch buffer for reading messages. This is allocated once and reused for each message.
     // It does not hold any meaningful state.
     buf: Vec<u8>,
@@ -127,18 +132,29 @@ enum Request {
     },
 }
 
-impl VmbfsChannel {
-    async fn process(&mut self, dev: &mut VmbfsDevice) {
-        match self.process_inner(dev).await {
+impl<M: RingMem + Unpin> VmbfsChannel<M> {
+    async fn process(
+        &mut self,
+        dev: &mut VmbfsDevice,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
+        match self.process_inner(dev, check).await {
             Ok(()) => {}
+            Err(DeviceError::Cancelled(cancelled)) => return Err(cancelled),
             Err(err) => {
                 tracing::error!(error = &err as &dyn std::error::Error, "vmbfs failed");
             }
         }
+        Ok(())
     }
 
-    async fn process_inner(&mut self, dev: &mut VmbfsDevice) -> Result<(), DeviceError> {
+    async fn process_inner(
+        &mut self,
+        dev: &mut VmbfsDevice,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), DeviceError> {
         loop {
+            check.check()?;
             self.pipe
                 .wait_write_ready(protocol::MAX_MESSAGE_SIZE)
                 .await
@@ -309,6 +325,8 @@ fn parse_path(buf: &[u8]) -> Result<String, DeviceError> {
 
 #[derive(Debug, Error)]
 enum DeviceError {
+    #[error("cancelled")]
+    Cancelled(Cancelled),
     #[error("vmbus pipe error")]
     Pipe(#[source] std::io::Error),
     #[error("message too short")]
@@ -325,6 +343,12 @@ enum DeviceError {
     InvalidMessageType(protocol::MessageType),
     #[error("read too large")]
     ReadTooLarge,
+}
+
+impl From<Cancelled> for DeviceError {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 mod save_restore {

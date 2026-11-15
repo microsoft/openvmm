@@ -51,6 +51,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::install_dotnet_cli::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
+        ctx.import::<flowey_lib_common::install_azure_cli_extension::Node>();
         ctx.import::<flowey_lib_common::install_git::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
@@ -68,7 +69,7 @@ impl SimpleFlowNode for Node {
             no_incremental,
         } = request;
 
-        if matches!(ctx.backend(), FlowBackend::Github) {
+        if matches!(ctx.backend(), FlowBackend::Github | FlowBackend::Ado) {
             if local_only.is_some() {
                 anyhow::bail!("can only set `local_only` params when using Local backend");
             }
@@ -78,22 +79,17 @@ impl SimpleFlowNode for Node {
                 ignore_version: Some(false),
                 ..Default::default()
             });
-            let token = ctx.get_gh_context_var().global().token();
-            ctx.config(flowey_lib_common::use_gh_cli::Config {
-                auth: Some(flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(
-                    ConfigVar(token),
-                )),
-            });
-        } else if matches!(ctx.backend(), FlowBackend::Ado) {
-            if local_only.is_some() {
-                anyhow::bail!("can only set `local_only` params when using Local backend");
-            }
-
-            ctx.config(flowey_lib_common::install_rust::Config {
+            ctx.config(flowey_lib_common::install_azure_cli_extension::Config {
                 auto_install: Some(true),
-                ignore_version: Some(false),
-                ..Default::default()
             });
+            if matches!(ctx.backend(), FlowBackend::Github) {
+                let token = ctx.get_gh_context_var().global().token();
+                ctx.config(flowey_lib_common::use_gh_cli::Config {
+                    auth: Some(flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(
+                        ConfigVar(token),
+                    )),
+                });
+            }
         } else if matches!(ctx.backend(), FlowBackend::Local) {
             let local_only =
                 local_only.ok_or(anyhow::anyhow!("missing essential request: local_only"))?;
@@ -136,6 +132,9 @@ impl SimpleFlowNode for Node {
                 ctx.config(flowey_lib_common::install_azure_cli::Config {
                     auto_install: Some(auto_install),
                     ..Default::default()
+                });
+                ctx.config(flowey_lib_common::install_azure_cli_extension::Config {
+                    auto_install: Some(auto_install),
                 });
                 ctx.config(flowey_lib_common::install_git::Config {
                     auto_install: Some(auto_install),

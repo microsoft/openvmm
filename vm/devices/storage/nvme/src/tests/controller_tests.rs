@@ -18,6 +18,8 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
+use disk_backend::Disk;
+use disk_prwrap::DiskWithReservations;
 use disklayer_ram::ram_disk;
 use guestmem::GuestMemory;
 use guid::Guid;
@@ -536,6 +538,185 @@ async fn test_io_command_invalid_namespace(driver: DefaultDriver) {
         spec::Status::INVALID_NAMESPACE_OR_FORMAT.0,
         "command to invalid namespace should return INVALID_NAMESPACE_OR_FORMAT"
     );
+}
+
+/// An I/O command answers each kind of NSID with the status NVMe Base 2.1
+/// gives it: an invalid NSID (0h, above NN) Invalid Namespace or Format, an
+/// inactive one Invalid Field in Command (section 3.2.1.5), for a read and a
+/// Flush alike. The broadcast FFFFFFFFh answers by opcode: Invalid Namespace
+/// or Format for a Flush (Flush Behavior 10b, section 7.2), Invalid Field in
+/// Command for anything else (Figure 92). That includes the reserved opcode
+/// 03h, which the attached namespace answers Invalid Command Opcode: the NSID
+/// is checked before the opcode. Every NSID answer sets Do Not Retry; the
+/// opcode refusal and the successes do not.
+///
+/// The rows to the attached namespace run last on the same SQ, so the rows
+/// above cannot pass by refusing every NSID or every Flush.
+#[async_test]
+async fn test_io_command_status_per_nsid(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+    nvmec.client().add_namespace(1, disk).await.unwrap();
+
+    write_msix_table_entry(&mut nvmec, 1, 0xfeed0000, 0x2222, false);
+
+    let io_cq_gpa: u64 = 0x4000;
+    let io_sq_gpa: u64 = 0x5000;
+    let read_buf_gpa: u64 = 0x8000;
+    let _admin_slot = create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &admin_cq_buf,
+        &admin_sq_buf,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        io_cq_gpa,
+        io_sq_gpa,
+        /* cq_qsize_z = */ 16,
+        /* sq_qsize_z = */ 16,
+        /* cq_iv = */ 1,
+    )
+    .await;
+    let io_sq_buf = PrpRange::new(vec![io_sq_gpa], 0, PAGE_SIZE64).unwrap();
+    let io_cq_buf = PrpRange::new(vec![io_cq_gpa], 0, PAGE_SIZE64).unwrap();
+
+    struct Row {
+        what: &'static str,
+        opcode: nvm::NvmOpcode,
+        nsid: u32,
+        status: spec::Status,
+        dnr: bool,
+    }
+    let rows = [
+        Row {
+            what: "read, NSID 0h",
+            opcode: nvm::NvmOpcode::READ,
+            nsid: 0,
+            status: spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+            dnr: true,
+        },
+        Row {
+            what: "flush, NSID 0h",
+            opcode: nvm::NvmOpcode::FLUSH,
+            nsid: 0,
+            status: spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+            dnr: true,
+        },
+        Row {
+            what: "read, inactive NSID",
+            opcode: nvm::NvmOpcode::READ,
+            nsid: 2,
+            status: spec::Status::INVALID_FIELD_IN_COMMAND,
+            dnr: true,
+        },
+        Row {
+            what: "flush, inactive NSID",
+            opcode: nvm::NvmOpcode::FLUSH,
+            nsid: 2,
+            status: spec::Status::INVALID_FIELD_IN_COMMAND,
+            dnr: true,
+        },
+        Row {
+            what: "read, NSID NN (inactive)",
+            opcode: nvm::NvmOpcode::READ,
+            nsid: MAX_NSID,
+            status: spec::Status::INVALID_FIELD_IN_COMMAND,
+            dnr: true,
+        },
+        Row {
+            what: "read, NSID above NN",
+            opcode: nvm::NvmOpcode::READ,
+            nsid: MAX_NSID + 1,
+            status: spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+            dnr: true,
+        },
+        Row {
+            what: "read, NSID FFFFFFFFh",
+            opcode: nvm::NvmOpcode::READ,
+            nsid: 0xffff_ffff,
+            status: spec::Status::INVALID_FIELD_IN_COMMAND,
+            dnr: true,
+        },
+        Row {
+            what: "flush, NSID FFFFFFFFh",
+            opcode: nvm::NvmOpcode::FLUSH,
+            nsid: 0xffff_ffff,
+            status: spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+            dnr: true,
+        },
+        Row {
+            what: "opcode 03h, NSID FFFFFFFFh",
+            opcode: nvm::NvmOpcode(0x03),
+            nsid: 0xffff_ffff,
+            status: spec::Status::INVALID_FIELD_IN_COMMAND,
+            dnr: true,
+        },
+        Row {
+            what: "opcode 03h, attached NSID",
+            opcode: nvm::NvmOpcode(0x03),
+            nsid: 1,
+            status: spec::Status::INVALID_COMMAND_OPCODE,
+            dnr: false,
+        },
+        Row {
+            what: "read, attached NSID",
+            opcode: nvm::NvmOpcode::READ,
+            nsid: 1,
+            status: spec::Status::SUCCESS,
+            dnr: false,
+        },
+        Row {
+            what: "flush, attached NSID",
+            opcode: nvm::NvmOpcode::FLUSH,
+            nsid: 1,
+            status: spec::Status::SUCCESS,
+            dnr: false,
+        },
+    ];
+    for (slot, row) in rows.iter().enumerate() {
+        let cid = 0x900 + slot as u16;
+        let mut command = spec::Command::new_zeroed();
+        command.cdw0.set_opcode(row.opcode.0);
+        command.cdw0.set_cid(cid);
+        command.nsid = row.nsid;
+        // One block from LBA 0 for the read (NLB is zero-based); a Flush
+        // ignores it.
+        command.dptr[0] = read_buf_gpa;
+        write_command_to_queue(&gm, &io_sq_buf, slot, &command);
+        nvmec
+            .write_bar0(sq_db(1), (slot as u32 + 1).as_bytes())
+            .unwrap();
+        wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x2222).await;
+
+        let cqe = read_completion_from_queue(&gm, &io_cq_buf, slot);
+        assert_eq!(cqe.cid, cid, "{}: completion for another command", row.what);
+        assert_eq!(
+            cqe.status.status(),
+            row.status.0,
+            "{}: expected {:?}",
+            row.what,
+            row.status
+        );
+        assert_eq!(cqe.status.dnr(), row.dnr, "{}: DNR", row.what);
+    }
 }
 
 /// Regression test: when multiple invalid-namespace inline completions are
@@ -1364,6 +1545,107 @@ async fn test_mandatory_features_roundtrip(driver: DefaultDriver) {
     }
 }
 
+/// Get Features of Reservation Persistence (FID 83h) answers each kind of
+/// NSID with the status NVMe Base 2.1 gives it: FFFFFFFFh with Invalid
+/// Field in Command (section 5.1.25.1.30), an invalid NSID (0h, or above NN)
+/// with Invalid Namespace or Format and an inactive one with Invalid Field in
+/// Command (Figure 92, section 3.2.1.5), and an attached namespace with
+/// reservations with its PTPL state.
+#[async_test]
+async fn test_get_features_reservation_persistence_status_per_nsid(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // PTPL defaults to off; set it so the success row reads a value that
+    // only the backend can have supplied.
+    let disk = Disk::new(DiskWithReservations::new(ram_disk(1 << 20, false).unwrap())).unwrap();
+    disk.pr()
+        .unwrap()
+        .register(None, 0x1234, Some(true))
+        .await
+        .unwrap();
+    nvmec.client().add_namespace(1, disk).await.unwrap();
+
+    struct Row {
+        what: &'static str,
+        nsid: u32,
+        status: spec::Status,
+    }
+    let rows = [
+        Row {
+            what: "the broadcast NSID FFFFFFFFh",
+            nsid: 0xffff_ffff,
+            status: spec::Status::INVALID_FIELD_IN_COMMAND,
+        },
+        Row {
+            what: "the invalid NSID 0h",
+            nsid: 0,
+            status: spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+        },
+        Row {
+            what: "an invalid NSID above NN",
+            nsid: MAX_NSID + 1,
+            status: spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+        },
+        Row {
+            what: "an inactive NSID",
+            nsid: 2,
+            status: spec::Status::INVALID_FIELD_IN_COMMAND,
+        },
+        Row {
+            what: "the attached namespace with reservations",
+            nsid: 1,
+            status: spec::Status::SUCCESS,
+        },
+    ];
+    for (slot, row) in rows.iter().enumerate() {
+        let mut command = get_feature_command(spec::Feature::NVM_RESERVATION_PERSISTENCE, 0);
+        command.cdw0.set_cid(0x830 + slot as u16);
+        command.nsid = row.nsid;
+        let cqe = submit_admin_command(
+            &mut nvmec,
+            &gm,
+            &asq,
+            &acq,
+            &int_controller,
+            driver.clone(),
+            slot as u32,
+            &command,
+        )
+        .await;
+        assert_eq!(
+            cqe.cid,
+            0x830 + slot as u16,
+            "{}: the completion is another command's",
+            row.what
+        );
+        assert_eq!(
+            cqe.status.status(),
+            row.status.0,
+            "{}: expected {:?}",
+            row.what,
+            row.status
+        );
+        if row.status == spec::Status::SUCCESS {
+            assert_eq!(cqe.dw0, 1, "{}: DW0 is not the PTPL state", row.what);
+        }
+    }
+}
+
 /// CNS 06h (I/O Command Set specific Identify Controller): the NVM command set
 /// (CSI 0h) defines no such data structure, so the controller must return a
 /// zero-filled 4096-byte structure (NVMe Base 2.3 §5.2.13.2.6). A request for
@@ -1497,5 +1779,72 @@ async fn test_get_supported_log_pages(driver: DefaultDriver) {
             supported.contains(&lid),
             "LID {lid:#x} LSUPP bit mismatch"
         );
+    }
+}
+
+/// The SMART / Health Information log page is not supported per namespace
+/// (LPA.SMARTS is 0), so NSID 0h and FFFFFFFFh both return the controller log
+/// page and any other NSID is Invalid Field in Command (NVMe Base 2.1 section
+/// 5.1.12.1.3).
+#[async_test]
+async fn test_get_smart_log_page_nsid(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    let data_gpa = 0x8000u64;
+    for (admin_slot, (nsid, expected)) in [
+        (0, spec::Status::SUCCESS),
+        (!0, spec::Status::SUCCESS),
+        (1, spec::Status::INVALID_FIELD_IN_COMMAND),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        gm.write_plain::<[u8; 512]>(data_gpa, &[0xff; 512]).unwrap();
+
+        let mut cmd = spec::Command::new_zeroed();
+        cmd.cdw0.set_opcode(spec::AdminOpcode::GET_LOG_PAGE.0);
+        cmd.nsid = nsid;
+        // 512 bytes = 128 dwords; NUMDL is a 0-based dword count.
+        cmd.cdw10 = spec::Cdw10GetLogPage::new()
+            .with_lid(spec::LogPageIdentifier::HEALTH_INFORMATION.0)
+            .with_numdl_z(127)
+            .into();
+        cmd.dptr[0] = data_gpa;
+
+        let cqe = submit_admin_command(
+            &mut nvmec,
+            &gm,
+            &asq,
+            &acq,
+            &int_controller,
+            driver.clone(),
+            admin_slot as u32,
+            &cmd,
+        )
+        .await;
+        assert_eq!(
+            cqe.status.status(),
+            expected.0,
+            "unexpected status for nsid {nsid:#x}"
+        );
+        if expected == spec::Status::SUCCESS {
+            let page = gm.read_plain::<[u8; 512]>(data_gpa).unwrap();
+            assert_eq!(page, [0; 512], "log page not written for nsid {nsid:#x}");
+        }
     }
 }

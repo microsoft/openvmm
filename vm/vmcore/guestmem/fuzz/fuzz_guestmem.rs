@@ -261,7 +261,7 @@ fn do_fuzz(input: FuzzCase) {
                 } else {
                     guestmem::AccessType::Read
                 };
-                _ = gm.lock_gpns(access, true, &gpns);
+                _ = gm.lock_kernel_gpns(access, &gpns);
             }
             GuestMemAction::ProbeGpns { gpns } => {
                 _ = gm.probe_gpns(&gpns);

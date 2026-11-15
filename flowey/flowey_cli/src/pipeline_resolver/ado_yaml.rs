@@ -158,9 +158,18 @@ pub fn ado_yaml(
             // actual artifact publish happens at the end of the job
             let _ = (artifact, publish);
 
+            let ado_bootstrap_template = ado_bootstrap_template.as_ref().context(
+                "Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template_fn`",
+            )?(platform, arch)
+            .with_context(|| {
+                format!(
+                    "while generating flowey bootstrap template for job '{label}' ({platform}/{arch})"
+                )
+            })?;
+
             if ado_bootstrap_template.is_empty() {
                 anyhow::bail!(
-                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template`"
+                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template_fn`"
                 )
             }
 
@@ -900,15 +909,13 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                 label,
                 code: _,
             } => {
-                output_steps.extend(bash_commands.push(
+                output_steps.extend(bash_commands.push_exec_snippet(
                     Some(label),
                     can_merge,
-                    crate::cli::exec_snippet::construct_exec_snippet_cli(
-                        "$(FLOWEY_BIN)",
-                        node_modpath,
-                        idx,
-                        job_idx,
-                    ),
+                    "$(FLOWEY_BIN)",
+                    node_modpath,
+                    idx,
+                    job_idx,
                 ));
             }
             Step::AdoYaml {

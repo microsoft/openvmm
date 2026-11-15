@@ -1,20 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The openhcl boot loader, which loads before the kernel to set up the
-//! kernel's boot parameters.
+//! Bare-metal OpenHCL boot loader that prepares VTL2 before Linux starts.
+//!
+//! This measured payload validates its imported regions and host parameters,
+//! establishes the VTL2 address space and processor state, constructs Linux
+//! boot parameters and a device tree, and initializes the sidecar kernel when
+//! configured. It then transfers control to the OpenHCL Linux kernel.
 
 // See build.rs.
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
-// Allow the allocator api when compiling with `RUSTFLAGS="--cfg nightly"`. This
-// is used for some miri tests for testing the bump allocator.
-//
-// Do not use a normal feature, as that shows errors with rust-analyzer since
-// most people are using stable and enable all features. We could remove this
-// once the allocator_api feature is stable.
-#![cfg_attr(nightly, feature(allocator_api))]
 
 mod arch;
 mod boot_logger;
@@ -306,19 +303,6 @@ fn build_kernel_command_line(
 
     if let Some(sidecar) = sidecar {
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
-    }
-
-    if !cmdline.contains("hv_vmbus.message_connection_id") {
-        // HACK: Set the vmbus connection id via kernel commandline if we haven't
-        // gotten one from elsewhere.
-        //
-        // This code will be removed when the kernel supports setting connection id
-        // via device tree.
-        write!(
-            cmdline,
-            "hv_vmbus.message_connection_id=0x{:x} ",
-            partition_info.vmbus_vtl2.connection_id
-        )?;
     }
 
     // Prepend the computed parameters to the original command line.
@@ -875,16 +859,21 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         arch::uninitialize_serial_io(&p);
     }
 
-    cfg_if::cfg_if! {
-        if #[cfg(target_arch = "x86_64")] {
+    cfg_select! {
+        target_arch = "x86_64" => {
             // SAFETY: the parameter blob is trusted.
             let kernel_entry: extern "C" fn(u64, &loader_defs::linux::boot_params) -> ! =
                 unsafe { core::mem::transmute(p.kernel_entry_address) };
             kernel_entry(0, &boot_params.0)
-        } else if #[cfg(target_arch = "aarch64")] {
+        }
+        target_arch = "aarch64" => {
             // SAFETY: the parameter blob is trusted.
-            let kernel_entry: extern "C" fn(fdt_data: *const u8, mbz0: u64, mbz1: u64, mbz2: u64) -> ! =
-                unsafe { core::mem::transmute(p.kernel_entry_address) };
+            let kernel_entry: extern "C" fn(
+                fdt_data: *const u8,
+                mbz0: u64,
+                mbz1: u64,
+                mbz2: u64,
+            ) -> ! = unsafe { core::mem::transmute(p.kernel_entry_address) };
             // Disable MMU for kernel boot without EFI, as required by the boot protocol.
             // Flush (and invalidate) the caches, as that is required for disabling MMU.
             // SAFETY: Just changing a bit in the register and then jumping to the kernel.
@@ -901,7 +890,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
                 );
             }
             kernel_entry(fdt.data.as_ptr(), 0, 0, 0)
-        } else {
+        }
+        _ => {
             panic!("unsupported arch")
         }
     }
@@ -1023,13 +1013,9 @@ mod test {
                 sidecar_starts_cpu: [true; sidecar_defs::NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
             },
             cmdline: ArrayString::new(),
-            vmbus_vtl2: VmbusInfo {
-                mmio,
-                connection_id: 0,
-            },
+            vmbus_vtl2: VmbusInfo { mmio },
             vmbus_vtl0: VmbusInfo {
                 mmio: ArrayVec::new(),
-                connection_id: 0,
             },
             com3_serial: ComInfo::None,
             gic: None,

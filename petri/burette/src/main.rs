@@ -3,8 +3,14 @@
 
 //! OpenVMM performance test runner.
 //!
-//! A standalone binary that runs performance benchmarks against OpenVMM
-//! using the petri test framework, producing JSON reports.
+//! This host-side CLI runs repeatable performance benchmarks against an
+//! OpenVMM executable using the Petri test framework. It boots real test VMs,
+//! measures boot, scaling, memory, network, disk, and virtio-fs behavior, and
+//! writes JSON reports that can be compared between builds.
+//!
+//! Burette is intended for direct developer use and can package its binaries
+//! and guest artifacts for execution on another machine. The host must provide
+//! a usable hypervisor and the OpenVMM/Pipette/test-image artifacts needed.
 //!
 //! # Usage
 //!
@@ -35,6 +41,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use tests::boot_time::BootProfile;
 use tests::disk_io::DiskBackend;
+use tests::disk_io::DiskWorkload;
 use tests::network::NetBackend;
 use tests::network::NicBackend;
 
@@ -110,6 +117,10 @@ struct RunArgs {
     #[arg(long, default_value = "2048")]
     mem_mb: u64,
 
+    /// Virtual processors per guest for the boot-time benchmark.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    boot_vps: u32,
+
     /// Print guest dmesg and /proc/uptime after the first boot for
     /// diagnostics. Does not affect measurements.
     #[arg(long)]
@@ -151,6 +162,43 @@ struct RunArgs {
     /// Data disk size in GiB for the disk_io test.
     #[arg(long, default_value = "4")]
     data_disk_size_gib: u64,
+
+    /// fio queue depth for the disk_io test.
+    #[arg(long, default_value_t = 32, value_parser = clap::value_parser!(u32).range(1..))]
+    disk_io_depth: u32,
+
+    /// fio block size in KiB for the disk_io test.
+    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u32).range(1..))]
+    disk_block_size_kib: u32,
+
+    /// Bypass the host page cache for file-backed disk_io tests (Linux only).
+    #[arg(long, requires = "data_disk")]
+    disk_direct: bool,
+
+    /// Measurement duration per fio job, in seconds.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+    disk_runtime_secs: u32,
+
+    /// Unmeasured ramp duration per fio job, in seconds.
+    #[arg(long, default_value_t = 5)]
+    disk_ramp_secs: u32,
+
+    /// fio workloads to run, in order.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "read,write,randread,randwrite"
+    )]
+    disk_workloads: Vec<DiskWorkload>,
+
+    /// Reuse an existing, initialized data file without truncation or initialization.
+    /// Selected write workloads still overwrite its contents.
+    #[arg(long, requires = "data_disk")]
+    disk_reuse: bool,
+
+    /// Pin guest fio to this vCPU (the disk benchmark has two vCPUs).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(..2))]
+    disk_cpu: Option<u32>,
 
     /// Test file size in MiB for the virtio_fs test.
     #[arg(long, default_value = "512")]
@@ -244,7 +292,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
         tracing::level_filters::LevelFilter::INFO
     };
 
-    let log_source = petri::try_init_tracing(&args.log_dir, default_level)
+    let log_source = petri::try_init_tracing(&args.log_dir, default_level, None)
         .context("failed to initialize tracing")?;
     LOG_SOURCE
         .set(log_source)
@@ -278,6 +326,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                     args.profile,
                     args.diag,
                     args.mem_mb,
+                    args.boot_vps,
                     &resolver,
                 )
                 .context("boot_time prep")?;
@@ -344,6 +393,15 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                     data_disk: args.data_disk.clone(),
                     data_disk_size_gib: args.data_disk_size_gib,
                     perf_dir: args.perf_dir.clone(),
+                    io_depth: args.disk_io_depth,
+                    block_size_kib: args.disk_block_size_kib,
+                    direct: args.disk_direct,
+                    runtime_secs: args.disk_runtime_secs,
+                    ramp_secs: args.disk_ramp_secs,
+                    fio_output_dir: args.log_dir.join("fio"),
+                    workloads: args.disk_workloads.clone(),
+                    reuse: args.disk_reuse,
+                    cpu: args.disk_cpu,
                 };
 
                 let artifacts = resolve_artifacts(tests::disk_io::register_artifacts)?;
@@ -390,8 +448,6 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
     let resolver =
         petri_artifact_resolver_openvmm_known_paths::OpenvmmKnownPathsTestArtifactResolver::new("");
 
-    let bundle_name = petri_artifact_resolver_openvmm_known_paths::resolve_bundle_name;
-
     // Collect the union of all artifacts needed by every test, using the
     // same register_artifacts functions that cmd_run uses. This avoids
     // duplicating artifact lists and automatically adapts to the host arch.
@@ -411,7 +467,8 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
 
     // Deduplicate: required_artifacts may contain repeats across tests.
     let artifact_ids: Vec<_> = {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<petri::ErasedArtifactHandle> =
+            std::collections::HashSet::new();
         requirements
             .required_artifacts()
             .filter(|id| seen.insert(*id))
@@ -424,24 +481,18 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         .resolve(&resolver)
         .context("failed to resolve test artifacts")?;
 
-    let mut files: Vec<(PathBuf, String)> = Vec::new();
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
 
     // Add burette itself (not an artifact — it's our own binary).
     let burette_path =
-        petri_artifact_resolver_openvmm_known_paths::get_output_executable_path("burette")
+        petri_artifact_resolver_openvmm_known_paths::get_executable_path_relative("burette")
             .context("failed to find burette binary")?;
     files.push((burette_path, "burette".into()));
 
     // Build the file list from resolved artifacts.
     for id in artifact_ids {
         let path = artifacts.get(id).to_path_buf();
-        let dest = if let Some(name) = bundle_name(id) {
-            name.to_string()
-        } else {
-            path.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| format!("{:?}", id))
-        };
+        let dest = id.relative_path();
         files.push((path, dest));
     }
 
@@ -455,16 +506,21 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         let dest = bundle.join(name);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create dir for {name}"))?;
+                .with_context(|| format!("failed to create dir for {}", name.display()))?;
         }
-        std::fs::copy(src, &dest).with_context(|| format!("failed to copy {name}"))?;
+        std::fs::copy(src, &dest).with_context(|| format!("failed to copy {}", name.display()))?;
 
         // Strip debug symbols from ELF executables to reduce tarball size.
-        if !args.no_strip && matches!(name.as_str(), "burette" | "openvmm" | "pipette") {
+        if !args.no_strip
+            && matches!(
+                name.iter().next_back().and_then(|n| n.to_str()),
+                Some("burette") | Some("openvmm") | Some("pipette")
+            )
+        {
             let _ = std::process::Command::new("strip").arg(&dest).status();
         }
 
-        println!("  adding {name} ({})", human_size(&dest)?);
+        println!("  adding {} ({})", name.display(), human_size(&dest)?);
     }
 
     // Create tarball using system tar.

@@ -6,6 +6,7 @@
 use self::device_range::DeviceRangeMapper;
 use super::device::ArcMutexChipsetServicesFinalize;
 use super::state_unit::ArcMutexChipsetDeviceUnit;
+use super::state_unit::DynamicDeviceUnit;
 use crate::BusIdPci;
 use crate::BusIdPcieDownstreamPort;
 use crate::BusIdPcieEnumerator;
@@ -14,7 +15,10 @@ use crate::VmmChipsetDevice;
 use crate::chipset::io_ranges::IoRanges;
 use crate::chipset::line_sets::LineSetTargetDevice;
 use chipset_device::ChipsetDevice;
+use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pio::ControlPortIoIntercept;
+use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device_resources::LineSetId;
 use closeable_mutex::CloseableMutex;
 use std::ops::RangeInclusive;
@@ -34,6 +38,8 @@ pub struct ArcMutexChipsetServices<'a, 'b> {
     line_set_dependencies: Vec<LineSetId>,
     line_set_targets: Vec<(LineSetId, RangeInclusive<u32>, u32)>,
     line_error: Option<NewLineError>,
+    static_mmio: Vec<Box<dyn ControlMmioIntercept>>,
+    static_pio: Vec<Box<dyn ControlPortIoIntercept>>,
 
     omit_saved_state: bool,
 }
@@ -133,12 +139,16 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
             }
         }
 
-        let device = ArcMutexChipsetDeviceUnit::new(device.clone(), self.omit_saved_state);
+        let device_unit = ArcMutexChipsetDeviceUnit::new(device.clone(), self.omit_saved_state)
+            .with_static_regions(self.static_mmio, self.static_pio);
+        let driver = self.builder.driver_source.simple();
         let unit = builder
-            .spawn(self.builder.driver_source.simple(), |recv| device.run(recv))
+            .spawn(driver.clone(), |recv| device_unit.run(recv))
             .map_err(FinalizeError::NameInUse)?;
 
-        inner.arc_mutex_device_units.push(unit);
+        inner
+            .arc_mutex_device_units
+            .push(DynamicDeviceUnit::new(unit, driver, device.clone()));
         Ok(())
     }
 }
@@ -156,6 +166,8 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
             line_set_dependencies: Vec::new(),
             line_set_targets: Vec::new(),
             line_error: None,
+            static_mmio: Vec::new(),
+            static_pio: Vec::new(),
 
             omit_saved_state: false,
         }
@@ -185,6 +197,22 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
             dev_name: self.dev_name.clone(),
             ranges: inner.vm_chipset.pio_ranges.clone(),
         }
+    }
+
+    pub fn register_static_mmio(&mut self, label: &str, range: RangeInclusive<u64>) {
+        let mut region = self
+            .register_mmio()
+            .new_io_region(label, range.end() - range.start() + 1);
+        region.map(*range.start());
+        self.static_mmio.push(region);
+    }
+
+    pub fn register_static_pio(&mut self, label: &str, range: RangeInclusive<u16>) {
+        let mut region = self
+            .register_pio()
+            .new_io_region(label, range.end() - range.start() + 1);
+        region.map(*range.start());
+        self.static_pio.push(region);
     }
 
     pub fn register_static_pci(&mut self, bus_id: BusIdPci, bdf: (u8, u8, u8)) {
@@ -257,6 +285,7 @@ pub(crate) fn register_mmio_for_device(
 
 mod device_range {
     use crate::chipset::io_ranges::IoRanges;
+    use address_filter::RangeKey;
     use chipset_device::ChipsetDevice;
     use chipset_device::mmio::ControlMmioIntercept;
     use chipset_device::mmio::RegisterMmioIntercept;
@@ -276,13 +305,27 @@ mod device_range {
 
     // Implementation detail - the concrete type returned by DeviceRangeMapper's
     // `new_io_region` implementation
-    struct DeviceRange<T> {
+    struct DeviceRange<T: RangeKey> {
         ranges: IoRanges<T>,
         region_name: Arc<str>,
         len: T,
         addr: Option<T>,
         dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         dev_name: Arc<str>,
+    }
+
+    impl<T: RangeKey> DeviceRange<T> {
+        fn revoke(&mut self) {
+            if let Some(addr) = self.addr.take() {
+                self.ranges.revoke(addr);
+            }
+        }
+    }
+
+    impl<T: RangeKey> Drop for DeviceRange<T> {
+        fn drop(&mut self) {
+            self.revoke();
+        }
     }
 
     macro_rules! impl_device_range {
@@ -335,9 +378,7 @@ mod device_range {
 
                 fn unmap(&mut self) {
                     tracing::trace!(region_name = ?self.region_name, addr = ?self.addr, len = ?self.len, "unmap");
-                    if let Some(addr) = self.addr.take() {
-                        self.ranges.revoke(addr)
-                    }
+                    self.revoke();
                 }
 
                 fn addr(&self) -> Option<$addr> {
@@ -360,4 +401,55 @@ mod device_range {
 
     impl_device_range!(RegisterMmioIntercept, ControlMmioIntercept, u64);
     impl_device_range!(RegisterPortIoIntercept, ControlPortIoIntercept, u16);
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use missing_dev::MissingDev;
+        use test_with_tracing::test;
+
+        fn mapper<T>(ranges: IoRanges<T>) -> DeviceRangeMapper<T> {
+            DeviceRangeMapper {
+                dev: Weak::<CloseableMutex<MissingDev>>::new(),
+                dev_name: "test".into(),
+                ranges,
+            }
+        }
+
+        #[test]
+        fn mmio_region_drop_releases_only_its_current_mapping() {
+            let ranges = IoRanges::<u64>::new(false, None);
+            let mut mapper = mapper(ranges.clone());
+            let mut region = mapper.new_io_region("mmio", 4);
+            region.map(0x1000);
+            assert!(ranges.is_occupied(0x1000));
+            region.map(0x2000);
+            assert!(!ranges.is_occupied(0x1000));
+            assert!(ranges.is_occupied(0x2000));
+
+            let mut conflicting = mapper.new_io_region("conflicting", 4);
+            conflicting.map(0x2000);
+            drop(conflicting);
+            assert!(ranges.is_occupied(0x2000));
+
+            region.unmap();
+            let mut replacement = mapper.new_io_region("replacement", 4);
+            replacement.map(0x2000);
+            drop(region);
+            assert!(ranges.is_occupied(0x2000));
+            drop(replacement);
+            assert!(!ranges.is_occupied(0x2000));
+        }
+
+        #[test]
+        fn pio_region_drop_releases_its_mapping() {
+            let ranges = IoRanges::<u16>::new(false, None);
+            let mut mapper = mapper(ranges.clone());
+            let mut region = mapper.new_io_region("pio", 4);
+            region.map(0x100);
+            assert!(ranges.is_occupied(0x100));
+            drop(region);
+            assert!(!ranges.is_occupied(0x100));
+        }
+    }
 }

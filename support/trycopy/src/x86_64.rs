@@ -185,7 +185,7 @@ pub(crate) unsafe fn try_memmove(
         // SAFETY: caller ensured.
         unsafe { try_copy_forward(dest, src, length) }
     } else {
-        crate::cold_path();
+        core::hint::cold_path();
         // SAFETY: caller ensured.
         unsafe { try_copy_backward(dest, src, length) }
     }

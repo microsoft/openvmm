@@ -7,10 +7,24 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
+hvdef.workspace = true
+inspect.workspace = true
+memory_range.workspace = true
+parking_lot.workspace = true
 tdisp.workspace = true
 tdisp_proto.workspace = true
+virt.workspace = true
+x86defs.workspace = true
 
 anyhow.workspace = true
+futures.workspace = true
+tracing.workspace = true
+
+# Both validators talk to /dev/mshv_vtl, and SEV-TIO also to /dev/sev-guest.
+[target.'cfg(target_os = "linux")'.dependencies]
+hcl.workspace = true
+sev_guest_device.workspace = true
+tracelimit.workspace = true
 
 [lints]
 workspace = true

@@ -9,6 +9,10 @@
 //! bearer token, exchanges it for a session token via the Azure DevOps
 //! REST API, and passes it to the NuGet credential provider via the
 //! `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` environment variable.
+//!
+//! The restored packages are cached (via [`crate::cache`], keyed on the
+//! requested `(id, version)` set and effective NuGet config contents) so that
+//! repeated restores can skip `dotnet restore` and, on Local, the auth dance.
 
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -17,6 +21,26 @@ use std::collections::BTreeMap;
 pub struct NugetPackage {
     pub id: String,
     pub version: String,
+}
+
+fn nuget_restore_cache_key(packages: Vec<NugetPackage>, config: &str) -> anyhow::Result<String> {
+    let mut packages: Vec<_> = packages
+        .into_iter()
+        .map(|NugetPackage { id, version }| (id.to_lowercase(), version))
+        .collect();
+    packages.sort();
+    packages.dedup();
+
+    let hasher = &mut rustc_hash::FxHasher::default();
+    for (id, version) in &packages {
+        std::hash::Hash::hash(id, hasher);
+        std::hash::Hash::hash(version, hasher);
+    }
+    let config = parse_nuget_config(config)?;
+    std::hash::Hash::hash(&config.filtered_config, hasher);
+    let hash = std::hash::Hasher::finish(hasher);
+
+    Ok(format!("nuget-install-package-{hash:016x}"))
 }
 
 flowey_request! {
@@ -52,6 +76,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<super::install_dotnet_cli::Node>();
+        ctx.import::<crate::cache::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -64,12 +89,17 @@ impl FlowNode for Node {
                     nuget_config_file,
                     install_dir,
                     pre_install_side_effects,
-                } => install.push(InstallRequest {
-                    packages,
-                    nuget_config_file,
-                    install_dir,
-                    pre_install_side_effects,
-                }),
+                } => {
+                    if packages.is_empty() {
+                        continue;
+                    }
+                    install.push(InstallRequest {
+                        packages,
+                        nuget_config_file,
+                        install_dir,
+                        pre_install_side_effects,
+                    });
+                }
             }
         }
 
@@ -104,9 +134,43 @@ impl Node {
             pre_install_side_effects,
         } in install
         {
+            // Resolve packages and config at runtime before looking up the cache.
+            let package_reads: Vec<_> = packages.iter().map(|(p, _)| p.clone()).collect();
+            let cache_key = ctx.emit_rust_stepv("compute nuget restore cache key", |ctx| {
+                let package_reads = package_reads.claim(ctx);
+                let nuget_config_file = nuget_config_file.clone().claim(ctx);
+                move |rt| {
+                    let pkgs: Vec<NugetPackage> =
+                        package_reads.into_iter().map(|p| rt.read(p)).collect();
+                    let config = fs_err::read_to_string(rt.read(nuget_config_file))?;
+                    nuget_restore_cache_key(pkgs, &config)
+                }
+            });
+
+            // A directory that `crate::cache` restores into / saves from.
+            // On Local, this is transparently backed by the node's
+            // persistent dir; on CI, by the platform's native cache action.
+            // Either way, a cache hit means the packages are already sitting
+            // here, laid out exactly how `dotnet restore --packages`
+            // produces them ({id_lower}/{version_lower}/).
+            let restore_packages_dir = ctx
+                .emit_rust_stepv("create nuget restore cache dir", |_| {
+                    |_| Ok(std::env::current_dir()?.join("packages").absolute()?)
+                });
+
+            let cache_hit = ctx.reqv(|v| crate::cache::Request {
+                label: "nuget-install-package".into(),
+                dir: restore_packages_dir.clone(),
+                key: cache_key,
+                restore_keys: None, // the package set and config must match exactly
+                hitvar: v,
+            });
+
             ctx.emit_rust_step("restore nuget packages", |ctx| {
                 let dotnet_bin = dotnet_bin.clone().claim(ctx);
                 let install_dir = install_dir.claim(ctx);
+                let restore_packages_dir = restore_packages_dir.claim(ctx);
+                let cache_hit = cache_hit.claim(ctx);
                 pre_install_side_effects.claim(ctx);
 
                 let packages = packages
@@ -119,6 +183,8 @@ impl Node {
                     let dotnet_bin = rt.read(dotnet_bin);
                     let nuget_config_file = rt.read(nuget_config_file);
                     let install_dir = rt.read(install_dir);
+                    let restore_packages_dir = rt.read(restore_packages_dir);
+                    let cache_hit = rt.read(cache_hit);
 
                     let packages = {
                         let mut pkgmap: BTreeMap<_, Vec<_>> = BTreeMap::new();
@@ -128,118 +194,31 @@ impl Node {
                         pkgmap
                     };
 
-                    // Generate a synthetic .csproj with PackageDownload items.
-                    // PackageDownload downloads the exact nupkg without resolving
-                    // transitive dependencies — this is intentional, as these
-                    // packages are standalone native binaries / firmware blobs
-                    // that do not have NuGet transitive dependencies.
-                    //
-                    // The project is never compiled, so all implicit framework
-                    // references / targeting + runtime pack downloads are
-                    // disabled. Without this, an SDK newer than the
-                    // `TargetFramework` below would try to restore the matching
-                    // targeting packs (e.g. `Microsoft.NETCore.App.Ref`) from
-                    // the configured feeds, which typically don't mirror them.
-                    let csproj_content = {
-                        let items: String = packages
-                            .keys()
-                            .map(|NugetPackage { id, version }| {
-                                format!(
-                                    r#"    <PackageDownload Include="{id}" Version="[{version}]" />"#
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-
-                        format!(
-r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
-    <EnableTargetingPackDownload>false</EnableTargetingPackDownload>
-    <EnableRuntimePackDownload>false</EnableRuntimePackDownload>
-    <EnableAppHostPackDownload>false</EnableAppHostPackDownload>
-  </PropertyGroup>
-  <ItemGroup>
-{items}
-  </ItemGroup>
-</Project>
-"#
-                        )
-                    };
-
-                    log::debug!("generated .csproj:\n{}", csproj_content);
-
-                    // Write the synthetic project to a unique temp directory
-                    // so we don't pollute the repo and avoid collisions
-                    // with concurrent runs.
-                    //
-                    // NOTE: After the restore, packages are *moved* out of
-                    // this directory into `install_dir`. When `restore_work_dir`
-                    // is dropped it will attempt to remove the (now partially
-                    // empty) tree — this is harmless and intentional.
-                    let restore_work_dir = tempfile::tempdir()?;
-                    let restore_work_dir_path = restore_work_dir.path();
-
-                    let csproj_path = restore_work_dir_path.join("NuGetRestore.csproj");
-                    fs_err::write(&csproj_path, csproj_content)?;
-
-                    let restore_packages_dir = restore_work_dir_path.join("packages");
-                    fs_err::create_dir_all(&restore_packages_dir)?;
-
-                    // Copy the nuget.config alongside the .csproj so dotnet
-                    // picks it up automatically, filtering out the
-                    // packages.config-era `repositoryPath` setting
-                    // that lives under `<config>` and conflicts with
-                    // the `--packages` flag we pass to `dotnet restore`.
-                    let local_nuget_config = restore_work_dir_path.join("nuget.config");
-                    let config_content = fs_err::read_to_string(&nuget_config_file)?;
-                    let parsed = parse_nuget_config(&config_content)?;
-                    fs_err::write(&local_nuget_config, &parsed.filtered_config)?;
-
-                    // On the Local backend, obtain an Azure DevOps session
-                    // token from `az` CLI and pass it to the credential
-                    // provider via the VSS_NUGET_EXTERNAL_FEED_ENDPOINTS
-                    // env var (the same mechanism ADO CI uses).
-                    let feed_endpoints_json = if matches!(rt.backend(), FlowBackend::Local) {
-                        get_feed_endpoints_json(rt, parsed.feed_urls)?
+                    if matches!(cache_hit, crate::cache::CacheHit::Hit) {
+                        log::info!(
+                            "nuget restore cache hit - skipping `dotnet restore` (and any auth)"
+                        );
                     } else {
-                        None
-                    };
-
-                    let mut cmd = flowey::shell_cmd!(
-                        rt,
-                        "{dotnet_bin} restore {csproj_path} --packages {restore_packages_dir} --configfile {local_nuget_config}"
-                    );
-                    if let Some(json) = &feed_endpoints_json {
-                        cmd = cmd.env("VSS_NUGET_EXTERNAL_FEED_ENDPOINTS", json);
-                    }
-                    if let Err(e) = cmd.run() {
-                        if matches!(rt.backend(), FlowBackend::Local) {
-                            if feed_endpoints_json.is_some() {
-                                log::error!(
-                                    "HINT: NuGet restore failed while using Azure DevOps feeds. \
-                                     You may need to install the Azure Artifacts Credential \
-                                     Provider and/or log in with `az login` to refresh your \
-                                     credentials."
-                                );
-                            } else {
-                                log::error!(
-                                    "HINT: NuGet restore failed. Check the restore output above \
-                                     for details and ensure your NuGet feeds are accessible from \
-                                     this environment."
-                                );
-                            }
-                        }
-                        return Err(e.into());
+                        Self::run_dotnet_restore(
+                            rt,
+                            &dotnet_bin,
+                            &nuget_config_file,
+                            &restore_packages_dir,
+                            packages.keys(),
+                        )?;
                     }
 
-                    // Post-process: flatten from the dotnet restore layout
+                    // Flatten from the dotnet restore layout
                     // ({id_lower}/{version}/) into the expected layout
                     // ({original_case_id}/) in install_dir.
                     //
                     // dotnet restore stores packages with lowercased IDs, but
                     // downstream code expects original-case directory names.
+                    //
+                    // This always *copies* (never moves) out of
+                    // `restore_packages_dir`, since that directory is also
+                    // what `crate::cache` persists between runs - moving out
+                    // of it would mean nothing gets cached.
                     fs_err::create_dir_all(&install_dir)?;
 
                     for (package, package_out_dir) in packages {
@@ -257,7 +236,7 @@ r#"<Project Sdk="Microsoft.NET.Sdk">
                         }
 
                         if src_dir.exists() {
-                            move_dir(&src_dir, &dest_dir)?;
+                            crate::_util::copy_dir_all(&src_dir, &dest_dir)?;
                         } else {
                             anyhow::bail!(
                                 "Package '{}' version '{}' was not found in restore output at '{}'",
@@ -276,6 +255,117 @@ r#"<Project Sdk="Microsoft.NET.Sdk">
                     Ok(())
                 }
             });
+        }
+
+        Ok(())
+    }
+
+    /// Run `dotnet restore` against a synthetic `.csproj`, landing the
+    /// restored packages directly in `restore_packages_dir` (in dotnet
+    /// restore's native `{id_lower}/{version_lower}/` layout).
+    fn run_dotnet_restore<'a>(
+        rt: &mut RustRuntimeServices<'_>,
+        dotnet_bin: &Path,
+        nuget_config_file: &Path,
+        restore_packages_dir: &Path,
+        packages: impl Iterator<Item = &'a NugetPackage>,
+    ) -> anyhow::Result<()> {
+        // Generate a synthetic .csproj with PackageDownload items.
+        // PackageDownload downloads the exact nupkg without resolving
+        // transitive dependencies — this is intentional, as these
+        // packages are standalone native binaries / firmware blobs
+        // that do not have NuGet transitive dependencies.
+        //
+        // The project is never compiled, so all implicit framework
+        // references / targeting + runtime pack downloads are
+        // disabled. Without this, an SDK newer than the
+        // `TargetFramework` below would try to restore the matching
+        // targeting packs (e.g. `Microsoft.NETCore.App.Ref`) from
+        // the configured feeds, which typically don't mirror them.
+        let csproj_content = {
+            let items: String = packages
+                .map(|NugetPackage { id, version }| {
+                    format!(r#"    <PackageDownload Include="{id}" Version="[{version}]" />"#)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            format!(
+                r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <EnableTargetingPackDownload>false</EnableTargetingPackDownload>
+    <EnableRuntimePackDownload>false</EnableRuntimePackDownload>
+    <EnableAppHostPackDownload>false</EnableAppHostPackDownload>
+  </PropertyGroup>
+  <ItemGroup>
+{items}
+  </ItemGroup>
+</Project>
+"#
+            )
+        };
+
+        log::debug!("generated .csproj:\n{}", csproj_content);
+
+        // Write the synthetic project to a unique temp directory so we
+        // don't pollute the repo and avoid collisions with concurrent runs.
+        // Only the .csproj/.config live here - packages are restored
+        // straight into `restore_packages_dir`, which is not temporary.
+        let restore_work_dir = tempfile::tempdir()?;
+        let restore_work_dir_path = restore_work_dir.path();
+
+        let csproj_path = restore_work_dir_path.join("NuGetRestore.csproj");
+        fs_err::write(&csproj_path, csproj_content)?;
+
+        fs_err::create_dir_all(restore_packages_dir)?;
+
+        // Copy the nuget.config alongside the .csproj so dotnet
+        // picks it up automatically, filtering out the
+        // packages.config-era `repositoryPath` setting
+        // that lives under `<config>` and conflicts with
+        // the `--packages` flag we pass to `dotnet restore`.
+        let local_nuget_config = restore_work_dir_path.join("nuget.config");
+        let config_content = fs_err::read_to_string(nuget_config_file)?;
+        let parsed = parse_nuget_config(&config_content)?;
+        fs_err::write(&local_nuget_config, &parsed.filtered_config)?;
+
+        // On the Local backend, obtain an Azure DevOps session
+        // token from `az` CLI and pass it to the credential
+        // provider via the VSS_NUGET_EXTERNAL_FEED_ENDPOINTS
+        // env var (the same mechanism ADO CI uses).
+        let feed_endpoints_json = if matches!(rt.backend(), FlowBackend::Local) {
+            get_feed_endpoints_json(rt, parsed.feed_urls)?
+        } else {
+            None
+        };
+
+        let mut cmd = flowey::shell_cmd!(
+            rt,
+            "{dotnet_bin} restore {csproj_path} --packages {restore_packages_dir} --configfile {local_nuget_config}"
+        );
+        if let Some(json) = &feed_endpoints_json {
+            cmd = cmd.env("VSS_NUGET_EXTERNAL_FEED_ENDPOINTS", json);
+        }
+        if let Err(e) = cmd.run() {
+            if matches!(rt.backend(), FlowBackend::Local) {
+                if feed_endpoints_json.is_some() {
+                    log::error!(
+                        "HINT: NuGet restore failed while using Azure DevOps feeds. \
+                         You may need to install the Azure Artifacts Credential \
+                         Provider and/or log in with `az login` to refresh your \
+                         credentials."
+                    );
+                } else {
+                    log::error!(
+                        "HINT: NuGet restore failed. Check the restore output above \
+                         for details and ensure your NuGet feeds are accessible from \
+                         this environment."
+                    );
+                }
+            }
+            return Err(e.into());
         }
 
         Ok(())
@@ -467,29 +557,54 @@ fn get_feed_endpoints_json(
     Ok(Some(feed_json))
 }
 
-/// Move a directory, falling back to recursive copy + delete if rename fails
-/// (e.g. across filesystem boundaries where rename returns EXDEV).
-fn move_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
-    match fs_err::rename(src, dest) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // rename(2) fails with EXDEV (errno 18 on Linux, error 17 on
-            // Windows) when src and dest are on different filesystems.
-            // Fall back to a recursive copy + delete.
-            log::debug!(
-                "rename failed ({}), falling back to copy+delete for {}",
-                e,
-                src.display()
-            );
-            crate::_util::copy_dir_all(src, dest)?;
-            fs_err::remove_dir_all(src)?;
-            Ok(())
-        }
-    }
-}
-
 /// Check whether a feed URL is an Azure DevOps Artifacts feed.
 fn is_azure_devops_feed(url: &str) -> bool {
     let lower = url.to_lowercase();
     lower.contains("pkgs.dev.azure.com") || lower.contains(".pkgs.visualstudio.com")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn cache_key_includes_nuget_config() -> anyhow::Result<()> {
+        let package = NugetPackage {
+            id: "Example".into(),
+            version: "1.0".into(),
+        };
+        let packages = vec![package.clone()];
+
+        assert_ne!(
+            nuget_restore_cache_key(packages.clone(), "<source>A</source>")?,
+            nuget_restore_cache_key(packages.clone(), "<source>B</source>")?,
+        );
+        assert_eq!(
+            nuget_restore_cache_key(packages.clone(), "<source>A</source>")?,
+            nuget_restore_cache_key(vec![package.clone(), package], "<source>A</source>")?,
+        );
+        assert_eq!(
+            nuget_restore_cache_key(packages, "<source>A</source>")?,
+            nuget_restore_cache_key(
+                vec![NugetPackage {
+                    id: "example".into(),
+                    version: "1.0".into(),
+                }],
+                "<source>A</source>",
+            )?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cache_key_ignores_repository_path() -> anyhow::Result<()> {
+        let config = "<configuration>\n<config>\n<add key=\"repositoryPath\" value=\"old\" />\n</config>\n</configuration>";
+        let changed = config.replace("value=\"old\"", "value=\"new\"");
+        assert_eq!(
+            nuget_restore_cache_key(vec![], config)?,
+            nuget_restore_cache_key(vec![], &changed)?,
+        );
+        Ok(())
+    }
 }

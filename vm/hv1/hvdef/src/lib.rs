@@ -2235,6 +2235,28 @@ pub mod hypercall {
         pub reserved: u32,
     }
 
+    /// Layout of the `ModifySparsePageVisibility` hypercall on internal Hyper-V
+    /// builds. To be removed, used for SEV-TIO bringup.
+    #[bitfield(u32)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct ModifyHostVisibilityWithImmutability {
+        #[bits(2)]
+        pub host_visibility: HostVisibilityType,
+        pub immutability: bool,
+        #[bits(29)]
+        _reserved: u32,
+    }
+
+    /// Layout for the `ModifySparsePageVisibility` hypercall on internal
+    /// Hyper-V builds. To be removed, used for SEV-TIO bringup.
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct ModifySparsePageVisibilityWithImmutability {
+        pub partition_id: u64,
+        pub host_visibility: ModifyHostVisibilityWithImmutability,
+        pub reserved: u32,
+    }
+
     #[repr(C)]
     #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct QuerySparsePageVisibility {

@@ -3,6 +3,8 @@
 
 //! SHA-256 implementation using OpenSSL.
 
+use super::SHA_256_OUTPUT_SIZE_BYTES;
+
 pub struct Sha256(openssl::sha::Sha256);
 
 impl Sha256 {
@@ -14,7 +16,7 @@ impl Sha256 {
         self.0.update(data);
     }
 
-    pub fn finish(self) -> [u8; 32] {
+    pub fn finish(self) -> [u8; SHA_256_OUTPUT_SIZE_BYTES] {
         self.0.finish()
     }
 }

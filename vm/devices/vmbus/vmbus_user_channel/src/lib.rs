@@ -75,7 +75,7 @@ impl RingMem for MappedRingMem {
             .atomic_slice(self.offset, CONTROL_SIZE)
             .as_atomic_slice()
             .unwrap()[..vmbus_ring::CONTROL_WORD_COUNT]
-            .try_into()
+            .as_array()
             .unwrap()
     }
 

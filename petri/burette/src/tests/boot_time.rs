@@ -10,6 +10,7 @@
 
 use crate::report::MetricResult;
 use anyhow::Context as _;
+use petri::PetriInitrd;
 use petri_artifacts_common::tags::MachineArch;
 
 /// Boot time configuration profile.
@@ -21,6 +22,7 @@ use petri_artifacts_common::tags::MachineArch;
 pub enum BootProfile {
     /// Full device set, serial agent, CIDATA disk, shared memory.
     /// The "standard" configuration that vmm_tests use.
+    /// Includes Petri's startup save/restore verification when supported.
     Standard,
     /// Like Standard but with kernel console output suppressed
     /// (`quiet loglevel=0`). Isolates serial emulation overhead.
@@ -28,6 +30,8 @@ pub enum BootProfile {
     /// Pipette-as-init, minimal devices, no serial, shared memory.
     /// Measures VMM + kernel boot without serial overhead.
     Minimal,
+    /// Minimal devices with serial console output and shared memory.
+    MinimalSerial,
     /// Pipette-as-init, minimal devices, no serial, private memory.
     /// Fastest configuration — eliminates mmap overhead for guest RAM.
     MinimalPrivate,
@@ -41,7 +45,10 @@ impl BootProfile {
 
     /// Whether this profile uses the minimal device set.
     pub fn uses_minimal_builder(&self) -> bool {
-        matches!(self, Self::Minimal | Self::MinimalPrivate)
+        matches!(
+            self,
+            Self::Minimal | Self::MinimalSerial | Self::MinimalPrivate
+        )
     }
 
     /// Whether this profile suppresses kernel console output.
@@ -66,10 +73,13 @@ impl BootProfile {
         driver: &pal_async::DefaultDriver,
     ) -> anyhow::Result<petri::PetriVmBuilder<petri::openvmm::OpenVmmPetriBackend>> {
         let mut builder = if self.uses_minimal_builder() {
-            petri::PetriVmBuilder::minimal(params, artifacts, driver)?
+            petri::PetriVmBuilder::minimal(params.test_name, params.log_source, artifacts, driver)?
         } else {
             petri::PetriVmBuilder::new(params, artifacts, driver)?
         };
+        if matches!(self, Self::MinimalSerial) {
+            builder = builder.with_serial_output();
+        }
 
         // Memory backing is selected by the caller via `with_memory`.
         if self.uses_quiet_serial() {
@@ -93,23 +103,18 @@ impl BootProfile {
     pub fn prepare_initrd(
         &self,
         resolver: &petri::ArtifactResolver<'_>,
-    ) -> anyhow::Result<Option<tempfile::TempPath>> {
+    ) -> anyhow::Result<Option<PetriInitrd>> {
         if !self.uses_minimal_builder() {
             return Ok(None);
         }
 
         let artifacts = build_artifacts(resolver)?;
 
-        let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
-        let params = petri::PetriTestParams {
-            test_name: "initrd_prep",
-            logger: &log_source,
-            post_test_hooks: &mut post_test_hooks,
-        };
 
         let initrd = pal_async::DefaultPool::run_with(async |driver| {
-            let builder = petri::PetriVmBuilder::minimal(params, artifacts, &driver)?;
+            let builder =
+                petri::PetriVmBuilder::minimal("initrd_prep", &log_source, artifacts, &driver)?;
             builder.prepare_initrd().context("failed to prepare initrd")
         })?;
 
@@ -125,13 +130,15 @@ pub struct BootTimeTest {
     pub diag: bool,
     /// RAM size in MiB (default: 2048).
     pub mem_mb: u64,
+    /// Virtual processors per guest.
+    pub vp_count: u32,
     /// Pre-built initrd (kept alive for the duration of the test).
-    initrd: tempfile::TempPath,
+    initrd: PetriInitrd,
 }
 
 /// Build the firmware configuration for Linux direct boot.
 pub fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    petri::Firmware::linux_direct(resolver, MachineArch::host())
+    petri::Firmware::linux_direct(resolver, MachineArch::host(), None)
 }
 
 /// Build artifacts for the OpenVMM backend.
@@ -165,6 +172,7 @@ impl BootTimeTest {
         profile: BootProfile,
         diag: bool,
         mem_mb: u64,
+        vp_count: u32,
         resolver: &petri::ArtifactResolver<'_>,
     ) -> anyhow::Result<Self> {
         // Boot time always uses the initrd (even for standard profiles,
@@ -172,16 +180,15 @@ impl BootTimeTest {
         // minimal builder which knows how to build it.
         let artifacts = build_artifacts(resolver)?;
 
-        let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
-        let params = petri::PetriTestParams {
-            test_name: "boot_time_initrd_prep",
-            logger: &log_source,
-            post_test_hooks: &mut post_test_hooks,
-        };
 
         let initrd = pal_async::DefaultPool::run_with(async |driver| {
-            let builder = petri::PetriVmBuilder::minimal(params, artifacts, &driver)?;
+            let builder = petri::PetriVmBuilder::minimal(
+                "boot_time_initrd_prep",
+                &log_source,
+                artifacts,
+                &driver,
+            )?;
             builder.prepare_initrd().context("failed to prepare initrd")
         })?;
 
@@ -189,6 +196,7 @@ impl BootTimeTest {
             profile,
             diag,
             mem_mb,
+            vp_count,
             initrd,
         })
     }
@@ -218,7 +226,7 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
         let log_source = crate::log_source();
         let params = petri::PetriTestParams {
             test_name: "boot_time",
-            logger: &log_source,
+            log_source: &log_source,
             post_test_hooks: &mut post_test_hooks,
         };
 
@@ -226,7 +234,7 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
             .profile
             .create_builder(params, artifacts, driver)?
             .with_processor_topology(petri::ProcessorTopology {
-                vp_count: 1,
+                vp_count: self.vp_count,
                 ..Default::default()
             })
             .with_memory(petri::MemoryConfig {
@@ -236,10 +244,11 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
             });
 
         if self.profile.uses_minimal_builder() {
-            config = config.with_prebuilt_initrd(self.initrd.to_path_buf());
+            config = config.with_prebuilt_initrd(self.initrd.clone());
         }
 
         // Measure: start timing right before run(), stop when pipette connects.
+        tracing::info!(vp_count = self.vp_count, "boot measurement starting");
         let start = std::time::Instant::now();
         let (vm, agent) = config.run().await.context("failed to boot VM")?;
         let elapsed = start.elapsed();

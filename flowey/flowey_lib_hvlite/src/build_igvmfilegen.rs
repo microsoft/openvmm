@@ -6,7 +6,7 @@
 use crate::common::CommonTriple;
 use crate::run_cargo_build::BuildProfile;
 use flowey::node::prelude::*;
-use std::collections::BTreeMap;
+use flowey_lib_common::_util::group_by;
 
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
@@ -52,31 +52,17 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        // de-dupe incoming requests
-        let requests = requests
-            .into_iter()
-            .fold(BTreeMap::<_, Vec<_>>::new(), |mut m, r| {
-                let Request {
-                    build_params,
-                    igvmfilegen,
-                } = r;
-                m.entry(build_params).or_default().push(igvmfilegen);
-                m
-            });
+        let requests = group_by(
+            requests
+                .into_iter()
+                .map(|r| (r.build_params, r.igvmfilegen)),
+        );
+        if requests.is_empty() {
+            return Ok(());
+        }
 
         // `crypto`'s vendored OpenSSL build needs the headers and perl.
-        let ssl_pkgs: Vec<String> = match ctx.platform() {
-            FlowPlatform::Linux(distro) => match distro {
-                FlowPlatformLinuxDistro::Ubuntu => vec!["libssl-dev".into()],
-                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux => {
-                    vec!["openssl-devel".into(), "perl".into()]
-                }
-                FlowPlatformLinuxDistro::Arch => vec!["openssl".into(), "perl".into()],
-                FlowPlatformLinuxDistro::Nix => Vec::new(),
-                FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
-            },
-            _ => Vec::new(),
-        };
+        let ssl_pkgs = crate::common::openssl_dev_packages(ctx.platform())?;
         let ssl_dep = (!ssl_pkgs.is_empty()).then(|| {
             ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
                 package_names: ssl_pkgs,
@@ -115,9 +101,7 @@ impl FlowNode for Node {
                         _ => unreachable!(),
                     };
 
-                    for var in outvars {
-                        rt.write(var, &output);
-                    }
+                    rt.write_all(outvars, &output);
                 }
             });
         }

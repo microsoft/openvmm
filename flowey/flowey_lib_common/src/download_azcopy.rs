@@ -61,7 +61,7 @@ impl FlowNodeWithConfig for Node {
         let bsdtar_installed = ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
             package_names: match platform {
                 FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                    FlowPlatformLinuxDistro::Fedora => {
+                    FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::OpenSuse => {
                         vec!["bsdtar".into()]
                     }
                     FlowPlatformLinuxDistro::Ubuntu => vec!["libarchive-tools".into()],

@@ -1,0 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "hyperv_keyboard_protocol"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+guid.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

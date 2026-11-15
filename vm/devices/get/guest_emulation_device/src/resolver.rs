@@ -87,7 +87,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 disk.encryption_policy,
                 GuestStateLifetime::ReprovisionOnFailure,
             ),
-            VmgsResource::Reprovision(disk) => (
+            VmgsResource::ReprovisionSingle(disk) => (
                 Some(disk.disk),
                 disk.encryption_policy,
                 GuestStateLifetime::Reprovision,
@@ -145,12 +145,14 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     GuestFirmwareConfig::Uefi {
                         enable_vpci_boot,
                         firmware_debug,
+                        enable_memory_protections,
                         disable_frontpage,
                         console_mode,
                         default_boot_always_attempt,
                     } => crate::GuestFirmwareConfig::Uefi {
                         enable_vpci_boot,
                         firmware_debug,
+                        enable_memory_protections,
                         disable_frontpage,
                         console_mode: match console_mode {
                             UefiConsoleMode::Default => get_protocol::UefiConsoleMode::DEFAULT,

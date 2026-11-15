@@ -94,10 +94,53 @@ impl<T: ChipsetDevice> LineSetTargetDevice<T> {
 
 impl<T: ChipsetDevice> LineSetTarget for LineSetTargetDevice<T> {
     fn set_irq(&self, vector: u32, high: bool) {
-        self.device
-            .lock()
-            .supports_line_interrupt_target()
-            .unwrap()
-            .set_irq(vector, high);
+        if let Some(mut device) = self.device.lock_if_open() {
+            device
+                .supports_line_interrupt_target()
+                .unwrap()
+                .set_irq(vector, high);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chipset_device::interrupt::LineInterruptTarget;
+    use std::ops::RangeInclusive;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct Target(Arc<AtomicUsize>);
+
+    impl ChipsetDevice for Target {
+        fn supports_line_interrupt_target(&mut self) -> Option<&mut dyn LineInterruptTarget> {
+            Some(self)
+        }
+    }
+
+    impl LineInterruptTarget for Target {
+        fn set_irq(&mut self, _: u32, _: bool) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn valid_lines(&self) -> &[RangeInclusive<u32>] {
+            &[0..=0]
+        }
+    }
+
+    #[test]
+    fn late_interrupts_do_not_reach_a_removed_target() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let device = Arc::new(CloseableMutex::new(Target(calls.clone())));
+        let target = LineSetTargetDevice::new(device.clone());
+        target.set_irq(0, true);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        drop(device.close_permanently().take());
+        target.set_irq(0, false);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

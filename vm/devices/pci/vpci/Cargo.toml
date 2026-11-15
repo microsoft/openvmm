@@ -22,7 +22,7 @@ vmcore.workspace = true
 hvdef.workspace = true
 
 closeable_mutex.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect.workspace = true
 mesh.workspace = true
 task_control.workspace = true

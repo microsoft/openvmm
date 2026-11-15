@@ -15,16 +15,19 @@ use tdisp_proto::GuestToHostResponse;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
 use tdisp_proto::TdispCommandRequestGetTdiReport;
+use tdisp_proto::TdispCommandRequestModifyMmioRange;
 use tdisp_proto::TdispCommandRequestStartTdi;
 use tdisp_proto::TdispCommandRequestUnbind;
 use tdisp_proto::TdispCommandResponseBind;
 use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
 use tdisp_proto::TdispCommandResponseGetTdiReport;
+use tdisp_proto::TdispCommandResponseModifyMmioRange;
 use tdisp_proto::TdispCommandResponseStartTdi;
 use tdisp_proto::TdispCommandResponseUnbind;
 use tdisp_proto::TdispDeviceInterfaceInfo;
 use tdisp_proto::TdispGuestOperationErrorCode;
 use tdisp_proto::TdispGuestUnbindReason;
+use tdisp_proto::TdispMmioRangeAction;
 use tdisp_proto::TdispReportType;
 use tdisp_proto::TdispTdiState;
 use tdisp_proto::guest_to_host_command::Command;
@@ -119,8 +122,57 @@ fn test_command_unbind_roundtrip() {
     assert_eq!(req.unbind_reason, TdispGuestUnbindReason::Graceful as i32);
 }
 
-// ── Command validation-failure tests ─────────────────────────────────────────
+#[test]
+fn test_command_modify_mmio_range_roundtrip() {
+    for action in [
+        TdispMmioRangeAction::UnblockMmioRange,
+        TdispMmioRangeAction::BlockMmioRange,
+    ] {
+        let cmd = GuestToHostCommand {
+            device_id: 42,
+            command: Some(Command::ModifyMmioRange(
+                TdispCommandRequestModifyMmioRange {
+                    action: action as i32,
+                    range_id: 3,
+                    gpa_base: 0xf000_0000,
+                    range_len_bytes: 0x2_0000_0000,
+                },
+            )),
+        };
+        let bytes = serialize_command(&cmd);
+        let got = deserialize_command(&bytes).unwrap();
+        assert_eq!(got.device_id, 42);
+        let Some(Command::ModifyMmioRange(req)) = got.command else {
+            panic!("expected ModifyMmioRange command");
+        };
+        assert_eq!(req.action, action as i32);
+        assert_eq!(req.range_id, 3);
+        assert_eq!(req.gpa_base, 0xf000_0000);
+        // Deliberately larger than u32::MAX to pin the 64-bit length on the wire.
+        assert_eq!(req.range_len_bytes, 0x2_0000_0000);
+    }
+}
 
+#[test]
+fn test_deserialize_command_rejects_invalid_mmio_range_action() {
+    // An action integer outside the enum must fail validation, matching the
+    // other enum-carrying commands.
+    let cmd = GuestToHostCommand {
+        device_id: 42,
+        command: Some(Command::ModifyMmioRange(
+            TdispCommandRequestModifyMmioRange {
+                action: 99,
+                range_id: 0,
+                gpa_base: 0,
+                range_len_bytes: 0x1000,
+            },
+        )),
+    };
+    let bytes = serialize_command(&cmd);
+    assert!(deserialize_command(&bytes).is_err());
+}
+
+// ── Command validation-failure tests ─────────────────────────────────────────
 #[test]
 fn test_deserialize_command_rejects_missing_command_field() {
     // A GuestToHostCommand with no oneof variant set must be rejected.
@@ -165,6 +217,16 @@ fn test_response_unbind_roundtrip() {
     let bytes = serialize_response(&resp);
     let got = deserialize_response(&bytes).unwrap();
     assert!(matches!(got.response, Some(Response::Unbind(_))));
+}
+
+#[test]
+fn test_response_modify_mmio_range_roundtrip() {
+    let resp = make_response(Response::ModifyMmioRange(
+        TdispCommandResponseModifyMmioRange {},
+    ));
+    let bytes = serialize_response(&resp);
+    let got = deserialize_response(&bytes).unwrap();
+    assert!(matches!(got.response, Some(Response::ModifyMmioRange(_))));
 }
 
 #[test]

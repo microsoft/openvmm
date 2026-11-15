@@ -64,6 +64,7 @@ use std::task::Poll;
 use std::task::ready;
 use std::time::Duration;
 use unicycle::FuturesUnordered;
+use vmbus_channel::TaggedStream;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::GpadlRequest;
@@ -81,7 +82,6 @@ use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
 use vmbus_core::OutgoingMessage;
-use vmbus_core::TaggedStream;
 use vmbus_core::VMBUS_SINT;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
@@ -2193,19 +2193,20 @@ fn gpadl_ring_size(gpadl: &AlignedGpadlView) -> usize {
 ///
 /// This allows us to lock a page in a `GuestMemory` that doesn't have a full mapping, but can
 /// create one for a subrange.
-fn lock_page_with_subrange(gm: &GuestMemory, offset: u64) -> anyhow::Result<guestmem::LockedPages> {
-    Ok(gm.lockable_subrange(offset, PAGE_SIZE as u64)?.lock_gpns(
-        guestmem::AccessType::Write,
-        false,
-        &[0],
-    )?)
+fn lock_page_with_subrange(
+    gm: &GuestMemory,
+    offset: u64,
+) -> anyhow::Result<guestmem::UserLockedPages> {
+    Ok(gm
+        .lockable_subrange(offset, PAGE_SIZE as u64)?
+        .lock_user_gpns(guestmem::AccessType::Write, &[0])?)
 }
 
 /// Helper to create a subrange before locking a single page from a gpn.
 ///
 /// This allows us to lock a page in a `GuestMemory` that doesn't have a full mapping, but can
 /// create one for a subrange.
-fn lock_gpn_with_subrange(gm: &GuestMemory, gpn: u64) -> anyhow::Result<guestmem::LockedPages> {
+fn lock_gpn_with_subrange(gm: &GuestMemory, gpn: u64) -> anyhow::Result<guestmem::UserLockedPages> {
     lock_page_with_subrange(gm, gpn * PAGE_SIZE as u64)
 }
 

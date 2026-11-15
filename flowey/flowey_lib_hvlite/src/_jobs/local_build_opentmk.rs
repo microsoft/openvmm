@@ -87,11 +87,12 @@ impl SimpleFlowNode for Node {
                 image.persist(&vhd_path)?;
 
                 fs_err::copy(&efi, output_dir.join(format!("{name}.efi")))?;
-                fs_err::copy(&pdb, output_dir.join(format!("{name}.pdb")))?;
-
                 log::info!("EFI: {}", output_dir.join(format!("{name}.efi")).display());
                 log::info!("VHD: {}", vhd_path.display());
-                log::info!("PDB: {}", output_dir.join(format!("{name}.pdb")).display());
+                if let Some(pdb) = &pdb {
+                    fs_err::copy(pdb, output_dir.join(format!("{name}.pdb")))?;
+                    log::info!("PDB: {}", output_dir.join(format!("{name}.pdb")).display());
+                }
 
                 Ok(())
             }

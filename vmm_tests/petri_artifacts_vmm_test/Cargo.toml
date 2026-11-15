@@ -10,5 +10,8 @@ rust-version.workspace = true
 petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 
+linkme.workspace = true
+serde = { workspace = true, features = ["std", "derive"] }
+
 [lints]
 workspace = true

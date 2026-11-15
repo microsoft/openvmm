@@ -14,7 +14,7 @@ fn panic_handler(panic: &core::panic::PanicInfo<'_>) -> ! {
     println!("{}", panic);
 
     // If the system table is available, use UEFI's standard shutdown mechanism
-    if uefi::table::system_table_raw().is_none() {
+    if uefi::table::system_table_raw().is_some() {
         use uefi::runtime::ResetType;
         uefi::runtime::reset(ResetType::SHUTDOWN, uefi::Status::ABORTED, None);
     }
@@ -23,10 +23,11 @@ fn panic_handler(panic: &core::panic::PanicInfo<'_>) -> ! {
 
     // SAFETY: the undefined instruction trap handler in `guest_test_uefi` will not return
     unsafe {
-        #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("ud2");
-        #[cfg(target_arch = "aarch64")]
-        core::arch::asm!("brk #0");
+        cfg_select! {
+            target_arch = "x86_64" => core::arch::asm!("ud2"),
+            target_arch = "aarch64" => core::arch::asm!("brk #0"),
+            _ => compile_error!("unsupported target architecture"),
+        };
         core::hint::unreachable_unchecked();
     }
 }

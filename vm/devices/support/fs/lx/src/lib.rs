@@ -132,14 +132,34 @@ lx_errors! {
     ENOKEY = 126;
 }
 
+/// Linux's internal execute-open intent, forwarded to FUSE but not a userspace open flag.
+pub const __FMODE_EXEC: i32 = 0x000020;
+
 pub const O_RDONLY: i32 = 0x000000;
 pub const O_WRONLY: i32 = 0x000001;
 pub const O_RDWR: i32 = 0x000002;
 pub const O_NOACCESS: i32 = 0x000003;
 pub const O_CREAT: i32 = 0x000040;
 pub const O_EXCL: i32 = 0x000080;
+pub const O_NOCTTY: i32 = 0x000100;
 pub const O_TRUNC: i32 = 0x000200;
 pub const O_APPEND: i32 = 0x000400;
+pub const O_NONBLOCK: i32 = 0x000800;
+pub const O_DSYNC: i32 = 0x001000;
+
+// xtask-fmt allow-target-arch sys-crate
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub const O_DIRECT: i32 = 0x004000;
+// xtask-fmt allow-target-arch sys-crate
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub const O_LARGEFILE: i32 = 0x008000;
+
+// xtask-fmt allow-target-arch sys-crate
+#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+pub const O_DIRECT: i32 = 0x010000;
+// xtask-fmt allow-target-arch sys-crate
+#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+pub const O_LARGEFILE: i32 = 0x020000;
 
 // xtask-fmt allow-target-arch sys-crate
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -156,6 +176,9 @@ pub const O_DIRECTORY: i32 = 0x004000;
 pub const O_NOFOLLOW: i32 = 0x008000;
 
 pub const O_NOATIME: i32 = 0x040000;
+pub const O_CLOEXEC: i32 = 0x080000;
+pub const O_SYNC: i32 = 0x101000;
+pub const O_PATH: i32 = 0x200000;
 
 pub const O_ACCESS_MASK: i32 = 0x000003;
 

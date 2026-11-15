@@ -18,7 +18,7 @@ vmcore.workspace = true
 vm_topology.workspace = true
 memory_range.workspace = true
 
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 open_enum.workspace = true
 tracelimit.workspace = true
 

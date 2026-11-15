@@ -88,6 +88,13 @@ impl ScsiSaveRestore for AtapiScsiDisk {
 }
 
 impl AsyncScsiDisk for AtapiScsiDisk {
+    fn clear_nexus_state(&self) {
+        // This wrapper keeps its own sense slot in front of the device's, so
+        // both have to be cleared or a REQUEST SENSE still answers from here.
+        self.sense_data.set(None);
+        self.inner.clear_nexus_state();
+    }
+
     fn execute_scsi<'a>(
         &'a self,
         external_data: &'a RequestBuffers<'a>,

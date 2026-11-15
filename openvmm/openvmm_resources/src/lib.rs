@@ -11,6 +11,7 @@ mod hypervisor_resolvers;
 // Resources.
 vm_resource::register_static_resolvers! {
     // Chipset devices
+    chipset::acpi_power_button::AcpiPowerButtonResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
     #[cfg(guest_arch = "x86_64")]
@@ -51,6 +52,8 @@ vm_resource::register_static_resolvers! {
 
     // Serial ports
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,
+    serial_core::null::resolver::NullSerialBackendResolver,
+    serial_socket::file::FileSerialResolver,
     #[cfg(windows)]
     serial_socket::windows::WindowsPipeSerialResolver,
     serial_socket::net::SocketSerialResolver,
@@ -74,6 +77,7 @@ vm_resource::register_static_resolvers! {
     disk_prwrap::DiskWithReservationsResolver,
     disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,
+    disk_vmdk::FlatVmdkResolver,
     #[cfg(windows)]
     disk_vhdmp::VhdmpDiskResolver,
     #[cfg(feature = "disk_blob")]
@@ -86,7 +90,7 @@ vm_resource::register_static_resolvers! {
     disklayer_vhdx::resolver::VhdxDiskLayerResolver,
 
     // PCI devices
-    cxl_spec::test::resolver::CxlTestDeviceResolver,
+    cxl::test::resolver::CxlTestDeviceResolver,
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
     nvme_test::resolver::NvmeFaultControllerResolver,
@@ -105,6 +109,7 @@ vm_resource::register_static_resolvers! {
     virtio_net::resolver::VirtioNetResolver,
     virtio_pmem::resolver::VirtioPmemResolver,
     virtio_rng::resolver::VirtioRngResolver,
+    virtio_rtc::resolver::VirtioRtcResolver,
     #[cfg(target_os = "linux")]
     vhost_user_frontend::resolver::VhostUserFrontendResolver,
     virtio_vsock::resolver::VirtioVsockResolver,

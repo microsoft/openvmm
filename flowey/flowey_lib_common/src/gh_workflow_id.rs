@@ -212,19 +212,21 @@ fn get_action_id_by_commit(
         Some(action_id)
     };
 
+    const OLDEST_COMMIT: i32 = 10;
+
     let mut action_id = get_action_id(&commit_hash);
     let mut loop_count = 0;
 
     // CI may not have finished the build for the merge base, so loop through commits
-    // until we find a finished build or fail after 5 attempts
+    // until we find a finished build or fail after `OLDEST_COMMIT` attempts
     while action_id.is_none() {
         println!(
             "Unable to get action id for commit {}, trying again",
             commit_hash
         );
 
-        if loop_count > 4 {
-            anyhow::bail!("Failed to get action id after 5 attempts");
+        if loop_count >= OLDEST_COMMIT {
+            anyhow::bail!("Failed to get action id after {OLDEST_COMMIT} attempts");
         }
 
         commit_hash = flowey::shell_cmd!(

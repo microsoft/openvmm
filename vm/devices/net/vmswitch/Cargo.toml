@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 pal.workspace = true
 pal_event.workspace = true
 pal_async.workspace = true

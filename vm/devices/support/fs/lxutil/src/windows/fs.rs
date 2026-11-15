@@ -594,6 +594,16 @@ pub fn allocation_size_to_block_count(allocation_size: i64, block_size: u32) -> 
     result
 }
 
+pub struct LxAttrOptions {
+    pub flags: u32,
+    pub block_size: u32,
+    pub default_uid: lx::uid_t,
+    pub default_gid: lx::gid_t,
+    pub umask: u32,
+    pub fmask: u32,
+    pub dmask: u32,
+}
+
 /// Convert file information to a stat structure used by Linux.
 ///
 /// N.B. This routine does not provide all fields. The file system's device ID
@@ -601,14 +611,17 @@ pub fn allocation_size_to_block_count(allocation_size: i64, block_size: u32) -> 
 pub fn get_lx_attr(
     fs_context: &FsContext,
     info: &mut FileSystem::FILE_STAT_LX_INFORMATION,
-    flags: u32,
-    block_size: u32,
-    default_uid: lx::uid_t,
-    default_gid: lx::gid_t,
-    umask: u32,
-    fmask: u32,
-    dmask: u32,
+    options: LxAttrOptions,
 ) -> lx::Result<lx::StatEx> {
+    let LxAttrOptions {
+        flags,
+        block_size,
+        default_uid,
+        default_gid,
+        umask,
+        fmask,
+        dmask,
+    } = options;
     let inode_attr = determine_inode_attributes(fs_context, info, flags, umask, fmask, dmask)?;
     let mode = inode_attr.mode.unwrap_or(0);
     let file_size: u64;

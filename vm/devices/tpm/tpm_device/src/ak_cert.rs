@@ -4,8 +4,7 @@
 //! Helper traits for TPM Attestation Key Certificate (AK cert).
 
 use std::sync::Arc;
-use tpm_resources::RequestAkCertKind;
-use vm_resource::CanResolveTo;
+use tpm_resources::RequestAkCert;
 
 /// Type of TPM AK cert.
 pub enum TpmAkCertType {
@@ -44,39 +43,4 @@ impl TpmAkCertType {
             TpmAkCertType::Trusted(_, _) | TpmAkCertType::None => false,
         }
     }
-}
-
-impl CanResolveTo<ResolvedRequestAkCert> for RequestAkCertKind {
-    // Workaround for async_trait not supporting GATs with missing lifetimes.
-    type Input<'a> = &'a ();
-}
-
-/// A resolved request AK cert helper resource.
-pub struct ResolvedRequestAkCert(pub Arc<dyn RequestAkCert>);
-
-impl<T: 'static + RequestAkCert> From<T> for ResolvedRequestAkCert {
-    fn from(value: T) -> Self {
-        Self(Arc::new(value))
-    }
-}
-
-/// A trait for requesting an AK cert.
-#[async_trait::async_trait]
-pub trait RequestAkCert: Send + Sync {
-    /// Helper function to create the request needed by `request_ak_cert`.
-    fn create_ak_cert_request(
-        &self,
-        ak_pub_modulus: &[u8],
-        ak_pub_exponent: &[u8],
-        ek_pub_modulus: &[u8],
-        ek_pub_exponent: &[u8],
-        guest_input: &[u8],
-        is_attestation_report: bool,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
-
-    /// Helper function to request an AK cert.
-    async fn request_ak_cert(
-        &self,
-        request: Vec<u8>,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>;
 }

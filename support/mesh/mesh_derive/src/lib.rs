@@ -355,10 +355,7 @@ fn field_data<'a>(protobuf_mod: &Path, fields: &'a Fields) -> syn::Result<Vec<Fi
 
     numbers_and_spans.sort_by_key(|x| x.0);
     // check for duplicate numbers
-    for (&(left, span), &(right, _)) in numbers_and_spans
-        .iter()
-        .zip(numbers_and_spans.iter().skip(1))
-    {
+    for &[(left, span), (right, _)] in numbers_and_spans.array_windows() {
         if left == right {
             return Err(syn::Error::new(span, "duplicate field number"));
         }

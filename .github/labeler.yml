@@ -13,3 +13,6 @@ release_1.7.2511:
 
 release_1.8.2607:
  - base-branch: 'release/1.8.2607'
+
+release-nvx:
+ - base-branch: '^feature/microvm/'

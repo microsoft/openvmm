@@ -95,7 +95,6 @@ pub struct VmbusDeviceTreeInfo {
     p_compatible: StringId,
     p_ranges: StringId,
     p_vtl: StringId,
-    p_vmbus_connection_id: StringId,
     p_dma_coherent: StringId,
     p_interrupt_parent: StringId,
     p_interrupts: StringId,
@@ -116,7 +115,6 @@ fn write_vmbus<'a, T>(
         p_compatible,
         p_ranges,
         p_vtl,
-        p_vmbus_connection_id,
         p_dma_coherent,
         p_interrupt_parent,
         p_interrupts,
@@ -129,8 +127,7 @@ fn write_vmbus<'a, T>(
         .add_u32(p_size_cells, 2)?
         .add_null(p_dma_coherent)?
         .add_str(p_compatible, "microsoft,vmbus")?
-        .add_u32(p_vtl, u8::from(vtl).into())?
-        .add_u32(p_vmbus_connection_id, vmbus.connection_id)?;
+        .add_u32(p_vtl, u8::from(vtl).into())?;
 
     let mut mmio_ranges = ArrayVec::<u64, 6>::new();
     for entry in vmbus.mmio.iter() {
@@ -210,7 +207,6 @@ pub fn write_dt(
     let p_reftime_sidecar_start = builder.add_string("reftime_sidecar_start")?;
     let p_reftime_sidecar_end = builder.add_string("reftime_sidecar_end")?;
     let p_vtl = builder.add_string(igvm_defs::dt::IGVM_DT_VTL_PROPERTY)?;
-    let p_vmbus_connection_id = builder.add_string("microsoft,message-connection-id")?;
     let p_dma_coherent = builder.add_string("dma-coherent")?;
     let p_igvm_type = builder.add_string(IGVM_DT_IGVM_TYPE_PROPERTY)?;
     let p_openhcl_memory = builder.add_string("openhcl,memory-type")?;
@@ -480,7 +476,6 @@ pub fn write_dt(
         p_compatible,
         p_ranges,
         p_vtl,
-        p_vmbus_connection_id,
         p_dma_coherent,
         p_interrupt_parent,
         p_interrupts,

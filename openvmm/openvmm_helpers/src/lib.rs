@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod config;
 pub mod disk;
 pub mod hypervisor;
 pub mod shared_memory;

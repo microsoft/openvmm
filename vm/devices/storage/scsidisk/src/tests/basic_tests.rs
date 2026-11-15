@@ -34,6 +34,58 @@ use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
+#[async_test]
+async fn logical_block_provisioning_threshold_boundaries() {
+    let response_len =
+        size_of::<scsi::VpdPageHeader>() + size_of::<scsi::VpdLogicalBlockProvisioningPage>();
+    let inquiry = scsi::CdbInquiry {
+        operation_code: ScsiOp::INQUIRY.0,
+        flags: scsi::InquiryFlags::new().with_vpd(true),
+        page_code: scsi::VPD_LOGICAL_BLOCK_PROVISIONING,
+        allocation_length: (response_len as u16).into(),
+        control: 0,
+    };
+    let mut cdb = [0; 16];
+    cdb[..size_of_val(&inquiry)].copy_from_slice(inquiry.as_bytes());
+    let request = Request { cdb, srb_flags: 0 };
+
+    for (sector_count, expected) in [
+        (0, 1),
+        (1, 1),
+        ((1 << 32) - 1, 1),
+        (1 << 32, 1),
+        ((2 << 32) - 1, 1),
+        (2 << 32, 2),
+        ((2 << 32) + 1, 2),
+        (3 << 32, 2),
+        ((4 << 32) - 1, 2),
+        (4 << 32, 3),
+        ((4 << 32) + 1, 3),
+        (5 << 32, 3),
+        (u64::MAX, 32),
+    ] {
+        let (mut disk, _) = new_scsi_disk(512, 512, sector_count, false, false, false);
+        disk.scsi_parameters.support_unmap = true;
+        let memory = GuestMemory::allocate(response_len);
+        let buffers = OwnedRequestBuffers::linear(0, response_len, true);
+        check_execute_scsi_pass_with_tx(&disk, &buffers.buffer(&memory), &request, response_len)
+            .await;
+
+        let mut response = vec![0; response_len];
+        memory.read_at(0, &mut response).unwrap();
+        let page = scsi::VpdLogicalBlockProvisioningPage::read_from_prefix(
+            &response[size_of::<scsi::VpdPageHeader>()..],
+        )
+        .unwrap()
+        .0;
+        assert_eq!(page.threshold_exponent, expected, "{sector_count}");
+        assert!(
+            u128::from(sector_count) < (1u128 << (32 + page.threshold_exponent)),
+            "{sector_count}"
+        );
+    }
+}
+
 fn save_scsi_disk(scsi_disk: &SimpleScsiDisk) -> ScsiDiskSavedState {
     let saved_state = if let Some(ScsiSavedState::ScsiDisk(saved_state)) = scsi_disk.save().unwrap()
     {

@@ -78,7 +78,15 @@ pub(crate) use snp::acquire_snp_host_access;
 use snp::prepare_snp_config;
 use snp::snp_cpuid_overrides;
 use snp::snp_hv_cpuid_overrides;
+use snp::snp_sev_features;
 use snp::snp_start_vp_vmsa_gpa;
+
+// TODO: Matches upcoming kernel header changes to specify SNP interrupt
+// injection type. Update this to use new mshv bindings once that crate is
+// updated.
+const MSHV_PT_SNP_INJECTION_POLICY_SHIFT: u32 = 6;
+const MSHV_PT_SNP_RESTRICTED_INJECTION: u64 = 0;
+const MSHV_PT_SNP_NORMAL_INJECTION: u64 = 1;
 
 pub(crate) enum MshvProtoPartitionIsolation {
     None,
@@ -101,22 +109,29 @@ impl virt::Hypervisor for LinuxMshv {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<MshvProtoPartition<'a>, Self::Error> {
-        // An IGVM supplies SNP state that MSHV needs before partition build.
         let igvm_snp_config = match &config.isolation {
-            virt::ProtoPartitionIsolation::None => None,
-            virt::ProtoPartitionIsolation::Snp(snp_config) => snp_config.as_deref(),
-            _ => return Err(ErrorInner::IsolationNotSupported.into()),
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(snp_config)) => {
+                Some(snp_config.as_ref())
+            }
+            _ => None,
         };
         let isolation = config.isolation.isolation_type();
         validate_snp_cpuid_offload_config(isolation, self.snp_disable_cpuid_offload)?;
+        validate_nested_virt_config(config.nested_virt, config.hv_config.as_ref())?;
         let snp = isolation == virt::IsolationType::Snp;
         let x2apic = matches!(
             config.processor_topology.apic_mode(),
             vm_topology::processor::x86::ApicMode::X2ApicSupported
                 | vm_topology::processor::x86::ApicMode::X2ApicEnabled
         );
-        let create_args =
-            partition_create_args(snp, x2apic, config.processor_topology.smt_enabled());
+        let create_args = partition_create_args(
+            &config.isolation,
+            PartitionCreateOptions {
+                x2apic,
+                smt: config.processor_topology.smt_enabled(),
+                nested: config.nested_virt,
+            },
+        )?;
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
 
@@ -124,25 +139,40 @@ impl virt::Hypervisor for LinuxMshv {
         // guest interface is configured. SNP partitions require the smaller
         // early-property feature set accepted by the hypervisor.
         if config.hv_config.is_some() || snp {
-            let synthetic_features = if snp {
-                snp_synthetic_features()
+            let synthetic_features_mask = if snp {
+                u64::from(snp_synthetic_features())
+            } else if config.nested_virt {
+                // Limit the mask to features L0 reports as assignable.
+                self.mshv.make_default_synthetic_features_mask()
             } else {
-                common_synthetic_features()
-                    .with_access_partition_reference_tsc(true)
-                    .with_access_guest_idle_reg(true)
-                    .with_access_frequency_regs(true)
-                    .with_enable_extended_gva_ranges_for_flush_virtual_address_list(true)
+                u64::from(
+                    common_synthetic_features()
+                        .with_access_partition_reference_tsc(true)
+                        .with_access_guest_idle_reg(true)
+                        .with_access_frequency_regs(true)
+                        .with_enable_extended_gva_ranges_for_flush_virtual_address_list(true),
+                )
             };
 
             vmfd.set_partition_property(
                 HvPartitionPropertyCode::SyntheticProcFeatures.0,
-                u64::from(synthetic_features),
+                synthetic_features_mask,
             )
             .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
         }
 
         vmfd.initialize()
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
+
+        // Guest hypervisors probe architectural MSRs that L0 may not virtualize.
+        if config.nested_virt {
+            vmfd.set_partition_property(
+                HvPartitionPropertyCode::UnimplementedMsrAction.0,
+                mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
+                    as u64,
+            )
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+        }
 
         if snp {
             let snp_policy = igvm_snp_config.as_ref().map_or_else(
@@ -168,12 +198,14 @@ impl virt::Hypervisor for LinuxMshv {
                     mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
                         as u64,
                 ),
-                (HvPartitionPropertyCode::TimeFreeze, 1),
             ] {
                 vmfd.set_partition_property(code.0, value)
                     .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
             }
         }
+
+        vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
         // Tell the hypervisor how many VPs are in each socket.
         vmfd.set_partition_property(
@@ -206,24 +238,56 @@ impl virt::Hypervisor for LinuxMshv {
         proto.isolation = isolation;
         Ok(proto)
     }
+
+    fn recognizes_nested_virt(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Default)]
+struct PartitionCreateOptions {
+    x2apic: bool,
+    smt: bool,
+    nested: bool,
 }
 
 fn partition_create_args(
-    snp: bool,
-    x2apic: bool,
-    smt: bool,
-) -> mshv_bindings::mshv_create_partition_v2 {
+    isolation: &virt::ProtoPartitionIsolation,
+    options: PartitionCreateOptions,
+) -> Result<mshv_bindings::mshv_create_partition_v2, Error> {
+    let restricted_injection = match isolation {
+        virt::ProtoPartitionIsolation::None => None,
+        virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+            restricted_injection,
+        }) => Some(*restricted_injection),
+        virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(config)) => {
+            Some(snp_sev_features(config)?.restrict_injection())
+        }
+        _ => return Err(ErrorInner::IsolationNotSupported.into()),
+    };
+    let snp = restricted_injection.is_some();
     let mut pt_flags =
         1 << mshv_bindings::MSHV_PT_BIT_LAPIC | 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES;
 
-    if snp || x2apic {
+    if snp || options.x2apic {
         pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_X2APIC;
     }
-    if smt {
+    if options.smt {
         pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_SMT_ENABLED_GUEST;
     }
+    if let Some(restricted_injection) = restricted_injection {
+        let injection_policy = if restricted_injection {
+            MSHV_PT_SNP_RESTRICTED_INJECTION
+        } else {
+            MSHV_PT_SNP_NORMAL_INJECTION
+        };
+        pt_flags |= injection_policy << MSHV_PT_SNP_INJECTION_POLICY_SHIFT;
+    }
+    if options.nested {
+        pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_NESTED_VIRTUALIZATION;
+    }
 
-    mshv_bindings::mshv_create_partition_v2 {
+    Ok(mshv_bindings::mshv_create_partition_v2 {
         pt_flags: pt_flags | 1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES,
         pt_isolation: if snp {
             mshv_bindings::MSHV_PT_ISOLATION_SNP as u64
@@ -237,7 +301,7 @@ fn partition_create_args(
         ],
         pt_disabled_xsave: !u64::from(supported_xsave_features()),
         ..Default::default()
-    }
+    })
 }
 
 fn snp_synthetic_features() -> hvdef::HvPartitionSyntheticProcessorFeatures {
@@ -247,13 +311,13 @@ fn snp_synthetic_features() -> hvdef::HvPartitionSyntheticProcessorFeatures {
         .with_access_partition_reference_counter(true)
         .with_access_synic_regs(true)
         .with_access_synthetic_timer_regs(true)
-        // HACK: Do not advertise AccessPartitionReferenceTsc to the ACI SNP
-        // kernel yet. Physical Hyper-V and Cloud Hypervisor both advertise
+        // HACK: Do not advertise AccessPartitionReferenceTsc to SNP guests yet.
+        // Physical Hyper-V and Cloud Hypervisor both advertise
         // it, relying on the hypervisor/MSHV rather than userspace to service
         // HV_X64_MSR_REFERENCE_TSC and its page. OpenVMM launch-imports GPA
-        // 0x3402000 normally; the ACI kernel then shares it as its retained
+        // 0x3402000 normally; the guest kernel then shares it as its retained
         // Hyper-V `tsc_pg`. MSHV accepts the initial import but later reports
-        // that GPA as unaccepted when device I/O begins. Keeping ACI on the
+        // that GPA as unaccepted when device I/O begins. Keeping the guest on the
         // reference counter MSR makes virtio-blk write/readback work.
         // Re-enable this after tracing and fixing MSHV's SNP PSC/host-access
         // handling for the shared reference-TSC page.
@@ -300,6 +364,16 @@ fn validate_snp_cpuid_offload_config(
             "snp_disable_cpuid_offload requires SNP isolation",
         )
         .into());
+    }
+    Ok(())
+}
+
+fn validate_nested_virt_config(
+    nested_virt: bool,
+    hv_config: Option<&virt::HvConfig>,
+) -> Result<(), Error> {
+    if nested_virt && hv_config.is_none() {
+        return Err(ErrorInner::InvalidConfiguration("nested_virt requires hv_config").into());
     }
     Ok(())
 }
@@ -378,6 +452,7 @@ impl MshvProtoPartition<'_> {
             cet_ss: false,
             sgx: false,
             tsc_aux: false,
+            tsc_deadline: false,
             vtom: None,
             physical_address_width: self
                 .vmfd
@@ -389,7 +464,7 @@ impl MshvProtoPartition<'_> {
             xsaves_state_bv_broken: false,
             dr6_tsx_broken: false,
             nxe_forced_on: false,
-            nested_virt: false,
+            nested_virt: self.config.nested_virt,
         })
     }
 
@@ -518,6 +593,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 self.config.isolation.isolation_type(),
                 caps.hv1_reference_tsc_page,
             );
+            caps.nested_virt = self.config.nested_virt;
             caps.xsaves_state_bv_broken = true;
             caps.can_freeze_time = true;
             caps
@@ -540,7 +616,6 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 config,
             )),
         };
-        let time_frozen = isolation.is_isolated();
         let inner = Arc::new(MshvPartitionInner {
             vmfd: self.vmfd,
             bsp_vcpufd: self.bsp,
@@ -556,8 +631,8 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             synic_ports: Default::default(),
             software_devices: ApicSoftwareDevices::new(apic_id_map),
             isolation,
-            // SNP partition creation set TimeFreeze=1 before this object was built.
-            time_frozen: Mutex::new(time_frozen),
+            time_frozen: Mutex::new(true),
+            reset_with_scrub: false.into(),
         });
         inner.add_snp_vmsa_mapping()?;
 
@@ -585,6 +660,10 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 impl virt::Partition for MshvPartition {
     fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
         self.inner.isolation.initial_vp_state_source()
+    }
+
+    fn supports_time_control(&self) -> Option<&dyn virt::PartitionTimeControl> {
+        Some(self)
     }
 
     fn supports_initial_page_acceptance(
@@ -653,22 +732,20 @@ impl virt::X86Partition for MshvPartition {
     }
 }
 
-impl virt::ResetPartition for MshvPartition {
-    type Error = Error;
-
-    fn reset(&self) -> Result<(), Error> {
+impl MshvPartition {
+    pub(super) fn reset_arch_state(&self, scrubbed: bool) -> Result<(), Error> {
         use virt::x86::vm::AccessVmState;
 
-        for irq in 0..virt::irqcon::IRQ_LINES as u8 {
-            self.inner.irq_routes.set_irq_route(irq, None);
-        }
-
-        self.inner.freeze_time()?;
-
         let bsp_vp_info = &self.inner.vps[0].vp_info;
-        self.access_state(Vtl::Vtl0)
-            .reset_all(bsp_vp_info)
-            .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
+        if scrubbed {
+            if cfg!(debug_assertions) {
+                self.access_state(Vtl::Vtl0).check_reset_all(bsp_vp_info);
+            }
+        } else {
+            self.access_state(Vtl::Vtl0)
+                .reset_all(bsp_vp_info)
+                .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
+        }
 
         Ok(())
     }
@@ -689,6 +766,9 @@ impl Hv1 for MshvPartition {
     }
 
     fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        if self.inner.caps.nested_virt {
+            anyhow::bail!("synic ports are not supported with nested virtualization on MSHV");
+        }
         Ok(self.synic_ports.clone())
     }
 }
@@ -806,27 +886,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
         };
 
         if this.partition.isolation.snp().is_none() {
-            // Set the APIC state.
-            let apic_base =
-                virt::vp::Apic::at_reset(&this.partition.caps, &this.inner.vp_info).apic_base;
-
-            let regs = &[
-                HvRegisterAssoc::from((
-                    HvX64RegisterName::InitialApicId,
-                    u64::from(inner.vp_info.apic_id),
-                )),
-                HvRegisterAssoc::from((HvX64RegisterName::ApicBase, apic_base)),
-                HvRegisterAssoc::from((
-                    HvX64RegisterName::ApicId,
-                    u64::from(inner.vp_info.apic_id),
-                )),
-            ];
-
-            let reg_count = if this.partition.caps.x2apic { 2 } else { 3 };
-
-            vcpufd
-                .set_hvdef_regs(&regs[..reg_count])
-                .map_err(ErrorInner::Register)?;
+            this.finish_reset()?;
         }
 
         Ok(this)
@@ -834,6 +894,45 @@ impl virt::BindProcessor for MshvProcessorBinder {
 }
 
 impl MshvProcessor<'_> {
+    fn reset_apic(&self) -> Result<(), Error> {
+        let apic_base =
+            virt::vp::Apic::at_reset(&self.partition.caps, &self.inner.vp_info).apic_base;
+        let regs = &[
+            HvRegisterAssoc::from((
+                HvX64RegisterName::InitialApicId,
+                u64::from(self.inner.vp_info.apic_id),
+            )),
+            HvRegisterAssoc::from((HvX64RegisterName::ApicBase, apic_base)),
+            HvRegisterAssoc::from((
+                HvX64RegisterName::ApicId,
+                u64::from(self.inner.vp_info.apic_id),
+            )),
+        ];
+        let reg_count = if self.partition.caps.x2apic { 2 } else { 3 };
+        self.runner
+            .vcpufd
+            .set_hvdef_regs(&regs[..reg_count])
+            .map_err(ErrorInner::Register)?;
+        Ok(())
+    }
+
+    pub(super) fn finish_reset(&self) -> Result<(), Error> {
+        // Like WHP, fix up architectural CS and TSC at creation and after scrub.
+        let registers = virt::vp::Registers::at_reset(&self.partition.caps, &self.inner.vp_info);
+        let tsc = virt::vp::Tsc::at_reset(&self.partition.caps, &self.inner.vp_info);
+        self.runner
+            .vcpufd
+            .set_hvdef_regs(&[
+                HvRegisterAssoc::from((
+                    HvX64RegisterName::Cs,
+                    hvdef::HvX64SegmentRegister::from(registers.cs),
+                )),
+                HvRegisterAssoc::from((HvX64RegisterName::Tsc, tsc.value)),
+            ])
+            .map_err(ErrorInner::Register)?;
+        self.reset_apic()
+    }
+
     async fn emulate(
         &mut self,
         message: &HvMessage,
@@ -1129,7 +1228,52 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         gva: u64,
         mode: TranslateMode,
     ) -> Result<EmuTranslateResult, EmuTranslateError> {
-        emulate_translate_gva(self, gva, mode)
+        if self.partition.caps.nested_virt {
+            let mut flags =
+                hvdef::hypercall::TranslateGvaControlFlagsX64::new().with_set_page_table_bits(true);
+            match mode {
+                TranslateMode::Read => flags.set_validate_read(true),
+                TranslateMode::Write => {
+                    flags.set_validate_read(true);
+                    flags.set_validate_write(true);
+                }
+                TranslateMode::Execute => flags.set_validate_execute(true),
+            }
+
+            match self.vcpufd.translate_gva(gva, flags.into()) {
+                Ok((gpa, result)) => {
+                    // SAFETY: The kernel initialized the u64 view of this union.
+                    let result =
+                        hvdef::hypercall::TranslateGvaResult::from(unsafe { result.as_uint64 });
+                    let code = hvdef::hypercall::TranslateGvaResultCode(result.result_code());
+                    if code == hvdef::hypercall::TranslateGvaResultCode::SUCCESS {
+                        Ok(EmuTranslateResult {
+                            gpa,
+                            overlay_page: Some(result.overlay_page()),
+                        })
+                    } else {
+                        // TODO: Use HvCallTranslateVirtualAddressEx when Kernel supports it
+                        Err(EmuTranslateError {
+                            code,
+                            event_info: None,
+                        })
+                    }
+                }
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        gva,
+                        "failed to translate nested guest virtual address"
+                    );
+                    Err(EmuTranslateError {
+                        code: hvdef::hypercall::TranslateGvaResultCode::INTERCEPT,
+                        event_info: None,
+                    })
+                }
+            }
+        } else {
+            emulate_translate_gva(self, gva, mode)
+        }
     }
 
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent) {
@@ -1249,9 +1393,50 @@ impl MshvHypercallHandler<'_> {
             hv1_hypercall::HvPostMessage,
             hv1_hypercall::HvSignalEvent,
             hv1_hypercall::HvRetargetDeviceInterrupt,
+            hv1_hypercall::HvGetVpIndexFromApicId,
             hv1_hypercall::HvX64StartVirtualProcessor,
         ],
     );
+}
+
+impl hv1_hypercall::GetVpIndexFromApicId for MshvHypercallHandler<'_> {
+    fn get_vp_index_from_apic_id(
+        &mut self,
+        partition_id: u64,
+        target_vtl: Vtl,
+        apic_ids: &[u32],
+        vp_indices: &mut [u32],
+    ) -> hv1_hypercall::HvRepResult {
+        get_vp_indices_from_apic_ids(partition_id, target_vtl, apic_ids, vp_indices, |apic_id| {
+            self.partition
+                .vps
+                .iter()
+                .find(|vp| vp.vp_info.apic_id == apic_id)
+                .map(|vp| vp.vp_info.base.vp_index)
+        })
+    }
+}
+
+fn get_vp_indices_from_apic_ids(
+    partition_id: u64,
+    target_vtl: Vtl,
+    apic_ids: &[u32],
+    vp_indices: &mut [u32],
+    mut lookup: impl FnMut(u32) -> Option<VpIndex>,
+) -> hv1_hypercall::HvRepResult {
+    if partition_id != hvdef::HV_PARTITION_ID_SELF {
+        return Err((hvdef::HvError::InvalidPartitionId, 0));
+    }
+    if target_vtl != Vtl::Vtl0 {
+        return Err((hvdef::HvError::InvalidParameter, 0));
+    }
+
+    for (i, (&apic_id, vp_index)) in apic_ids.iter().zip(vp_indices).enumerate() {
+        *vp_index = lookup(apic_id)
+            .ok_or((hvdef::HvError::InvalidParameter, i))?
+            .index();
+    }
+    Ok(())
 }
 
 impl hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
@@ -1528,6 +1713,25 @@ mod tests {
     }
 
     #[test]
+    fn nested_virtualization_requires_hv_config() {
+        validate_nested_virt_config(false, None).unwrap();
+        validate_nested_virt_config(
+            true,
+            Some(&virt::HvConfig {
+                allow_device_assignment: false,
+                vtl2: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_nested_virt_config(true, None)
+                .unwrap_err()
+                .to_string(),
+            "invalid MSHV configuration: nested_virt requires hv_config"
+        );
+    }
+
+    #[test]
     fn snp_does_not_report_reference_tsc_page_support() {
         assert!(!hv1_reference_tsc_page_supported(
             true,
@@ -1552,8 +1756,72 @@ mod tests {
     }
 
     #[test]
+    fn apic_id_lookup_uses_vp_indices_and_reports_partial_completion() {
+        let lookup = |apic_id| match apic_id {
+            8 => Some(VpIndex::new(0)),
+            12 => Some(VpIndex::new(1)),
+            _ => None,
+        };
+        let mut output = [u32::MAX; 3];
+        get_vp_indices_from_apic_ids(
+            hvdef::HV_PARTITION_ID_SELF,
+            Vtl::Vtl0,
+            &[12, 8, 12],
+            &mut output,
+            lookup,
+        )
+        .unwrap();
+        assert_eq!(output, [1, 0, 1]);
+
+        output.fill(u32::MAX);
+        assert_eq!(
+            get_vp_indices_from_apic_ids(
+                hvdef::HV_PARTITION_ID_SELF,
+                Vtl::Vtl0,
+                &[8, 9, 12],
+                &mut output,
+                lookup,
+            ),
+            Err((hvdef::HvError::InvalidParameter, 1)),
+        );
+        assert_eq!(output, [0, u32::MAX, u32::MAX]);
+    }
+
+    #[test]
+    fn apic_id_lookup_rejects_other_partitions_and_vtls() {
+        for (partition_id, vtl, error) in [
+            (0, Vtl::Vtl0, hvdef::HvError::InvalidPartitionId),
+            (
+                hvdef::HV_PARTITION_ID_SELF,
+                Vtl::Vtl1,
+                hvdef::HvError::InvalidParameter,
+            ),
+            (
+                hvdef::HV_PARTITION_ID_SELF,
+                Vtl::Vtl2,
+                hvdef::HvError::InvalidParameter,
+            ),
+        ] {
+            let mut output = [u32::MAX];
+            assert_eq!(
+                get_vp_indices_from_apic_ids(partition_id, vtl, &[0], &mut output, |_| {
+                    panic!("invalid target must not perform a lookup")
+                }),
+                Err((error, 0)),
+            );
+            assert_eq!(output, [u32::MAX]);
+        }
+    }
+
+    #[test]
     fn snp_partition_creation_uses_isolation_flags() {
-        let args = partition_create_args(true, false, false);
+        let args = partition_create_args(
+            &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                restricted_injection: true,
+            }),
+            Default::default(),
+        )
+        .unwrap();
         let pt_isolation = args.pt_isolation;
         let pt_num_cpu_fbanks = args.pt_num_cpu_fbanks;
         let pt_cpu_fbanks = args.pt_cpu_fbanks;
@@ -1566,6 +1834,7 @@ mod tests {
             0
         );
         assert_ne!(args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_X2APIC, 0);
+        assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
         assert_ne!(
             args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES,
             0
@@ -1586,7 +1855,14 @@ mod tests {
 
     #[test]
     fn ordinary_partition_creation_keeps_feature_banks() {
-        let args = partition_create_args(false, false, true);
+        let args = partition_create_args(
+            &virt::ProtoPartitionIsolation::None,
+            PartitionCreateOptions {
+                smt: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let pt_isolation = args.pt_isolation;
         let pt_num_cpu_fbanks = args.pt_num_cpu_fbanks;
 
@@ -1600,6 +1876,11 @@ mod tests {
             0
         );
         assert_eq!(args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_X2APIC, 0);
+        assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
+        assert_eq!(
+            args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_NESTED_VIRTUALIZATION,
+            0
+        );
         assert_ne!(
             args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES,
             0
@@ -1607,6 +1888,23 @@ mod tests {
         assert_eq!(
             pt_num_cpu_fbanks,
             mshv_bindings::MSHV_NUM_CPU_FEATURES_BANKS as u16
+        );
+    }
+
+    #[test]
+    fn nested_partition_creation_sets_nested_virtualization_flag() {
+        let args = partition_create_args(
+            &virt::ProtoPartitionIsolation::None,
+            PartitionCreateOptions {
+                nested: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_ne!(
+            args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_NESTED_VIRTUALIZATION,
+            0
         );
     }
 }

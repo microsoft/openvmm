@@ -408,7 +408,11 @@ impl GuestEmulationTransportClient {
             .notify(msg::Msg::SetDebugInterruptCallback(callback.into()));
     }
 
-    /// Set the the callback to handle PostLiveMigrationNotification.
+    /// Enqueue registration of the callback for PostLiveMigrationNotification.
+    ///
+    /// Notifications received before registration is processed are coalesced
+    /// and delivered once when the callback is installed. The callback runs on
+    /// the GET loop and must not block.
     pub fn set_post_live_migration_callback(&mut self, callback: Box<dyn Fn() + Send + Sync>) {
         self.control
             .notify(msg::Msg::SetPostLiveMigrationCallback(callback.into()));

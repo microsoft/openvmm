@@ -3,7 +3,7 @@
 
 use super::cli::Cli;
 use super::config::VmmPerfConfig;
-use super::config::VmmPerfProfile;
+use super::config::VmmPerfProfileVariant;
 use super::config::selected_configs;
 use super::host::HostEnvironment;
 use super::runtime::VmmPerfRuntime;
@@ -22,7 +22,7 @@ pub(crate) struct VmmPerfRunner {
     firmware: PathBuf,
     output_dir: PathBuf,
     temp_dir: PathBuf,
-    profiles: Vec<VmmPerfProfile>,
+    profiles: Vec<VmmPerfProfileVariant>,
     configs: Vec<VmmPerfConfig>,
     metadata: Option<BTreeMap<String, String>>,
 }
@@ -33,7 +33,7 @@ impl VmmPerfRunner {
         ensure_file(&cli.firmware, "MSVM firmware")?;
         fs_err::create_dir_all(&cli.output_dir)?;
         let host = HostEnvironment::detect()?;
-        let profiles = cli.selected_profiles();
+        let profiles = cli.selected_profile_variants();
         let configs = selected_configs(host.capacity()?, &cli.config_selection())?;
         let metadata = github_pipeline_metadata();
         let temp_dir = cli.temp_dir.unwrap_or_else(std::env::temp_dir);
@@ -63,7 +63,7 @@ impl VmmPerfRunner {
         let mut failures = Vec::new();
         for profile in &self.profiles {
             tracing::info!(profile = profile.name(), "running VMM.Perf profile");
-            failures.extend(self.run_profile(*profile));
+            failures.extend(self.run_profile(profile));
         }
 
         anyhow::ensure!(
@@ -75,7 +75,7 @@ impl VmmPerfRunner {
         Ok(())
     }
 
-    fn run_profile(&self, profile: VmmPerfProfile) -> Vec<String> {
+    fn run_profile(&self, profile: &VmmPerfProfileVariant) -> Vec<String> {
         if let Err(err) = self.runtime.validate_profile(profile) {
             return vec![format!("{}: {err:#}", profile.name())];
         }
@@ -85,7 +85,7 @@ impl VmmPerfRunner {
             .cloned()
             .filter_map(|config| {
                 VirtualClientRun::run(VirtualClientRunRequest {
-                    profile,
+                    profile: profile.clone(),
                     config,
                     runtime: &self.runtime,
                     openvmm: &self.openvmm,

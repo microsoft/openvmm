@@ -16,7 +16,7 @@ scsi_buffers.workspace = true
 chipset_device.workspace = true
 disk_nvme.workspace = true
 disklayer_ram.workspace = true
-guid = { workspace = true, features = ["mesh", "inspect"] }
+guid = { workspace = true, features = ["getrandom", "inspect", "mesh"] }
 nvme.workspace = true
 nvme_driver.workspace = true
 page_pool_alloc.workspace = true

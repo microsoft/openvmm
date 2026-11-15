@@ -11,8 +11,11 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct OpentmkOutput {
+    #[serde(rename = "opentmk.efi")]
     pub efi: PathBuf,
-    pub pdb: PathBuf,
+    #[serde(rename = "opentmk.pdb")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdb: Option<PathBuf>,
 }
 
 impl Artifact for OpentmkOutput {}
@@ -85,7 +88,10 @@ impl FlowNode for Node {
                         _ => unreachable!(),
                     };
 
-                    let output = OpentmkOutput { efi, pdb };
+                    let output = OpentmkOutput {
+                        efi,
+                        pdb: Some(pdb),
+                    };
 
                     for var in outvars {
                         rt.write(var, &output);

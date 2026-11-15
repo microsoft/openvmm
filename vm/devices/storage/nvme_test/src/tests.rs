@@ -3,4 +3,5 @@
 
 mod controller_tests;
 mod shadow_doorbell_tests;
+mod tdisp_tests;
 mod test_helpers;

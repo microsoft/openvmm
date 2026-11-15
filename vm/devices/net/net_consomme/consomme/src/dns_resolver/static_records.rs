@@ -76,6 +76,8 @@ impl StaticDnsRecords {
     /// Builds a DNS response for `query` if it matches one of the static
     /// records, otherwise returns `None`.
     ///
+    /// AAAA queries for a static name return NOERROR with no answers.
+    ///
     /// `max_len` bounds the size of the returned DNS message (in bytes).
     pub fn build_response(&self, query: &[u8], max_len: usize) -> Option<Vec<u8>> {
         if self.records.is_empty() {
@@ -91,6 +93,7 @@ impl StaticDnsRecords {
 
         let mut rest = packet.payload();
         let mut answers = Vec::new();
+        let mut matching_aaaa = false;
         for _ in 0..packet.question_count() {
             let question_offset = query.len() - rest.len();
             // `Question::parse` also validates that the class is `IN`.
@@ -108,11 +111,13 @@ impl StaticDnsRecords {
                     }),
                     StaticDnsRecord::A(_) => None,
                 }));
+            } else if question.type_ == DnsQueryType::Aaaa {
+                matching_aaaa |= self.records.iter().any(|rec| rec.name == qname);
             }
             rest = next;
         }
 
-        if answers.is_empty() {
+        if answers.is_empty() && !matching_aaaa {
             return None;
         }
 
@@ -390,22 +395,43 @@ mod tests {
         records
             .add(StaticDnsRecord::A([1, 2, 3, 4]), "known.test")
             .unwrap();
-        let query = build_query(1, "unknown.test", DnsQueryType::A);
-        assert!(
-            records
-                .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
-                .is_none()
-        );
+        for qtype in [DnsQueryType::A, DnsQueryType::Aaaa] {
+            let query = build_query(1, "unknown.test", qtype);
+            assert!(
+                records
+                    .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)
+                    .is_none()
+            );
+        }
     }
 
     #[test]
-    fn non_a_query_returns_none() {
+    fn aaaa_query_returns_noerror_without_answers() {
         let mut records = StaticDnsRecords::default();
         records
             .add(StaticDnsRecord::A([1, 2, 3, 4]), "known.test")
             .unwrap();
-        // AAAA for the same name should not be answered.
-        let query = build_query(1, "known.test", DnsQueryType::Aaaa);
+        let query = build_query(0x1234, "KNOWN.TEST", DnsQueryType::Aaaa);
+        let response = records
+            .build_response(&query, query.len())
+            .expect("a static name should answer AAAA locally");
+
+        assert_eq!(&response[0..2], &[0x12, 0x34]);
+        assert_eq!(response[2], 0x85, "QR + AA + RD set, TC unset");
+        assert_eq!(response[3], 0x80, "RA set, AD unset, RCODE NOERROR");
+        assert_eq!(&response[4..6], &[0, 1], "one question");
+        assert_eq!(&response[6..12], &[0; 6], "no resource records");
+        assert_eq!(&response[12..], &query[12..], "question preserved");
+        assert!(records.build_response(&query, query.len() - 1).is_none());
+    }
+
+    #[test]
+    fn other_query_types_return_none() {
+        let mut records = StaticDnsRecords::default();
+        records
+            .add(StaticDnsRecord::A([1, 2, 3, 4]), "known.test")
+            .unwrap();
+        let query = build_query(1, "known.test", DnsQueryType::from(15));
         assert!(
             records
                 .build_response(&query, MAX_DNS_UDP_RESPONSE_LEN)

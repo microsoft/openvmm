@@ -121,7 +121,7 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let version = version.expect("local requests handled above");
+        let version = version.context("missing openvmm-deps version")?;
 
         // Determine which architectures we need to download.
         let needed_archs: BTreeSet<CommonArch> = deps.keys().map(|(_, arch)| *arch).collect();
@@ -138,8 +138,8 @@ impl FlowNodeWithConfig for Node {
                 };
                 let file_name = format!("openvmm-deps.{arch_str}.{version}.tar.gz");
                 let path = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                    repo_owner: "microsoft".into(),
-                    repo_name: "openvmm-deps".into(),
+                    repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                    repo_name: crate::common::OPENVMM_DEPS_GITHUB_REPO.into(),
                     needs_auth: false,
                     tag: version.clone(),
                     file_name,
@@ -176,9 +176,9 @@ impl FlowNodeWithConfig for Node {
                     .collect::<anyhow::Result<_>>()?;
 
                 for ((dep, arch), vars) in deps {
-                    let extract_dir = extract_dirs
-                        .get(&arch)
-                        .expect("archive was downloaded for this arch");
+                    let extract_dir = extract_dirs.get(&arch).with_context(|| {
+                        format!("missing extracted openvmm-deps archive for {arch:?}")
+                    })?;
                     let path = extract_dir.join(dep.filename());
                     rt.write_all(vars, &path)
                 }
