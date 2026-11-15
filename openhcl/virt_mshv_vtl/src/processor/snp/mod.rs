@@ -2960,6 +2960,30 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("spec_ctrl"))
     }
 
+    fn umwait_control(&mut self) -> Result<vp::UmwaitControl, Self::Error> {
+        Err(vp_state::Error::Unimplemented("umwait_control"))
+    }
+
+    fn set_umwait_control(&mut self, _value: &vp::UmwaitControl) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("umwait_control"))
+    }
+
+    fn debug_ctl(&mut self) -> Result<vp::DebugCtl, Self::Error> {
+        Err(vp_state::Error::Unimplemented("debug_ctl"))
+    }
+
+    fn set_debug_ctl(&mut self, _value: &vp::DebugCtl) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("debug_ctl"))
+    }
+
+    fn misc_msrs(&mut self) -> Result<vp::MiscMsrs, Self::Error> {
+        Err(vp_state::Error::Unimplemented("misc_msrs"))
+    }
+
+    fn set_misc_msrs(&mut self, _value: &vp::MiscMsrs) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("misc_msrs"))
+    }
+
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         Ok(vp::Cet { scet: vmsa.s_cet() })

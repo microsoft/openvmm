@@ -628,6 +628,30 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         self.set_register_state(value)
     }
 
+    fn umwait_control(&mut self) -> Result<vp::UmwaitControl, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_umwait_control(&mut self, value: &vp::UmwaitControl) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
+    fn debug_ctl(&mut self) -> Result<vp::DebugCtl, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_debug_ctl(&mut self, value: &vp::DebugCtl) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
+    fn misc_msrs(&mut self) -> Result<vp::MiscMsrs, Self::Error> {
+        super::msr_state::misc_msrs(&self.kvm())
+    }
+
+    fn set_misc_msrs(&mut self, value: &vp::MiscMsrs) -> Result<(), Self::Error> {
+        super::msr_state::set_misc_msrs(&self.kvm(), value)
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }
