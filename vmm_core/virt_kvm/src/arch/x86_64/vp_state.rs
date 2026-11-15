@@ -354,6 +354,9 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             interrupt_shadow: events.interrupt.shadow != 0,
             pending_event: event,
             pending_interruption: interruption,
+            // Linux before 6.4 reports only whether an NMI is pending, 0 or 1,
+            // even when KVM holds two, so a save on such a host holds no count.
+            nmi_pending_count: (events.nmi.pending > 1).then_some(events.nmi.pending),
         })
     }
 
@@ -365,6 +368,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             interrupt_shadow,
             pending_event,
             pending_interruption,
+            nmi_pending_count,
         } = *value;
 
         // KVM can neither report nor withdraw an extint queued with
@@ -383,6 +387,9 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         // Likewise, reject an injected soft exception before changing any
         // activity state.
         check_restorable_interruption(pending_interruption)?;
+
+        // And a count of pending NMIs that KVM would not hold.
+        check_restorable_nmi_count(value)?;
 
         let state = match mp_state {
             vp::MpState::Running => kvm::KVM_MP_STATE_RUNNABLE,
@@ -424,7 +431,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             },
             nmi: kvm::kvm_vcpu_events__bindgen_ty_3 {
                 injected: 0,
-                pending: nmi_pending.into(),
+                pending: nmi_pending_count.unwrap_or(nmi_pending.into()),
                 masked: nmi_masked.into(),
                 pad: 0,
             },
@@ -828,6 +835,38 @@ fn check_restorable_interruption(
     }
 }
 
+/// The most NMIs that KVM holds pending: two, while no NMI is blocked and none
+/// is being injected.
+const MAX_PENDING_NMIS: u8 = 2;
+
+/// Refuses a count of pending NMIs that KVM would not hold.
+///
+/// KVM holds two pending NMIs only while no NMI is blocked and none is being
+/// injected, when it injects one at once and the other once the guest's handler
+/// for the first returns; otherwise it holds one pending NMI, behind the one
+/// that is blocking NMIs. `KVM_SET_VCPU_EVENTS` accepts any count, but it cuts
+/// the count down to what KVM holds, so the VP would lose an NMI that the
+/// saved state holds, and its next save would not show it. A save holds a count
+/// only for two pending NMIs, with `nmi_pending` set, and only a damaged or
+/// crafted saved state holds any other, so the restore refuses it.
+fn check_restorable_nmi_count(activity: &vp::Activity) -> Result<(), KvmError> {
+    let Some(count) = activity.nmi_pending_count else {
+        return Ok(());
+    };
+    let injecting_nmi = matches!(
+        activity.pending_interruption,
+        Some(vp::PendingInterruption::Nmi)
+    );
+    if count == MAX_PENDING_NMIS && activity.nmi_pending && !activity.nmi_masked && !injecting_nmi {
+        Ok(())
+    } else {
+        Err(KvmError::InvalidState(
+            "a count of pending NMIs that KVM would not hold: only 2, with an NMI pending \
+             and none blocked or being injected",
+        ))
+    }
+}
+
 /// Returns the page that `KVM_SET_LAPIC` takes for `registers`.
 ///
 /// KVM starts a counting timer from the page's current count, so it fires an
@@ -884,12 +923,14 @@ fn check_restorable_apic_timer(lvt_timer: u32) -> Result<(), KvmError> {
 mod tests {
     use super::check_restorable_apic_timer;
     use super::check_restorable_interruption;
+    use super::check_restorable_nmi_count;
     use super::check_restored_efer;
     use super::kvm_lapic_page;
     use crate::KvmError;
     use test_with_tracing::test;
     use virt::CpuidLeaf;
     use virt::CpuidLeafSet;
+    use virt::x86::vp::Activity;
     use virt::x86::vp::ApicRegisters;
     use virt::x86::vp::PendingInterruption;
     use x86defs::X64_EFER_LMA;
@@ -1062,6 +1103,98 @@ mod tests {
             Some(PendingInterruption::Nmi),
         ] {
             check_restorable_interruption(pending_interruption).unwrap();
+        }
+    }
+
+    /// Returns the activity of a VP that holds two pending NMIs, as a save
+    /// reads it from KVM.
+    fn two_pending_nmis() -> Activity {
+        Activity {
+            nmi_pending: true,
+            nmi_pending_count: Some(2),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn two_pending_nmis_are_restored_only_where_kvm_holds_two() {
+        check_restorable_nmi_count(&two_pending_nmis()).unwrap();
+
+        // Neither an exception or an interrupt that is being injected, nor an
+        // interrupt shadow, blocks NMIs, so KVM holds two behind them.
+        for pending_interruption in [
+            PendingInterruption::Exception {
+                vector: 13,
+                error_code: Some(0),
+            },
+            PendingInterruption::Interrupt { vector: 0x30 },
+        ] {
+            check_restorable_nmi_count(&Activity {
+                pending_interruption: Some(pending_interruption),
+                interrupt_shadow: true,
+                ..two_pending_nmis()
+            })
+            .unwrap();
+        }
+
+        // KVM holds one pending NMI behind an NMI that is blocked or being
+        // injected, and none if none is pending, so the count that a restore
+        // would cut down is refused, as is any other.
+        let refused = |activity: Activity, what: &str| {
+            assert!(
+                matches!(
+                    check_restorable_nmi_count(&activity),
+                    Err(KvmError::InvalidState(_))
+                ),
+                "{what}: {activity:?}"
+            );
+        };
+        refused(
+            Activity {
+                nmi_masked: true,
+                ..two_pending_nmis()
+            },
+            "two pending NMIs with NMIs blocked",
+        );
+        refused(
+            Activity {
+                pending_interruption: Some(PendingInterruption::Nmi),
+                ..two_pending_nmis()
+            },
+            "two pending NMIs with an NMI being injected",
+        );
+        refused(
+            Activity {
+                nmi_pending: false,
+                ..two_pending_nmis()
+            },
+            "two pending NMIs with none pending",
+        );
+        for count in [0, 1, 3, u8::MAX] {
+            for nmi_pending in [false, true] {
+                refused(
+                    Activity {
+                        nmi_pending,
+                        nmi_pending_count: Some(count),
+                        ..Default::default()
+                    },
+                    "a count other than 2",
+                );
+            }
+        }
+
+        // Without a count, the Boolean says whether one NMI is pending, however
+        // NMIs are blocked.
+        for nmi_pending in [false, true] {
+            for nmi_masked in [false, true] {
+                check_restorable_nmi_count(&Activity {
+                    nmi_pending,
+                    nmi_masked,
+                    pending_interruption: Some(PendingInterruption::Nmi),
+                    ..Default::default()
+                })
+                .unwrap();
+            }
         }
     }
 }
