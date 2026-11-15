@@ -246,6 +246,16 @@ logs the failure, no vCPU runs, and the restore publishes no readiness event.
 The devices keep their restored state, so a later resume starts their queues
 again.
 
+A restore gives a KVM VP the NMIs that it held pending at capture, which can be
+two: a second NMI that reached the VP before it ran, which KVM injects once the
+guest's handler for the first returns. KVM reports both only from Linux 6.4 on;
+an earlier kernel reports whether an NMI is pending, so a capture on it holds
+one. A snapshot that an earlier OpenVMM captured holds no count, and
+restoring it gives the VP the one pending NMI that it always did. An earlier
+OpenVMM ignores the count in a later snapshot, so the guest loses an NMI,
+silently. The snapshot has no version for this; see [Fields of an
+element](../../dev_guide/snapshot_format.md#fields-of-an-element).
+
 For a tiered microVM restore, and for a restore that replaces the network
 policy of a snapshot without a tier, OpenVMM starts device workers with
 network, control, and filesystem input gated. The guest performs post-restore

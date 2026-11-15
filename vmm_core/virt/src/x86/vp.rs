@@ -381,6 +381,27 @@ pub struct Activity {
     pub pending_event: Option<PendingEvent>,
     #[mesh(6)]
     pub pending_interruption: Option<PendingInterruption>,
+    /// The number of pending NMIs when it is 2, and `None` otherwise, when
+    /// `nmi_pending` says whether the one NMI that can be pending is.
+    ///
+    /// KVM holds a second NMI that arrives while no NMI is blocked and none is
+    /// being injected, such as when two NMIs reach a VP before it runs: it
+    /// injects one at once, and the other once the guest's handler for the
+    /// first returns. `nmi_pending` is set then, as for one pending NMI, and
+    /// 2 is the only count that a save holds: with an NMI blocked, or being
+    /// injected, KVM holds one pending NMI. KVM reports the count from Linux
+    /// 6.4 on: an earlier kernel reports only whether an NMI is pending, so a
+    /// save on such a host holds no count and loses a second NMI, as before.
+    /// A backend that holds at most one pending NMI never reports a count.
+    ///
+    /// The field needs no version. A saved state from a build that predates
+    /// it, or that holds at most one pending NMI, has no such field, so
+    /// restoring it sets the one pending NMI that `nmi_pending` gives, as
+    /// before. A build that predates the field ignores it in a later state,
+    /// so it restores two pending NMIs as one, losing one silently. Never
+    /// change or reuse the field's number.
+    #[mesh(7)]
+    pub nmi_pending_count: Option<u8>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Protobuf, Inspect, Default)]
@@ -549,6 +570,7 @@ impl HvRegisterState<HvX64RegisterName, 4> for Activity {
             interrupt_shadow: interrupt_state.interrupt_shadow(),
             pending_event,
             pending_interruption,
+            nmi_pending_count: None,
         };
     }
 }
@@ -573,6 +595,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Activity {
             interrupt_shadow: false,
             pending_event: None,
             pending_interruption: None,
+            nmi_pending_count: None,
         }
     }
 }
@@ -3032,6 +3055,95 @@ mod tests {
         assert!(
             outcomes.iter().all(|&count| count >= 1000),
             "both outcomes are drawn: {outcomes:?}"
+        );
+    }
+
+    /// The activity of a build that predates `Activity::nmi_pending_count`.
+    #[derive(Debug, PartialEq, Protobuf)]
+    struct EarlierActivity {
+        #[mesh(1)]
+        mp_state: MpState,
+        #[mesh(2)]
+        nmi_pending: bool,
+        #[mesh(3)]
+        nmi_masked: bool,
+        #[mesh(4)]
+        interrupt_shadow: bool,
+        #[mesh(5)]
+        pending_event: Option<PendingEvent>,
+        #[mesh(6)]
+        pending_interruption: Option<PendingInterruption>,
+    }
+
+    /// The number of the field of `Activity::nmi_pending_count`, which its
+    /// `mesh` attribute must carry.
+    const NMI_PENDING_COUNT_FIELD: u8 = 7;
+
+    #[test]
+    fn nmi_pending_count_needs_no_version_to_coexist_with_earlier_builds() {
+        let earlier = || EarlierActivity {
+            mp_state: MpState::Halted,
+            nmi_pending: true,
+            nmi_masked: false,
+            interrupt_shadow: true,
+            pending_event: None,
+            pending_interruption: Some(PendingInterruption::Interrupt { vector: 0x30 }),
+        };
+        let current = |nmi_pending_count| Activity {
+            mp_state: MpState::Halted,
+            nmi_pending: true,
+            interrupt_shadow: true,
+            pending_interruption: Some(PendingInterruption::Interrupt { vector: 0x30 }),
+            nmi_pending_count,
+            ..Default::default()
+        };
+
+        // A saved state of an earlier build holds no count, so restoring it
+        // sets the one pending NMI that `nmi_pending` gives, as that build did.
+        assert_eq!(
+            mesh_protobuf::decode::<Activity>(&mesh_protobuf::encode(earlier())).unwrap(),
+            current(None)
+        );
+        // A state with at most one pending NMI is the one that the earlier
+        // build saved, byte for byte.
+        assert_eq!(
+            mesh_protobuf::encode(current(None)),
+            mesh_protobuf::encode(earlier())
+        );
+        // An earlier build reads the state of two pending NMIs and ignores the
+        // count, so it restores one NMI.
+        assert_eq!(
+            mesh_protobuf::decode::<EarlierActivity>(&mesh_protobuf::encode(current(Some(2))))
+                .unwrap(),
+            earlier()
+        );
+
+        // The count is a varint under the field's number, after the earlier
+        // fields: bytes that every build that holds it reads, and that no later
+        // change may alter.
+        let two = [NMI_PENDING_COUNT_FIELD << 3, 2];
+        assert_eq!(
+            mesh_protobuf::encode(current(Some(2))),
+            [mesh_protobuf::encode(earlier()), two.to_vec()].concat()
+        );
+        assert_eq!(
+            mesh_protobuf::encode(Activity {
+                nmi_pending: true,
+                nmi_pending_count: Some(2),
+                ..Default::default()
+            }),
+            [0x0a, 0x02, 0x0a, 0x00, 0x10, 0x01, two[0], two[1]]
+        );
+        assert_eq!(
+            mesh_protobuf::decode::<Activity>(&[
+                0x0a, 0x02, 0x0a, 0x00, 0x10, 0x01, two[0], two[1]
+            ])
+            .unwrap(),
+            Activity {
+                nmi_pending: true,
+                nmi_pending_count: Some(2),
+                ..Default::default()
+            }
         );
     }
 }

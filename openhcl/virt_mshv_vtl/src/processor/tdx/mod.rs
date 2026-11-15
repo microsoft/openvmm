@@ -3944,6 +3944,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
                 || interruptibility.blocked_by_movss(),
             pending_event: None,        // TODO TDX
             pending_interruption: None, // TODO TDX
+            nmi_pending_count: None,
         })
     }
 
@@ -3955,6 +3956,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             interrupt_shadow,
             pending_event: _,        // TODO TDX
             pending_interruption: _, // TODO TDX
+            nmi_pending_count: _,
         } = value;
         self.vp.backing.cvm.lapics[self.vtl].activity = mp_state;
         self.vp.backing.cvm.lapics[self.vtl].nmi_pending = nmi_pending;
