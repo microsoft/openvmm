@@ -19,6 +19,7 @@ cfg_select! {
         mod msi;
         mod msr_state;
         mod native;
+        mod nmi;
         #[cfg(target_os = "linux")]
         mod registers;
         #[cfg(target_os = "linux")]
