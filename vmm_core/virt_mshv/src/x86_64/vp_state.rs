@@ -456,6 +456,14 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         Err(ErrorInner::UnsupportedState("misc_msrs").into())
     }
 
+    fn machine_check(&mut self) -> Result<vp::MachineCheck, Self::Error> {
+        Err(ErrorInner::UnsupportedState("machine_check").into())
+    }
+
+    fn set_machine_check(&mut self, _value: &vp::MachineCheck) -> Result<(), Self::Error> {
+        Err(ErrorInner::UnsupportedState("machine_check").into())
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }
