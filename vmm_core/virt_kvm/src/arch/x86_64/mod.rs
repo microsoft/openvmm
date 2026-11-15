@@ -1440,6 +1440,10 @@ pub(crate) struct KvmMsi {
 }
 
 impl KvmMsi {
+    /// Converts `request` to the form that KVM takes, or returns `None` for a
+    /// request that KVM must not get: one whose address is not in the MSI
+    /// window, or whose delivery mode is remote read (011), which KVM takes as
+    /// its paravirtual kick.
     pub(crate) fn new(request: MsiRequest) -> Option<Self> {
         // TODO: validate the high bits of the request as well, across the codebase.
         let request_address = MsiAddress::from(request.address as u32);
@@ -1447,6 +1451,19 @@ impl KvmMsi {
             return None;
         }
         let request_data = MsiData::from(request.data);
+
+        // Delivery mode 011 (remote read) is reserved for an MSI and for an
+        // IO-APIC redirection entry, which a guest or a device can still set.
+        // KVM takes it as its paravirtual kick, which sets the target VP's
+        // `pv_unhalted`: KVM_GET_MP_STATE then reports a halted VP as
+        // runnable, and a running VP's next HLT returns at once. The saved
+        // state holds neither, so a restore would lose the wake-up. Drop the
+        // request instead of passing it on. The other reserved mode, 110,
+        // which KVM takes as a startup IPI, stays: the SIPI that it latches
+        // goes at the next read of the MP state, and a capture checks for it.
+        if DeliveryMode(request_data.delivery_mode()) == DeliveryMode::REMOTE_READ {
+            return None;
+        }
 
         // Although architecturally the destination mode bit is only supposed to
         // be considered when the redirection hint bit is set, KVM always gets
@@ -1487,7 +1504,7 @@ impl KvmPartitionInner {
             tracelimit::warn_ratelimited!(
                 address = request.address,
                 data = request.data,
-                "invalid MSI address"
+                "invalid MSI address or delivery mode"
             );
             return;
         };
@@ -1558,7 +1575,7 @@ impl IoApicRouting for KvmPartitionInner {
                         irq,
                         address = request.address,
                         data = request.data,
-                        "invalid MSI address for IO-APIC route"
+                        "invalid MSI address or delivery mode for IO-APIC route"
                     );
                     None
                 }
@@ -2326,6 +2343,7 @@ impl SignalMsi for KvmPartitionInner {
 
 #[cfg(test)]
 mod tests {
+    use super::KvmMsi;
     use super::check_xsave_layout;
     use super::kvm_recommends_hyperv_apic_msrs;
     use super::partition_capabilities;
@@ -2335,6 +2353,7 @@ mod tests {
     use test_with_tracing::test;
     use virt::CpuidLeaf;
     use virt::CpuidLeafSet;
+    use virt::irqcon::MsiRequest;
     use virt::x86::X86PartitionCapabilities;
     use virt::x86::X86PartitionCapabilitiesError as Error;
     use vm_topology::processor::TopologyBuilder;
@@ -2511,5 +2530,224 @@ mod tests {
                 ..Default::default()
             },
         ]));
+    }
+
+    /// Returns the MSI request that has the given fields, in the layout of the
+    /// Intel SDM's message address and data registers (Vol. 3A, 11.11): the
+    /// destination ID in bits 19:12 of the address, with the destination mode
+    /// in bit 2 and the redirection hint in bit 3, which only lowest priority
+    /// sets; and the vector in bits 7:0 of the data, the delivery mode in bits
+    /// 10:8, the level in bit 14, and the trigger mode in bit 15. The
+    /// destination mode is also in bit 11 of the data, as the IO-APIC's
+    /// conversion of a redirection entry leaves it.
+    fn msi_request(
+        mode: u8,
+        trigger_level: bool,
+        assert: bool,
+        logical: bool,
+        destination: u8,
+        vector: u8,
+    ) -> MsiRequest {
+        let address = 0xfee0_0000
+            | u32::from(destination) << 12
+            | u32::from(mode == 1) << 3
+            | u32::from(logical) << 2;
+        let data = u32::from(vector)
+            | u32::from(mode) << 8
+            | u32::from(logical) << 11
+            | u32::from(assert) << 14
+            | u32::from(trigger_level) << 15;
+        MsiRequest {
+            address: address.into(),
+            data,
+        }
+    }
+
+    /// Every request in the delivery mode `mode` that has a combination of the
+    /// trigger mode, the level, the destination mode, a destination, and a
+    /// vector, from the values that the tests cover: both of each flag, and
+    /// the lowest, a middle, and the highest destination and vector.
+    fn msi_requests(mode: u8) -> Vec<MsiRequest> {
+        let mut requests = Vec::new();
+        for trigger_level in [false, true] {
+            for assert in [false, true] {
+                for logical in [false, true] {
+                    for destination in [0, 5, 0xff] {
+                        for vector in [0, 0x40, 0xff] {
+                            requests.push(msi_request(
+                                mode,
+                                trigger_level,
+                                assert,
+                                logical,
+                                destination,
+                                vector,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        requests
+    }
+
+    #[test]
+    fn kvm_does_not_get_the_reserved_remote_read_delivery_mode() {
+        // KVM takes delivery mode 011 as its paravirtual kick, which sets a
+        // wake-up that the saved state cannot hold, so no request in it may
+        // reach KVM, by an MSI, an IO-APIC route, or an irqfd route.
+        for request in msi_requests(3) {
+            assert!(KvmMsi::new(request).is_none(), "{request:x?} reaches KVM");
+        }
+    }
+
+    #[test]
+    fn kvm_gets_every_other_delivery_mode_unchanged() {
+        // Every other mode reaches KVM as it did, and the message that KVM
+        // takes is the request itself. That includes 110, which the Intel SDM
+        // also reserves for an MSI and KVM takes as a startup IPI, which
+        // `has_pending_init_sipi` covers and the INIT and SIPI contract tests
+        // send as an MSI.
+        for mode in [0, 1, 2, 4, 5, 6, 7] {
+            for request in msi_requests(mode) {
+                let msi = KvmMsi::new(request).unwrap_or_else(|| panic!("{request:x?} is dropped"));
+                assert_eq!(
+                    (msi.address_lo, msi.address_hi, msi.data),
+                    (request.address as u32, 0, request.data),
+                    "{request:x?}"
+                );
+            }
+        }
+    }
+}
+
+/// Tests against the host's KVM, with a real-mode guest that halts.
+#[cfg(test)]
+mod kvm_tests {
+    use super::KvmMsi;
+    use super::test_guest::GuestRam;
+    use kvm::Exit;
+    use kvm::Kvm;
+    use kvm::Partition;
+    use kvm::VmType;
+    use kvm::kvm_cpuid_entry2;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use test_with_tracing::test;
+    use virt::irqcon::DeliveryMode;
+    use virt::irqcon::MsiRequest;
+
+    const CODE_GPA: u64 = 0x1000;
+    const WOKE_PORT: u8 = 0x80;
+    /// Enabled, in x2APIC mode, and the BSP flag.
+    const APIC_BASE: u64 = 0xfee0_0d00;
+
+    /// Gives KVM an MSI that has this address, high address, and data.
+    fn send_msi(partition: &Partition, address_lo: u32, address_hi: u32, data: u32) {
+        partition
+            .request_msi(&kvm::kvm_msi {
+                address_lo,
+                address_hi,
+                data,
+                flags: 0,
+                devid: 0,
+                pad: [0; 12],
+            })
+            .unwrap();
+    }
+
+    /// Runs a VP at `cli; hlt; out WOKE_PORT, al; jmp hlt` for 300 ms, after
+    /// `send` has sent it an interrupt, and returns how many times it got past
+    /// its HLT. With IF clear, only a wake-up that KVM keeps outside the
+    /// interrupts, such as the paravirtual kick, gets it past an HLT, and KVM
+    /// does not report that wake-up in the VP's MP state, which stays runnable.
+    fn hlt_wakeups(send: impl FnOnce(&Partition)) -> usize {
+        kvm::init();
+        let mut partition = Kvm::new().unwrap().new_vm(VmType::Default).unwrap();
+        partition.enable_split_irqchip(24).unwrap();
+        partition.enable_x2apic_api().unwrap();
+        partition.add_vp(0).unwrap();
+        let ram = GuestRam::new(&partition, 0x10000);
+        ram.write(CODE_GPA, &[0xfa, 0xf4, 0xe6, WOKE_PORT, 0xeb, 0xfb]);
+
+        let vp = partition.vp(0);
+        // Enumerate the x2APIC, enable it, and software-enable the LAPIC, so
+        // that a fixed interrupt is held for the VP and not dropped.
+        vp.set_cpuid(&[kvm_cpuid_entry2 {
+            function: 1,
+            ecx: 1 << 21,
+            ..Default::default()
+        }])
+        .unwrap();
+        vp.set_msrs(&[(x86defs::X86X_MSR_APIC_BASE, APIC_BASE)])
+            .unwrap();
+        let mut page = [0; 1024];
+        vp.get_lapic(&mut page).unwrap();
+        page[0xf0..0xf4].copy_from_slice(&0x1ffu32.to_le_bytes());
+        vp.set_lapic(&page).unwrap();
+        let mut sregs = vp.get_sregs().unwrap();
+        sregs.cs.selector = 0;
+        sregs.cs.base = 0;
+        vp.set_sregs(&sregs).unwrap();
+        vp.set_regs(&kvm::kvm_regs {
+            rip: CODE_GPA,
+            rsp: 0x8000,
+            rflags: 2,
+            ..Default::default()
+        })
+        .unwrap();
+        send(&partition);
+
+        let stop = AtomicBool::new(false);
+        let mut runner = vp.runner();
+        let mut wakeups = 0;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                stop.store(true, Ordering::Relaxed);
+                partition.vp(0).force_exit();
+            });
+            while !stop.load(Ordering::Relaxed) {
+                match runner.run().unwrap() {
+                    Exit::Interrupted => {}
+                    Exit::IoOut { port, .. } if port == u16::from(WOKE_PORT) => wakeups += 1,
+                    exit => panic!("unexpected exit: {exit:?}"),
+                }
+            }
+        });
+        wakeups
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn a_remote_read_msi_does_not_make_the_next_hlt_return() {
+        // The MSI as the VMM gives it to KVM, if it does.
+        let through_the_vmm = |mode| {
+            move |partition: &Partition| {
+                let request = MsiRequest::new_x86(mode, 0, false, 0x40, false);
+                if let Some(msi) = KvmMsi::new(request) {
+                    send_msi(partition, msi.address_lo, msi.address_hi, msi.data);
+                }
+            }
+        };
+
+        // Nothing wakes the VP, and neither does a fixed interrupt, which the
+        // clear IF holds off.
+        assert_eq!(hlt_wakeups(|_| {}), 0);
+        assert_eq!(hlt_wakeups(through_the_vmm(DeliveryMode::FIXED)), 0);
+
+        // KVM gets no remote-read MSI from the VMM, so the VP stays halted.
+        assert_eq!(
+            hlt_wakeups(through_the_vmm(DeliveryMode::REMOTE_READ)),
+            0,
+            "the VP got past its HLT after a remote-read MSI"
+        );
+
+        // The same message given to KVM as it is does get the VP past one HLT,
+        // which shows that the test sees the wake-up.
+        assert_eq!(
+            hlt_wakeups(|partition| send_msi(partition, 0xfee0_0000, 0, (3 << 8) | 0x40)),
+            1
+        );
     }
 }
