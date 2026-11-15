@@ -320,6 +320,32 @@ restore leaves those MSRs as `bind` set them, as it did before:
 as a new VP has them, and the other MSRs at 0. An earlier build ignores the
 elements of a later snapshot in the same way.
 
+### Fields of an element
+
+An element can gain an optional field under the same rules. The activity
+element (`virt.x86.Activity`, field 2) holds a VP's MP state, its pending and
+blocked NMIs, its interrupt shadow, and the event and interruption that it was
+about to take. KVM can hold two NMIs pending, when a second NMI reaches a VP
+before it has run, which the Boolean `nmi_pending` cannot say, so the activity
+records the count in its optional field 7, `nmi_pending_count`, when it is 2:
+
+- A saved state from a build that predates the field has none, and nor has a
+  state that holds at most one pending NMI, so restoring it sets the one
+  pending NMI that `nmi_pending` gives, as before. Only a KVM VP that holds two
+  pending NMIs saves the field, and only on Linux 6.4 and later, whose
+  `KVM_GET_VCPU_EVENTS` reports the count: an earlier kernel reports whether an
+  NMI is pending, so a save on it holds one and loses a second NMI, as before.
+- A build that predates the field ignores it in a saved state from a later
+  build, so it restores two pending NMIs as one: the guest loses an NMI,
+  silently.
+
+There is no version to check, and no reader refuses the field. Never change or
+reuse the number of a field.
+
+A restore of KVM refuses a count that it would cut down to what it holds:
+anything but 2, or 2 with NMIs blocked or an NMI being injected. It changes no
+state before it refuses.
+
 ## Extending the format
 
 When adding new fields to `SnapshotManifest`, use the next available mesh
