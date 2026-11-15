@@ -901,6 +901,9 @@ pub enum Error {
     TscFrequencyCpuid(#[from] virt::x86::tsc::TscFrequencyCpuidError),
     #[error("{0} is not supported on this architecture")]
     UnsupportedParameter(&'static str),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("saving or restoring {0} is not supported by WHP")]
+    UnsupportedState(&'static str),
     #[error("WHP does not support nested virtualization on this host")]
     NestedVirtUnsupported,
     #[error("nested_virt requires the in-hypervisor APIC")]
@@ -1417,6 +1420,8 @@ impl WhpPartitionInner {
                 let mut caps = caps.map_err(Error::Capabilities)?;
                 caps.can_freeze_time = true;
                 caps.tsc_deadline &= matches!(vtl0.lapic, LocalApicKind::Offloaded);
+                // The VP state access does not hold UMWAIT_CONTROL.
+                caps.umwait_control = false;
                 caps.xsaves_state_bv_broken = true;
                 caps.dr6_tsx_broken = true;
                 caps.nested_virt = nested_virt;

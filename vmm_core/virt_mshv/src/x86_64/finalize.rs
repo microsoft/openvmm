@@ -235,6 +235,8 @@ impl MshvPartitionInner {
         caps.tsc_deadline = false;
         // The VMSA holds an SNP guest's SPEC_CTRL, which the root cannot read.
         caps.spec_ctrl &= self.isolation_type() == virt::IsolationType::None;
+        // The VP state access does not hold UMWAIT_CONTROL.
+        caps.umwait_control = false;
         caps.xsaves_state_bv_broken = true;
         // Ordinary state access does not freeze the partition clock.
         caps.can_freeze_time = false;
