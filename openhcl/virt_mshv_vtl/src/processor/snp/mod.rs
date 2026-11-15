@@ -2984,6 +2984,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("misc_msrs"))
     }
 
+    fn machine_check(&mut self) -> Result<vp::MachineCheck, Self::Error> {
+        Err(vp_state::Error::Unimplemented("machine_check"))
+    }
+
+    fn set_machine_check(&mut self, _value: &vp::MachineCheck) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("machine_check"))
+    }
+
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         Ok(vp::Cet { scet: vmsa.s_cet() })

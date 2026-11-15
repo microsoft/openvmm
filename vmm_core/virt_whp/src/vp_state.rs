@@ -262,6 +262,14 @@ mod x86 {
             Err(Error::UnsupportedState("misc_msrs"))
         }
 
+        fn machine_check(&mut self) -> Result<vp::MachineCheck, Self::Error> {
+            Err(Error::UnsupportedState("machine_check"))
+        }
+
+        fn set_machine_check(&mut self, _value: &vp::MachineCheck) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedState("machine_check"))
+        }
+
         fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
             match self.run.state.vtls[self.vtl].hv {
                 Some(_) => {

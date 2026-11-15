@@ -22,6 +22,7 @@ pub(crate) struct Capabilities {
     pub(crate) umwait_control: bool,
     pub(crate) debug_ctl: bool,
     pub(crate) misc_msrs: bool,
+    pub(crate) machine_check: bool,
 }
 
 // Probe the same enlightenment configuration used by the test, including
@@ -44,6 +45,7 @@ where
             umwait_control: partition.caps().umwait_control,
             debug_ctl: partition.caps().debug_ctl,
             misc_msrs: partition.caps().misc_msrs,
+            machine_check: partition.caps().machine_check,
         })
     })
 }
