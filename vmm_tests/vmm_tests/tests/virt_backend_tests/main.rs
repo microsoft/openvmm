@@ -24,6 +24,8 @@ cfg_select! {
         mod save;
         mod speculation;
         mod time;
+        #[cfg(target_os = "linux")]
+        mod xsave;
     }
     _ => {}
 }
