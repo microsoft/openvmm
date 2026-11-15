@@ -747,3 +747,12 @@ immediately with a clear error if any active device does not support it.
   Snapshots from a build that computes a different effective CPUID, or, for a
   host profile, whose policy differs in a way that changes the recorded
   profile, must be recaptured.
+- A restore gives the guest back the guest-writable MSRs that the saved
+  processor state holds, such as `IA32_SPEC_CTRL`, the machine-check banks, and
+  `IA32_MISC_ENABLE`: see [VP state
+  elements](../../dev_guide/snapshot_format.md#vp-state-elements) for the list.
+  A snapshot from a build that predates one of them leaves that state as a new
+  VP has it, and a build that predates it ignores it in a later snapshot, so
+  neither restore fails, and neither keeps what the guest wrote. Only a host
+  whose KVM can access an MSR saves it, and a snapshot restores only on a host
+  that can access every MSR that it holds.

@@ -244,6 +244,82 @@ IBRS, STIBP, or SSBD keeps its speculation controls across a restore, but one
 restored from a snapshot of an earlier build, or by an earlier build, starts
 with them cleared, as every guest did before, until it next writes the MSR.
 
+The elements of this kind after `IA32_TSC_DEADLINE`, each a guest-writable MSR
+or group of MSRs that a VP holds and a fresh VP does not:
+
+| Field | Element | State | A save holds it when |
+| --- | --- | --- | --- |
+| 16 | `spec_ctrl` | `IA32_SPEC_CTRL` | the guest's CPUID enumerates IBRS, STIBP, or SSBD |
+| 17 | `umwait_control` | `IA32_UMWAIT_CONTROL` | the guest's CPUID enumerates WAITPKG |
+| 18 | `debug_ctl` | `IA32_DEBUGCTL` | the backend has it (KVM) |
+| 19 | `misc_msrs` | `IA32_MISC_ENABLE`, `MSR_MISC_FEATURES_ENABLES` (CPUID faulting), and `IA32_POWER_CTL` | the backend has them (KVM) |
+| 20 | `machine_check` | `IA32_MCG_STATUS`, `IA32_MCG_CTL`, and the control, status, address, miscellaneous, and CMCI control registers of each machine-check bank | the backend has them (KVM) |
+
+A partition has an element only where the guest can have the state and the
+backend can access it, which the partition's capabilities record. The guest's
+CPUID decides the first for `spec_ctrl` and `umwait_control`; no CPUID bit
+decides it for the other elements, whose MSRs every CPU has. For the KVM
+backend:
+
+- It can access an MSR only if the host's `KVM_GET_MSR_INDEX_LIST` lists it, so
+  a host without the MSR, such as one without WAITPKG, holds no element for it
+  instead of failing every save.
+- It can access none of them for an SNP guest, whose registers live in an
+  encrypted VMSA.
+- `IA32_DEBUGCTL` is the exception to the list. Every KVM virtualizes it, and
+  `KVM_GET_MSRS` and `KVM_SET_MSRS` reach it on every kernel that the time ABI
+  supports, Linux 5.16 and later: the vendor code fails a write only for a bit
+  that KVM does not support (VMX, which drops BTF and LBR instead) or that is
+  above bit 5 (SVM, which ignores the write without LBR virtualization). So 0
+  always restores, and so does what a guest holds, unless a newer kernel gave it
+  a bit, as Linux 6.17 gave it `RTM_DEBUG`, and the restore into an older kernel
+  fails. A kernel lists the MSR only since commit `3700f0788da6` ("KVM: SVM: Add
+  missing save/restore handling of LBR MSRs"), in Linux 7.1 and the stable
+  kernels that took it, such as 6.18.57, which found that KVM enumerated neither
+  `IA32_DEBUGCTL` nor the LBR MSRs for userspace to save. Following the list
+  would make a snapshot restore only on such a kernel, though almost every guest
+  holds 0.
+- KVM does not list the registers of the machine-check banks, so `machine_check`
+  follows `IA32_MCG_STATUS`, and the number of banks is the one that the VP's
+  `IA32_MCG_CAP` reports.
+
+The MSHV, WHP, and OpenHCL backends do not have elements 17 through 20, and
+clear their capabilities.
+
+A saved state restores only into a partition that has every element that it
+holds. A destination whose backend lacks one, such as a host whose KVM does not
+list `IA32_UMWAIT_CONTROL`, cannot give the guest the value that it saved, and
+`restore_all` does not drop the element: it stops on an assertion.
+
+A restore of the machine-check state sets the banks that the saved state lists
+and puts the VP's other banks back as `bind` left them: with every error enabled
+on a host that advertises CMCI, and disabled otherwise. It refuses a saved state
+that lists more banks than the VP has before it writes anything. The restore
+also fails for a state that holds a value that KVM refuses, such as a bank
+control other than 0 or all ones (bit 0 and bit 10 may be clear), which no guest
+writes, after it has written the registers that precede it.
+
+Some guest-writable state has no element:
+
+- `IA32_BNDCFGS` belongs to MPX, which only the Skylake-SP CPU profile
+  enumerates. Since Linux 5.6, the kernel does not enable the MPX state
+  components in the host's XCR0, which KVM needs to expose MPX, so that CPU
+  profile cannot run on a KVM host that the time ABI supports, which needs
+  Linux 5.16.
+- `MSR_VM_HSAVE_PA` belongs to SVM, which no CPU profile enumerates. A guest
+  without SVM cannot run VMRUN, so nothing uses the MSR.
+- AMD's legacy performance counters, `0xc0010000` through `0xc0010007`, hold
+  state only on an AMD host whose KVM virtual PMU is on. A time ABI guest has no
+  PMU, so the KVM backend raises #GP for them instead (see [Time and CPU
+  compatibility](../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility)),
+  and a snapshot of another guest does not hold their state.
+
+A snapshot from an earlier build holds none of elements 17 through 20, so a
+restore leaves those MSRs as `bind` set them, as it did before:
+`IA32_MISC_ENABLE` at the Microsoft hypervisor's value, the machine-check banks
+as a new VP has them, and the other MSRs at 0. An earlier build ignores the
+elements of a later snapshot in the same way.
+
 ## Extending the format
 
 When adding new fields to `SnapshotManifest`, use the next available mesh
