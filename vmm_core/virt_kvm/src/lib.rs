@@ -105,6 +105,11 @@ pub enum KvmError {
     #[cfg(guest_arch = "x86_64")]
     #[error(transparent)]
     Xsave(#[from] virt::x86::vp::XsaveError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "VP {vp_index} is in system management mode (SMM) or has a system management interrupt (SMI) pending, which a save cannot hold: the guest has not finished handling an SMI"
+    )]
+    SmmState { vp_index: u32 },
 }
 
 #[derive(Inspect)]
