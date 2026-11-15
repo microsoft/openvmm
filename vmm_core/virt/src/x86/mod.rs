@@ -862,6 +862,8 @@ mod tests {
     /// Skylake-SP and Alder Lake CPUs have them, and the Ice Lake-SP, Emerald
     /// Rapids, Granite Rapids, and AMD profiles hide them.
     #[test]
+    // The time ABI's CPUID helpers exist only for x86-64 guests.
+    #[cfg(guest_arch = "x86_64")]
     fn spec_ctrl_state_is_present_for_the_profiles_that_enumerate_a_control() {
         let topology = vm_topology::processor::TopologyBuilder::new_x86()
             .vps_per_socket(2)
