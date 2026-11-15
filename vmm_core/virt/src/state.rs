@@ -305,4 +305,161 @@ mod tests {
         assert!(std::error::Error::source(&err).is_some_and(|err| err.is::<Error>()));
         assert_eq!(state.0.reads, ["check_saveable"]);
     }
+
+    /// State with an element that only some partitions have, as the VP state
+    /// has for an MSR that a CPUID feature enumerates.
+    mod optional {
+        use super::StateElement;
+        use super::state_trait;
+        use inspect::Inspect;
+        use mesh_protobuf::Protobuf;
+        use std::fmt::Error;
+
+        pub struct Caps {
+            has_extra: bool,
+        }
+        pub struct Vp;
+
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+        #[mesh(package = "virt.test.optional")]
+        pub struct Always {
+            #[mesh(1)]
+            value: u32,
+        }
+
+        impl StateElement<Caps, Vp> for Always {
+            fn is_present(_caps: &Caps) -> bool {
+                true
+            }
+
+            fn at_reset(_caps: &Caps, _vp: &Vp) -> Self {
+                Self { value: 0 }
+            }
+        }
+
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+        #[mesh(package = "virt.test.optional")]
+        pub struct Extra {
+            #[mesh(1)]
+            value: u32,
+        }
+
+        impl StateElement<Caps, Vp> for Extra {
+            fn is_present(caps: &Caps) -> bool {
+                caps.has_extra
+            }
+
+            fn at_reset(_caps: &Caps, _vp: &Vp) -> Self {
+                Self { value: 0 }
+            }
+        }
+
+        state_trait! {
+            "Test state with an optional element",
+            AccessOptionalState,
+            Caps,
+            Vp,
+            OptionalSavedState,
+            "virt.test.optional",
+            (1, "always", always, set_always, Always),
+            (2, "extra", extra, set_extra, Extra),
+        }
+
+        /// A partition that holds its elements and records the ones that a
+        /// restore sets, in order.
+        struct Partition {
+            caps: Caps,
+            always: Always,
+            extra: Extra,
+            sets: Vec<&'static str>,
+        }
+
+        impl Partition {
+            fn new(has_extra: bool) -> Self {
+                Self {
+                    caps: Caps { has_extra },
+                    always: Always { value: 1 },
+                    extra: Extra { value: 2 },
+                    sets: Vec::new(),
+                }
+            }
+        }
+
+        impl AccessOptionalState for Partition {
+            type Error = Error;
+
+            fn caps(&self) -> &Caps {
+                &self.caps
+            }
+
+            fn commit(&mut self) -> Result<(), Error> {
+                Ok(())
+            }
+
+            fn always(&mut self) -> Result<Always, Error> {
+                Ok(self.always)
+            }
+
+            fn set_always(&mut self, value: &Always) -> Result<(), Error> {
+                self.sets.push("always");
+                self.always = *value;
+                Ok(())
+            }
+
+            fn extra(&mut self) -> Result<Extra, Error> {
+                Ok(self.extra)
+            }
+
+            fn set_extra(&mut self, value: &Extra) -> Result<(), Error> {
+                self.sets.push("extra");
+                self.extra = *value;
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn a_save_holds_an_optional_element_only_where_the_partition_has_it() {
+            assert_eq!(
+                Partition::new(false).save_all().unwrap(),
+                OptionalSavedState {
+                    always: Some(Always { value: 1 }),
+                    extra: None,
+                }
+            );
+            assert_eq!(
+                Partition::new(true).save_all().unwrap(),
+                OptionalSavedState {
+                    always: Some(Always { value: 1 }),
+                    extra: Some(Extra { value: 2 }),
+                }
+            );
+        }
+
+        #[test]
+        fn a_restore_leaves_an_optional_element_that_the_saved_state_lacks() {
+            // A saved state from before the element existed, restored where
+            // the partition has it, as after an upgrade.
+            let mut partition = Partition::new(true);
+            partition
+                .restore_all(&OptionalSavedState {
+                    always: Some(Always { value: 5 }),
+                    extra: None,
+                })
+                .unwrap();
+            assert_eq!(partition.sets, ["always"]);
+            assert_eq!(partition.always, Always { value: 5 });
+            assert_eq!(partition.extra, Extra { value: 2 });
+
+            // A saved state with the element sets it.
+            let mut partition = Partition::new(true);
+            partition
+                .restore_all(&OptionalSavedState {
+                    always: Some(Always { value: 5 }),
+                    extra: Some(Extra { value: 6 }),
+                })
+                .unwrap();
+            assert_eq!(partition.sets, ["always", "extra"]);
+            assert_eq!(partition.extra, Extra { value: 6 });
+        }
+    }
 }

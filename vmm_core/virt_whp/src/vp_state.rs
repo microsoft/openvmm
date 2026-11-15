@@ -230,6 +230,14 @@ mod x86 {
             self.run.vp.set_register_state(self.vtl, value)
         }
 
+        fn spec_ctrl(&mut self) -> Result<vp::SpecCtrl, Self::Error> {
+            self.run.vp.get_register_state(self.vtl)
+        }
+
+        fn set_spec_ctrl(&mut self, value: &vp::SpecCtrl) -> Result<(), Self::Error> {
+            self.run.vp.set_register_state(self.vtl, value)
+        }
+
         fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
             match self.run.state.vtls[self.vtl].hv {
                 Some(_) => {
