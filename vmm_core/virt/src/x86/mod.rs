@@ -76,6 +76,11 @@ pub struct X86PartitionCapabilities {
     pub sgx: bool,
     /// TSC_AUX is supported
     pub tsc_aux: bool,
+    /// The guest's CPUID enumerates a control of `IA32_SPEC_CTRL` (IBRS,
+    /// STIBP, or SSBD), so the guest can write the MSR, which the VP's saved
+    /// state then holds. Backends without access to the MSR must clear this
+    /// even if guest CPUID enumerates a control.
+    pub spec_ctrl: bool,
     /// Architectural TSC-deadline state is available. Backends without access
     /// to this MSR must clear this even if guest CPUID advertises the feature.
     pub tsc_deadline: bool,
@@ -142,6 +147,7 @@ impl X86PartitionCapabilities {
             cet_ss: false,
             sgx: false,
             tsc_aux: false,
+            spec_ctrl: false,
             tsc_deadline: false,
             vtom: None,
             physical_address_width: max_physical_address_size_from_cpuid(&mut *f),
@@ -274,17 +280,16 @@ impl X86PartitionCapabilities {
             }
         }
 
+        let extended_max_function = f(CpuidFunction::ExtendedMaxFunction.0, 0)[0];
+
         this.tsc_aux = {
-            let rdtscp = {
-                let extended_max_function = f(CpuidFunction::ExtendedMaxFunction.0, 0)[0];
-                if extended_max_function >= CpuidFunction::ExtendedVersionAndFeatures.0 {
-                    x86defs::cpuid::ExtendedVersionAndFeaturesEdx::from(
-                        f(CpuidFunction::ExtendedVersionAndFeatures.0, 0)[3],
-                    )
-                    .rdtscp()
-                } else {
-                    false
-                }
+            let rdtscp = if extended_max_function >= CpuidFunction::ExtendedVersionAndFeatures.0 {
+                x86defs::cpuid::ExtendedVersionAndFeaturesEdx::from(
+                    f(CpuidFunction::ExtendedVersionAndFeatures.0, 0)[3],
+                )
+                .rdtscp()
+            } else {
+                false
             };
 
             let rdpid =
@@ -292,6 +297,16 @@ impl X86PartitionCapabilities {
 
             rdtscp || rdpid
         };
+
+        // Intel enumerates the controls of IA32_SPEC_CTRL in CPUID.(7,0):EDX,
+        // and AMD in CPUID.0x80000008:EBX.
+        let address_space_sizes =
+            if extended_max_function >= CpuidFunction::ExtendedAddressSpaceSizes.0 {
+                f(CpuidFunction::ExtendedAddressSpaceSizes.0, 0)
+            } else {
+                Default::default()
+            };
+        this.spec_ctrl = enumerates_spec_ctrl(extended_features, address_space_sizes);
 
         Ok(this)
     }
@@ -562,6 +577,20 @@ pub fn max_physical_address_size_from_cpuid(mut cpuid: impl FnMut(u32, u32) -> [
     }
 }
 
+/// Returns whether CPUID enumerates a control of `IA32_SPEC_CTRL`, so that a
+/// guest can write the MSR: Intel's IBRS, STIBP, or SSBD, in
+/// `CPUID.(7,0):EDX[26]`, `[27]`, and `[31]`, or AMD's, in
+/// `CPUID.0x80000008:EBX[14]`, `[15]`, and `[24]`.
+///
+/// `extended_features` is the result of `CPUID.(7,0)`, and
+/// `address_space_sizes` that of `CPUID.0x80000008`, each zero if the CPU has
+/// no such leaf.
+pub fn enumerates_spec_ctrl(extended_features: [u32; 4], address_space_sizes: [u32; 4]) -> bool {
+    let intel = x86defs::cpuid::ExtendedFeatureSubleaf0Edx::from(extended_features[3]);
+    let amd = x86defs::cpuid::ExtendedAddressSpaceSizesEbx::from(address_space_sizes[1]);
+    intel.ibrs() || intel.stibp() || intel.ssbd() || amd.ibrs() || amd.stibp() || amd.ssbd()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,6 +792,97 @@ mod tests {
             _ => [0; 4],
         };
         assert_eq!(snp_c_bit_from_cpuid(cpuid_without_snp), None);
+    }
+
+    #[test]
+    fn spec_ctrl_controls_are_the_ibrs_stibp_and_ssbd_bits_of_either_vendor() {
+        // CPUID.(7,0):EDX[26], [27], and [31] for Intel, whichever other
+        // features the register enumerates, and none of AMD's bits in it.
+        for bit in 0..32 {
+            assert_eq!(
+                enumerates_spec_ctrl([0, 0, 0, 1 << bit], [0; 4]),
+                matches!(bit, 26 | 27 | 31),
+                "CPUID.(7,0):EDX[{bit}]"
+            );
+        }
+        // CPUID.0x80000008:EBX[14], [15], and [24] for AMD. IBPB, VIRT_SSBD,
+        // and the rest of its speculation features neither need the MSR nor
+        // are controls of it, and PSFD, a bit of the MSR, needs one of the
+        // controls to reach it.
+        for bit in 0..32 {
+            assert_eq!(
+                enumerates_spec_ctrl([0; 4], [0, 1 << bit, 0, 0]),
+                matches!(bit, 14 | 15 | 24),
+                "CPUID.0x80000008:EBX[{bit}]"
+            );
+        }
+        // The other registers of the leaves enumerate none.
+        assert!(!enumerates_spec_ctrl([!0, !0, !0, 0], [!0, 0, !0, !0]));
+    }
+
+    /// Returns whether the partition capabilities of a CPU with `leaf7_edx`
+    /// and `ext8_ebx` in `CPUID.(7,0):EDX` and `CPUID.0x80000008:EBX`, and
+    /// the highest leaves `max_function` and `max_extended`, include the
+    /// SPEC_CTRL state.
+    fn has_spec_ctrl(max_function: u32, max_extended: u32, leaf7_edx: u32, ext8_ebx: u32) -> bool {
+        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+            .build(1)
+            .unwrap();
+        let x2apic = topology.apic_mode() != ApicMode::XApic;
+        X86PartitionCapabilities::from_cpuid(
+            &topology,
+            &mut |leaf, subleaf| match (leaf, subleaf) {
+                (0, _) => [max_function, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
+                (1, _) => [0, 0, u32::from(x2apic) << 21, 0],
+                (7, 0) => [0, 0, 0, leaf7_edx],
+                (0x8000_0000, _) => [max_extended, 0, 0, 0],
+                (0x8000_0008, 0) => [0, ext8_ebx, 0, 0],
+                _ => [0; 4],
+            },
+        )
+        .unwrap()
+        .spec_ctrl
+    }
+
+    #[test]
+    fn spec_ctrl_state_needs_a_control_in_a_leaf_that_the_cpu_has() {
+        const IBRS: u32 = 1 << 26;
+        const AMD_IBRS: u32 = 1 << 14;
+        assert!(!has_spec_ctrl(0xd, 0x8000_0008, 0, 0));
+        assert!(has_spec_ctrl(0xd, 0x8000_0008, IBRS, 0));
+        assert!(has_spec_ctrl(0xd, 0x8000_0008, 0, AMD_IBRS));
+        // A leaf above the highest is not CPUID's to enumerate.
+        assert!(!has_spec_ctrl(6, 0x8000_0008, IBRS, 0));
+        assert!(!has_spec_ctrl(0xd, 0x8000_0007, 0, AMD_IBRS));
+        assert!(has_spec_ctrl(6, 0x8000_0008, 0, AMD_IBRS));
+        assert!(has_spec_ctrl(0xd, 0x8000_0007, IBRS, 0));
+    }
+
+    /// The pinned profiles whose CPUID enumerates controls of SPEC_CTRL: the
+    /// Skylake-SP and Alder Lake CPUs have them, and the Ice Lake-SP, Emerald
+    /// Rapids, Granite Rapids, and AMD profiles hide them.
+    #[test]
+    fn spec_ctrl_state_is_present_for_the_profiles_that_enumerate_a_control() {
+        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+            .vps_per_socket(2)
+            .x2apic(vm_topology::processor::x86::X2ApicState::Supported)
+            .build(2)
+            .unwrap();
+        for profile in cpu_profile::pinned_profiles() {
+            let effective = crate::time_abi::cpuid::effective_cpuid(profile, &topology).unwrap();
+            let mut lookup = |leaf, subleaf| effective.lookup(leaf, subleaf);
+            let caps = X86PartitionCapabilities::from_cpuid(
+                &topology,
+                &mut crate::time_abi::identity::capabilities_cpuid(&mut lookup),
+            )
+            .unwrap();
+            assert_eq!(
+                caps.spec_ctrl,
+                matches!(profile.id(), "intel.skylake-sp.v1" | "intel.alderlake.v1"),
+                "{}",
+                profile.id()
+            );
+        }
     }
 }
 

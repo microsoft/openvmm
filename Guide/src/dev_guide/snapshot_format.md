@@ -217,6 +217,33 @@ Key unsupported categories:
   `VmbusSerialHost`, `Vmbfs` return `None` from
   `supports_save_restore()`.
 
+## VP state elements
+
+Each VP's saved state is a `virt.x86.VpSavedState`
+(`vmm_core/virt/src/x86/vp.rs`) with one optional field per element, such as the
+registers, the APIC, and `IA32_TSC_AUX`, each under a field number of its own. A
+save holds an element only where the partition has it, as for an MSR that the
+guest's CPUID enumerates, and a restore sets only the elements that the saved
+state holds, before any VP runs.
+
+An element that a later build adds needs no version, because the field is
+optional and the rules of [Save State](contrib/save-state.md) apply to it:
+
+- A saved state from a build that predates the element has no such field, so
+  restoring it leaves the VP's state as a new VP has it, the reset value, as it
+  did before the element.
+- A build that predates the element ignores the field in a saved state from a
+  later build, so the state is lost there too.
+
+Restoring across such builds therefore never fails on the element, but it can
+lose what the element preserves, silently. There is no version to check, and no
+reader refuses a saved state for an element that it does not know. Never change
+or reuse the number of an element's field. `IA32_TSC_DEADLINE`, in field 15, and
+`IA32_SPEC_CTRL`, in field 16, are such elements. A guest whose CPUID enumerates
+IBRS, STIBP, or SSBD keeps its speculation controls across a restore, but one
+restored from a snapshot of an earlier build, or by an earlier build, starts
+with them cleared, as every guest did before, until it next writes the MSR.
+
 ## Extending the format
 
 When adding new fields to `SnapshotManifest`, use the next available mesh
