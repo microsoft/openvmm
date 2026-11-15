@@ -209,6 +209,18 @@ pub struct MiscEnable {
     _reserved: u64,
 }
 
+/// The value of `X86X_IA32_MSR_MISC_ENABLE` that the Microsoft hypervisor
+/// presents, and that a VP of a backend that lets the guest write the MSR starts
+/// with and returns to at reset.
+pub const MISC_ENABLE_DEFAULT: MiscEnable = MiscEnable::new()
+    .with_fast_string(true)
+    .with_tm1(true)
+    .with_bts_unavailable(true)
+    .with_pebs_unavailable(true)
+    .with_enhanced_speedstep(true)
+    .with_mwait(true)
+    .with_xtpr_disable(true);
+
 pub const X86X_MSR_TSC: u32 = 0x10;
 pub const X86X_MSR_TSC_DEADLINE: u32 = 0x6e0;
 pub const X86X_IA32_MSR_PLATFORM_ID: u32 = 0x17;
@@ -267,6 +279,8 @@ pub struct McgCap {
 }
 
 pub const X86X_IA32_MSR_MISC_ENABLE: u32 = 0x1a0;
+pub const X86X_MSR_DEBUGCTL: u32 = 0x1d9;
+pub const X86X_MSR_POWER_CTL: u32 = 0x1fc;
 pub const X86X_MSR_MTRR_PHYSBASE0: u32 = 0x200;
 pub const X86X_MSR_MTRR_FIX64K_00000: u32 = 0x0250;
 pub const X86X_MSR_MTRR_FIX16K_80000: u32 = 0x0258;

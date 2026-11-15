@@ -432,6 +432,30 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.set_register_state(value)
     }
 
+    fn umwait_control(&mut self) -> Result<vp::UmwaitControl, Self::Error> {
+        Err(ErrorInner::UnsupportedState("umwait_control").into())
+    }
+
+    fn set_umwait_control(&mut self, _value: &vp::UmwaitControl) -> Result<(), Self::Error> {
+        Err(ErrorInner::UnsupportedState("umwait_control").into())
+    }
+
+    fn debug_ctl(&mut self) -> Result<vp::DebugCtl, Self::Error> {
+        Err(ErrorInner::UnsupportedState("debug_ctl").into())
+    }
+
+    fn set_debug_ctl(&mut self, _value: &vp::DebugCtl) -> Result<(), Self::Error> {
+        Err(ErrorInner::UnsupportedState("debug_ctl").into())
+    }
+
+    fn misc_msrs(&mut self) -> Result<vp::MiscMsrs, Self::Error> {
+        Err(ErrorInner::UnsupportedState("misc_msrs").into())
+    }
+
+    fn set_misc_msrs(&mut self, _value: &vp::MiscMsrs) -> Result<(), Self::Error> {
+        Err(ErrorInner::UnsupportedState("misc_msrs").into())
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }

@@ -81,6 +81,21 @@ pub struct X86PartitionCapabilities {
     /// state then holds. Backends without access to the MSR must clear this
     /// even if guest CPUID enumerates a control.
     pub spec_ctrl: bool,
+    /// The guest's CPUID enumerates WAITPKG, so the guest can write
+    /// `IA32_UMWAIT_CONTROL`, which the VP's saved state then holds. Backends
+    /// without access to the MSR must clear this even if guest CPUID
+    /// enumerates WAITPKG.
+    pub umwait_control: bool,
+    /// The backend holds the guest's `IA32_DEBUGCTL` in the VP's saved state.
+    /// No CPUID bit decides whether the guest can write the MSR, which every
+    /// CPU has, so `from_cpuid` leaves this clear and a backend that can
+    /// access the MSR sets it.
+    pub debug_ctl: bool,
+    /// The backend holds the guest's `IA32_MISC_ENABLE`,
+    /// `MSR_MISC_FEATURES_ENABLES`, and `IA32_POWER_CTL` in the VP's saved
+    /// state. Like [`Self::debug_ctl`], no CPUID bit decides it, so a backend
+    /// that can access the MSRs sets it.
+    pub misc_msrs: bool,
     /// Architectural TSC-deadline state is available. Backends without access
     /// to this MSR must clear this even if guest CPUID advertises the feature.
     pub tsc_deadline: bool,
@@ -148,6 +163,9 @@ impl X86PartitionCapabilities {
             sgx: false,
             tsc_aux: false,
             spec_ctrl: false,
+            umwait_control: false,
+            debug_ctl: false,
+            misc_msrs: false,
             tsc_deadline: false,
             vtom: None,
             physical_address_width: max_physical_address_size_from_cpuid(&mut *f),
@@ -307,6 +325,7 @@ impl X86PartitionCapabilities {
                 Default::default()
             };
         this.spec_ctrl = enumerates_spec_ctrl(extended_features, address_space_sizes);
+        this.umwait_control = enumerates_waitpkg(extended_features);
 
         Ok(this)
     }
@@ -591,6 +610,16 @@ pub fn enumerates_spec_ctrl(extended_features: [u32; 4], address_space_sizes: [u
     intel.ibrs() || intel.stibp() || intel.ssbd() || amd.ibrs() || amd.stibp() || amd.ssbd()
 }
 
+/// Returns whether CPUID enumerates WAITPKG, the `UMWAIT` and `TPAUSE`
+/// instructions, so that a guest can write `IA32_UMWAIT_CONTROL`:
+/// `CPUID.(7,0):ECX[5]`.
+///
+/// `extended_features` is the result of `CPUID.(7,0)`, zero if the CPU has no
+/// such leaf.
+pub fn enumerates_waitpkg(extended_features: [u32; 4]) -> bool {
+    x86defs::cpuid::ExtendedFeatureSubleaf0Ecx::from(extended_features[2]).umwait_tpause()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,33 +887,111 @@ mod tests {
         assert!(has_spec_ctrl(0xd, 0x8000_0007, IBRS, 0));
     }
 
-    /// The pinned profiles whose CPUID enumerates controls of SPEC_CTRL: the
-    /// Skylake-SP and Alder Lake CPUs have them, and the Ice Lake-SP, Emerald
-    /// Rapids, Granite Rapids, and AMD profiles hide them.
-    #[test]
+    /// Returns the ID and partition capabilities of every pinned CPU profile.
     // The time ABI's CPUID helpers exist only for x86-64 guests.
     #[cfg(guest_arch = "x86_64")]
-    fn spec_ctrl_state_is_present_for_the_profiles_that_enumerate_a_control() {
+    fn pinned_profile_capabilities() -> Vec<(&'static str, X86PartitionCapabilities)> {
         let topology = vm_topology::processor::TopologyBuilder::new_x86()
             .vps_per_socket(2)
             .x2apic(vm_topology::processor::x86::X2ApicState::Supported)
             .build(2)
             .unwrap();
-        for profile in cpu_profile::pinned_profiles() {
-            let effective = crate::time_abi::cpuid::effective_cpuid(profile, &topology).unwrap();
-            let mut lookup = |leaf, subleaf| effective.lookup(leaf, subleaf);
-            let caps = X86PartitionCapabilities::from_cpuid(
-                &topology,
-                &mut crate::time_abi::identity::capabilities_cpuid(&mut lookup),
-            )
-            .unwrap();
+        cpu_profile::pinned_profiles()
+            .iter()
+            .map(|profile| {
+                let effective =
+                    crate::time_abi::cpuid::effective_cpuid(profile, &topology).unwrap();
+                let mut lookup = |leaf, subleaf| effective.lookup(leaf, subleaf);
+                let caps = X86PartitionCapabilities::from_cpuid(
+                    &topology,
+                    &mut crate::time_abi::identity::capabilities_cpuid(&mut lookup),
+                )
+                .unwrap();
+                (profile.id(), caps)
+            })
+            .collect()
+    }
+
+    /// The pinned profiles whose CPUID enumerates controls of SPEC_CTRL: the
+    /// Skylake-SP and Alder Lake CPUs have them, and the Ice Lake-SP, Emerald
+    /// Rapids, Granite Rapids, and AMD profiles hide them.
+    #[test]
+    #[cfg(guest_arch = "x86_64")]
+    fn spec_ctrl_state_is_present_for_the_profiles_that_enumerate_a_control() {
+        for (id, caps) in pinned_profile_capabilities() {
             assert_eq!(
                 caps.spec_ctrl,
-                matches!(profile.id(), "intel.skylake-sp.v1" | "intel.alderlake.v1"),
-                "{}",
-                profile.id()
+                matches!(id, "intel.skylake-sp.v1" | "intel.alderlake.v1"),
+                "{id}"
             );
         }
+    }
+
+    #[test]
+    fn waitpkg_is_bit_5_of_the_extended_features_ecx() {
+        for bit in 0..32 {
+            assert_eq!(
+                enumerates_waitpkg([0, 0, 1 << bit, 0]),
+                bit == 5,
+                "CPUID.(7,0):ECX[{bit}]"
+            );
+        }
+        // The other registers of the leaf enumerate none.
+        assert!(!enumerates_waitpkg([!0, !0, 0, !0]));
+    }
+
+    /// Returns the partition capabilities of a CPU whose highest basic leaf is
+    /// `max_function` and whose `CPUID.(7,0):ECX` is `leaf7_ecx`.
+    fn capabilities_with_leaf7_ecx(max_function: u32, leaf7_ecx: u32) -> X86PartitionCapabilities {
+        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+            .build(1)
+            .unwrap();
+        let x2apic = topology.apic_mode() != ApicMode::XApic;
+        X86PartitionCapabilities::from_cpuid(
+            &topology,
+            &mut |leaf, subleaf| match (leaf, subleaf) {
+                (0, _) => [max_function, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
+                (1, _) => [0, 0, u32::from(x2apic) << 21, 0],
+                (7, 0) => [0, 0, leaf7_ecx, 0],
+                _ => [0; 4],
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn umwait_control_state_needs_waitpkg_in_a_leaf_that_the_cpu_has() {
+        const WAITPKG: u32 = 1 << 5;
+        assert!(!capabilities_with_leaf7_ecx(0xd, 0).umwait_control);
+        assert!(!capabilities_with_leaf7_ecx(0xd, !WAITPKG).umwait_control);
+        assert!(capabilities_with_leaf7_ecx(0xd, WAITPKG).umwait_control);
+        // A leaf above the highest is not CPUID's to enumerate.
+        assert!(!capabilities_with_leaf7_ecx(6, WAITPKG).umwait_control);
+    }
+
+    /// The pinned profiles whose CPUID enumerates WAITPKG: the Alder Lake and
+    /// Granite Rapids CPUs have it, and the Skylake-SP, Ice Lake-SP, Emerald
+    /// Rapids, and AMD profiles hide it.
+    #[test]
+    #[cfg(guest_arch = "x86_64")]
+    fn umwait_control_state_is_present_for_the_profiles_that_enumerate_waitpkg() {
+        for (id, caps) in pinned_profile_capabilities() {
+            assert_eq!(
+                caps.umwait_control,
+                matches!(id, "intel.alderlake.v1" | "intel.graniterapids.v1"),
+                "{id}"
+            );
+        }
+    }
+
+    /// No CPUID bit decides the state that every CPU has, so `from_cpuid`
+    /// leaves its capabilities clear, whatever the CPU enumerates, for a
+    /// backend that can access the state to set.
+    #[test]
+    fn state_that_no_cpuid_bit_decides_is_left_to_the_backend() {
+        let caps = capabilities_with_leaf7_ecx(0xd, !0);
+        assert!(!caps.debug_ctl);
+        assert!(!caps.misc_msrs);
     }
 }
 
