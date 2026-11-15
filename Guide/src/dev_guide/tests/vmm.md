@@ -53,6 +53,15 @@ A guest's `IA32_SPEC_CTRL` is also saved and restored where its CPUID
 enumerates a control, which the case `spec_ctrl_survives_a_save_and_restore`
 needs; a fixture's partition has none on most virtual-machine hosts, which
 hide the MSR, so the case reports ignored there.
+The other guest-writable MSRs that the VP state holds, where the backend can
+access them, have cases of their own in `msr_state.rs`:
+`misc_msrs_survive_a_save_and_restore`,
+`umwait_control_survives_a_save_and_restore` (which needs a host with WAITPKG),
+`debug_ctl_survives_a_save_and_restore`, and
+`machine_check_state_survives_a_save_and_restore`, each of which sets the state,
+saves it, changes the VP, and restores it, and two that check that a reset
+returns the feature MSRs and the machine-check state to what a new VP holds.
+MSHV and WHP do not hold these elements, so these cases report ignored there.
 
 The contract functions operate on the public `virt` interfaces. Each function
 has an adjacent `backend_test!` declaration that registers it with Petri for
