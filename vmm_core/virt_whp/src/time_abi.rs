@@ -2981,6 +2981,53 @@ mod whp_tests {
         println!("second resume: {:?}", partition.resume_time());
     }
 
+    /// A guest whose CPU profile enumerates a control of IA32_SPEC_CTRL can
+    /// write the MSR, which the VP's saved state then holds. Checks, with the
+    /// processor features of this host's profile, that WHP presents the
+    /// profile's controls to the guest and takes the register that the
+    /// backend reads and writes for that state. Only the Skylake-SP and Alder
+    /// Lake profiles enumerate a control, so the test skips on other hosts.
+    #[test]
+    #[ignore = "requires WHP"]
+    fn host_profile_partition_takes_spec_ctrl_where_it_enumerates_a_control() {
+        let Some(Partition {
+            partition,
+            time_abi,
+            effective,
+            ..
+        }) = partition(1)
+        else {
+            return;
+        };
+        let enumerates = |lookup: &dyn Fn(u32, u32) -> [u32; 4]| {
+            virt::x86::enumerates_spec_ctrl(lookup(7, 0), lookup(0x8000_0008, 0))
+        };
+        let profile = enumerates(&|function, index| effective.lookup(function, index));
+        let presented = enumerates(&|function, index| native(&partition, function, index).unwrap());
+        assert_eq!(
+            presented, profile,
+            "WHP does not present the profile's controls"
+        );
+        if !profile {
+            println!(
+                "skipped: the {} profile hides the SPEC_CTRL controls",
+                time_abi.cpu_profile.id()
+            );
+            return;
+        }
+        let vp = partition.vp(0);
+        assert_eq!(vp.get_register(whp::Register64::SpecCtrl).unwrap(), 0);
+        // IBRS, STIBP, and SSBD, each alone and together, and cleared again.
+        for value in [1, 2, 4, 7, 0] {
+            vp.set_register(whp::Register64::SpecCtrl, value).unwrap();
+            assert_eq!(vp.get_register(whp::Register64::SpecCtrl).unwrap(), value);
+        }
+        println!(
+            "{}: the guest's IA32_SPEC_CTRL takes IBRS, STIBP, and SSBD",
+            time_abi.cpu_profile.id()
+        );
+    }
+
     #[test]
     #[ignore = "requires WHP"]
     fn synchronized_set_is_exact_while_suspended() {
