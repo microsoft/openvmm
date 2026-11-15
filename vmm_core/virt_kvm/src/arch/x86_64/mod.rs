@@ -11,6 +11,7 @@ mod init_sipi;
 mod lapic_timer;
 mod machine_check;
 mod msr_state;
+mod pkru;
 mod regs;
 pub(crate) mod snp;
 #[cfg(test)]
@@ -1078,6 +1079,12 @@ impl virt::BindProcessor for KvmProcessorBinder {
     type Error = KvmError;
 
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
+        // Before this thread's first KVM_RUN, give it Linux's default PKRU if its
+        // PKRU is 0, so that a save keeps the guest's PKRU; see the `pkru`
+        // module. The processor holds a runner, which is not Send, so every
+        // later KVM_RUN of the VP runs on this thread.
+        pkru::raise_zero_thread_pkru();
+
         let inner = &self.partition.vps[self.vpindex.index() as usize];
         let vp_info = inner.vp_info;
         let kvm = self.partition.kvm.vp(vp_info.apic_id);
