@@ -392,6 +392,12 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
                 return Err(KvmError::InvalidState("Hyper-V idle state not supported"));
             }
         };
+        // The state that is set describes a vCPU outside SMM, with no SMI
+        // pending and no INIT latched, as a saved state always does, but
+        // setting the events leaves the SMM state of a vCPU that has already
+        // run as it is. Take the vCPU out of SMM before setting the MP state,
+        // which KVM can refuse for a vCPU in SMM.
+        super::smm::leave(&self.kvm())?;
         self.kvm().set_mp_state(state)?;
 
         let mut event_flags = 0;

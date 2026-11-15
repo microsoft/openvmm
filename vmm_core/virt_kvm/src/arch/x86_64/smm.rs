@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A save's check of a vCPU's system management mode (SMM) state.
+//! A vCPU's system management mode (SMM) state: a save's check of it, and its
+//! reset when the activity is set.
 //!
 //! A vCPU is in SMM from the moment that it takes a system management
 //! interrupt (SMI) until it executes `RSM`. KVM holds an SMI that reaches a
@@ -30,6 +31,13 @@
 //! events leaves the vCPU as it is: KVM turns an SMI that it has been asked to
 //! inject into a pending one, which the vCPU takes when it next runs, as it
 //! would have.
+//!
+//! A restore and a reset do the reverse. The state that they set describes a
+//! vCPU outside SMM, with no SMI pending and no INIT latched, as a saved state
+//! always does, but setting the events leaves the SMM state as it is, so a
+//! restore or a reset of a vCPU that has already run would leave it in SMM, or
+//! with its SMI pending. Setting the activity therefore takes the vCPU out of
+//! SMM first.
 
 use crate::KvmError;
 
@@ -44,6 +52,28 @@ pub(super) fn check(
     if smi.smm != 0 || smi.pending != 0 {
         return Err(KvmError::SmmState { vp_index });
     }
+    Ok(())
+}
+
+/// Takes the stopped vCPU `vp` out of SMM, with no SMI pending and no INIT
+/// latched, and leaves the rest of its events as they are: OpenVMM enables
+/// neither `KVM_CAP_EXCEPTION_PAYLOAD` nor the triple-fault event, so the events
+/// that KVM reports are the events that it takes.
+///
+/// KVM changes the SMM state only when the events that are set say that it is
+/// valid (`KVM_VCPUEVENT_VALID_SMM`). It also replaces only the SMI that is
+/// pending, not one that it has been asked to inject and has not yet made
+/// pending, which only getting the events does, so this gets them first.
+///
+/// A vCPU in SMM cannot wait for a SIPI: until Linux 6.16, `KVM_SET_MP_STATE`
+/// refuses to put it, or a vCPU with an SMI pending, in that state, and since
+/// Linux 6.17, `KVM_RUN` refuses to run it. A reset puts every vCPU but the
+/// first in that state, so the caller sets the MP state after this.
+pub(super) fn leave(vp: &kvm::Processor<'_>) -> Result<(), KvmError> {
+    let mut events = vp.get_vcpu_events()?;
+    events.flags = kvm::KVM_VCPUEVENT_VALID_SMM;
+    events.smi = Default::default();
+    vp.set_vcpu_events(&events)?;
     Ok(())
 }
 
@@ -90,6 +120,7 @@ mod tests {
 #[cfg(test)]
 mod kvm_tests {
     use super::check;
+    use super::leave;
     use crate::KvmError;
     use crate::arch::x86_64::KvmMsi;
     use kvm::KVM_VCPUEVENT_VALID_SMM;
@@ -97,6 +128,7 @@ mod kvm_tests {
     use kvm::Partition;
     use kvm::VmType;
     use kvm::kvm_msi;
+    use kvm::kvm_vcpu_events;
     use kvm::kvm_vcpu_events__bindgen_ty_4 as Smi;
     use test_with_tracing::test;
     use virt::irqcon::DeliveryMode;
@@ -175,6 +207,57 @@ mod kvm_tests {
             assert_eq!((smi.smm, smi.pending), (1, 0));
             let err = check(0, &smi).unwrap_err();
             assert!(matches!(err, KvmError::SmmState { vp_index: 0 }), "{err:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
+    fn leaving_smm_leaves_nothing_of_it() {
+        let partition = partition();
+        let vp = partition.vp(0);
+
+        let mut events = vp.get_vcpu_events().unwrap();
+        events.flags = KVM_VCPUEVENT_VALID_SMM;
+        events.nmi.masked = 1;
+        events.smi = Smi {
+            smm: 1,
+            pending: 1,
+            smm_inside_nmi: 1,
+            latched_init: 1,
+        };
+        vp.set_vcpu_events(&events).unwrap();
+        let before = vp.get_vcpu_events().unwrap();
+        assert_eq!(before.smi, events.smi);
+
+        leave(&vp).unwrap();
+
+        // The rest of the events are as they were.
+        let after = vp.get_vcpu_events().unwrap();
+        let expected = kvm_vcpu_events {
+            smi: Smi::default(),
+            ..before
+        };
+        assert_eq!(after, expected);
+    }
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
+    fn leaving_smm_drops_an_smi_whether_or_not_kvm_made_it_pending() {
+        for made_pending in [false, true] {
+            let partition = partition();
+            let vp = partition.vp(0);
+            send_smi(&partition);
+            if made_pending {
+                assert_eq!(vp.get_vcpu_events().unwrap().smi.pending, 1);
+            }
+
+            leave(&vp).unwrap();
+
+            assert_eq!(
+                vp.get_vcpu_events().unwrap().smi,
+                Smi::default(),
+                "made pending: {made_pending}"
+            );
         }
     }
 }
