@@ -289,6 +289,20 @@ the kind refuses a snapshot that holds one, which only a damaged or crafted
 snapshot of another backend does, since a restore requires the backend that
 captured the snapshot.
 
+A restore also refuses a saved VM or vCPU state that holds an element that the
+partition does not have, such as SynIC state for a microVM, whose partition has
+no Hyper-V enlightenments, or an MSR that the destination's KVM does not list
+(see [VP state
+elements](../../dev_guide/snapshot_format.md#vp-state-elements)). A save holds
+only the elements that its partition has, so only a snapshot that was edited, or
+that a host captured whose backend could access an MSR that the destination's
+cannot, holds one. The restore of the VM state, and of each vCPU's state, checks
+all of its elements before it sets any of them. OpenVMM does not abort: the
+restore fails with an error in the phase `restore check` that names the first
+element that the partition lacks, and no vCPU runs. The refused state is left as
+it was, but the VM state and the other vCPUs' states may already be restored, so
+the VM is reset or discarded, as after any failed restore.
+
 For a tiered microVM restore, and for a restore that replaces the network
 policy of a snapshot without a tier, OpenVMM starts device workers with
 network, control, and filesystem input gated. The guest performs post-restore
@@ -816,4 +830,5 @@ immediately with a clear error if any active device does not support it.
   VP has it, and a build that predates it ignores it in a later snapshot, so
   neither restore fails, and neither keeps what the guest wrote. Only a host
   whose KVM can access an MSR saves it, and a snapshot restores only on a host
-  that can access every MSR that it holds.
+  that can access every MSR that it holds: on another host, the restore is
+  refused, with an error that names the element, before it changes the VP.
