@@ -11,6 +11,7 @@ mod fingerprint;
 mod gif;
 mod init_sipi;
 mod lapic_timer;
+mod machine_check;
 mod msr_state;
 mod regs;
 pub(crate) mod snp;

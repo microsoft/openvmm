@@ -240,6 +240,7 @@ pub const X86X_MSR_SYSENTER_ESP: u32 = 0x175;
 pub const X86X_MSR_SYSENTER_EIP: u32 = 0x176;
 pub const X86X_MSR_MCG_CAP: u32 = 0x179;
 pub const X86X_MSR_MCG_STATUS: u32 = 0x17a;
+pub const X86X_MSR_MCG_CTL: u32 = 0x17b;
 
 /// [`X86X_MSR_MCG_CAP`] (MSR 0x179): global machine-check capability register.
 ///
@@ -294,7 +295,12 @@ pub const X86X_MSR_MTRR_FIX4K_E8000: u32 = 0x026D;
 pub const X86X_MSR_MTRR_FIX4K_F0000: u32 = 0x026E;
 pub const X86X_MSR_MTRR_FIX4K_F8000: u32 = 0x026F;
 pub const X86X_MSR_CR_PAT: u32 = 0x277;
+/// `IA32_MC0_CTL2`, the first of the CMCI control registers, one per bank.
+pub const X86X_MSR_MC0_CTL2: u32 = 0x280;
 pub const X86X_MSR_MTRR_DEF_TYPE: u32 = 0x2ff;
+/// `IA32_MC0_CTL`, the first of the machine-check bank registers: each bank
+/// has four, `CTL`, `STATUS`, `ADDR`, and `MISC`, in that order.
+pub const X86X_MSR_MC0_CTL: u32 = 0x400;
 
 pub const X86X_MSR_XSS: u32 = 0xda0;
 

@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 //! Guest-free contract tests of the guest-writable MSRs that a save holds beyond
-//! the registers: the feature and power controls, `IA32_UMWAIT_CONTROL`, and
-//! `IA32_DEBUGCTL`.
+//! the registers: the feature and power controls, `IA32_UMWAIT_CONTROL`,
+//! `IA32_DEBUGCTL`, and the machine-check state.
 //!
 //! A guest writes these MSRs at boot, a new VP starts without what it wrote,
 //! and a restore into a new VP must give the guest back what it saved.
@@ -194,6 +194,125 @@ fn debug_ctl_survives_a_save_and_restore(
         "the restore did not give the guest its controls: saved {:#x}, restored {:#x}",
         written.value,
         restored.value
+    );
+    Ok(())
+}
+
+// A guest with machine-check support (`CONFIG_X86_MCE` in Linux) enables the
+// errors of its banks and their CMCI, and clears their status at boot, and the
+// registers that it writes live in the VP.
+backend_test!(machine_check_state_survives_a_save_and_restore, requires: [machine_check]);
+fn machine_check_state_survives_a_save_and_restore(
+    _partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let mut state = processor.access_state(Vtl::Vtl0);
+
+    // A new VP records no error. Whether a bank enables every error depends on
+    // the host, so the test takes what the VP holds as the new state.
+    let new_vp = state.machine_check()?;
+    anyhow::ensure!(
+        new_vp.banks.len() >= 2,
+        "a new VP has fewer than two banks: {}",
+        new_vp.banks.len()
+    );
+    anyhow::ensure!(
+        new_vp.status == 0
+            && new_vp
+                .banks
+                .iter()
+                .all(|bank| (bank.status, bank.addr, bank.misc, bank.ctl2) == (0, 0, 0, 0)),
+        "a new VP records an error: {new_vp:#x?}"
+    );
+
+    let mut written = new_vp.clone();
+    written.status = 0x7;
+    // A control is 0 or all ones: a new VP holds one, so the other is a change
+    // on either vendor's host.
+    written.banks[0].ctl = 0;
+    written.banks[0].addr = 0x1234;
+    written.banks[0].misc = 0x5678;
+    written.banks[1].ctl = !0;
+    // CMCI enabled, with a threshold.
+    written.banks[1].ctl2 = 0x4000_0003;
+    let last = written.banks.len() - 1;
+    written.banks[last].addr = 0xdead_beef;
+    written.banks[last].status = 0x8000_0000_0000_0001;
+    if state.set_machine_check(&written).is_err() {
+        // The VP has no CMCI, so it refuses a nonzero control.
+        written.banks[1].ctl2 = 0;
+        state.set_machine_check(&written)?;
+    }
+    state.commit()?;
+    let held = state.machine_check()?;
+    anyhow::ensure!(
+        held == written,
+        "the VP does not hold the state that was just set: {held:#x?}"
+    );
+
+    let saved = save(&mut state)?;
+
+    // The state at reset resets every bank, which leaves what a new VP held.
+    state.set_machine_check(&vp::MachineCheck::default())?;
+    state.commit()?;
+    anyhow::ensure!(
+        state.machine_check()? == new_vp,
+        "the state at reset does not leave the state of a new VP: {:#x?}",
+        state.machine_check()?
+    );
+
+    // A state that lists more banks than the VP has is refused, and writes
+    // nothing.
+    let mut too_many = written.clone();
+    too_many.banks.push(Default::default());
+    anyhow::ensure!(
+        state.set_machine_check(&too_many).is_err(),
+        "a state with more banks than the VP has is restored"
+    );
+    anyhow::ensure!(
+        state.machine_check()? == new_vp,
+        "a refused state changed the VP: {:#x?}",
+        state.machine_check()?
+    );
+
+    restore(&mut state, &saved)?;
+    let restored = state.machine_check()?;
+    anyhow::ensure!(
+        restored == written,
+        "the restore did not give the guest its state: saved {written:#x?}, restored {restored:#x?}"
+    );
+    Ok(())
+}
+
+// A VM reset resets the banks that the guest wrote, to what a new VP holds.
+backend_test!(a_reset_returns_the_machine_check_state_to_what_a_new_vp_holds, requires: [machine_check]);
+fn a_reset_returns_the_machine_check_state_to_what_a_new_vp_holds(
+    _partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let new_vp = processor.access_state(Vtl::Vtl0).machine_check()?;
+    anyhow::ensure!(
+        new_vp.banks.len() >= 2,
+        "a new VP has fewer than two banks: {}",
+        new_vp.banks.len()
+    );
+    {
+        let mut state = processor.access_state(Vtl::Vtl0);
+        let mut written = new_vp.clone();
+        written.status = 0x7;
+        written.banks[0].addr = 0x1234;
+        // A control is 0 or all ones, so this is the one that a new VP lacks.
+        written.banks[1].ctl = !new_vp.banks[1].ctl;
+        state.set_machine_check(&written)?;
+        state.commit()?;
+    }
+
+    processor.reset()?;
+
+    let reset = processor.access_state(Vtl::Vtl0).machine_check()?;
+    anyhow::ensure!(
+        reset == new_vp,
+        "the reset left the VP with the guest's state: new {new_vp:#x?}, reset {reset:#x?}"
     );
     Ok(())
 }

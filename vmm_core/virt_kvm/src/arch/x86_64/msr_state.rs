@@ -52,6 +52,10 @@ pub(super) fn set_capabilities(
     // following the list would have a snapshot restore only on such a kernel.
     caps.debug_ctl = !snp;
     caps.misc_msrs = saveable(msr_index_list, snp, &MISC_MSRS);
+    // KVM lists `IA32_MCG_STATUS`, which it emulates for every vCPU, but not
+    // the registers of the banks, whose number `IA32_MCG_CAP` gives for each
+    // vCPU, so the capability follows `IA32_MCG_STATUS`.
+    caps.machine_check = saveable(msr_index_list, snp, &[x86defs::X86X_MSR_MCG_STATUS]);
 }
 
 /// Reads the feature and power MSRs of `vp`.
@@ -109,10 +113,12 @@ mod tests {
     }
 
     /// `KVM_GET_MSR_INDEX_LIST` of a host that has every MSR of the state.
-    const FULL_LIST: [u32; 6] = [
+    const FULL_LIST: [u32; 8] = [
         x86defs::X86X_MSR_UMWAIT_CONTROL,
         x86defs::X86X_IA32_MSR_MISC_ENABLE,
         x86defs::X86X_MSR_MISC_FEATURE_ENABLES,
+        x86defs::X86X_MSR_MCG_STATUS,
+        x86defs::X86X_MSR_MCG_CTL,
         x86defs::X86X_MSR_DEBUGCTL,
         x86defs::X86X_MSR_POWER_CTL,
         x86defs::X86X_MSR_TSC,
@@ -122,35 +128,54 @@ mod tests {
         FULL_LIST.into_iter().filter(|&m| m != msr).collect()
     }
 
-    /// The capabilities as `(umwait_control, debug_ctl, misc_msrs)`.
-    fn gates(caps: &X86PartitionCapabilities) -> (bool, bool, bool) {
-        (caps.umwait_control, caps.debug_ctl, caps.misc_msrs)
+    /// The capabilities as `(umwait_control, debug_ctl, misc_msrs,
+    /// machine_check)`.
+    fn gates(caps: &X86PartitionCapabilities) -> (bool, bool, bool, bool) {
+        (
+            caps.umwait_control,
+            caps.debug_ctl,
+            caps.misc_msrs,
+            caps.machine_check,
+        )
     }
 
     #[test]
     fn a_host_that_has_the_msrs_saves_what_the_guest_can_write() {
         let mut with = caps(true);
         set_capabilities(&mut with, &FULL_LIST, false);
-        assert_eq!(gates(&with), (true, true, true));
+        assert_eq!(gates(&with), (true, true, true, true));
 
         // Without WAITPKG in the guest's CPUID, the guest cannot write
         // IA32_UMWAIT_CONTROL, whatever the host has.
         let mut without_waitpkg = caps(false);
         set_capabilities(&mut without_waitpkg, &FULL_LIST, false);
-        assert_eq!(gates(&without_waitpkg), (false, true, true));
+        assert_eq!(gates(&without_waitpkg), (false, true, true, true));
     }
 
     #[test]
     fn the_host_decides_each_state_by_its_msrs() {
         for (lacked, expected) in [
-            (x86defs::X86X_MSR_UMWAIT_CONTROL, (false, true, true)),
+            (
+                x86defs::X86X_MSR_UMWAIT_CONTROL,
+                (false, true, true, true),
+            ),
             // One of the three feature and power MSRs takes the state.
-            (x86defs::X86X_IA32_MSR_MISC_ENABLE, (true, true, false)),
-            (x86defs::X86X_MSR_MISC_FEATURE_ENABLES, (true, true, false)),
-            (x86defs::X86X_MSR_POWER_CTL, (true, true, false)),
+            (
+                x86defs::X86X_IA32_MSR_MISC_ENABLE,
+                (true, true, false, true),
+            ),
+            (
+                x86defs::X86X_MSR_MISC_FEATURE_ENABLES,
+                (true, true, false, true),
+            ),
+            (x86defs::X86X_MSR_POWER_CTL, (true, true, false, true)),
+            // IA32_MCG_STATUS is the machine-check state's anchor, and
+            // IA32_MCG_CTL is not.
+            (x86defs::X86X_MSR_MCG_STATUS, (true, true, true, false)),
+            (x86defs::X86X_MSR_MCG_CTL, (true, true, true, true)),
             // A kernel that lacks the fix that lists IA32_DEBUGCTL still has
             // the MSR, so the host's list does not decide it.
-            (x86defs::X86X_MSR_DEBUGCTL, (true, true, true)),
+            (x86defs::X86X_MSR_DEBUGCTL, (true, true, true, true)),
         ] {
             let mut caps = caps(true);
             set_capabilities(&mut caps, &without(lacked), false);
@@ -159,14 +184,14 @@ mod tests {
         // A host with none of the other MSRs saves none of the other states.
         let mut caps = caps(true);
         set_capabilities(&mut caps, &[], false);
-        assert_eq!(gates(&caps), (false, true, false));
+        assert_eq!(gates(&caps), (false, true, false, false));
     }
 
     #[test]
     fn an_snp_guest_saves_none_of_them() {
         let mut caps = caps(true);
         set_capabilities(&mut caps, &FULL_LIST, true);
-        assert_eq!(gates(&caps), (false, false, false));
+        assert_eq!(gates(&caps), (false, false, false, false));
     }
 }
 
@@ -234,7 +259,7 @@ mod kvm_tests {
         // The guest has no WAITPKG, so no state for IA32_UMWAIT_CONTROL.
         let mut caps = tests::caps(false);
         set_capabilities(&mut caps, &list, false);
-        assert!(caps.debug_ctl && caps.misc_msrs);
+        assert!(caps.debug_ctl && caps.misc_msrs && caps.machine_check);
         assert!(!caps.umwait_control);
     }
 

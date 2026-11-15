@@ -1698,6 +1698,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         Err(vp_state::Error::Unimplemented("misc_msrs"))
     }
 
+    fn machine_check(&mut self) -> Result<vp::MachineCheck, Self::Error> {
+        Err(vp_state::Error::Unimplemented("machine_check"))
+    }
+
+    fn set_machine_check(&mut self, _value: &vp::MachineCheck) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("machine_check"))
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }
