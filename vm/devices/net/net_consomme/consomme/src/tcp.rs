@@ -820,6 +820,14 @@ impl<T: Client> Access<'_, T> {
             .retain(|key, listener| match listener.poll_listener(cx) {
                 Ok(result) => {
                     if let Some((socket, mut other_addr)) = result {
+                        // A successful accept sets no wakeup for the listener,
+                        // whose readiness stays set, so poll again to accept
+                        // any connection that waits behind this one, and to
+                        // arm the wakeup once none does. Without it, those
+                        // connections wait for an unrelated wakeup, and a
+                        // client that the listener resets sees its connection
+                        // complete and then hang.
+                        cx.waker().wake_by_ref();
                         let local = socket
                             .local_addr()
                             .ok()
@@ -884,8 +892,6 @@ impl<T: Client> Access<'_, T> {
                                         max_connections,
                                         "dropping inbound TCP flow because the active-flow limit was reached"
                                     );
-                                    // Drain another accept or re-arm listener readiness.
-                                    cx.waker().wake_by_ref();
                                     return true;
                                 }
                                 let mut sender = Sender {
