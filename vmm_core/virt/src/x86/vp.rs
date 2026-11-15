@@ -30,6 +30,8 @@ use hvdef::HvX64TableRegister;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;
+use std::ops::Range;
+use thiserror::Error;
 use vm_topology::processor::x86::X86VpInfo;
 use x86defs::RFlags;
 use x86defs::X64_CR0_CD;
@@ -708,6 +710,24 @@ pub struct Xsave {
     pub data: Vec<u64>,
 }
 
+/// Why [`Xsave::write_standard`] cannot write an area in the standard format.
+///
+/// A save never returns an area that has too few words or selects a component
+/// past its end, so only a crafted or damaged saved state holds one.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum XsaveError {
+    /// The area has too few words to hold its legacy area and header.
+    #[error("the XSAVE area has {words} words, too few for its legacy area and header")]
+    AreaTooShort { words: usize },
+    /// The area's XCOMP_BV and XSTATE_BV both select a component that ends past
+    /// the end of the area.
+    #[error("XSAVE component {component} ends past the end of the area, which has {words} words")]
+    ComponentPastArea { component: u32, words: usize },
+    /// The buffer is too short for the standard format of the area.
+    #[error("the {len}-byte buffer is too short for the standard format of the XSAVE area")]
+    BufferTooShort { len: usize },
+}
+
 impl Xsave {
     fn normalize(&mut self) {
         let (mut fxsave, data) = Ref::<_, Fxsave>::from_prefix(self.data.as_mut_bytes()).unwrap();
@@ -821,7 +841,33 @@ impl Xsave {
     }
 
     /// Write out to standard (non-compact) xsave format.
-    pub fn write_standard(&self, data: &mut [u8], caps: &X86PartitionCapabilities) {
+    ///
+    /// Fails, writing nothing, if the area has too few words for its legacy
+    /// area and header, if a component that both its XCOMP_BV and its
+    /// XSTATE_BV select ends past its end, or if `data` is too short for the
+    /// standard format. A save never returns such an area, but a saved state
+    /// can hold one, so this checks the area instead of assuming it.
+    pub fn write_standard(
+        &self,
+        data: &mut [u8],
+        caps: &X86PartitionCapabilities,
+    ) -> Result<(), XsaveError> {
+        let words = self.data.len();
+        if words < XSAVE_VARIABLE_OFFSET / size_of::<u64>() {
+            return Err(XsaveError::AreaTooShort { words });
+        }
+        if data.len() < XSAVE_VARIABLE_OFFSET {
+            return Err(XsaveError::BufferTooShort { len: data.len() });
+        }
+        for (component, source, destination) in self.selected_components(caps) {
+            if source.end > self.data.as_bytes().len() {
+                return Err(XsaveError::ComponentPastArea { component, words });
+            }
+            if destination.end > data.len() {
+                return Err(XsaveError::BufferTooShort { len: data.len() });
+            }
+        }
+
         // Copy the legacy region including default values for disabled features.
         data[..XSAVE_LEGACY_LEN].copy_from_slice(self.fxsave().as_bytes());
 
@@ -836,18 +882,35 @@ impl Xsave {
         );
 
         // Copy the features.
-        let mut cur = XSAVE_VARIABLE_OFFSET;
-        for (i, feature) in caps.xsave.variable_features(header.xcomp_bv) {
-            let offset = feature.offset as usize;
-            let len = feature.len as usize;
-            if feature.align {
-                cur = (cur + 63) & !63;
-            }
-            if header.xstate_bv & (1 << i) != 0 {
-                data[offset..offset + len].copy_from_slice(&self.data.as_bytes()[cur..cur + len]);
-            }
-            cur += len;
+        for (_, source, destination) in self.selected_components(caps) {
+            data[destination].copy_from_slice(&self.data.as_bytes()[source]);
         }
+        Ok(())
+    }
+
+    /// Returns the components that both XCOMP_BV and XSTATE_BV of the area's
+    /// header select, in order, each with its bytes in the area and its bytes
+    /// in the standard format. The area must hold its header.
+    fn selected_components(
+        &self,
+        caps: &X86PartitionCapabilities,
+    ) -> impl Iterator<Item = (u32, Range<usize>, Range<usize>)> {
+        let header = self.xsave_header();
+        // In the compact format, each component that XCOMP_BV has follows the
+        // one before it, at the next 64 bytes if it asks for alignment.
+        let mut cur = XSAVE_VARIABLE_OFFSET;
+        caps.xsave
+            .variable_features(header.xcomp_bv)
+            .filter_map(move |(i, feature)| {
+                let len = feature.len as usize;
+                if feature.align {
+                    cur = (cur + 63) & !63;
+                }
+                let compact = cur..cur + len;
+                cur += len;
+                let offset = feature.offset as usize;
+                (header.xstate_bv & (1 << i) != 0).then(|| (i, compact, offset..offset + len))
+            })
     }
 
     /// Returns the compact form.
@@ -2698,5 +2761,277 @@ mod tests {
                 bytes
             );
         }
+    }
+
+    /// The components beyond x87 and SSE of the XSAVE layout of the tests of
+    /// `write_standard`, each `(index, size, standard offset, aligned)`. In the
+    /// compact format, with all of them present, they sit at the bytes 576
+    /// (AVX), 832, 896, 1408, and 1472, which is 1416 rounded up to the 64
+    /// bytes that component 17 asks for, and the area ends at 1536, which is
+    /// 192 words.
+    const LAYOUT: [(u32, u32, u32, bool); 5] = [
+        (2, 256, 576, false),
+        (5, 64, 1088, false),
+        (6, 512, 1152, false),
+        (9, 8, 2688, false),
+        (17, 64, 2752, true),
+    ];
+
+    /// Returns the capabilities of a CPU with XSAVE whose components beyond
+    /// x87 and SSE are `components`, each `(index, size, standard offset,
+    /// aligned)`.
+    fn caps_with_components(components: &[(u32, u32, u32, bool)]) -> X86PartitionCapabilities {
+        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+            .x2apic(vm_topology::processor::x86::X2ApicState::Supported)
+            .build(1)
+            .unwrap();
+        let features = components
+            .iter()
+            .fold(3, |features, &(index, ..)| features | 1u64 << index);
+        X86PartitionCapabilities::from_cpuid(
+            &topology,
+            &mut |leaf, subleaf| match (leaf, subleaf) {
+                (0, _) => [0xd, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
+                (1, _) => [0, 0, (1 << 26) | (1 << 21), 0],
+                (0xd, 0) => [features as u32, 0, 4096, (features >> 32) as u32],
+                (0xd, index @ 2..) => components
+                    .iter()
+                    .find(|component| component.0 == index)
+                    .map_or([0; 4], |&(_, size, offset, aligned)| {
+                        [size, offset, u32::from(aligned) << 1, 0]
+                    }),
+                _ => [0; 4],
+            },
+        )
+        .unwrap()
+    }
+
+    /// Returns an XSAVE area of `words` words, whose header, when it holds one,
+    /// has XSTATE_BV `xstate_bv` and XCOMP_BV `xcomp_bv`, and whose other words
+    /// are all different.
+    fn xsave_area(words: usize, xstate_bv: u64, xcomp_bv: u64) -> Xsave {
+        let mut data: Vec<u64> = (0..words as u64).map(|word| 0xa5a5 << 48 | word).collect();
+        if words > 65 {
+            data[64] = xstate_bv;
+            data[65] = xcomp_bv;
+        }
+        Xsave { data }
+    }
+
+    /// Writes `area` into a buffer of `len` bytes that holds 0xee, which a
+    /// refusal must leave as it was, and returns the outcome.
+    fn try_write(
+        area: &Xsave,
+        len: usize,
+        caps: &X86PartitionCapabilities,
+    ) -> Result<(), XsaveError> {
+        let mut buffer = vec![0xee; len];
+        let result = area.write_standard(&mut buffer, caps);
+        if result.is_err() {
+            assert!(
+                buffer.iter().all(|&byte| byte == 0xee),
+                "a refusal wrote to the buffer, {result:?}"
+            );
+        }
+        result
+    }
+
+    #[test]
+    fn write_standard_refuses_an_area_without_its_legacy_area_and_header() {
+        let caps = caps_with_components(&LAYOUT);
+        let xcomp_bv = XCOMP_COMPRESSED | caps.xsave.features;
+        // The legacy area takes 64 words, and the header 8 more.
+        for words in 0..72 {
+            assert_eq!(
+                try_write(&xsave_area(words, 3, xcomp_bv), 4096, &caps),
+                Err(XsaveError::AreaTooShort { words })
+            );
+        }
+        try_write(&xsave_area(72, 3, xcomp_bv), 4096, &caps).unwrap();
+    }
+
+    #[test]
+    fn write_standard_refuses_a_selected_component_that_ends_past_the_area() {
+        let caps = caps_with_components(&LAYOUT);
+        let all = XCOMP_COMPRESSED | caps.xsave.features;
+        let past = |component, words| Err(XsaveError::ComponentPastArea { component, words });
+        // The area that a header selects components in, its words, and the
+        // outcome of writing it.
+        for (xstate_bv, xcomp_bv, words, expected) in [
+            // AVX ends at the byte 832, the word 104: an area of the legacy
+            // area and the header alone, and one a word short, do not hold it.
+            (1 << 2, all, 72, past(2, 72)),
+            (1 << 2, all, 103, past(2, 103)),
+            (1 << 2, all, 104, Ok(())),
+            // PKRU ends at the byte 1416, the word 177.
+            (1 << 9, all, 176, past(9, 176)),
+            (1 << 9, all, 177, Ok(())),
+            // Component 17 asks for 64-byte alignment, so it starts at the byte
+            // 1472, not 1416 where PKRU ends, and ends at the byte 1536, the
+            // word 192, not 1480, the word 185.
+            (1 << 17, all, 185, past(17, 185)),
+            (1 << 17, all, 191, past(17, 191)),
+            (1 << 17, all, 192, Ok(())),
+            // The first selected component that does not fit is the one named.
+            (1 << 2 | 1 << 17, all, 191, past(17, 191)),
+            (1 << 5 | 1 << 17, all, 103, past(5, 103)),
+            // Where the area puts a component depends on the components that
+            // XCOMP_BV has before it, whether or not XSTATE_BV selects them:
+            // component 17 alone starts at the byte 576, and after component
+            // 5 at the byte 640.
+            (1 << 17, XCOMP_COMPRESSED | 1 << 17, 79, past(17, 79)),
+            (1 << 17, XCOMP_COMPRESSED | 1 << 17, 80, Ok(())),
+            (
+                1 << 17,
+                XCOMP_COMPRESSED | 1 << 5 | 1 << 17,
+                87,
+                past(17, 87),
+            ),
+            (1 << 17, XCOMP_COMPRESSED | 1 << 5 | 1 << 17, 88, Ok(())),
+            // A component that only one of the two masks selects is not read.
+            (3, all, 72, Ok(())),
+            (1 << 17 | 3, XCOMP_COMPRESSED | 3, 72, Ok(())),
+        ] {
+            let area = xsave_area(words, xstate_bv, xcomp_bv);
+            assert_eq!(
+                try_write(&area, 4096, &caps),
+                expected,
+                "XSTATE_BV {xstate_bv:#x}, XCOMP_BV {xcomp_bv:#x}, {words} words"
+            );
+        }
+    }
+
+    #[test]
+    fn write_standard_refuses_a_buffer_that_is_too_short_for_the_standard_format() {
+        let caps = caps_with_components(&LAYOUT);
+        let all = XCOMP_COMPRESSED | caps.xsave.features;
+        let short = |len| Err(XsaveError::BufferTooShort { len });
+        let area = |xstate_bv| xsave_area(192, xstate_bv, all);
+        // The legacy area and the header take 576 bytes.
+        assert_eq!(try_write(&area(3), 0, &caps), short(0));
+        assert_eq!(try_write(&area(3), 575, &caps), short(575));
+        try_write(&area(3), 576, &caps).unwrap();
+        // Component 17 ends at the standard offset 2752 + 64, and the earlier
+        // components, which XSTATE_BV leaves out, do not need their room.
+        assert_eq!(try_write(&area(1 << 17), 2815, &caps), short(2815));
+        try_write(&area(1 << 17), 2816, &caps).unwrap();
+        try_write(&area(1 << 2), 832, &caps).unwrap();
+    }
+
+    #[test]
+    fn write_standard_writes_each_selected_component_at_its_standard_offset() {
+        let caps = caps_with_components(&LAYOUT);
+        assert_eq!(caps.xsave.compact_len, 1536);
+        // XSTATE_BV selects all but component 5, which XCOMP_BV has.
+        let xstate_bv = caps.xsave.features & !(1 << 5);
+        let area = xsave_area(192, xstate_bv, XCOMP_COMPRESSED | caps.xsave.features);
+        let compact = area.compact();
+        let mut standard = [0xee; 4096];
+        area.write_standard(&mut standard, &caps).unwrap();
+
+        // The legacy area, whose x87 and SSE state XSTATE_BV selects, and the
+        // header with XCOMP_BV cleared, then each selected component at its
+        // standard offset from its compact place, and nothing else.
+        let mut expected = [0xee; 4096];
+        expected[..576].copy_from_slice(&compact[..576]);
+        expected[520..528].fill(0);
+        for (size, compact_place, standard_offset) in [
+            (256, 576, 576),
+            (512, 896, 1152),
+            (8, 1408, 2688),
+            (64, 1472, 2752),
+        ] {
+            expected[standard_offset..standard_offset + size]
+                .copy_from_slice(&compact[compact_place..compact_place + size]);
+        }
+        let first_difference = standard.iter().zip(&expected).position(|(a, b)| a != b);
+        assert_eq!(first_difference, None, "the first byte that differs");
+    }
+
+    #[test]
+    fn write_standard_refuses_exactly_the_areas_that_do_not_fit() {
+        // The words that an area needs, and the bytes that a buffer needs, for
+        // the legacy area, the header, and each component that both masks
+        // select, which the layout puts at its place in the area and at its
+        // standard offset in the buffer.
+        fn needs(caps: &X86PartitionCapabilities, xstate_bv: u64, xcomp_bv: u64) -> (usize, usize) {
+            let (mut words, mut bytes) = (72, 576);
+            let mut place = 576;
+            for index in 2..63 {
+                if xcomp_bv >> index & 1 == 0 {
+                    continue;
+                }
+                let feature = &caps.xsave.feature_info[index];
+                if feature.align {
+                    place = usize::next_multiple_of(place, 64);
+                }
+                let len = feature.len as usize;
+                if xstate_bv >> index & 1 != 0 {
+                    words = words.max((place + len).div_ceil(8));
+                    bytes = bytes.max(feature.offset as usize + len);
+                }
+                place += len;
+            }
+            (words, bytes)
+        }
+
+        // A generator of numbers below a bound, which gives the same ones every
+        // run, so that a failure repeats.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut random = move |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+
+        let mut outcomes = [0; 2];
+        for _ in 0..5000 {
+            // A layout of up to 6 components, which may overlap, lie past 4096
+            // bytes, have no size, or repeat an index.
+            let mut caps = caps_with_components(&[]);
+            let mut defined = 0u64;
+            for _ in 0..random(7) {
+                let index = 2 + random(61) as usize;
+                caps.xsave.feature_info[index] = crate::x86::XsaveFeature {
+                    offset: 576 + random(3700) as u32,
+                    len: random(300) as u32,
+                    align: random(2) == 0,
+                };
+                defined |= 1 << index;
+            }
+            let xcomp_bv = XCOMP_COMPRESSED | defined & random(u64::MAX);
+            let xstate_bv = match random(3) {
+                0 => defined,
+                1 => xcomp_bv & random(u64::MAX),
+                _ => random(u64::MAX),
+            };
+
+            // Sizes of the area and the buffer that are one short of what they
+            // need, exact, and one more, or anything.
+            let (needed_words, needed_bytes) = needs(&caps, xstate_bv, xcomp_bv);
+            let words = match random(4) {
+                0 => random(needed_words as u64 + 8) as usize,
+                _ => needed_words - 1 + random(3) as usize,
+            };
+            let buffer_len = match random(4) {
+                0 => random(5000) as usize,
+                _ => needed_bytes - 1 + random(3) as usize,
+            };
+            let fits = words >= needed_words && buffer_len >= needed_bytes;
+
+            let area = xsave_area(words, xstate_bv, xcomp_bv);
+            let result = try_write(&area, buffer_len, &caps);
+            assert_eq!(
+                result.is_ok(),
+                fits,
+                "{words} words, XSTATE_BV {xstate_bv:#x}, XCOMP_BV {xcomp_bv:#x}, a buffer of {buffer_len} bytes, {result:?}"
+            );
+            outcomes[usize::from(fits)] += 1;
+        }
+        assert!(
+            outcomes.iter().all(|&count| count >= 1000),
+            "both outcomes are drawn: {outcomes:?}"
+        );
     }
 }
