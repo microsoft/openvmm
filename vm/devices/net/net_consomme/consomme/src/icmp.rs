@@ -1,9 +1,29 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! The relay of the guest's IPv4 ICMP echo requests, which carry ping.
+//!
+//! The gateway answers the echo requests that are addressed to it itself. The
+//! relay sends the guest's other echo requests through a host ICMP socket, one
+//! per guest address, and returns the echo replies that answer them. It
+//! relays nothing else: the guest's other ICMP messages are dropped, and so are
+//! the host's ICMP messages that answer no request of the flow, which a raw
+//! socket receives for the whole host. ICMP errors, such as an unreachable
+//! destination or an expired hop limit, do not reach the guest.
+//!
+//! The host's socket is a raw socket on Windows, and an unprivileged datagram
+//! socket elsewhere, which needs the group of the process to be in the host's
+//! `net.ipv4.ping_group_range` on Linux. A host that refuses the socket drops
+//! the request, and the guest sees no reply. The [`echo`] module describes how
+//! replies find their requests.
+
 // UNSAFETY: needed to cast the socket buffer to `MaybeUninit`.
 #![expect(unsafe_code)]
 
+mod echo;
+
+use self::echo::Delivery;
+use self::echo::PendingEchoes;
 use super::Access;
 use super::Client;
 use super::ConsommeState;
@@ -94,6 +114,8 @@ struct IcmpConnection {
     socket: Option<PolledSocket<Socket>>,
     #[inspect(display)]
     guest_mac: EthernetAddress,
+    #[inspect(with = "|x| x.len()")]
+    echoes: PendingEchoes,
     stats: Stats,
     #[inspect(debug)]
     last_activity: Instant,
@@ -105,6 +127,9 @@ struct Stats {
     tx_dropped: Counter,
     tx_errors: Counter,
     rx_packets: Counter,
+    /// Messages from the host's socket that were no reply to a request of the
+    /// flow, or were malformed.
+    rx_dropped: Counter,
 }
 
 impl IcmpConnection {
@@ -117,30 +142,42 @@ impl IcmpConnection {
     ) -> bool {
         let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
         loop {
+            // The message lands after the room that the guest's IPv4 header
+            // will take, which spares moving it.
             match self.socket.as_mut().unwrap().poll_io(
                 cx,
                 InterestSlot::Read,
                 PollEvents::IN,
-                |socket| Self::recv_from(socket.get(), &mut eth.payload_mut()[..]),
+                |socket| Self::recv_from(socket.get(), &mut eth.payload_mut()[IPV4_HEADER_LEN..]),
             ) {
-                Poll::Ready(Ok((n, _))) => {
-                    if n < IPV4_HEADER_LEN + ICMPV4_HEADER_LEN {
-                        tracelimit::warn_ratelimited!(
-                            guest_ip = %dst_addr.ip(),
-                            "dropping malformed ICMP incoming packet",
-                        );
+                Poll::Ready(Ok((n, peer))) => {
+                    let peer = peer.as_socket_ipv4().map(|peer| *peer.ip());
+                    let Some(reply) = self.echoes.relay_reply(
+                        Delivery::HOST,
+                        &mut eth.payload_mut()[IPV4_HEADER_LEN..],
+                        n,
+                        peer,
+                        Instant::now(),
+                    ) else {
+                        self.stats.rx_dropped.increment();
                         continue;
-                    }
+                    };
 
-                    // What is received is a raw IPV4 packet. Add the Ethernet frame and
-                    // set the destination address in the IP header.
+                    // Add the IPv4 header and the Ethernet frame around the
+                    // message that was received.
                     eth.set_ethertype(EthernetProtocol::Ipv4);
                     eth.set_src_addr(state.params.gateway_mac);
                     eth.set_dst_addr(self.guest_mac);
                     let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
-                    ipv4.set_dst_addr(*dst_addr.ip());
-                    ipv4.fill_checksum();
-                    let len = ETHERNET_HEADER_LEN + n;
+                    Ipv4Repr {
+                        src_addr: reply.source,
+                        dst_addr: *dst_addr.ip(),
+                        next_header: IpProtocol::Icmp,
+                        payload_len: reply.len,
+                        hop_limit: reply.hop_limit,
+                    }
+                    .emit(&mut ipv4, &ChecksumCapabilities::default());
+                    let len = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + reply.len;
                     client.recv(&eth.as_ref()[..len], &ChecksumState::IPV4_ONLY);
                     self.stats.rx_packets.increment();
                     self.last_activity = Instant::now();
@@ -293,7 +330,12 @@ impl<T: Client> Access<'_, T> {
             return self.handle_icmp_gateway_echo(frame, addresses, payload);
         }
 
-        let icmp_packet = Icmpv4Packet::new_unchecked(payload);
+        // Only echo requests leave: the relay forwards no other message that
+        // the guest could forge, nor an echo request that it cannot read.
+        let request = Icmpv4Packet::new_checked(payload)?;
+        if request.msg_type() != Icmpv4Message::EchoRequest || request.msg_code() != 0 {
+            return Err(DropReason::UnsupportedIcmpv4(request.msg_type()));
+        }
         let guest_addr = SocketAddrV4::new(addresses.src_addr, 0);
 
         self.inner.icmp.check_flow_limit(&guest_addr)?;
@@ -304,12 +346,11 @@ impl<T: Client> Access<'_, T> {
             hash_map::Entry::Vacant(e) => {
                 // Linux restricts opening of 'RAW' sockets without 'CAP_NET_RAW'
                 // permission. But, it allows user mode DGRAM + ICMP_PROTO sockets
-                // with the 'net.ip.ping_group_range' configuration, which is more
+                // with the 'net.ipv4.ping_group_range' configuration, which is more
                 // permissive.
-                let socket_type = if cfg!(windows) {
-                    Type::RAW
-                } else {
-                    Type::DGRAM
+                let socket_type = match Delivery::HOST {
+                    Delivery::Raw => Type::RAW,
+                    Delivery::Packet | Delivery::Message => Type::DGRAM,
                 };
                 let mut socket =
                     match Socket::new(Domain::IPV4, socket_type, Some(Protocol::ICMPV4)) {
@@ -330,6 +371,7 @@ impl<T: Client> Access<'_, T> {
                 let conn = IcmpConnection {
                     socket: Some(socket),
                     guest_mac: frame.src_addr,
+                    echoes: PendingEchoes::random(),
                     stats: Default::default(),
                     last_activity: Instant::now(),
                 };
@@ -337,20 +379,29 @@ impl<T: Client> Access<'_, T> {
             }
         };
 
-        let send_buffer = icmp_packet.into_inner();
-        match conn.send_to(addresses.dst_addr, send_buffer, hop_limit) {
+        // The request leaves under the numbers that its reply returns.
+        let mut message = payload.to_vec();
+        let host_seq = conn.echoes.relay_request(
+            Delivery::HOST,
+            &mut message,
+            addresses.dst_addr,
+            Instant::now(),
+        );
+        match conn.send_to(addresses.dst_addr, &message, hop_limit) {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
                 conn.last_activity = Instant::now();
                 Ok(())
             }
-            Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                conn.stats.tx_dropped.increment();
-                Err(DropReason::SendBufferFull)
-            }
             Err(err) => {
-                conn.stats.tx_errors.increment();
-                Err(DropReason::Io(err))
+                conn.echoes.forget(host_seq);
+                if err.kind() == ErrorKind::WouldBlock {
+                    conn.stats.tx_dropped.increment();
+                    Err(DropReason::SendBufferFull)
+                } else {
+                    conn.stats.tx_errors.increment();
+                    Err(DropReason::Io(err))
+                }
             }
         }
     }
@@ -364,15 +415,20 @@ impl<T: Client> Access<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    mod echoes;
     mod limits;
 
+    use self::echoes::GUEST_IDENT;
+    use self::echoes::delivered;
+    use self::echoes::flow;
+    use self::echoes::icmp_message;
+    use self::echoes::wire_ident;
     use super::*;
     use crate::Consomme;
     use crate::ConsommeParams;
     use crate::tests::DriverThread;
     use crate::tests::TestClient;
     use crate::tests::WakeChannel;
-    use smoltcp::wire::Ipv4Repr;
     use std::net::UdpSocket;
     use test_with_tracing::test;
 
@@ -386,15 +442,21 @@ mod tests {
         let mut consomme = Consomme::new(params);
         let mut client = TestClient::new(old_driver);
 
-        // Feed raw IP packets through UDP so this test needs no raw-socket privileges.
+        // Feed what a host ICMP socket delivers through UDP so this test needs no
+        // ICMP-socket privileges. The replies answer two requests of the flow.
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let host_addr = socket.local_addr().unwrap();
         let socket = PolledSocket::new(&client.driver, Socket::from(socket)).unwrap();
+        let mut echoes = flow();
+        let now = Instant::now();
+        let old_seq = echoes.insert(GUEST_IDENT, 1, Ipv4Addr::LOCALHOST, now);
+        let new_seq = echoes.insert(GUEST_IDENT, 2, Ipv4Addr::LOCALHOST, now);
         consomme.icmp.connections.insert(
             guest_addr,
             IcmpConnection {
                 socket: Some(socket),
                 guest_mac,
+                echoes,
                 stats: Default::default(),
                 last_activity: Instant::now(),
             },
@@ -403,23 +465,18 @@ mod tests {
         old_wake.poll(&mut consomme, &mut client);
         assert!(client.received_packets.is_empty());
 
-        let mut packet = [0; IPV4_HEADER_LEN + ICMPV4_HEADER_LEN + 4];
-        let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet[..]);
-        Ipv4Repr {
-            src_addr: Ipv4Addr::LOCALHOST,
-            dst_addr: Ipv4Addr::LOCALHOST,
-            next_header: IpProtocol::Icmp,
-            payload_len: ICMPV4_HEADER_LEN + 4,
-            hop_limit: 64,
-        }
-        .emit(&mut ipv4, &ChecksumCapabilities::default());
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let mut send = |data: &[u8]| {
-            ipv4.payload_mut()[ICMPV4_HEADER_LEN..].copy_from_slice(data);
-            Icmpv4Packet::new_unchecked(ipv4.payload_mut()).fill_checksum();
-            sender.send_to(ipv4.as_ref(), host_addr).unwrap();
+        let send = |seq: u16, data: &[u8]| {
+            let message = icmp_message(
+                Icmpv4Message::EchoReply,
+                wire_ident(Delivery::HOST),
+                seq,
+                data,
+            );
+            let delivered = delivered(Delivery::HOST, Ipv4Addr::LOCALHOST, &message);
+            sender.send_to(&delivered, host_addr).unwrap();
         };
-        send(b"old!");
+        send(old_seq, b"old!");
         client.driver = new_driver;
         old_thread.join();
         consomme.access(&mut client).refresh_driver();
@@ -437,7 +494,7 @@ mod tests {
 
         client.received_packets.clear();
         wake.poll(&mut consomme, &mut client);
-        send(b"new!");
+        send(new_seq, b"new!");
         wake.wait_for_packet(&mut consomme, &mut client, |_| true);
         let frame = EthernetFrame::new_checked(&client.received_packets[0]).unwrap();
         let reply = Ipv4Packet::new_checked(frame.payload()).unwrap();
