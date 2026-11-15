@@ -20,6 +20,12 @@ mod init_sipi;
     guest_is_native,
     any(target_os = "linux", windows)
 ))]
+mod msr_state;
+#[cfg(all(
+    guest_arch = "x86_64",
+    guest_is_native,
+    any(target_os = "linux", windows)
+))]
 mod native;
 #[cfg(all(guest_arch = "x86_64", guest_is_native, target_os = "linux"))]
 mod registers;

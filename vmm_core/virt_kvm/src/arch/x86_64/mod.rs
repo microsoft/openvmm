@@ -11,6 +11,7 @@ mod fingerprint;
 mod gif;
 mod init_sipi;
 mod lapic_timer;
+mod msr_state;
 mod regs;
 pub(crate) mod snp;
 #[cfg(test)]
@@ -644,6 +645,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         // SNP guest's from its encrypted VMSA.
         caps.spec_ctrl &=
             self.sev.is_none() && self.msr_index_list.contains(&x86defs::X86X_MSR_SPEC_CTRL);
+        msr_state::set_capabilities(&mut caps, &self.msr_index_list, self.sev.is_some());
 
         let mut gsi_routing = GsiRouting::new();
 

@@ -986,6 +986,9 @@ enum ErrorInner {
     InvalidVpRegisterValue { vp_index: u32 },
     #[error("invalid VP register message payload length {payload_len} for VP {vp_index}")]
     InvalidVpRegisterMessage { vp_index: u32, payload_len: u8 },
+    #[cfg(guest_arch = "x86_64")]
+    #[error("saving or restoring {0} is not supported by MSHV")]
+    UnsupportedState(&'static str),
     #[error("create_vm failed")]
     CreateVMFailed(#[source] KernelError),
     #[error("failed to initialize VM")]
