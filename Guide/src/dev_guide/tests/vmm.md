@@ -49,6 +49,10 @@ advertises access to it. Initial clock values need not be zero; zero is expected
 only after an explicit reset.
 Countdown readback while paused describes the captured snapshot, not whether
 the native timer is still running.
+A guest's `IA32_SPEC_CTRL` is also saved and restored where its CPUID
+enumerates a control, which the case `spec_ctrl_survives_a_save_and_restore`
+needs; a fixture's partition has none on most virtual-machine hosts, which
+hide the MSR, so the case reports ignored there.
 
 The contract functions operate on the public `virt` interfaces. Each function
 has an adjacent `backend_test!` declaration that registers it with Petri for

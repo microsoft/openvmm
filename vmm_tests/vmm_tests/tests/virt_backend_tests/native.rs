@@ -18,6 +18,7 @@ pub(crate) struct Capabilities {
     pub(crate) reset: bool,
     pub(crate) deadline: bool,
     pub(crate) hv1: bool,
+    pub(crate) spec_ctrl: bool,
 }
 
 // Probe the same enlightenment configuration used by the test, including
@@ -36,6 +37,7 @@ where
             reset: partition.supports_reset().is_some(),
             deadline: partition.caps().tsc_deadline,
             hv1: partition.caps().hv1,
+            spec_ctrl: partition.caps().spec_ctrl,
         })
     })
 }
