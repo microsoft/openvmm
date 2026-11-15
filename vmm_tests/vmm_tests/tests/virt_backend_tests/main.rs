@@ -43,6 +43,8 @@ mod speculation;
     any(target_os = "linux", windows)
 ))]
 mod time;
+#[cfg(all(guest_arch = "x86_64", guest_is_native, target_os = "linux"))]
+mod xsave;
 
 fn main() {
     petri::test_main(|name, requirements| {

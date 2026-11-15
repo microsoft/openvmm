@@ -102,6 +102,9 @@ pub enum KvmError {
         "the global interrupt flag (GIF) of VP {vp_index} is clear, which a save cannot hold: the guest ran CLGI and has not run STGI"
     )]
     GifClear { vp_index: u32 },
+    #[cfg(guest_arch = "x86_64")]
+    #[error(transparent)]
+    Xsave(#[from] virt::x86::vp::XsaveError),
 }
 
 #[derive(Inspect)]
