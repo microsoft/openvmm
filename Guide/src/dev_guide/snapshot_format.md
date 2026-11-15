@@ -342,9 +342,12 @@ records the count in its optional field 7, `nmi_pending_count`, when it is 2:
 There is no version to check, and no reader refuses the field. Never change or
 reuse the number of a field.
 
-A restore of KVM refuses a count that it would cut down to what it holds:
-anything but 2, or 2 with NMIs blocked or an NMI being injected. It changes no
-state before it refuses.
+A restore never drops a count that it reads. A backend that holds at most one
+pending NMI refuses the activity, and KVM does for a count that it would cut
+down to what it holds: anything but 2, or 2 with NMIs blocked or an NMI being
+injected. Neither changes any state before it refuses, and only a damaged or
+crafted snapshot reaches either, since a snapshot restores only on the backend
+that captured it.
 
 ## Extending the format
 
