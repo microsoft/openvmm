@@ -432,12 +432,13 @@ TSC-deadline mode, `IA32_TSC_ADJUST`, and kvmclock are not exposed. Under an
 AMD CPU profile, AMD's configuration MSRs read fixed values on every backend:
 HWCR (`0xc0010015`) only `TscFreqSel`, so Linux takes the TSC to count at the
 P0 frequency, and DE_CFG (`0xc0011029`) only `LFENCE` serialization. Writing
-the value read back changes nothing; any other write raises #GP. On KVM, an AMD
-profile's legacy performance counters (`PerfEvtSel0` through `PerfEvtSel3` and
-`PerfCtr0` through `PerfCtr3`, `0xc0010000` through `0xc0010007`) raise #GP, as
-the guest has no PMU: a KVM whose virtual PMU is on would serve them whatever
-the CPUID says, and keep their state in the vCPU, which a snapshot does not
-hold.
+the value read back changes nothing; any other write raises #GP. Under an
+Intel CPU profile, both MSRs raise #GP, as they do on an Intel CPU. On KVM, an
+AMD profile's legacy performance counters (`PerfEvtSel0` through `PerfEvtSel3`
+and `PerfCtr0` through `PerfCtr3`, `0xc0010000` through `0xc0010007`) raise
+#GP, as the guest has no PMU: a KVM whose virtual PMU is on would serve them
+whatever the CPUID says, and keep their state in the vCPU, which a snapshot
+does not hold.
 
 Each time sample pairs host UTC with the guest TSC on the host, so the guest
 needs no tight bracket of its own around the port write: the guest TSC is the

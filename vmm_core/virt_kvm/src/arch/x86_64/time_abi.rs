@@ -36,7 +36,12 @@
 //!   ([`AMD_LEGACY_PMU_MSRS`]), which raise #GP: the CPU time bits give the
 //!   guest no PMU, but a KVM whose virtual PMU is on serves the counters to
 //!   any AMD guest whatever its CPUID says, and keeps their state in the
-//!   vCPU, which a snapshot does not hold.
+//!   vCPU, which a snapshot does not hold. Under an Intel CPU profile, the
+//!   filter denies HWCR too, and OpenVMM raises #GP, as an Intel CPU does:
+//!   KVM would otherwise accept the guest's writes of HWCR's `McStatusWrEn`
+//!   and `TscFreqSel` bits and read them back, although no element of the
+//!   saved state holds them. KVM does not know DE_CFG on an Intel host, so an
+//!   access to it exits as one to an unknown MSR, which raises #GP as well.
 //! - **Invariant TSC.** With `"Hv#1"` and `AccessTscInvariantControls` in
 //!   CPUID, KVM (Linux 6.3 and later) hides the invariant-TSC bit of CPUID
 //!   `0x80000007` until its own copy of `HV_X64_MSR_TSC_INVARIANT_CONTROL` is
@@ -90,6 +95,7 @@ use virt::time_abi::TscSyncMethod;
 use virt::time_abi::host::sample_host_time;
 use virt::time_abi::msr::AMD_CONFIG_MSRS;
 use virt::time_abi::msr::IDENTITY_MSR_RANGE;
+use virt::time_abi::msr::MSR_AMD_HWCR;
 use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
 use virt::time_abi::msr::amd_config_msr_read;
 use virt::time_abi::msr::amd_config_msr_write;
@@ -173,7 +179,9 @@ pub(crate) fn identity_msr_filter() -> [kvm::MsrFilterRange; 7] {
 /// of `vendor`: [`identity_msr_filter`], and for AMD also AMD's
 /// configuration MSRs ([`AMD_CONFIG_MSRS`]), which KVM would otherwise
 /// serve itself (HWCR reading 0, and DE_CFG reading what the VMM last set),
-/// and its legacy performance counters ([`AMD_LEGACY_PMU_MSRS`]).
+/// and its legacy performance counters ([`AMD_LEGACY_PMU_MSRS`]). For Intel,
+/// which does not define HWCR, the filter also denies HWCR, which KVM would
+/// otherwise keep for the guest without saving it.
 pub(crate) fn time_abi_msr_filter(vendor: CpuVendor) -> Vec<kvm::MsrFilterRange> {
     let mut ranges = identity_msr_filter().to_vec();
     match vendor {
@@ -185,7 +193,7 @@ pub(crate) fn time_abi_msr_filter(vendor: CpuVendor) -> Vec<kvm::MsrFilterRange>
             );
             ranges.push(kvm::MsrFilterRange::deny(AMD_LEGACY_PMU_MSRS));
         }
-        CpuVendor::Intel => {}
+        CpuVendor::Intel => ranges.push(kvm::MsrFilterRange::deny(MSR_AMD_HWCR..=MSR_AMD_HWCR)),
     }
     ranges
 }
@@ -395,7 +403,7 @@ pub(crate) struct KvmTimeAbi {
     /// Whether the CPU profile is AMD's, so that OpenVMM serves AMD's
     /// configuration MSRs, which [`time_abi_msr_filter`] routes to it, and
     /// raises #GP for AMD's legacy performance counters, which it routes
-    /// there too.
+    /// there too. Under another vendor's, HWCR raises #GP instead.
     amd_config_msrs: bool,
 }
 
@@ -473,10 +481,13 @@ impl KvmTimeAbi {
     }
 
     /// Whether a guest access to `msr` raises #GP: an MSR that every time ABI
-    /// partition hides ([`is_hidden_msr`]), or AMD's legacy performance
-    /// counters under an AMD CPU profile.
+    /// partition hides ([`is_hidden_msr`]), AMD's legacy performance counters
+    /// under an AMD CPU profile, or HWCR under another vendor's, whose CPU
+    /// does not define it.
     fn hides_msr(&self, msr: u32) -> bool {
-        is_hidden_msr(msr) || (self.amd_config_msrs && AMD_LEGACY_PMU_MSRS.contains(&msr))
+        is_hidden_msr(msr)
+            || (self.amd_config_msrs && AMD_LEGACY_PMU_MSRS.contains(&msr))
+            || (!self.amd_config_msrs && msr == MSR_AMD_HWCR)
     }
 
     /// Handles a guest read of `msr` that exited to user space. `None` means
@@ -817,12 +828,9 @@ mod tests {
             (0xc001_1029, 0xc001_1029),
             (0xc001_0000, 0xc001_0007),
         ];
-        assert_eq!(
-            identity_msr_filter().to_vec(),
-            time_abi_msr_filter(CpuVendor::Intel)
-        );
         for (vendor, owned) in [
-            (CpuVendor::Intel, identity.to_vec()),
+            // HWCR is the first of AMD's ranges.
+            (CpuVendor::Intel, [identity.as_slice(), &amd[..1]].concat()),
             (CpuVendor::Amd, [identity.as_slice(), &amd].concat()),
         ] {
             let filter = time_abi_msr_filter(vendor);
@@ -1281,8 +1289,9 @@ mod tests {
             assert_eq!(write(msr, 0), Some(Err(())), "{msr:#x}");
         }
         // Other unknown MSRs keep their existing handling, and so do AMD's
-        // configuration MSRs and legacy performance counters under an Intel
-        // profile, which the filter does not route here.
+        // DE_CFG and legacy performance counters under an Intel profile, which
+        // the filter does not route here. KVM does not know DE_CFG on an Intel
+        // host: its exit as an unknown MSR raises #GP.
         for msr in [
             0x87,
             0x8b,
@@ -1291,7 +1300,6 @@ mod tests {
             0x11f,
             0xc001_0000,
             0xc001_0007,
-            0xc001_0015,
             0xc001_1029,
         ] {
             assert_eq!(read(msr), None, "{msr:#x}");
@@ -1303,6 +1311,23 @@ mod tests {
         assert_eq!(write(MSR_TSC_INVARIANT_CONTROL, 1), Some(Ok(())));
         assert_eq!(msrs.tsc_invariant_control(), 1);
         assert_eq!(read(MSR_TSC_INVARIANT_CONTROL), Some(Ok(1)));
+    }
+
+    /// Under an Intel profile, HWCR, which an Intel CPU does not define,
+    /// raises #GP: KVM would otherwise keep what the guest writes to it,
+    /// which no element of the saved state holds.
+    #[test]
+    fn msr_exits_reject_hwcr_under_an_intel_profile() {
+        let time_abi = time_abi(Arc::new(TimeAbiMsrs::new()), CpuVendor::Intel);
+        let vp = VpIndex::new(0);
+        assert_eq!(outcome(time_abi.read_msr(vp, MSR_AMD_HWCR)), Some(Err(())));
+        for value in [0, 1 << 24, 1 << 24 | 1 << 18, u64::MAX] {
+            assert_eq!(
+                outcome(time_abi.write_msr(vp, MSR_AMD_HWCR, value)),
+                Some(Err(())),
+                "{value:#x}"
+            );
+        }
     }
 
     /// Under an AMD profile, the filter routes HWCR and DE_CFG to OpenVMM,
@@ -1356,7 +1381,10 @@ mod tests {
 #[cfg(test)]
 mod kvm_tests {
     use super::*;
+    use crate::arch::x86_64::test_guest::GuestRam;
+    use kvm::Exit;
     use test_with_tracing::test;
+    use virt::time_abi::msr::MSR_AMD_DE_CFG;
 
     fn partition(vp_count: u32) -> kvm::Partition {
         let kvm = kvm::Kvm::new().unwrap();
@@ -1378,6 +1406,193 @@ mod kvm_tests {
         vm.vp(0)
             .get_msrs(&[x86defs::X86X_MSR_TSC], &mut value)
             .unwrap();
+    }
+
+    const CODE_GPA: u64 = 0x1000;
+    const HANDLER_GPA: u64 = 0x2000;
+    /// The guest's data: the MSR that it accesses, the value that it writes,
+    /// and the value that its read returns.
+    const MSR_GPA: u64 = 0x3000;
+    const WRITE_GPA: u64 = 0x3008;
+    const READ_GPA: u64 = 0x3010;
+    /// The ports that the guest reports to: its #GP handler ran, its WRMSR
+    /// finished, with a fault or without one, and the guest is done.
+    const FAULT_PORT: u8 = 0x82;
+    const WROTE_PORT: u8 = 0x81;
+    const DONE_PORT: u8 = 0x80;
+    const GP_VECTOR: u64 = 13;
+    /// The bits of HWCR that KVM accepts: `McStatusWrEn` and `TscFreqSel`.
+    const HWCR_KVM_BITS: u64 = (1 << 18) | (1 << 24);
+
+    /// What a real-mode guest saw when it wrote a value to an MSR and read it.
+    struct MsrAccess {
+        /// What the guest reported, in order.
+        reports: Vec<u8>,
+        /// The accesses that exited to OpenVMM, writes as `true`.
+        exits: Vec<(bool, u32)>,
+        /// What its RDMSR returned: 0 if it faulted.
+        read: u64,
+        /// The MSR as KVM itself holds it, which no element of a VP's saved
+        /// state holds, or `None` if KVM does not know the MSR.
+        kvm_value: Option<u64>,
+    }
+
+    /// Runs a real-mode guest in a VM with the MSR filter and the MSR exit
+    /// handling of a time ABI partition of a CPU profile of `vendor`. The
+    /// guest writes `value` to `msr` and reads `msr`, and its #GP handler
+    /// skips the two-byte WRMSR or RDMSR that faulted.
+    fn access_msr(vendor: CpuVendor, msr: u32, value: u64) -> MsrAccess {
+        kvm::init();
+        let vm = partition(1);
+        install_identity_msr_filter(&vm, vendor).unwrap();
+        let time_abi = KvmTimeAbi::new(
+            &vm,
+            &[0],
+            Arc::new(TimeAbiMsrs::new()),
+            SupportedCpuSurface::default(),
+            None,
+            vendor,
+        )
+        .unwrap();
+
+        let ram = GuestRam::new(&vm, 0x10000);
+        ram.write(
+            GP_VECTOR * 4,
+            &[HANDLER_GPA as u8, (HANDLER_GPA >> 8) as u8, 0, 0],
+        );
+        ram.write(
+            CODE_GPA,
+            &[
+                0x66, 0x8b, 0x0e, 0x00, 0x30, // mov ecx, [MSR_GPA]
+                0x66, 0xa1, 0x08, 0x30, // mov eax, [WRITE_GPA]
+                0x66, 0x8b, 0x16, 0x0c, 0x30, // mov edx, [WRITE_GPA + 4]
+                0x0f, 0x30, // wrmsr
+                0xe6, WROTE_PORT, // out WROTE_PORT, al
+                0x66, 0x8b, 0x0e, 0x00, 0x30, // mov ecx, [MSR_GPA]
+                0x66, 0x31, 0xc0, // xor eax, eax
+                0x66, 0x31, 0xd2, // xor edx, edx
+                0x0f, 0x32, // rdmsr
+                0x66, 0xa3, 0x10, 0x30, // mov [READ_GPA], eax
+                0x66, 0x89, 0x16, 0x14, 0x30, // mov [READ_GPA + 4], edx
+                0xe6, DONE_PORT, // out DONE_PORT, al
+                0xeb, 0xfe, // jmp $
+            ],
+        );
+        ram.write(
+            HANDLER_GPA,
+            &[
+                0xe6, FAULT_PORT, // out FAULT_PORT, al
+                0x89, 0xe5, // mov bp, sp
+                0x83, 0x46, 0x00, 0x02, // add word [bp], 2
+                0xcf, // iret
+            ],
+        );
+        ram.write(MSR_GPA, &u64::from(msr).to_le_bytes());
+        ram.write(WRITE_GPA, &value.to_le_bytes());
+
+        let vp = vm.vp(0);
+        let mut sregs = vp.get_sregs().unwrap();
+        sregs.cs.selector = 0;
+        sregs.cs.base = 0;
+        vp.set_sregs(&sregs).unwrap();
+        vp.set_regs(&kvm::kvm_regs {
+            rip: CODE_GPA,
+            rsp: 0x8000,
+            rflags: 2,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let mut reports = Vec::new();
+        let mut exits = Vec::new();
+        let mut runner = vp.runner();
+        while reports.last() != Some(&DONE_PORT) {
+            assert!(reports.len() < 16, "the guest runs away: {reports:x?}");
+            // As the VP's run loop handles the exits: an MSR that the time ABI
+            // does not handle is unrecognized, and raises #GP.
+            match runner.run().unwrap() {
+                Exit::IoOut { port, .. } => reports.push(port.try_into().unwrap()),
+                Exit::MsrRead { index, data, error } => {
+                    exits.push((false, index));
+                    match time_abi.read_msr(VpIndex::BSP, index) {
+                        Some(Ok(value)) => *data = value,
+                        _ => *error = 1,
+                    }
+                }
+                Exit::MsrWrite { index, data, error } => {
+                    exits.push((true, index));
+                    if !matches!(time_abi.write_msr(VpIndex::BSP, index, data), Some(Ok(()))) {
+                        *error = 1;
+                    }
+                }
+                exit => panic!("unexpected exit: {exit:?}"),
+            }
+        }
+        let mut held = [0];
+        let kvm_value = vp.get_msrs(&[msr], &mut held).ok().map(|()| held[0]);
+        MsrAccess {
+            reports,
+            exits,
+            read: ram.read_u64(READ_GPA),
+            kvm_value,
+        }
+    }
+
+    /// An Intel CPU does not define HWCR, so its access raises #GP, rather
+    /// than reach KVM, which keeps the McStatusWrEn and TscFreqSel bits that
+    /// the guest writes for it to read, although a save does not hold them.
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn hwcr_raises_gp_under_an_intel_profile() {
+        let access = access_msr(CpuVendor::Intel, MSR_AMD_HWCR, HWCR_KVM_BITS);
+        assert_eq!(
+            access.reports,
+            [FAULT_PORT, WROTE_PORT, FAULT_PORT, DONE_PORT]
+        );
+        assert_eq!(access.exits, [(true, MSR_AMD_HWCR), (false, MSR_AMD_HWCR)]);
+        assert_eq!(access.read, 0);
+        assert_eq!(access.kvm_value, Some(0), "KVM holds the guest's write");
+    }
+
+    /// DE_CFG is SVM's on KVM, so on an Intel host it is unknown to KVM, and
+    /// its access exits as one to an unknown MSR, which raises #GP.
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn de_cfg_raises_gp_under_an_intel_profile() {
+        let leaf = safe_intrinsics::cpuid(0, 0);
+        if [leaf.ebx, leaf.edx, leaf.ecx] != [0x756e_6547, 0x4965_6e69, 0x6c65_746e] {
+            tracing::info!("the host is not Intel's, so KVM serves DE_CFG itself");
+            return;
+        }
+        let access = access_msr(CpuVendor::Intel, MSR_AMD_DE_CFG, 1 << 1);
+        assert_eq!(
+            access.reports,
+            [FAULT_PORT, WROTE_PORT, FAULT_PORT, DONE_PORT]
+        );
+        assert_eq!(access.read, 0);
+    }
+
+    /// An AMD profile keeps the time ABI's fixed values, whatever KVM would
+    /// hold: a write of the value that a read returns changes nothing, and any
+    /// other value raises #GP.
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn amd_config_msrs_read_their_fixed_values_under_an_amd_profile() {
+        for (msr, fixed) in AMD_CONFIG_MSRS {
+            for (value, reports) in [
+                (fixed, vec![WROTE_PORT, DONE_PORT]),
+                (fixed ^ (1 << 18), vec![FAULT_PORT, WROTE_PORT, DONE_PORT]),
+            ] {
+                let access = access_msr(CpuVendor::Amd, msr, value);
+                assert_eq!(access.reports, reports, "{msr:#x} {value:#x}");
+                assert_eq!(
+                    access.exits,
+                    [(true, msr), (false, msr)],
+                    "{msr:#x} {value:#x}"
+                );
+                assert_eq!(access.read, fixed, "{msr:#x} {value:#x}");
+            }
+        }
     }
 
     #[test]
