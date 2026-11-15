@@ -392,7 +392,8 @@ pub struct Activity {
     /// injected, KVM holds one pending NMI. KVM reports the count from Linux
     /// 6.4 on: an earlier kernel reports only whether an NMI is pending, so a
     /// save on such a host holds no count and loses a second NMI, as before.
-    /// A backend that holds at most one pending NMI never reports a count.
+    /// A backend that holds at most one pending NMI never reports a count, and
+    /// refuses to restore one, rather than drop the second NMI.
     ///
     /// The field needs no version. A saved state from a build that predates
     /// it, or that holds at most one pending NMI, has no such field, so
