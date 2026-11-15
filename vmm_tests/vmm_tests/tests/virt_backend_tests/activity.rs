@@ -3,10 +3,14 @@
 
 //! Guest-free contract tests of the activity that a restore sets.
 
+use super::fixture::Fixture;
 use super::native::backend_test;
 use anyhow::Context as _;
 use hvdef::Vtl;
+use virt::BindProcessor as _;
+use virt::Hypervisor;
 use virt::Partition;
+use virt::PartitionMemoryMapper;
 use virt::Processor;
 use virt::irqcon::DeliveryMode;
 use virt::irqcon::MsiRequest;
@@ -219,3 +223,142 @@ fn reset_drops_an_smi(
         .context("a reset left the SMI that was sent to the VP")?;
     Ok(())
 }
+
+// KVM_SET_VCPU_EVENTS accepts any count of pending NMIs, but KVM cuts the count
+// down to what it holds: one while an NMI is blocked or being injected, and
+// otherwise two. A restore of a count that KVM would cut down would lose an NMI
+// that the saved state holds, which the VP's next save would not show. A save
+// holds a count only for two pending NMIs, so only a damaged or crafted saved
+// state holds any other, and the restore must refuse it.
+backend_test!(refuses_a_pending_nmi_count_that_kvm_would_not_hold, kvm_only, requires: []);
+fn refuses_a_pending_nmi_count_that_kvm_would_not_hold(
+    _partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let mut state = processor.access_state(Vtl::Vtl0);
+    let before = state.activity()?;
+
+    // The halt shows a restore that changed the activity before it refused.
+    let two = || vp::Activity {
+        mp_state: vp::MpState::Halted,
+        nmi_pending: true,
+        nmi_pending_count: Some(2),
+        ..Default::default()
+    };
+    for (what, crafted) in [
+        (
+            "two pending NMIs with NMIs blocked",
+            vp::Activity {
+                nmi_masked: true,
+                ..two()
+            },
+        ),
+        (
+            "two pending NMIs with an NMI being injected",
+            vp::Activity {
+                pending_interruption: Some(vp::PendingInterruption::Nmi),
+                ..two()
+            },
+        ),
+        (
+            "a count of two with no NMI pending",
+            vp::Activity {
+                nmi_pending: false,
+                ..two()
+            },
+        ),
+        (
+            "a count of one",
+            vp::Activity {
+                nmi_pending_count: Some(1),
+                ..two()
+            },
+        ),
+        (
+            "a count of three",
+            vp::Activity {
+                nmi_pending_count: Some(3),
+                ..two()
+            },
+        ),
+    ] {
+        anyhow::ensure!(
+            state.set_activity(&crafted).is_err(),
+            "restoring {what} succeeded"
+        );
+        anyhow::ensure!(
+            state.activity()? == before,
+            "the refused restore of {what} changed the activity"
+        );
+    }
+
+    // What a save holds restores: two pending NMIs behind an interrupt that is
+    // being injected, and an interrupt shadow, which do not block NMIs.
+    let behind_an_interrupt = vp::Activity {
+        pending_interruption: Some(vp::PendingInterruption::Interrupt { vector: 0x30 }),
+        interrupt_shadow: true,
+        ..two()
+    };
+    state
+        .set_activity(&behind_an_interrupt)
+        .with_context(|| format!("restoring {behind_an_interrupt:?} failed"))?;
+    let restored = state.activity()?;
+    anyhow::ensure!(
+        restored == behind_an_interrupt,
+        "restoring {behind_an_interrupt:?} read back as {restored:?}"
+    );
+    Ok(())
+}
+
+// KVM holds a second NMI that reaches a VP before it has run as a second
+// pending NMI: it injects one NMI at once, and the other once the guest's
+// handler for the first returns. The saved state must hold both, and a restore
+// into a new VP must give them back, or the guest loses an NMI. A new partition
+// supplies the VP that restores them, because a VP that already holds the NMIs
+// could not show that the restore wrote them.
+fn restores_two_pending_nmis<H: Hypervisor>(fixture: &Fixture, hv: &mut H) -> anyhow::Result<()>
+where
+    H::Partition: Partition + PartitionMemoryMapper,
+{
+    let (saved, activity) = {
+        let (partition, mut binder) = fixture.build(hv, false)?;
+        let mut processor = binder.bind()?;
+        send(&partition, DeliveryMode::NMI);
+        send(&partition, DeliveryMode::NMI);
+        let mut state = processor.access_state(Vtl::Vtl0);
+        let activity = state.activity()?;
+        (mesh::payload::encode(state.save_all()?), activity)
+    };
+    anyhow::ensure!(
+        activity.nmi_pending && activity.nmi_pending_count == Some(2),
+        "the VP that two NMIs reached does not hold them: {activity:?}"
+    );
+
+    let (_partition, mut binder) = fixture.build(hv, false)?;
+    let mut processor = binder.bind()?;
+    let mut state = processor.access_state(Vtl::Vtl0);
+    anyhow::ensure!(!state.activity()?.nmi_pending, "a new VP holds an NMI");
+    state
+        .restore_all(&mesh::payload::decode::<vp::VpSavedState>(&saved)?)
+        .context("restoring the saved state failed")?;
+    let restored = state.activity()?;
+    anyhow::ensure!(
+        restored == activity,
+        "the restore did not give the VP its NMIs: saved {activity:?}, restored {restored:?}"
+    );
+    Ok(())
+}
+
+// This contract builds a second partition, so it registers by hand, with what
+// `backend_test!` registers for KVM.
+petri::multitest!(vec![crate::native::kvm::test(
+    "kvm::restores_two_pending_nmis",
+    false,
+    || {
+        // Evaluate the capabilities, which the test reads, as `backend_test!`
+        // does, so that a failed probe fails the test.
+        let _ = crate::native::kvm::capabilities(false);
+        true
+    },
+    async |driver, mut hv| restores_two_pending_nmis(&Fixture::new(driver).await?, &mut hv),
+)]);
