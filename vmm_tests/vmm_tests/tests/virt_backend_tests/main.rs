@@ -21,6 +21,7 @@ cfg_select! {
         mod registers;
         #[cfg(target_os = "linux")]
         mod save;
+        mod speculation;
         mod time;
     }
     _ => {}
