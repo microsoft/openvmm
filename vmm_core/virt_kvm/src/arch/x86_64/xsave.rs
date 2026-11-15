@@ -43,6 +43,7 @@ use std::ops::Range;
 use virt::x86::X86PartitionCapabilities;
 use virt::x86::XsaveCapabilities;
 use virt::x86::vp::Xsave;
+use virt::x86::vp::XsaveError;
 use x86defs::xsave::Fxsave;
 use x86defs::xsave::X86X_XSAVE_LEGACY_FEATURES;
 use x86defs::xsave::XFEATURE_SSE;
@@ -73,18 +74,20 @@ const XMM_BYTES: Range<usize> = offset_of!(Fxsave, xmm)..offset_of!(Fxsave, rese
 /// Restores `value` as the XSAVE state of `vp`, a VP of a partition with
 /// `caps`.
 ///
-/// Refuses an area whose XSTATE_BV the VP cannot keep, as `check_xstate_bv`
-/// describes, before it writes anything. KVM refuses a buffer before it
-/// changes the VP, and takes the area whenever it took the seed, whose
-/// XSTATE_BV has all of the area's bits, so a refused restore leaves the VP's
-/// XSAVE state as it was.
+/// Refuses an area that the VP cannot take, before it writes anything: one
+/// whose XSTATE_BV the VP cannot keep, as `check_xstate_bv` describes, and one
+/// that [`Xsave::write_standard`] cannot write in the standard format that KVM
+/// takes, since it has too few words for what its header selects. KVM refuses a
+/// buffer before it changes the VP, and takes the area whenever it took the
+/// seed, whose XSTATE_BV has all of the area's bits, so a refused restore
+/// leaves the VP's XSAVE state as it was.
 pub(super) fn restore(
     vp: &kvm::Processor<'_>,
     caps: &X86PartitionCapabilities,
     value: &Xsave,
 ) -> Result<(), KvmError> {
     check_xstate_bv(value, &caps.xsave)?;
-    Buffers::new(value, caps).write(|buffer| vp.set_xsave(buffer))?;
+    Buffers::new(value, caps)?.write(|buffer| vp.set_xsave(buffer))?;
     Ok(())
 }
 
@@ -105,10 +108,11 @@ struct Buffers {
 
 impl Buffers {
     /// Builds the buffers that restore `value`, an area of a partition with
-    /// `caps`.
-    fn new(value: &Xsave, caps: &X86PartitionCapabilities) -> Self {
+    /// `caps`, or fails as [`Xsave::write_standard`] does for an area that it
+    /// cannot write, before anything is written to a VP.
+    fn new(value: &Xsave, caps: &X86PartitionCapabilities) -> Result<Self, XsaveError> {
         let mut area = [0; 4096];
-        value.write_standard(&mut area, caps);
+        value.write_standard(&mut area, caps)?;
         init_cleared_legacy(&mut area);
         let xstate_bv = read_xstate_bv(&area);
         let seeded = seed_components(xstate_bv, &caps.xsave);
@@ -117,7 +121,7 @@ impl Buffers {
             write_xstate_bv(&mut seed, xstate_bv | seeded);
             seed
         });
-        Self { seed, area }
+        Ok(Self { seed, area })
     }
 
     /// Gives the buffers to `set_xsave`, which writes one, in order, and stops
@@ -242,6 +246,7 @@ mod tests {
     use virt::x86::XsaveCapabilities;
     use virt::x86::XsaveFeature;
     use virt::x86::vp::Xsave;
+    use virt::x86::vp::XsaveError;
     use vm_topology::processor::ProcessorTopology;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::x86::X2ApicState;
@@ -731,6 +736,7 @@ mod tests {
     /// Restores `area` into `vp` as `restore` does.
     fn restore_into(vp: &mut Vp, caps: &X86PartitionCapabilities, area: &Xsave) {
         Buffers::new(area, caps)
+            .unwrap()
             .write(|buffer| vp.set_xsave(buffer))
             .unwrap();
     }
@@ -739,7 +745,7 @@ mod tests {
     /// area's clear bits as init state: `write_standard`'s buffer as it is.
     fn restore_as_is(vp: &mut Vp, caps: &X86PartitionCapabilities, area: &Xsave) {
         let mut buffer = [0; 4096];
-        area.write_standard(&mut buffer, caps);
+        area.write_standard(&mut buffer, caps).unwrap();
         vp.set_xsave(&buffer).unwrap();
     }
 
@@ -782,7 +788,7 @@ mod tests {
         };
         let caps = host.caps();
         let vp_info = topology().vp_arch(VpIndex::BSP);
-        let buffers = Buffers::new(&Xsave::at_reset(&caps, &vp_info), &caps);
+        let buffers = Buffers::new(&Xsave::at_reset(&caps, &vp_info), &caps).unwrap();
 
         // The area holds init state: FCW and MXCSR hold their init values, and
         // nothing is marked in use.
@@ -802,14 +808,62 @@ mod tests {
         let caps = host.caps();
         want[513] = 0;
         assert!(
-            Buffers::new(&Xsave::at_reset(&caps, &vp_info), &caps).seed == Some(want),
+            Buffers::new(&Xsave::at_reset(&caps, &vp_info), &caps)
+                .unwrap()
+                .seed
+                == Some(want),
             "the seed without PKRU"
         );
 
         // An area that has x87, SSE, and AVX leaves nothing for a seed to
         // write.
         let area = crafted_area(&caps, X87 | SSE | AVX);
-        assert!(Buffers::new(&area, &caps).seed.is_none());
+        assert!(Buffers::new(&area, &caps).unwrap().seed.is_none());
+    }
+
+    #[test]
+    fn a_short_or_malformed_area_gets_no_buffers() {
+        for host in HOSTS {
+            let caps = host.caps();
+            // An area with too few words for its legacy area and header, from
+            // none to one short of them, which a restore refuses before it
+            // writes a buffer.
+            for words in 0..72 {
+                let area = Xsave {
+                    data: vec![0; words],
+                };
+                assert_eq!(
+                    Buffers::new(&area, &caps).err(),
+                    Some(XsaveError::AreaTooShort { words }),
+                    "{host:?}, {words} words"
+                );
+            }
+            if host.xcr0() & AVX == 0 {
+                continue;
+            }
+            // An area whose header selects AVX, which the header puts right
+            // after itself, and that ends before AVX's 256 bytes do: the
+            // legacy area and the header alone, and one a word short.
+            let crafted = crafted_area(&caps, AVX);
+            for words in [72, 103] {
+                let area = Xsave {
+                    data: crafted.data[..words].to_vec(),
+                };
+                assert_eq!(
+                    Buffers::new(&area, &caps).err(),
+                    Some(XsaveError::ComponentPastArea {
+                        component: 2,
+                        words
+                    }),
+                    "{host:?}, {words} words"
+                );
+            }
+            // The area that ends where AVX does is written.
+            let area = Xsave {
+                data: crafted.data[..104].to_vec(),
+            };
+            Buffers::new(&area, &caps).unwrap();
+        }
     }
 
     #[test]
@@ -835,7 +889,7 @@ mod tests {
                 // area's standard-format buffer: it holds no component that
                 // XSTATE_BV leaves out.
                 let mut as_is = [0; 4096];
-                area.write_standard(&mut as_is, &caps);
+                area.write_standard(&mut as_is, &caps).unwrap();
                 assert!(
                     Xsave::from_standard(&vp.get_xsave(), &caps)
                         == Xsave::from_standard(&as_is, &caps),
@@ -987,7 +1041,7 @@ mod kvm_tests {
 
                 // What KVM does with the area alone.
                 let mut data = [0; 4096];
-                area.write_standard(&mut data, &caps);
+                area.write_standard(&mut data, &caps).unwrap();
                 let outcome = match vp.set_xsave(&data) {
                     Err(_) => Outcome::Refused,
                     Ok(()) if selects(&vp, &caps, component) => Outcome::Kept,
