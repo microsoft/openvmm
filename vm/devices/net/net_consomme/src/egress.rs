@@ -157,6 +157,7 @@ impl ConsommeQueue {
                     }
                     consomme::DropReason::UnsupportedEthertype(_)
                     | consomme::DropReason::UnsupportedIpProtocol(_)
+                    | consomme::DropReason::UnsupportedIcmpv4(_)
                     | consomme::DropReason::UnsupportedIcmpv6(_)
                     | consomme::DropReason::UnsupportedDhcp(_)
                     | consomme::DropReason::UnsupportedArp

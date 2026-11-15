@@ -321,11 +321,30 @@ such a stub, or configure a DNS server reachable from the guest.
 
 ### ICMP
 
-Echo requests (ping) are forwarded through a host-side ICMP socket.
-The guest's TTL is preserved, so ping works and traceroute partially
-works (the echo reply comes back, but intermediate TTL Exceeded hops
-are not relayed — see limitations). Idle ICMP source flows use the same
-configurable timeout as UDP bindings (5 minutes by default).
+Echo requests (ping) are forwarded through a host-side ICMP socket: a raw
+socket on Windows, and an unprivileged datagram socket elsewhere, which Linux
+opens only to the groups in `net.ipv4.ping_group_range`. A Linux host whose
+range excludes the OpenVMM process, such as one that keeps the default of
+`1 0`, makes Consomme drop each request and log `icmp socket creation failed`.
+Only echo requests leave, and only echo replies to them return. The guest's
+other ICMP messages are dropped, and so are the host's ICMP messages that
+answer no request of the flow, which a Windows raw socket receives for the
+whole host.
+
+Each request leaves under a sequence number of its own, which its reply
+returns, so that the reply carries the guest's identifier and sequence number
+whichever socket the host provides: a Linux datagram socket replaces the
+identifier with its own, and delivers the ICMP message without its IPv4
+header. A raw socket sends an identifier of the flow's own too, since it
+delivers the replies of every flow and process of the host. The flow's
+identifier and first sequence number are random, so that another flow's
+request is unlikely to match. A reply must come from the host that its request
+named, and arrive within 30 seconds, and a flow awaits at most 64 replies,
+forgetting the oldest request beyond them. The guest's TTL is preserved, so
+ping works and traceroute partially works (the echo reply comes back, but
+intermediate TTL Exceeded hops are not relayed — see limitations). Idle ICMP
+source flows use the same configurable timeout as UDP bindings (5 minutes by
+default).
 
 ### ARP and NDP
 
