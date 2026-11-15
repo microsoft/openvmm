@@ -424,6 +424,14 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.set_register_state(value)
     }
 
+    fn spec_ctrl(&mut self) -> Result<vp::SpecCtrl, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_spec_ctrl(&mut self, value: &vp::SpecCtrl) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }

@@ -527,6 +527,7 @@ impl MshvPartitionInner {
             cet_ss: false,
             sgx: false,
             tsc_aux: false,
+            spec_ctrl: false,
             // MSHV does not reliably deliver TSC deadline events to direct-boot
             // guests. Fall back to the LAPIC count-mode clockevent.
             tsc_deadline: false,
