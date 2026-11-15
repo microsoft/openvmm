@@ -29,6 +29,7 @@ cfg_select! {
         mod shadow;
         mod speculation;
         mod time;
+        mod unsupported_state;
         #[cfg(target_os = "linux")]
         mod xsave;
     }
