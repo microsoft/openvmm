@@ -10,7 +10,7 @@ use inspect::Inspect;
 use std::fmt::Debug;
 use thiserror::Error;
 
-pub trait StateElement<C, V>: Sized + Inspect {
+pub trait StateElement<C, V>: Sized + Inspect + PartialEq {
     /// Returns whether this state is present for the partition, based on the
     /// partition capabilities.
     fn is_present(caps: &C) -> bool;
@@ -25,6 +25,22 @@ pub trait StateElement<C, V>: Sized + Inspect {
     /// timestamp counter for hypervisors that cannot freeze time).
     fn can_compare(_caps: &C) -> bool {
         true
+    }
+
+    /// Returns whether `restored`, which the partition reads back after a
+    /// restore of `expected`, is `expected` up to what the hypervisor does not
+    /// keep of it.
+    ///
+    /// A hypervisor can normalize a state that it is given: drop its reserved
+    /// bits, or restore it in a form that reads back differently. A restore
+    /// check that required equality would then reject a state that the
+    /// hypervisor restored as well as it can hold it. An element that a
+    /// hypervisor normalizes overrides this to accept the normalization that
+    /// the hypervisor documents, and nothing else, so that a restore that
+    /// loses more is still caught. By default, only an equal state is
+    /// accepted.
+    fn restore_eq(_caps: &C, restored: &Self, expected: &Self) -> bool {
+        restored == expected
     }
 }
 
@@ -117,6 +133,11 @@ mod macros {
                 }
 
                 /// Restore state elements saved in save state.
+                ///
+                /// A debug build reads each element back after it sets it, and
+                /// asserts that the state that it reads is the one that it set,
+                /// up to the normalization that the element's `restore_eq`
+                /// accepts.
                 #[allow(unused_variables)]
                 fn restore_all(&mut self, state: &$save_state) -> Result<(), $crate::state::StateError<Self::Error>> {
                     $(
@@ -126,7 +147,13 @@ mod macros {
                             self.$set(value).map_err(|err| $crate::state::StateError{phase: concat!("restore ", stringify!($id)), err})?;
                             if cfg!(debug_assertions) {
                                 if <$ty as $crate::state::StateElement<$caps, $vp>>::can_compare(self.caps()) {
-                                    assert_eq!(&self.$get().expect($id), value, "restore state mismatch (actual/expected)");
+                                    let restored = self.$get().expect($id);
+                                    assert!(
+                                        <$ty as $crate::state::StateElement<$caps, $vp>>::restore_eq(self.caps(), &restored, value),
+                                        "restore state mismatch (actual/expected): {:?} / {:?}",
+                                        restored,
+                                        value,
+                                    );
                                 }
                             }
                         }
@@ -225,6 +252,119 @@ mod tests {
         TestSavedState,
         "virt.test",
         (1, "number", number, set_number, Number),
+    }
+
+    /// An element that a backend need not keep whole: of a restored value, only
+    /// its low bit can read back differently.
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+    #[mesh(package = "virt.test")]
+    pub struct Coarse {
+        #[mesh(1)]
+        value: u32,
+    }
+
+    impl StateElement<Caps, Vp> for Coarse {
+        fn is_present(_caps: &Caps) -> bool {
+            true
+        }
+
+        fn at_reset(_caps: &Caps, _vp: &Vp) -> Self {
+            Self { value: 0 }
+        }
+
+        fn restore_eq(_caps: &Caps, restored: &Self, expected: &Self) -> bool {
+            restored.value == expected.value & !1
+        }
+    }
+
+    state_trait! {
+        "Test state with an element that a backend can normalize",
+        AccessCoarseState,
+        Caps,
+        Vp,
+        CoarseSavedState,
+        "virt.test.coarse",
+        (1, "number", number, set_number, Number),
+        (2, "coarse", coarse, set_coarse, Coarse),
+    }
+
+    /// A state that keeps of each restored value only the bits of a mask.
+    struct Masked {
+        number_mask: u32,
+        coarse_mask: u32,
+        number: u32,
+        coarse: u32,
+    }
+
+    impl Masked {
+        fn new(number_mask: u32, coarse_mask: u32) -> Self {
+            Self {
+                number_mask,
+                coarse_mask,
+                number: 0,
+                coarse: 0,
+            }
+        }
+    }
+
+    impl AccessCoarseState for Masked {
+        type Error = Error;
+
+        fn caps(&self) -> &Caps {
+            &Caps
+        }
+
+        fn commit(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn number(&mut self) -> Result<Number, Error> {
+            Ok(Number { value: self.number })
+        }
+
+        fn set_number(&mut self, value: &Number) -> Result<(), Error> {
+            self.number = value.value & self.number_mask;
+            Ok(())
+        }
+
+        fn coarse(&mut self) -> Result<Coarse, Error> {
+            Ok(Coarse { value: self.coarse })
+        }
+
+        fn set_coarse(&mut self, value: &Coarse) -> Result<(), Error> {
+            self.coarse = value.value & self.coarse_mask;
+            Ok(())
+        }
+    }
+
+    fn restored(number: u32, coarse: u32) -> CoarseSavedState {
+        CoarseSavedState {
+            number: Some(Number { value: number }),
+            coarse: Some(Coarse { value: coarse }),
+        }
+    }
+
+    #[test]
+    fn a_restore_accepts_the_normalization_that_an_element_documents() {
+        let mut state = Masked::new(!0, !1);
+        state.restore_all(&restored(5, 7)).unwrap();
+        assert_eq!((state.number, state.coarse), (5, 6));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "restore state mismatch")]
+    fn a_debug_restore_catches_more_than_an_element_documents() {
+        // The backend also drops bit 1, which the element does not accept.
+        Masked::new(!0, !3).restore_all(&restored(5, 7)).unwrap();
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "restore state mismatch")]
+    fn a_debug_restore_requires_an_equal_state_by_default() {
+        // The number documents no normalization, so a dropped bit is a loss.
+        Masked::new(!1, !1).restore_all(&restored(5, 7)).unwrap();
     }
 
     /// A state that every save accepts, which records the elements that a

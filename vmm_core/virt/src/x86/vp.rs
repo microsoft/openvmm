@@ -364,6 +364,79 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Registers {
             efer,
         }
     }
+
+    /// KVM does not keep everything of a segment's attributes:
+    ///
+    /// - Its segment format has no field for the reserved bits 8-11, so they
+    ///   read back clear.
+    /// - A CPU with VMX that runs the guest unrestricted, as the CPUs that
+    ///   support it do by default, has KVM set the accessed bit, bit 0 of the
+    ///   type, of every segment register but the LDTR as it writes one
+    ///   (`__vmx_set_segment`, Linux v6.18 `vmx.c`), as the processor requires
+    ///   of a usable segment, and an SVM CPU's reads set it of the data
+    ///   segment registers that are present (`svm_get_segment`, `svm.c`). The
+    ///   KVM backend clears it as it reads a segment that is not present
+    ///   (`seg_reg_from_kvm`), which an earlier save did not do. So the bit
+    ///   reads back as it was set, or as the segment's present bit.
+    fn restore_eq(caps: &X86PartitionCapabilities, restored: &Self, expected: &Self) -> bool {
+        const RESERVED: u16 = 0x0f00;
+        const ACCESSED: u16 = 0x0001;
+        const PRESENT: u16 = 0x0080;
+
+        /// Returns whether the segment `restored` is `expected`, but for the
+        /// reserved attribute bits, and, if `accessed_varies`, the accessed
+        /// bit, which can read back as the segment's present bit instead.
+        fn segment_eq(
+            restored: SegmentRegister,
+            expected: SegmentRegister,
+            accessed_varies: bool,
+        ) -> bool {
+            let ignored = if accessed_varies {
+                RESERVED | ACCESSED
+            } else {
+                RESERVED
+            };
+            let accessed = |segment: SegmentRegister| segment.attributes & ACCESSED != 0;
+            let present = restored.attributes & PRESENT != 0;
+            SegmentRegister {
+                attributes: restored.attributes & !ignored,
+                ..restored
+            } == SegmentRegister {
+                attributes: expected.attributes & !ignored,
+                ..expected
+            } && (!accessed_varies
+                || accessed(restored) == accessed(expected)
+                || accessed(restored) == present)
+        }
+
+        if !caps.normalizes_restored_state {
+            return restored == expected;
+        }
+
+        let without_segments = |registers: &Registers| {
+            let none = SegmentRegister::default();
+            Registers {
+                cs: none,
+                ds: none,
+                es: none,
+                fs: none,
+                gs: none,
+                ss: none,
+                tr: none,
+                ldtr: none,
+                ..*registers
+            }
+        };
+        without_segments(restored) == without_segments(expected)
+            && segment_eq(restored.cs, expected.cs, true)
+            && segment_eq(restored.ds, expected.ds, true)
+            && segment_eq(restored.es, expected.es, true)
+            && segment_eq(restored.fs, expected.fs, true)
+            && segment_eq(restored.gs, expected.gs, true)
+            && segment_eq(restored.ss, expected.ss, true)
+            && segment_eq(restored.tr, expected.tr, true)
+            && segment_eq(restored.ldtr, expected.ldtr, false)
+    }
 }
 
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
@@ -598,6 +671,59 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Activity {
             pending_interruption: None,
             nmi_pending_count: None,
         }
+    }
+
+    /// KVM, without `KVM_CAP_EXCEPTION_PAYLOAD`, reports an exception that is
+    /// queued but not yet injected as pending and injected both, and restores
+    /// only an injected one. An earlier save recorded such an exception as
+    /// both, which reads back as the injected exception alone.
+    ///
+    /// Every other field is compared exactly, the count of pending NMIs
+    /// included: KVM restores the count that it is given, and reports it from
+    /// Linux 6.4 on.
+    fn restore_eq(caps: &X86PartitionCapabilities, restored: &Self, expected: &Self) -> bool {
+        /// Returns `activity`, but for a pending exception that is the
+        /// injected one, which is no event of its own.
+        fn without_queued_exception(activity: &Activity) -> Activity {
+            let &Activity {
+                mp_state,
+                nmi_pending,
+                nmi_masked,
+                interrupt_shadow,
+                pending_event,
+                pending_interruption,
+                nmi_pending_count,
+            } = activity;
+            let pending_event = match (pending_event, pending_interruption) {
+                (
+                    Some(PendingEvent::Exception {
+                        vector,
+                        error_code,
+                        parameter: 0,
+                    }),
+                    Some(PendingInterruption::Exception {
+                        vector: injected_vector,
+                        error_code: injected_error_code,
+                    }),
+                ) if (vector, error_code) == (injected_vector, injected_error_code) => None,
+                (event, _) => event,
+            };
+            Activity {
+                mp_state,
+                nmi_pending,
+                nmi_masked,
+                interrupt_shadow,
+                pending_event,
+                pending_interruption,
+                nmi_pending_count,
+            }
+        }
+
+        if !caps.normalizes_restored_state {
+            return restored == expected;
+        }
+
+        without_queued_exception(restored) == without_queued_exception(expected)
     }
 }
 
@@ -1621,6 +1747,48 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for VirtualMsrs {
             sfmask: 0,
         }
     }
+
+    /// KVM keeps some SYSENTER MSRs in a narrower form than the 64 bits that
+    /// they hold, so a value that it did not save itself, as one from a host
+    /// with a different width of virtual addresses, can read back changed
+    /// (Linux v6.18):
+    ///
+    /// - It makes SYSENTER_EIP and SYSENTER_ESP canonical, by sign extension
+    ///   from bit 47, or from bit 56 on a host with 5-level paging
+    ///   (`__kvm_set_msr` in `x86.c`). An SVM host keeps only their low 32 bits
+    ///   for a guest CPU that is not Intel-compatible (`svm_set_msr` in
+    ///   `svm.c`).
+    /// - A VMX host keeps SYSENTER_CS in a 32-bit field of the VMCS
+    ///   (`vmx_set_msr` in `vmx.c`).
+    fn restore_eq(caps: &X86PartitionCapabilities, restored: &Self, expected: &Self) -> bool {
+        /// Returns whether `restored` is `expected`, or the low 32 bits of it.
+        fn low_eq(restored: u64, expected: u64) -> bool {
+            restored == expected || restored == expected & 0xffff_ffff
+        }
+
+        /// Returns whether `restored` is `expected`, or its canonical form at
+        /// either width of a virtual address, or its low 32 bits.
+        fn address_eq(restored: u64, expected: u64) -> bool {
+            let canonical = |bits: u32| (((expected << (64 - bits)) as i64) >> (64 - bits)) as u64;
+            restored == canonical(48) || restored == canonical(57) || low_eq(restored, expected)
+        }
+
+        if !caps.normalizes_restored_state {
+            return restored == expected;
+        }
+
+        // The other MSRs are kept whole.
+        let whole = |msrs: &VirtualMsrs| VirtualMsrs {
+            sysenter_cs: 0,
+            sysenter_esp: 0,
+            sysenter_eip: 0,
+            ..*msrs
+        };
+        whole(restored) == whole(expected)
+            && low_eq(restored.sysenter_cs, expected.sysenter_cs)
+            && address_eq(restored.sysenter_esp, expected.sysenter_esp)
+            && address_eq(restored.sysenter_eip, expected.sysenter_eip)
+    }
 }
 
 #[repr(C)]
@@ -1657,6 +1825,18 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for TscAux {
 
     fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
         Default::default()
+    }
+
+    /// KVM keeps the low 32 bits of TSC_AUX for a guest CPU that is not
+    /// Intel-compatible, since Intel reserves bits 63:32 and AMD's CPUs ignore
+    /// them, and it refuses a restore that sets them for one that is
+    /// (`__kvm_set_msr` in Linux v6.18 `x86.c`).
+    fn restore_eq(caps: &X86PartitionCapabilities, restored: &Self, expected: &Self) -> bool {
+        if !caps.normalizes_restored_state {
+            return restored == expected;
+        }
+
+        restored.value == expected.value || restored.value == expected.value & 0xffff_ffff
     }
 }
 
@@ -3146,5 +3326,377 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    /// Returns the capabilities of a hypervisor that does or does not
+    /// normalize the state that a restore sets.
+    fn caps(normalizes_restored_state: bool) -> X86PartitionCapabilities {
+        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+            .build(1)
+            .unwrap();
+        let x2apic = topology.apic_mode() != vm_topology::processor::x86::ApicMode::XApic;
+        let mut caps =
+            X86PartitionCapabilities::from_cpuid(&topology, &mut |function, _| match function {
+                0 => [1, 0, 0, 0],
+                1 => [0, 0, u32::from(x2apic) << 21, 0],
+                _ => [0; 4],
+            })
+            .unwrap();
+        caps.normalizes_restored_state = normalizes_restored_state;
+        caps
+    }
+
+    /// Returns whether a restore accepts `restored`, which it read back, as the
+    /// state `expected` that it set, on a hypervisor that does or does not
+    /// normalize the state that a restore sets.
+    fn accepted<T: StateElement<X86PartitionCapabilities, X86VpInfo>>(
+        normalizes_restored_state: bool,
+        restored: &T,
+        expected: &T,
+    ) -> bool {
+        T::restore_eq(&caps(normalizes_restored_state), restored, expected)
+    }
+
+    #[test]
+    fn a_restore_accepts_the_segment_attributes_that_kvm_normalizes() {
+        /// Returns the registers of a reset VP but for the segment register
+        /// `index`, which has `attributes`.
+        fn with_segment(index: usize, attributes: u16) -> Registers {
+            let segment = SegmentRegister {
+                attributes,
+                ..SegmentRegister::default()
+            };
+            let mut registers = Registers::default();
+            match index {
+                0 => registers.cs = segment,
+                1 => registers.ds = segment,
+                2 => registers.es = segment,
+                3 => registers.fs = segment,
+                4 => registers.gs = segment,
+                5 => registers.ss = segment,
+                6 => registers.tr = segment,
+                _ => registers.ldtr = segment,
+            }
+            registers
+        }
+
+        const LDTR: usize = 7;
+        for index in 0..=LDTR {
+            let check = |restored, expected| {
+                accepted(
+                    true,
+                    &with_segment(index, restored),
+                    &with_segment(index, expected),
+                )
+            };
+
+            // The reserved bits read back clear.
+            assert!(check(0x0092, 0x0f92), "segment {index}");
+            // Every segment register but the LDTR can read back accessed. It
+            // reads back as it was set, or as the segment's present bit: KVM
+            // sets the bit of a segment, and the backend clears it of a segment
+            // that is not present, so a saved state can hold either. A segment
+            // that is present is not given a clear accessed bit, nor one that
+            // is not present a set one.
+            assert_eq!(check(0x0093, 0x0092), index != LDTR, "segment {index}");
+            assert_eq!(check(0x0012, 0x0013), index != LDTR, "segment {index}");
+            assert!(!check(0x0013, 0x0012), "segment {index}");
+            assert!(!check(0x0092, 0x0093), "segment {index}");
+            assert!(check(0x0093, 0x0093), "segment {index}");
+            assert!(check(0x0012, 0x0012), "segment {index}");
+            // Nothing else changes: the other bits of the type and attributes,
+            // and the rest of the registers.
+            for other in [
+                0x0090, 0x0096, 0x0082, 0x0012, 0x1092, 0x2092, 0x4092, 0x8092,
+            ] {
+                assert!(!check(other, 0x0f92), "segment {index}: {other:#x}");
+            }
+            let moved = Registers {
+                rax: 1,
+                ..with_segment(index, 0x0092)
+            };
+            assert!(!accepted(true, &moved, &with_segment(index, 0x0f92)));
+            assert!(!accepted(true, &with_segment(index, 0x0092), &moved));
+
+            // A hypervisor that does not normalize keeps every bit.
+            assert!(accepted(
+                false,
+                &with_segment(index, 0x0f92),
+                &with_segment(index, 0x0f92)
+            ));
+            assert!(!accepted(
+                false,
+                &with_segment(index, 0x0092),
+                &with_segment(index, 0x0f92)
+            ));
+            assert!(!accepted(
+                false,
+                &with_segment(index, 0x0093),
+                &with_segment(index, 0x0092)
+            ));
+        }
+    }
+
+    fn exception(vector: u8, error_code: Option<u32>) -> PendingInterruption {
+        PendingInterruption::Exception { vector, error_code }
+    }
+
+    fn pending_exception(vector: u8, error_code: Option<u32>, parameter: u64) -> PendingEvent {
+        PendingEvent::Exception {
+            vector,
+            error_code,
+            parameter,
+        }
+    }
+
+    #[test]
+    fn a_restore_accepts_a_queued_exception_as_the_injected_one() {
+        let activity = |pending_event, pending_interruption| Activity {
+            pending_event,
+            pending_interruption,
+            ..Default::default()
+        };
+
+        // An earlier save recorded an exception that KVM had queued, but not
+        // injected yet, as pending and injected both, and KVM restores it as
+        // the injected exception alone.
+        let queued_event = Some(pending_exception(13, Some(0), 0));
+        let injected_exception = Some(exception(13, Some(0)));
+        let queued = activity(queued_event, injected_exception);
+        let injected = activity(None, injected_exception);
+        assert!(accepted(true, &injected, &queued));
+        assert!(accepted(true, &queued, &queued));
+        assert!(accepted(true, &injected, &injected));
+        // A hypervisor that does not normalize keeps both.
+        assert!(!accepted(false, &injected, &queued));
+        assert!(accepted(false, &queued, &queued));
+
+        // The rest of the activity is kept.
+        for (mp_state, nmi_pending, nmi_masked, interrupt_shadow) in [
+            (MpState::Halted, false, false, false),
+            (MpState::Running, true, false, false),
+            (MpState::Running, false, true, false),
+            (MpState::Running, false, false, true),
+        ] {
+            let surround = |pending_event, pending_interruption| Activity {
+                mp_state,
+                nmi_pending,
+                nmi_masked,
+                interrupt_shadow,
+                pending_event,
+                pending_interruption,
+                ..Default::default()
+            };
+            assert!(accepted(
+                true,
+                &surround(None, injected_exception),
+                &surround(queued_event, injected_exception)
+            ));
+            assert!(!accepted(
+                true,
+                &surround(None, injected_exception),
+                &queued
+            ));
+            assert!(!accepted(
+                true,
+                &injected,
+                &surround(queued_event, injected_exception)
+            ));
+        }
+
+        // So is the count of pending NMIs, which KVM restores as it is given
+        // and reports from Linux 6.4 on: a difference in it is a loss, beside
+        // a queued exception or not.
+        let counted = |pending_event, nmi_pending_count| Activity {
+            nmi_pending: true,
+            nmi_pending_count,
+            ..activity(pending_event, injected_exception)
+        };
+        for restored in [None, Some(2)] {
+            for expected in [None, Some(2)] {
+                assert_eq!(
+                    accepted(
+                        true,
+                        &counted(None, restored),
+                        &counted(queued_event, expected)
+                    ),
+                    restored == expected
+                );
+                assert_eq!(
+                    accepted(false, &counted(None, restored), &counted(None, expected)),
+                    restored == expected
+                );
+            }
+        }
+
+        // A pending event is the injected exception only if its vector and
+        // error code say so, and it has no payload. Another is an event of its
+        // own, which the restore must not lose.
+        for pending_event in [
+            pending_exception(14, Some(0), 0),
+            pending_exception(13, Some(1), 0),
+            pending_exception(13, None, 0),
+            pending_exception(13, Some(0), 1),
+            PendingEvent::ExtInt { vector: 13 },
+        ] {
+            let pair = activity(Some(pending_event), injected_exception);
+            assert!(!accepted(true, &injected, &pair), "{pending_event:?}");
+            assert!(accepted(true, &pair, &pair), "{pending_event:?}");
+        }
+        for pending_interruption in [
+            None,
+            Some(exception(14, Some(0))),
+            Some(exception(13, None)),
+            Some(PendingInterruption::Interrupt { vector: 13 }),
+            Some(PendingInterruption::Nmi),
+        ] {
+            let pair = activity(queued_event, pending_interruption);
+            assert!(
+                !accepted(true, &activity(None, pending_interruption), &pair),
+                "{pending_interruption:?}"
+            );
+        }
+    }
+
+    fn msrs(sysenter_cs: u64, sysenter_eip: u64, sysenter_esp: u64) -> VirtualMsrs {
+        VirtualMsrs {
+            sysenter_cs,
+            sysenter_eip,
+            sysenter_esp,
+            ..virtual_msrs()
+        }
+    }
+
+    #[test]
+    fn a_restore_accepts_the_msrs_that_kvm_keeps_narrow() {
+        // The SYSENTER addresses that KVM makes canonical: what is given, and
+        // what is kept on a host with 4 levels of paging, and on one with 5.
+        let addresses = [
+            // Canonical at neither width.
+            (0x8000_0000_0000_1000, 0x1000, 0x1000),
+            // Canonical at 57 bits, but not at 48.
+            (0x0080_0000_0000_1000, 0x1000, 0x0080_0000_0000_1000),
+            (
+                0x0000_8000_0000_1000,
+                0xffff_8000_0000_1000,
+                0x0000_8000_0000_1000,
+            ),
+            (0xff80_0000_0000_1000, 0x1000, 0xff80_0000_0000_1000),
+            // Canonical at both.
+            (
+                0xffff_8000_0000_1000,
+                0xffff_8000_0000_1000,
+                0xffff_8000_0000_1000,
+            ),
+            (0x1000, 0x1000, 0x1000),
+        ];
+        for (given, at_4_levels, at_5_levels) in addresses {
+            // An SVM host also keeps the low 32 bits for a guest that is not
+            // Intel-compatible.
+            for kept in [given, at_4_levels, at_5_levels, given & 0xffff_ffff] {
+                assert!(
+                    accepted(true, &msrs(0x10, kept, 0x2000), &msrs(0x10, given, 0x2000)),
+                    "SYSENTER_EIP {given:#x} as {kept:#x}"
+                );
+                assert!(
+                    accepted(true, &msrs(0x10, 0x1000, kept), &msrs(0x10, 0x1000, given)),
+                    "SYSENTER_ESP {given:#x} as {kept:#x}"
+                );
+            }
+            // No other address is.
+            for kept in [given ^ 1, given ^ 0x1000, 0] {
+                if [given, at_4_levels, at_5_levels, given & 0xffff_ffff].contains(&kept) {
+                    continue;
+                }
+                assert!(
+                    !accepted(true, &msrs(0x10, kept, 0x2000), &msrs(0x10, given, 0x2000)),
+                    "SYSENTER_EIP {given:#x} as {kept:#x}"
+                );
+                assert!(
+                    !accepted(true, &msrs(0x10, 0x1000, kept), &msrs(0x10, 0x1000, given)),
+                    "SYSENTER_ESP {given:#x} as {kept:#x}"
+                );
+            }
+            // A hypervisor that does not normalize keeps an address whole.
+            assert!(accepted(
+                false,
+                &msrs(0x10, given, given),
+                &msrs(0x10, given, given)
+            ));
+            if at_4_levels != given {
+                assert!(!accepted(
+                    false,
+                    &msrs(0x10, at_4_levels, 0x2000),
+                    &msrs(0x10, given, 0x2000)
+                ));
+            }
+        }
+
+        // A VMX host keeps the low 32 bits of SYSENTER_CS, and nothing else
+        // of it changes.
+        assert!(accepted(
+            true,
+            &msrs(0x10, 0x1000, 0x2000),
+            &msrs(0x1_0000_0010, 0x1000, 0x2000)
+        ));
+        assert!(accepted(
+            true,
+            &msrs(0x1_0000_0010, 0x1000, 0x2000),
+            &msrs(0x1_0000_0010, 0x1000, 0x2000)
+        ));
+        assert!(!accepted(
+            true,
+            &msrs(0x11, 0x1000, 0x2000),
+            &msrs(0x1_0000_0010, 0x1000, 0x2000)
+        ));
+        assert!(!accepted(
+            true,
+            &msrs(0x1_0000_0010, 0x1000, 0x2000),
+            &msrs(0x10, 0x1000, 0x2000)
+        ));
+        assert!(!accepted(
+            false,
+            &msrs(0x10, 0x1000, 0x2000),
+            &msrs(0x1_0000_0010, 0x1000, 0x2000)
+        ));
+
+        // The other MSRs are kept whole.
+        for other in [
+            VirtualMsrs {
+                kernel_gs_base: 0,
+                ..virtual_msrs()
+            },
+            VirtualMsrs {
+                star: 0,
+                ..virtual_msrs()
+            },
+            VirtualMsrs {
+                lstar: 0,
+                ..virtual_msrs()
+            },
+            VirtualMsrs {
+                cstar: 0,
+                ..virtual_msrs()
+            },
+            VirtualMsrs {
+                sfmask: 0,
+                ..virtual_msrs()
+            },
+        ] {
+            assert!(!accepted(true, &other, &virtual_msrs()), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_restore_accepts_the_tsc_aux_that_kvm_keeps_narrow() {
+        let aux = |value| TscAux { value };
+        // KVM keeps the low 32 bits for a guest that is not Intel-compatible.
+        assert!(accepted(true, &aux(0x1234), &aux(0x1_0000_1234)));
+        assert!(accepted(true, &aux(0x1_0000_1234), &aux(0x1_0000_1234)));
+        assert!(!accepted(true, &aux(0x1235), &aux(0x1_0000_1234)));
+        assert!(!accepted(true, &aux(0x1_0000_1234), &aux(0x1234)));
+        // A hypervisor that does not normalize keeps all of it.
+        assert!(accepted(false, &aux(0x1234), &aux(0x1234)));
+        assert!(!accepted(false, &aux(0x1234), &aux(0x1_0000_1234)));
     }
 }

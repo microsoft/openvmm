@@ -127,6 +127,15 @@ pub struct X86PartitionCapabilities {
     pub nxe_forced_on: bool,
     /// Nested virtualization is enabled for this partition.
     pub nested_virt: bool,
+    /// The hypervisor normalizes some of the state that a restore sets, so that
+    /// the state that the restore's check reads back can differ from the one
+    /// that it set in the ways that [`StateElement::restore_eq`] documents for
+    /// each element. KVM does: see [`vp::Registers`], [`vp::Activity`],
+    /// [`vp::VirtualMsrs`], and [`vp::TscAux`]. Without it, a restore's check
+    /// requires equal states.
+    ///
+    /// [`StateElement::restore_eq`]: crate::state::StateElement::restore_eq
+    pub normalizes_restored_state: bool,
 }
 
 #[derive(Error, Debug)]
@@ -180,6 +189,7 @@ impl X86PartitionCapabilities {
             dr6_tsx_broken: false,
             nxe_forced_on: false,
             nested_virt: false,
+            normalizes_restored_state: false,
         };
 
         let max_function = {
