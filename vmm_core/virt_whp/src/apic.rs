@@ -217,6 +217,12 @@ impl WhpProcessor<'_> {
         if value.nmi_pending_count.is_some() {
             return Err(Error::UnsupportedState("nmi_pending_count"));
         }
+        // WHP's interrupt state has one bit for both kinds of interrupt
+        // shadow, so it cannot restore a kind. Refuse it before changing any
+        // state.
+        if value.interrupt_shadow_kind.is_some() {
+            return Err(Error::UnsupportedState("interrupt_shadow_kind"));
+        }
         match self.vp.partition.vtlp(vtl).lapic {
             LocalApicKind::Emulated(_) => {
                 let lapic = self.state.vtls[vtl].lapic.as_mut().unwrap();

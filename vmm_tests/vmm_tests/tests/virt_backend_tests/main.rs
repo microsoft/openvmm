@@ -50,6 +50,12 @@ mod save;
     guest_is_native,
     any(target_os = "linux", windows)
 ))]
+mod shadow;
+#[cfg(all(
+    guest_arch = "x86_64",
+    guest_is_native,
+    any(target_os = "linux", windows)
+))]
 mod speculation;
 #[cfg(all(
     guest_arch = "x86_64",

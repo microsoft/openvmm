@@ -1542,6 +1542,12 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         if value.nmi_pending_count.is_some() {
             return Err(vp_state::Error::Unimplemented("nmi_pending_count"));
         }
+        // This backend's interrupt state has one bit for both kinds of
+        // interrupt shadow, so it cannot restore a kind. Refuse it before
+        // changing any state.
+        if value.interrupt_shadow_kind.is_some() {
+            return Err(vp_state::Error::Unimplemented("interrupt_shadow_kind"));
+        }
         self.set_register_state(value)?;
 
         // TODO: Set the NMI pending bit via the APIC.
