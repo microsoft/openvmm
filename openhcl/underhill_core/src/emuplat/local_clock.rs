@@ -144,14 +144,19 @@ impl LocalClock for UnderhillLocalClock {
 }
 
 mod host_time {
-    use futures::FutureExt;
     use guest_emulation_transport::api::Time;
     use inspect::Inspect;
     use jiff::SignedDuration;
+    use jiff::Timestamp;
     use jiff::Zoned;
     use parking_lot::Mutex;
     use std::future::Future;
     use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Wake;
+    use std::task::Waker;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -167,28 +172,39 @@ mod host_time {
 
     #[derive(Inspect)]
     pub(super) struct CachedHostTime {
-        /// When the query for `time` was sent.
+        /// When the last query to be answered was sent.
         #[inspect(
             rename = "since_last_query",
             with = "|x| inspect::AsDebug(x.elapsed())"
         )]
         pub(super) last_query: Instant,
-        /// The host time from the last query.
+        /// The host time at `anchor`.
         #[inspect(rename = "cached_time", display)]
         pub(super) time: Zoned,
+        /// The local time `time` is advanced from.
+        #[inspect(skip)]
+        pub(super) anchor: Instant,
         /// The latest time returned.
         #[inspect(display)]
         latest: Zoned,
-        /// An outstanding query, and when it was sent.
+        /// An outstanding query: when it was sent, when it was last woken, and
+        /// the reply.
         #[inspect(with = "Option::is_some")]
-        refresh: Option<(Instant, Pin<Box<dyn Future<Output = Time> + Send>>)>,
+        refresh: Option<Refresh>,
     }
+
+    type Refresh = (
+        Instant,
+        Arc<WokenAt>,
+        Pin<Box<dyn Future<Output = Time> + Send>>,
+    );
 
     impl std::fmt::Debug for CachedHostTime {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             let Self {
                 last_query,
                 time,
+                anchor,
                 latest,
                 refresh,
             } = self;
@@ -196,9 +212,41 @@ mod host_time {
             f.debug_struct("CachedHostTime")
                 .field("last_query", last_query)
                 .field("time", time)
+                .field("anchor", anchor)
                 .field("latest", latest)
-                .field("refresh", &refresh.as_ref().map(|(sent, _)| sent))
+                .field("refresh", &refresh.as_ref().map(|(sent, _, _)| sent))
                 .finish()
+        }
+    }
+
+    impl CachedHostTime {
+        /// Take a reply to a query sent at `sent`, which came in at `replied`.
+        fn update(&mut self, sent: Instant, replied: Instant, reply: Time, now: Instant) {
+            // The host sampled its time somewhere between sending the query
+            // and the reply coming in. Keep advancing the time as before if it
+            // falls in that range, and otherwise move it to the nearer end, so
+            // that a slow reply doesn't move the time by however long the host
+            // took.
+            let reply = reply.to_jiff();
+            let advanced = &self.time + now.duration_since(self.anchor);
+            self.time = advanced
+                .clamp(
+                    &reply + now.duration_since(replied),
+                    &reply + now.duration_since(sent),
+                )
+                .with_time_zone(reply.time_zone().clone());
+            self.anchor = now;
+            self.last_query = sent;
+            self.refresh = None;
+        }
+    }
+
+    /// Records when a query was last woken, which is when its reply came in.
+    struct WokenAt(Mutex<Option<Instant>>);
+
+    impl Wake for WokenAt {
+        fn wake(self: Arc<Self>) {
+            *self.0.lock() = Some(Instant::now());
         }
     }
 
@@ -214,6 +262,7 @@ mod host_time {
                     last_query,
                     latest: time.clone(),
                     time,
+                    anchor: Instant::now(),
                     refresh: None,
                 }),
             }
@@ -236,13 +285,14 @@ mod host_time {
             // This is called on the VP thread, so don't wait for the host to
             // respond. Until it does, keep advancing the previous host time;
             // if the host paused the VM, which VTL2 can't see, this is behind
-            // by the pause until the reply comes in.
+            // by the pause until the reply comes in, and after the time has
+            // gone unread for a while it is off by the local clock's drift.
             let now = Instant::now();
             let mut cached_host_time = self.cached_host_time.lock();
             let cached_host_time = &mut *cached_host_time;
             self.refresh(cached_host_time, now);
 
-            let time = &cached_host_time.time + now.duration_since(cached_host_time.last_query);
+            let time = &cached_host_time.time + now.duration_since(cached_host_time.anchor);
 
             // The local clock may run ahead of the host between queries, so a
             // reply can put the time behind what was returned before. Hold it
@@ -268,18 +318,24 @@ mod host_time {
                 cached_host_time.refresh = Some(self.send(now));
             }
 
-            if let Some((sent, refresh)) = &mut cached_host_time.refresh
-                && let Some(time) = refresh.now_or_never()
+            if let Some((sent, woken_at, reply)) = &mut cached_host_time.refresh
+                && let Poll::Ready(reply) = reply
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&Waker::from(woken_at.clone())))
             {
-                cached_host_time.last_query = *sent;
-                cached_host_time.time = time.to_jiff();
-                cached_host_time.refresh = None;
+                let sent = *sent;
+                let replied = woken_at.0.lock().unwrap_or(now);
+                cached_host_time.update(sent, replied, reply, now);
             }
         }
 
-        fn send(&self, now: Instant) -> (Instant, Pin<Box<dyn Future<Output = Time> + Send>>) {
+        fn send(&self, now: Instant) -> Refresh {
             let get = self.get.clone();
-            (now, Box::pin(async move { get.host_time().await }))
+            (
+                now,
+                Arc::new(WokenAt(Mutex::new(None))),
+                Box::pin(async move { get.host_time().await }),
+            )
         }
 
         /// Return the host time as of the call, for setting the time. Unlike
@@ -296,23 +352,40 @@ mod host_time {
             self.refresh(cached_host_time, now);
 
             if now.duration_since(cached_host_time.last_query) >= Duration::from_secs(1) {
-                let (sent, refresh) = cached_host_time
+                let (sent, _, reply) = cached_host_time
                     .refresh
                     .take()
-                    .filter(|(sent, _)| now.duration_since(*sent) < Duration::from_secs(1))
+                    .filter(|(sent, _, _)| now.duration_since(*sent) < Duration::from_secs(1))
                     .unwrap_or_else(|| self.send(now));
                 // TODO: this block_on really ain't great, but since we're
                 // not hammering the GET on _each_ access, it's okay for now...
-                let time = pal_async::local::block_with_io(|_| refresh);
-                cached_host_time.last_query = sent;
-                cached_host_time.time = time.to_jiff();
+                let reply = pal_async::local::block_with_io(|_| reply);
+                let replied = Instant::now();
+                cached_host_time.update(sent, replied, reply, replied);
             }
 
             // The time is set as of when the guest wrote it, not when the
             // reply came in.
-            let time = &cached_host_time.time + now.duration_since(cached_host_time.last_query);
-            cached_host_time.latest = time.clone();
-            time
+            cached_host_time.latest = if now >= cached_host_time.anchor {
+                &cached_host_time.time + now.duration_since(cached_host_time.anchor)
+            } else {
+                &cached_host_time.time - cached_host_time.anchor.duration_since(now)
+            };
+            cached_host_time.latest.clone()
+        }
+
+        /// Return the latest time returned.
+        pub fn latest(&self) -> Timestamp {
+            self.cached_host_time.lock().latest.timestamp()
+        }
+
+        /// Hold times before `latest`, as returned before servicing.
+        pub fn hold(&self, latest: Timestamp) {
+            let mut cached_host_time = self.cached_host_time.lock();
+            let latest = latest.to_zoned(cached_host_time.latest.time_zone().clone());
+            if latest > cached_host_time.latest {
+                cached_host_time.latest = latest;
+            }
         }
     }
 }
@@ -361,6 +434,10 @@ mod save_restore {
         pub struct SavedState {
             #[mesh(1)]
             pub offset_from_host_time_millis: i64,
+            /// The latest host time returned, so that the time doesn't go
+            /// back across servicing.
+            #[mesh(2)]
+            pub latest_host_time_millis: Option<i64>,
         }
     }
 
@@ -370,15 +447,23 @@ mod save_restore {
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 offset_from_host_time_millis: self.offset_from_host_time.as_millis(),
+                latest_host_time_millis: Some(self.host_time.latest().as_millisecond()),
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let state::SavedState {
                 offset_from_host_time_millis,
+                latest_host_time_millis,
             } = state;
 
             self.offset_from_host_time = LocalClockDelta::from_millis(offset_from_host_time_millis);
+            if let Some(latest) = latest_host_time_millis {
+                self.host_time.hold(
+                    jiff::Timestamp::from_millisecond(latest)
+                        .map_err(|err| RestoreError::InvalidSavedState(err.into()))?,
+                );
+            }
 
             Ok(())
         }
@@ -391,6 +476,7 @@ mod tests {
     use super::fetch_skew_from_store;
     use super::host_time::HostSystemTimeAccess;
     use guest_emulation_transport::test_utilities::TestGet;
+    use jiff::Zoned;
     use local_clock::LocalClock;
     use local_clock::LocalClockTime;
     use pal_async::DefaultDriver;
@@ -431,6 +517,10 @@ mod tests {
         (clock, get, get_driver)
     }
 
+    fn is_near_host_time(time: &Zoned) -> bool {
+        time.duration_since(&Zoned::now()).unsigned_abs() < Duration::from_millis(500)
+    }
+
     #[async_test]
     async fn stale_time_does_not_wait_for_host(driver: DefaultDriver) {
         let get = new_get(&driver).await;
@@ -442,6 +532,7 @@ mod tests {
         {
             let mut cached_host_time = host_time.cached_host_time.lock();
             cached_host_time.last_query -= Duration::from_secs(10);
+            cached_host_time.anchor -= Duration::from_secs(10);
         }
         let last_query = host_time.cached_host_time.lock().last_query;
         assert!(host_time.now() >= &initial + Duration::from_secs(10));
@@ -465,6 +556,7 @@ mod tests {
         {
             let mut cached_host_time = host_time.cached_host_time.lock();
             cached_host_time.last_query -= Duration::from_secs(1);
+            cached_host_time.anchor -= Duration::from_secs(1);
             cached_host_time.time = &cached_host_time.time - Duration::from_millis(200);
         }
         let last_query = host_time.cached_host_time.lock().last_query;
@@ -476,6 +568,76 @@ mod tests {
             assert!(host_time.now() >= ahead);
         }
         assert!(host_time.cached_host_time.lock().time < ahead);
+    }
+
+    #[async_test]
+    async fn slow_reply_does_not_move_time(driver: DefaultDriver) {
+        let get = new_get(&driver).await;
+        let host_time = HostSystemTimeAccess::new(get.client.clone()).await;
+
+        // The host is served by this thread, so blocking it delays when the
+        // host samples its time.
+        let last_query = {
+            let mut cached_host_time = host_time.cached_host_time.lock();
+            cached_host_time.last_query -= Duration::from_secs(1);
+            cached_host_time.last_query
+        };
+        host_time.now();
+        std::thread::sleep(Duration::from_millis(1500));
+
+        let mut timer = PolledTimer::new(&driver);
+        while host_time.cached_host_time.lock().last_query == last_query {
+            timer.sleep(Duration::from_millis(10)).await;
+            host_time.now();
+        }
+        assert!(is_near_host_time(&host_time.now()));
+    }
+
+    #[async_test]
+    async fn reply_is_timed_when_it_comes_in(driver: DefaultDriver) {
+        let get = new_get(&driver).await;
+        let host_time = HostSystemTimeAccess::new(get.client.clone()).await;
+
+        // Pretend the host paused the VM for an hour, and nothing reads the
+        // time for a while after the reply to the next query comes in.
+        {
+            let mut cached_host_time = host_time.cached_host_time.lock();
+            cached_host_time.last_query -= Duration::from_secs(1);
+            cached_host_time.time = &cached_host_time.time - Duration::from_secs(3600);
+        }
+        host_time.now();
+        PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(100))
+            .await;
+        std::thread::sleep(Duration::from_millis(1500));
+
+        assert!(is_near_host_time(&host_time.now()));
+    }
+
+    #[async_test]
+    async fn servicing_does_not_go_backwards(driver: DefaultDriver) {
+        let get = new_get(&driver).await;
+        let mut clock = UnderhillLocalClock::new(
+            get.client.clone(),
+            EphemeralNonVolatileStore::new_boxed(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Pretend the local clock ran 800ms ahead of the host.
+        clock.host_time.cached_host_time.lock().anchor -= Duration::from_millis(800);
+        let ahead = clock.get_time();
+
+        let state = clock.save().unwrap();
+        let mut clock = UnderhillLocalClock::new(
+            get.client.clone(),
+            EphemeralNonVolatileStore::new_boxed(),
+            Some(state),
+        )
+        .await
+        .unwrap();
+        assert!(clock.get_time() >= ahead);
     }
 
     #[async_test]
@@ -551,5 +713,11 @@ mod tests {
         let before = Instant::now();
         clock.set_time(LocalClockTime::from(SystemTime::now()));
         assert!(clock.host_time.cached_host_time.lock().last_query >= before);
+        // The time is set as of the write, not as of the reply.
+        let skew = fetch_skew_from_store(&mut *clock.store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(skew.as_millis().abs() < 100, "{skew:?}");
     }
 }
