@@ -833,11 +833,13 @@ impl DiskIo for LayeredDisk {
         sector_count: u64,
         block_level_only: bool,
     ) -> Result<(), DiskError> {
-        if self.unmap_behavior == UnmapBehavior::Ignored {
-            return Ok(());
-        }
+        // Checked before the ignored case so that a read-only disk never
+        // reports a successful unmap.
         if self.read_only {
             return Err(DiskError::ReadOnly);
+        }
+        if self.unmap_behavior == UnmapBehavior::Ignored {
+            return Ok(());
         }
 
         for (layer, next_layer) in self
@@ -1220,6 +1222,30 @@ mod tests {
             Err(disk_backend::DiskError::ReadOnly)
         ));
         assert_eq!(&cache.sectors.lock()[&0].0[..], &[0x5a; 512]);
+    }
+
+    #[async_test]
+    async fn test_read_only_refuses_ignored_unmap() {
+        // A write-through layer whose unmap does not zero makes the disk
+        // ignore unmap. A read-only disk must still refuse it.
+        let layers = vec![
+            LayerConfiguration {
+                layer: DiskLayer::new(Arc::new(TestLayer::new(8))),
+                read_cache: false,
+                write_through: true,
+            },
+            LayerConfiguration {
+                layer: DiskLayer::new(Arc::new(TestLayer::new(8))),
+                read_cache: false,
+                write_through: false,
+            },
+        ];
+        let disk = LayeredDisk::new(true, layers).await.unwrap();
+        assert_eq!(disk.unmap_behavior(), UnmapBehavior::Ignored);
+        assert!(matches!(
+            disk.unmap(0, 1, false).await,
+            Err(disk_backend::DiskError::ReadOnly)
+        ));
     }
 
     #[async_test]
