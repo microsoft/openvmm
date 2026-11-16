@@ -325,9 +325,11 @@ elements of a later snapshot in the same way.
 An element can gain an optional field under the same rules. The activity
 element (`virt.x86.Activity`, field 2) holds a VP's MP state, its pending and
 blocked NMIs, its interrupt shadow, and the event and interruption that it was
-about to take. KVM can hold two NMIs pending, when a second NMI reaches a VP
-before it has run, which the Boolean `nmi_pending` cannot say, so the activity
-records the count in its optional field 7, `nmi_pending_count`, when it is 2:
+about to take, and it has two optional fields: the count of pending NMIs and the
+kind of the interrupt shadow. KVM can hold two NMIs pending, when a second NMI
+reaches a VP before it has run, which the Boolean `nmi_pending` cannot say, so
+the activity records the count in its optional field 7, `nmi_pending_count`,
+when it is 2:
 
 - A saved state from a build that predates the field has none, and nor has a
   state that holds at most one pending NMI, so restoring it sets the one
@@ -362,6 +364,28 @@ save records it as the activity's interruption alone and holds no event for it:
 
 A restore refuses any other pending exception, which KVM would drop, before it
 changes the activity. Only a damaged or crafted snapshot holds one.
+
+KVM on an Intel CPU can hold an interrupt shadow of either kind, which the
+Boolean `interrupt_shadow` cannot say: the shadow that a `MOV SS` or `POP SS`
+leaves also blocks NMIs and suppresses certain debug exceptions at the next
+instruction boundary, and the one that an `STI` leaves, with `IF` clear, does
+not. A restore that is given no kind sets a `MOV SS` shadow, which errs on the
+safe side, so the activity records the kind in its optional field 8,
+`interrupt_shadow_kind`, when the shadow is an `STI` shadow:
+
+- A saved state from a build that predates the field has none, and nor has a
+  state whose shadow is a `MOV SS` shadow, or that has no shadow, so restoring
+  it sets a `MOV SS` shadow, as before, and a save encodes every such state byte
+  for byte as an earlier build did. Only KVM on an Intel CPU saves the field,
+  for an `STI` shadow. An AMD CPU has one kind of shadow, and the interrupt
+  state register of MSHV and WHP has one bit for both, so they save none.
+- A build that predates the field ignores it in a saved state from a later
+  build, so it restores an `STI` shadow as a `MOV SS` shadow, as before: an NMI
+  or a debug exception that the `STI` shadow would let through waits for one
+  more instruction.
+
+KVM refuses a kind without a shadow, before it changes the activity. Only a
+damaged or crafted snapshot holds one.
 
 ## Extending the format
 
