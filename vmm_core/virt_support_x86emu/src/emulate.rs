@@ -978,6 +978,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         {
             true
         } else if self.support.is_gpa_mapped(gpa, true) {
+            // TODO: Support unaligned atomics on non-x64 hosts.
             match (current.len(), new.len()) {
                 (1, 1) => self
                     .gm
