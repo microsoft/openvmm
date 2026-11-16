@@ -7,6 +7,8 @@ use petri::PetriVmBuilder;
 #[cfg(target_os = "linux")]
 use petri::PetriVmmBackend;
 use petri::openvmm::OpenVmmPetriBackend;
+#[cfg(target_os = "linux")]
+use petri_artifacts_vmm_test::artifacts::host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL;
 
 pub(crate) async fn vm_host(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
@@ -43,7 +45,9 @@ pub(crate) async fn vm_host_mshv(
     Ok(())
 }
 
-/// Reboot a nested-enabled Linux guest and verify virtualization remains exposed.
+/// Reboot a two-VP Linux L1 three times with nesting enabled and VMBus disabled.
+/// Check changed boot IDs, connectivity, and VMX/SVM exposure on both VPs.
+/// This does not launch an L2; `reboot_l2` separately exercises an L2 reboot.
 #[cfg(target_os = "linux")]
 #[vmm_test_macros::vmm_test_with(
     openvmm,
@@ -92,6 +96,37 @@ async fn reboot_nested_virt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
             "boot {boot}: nested virtualization is not exposed on every CPU"
         );
 
+        if boot != 3 {
+            agent.reboot().await?;
+            agent = vm.wait_for_reset().await?;
+        }
+    }
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Keep the nested-enabled L1 running while rebooting a Linux L2 three times.
+#[cfg(target_os = "linux")]
+#[vmm_test_macros::vmm_test(nested(
+    (vm_host, openvmm_linux_direct_x64),
+    (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "nested", openvmm_linux_direct_x64),
+))]
+async fn reboot_l2(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (mut vm, mut agent) = config.run().await?;
+    let mut previous_boot_id = None;
+    for boot in 0..=3 {
+        agent.ping().await?;
+        let boot_id = agent
+            .unix_shell()
+            .read_file("/proc/sys/kernel/random/boot_id")
+            .await?;
+        anyhow::ensure!(
+            previous_boot_id.as_ref() != Some(&boot_id),
+            "boot {boot}: L2 guest did not reboot"
+        );
+        previous_boot_id = Some(boot_id);
         if boot != 3 {
             agent.reboot().await?;
             agent = vm.wait_for_reset().await?;

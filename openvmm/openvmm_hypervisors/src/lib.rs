@@ -46,7 +46,7 @@ pub fn mshv_snp_available() -> bool {
 }
 
 /// Returns whether KVM supports the nested-state ioctls on this machine.
-pub fn kvm_nested_state_available() -> anyhow::Result<bool> {
+pub fn kvm_nested_state_available() -> bool {
     #[cfg(all(
         target_os = "linux",
         feature = "virt_kvm",
@@ -54,13 +54,7 @@ pub fn kvm_nested_state_available() -> anyhow::Result<bool> {
         guest_arch = "x86_64"
     ))]
     {
-        use anyhow::Context as _;
-
-        let kvm = ::kvm::Kvm::new().context("open KVM for nested-state probe")?;
-        Ok(kvm
-            .check_extension(::kvm::KVM_CAP_NESTED_STATE)
-            .context("query KVM_CAP_NESTED_STATE")?
-            > 0)
+        virt_kvm::is_nested_state_available()
     }
     #[cfg(not(all(
         target_os = "linux",
@@ -69,19 +63,19 @@ pub fn kvm_nested_state_available() -> anyhow::Result<bool> {
         guest_arch = "x86_64"
     )))]
     {
-        Ok(false)
+        false
     }
 }
 
 /// Returns whether MSHV supports partition scrub on this machine.
-pub fn mshv_partition_scrub_available() -> anyhow::Result<bool> {
+pub fn mshv_partition_scrub_available() -> bool {
     #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native))]
     {
         virt_mshv::is_partition_scrub_available()
     }
     #[cfg(not(all(target_os = "linux", feature = "virt_mshv", guest_is_native)))]
     {
-        Ok(false)
+        false
     }
 }
 

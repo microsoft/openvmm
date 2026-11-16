@@ -22,6 +22,7 @@ cfg_select! {
 // x86_64 and aarch64.
 pub mod irqfd;
 
+use anyhow::Context as _;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hv1_emulator::message_queues::MessageQueues;
@@ -248,19 +249,25 @@ pub fn is_available() -> Result<bool, Error> {
 }
 
 /// Probes partition scrub support using a temporary, non-isolated partition.
-/// Only an unimplemented scrub ioctl is treated as unsupported.
-pub fn is_partition_scrub_available() -> anyhow::Result<bool> {
-    use anyhow::Context as _;
-
-    let hv = LinuxMshv::new().context("open MSHV for partition scrub probe")?;
-    let vmfd = hv
-        .mshv
-        .create_vm()
-        .context("create scrub probe partition")?;
-    vmfd.initialize()
-        .context("initialize scrub probe partition")?;
-    let _vp = vmfd.create_vcpu(0).context("create scrub probe VP")?;
-    scrub_partition(&vmfd).context("scrub probe partition")
+pub fn is_partition_scrub_available() -> bool {
+    let probe = || -> anyhow::Result<bool> {
+        let hv = LinuxMshv::new().context("open MSHV for partition scrub probe")?;
+        let vmfd = hv
+            .mshv
+            .create_vm()
+            .context("create scrub probe partition")?;
+        vmfd.initialize()
+            .context("initialize scrub probe partition")?;
+        let _vp = vmfd.create_vcpu(0).context("create scrub probe VP")?;
+        scrub_partition(&vmfd).context("scrub probe partition")
+    };
+    match probe() {
+        Ok(supported) => supported,
+        Err(err) => {
+            tracing::warn!(error = &*err, "MSHV partition scrub probe failed");
+            false
+        }
+    }
 }
 
 /// Returns whether MSHV can create SEV-SNP partitions on this machine.

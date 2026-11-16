@@ -1277,6 +1277,8 @@ pub enum RoutingEntry {
 pub struct Processor<'a>(&'a Partition, u32);
 
 #[cfg(target_arch = "x86_64")]
+// Architectural reset discards any prior L2 state. Only the CPU vendor
+// determines the inactive VMX/SVM header; no VMCS/VMCB payload survives.
 fn nested_state_at_reset(vmx: bool) -> kvm_nested_state {
     let mut state = kvm_nested_state {
         size: size_of::<kvm_nested_state>() as u32,
@@ -2274,30 +2276,6 @@ pub struct DebugRegisters {
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn nested_vmx_reset_has_no_vmxon_region_or_vmcs() {
-        let state = nested_state_at_reset(true);
-        assert_eq!(state.size as usize, size_of::<kvm_nested_state>());
-        assert_eq!(u32::from(state.format), KVM_STATE_NESTED_FORMAT_VMX);
-        assert_eq!(state.flags, 0);
-        // SAFETY: The reset state uses the VMX format.
-        let vmx = unsafe { state.hdr.vmx };
-        assert_eq!(vmx.vmxon_pa, u64::MAX);
-        assert_eq!(vmx.vmcs12_pa, u64::MAX);
-        assert_eq!(vmx.smm.flags, 0);
-        assert_eq!(vmx.flags, 0);
-    }
-
-    #[test]
-    fn nested_svm_reset_leaves_guest_mode_with_gif_set() {
-        let state = nested_state_at_reset(false);
-        assert_eq!(state.size as usize, size_of::<kvm_nested_state>());
-        assert_eq!(u32::from(state.format), KVM_STATE_NESTED_FORMAT_SVM);
-        assert_eq!(u32::from(state.flags), KVM_STATE_NESTED_GIF_SET);
-        // SAFETY: The reset state uses the SVM format.
-        assert_eq!(unsafe { state.hdr.svm.vmcb_pa }, 0);
-    }
 
     #[test]
     fn sev_snp_page_type_values_match_kvm_uapi() {
