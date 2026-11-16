@@ -476,29 +476,31 @@ pub struct Activity {
     /// change or reuse the field's number.
     #[mesh(7)]
     pub nmi_pending_count: Option<u8>,
-    /// The kind of the interrupt shadow, when it is not the kind that restoring
-    /// `None` sets.
+    /// The kind of the interrupt shadow, when it is not the kind that a restore
+    /// sets for a shadow with no kind.
     ///
     /// An interrupt shadow lasts until the next instruction ends. The one that
     /// a MOV SS or POP SS leaves also blocks NMIs and suppresses certain debug
     /// exceptions at that boundary, and the one that an STI leaves does not,
     /// as [`InterruptShadowKind`] says. Where a backend has a shadow of each
-    /// kind, restoring `None` sets a MOV SS shadow, so its save reports `None`
-    /// for that one and `Some(InterruptShadowKind::Sti)` for the other, and a
-    /// state reads back from its restore as it was saved. KVM on an Intel CPU
-    /// reports the kind. A backend whose shadow has one kind reports `None` for
-    /// every shadow: AMD hardware, and Hyper-V's interrupt state register,
-    /// which MSHV and WHP use, which has one bit for both. MSHV, WHP, and
-    /// OpenHCL's backends refuse to restore a kind, rather than drop it, and
-    /// KVM on an AMD CPU sets its one shadow, which reads back with no kind. A
-    /// kind without `interrupt_shadow` describes nothing, and KVM refuses it.
+    /// kind, a restore sets a MOV SS shadow for a shadow with no kind, so its
+    /// save reports `None` for that one and `Some(InterruptShadowKind::Sti)`
+    /// for the other, and a state reads back from its restore as it was saved.
+    /// KVM on an Intel CPU reports the kind. A backend whose shadow has one
+    /// kind reports `None` for every shadow: AMD hardware, and Hyper-V's
+    /// interrupt state register, which MSHV and WHP use, which has one bit for
+    /// both. MSHV, WHP, and OpenHCL's backends refuse to restore a kind, rather
+    /// than drop it, and KVM on an AMD CPU sets its one shadow, which reads
+    /// back with no kind. A kind without `interrupt_shadow` describes nothing,
+    /// and KVM refuses it.
     ///
     /// The field needs no version. A saved state from a build that predates
     /// it, or whose shadow is not an STI shadow, has no such field, which is
-    /// byte for byte what earlier builds saved, so restoring it sets the
-    /// shadow that `None` gives, as before. A build that predates the field
-    /// ignores it in a later state, so it restores an STI shadow as a MOV SS
-    /// shadow, as before. Never change or reuse the field's number.
+    /// byte for byte what earlier builds saved, so restoring it sets a MOV SS
+    /// shadow if it has a shadow, and none if it has none, as before. A build
+    /// that predates the field ignores it in a later state, so it restores an
+    /// STI shadow as a MOV SS shadow, as before. Never change or reuse the
+    /// field's number.
     #[mesh(8)]
     pub interrupt_shadow_kind: Option<InterruptShadowKind>,
 }
@@ -510,11 +512,13 @@ pub struct Activity {
 /// certain debug exceptions there, and the one that an STI leaves does not. A
 /// restored guest differs from the saved one at that boundary if the restore
 /// sets one kind as the other. The MOV SS shadow is the safe one to set: an STI
-/// shadow that restores as a MOV SS shadow only delays an NMI or a debug
-/// exception by an instruction, while the reverse lets one split a MOV SS from
-/// the instruction that follows it, which sets the stack pointer. So
-/// [`Activity::interrupt_shadow_kind`] names only the kinds that restoring
-/// `None` does not set, and no variant stands for the MOV SS shadow.
+/// shadow that restores as a MOV SS shadow holds an NMI off for one more
+/// instruction, and an Intel CPU skips an instruction breakpoint at that
+/// instruction, which an STI shadow does not, while the reverse lets an NMI or
+/// a debug exception split a MOV SS from the instruction that follows it, which
+/// sets the stack pointer. So [`Activity::interrupt_shadow_kind`] names only the
+/// kinds that restoring a shadow with no kind does not set, and no variant
+/// stands for the MOV SS shadow.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
 pub enum InterruptShadowKind {

@@ -154,10 +154,10 @@ fn restore_accepts_the_state_that_kvm_normalizes(
 }
 
 // A save names the kind of an interrupt shadow only for an STI shadow, and a
-// restore that is given no kind sets a MOV SS shadow, so the shadow of an
-// earlier save, which has no kind, and an STI shadow read back as they were
-// saved, and the restore's check accepts them as they are. An SVM CPU has one
-// kind of shadow, which a save holds no kind for.
+// restore of a shadow that is given no kind sets a MOV SS shadow, so the shadow
+// of an earlier save, which has no kind, and an STI shadow read back as they
+// were saved, and the restore's check accepts them as they are. An SVM CPU has
+// one kind of shadow, which a save holds no kind for.
 backend_test!(restore_reads_back_an_interrupt_shadow_as_saved, kvm_only, requires: []);
 fn restore_reads_back_an_interrupt_shadow_as_saved(
     partition: &impl Partition,
