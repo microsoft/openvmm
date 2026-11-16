@@ -3945,6 +3945,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             pending_event: None,        // TODO TDX
             pending_interruption: None, // TODO TDX
             nmi_pending_count: None,
+            // TODO TDX: the VMCS holds the kind
+            interrupt_shadow_kind: None,
         })
     }
 
@@ -3957,6 +3959,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             pending_event: _,        // TODO TDX
             pending_interruption: _, // TODO TDX
             nmi_pending_count,
+            // TODO TDX: the VMCS holds the kind
+            interrupt_shadow_kind: _,
         } = value;
         // This backend holds at most one pending NMI, so it cannot restore a
         // count of them. Refuse it before changing any state.

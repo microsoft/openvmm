@@ -2765,6 +2765,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             pending_event: None,        // TODO SNP
             pending_interruption: None, // TODO SNP
             nmi_pending_count: None,
+            // TODO SNP
+            interrupt_shadow_kind: None,
         })
     }
 
@@ -2777,6 +2779,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
             pending_event: _,        // TODO SNP
             pending_interruption: _, // TODO SNP
             nmi_pending_count,
+            // TODO SNP
+            interrupt_shadow_kind: _,
         } = value;
         // This backend holds at most one pending NMI, so it cannot restore a
         // count of them. Refuse it before changing any state.
