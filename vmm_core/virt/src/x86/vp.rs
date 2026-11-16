@@ -476,6 +476,51 @@ pub struct Activity {
     /// change or reuse the field's number.
     #[mesh(7)]
     pub nmi_pending_count: Option<u8>,
+    /// The kind of the interrupt shadow, when it is not the kind that restoring
+    /// `None` sets.
+    ///
+    /// An interrupt shadow lasts until the next instruction ends. The one that
+    /// a MOV SS or POP SS leaves also blocks NMIs and suppresses certain debug
+    /// exceptions at that boundary, and the one that an STI leaves does not,
+    /// as [`InterruptShadowKind`] says. Where a backend has a shadow of each
+    /// kind, restoring `None` sets a MOV SS shadow, so its save reports `None`
+    /// for that one and `Some(InterruptShadowKind::Sti)` for the other, and a
+    /// state reads back from its restore as it was saved. KVM on an Intel CPU
+    /// reports the kind. A backend whose shadow has one kind reports `None` for
+    /// every shadow: AMD hardware, and Hyper-V's interrupt state register,
+    /// which MSHV and WHP use, which has one bit for both. MSHV, WHP, and
+    /// OpenHCL's backends refuse to restore a kind, rather than drop it, and
+    /// KVM on an AMD CPU sets its one shadow, which reads back with no kind. A
+    /// kind without `interrupt_shadow` describes nothing, and KVM refuses it.
+    ///
+    /// The field needs no version. A saved state from a build that predates
+    /// it, or whose shadow is not an STI shadow, has no such field, which is
+    /// byte for byte what earlier builds saved, so restoring it sets the
+    /// shadow that `None` gives, as before. A build that predates the field
+    /// ignores it in a later state, so it restores an STI shadow as a MOV SS
+    /// shadow, as before. Never change or reuse the field's number.
+    #[mesh(8)]
+    pub interrupt_shadow_kind: Option<InterruptShadowKind>,
+}
+
+/// A kind of interrupt shadow, which lasts until the next instruction ends.
+///
+/// Every kind blocks maskable interrupts at that instruction boundary. The
+/// shadow that a MOV SS or POP SS leaves also blocks NMIs and suppresses
+/// certain debug exceptions there, and the one that an STI leaves does not. A
+/// restored guest differs from the saved one at that boundary if the restore
+/// sets one kind as the other. The MOV SS shadow is the safe one to set: an STI
+/// shadow that restores as a MOV SS shadow only delays an NMI or a debug
+/// exception by an instruction, while the reverse lets one split a MOV SS from
+/// the instruction that follows it, which sets the stack pointer. So
+/// [`Activity::interrupt_shadow_kind`] names only the kinds that restoring
+/// `None` does not set, and no variant stands for the MOV SS shadow.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+pub enum InterruptShadowKind {
+    /// `STI`, executed with RFLAGS.IF clear.
+    #[mesh(1)]
+    Sti,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Protobuf, Inspect, Default)]
@@ -645,6 +690,8 @@ impl HvRegisterState<HvX64RegisterName, 4> for Activity {
             pending_event,
             pending_interruption,
             nmi_pending_count: None,
+            // The interrupt state register has one bit for both kinds.
+            interrupt_shadow_kind: None,
         };
     }
 }
@@ -670,6 +717,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Activity {
             pending_event: None,
             pending_interruption: None,
             nmi_pending_count: None,
+            interrupt_shadow_kind: None,
         }
     }
 
@@ -678,9 +726,13 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Activity {
     /// only an injected one. An earlier save recorded such an exception as
     /// both, which reads back as the injected exception alone.
     ///
-    /// Every other field is compared exactly, the count of pending NMIs
-    /// included: KVM restores the count that it is given, and reports it from
-    /// Linux 6.4 on.
+    /// Every other field is compared exactly, the count of pending NMIs and the
+    /// kind of the interrupt shadow included: KVM restores the count that it is
+    /// given, and reports it from Linux 6.4 on, and restores the kind that it
+    /// is given where it has one. KVM on an AMD CPU, whose one shadow has no
+    /// kind, sets a kind as that shadow and reads it back as none, which this
+    /// check reports. Only a crafted state gets there: an AMD save holds no
+    /// kind, and a snapshot of another vendor's CPU does not restore on AMD.
     fn restore_eq(caps: &X86PartitionCapabilities, restored: &Self, expected: &Self) -> bool {
         /// Returns `activity`, but for a pending exception that is the
         /// injected one, which is no event of its own.
@@ -693,6 +745,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Activity {
                 pending_event,
                 pending_interruption,
                 nmi_pending_count,
+                interrupt_shadow_kind,
             } = activity;
             let pending_event = match (pending_event, pending_interruption) {
                 (
@@ -716,6 +769,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Activity {
                 pending_event,
                 pending_interruption,
                 nmi_pending_count,
+                interrupt_shadow_kind,
             }
         }
 
@@ -3529,6 +3583,30 @@ mod tests {
             }
         }
 
+        // And so is the kind of the interrupt shadow, which KVM restores as it
+        // is given where it has one: a difference in it is a loss as well.
+        let shadowed = |pending_event, interrupt_shadow_kind| Activity {
+            interrupt_shadow: true,
+            interrupt_shadow_kind,
+            ..activity(pending_event, injected_exception)
+        };
+        for restored in [None, Some(InterruptShadowKind::Sti)] {
+            for expected in [None, Some(InterruptShadowKind::Sti)] {
+                assert_eq!(
+                    accepted(
+                        true,
+                        &shadowed(None, restored),
+                        &shadowed(queued_event, expected)
+                    ),
+                    restored == expected
+                );
+                assert_eq!(
+                    accepted(false, &shadowed(None, restored), &shadowed(None, expected)),
+                    restored == expected
+                );
+            }
+        }
+
         // A pending event is the injected exception only if its vector and
         // error code say so, and it has no payload. Another is an event of its
         // own, which the restore must not lose.
@@ -3698,5 +3776,127 @@ mod tests {
         // A hypervisor that does not normalize keeps all of it.
         assert!(accepted(false, &aux(0x1234), &aux(0x1234)));
         assert!(!accepted(false, &aux(0x1234), &aux(0x1_0000_1234)));
+    }
+
+    /// The activity of a build that predates `Activity::interrupt_shadow_kind`.
+    #[derive(Debug, PartialEq, Protobuf)]
+    struct ActivityBeforeShadowKind {
+        #[mesh(1)]
+        mp_state: MpState,
+        #[mesh(2)]
+        nmi_pending: bool,
+        #[mesh(3)]
+        nmi_masked: bool,
+        #[mesh(4)]
+        interrupt_shadow: bool,
+        #[mesh(5)]
+        pending_event: Option<PendingEvent>,
+        #[mesh(6)]
+        pending_interruption: Option<PendingInterruption>,
+        #[mesh(7)]
+        nmi_pending_count: Option<u8>,
+    }
+
+    /// The number of the field of `Activity::interrupt_shadow_kind`, which its
+    /// `mesh` attribute must carry.
+    const INTERRUPT_SHADOW_KIND_FIELD: u8 = 8;
+
+    #[test]
+    fn interrupt_shadow_kind_needs_no_version_to_coexist_with_earlier_builds() {
+        let earlier = |interrupt_shadow| ActivityBeforeShadowKind {
+            mp_state: MpState::Halted,
+            nmi_pending: true,
+            nmi_masked: false,
+            interrupt_shadow,
+            pending_event: None,
+            pending_interruption: Some(PendingInterruption::Interrupt { vector: 0x30 }),
+            nmi_pending_count: Some(2),
+        };
+        let current = |interrupt_shadow, interrupt_shadow_kind| Activity {
+            mp_state: MpState::Halted,
+            nmi_pending: true,
+            interrupt_shadow,
+            pending_interruption: Some(PendingInterruption::Interrupt { vector: 0x30 }),
+            nmi_pending_count: Some(2),
+            interrupt_shadow_kind,
+            ..Default::default()
+        };
+        let sti = Some(InterruptShadowKind::Sti);
+
+        for interrupt_shadow in [false, true] {
+            // A saved state of an earlier build holds no kind, so restoring it
+            // sets the shadow that `None` gives, as that build did.
+            assert_eq!(
+                mesh_protobuf::decode::<Activity>(&mesh_protobuf::encode(earlier(
+                    interrupt_shadow
+                )))
+                .unwrap(),
+                current(interrupt_shadow, None)
+            );
+            // A state whose shadow is not an STI shadow, or that has none, is
+            // the one that the earlier build saved, byte for byte.
+            assert_eq!(
+                mesh_protobuf::encode(current(interrupt_shadow, None)),
+                mesh_protobuf::encode(earlier(interrupt_shadow))
+            );
+        }
+        // An earlier build reads the state of an STI shadow and ignores the
+        // kind, so it restores a MOV SS shadow.
+        assert_eq!(
+            mesh_protobuf::decode::<ActivityBeforeShadowKind>(&mesh_protobuf::encode(current(
+                true, sti
+            )))
+            .unwrap(),
+            earlier(true)
+        );
+
+        // The kind is a message under the field's number, after the earlier
+        // fields: bytes that every build that holds it reads, and that no
+        // later change may alter.
+        let kind = [(INTERRUPT_SHADOW_KIND_FIELD << 3) | 2, 2, 0x0a, 0x00];
+        assert_eq!(
+            mesh_protobuf::encode(current(true, sti)),
+            [mesh_protobuf::encode(earlier(true)), kind.to_vec()].concat()
+        );
+        let pinned = [
+            0x0a, 0x02, 0x0a, 0x00, 0x20, 0x01, kind[0], kind[1], kind[2], kind[3],
+        ];
+        let activity = Activity {
+            interrupt_shadow: true,
+            interrupt_shadow_kind: sti,
+            ..Default::default()
+        };
+        assert_eq!(mesh_protobuf::encode(activity), pinned);
+        assert_eq!(
+            mesh_protobuf::decode::<Activity>(&pinned).unwrap(),
+            Activity {
+                interrupt_shadow: true,
+                interrupt_shadow_kind: sti,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn activity_registers_hold_no_interrupt_shadow_kind() {
+        // The interrupt state register has one bit for both kinds, so the
+        // backends that hold the activity in registers (MSHV and WHP) neither
+        // write nor read a kind.
+        fn values(kind: Option<InterruptShadowKind>) -> [HvRegisterValue; 4] {
+            let mut values = [HvRegisterValue::from(0u64); 4];
+            Activity {
+                interrupt_shadow: true,
+                interrupt_shadow_kind: kind,
+                ..Default::default()
+            }
+            .get_values(values.iter_mut());
+            values
+        }
+        assert_eq!(values(Some(InterruptShadowKind::Sti)), values(None));
+
+        let mut read = Activity::default();
+        read.set_values(values(Some(InterruptShadowKind::Sti)).into_iter());
+        assert!(read.interrupt_shadow);
+        assert_eq!(read.interrupt_shadow_kind, None);
     }
 }
