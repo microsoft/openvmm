@@ -12,7 +12,7 @@ use virtio::resolve::VirtioResolveInput;
 use virtio_resources::fs::VirtioFsAggregateChild;
 use virtio_resources::fs::VirtioFsBackend;
 use virtio_resources::fs::VirtioFsHandle;
-use virtio_resources::fs::VirtioFsWindowsOptions;
+use virtio_resources::fs::VirtioFsOsSpecificOptions;
 use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -55,7 +55,7 @@ impl ParsedVirtioFs {
             VirtioFsBackend::HostFs {
                 root_path,
                 mount_options,
-                windows_options,
+                os_specific_options,
             } => {
                 anyhow::ensure!(
                     !root_path.is_empty(),
@@ -66,7 +66,7 @@ impl ParsedVirtioFs {
                     "virtio-fs root path must not contain NUL bytes"
                 );
 
-                return parse_host_fs(root_path, mount_options, windows_options)
+                return parse_host_fs(root_path, mount_options, os_specific_options)
                     .map(|backend| Self { tag, backend });
             }
             #[cfg(windows)]
@@ -89,19 +89,24 @@ impl ParsedVirtioFs {
 fn parse_host_fs(
     root_path: String,
     mount_options: String,
-    windows_options: Option<VirtioFsWindowsOptions>,
+    os_specific_options: Option<VirtioFsOsSpecificOptions>,
 ) -> anyhow::Result<ParsedVirtioFsBackend> {
-    if windows_options.is_some_and(|options| options.shared_mem) {
+    match os_specific_options {
         #[cfg(windows)]
-        {
-            anyhow::ensure!(
-                mount_options.is_empty(),
-                "virtio-fs shared_mem does not support mount_options"
-            );
-            return Ok(ParsedVirtioFsBackend::SectionFs { root_path });
+        Some(VirtioFsOsSpecificOptions::Windows(options)) => {
+            if options.shared_mem {
+                anyhow::ensure!(
+                    mount_options.is_empty(),
+                    "virtio-fs shared_mem does not support mount_options"
+                );
+                return Ok(ParsedVirtioFsBackend::SectionFs { root_path });
+            }
         }
         #[cfg(not(windows))]
-        anyhow::bail!("virtio-fs windows_options are only supported on Windows");
+        Some(VirtioFsOsSpecificOptions::Windows(_)) => {
+            anyhow::bail!("virtio-fs Windows options are only supported on Windows");
+        }
+        None => {}
     }
     Ok(ParsedVirtioFsBackend::HostFs {
         root_path,
@@ -175,6 +180,7 @@ mod tests {
     use test_with_tracing::test;
     use virtio_resources::fs::VirtioFsBackend;
     use virtio_resources::fs::VirtioFsHandle;
+    use virtio_resources::fs::VirtioFsOsSpecificOptions;
     use virtio_resources::fs::VirtioFsWindowsOptions;
 
     fn host_fs(tag: &str, root_path: &str, mount_options: &str) -> VirtioFsHandle {
@@ -183,7 +189,7 @@ mod tests {
             fs: VirtioFsBackend::HostFs {
                 root_path: root_path.to_owned(),
                 mount_options: mount_options.to_owned(),
-                windows_options: None,
+                os_specific_options: None,
             },
         }
     }
@@ -216,12 +222,15 @@ mod tests {
     fn parse_shared_memory_options() {
         let mut resource = host_fs("tag", "root", "");
         let VirtioFsBackend::HostFs {
-            windows_options, ..
+            os_specific_options,
+            ..
         } = &mut resource.fs
         else {
             unreachable!();
         };
-        *windows_options = Some(VirtioFsWindowsOptions { shared_mem: true });
+        *os_specific_options = Some(VirtioFsOsSpecificOptions::Windows(VirtioFsWindowsOptions {
+            shared_mem: true,
+        }));
         let result = ParsedVirtioFs::parse(resource);
         #[cfg(windows)]
         assert!(matches!(
@@ -238,27 +247,41 @@ mod tests {
         for mount_options in ["ro", "uid=1000"] {
             let mut resource = host_fs("tag", "root", mount_options);
             let VirtioFsBackend::HostFs {
-                windows_options, ..
+                os_specific_options,
+                ..
             } = &mut resource.fs
             else {
                 unreachable!();
             };
-            *windows_options = Some(VirtioFsWindowsOptions { shared_mem: true });
+            *os_specific_options =
+                Some(VirtioFsOsSpecificOptions::Windows(VirtioFsWindowsOptions {
+                    shared_mem: true,
+                }));
             assert!(ParsedVirtioFs::parse(resource).is_err());
         }
     }
 
-    #[cfg(not(windows))]
     #[test]
-    fn parse_accepts_empty_windows_options_on_non_windows() {
-        let mut resource = host_fs("tag", "root", "");
+    fn parse_empty_windows_options() {
+        let mut resource = host_fs("tag", "root", "ro");
         let VirtioFsBackend::HostFs {
-            windows_options, ..
+            os_specific_options,
+            ..
         } = &mut resource.fs
         else {
             unreachable!();
         };
-        *windows_options = Some(Default::default());
-        assert!(ParsedVirtioFs::parse(resource).is_ok());
+        *os_specific_options = Some(VirtioFsOsSpecificOptions::Windows(Default::default()));
+        let result = ParsedVirtioFs::parse(resource);
+        #[cfg(windows)]
+        {
+            let ParsedVirtioFsBackend::HostFs { mount_options, .. } = result.unwrap().backend
+            else {
+                panic!("expected host filesystem backend");
+            };
+            assert!(mount_options.is_readonly());
+        }
+        #[cfg(not(windows))]
+        assert!(result.is_err());
     }
 }

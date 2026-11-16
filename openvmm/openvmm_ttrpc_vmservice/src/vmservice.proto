@@ -1152,8 +1152,10 @@ message VirtioFs {
     string root_path = 2;
     // Backend mount options, separated by ';'. Include "ro" for read-only access.
     string mount_options = 3;
-    // Host-specific virtio-fs options. Omitted on non-Windows hosts.
-    WindowsOptions windows_options = 5;
+    // Host-specific virtio-fs options. Must match the host OS when specified.
+    oneof os_specific_options {
+        WindowsOptions windows = 5;
+    }
 
     message WindowsOptions {
         // Expose shared-memory section objects instead of host files.

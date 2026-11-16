@@ -1120,7 +1120,7 @@ async fn test_ttrpc_interface(
                         tag: "testfs".to_string(),
                         root_path: virtiofs_root.to_string_lossy().into(),
                         mount_options: if i == 0 { "ro" } else { "" }.to_string(),
-                        windows_options: None,
+                        os_specific_options: None,
                     }]
                 },
                 // A SCSI controller keeps a request channel
@@ -1358,7 +1358,7 @@ async fn test_ttrpc_interface(
                                 tag: "hotplugfs".to_string(),
                                 root_path: hotplug_virtiofs_root.to_string_lossy().into(),
                                 mount_options: "ro".to_string(),
-                                windows_options: None,
+                                os_specific_options: None,
                             },
                         ))),
                     },
@@ -2406,7 +2406,7 @@ fn virtio_fs_vpci_request(
                 tag: tag.to_string(),
                 root_path: root_path.to_string_lossy().into_owned(),
                 mount_options: if read_only { "ro" } else { "" }.to_string(),
-                windows_options: None,
+                os_specific_options: None,
             },
         ))),
     }

@@ -57,11 +57,16 @@ pub mod fs {
     }
 
     #[derive(MeshPayload)]
+    pub enum VirtioFsOsSpecificOptions {
+        Windows(VirtioFsWindowsOptions),
+    }
+
+    #[derive(MeshPayload)]
     pub enum VirtioFsBackend {
         HostFs {
             root_path: String,
             mount_options: String,
-            windows_options: Option<VirtioFsWindowsOptions>,
+            os_specific_options: Option<VirtioFsOsSpecificOptions>,
         },
         SectionFs {
             root_path: String,
