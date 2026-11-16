@@ -546,6 +546,7 @@ impl MshvPartitionInner {
             dr6_tsx_broken: false,
             nxe_forced_on: false,
             nested_virt: self.config.nested_virt,
+            normalizes_restored_state: false,
         })
     }
 }
