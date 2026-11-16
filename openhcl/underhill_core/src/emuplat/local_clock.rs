@@ -14,6 +14,8 @@ use self::host_time::HostSystemTimeAccess;
 use cvm_tracing::CVM_ALLOWED;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::Either;
+use futures_concurrency::future::Race;
 use inspect::Inspect;
 use local_clock::LocalClock;
 use local_clock::LocalClockDelta;
@@ -75,59 +77,60 @@ impl UnderhillLocalClock {
         saved_state: Option<<Self as SaveRestore>::SavedState>,
     ) -> anyhow::Result<Self> {
         let host_time = HostSystemTimeAccess::new(get);
-        let restored = saved_state.is_some();
-        let mut offset_from_host_time = match saved_state {
-            Some(state) => LocalClockDelta::from_millis(state.offset_from_host_time_millis),
-            None => {
-                match fetch_skew_from_store(&mut store).await? {
-                    Some(skew) => skew,
-                    None => {
-                        // If there is no existing host time offset, default to using
-                        // the host's provided timezone offset.
-                        //
-                        // Hosts _could_ choose to pass time as UTC, but in Hyper-V,
-                        // this is set to the host's _local_ time, as this allows
-                        // Windows guests to report the correct time on first boot.
-                        // Windows assumes the time stored in the RTC is the machine's
-                        // _local_ time, whereas Linux assume the time stored in the RTC
-                        // stores UTC.
-                        let skew = host_time.now().offset();
-                        let skew = LocalClockDelta::from_millis(skew.seconds() as i64 * 1000);
-                        tracing::info!(
-                            CVM_ALLOWED,
-                            ?skew,
-                            "no saved skew found: defaulting to host local time"
-                        );
-                        skew
-                    }
+        let offset_from_host_time = if saved_state.is_some() {
+            LocalClockDelta::from_millis(0)
+        } else {
+            match fetch_skew_from_store(&mut store).await? {
+                Some(skew) => skew,
+                None => {
+                    // If there is no existing host time offset, default to using
+                    // the host's provided timezone offset.
+                    //
+                    // Hosts _could_ choose to pass time as UTC, but in Hyper-V,
+                    // this is set to the host's _local_ time, as this allows
+                    // Windows guests to report the correct time on first boot.
+                    // Windows assumes the time stored in the RTC is the machine's
+                    // _local_ time, whereas Linux assume the time stored in the RTC
+                    // stores UTC.
+                    let skew = host_time.now().offset();
+                    let skew = LocalClockDelta::from_millis(skew.seconds() as i64 * 1000);
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        ?skew,
+                        "no saved skew found: defaulting to host local time"
+                    );
+                    skew
                 }
             }
         };
 
         // prevent guests from persisting an RTC time in the distant past,
         // which could be used to circumvent time-based licensing checks.
-        let neg_two_days = LocalClockDelta::from_millis(-MILLIS_IN_TWO_DAYS);
-        if offset_from_host_time < neg_two_days {
-            offset_from_host_time = neg_two_days;
-            tracing::warn!(
-                CVM_ALLOWED,
-                "Guest time was more than two days in the past."
-            );
-        }
+        let clamp_skew = |millis: i64| {
+            if millis < -MILLIS_IN_TWO_DAYS {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    "Guest time was more than two days in the past."
+                );
+                -MILLIS_IN_TWO_DAYS
+            } else {
+                millis
+            }
+        };
 
         let mut this = Self {
             persistence: SkewPersistence::new(driver, store),
             host_time,
             offset_from_host_time,
         };
-        if restored {
-            this.persistence.queue(offset_from_host_time);
+        if let Some(mut state) = saved_state {
+            state.offset_from_host_time_millis = clamp_skew(state.offset_from_host_time_millis);
+            this.restore(state)?;
+        } else {
+            this.offset_from_host_time =
+                LocalClockDelta::from_millis(clamp_skew(offset_from_host_time.as_millis()));
         }
         Ok(this)
-    }
-
-    pub fn flush(&self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
-        self.persistence.flush()
     }
 }
 
@@ -188,21 +191,17 @@ impl SkewPersistence {
         }
     }
 
-    fn queue(&mut self, skew: LocalClockDelta) {
+    fn queue(&self, skew: LocalClockDelta) {
         let first = self.pending.lock().replace(skew).is_none();
         if first {
             self.requests.send(PersistenceRequest::Dirty);
         }
     }
 
-    fn flush(&self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
-        let requests = self.requests.clone();
-        async move {
-            let (send, recv) = mesh::oneshot();
-            requests.send(PersistenceRequest::Flush(send));
-            recv.await??;
-            Ok(())
-        }
+    fn request_flush(&self) -> mesh::OneshotReceiver<Result<(), NonVolatileStoreError>> {
+        let (send, recv) = mesh::oneshot();
+        self.requests.send(PersistenceRequest::Flush(send));
+        recv
     }
 }
 
@@ -214,23 +213,34 @@ async fn persist_skew_worker(
 ) {
     let mut deadline = None;
     loop {
-        let completion = futures::select_biased! {
-            _ = async {
-                match deadline {
-                    Some(deadline) => { timer.sleep_until(deadline).await; }
-                    None => std::future::pending::<()>().await,
-                }
-            }.fuse() => None,
-            request = requests.next().fuse() => match request {
-                Some(PersistenceRequest::Dirty) => {
-                    if pending.lock().is_some() {
-                        deadline.get_or_insert_with(|| Instant::now() + RTC_SKEW_PERSIST_DELAY);
+        let wake = if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+            Either::Left(())
+        } else {
+            (
+                async {
+                    match deadline {
+                        Some(deadline) => {
+                            timer.sleep_until(deadline).await;
+                        }
+                        None => std::future::pending::<()>().await,
                     }
-                    continue;
                 }
-                Some(PersistenceRequest::Flush(completion)) => Some(completion),
-                None => return,
-            },
+                .map(Either::Left),
+                requests.next().map(Either::Right),
+            )
+                .race()
+                .await
+        };
+        let completion = match wake {
+            Either::Left(()) => None,
+            Either::Right(Some(PersistenceRequest::Dirty)) => {
+                if pending.lock().is_some() {
+                    deadline.get_or_insert_with(|| Instant::now() + RTC_SKEW_PERSIST_DELAY);
+                }
+                continue;
+            }
+            Either::Right(Some(PersistenceRequest::Flush(completion))) => Some(completion),
+            Either::Right(None) => return,
         };
         let result = persist_pending_skew(&mut *store, &pending).await;
         if let Err(err) = &result {
@@ -347,6 +357,12 @@ mod host_time {
 pub struct ArcMutexUnderhillLocalClock(pub Arc<Mutex<UnderhillLocalClock>>);
 
 impl ArcMutexUnderhillLocalClock {
+    pub async fn flush(&self) -> anyhow::Result<()> {
+        let completion = self.0.lock().persistence.request_flush();
+        completion.await??;
+        Ok(())
+    }
+
     /// Creates a new clock that is backed by the same time source.
     ///
     /// It is appropriate to use this method if the system is expected to have
@@ -511,12 +527,12 @@ mod tests {
         driver: &DefaultDriver,
     ) -> Vec<u8> {
         let mut timer = PolledTimer::new(driver);
-        futures::select! {
-            attempt = attempts.next().fuse() => attempt.unwrap(),
-            _ = timer.sleep(Duration::from_secs(5)).fuse() => {
-                panic!("timed out waiting for RTC skew persistence")
-            }
-        }
+        (async { attempts.next().await.unwrap() }, async {
+            timer.sleep(Duration::from_secs(5)).await;
+            panic!("timed out waiting for RTC skew persistence")
+        })
+            .race()
+            .await
     }
 
     #[async_test]
@@ -528,7 +544,7 @@ mod tests {
             completion: None,
             attempts: Some(send),
         };
-        let mut persistence = SkewPersistence::new(&driver, Box::new(store));
+        let persistence = SkewPersistence::new(&driver, Box::new(store));
         for millis in 1..=100 {
             persistence.queue(LocalClockDelta::from_millis(millis));
         }
@@ -537,7 +553,7 @@ mod tests {
             next_attempt(&mut attempts, &driver).await,
             1_000_000i64.to_le_bytes()
         );
-        persistence.flush().await.unwrap();
+        persistence.request_flush().await.unwrap().unwrap();
         assert_eq!(writes.lock().len(), 1);
         assert!(persistence.pending.lock().is_none());
     }
@@ -550,11 +566,11 @@ mod tests {
             completion: None,
             attempts: None,
         };
-        let mut persistence = SkewPersistence::new(&driver, Box::new(store));
+        let persistence = SkewPersistence::new(&driver, Box::new(store));
         persistence.queue(LocalClockDelta::from_millis(100));
         persistence.queue(LocalClockDelta::from_millis(200));
-        persistence.flush().await.unwrap();
-        persistence.flush().await.unwrap();
+        persistence.request_flush().await.unwrap().unwrap();
+        persistence.request_flush().await.unwrap().unwrap();
         assert_eq!(*writes.lock(), [2_000_000i64.to_le_bytes().to_vec()]);
     }
 
@@ -568,7 +584,7 @@ mod tests {
             completion: Some(completion),
             attempts: Some(send),
         };
-        let mut persistence = SkewPersistence::new(&driver, Box::new(store));
+        let persistence = SkewPersistence::new(&driver, Box::new(store));
         complete.send(false);
         persistence.queue(LocalClockDelta::from_millis(100));
         for _ in 0..2 {
@@ -577,7 +593,7 @@ mod tests {
                 1_000_000i64.to_le_bytes()
             );
         }
-        persistence.flush().await.unwrap();
+        persistence.request_flush().await.unwrap().unwrap();
         assert_eq!(writes.lock().len(), 2);
     }
 
@@ -591,16 +607,16 @@ mod tests {
             completion: Some(completion),
             attempts: Some(send),
         };
-        let mut persistence = SkewPersistence::new(&driver, Box::new(store));
+        let persistence = SkewPersistence::new(&driver, Box::new(store));
         persistence.queue(LocalClockDelta::from_millis(100));
         assert_eq!(
             next_attempt(&mut attempts, &driver).await,
             1_000_000i64.to_le_bytes()
         );
         persistence.queue(LocalClockDelta::from_millis(200));
-        let flush = persistence.flush();
+        let flush = persistence.request_flush();
         complete.send(false);
-        flush.await.unwrap();
+        flush.await.unwrap().unwrap();
         assert_eq!(
             *writes.lock(),
             [
@@ -620,24 +636,23 @@ mod tests {
             completion: None,
             attempts: Some(send),
         };
-        let mut persistence = SkewPersistence::new(&driver, Box::new(store));
+        let persistence = SkewPersistence::new(&driver, Box::new(store));
         let mut millis = 100;
         persistence.queue(LocalClockDelta::from_millis(millis));
         let mut timer = PolledTimer::new(&driver);
         {
-            let mut attempt = std::pin::pin!(next_attempt(&mut attempts, &driver).fuse());
-            loop {
-                futures::select_biased! {
-                    _ = attempt => break,
-                    _ = timer.sleep(Duration::from_millis(10)).fuse() => {
-                        millis += 1;
-                        persistence.queue(LocalClockDelta::from_millis(millis));
-                    }
+            (next_attempt(&mut attempts, &driver).map(|_| ()), async {
+                loop {
+                    timer.sleep(Duration::from_millis(10)).await;
+                    millis += 1;
+                    persistence.queue(LocalClockDelta::from_millis(millis));
                 }
-            }
+            })
+                .race()
+                .await;
         }
         assert!(millis > 100);
-        persistence.flush().await.unwrap();
+        persistence.request_flush().await.unwrap().unwrap();
         assert_eq!(
             writes.lock().last().unwrap(),
             &(millis * 10_000).to_le_bytes().to_vec()
@@ -653,13 +668,13 @@ mod tests {
             completion: Some(completion),
             attempts: None,
         };
-        let mut persistence = SkewPersistence::new(&driver, Box::new(store));
+        let persistence = SkewPersistence::new(&driver, Box::new(store));
         let skew = LocalClockDelta::from_millis(100);
         persistence.queue(skew);
         complete.send(false);
-        assert!(persistence.flush().await.is_err());
+        assert!(persistence.request_flush().await.unwrap().is_err());
         assert_eq!(*persistence.pending.lock(), Some(skew));
-        persistence.flush().await.unwrap();
+        persistence.request_flush().await.unwrap().unwrap();
         assert_eq!(writes.lock().len(), 2);
         assert!(persistence.pending.lock().is_none());
     }
@@ -699,7 +714,122 @@ mod tests {
             restored.offset_from_host_time,
             LocalClockDelta::from_millis(100)
         );
-        restored.flush().await.unwrap();
+        ArcMutexUnderhillLocalClock(Arc::new(Mutex::new(restored)))
+            .flush()
+            .await
+            .unwrap();
         assert_eq!(*writes.lock(), [1_000_000i64.to_le_bytes().to_vec()]);
+    }
+
+    #[async_test]
+    async fn constructor_restore_clamps_pending_offset(driver: DefaultDriver) {
+        let get = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver.clone(),
+            None,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+        for millis in [-MILLIS_IN_TWO_DAYS - 1, -MILLIS_IN_TWO_DAYS, 100] {
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            let store = || {
+                Box::new(RecordingStore {
+                    writes: writes.clone(),
+                    completion: None,
+                    attempts: None,
+                }) as Box<dyn NonVolatileStore>
+            };
+            let mut clock = UnderhillLocalClock {
+                persistence: SkewPersistence::new(&driver, store()),
+                host_time: HostSystemTimeAccess::new(get.client.clone()),
+                offset_from_host_time: LocalClockDelta::from_millis(millis),
+            };
+            let saved = clock.save().unwrap();
+            drop(clock);
+            let clock = UnderhillLocalClock::new(&driver, get.client.clone(), store(), Some(saved))
+                .await
+                .unwrap();
+            let expected = millis.max(-MILLIS_IN_TWO_DAYS);
+            assert_eq!(clock.offset_from_host_time.as_millis(), expected);
+            assert_eq!(
+                *clock.persistence.pending.lock(),
+                Some(LocalClockDelta::from_millis(expected))
+            );
+            ArcMutexUnderhillLocalClock(Arc::new(Mutex::new(clock)))
+                .flush()
+                .await
+                .unwrap();
+            assert_eq!(*writes.lock(), [(expected * 10_000).to_le_bytes().to_vec()]);
+        }
+    }
+
+    #[async_test]
+    async fn servicing_save_flushes_without_holding_clock_lock(driver: DefaultDriver) {
+        let get = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver.clone(),
+            None,
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+        for success in [true, false] {
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            let (complete, completion) = mesh::oneshot();
+            let (send, mut attempts) = mesh::channel();
+            let clock = Arc::new(Mutex::new(UnderhillLocalClock {
+                persistence: SkewPersistence::new(
+                    &driver,
+                    Box::new(RecordingStore {
+                        writes: writes.clone(),
+                        completion: Some(completion),
+                        attempts: Some(send),
+                    }),
+                ),
+                host_time: HostSystemTimeAccess::new(get.client.clone()),
+                offset_from_host_time: LocalClockDelta::from_millis(100),
+            }));
+            clock
+                .lock()
+                .persistence
+                .queue(LocalClockDelta::from_millis(100));
+            let mut servicing = super::super::EmuplatServicing {
+                rtc_local_clock: ArcMutexUnderhillLocalClock(clock.clone()),
+                get_backed_adjust_gpa_range: None,
+                netvsp_state: Vec::new(),
+                network_adapter_index: super::super::netvsp::NetworkAdapterIndex::new(None),
+            };
+            let mut save = servicing.save().boxed();
+            assert!(save.as_mut().now_or_never().is_none());
+            assert_eq!(
+                next_attempt(&mut attempts, &driver).await,
+                1_000_000i64.to_le_bytes()
+            );
+            assert!(clock.try_lock().is_some());
+            assert!(save.as_mut().now_or_never().is_none());
+            complete.send(success);
+            let result = save.await;
+            if success {
+                assert_eq!(
+                    result.unwrap().rtc_local_clock.offset_from_host_time_millis,
+                    100
+                );
+                assert!(clock.lock().persistence.pending.lock().is_none());
+            } else {
+                assert!(
+                    result
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("RTC skew flush failed")
+                );
+                assert_eq!(
+                    *clock.lock().persistence.pending.lock(),
+                    Some(LocalClockDelta::from_millis(100))
+                );
+            }
+            assert_eq!(*writes.lock(), [1_000_000i64.to_le_bytes().to_vec()]);
+        }
     }
 }

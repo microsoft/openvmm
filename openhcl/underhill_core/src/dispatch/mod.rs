@@ -586,8 +586,7 @@ impl LoadedVm {
         };
 
         self.stop().await;
-        let flush_rtc = self.emuplat_servicing.rtc_local_clock.lock().flush();
-        if let Err(err) = flush_rtc.await {
+        if let Err(err) = self.emuplat_servicing.rtc_local_clock.flush().await {
             tracing::error!(
                 CVM_ALLOWED,
                 error = err.as_ref() as &dyn std::error::Error,
@@ -959,13 +958,14 @@ impl LoadedVm {
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
-        let flush_rtc = self.emuplat_servicing.rtc_local_clock.lock().flush();
-        flush_rtc.await.context("RTC skew flush failed")?;
-
         // Save the emulation platform state prior to any network settings so that
         // it can capture any relevant state from the network devices that may be
         // needed for a successful restore.
-        let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
+        let emuplat = self
+            .emuplat_servicing
+            .save()
+            .await
+            .context("emuplat save failed")?;
 
         // For servicing without MANA keepalive, preserve the synthetic NIC state
         // units and unload MANA to exclude its allocations from the DMA snapshot.
