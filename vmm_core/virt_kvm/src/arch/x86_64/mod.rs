@@ -644,6 +644,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         caps.can_freeze_time = false;
         caps.nested_virt = self.nested_virt;
+        caps.normalizes_restored_state = true;
         // KVM can save SPEC_CTRL only if the host has it, and cannot read an
         // SNP guest's from its encrypted VMSA.
         caps.spec_ctrl &=
