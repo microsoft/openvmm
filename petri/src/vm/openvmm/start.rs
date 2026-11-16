@@ -26,6 +26,10 @@ use std::io::Write;
 use std::sync::Arc;
 use vm_resource::IntoResource;
 
+fn pcie_device_supports_save_restore(id: &str) -> bool {
+    !matches!(id, "nvme" | "gdma" | "usb_xhci" | "usb_xhci_config")
+}
+
 impl PetriVmConfigOpenVmm {
     pub(super) async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         self.run_core_inner(None).await
@@ -103,14 +107,14 @@ impl PetriVmConfigOpenVmm {
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
-        // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
+        // TODO: VPCI and some PCIe endpoints (NVMe/GDMA/USB) don't support
         // TODO: virtio vsock and console don't support save/restore yet
         // TODO: 9p shares don't support save/restore yet
         // TODO: nested virt doesn't support save/restore yet
         let has_unsupported_pcie_save_restore_device = config
             .pcie_devices
             .iter()
-            .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
+            .any(|device| !pcie_device_supports_save_restore(device.resource.id()));
         let supports_save_restore = !skip_save_restore
             && !resources.properties.is_openhcl
             && !resources.properties.is_isolated

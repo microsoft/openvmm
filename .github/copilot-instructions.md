@@ -164,10 +164,24 @@ For tasks that seek existing test gaps, collect those packages and use
 Use file/range queries to inspect covering tests and prioritize important
 requirements, regressions, boundaries, and realistic error paths.
 
-- **Test behavior, not execution counts.** Add meaningful assertions about
-  observable results or invariants. A bug-fix regression should detect the
-  original bug where feasible. Executing a line does not prove its behavior
-  was checked; line coverage is not branch coverage.
+- **Test behavior, not execution counts.** Inspect existing assertions before
+  adding tests. Add or strengthen tests to close a specific gap in protection
+  of a requirement or invariant, not merely to execute uncovered code. Choose
+  inputs and assertions that distinguish correct behavior from a meaningful
+  incorrect result. Ground expected results in the requirement rather than
+  merely repeating the implementation. Property and invariant tests qualify;
+  a specific known bug is not required. For bug fixes, verify that the
+  regression test fails without the fix and passes with it where feasible.
+  Do not add tests when existing assertions already protect the behavior.
+- **Review test protection, not coverage counts.** Inspect existing inputs
+  and assertions before requesting additional tests. Use focused coverage
+  and covering-test queries, when available, to locate relevant tests.
+  Request new or stronger tests for a specific gap in behavioral protection.
+  When flagging a weak test, identify a meaningful incorrect result its
+  assertions would miss. Before recommending removal, explain what
+  protection would be lost and what protection remains, or why the test
+  checks no meaningful behavior. Overlapping line coverage does not prove
+  redundancy; unchanged line coverage does not make a test useless.
 - **Do not optimize for 100%.** There is no percentage target or coverage
   gate. Do not add tests that merely execute lines, weaken assertions, hide
   code through exclusions or configuration changes, or alter sound production

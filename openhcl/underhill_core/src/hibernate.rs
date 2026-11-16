@@ -28,31 +28,15 @@ pub enum Token {
 }
 
 impl Token {
-    /// Written when the current firmware hibernates; bump per release.
-    pub const CURRENT: Self = Self::Hibernated { major: 1, minor: 9 };
+    /// Written when the current firmware hibernates: the UEFI (mu_msvm)
+    /// `major.minor`. Bump when that changes.
+    pub const CURRENT: Self = Self::Hibernated {
+        major: 26,
+        minor: 0,
+    };
     /// Written when the firmware version is unknown (e.g. after servicing).
     pub const UNKNOWN: Self = Self::Hibernated { major: 1, minor: 0 };
 }
-
-// Fail versioned builds whose release doesn't match `Token::CURRENT`.
-const _: () = {
-    let version = build_info::OpenHclVersion::new();
-    let (major, minor) = (version.major(), version.minor());
-    // Builds without `OPENHCL_VERSION` (e.g. `cargo test`) parse as 0.0.
-    if major != 0 || minor != 0 {
-        let Token::Hibernated {
-            major: token_major,
-            minor: token_minor,
-        } = Token::CURRENT
-        else {
-            panic!("Token::CURRENT must be a firmware version");
-        };
-        assert!(
-            major == token_major as u32 && minor == token_minor as u32,
-            "Token::CURRENT does not match the OPENHCL_VERSION major.minor; bump it"
-        );
-    }
-};
 
 impl From<Token> for u64 {
     fn from(token: Token) -> Self {
@@ -229,8 +213,25 @@ mod tests {
     #[test]
     fn constants_encode_as_expected() {
         assert_eq!(u64::from(Token::NotHibernated), 0);
-        assert_eq!(u64::from(Token::CURRENT), 0x0109);
+        assert_eq!(u64::from(Token::CURRENT), 0x1A00);
         assert_eq!(u64::from(Token::UNKNOWN), 0x0100);
+    }
+
+    #[test]
+    fn current_matches_pinned_mu_msvm() {
+        let versions = include_str!("../../../flowey/flowey_lib_hvlite/src/_jobs/cfg_versions.rs");
+        let pinned = versions
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("pub const MU_MSVM: &str = \""))
+            .and_then(|rest| rest.strip_suffix("\";"))
+            .expect("MU_MSVM pin not found");
+        let mut parts = pinned.split('.').map(|part| part.parse::<u8>().unwrap());
+        let (major, minor) = (parts.next().unwrap(), parts.next().unwrap());
+        assert_eq!(
+            Token::CURRENT,
+            Token::Hibernated { major, minor },
+            "Token::CURRENT must match the pinned mu_msvm {pinned}; bump it"
+        );
     }
 
     #[test]

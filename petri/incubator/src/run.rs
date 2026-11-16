@@ -92,7 +92,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
             guest: petri::UefiGuest::Mshv(petri::mshv_boot::MshvBoot {
                 host_boot: ResolvedArtifact::from_local_path(boot.host_boot.clone()),
                 kernel: ResolvedArtifact::from_local_path(config.kernel.clone()),
-                initrd: initrd.clone(),
+                initrd: initrd.clone().into(),
                 boot_artifacts: ResolvedArtifact::from_local_path(boot.boot_artifacts.clone()),
                 kernel_cmdline: boot.kernel_cmdline.clone(),
                 hypervisor_cmdline: boot.hypervisor_cmdline.clone(),

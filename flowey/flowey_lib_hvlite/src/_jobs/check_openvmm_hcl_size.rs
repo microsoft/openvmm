@@ -87,12 +87,16 @@ impl SimpleFlowNode for Node {
             base_branch,
         });
 
+        // The baseline is published by the build job, so accept a run that is
+        // still in progress once that job has succeeded. Waiting for the whole
+        // run would tie the baseline to its slowest jobs, such as VMM tests
+        // queued for scarce self-hosted runners.
         let merge_run = ctx.reqv(|v| gh_workflow_id::Request {
             repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
             repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
             commit_or_branch: gh_workflow_id::GitCommitOrBranch::Commit(merge_commit),
             pipeline_name,
-            require_run_status: Some(gh_workflow_id::GhRunStatus::Completed),
+            require_run_status: None,
             require_successful_job_with_name: Some(job_name),
             gh_workflow: v,
         });
