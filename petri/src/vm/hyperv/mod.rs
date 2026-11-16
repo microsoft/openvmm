@@ -366,15 +366,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
             // Hypervisor support is needed for this to work.
             //
             // Hyper-V VBS VMs on AMD hosts fail before OpenHCL can be reached
-            // through diag_client, so try COM3 on those hosts to capture early
-            // boot output. TPM tests keep the default configuration to retain
-            // host diagnostics for the unchanged failure.
+            // through diag_client, so try COM3 for non-TPM VBS tests to capture
+            // early boot output. Intel hosts, where VBS boots, show whether
+            // COM3 carries OpenHCL output for VBS VMs at all. TPM tests keep
+            // the default configuration.
             let is_vbs = matches!(config.firmware.isolation(), Some(IsolationType::Vbs));
-            let is_amd_host =
-                std::env::var("PROCESSOR_IDENTIFIER").is_ok_and(|id| id.contains("AuthenticAMD"));
-            let try_vbs_com3 = is_vbs && is_amd_host && !config.name.contains("::tpm");
+            let try_vbs_com3 = is_vbs && !config.name.contains("::tpm");
             if try_vbs_com3 {
-                tracing::info!("trying COM3 for hyper-v vbs vm on amd host");
+                tracing::info!("trying COM3 for hyper-v vbs vm");
             }
             let is_not_vbs = !is_vbs || try_vbs_com3;
 
