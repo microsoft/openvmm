@@ -22,6 +22,7 @@ vmm_cli.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

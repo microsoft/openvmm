@@ -74,7 +74,7 @@ impl GetVpRegisters for HvfHypercallHandler<'_, '_> {
                 HvArm64RegisterName::TimeRefCount => {
                     self.vp.partition.vmtime.now().as_100ns().into()
                 }
-                HvArm64RegisterName::VpIndex => 0u32.into(),
+                HvArm64RegisterName::VpIndex => self.vp.inner.vp_info.base.vp_index.index().into(),
                 HvArm64RegisterName::GuestOsId => self
                     .vp
                     .partition

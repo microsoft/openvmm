@@ -197,7 +197,6 @@ pub(crate) struct LoadedVm {
     pub runtime_params: crate::loader::vtl2_config::RuntimeParameters,
 
     /// Per-VM measured product policy.
-    #[cfg(feature = "product_policy")]
     pub measured_product_policy: product_policy::MeasuredProductPolicy,
 
     pub _input_distributor: SpawnedUnit<InputDistributor>,
@@ -365,6 +364,7 @@ impl LoadedVm {
                             req.respond().field("dps", &self.device_platform_settings);
                         });
                         resp.field("runtime_params", &self.runtime_params);
+                        resp.field("measured_product_policy", &self.measured_product_policy);
                         resp.field("get", &self.get_client);
                         resp.field("vmgs", self.vmgs.as_ref().map(|x| &x.0));
                         resp.field("network", &self.network_settings);

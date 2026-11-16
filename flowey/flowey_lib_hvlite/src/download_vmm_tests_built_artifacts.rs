@@ -53,6 +53,8 @@ impl SimpleFlowNode for Node {
                     pipette_linux_musl_x64,
                     pipette_linux_musl_aarch64,
                     guest_test_uefi_x64,
+                    mshv_host_boot_x64,
+                    mshv_boot_artifacts_x64,
                     guest_test_uefi_aarch64,
                     openhcl_standard_x64,
                     openhcl_standard_aarch64,
@@ -61,6 +63,7 @@ impl SimpleFlowNode for Node {
                     openhcl_cvm_x64,
                     vmfirmwareigvm_cvm_x64,
                     openhcl_linux_direct_x64,
+                    openhcl_sivm_x64,
                     snp_linux_direct_igvm_x64,
                     tmks_x64,
                     tmks_aarch64,
@@ -157,6 +160,8 @@ impl SimpleFlowNode for Node {
         download!(pipette_linux_musl_aarch64, "aarch64-linux-musl-pipette");
 
         download!(guest_test_uefi_x64, "x64-guest_test_uefi");
+        download!(mshv_host_boot_x64, "x64-mshv-host-boot");
+        download!(mshv_boot_artifacts_x64, "x64-mshv-boot-artifacts");
         download!(guest_test_uefi_aarch64, "aarch64-guest_test_uefi");
 
         download!(openhcl_standard_x64, "x64-openhcl-igvm");
@@ -170,6 +175,7 @@ impl SimpleFlowNode for Node {
             "x64-openhcl-igvm-test-linux-direct"
         );
         download!(snp_linux_direct_igvm_x64, "x64-linux-snp-linux-direct-igvm");
+        download!(openhcl_sivm_x64, "x64-openhcl-igvm-test-sivm");
 
         download!(tmks_x64, "x64-tmks");
         download!(tmks_aarch64, "aarch64-tmks");

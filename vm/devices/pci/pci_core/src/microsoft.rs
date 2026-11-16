@@ -26,6 +26,8 @@ open_enum::open_enum! {
     pub enum DeviceId: u16 {
         /// MANA/GDMA network adapter.
         GDMA = 0x00BA,
+        /// USB 3.x xHCI controller.
+        USB_XHCI = 0x0C03,
         /// VGA adapter.
         VGA = 0x5353,
         /// AZIHSM (Azure Integrated HSM) device.
