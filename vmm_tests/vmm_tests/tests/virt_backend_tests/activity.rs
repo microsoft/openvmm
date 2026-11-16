@@ -466,12 +466,12 @@ fn restores_a_queued_exception_as_injected(
 // holds an interrupt shadow, which blocks maskable interrupts for one
 // instruction. A MOV SS shadow also blocks NMIs and suppresses certain debug
 // exceptions there, as an STI shadow does not. A save names a kind only for an
-// STI shadow, because a restore that is given none sets a MOV SS shadow, as
-// every restore did. So a state with a shadow and no kind, such as every state
-// that an earlier save holds, reads back as saved on every host, and an STI
-// shadow does where KVM tells it. KVM on VMX reports each kind. SVM has one
-// kind of shadow, which KVM reports as both, so a save holds no kind for it,
-// and it restores whatever shadow it is given.
+// STI shadow, because a restore of a shadow that is given none sets a MOV SS
+// shadow, as every restore did. So a state with a shadow and no kind, such as
+// every state that an earlier save holds, reads back as saved on every host,
+// and an STI shadow does where KVM tells it. KVM on VMX reports each kind. SVM
+// has one kind of shadow, which KVM reports as both, so a save holds no kind
+// for it, and it restores whatever shadow it is given.
 backend_test!(restores_the_kind_of_an_interrupt_shadow, kvm_only, requires: []);
 fn restores_the_kind_of_an_interrupt_shadow(
     partition: &impl Partition,
