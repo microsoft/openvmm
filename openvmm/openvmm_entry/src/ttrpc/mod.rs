@@ -3423,7 +3423,7 @@ mod tests {
                 }],
                 ..Default::default()
             };
-            let registry = FdRegistry::default();
+            let registry = ResourceRegistry::default();
             let iommufds = IommufdContexts::default();
             for _ in 0..2 {
                 let topology = build_pcie_topology(config.clone(), &registry, &iommufds, false)
