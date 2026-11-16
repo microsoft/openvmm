@@ -412,6 +412,8 @@ pub struct PetriVmResources {
     pub log_source: PetriLogSource,
     /// Pre-built initrd with pipette already injected (skips runtime injection).
     pub prebuilt_initrd: Option<PetriInitrd>,
+    /// Log file capturing the guest's COM1 serial output, if serial logging is configured.
+    pub com1_log: std::sync::OnceLock<crate::PetriLogFile>,
 }
 
 /// Trait for VMM-specific contruction and runtime resources
@@ -730,6 +732,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 driver: driver.clone(),
                 log_source: log_source.clone(),
                 prebuilt_initrd: None,
+                com1_log: std::sync::OnceLock::new(),
             },
 
             guest_quirks,
@@ -2381,6 +2384,19 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.openhcl_diag()?.kmsg().await
     }
 
+    /// Subscribe to the guest's COM1 serial output stream.
+    ///
+    /// Replays buffered lines emitted since boot and streams new lines as they
+    /// arrive. Fails if serial output was not enabled for this VM.
+    pub fn com1(&self) -> anyhow::Result<crate::PetriLogStream> {
+        let log_file = self
+            .resources
+            .com1_log
+            .get()
+            .context("COM1 serial logging is not enabled for this VM")?;
+        Ok(log_file.subscribe())
+    }
+
     /// Gets a live core dump of the OpenHCL process specified by 'name' and
     /// writes it to 'path'
     pub async fn openhcl_core_dump(&self, name: &str, path: &Path) -> anyhow::Result<()> {
@@ -3605,11 +3621,11 @@ impl Firmware {
             }
             | Firmware::IgvmLinuxDirect { .. } => OsFlavor::Linux,
             Firmware::Uefi {
-                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::None,
+                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::CustomDisk(_) | UefiGuest::None,
                 ..
             }
             | Firmware::OpenhclUefi {
-                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::None,
+                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::CustomDisk(_) | UefiGuest::None,
                 ..
             } => OsFlavor::Uefi,
             Firmware::Pcat {
@@ -3667,11 +3683,11 @@ impl Firmware {
             | Firmware::IgvmLinuxDirect { .. }
             | Firmware::OpenhclLinuxDirect { .. }
             | Firmware::Uefi {
-                guest: UefiGuest::GuestTestUefi(_),
+                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::CustomDisk(_),
                 ..
             }
             | Firmware::OpenhclUefi {
-                guest: UefiGuest::GuestTestUefi(_),
+                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::CustomDisk(_),
                 ..
             } => None,
             Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => {
@@ -3805,6 +3821,20 @@ impl Firmware {
                 false,
             )));
         }
+        if let Firmware::Uefi {
+            guest: UefiGuest::CustomDisk(custom),
+            ..
+        }
+        | Firmware::OpenhclUefi {
+            guest: UefiGuest::CustomDisk(custom),
+            ..
+        } = self
+        {
+            return Ok(Some(Drive::new(
+                Some(custom.build().context("building custom UEFI boot disk")?),
+                false,
+            )));
+        }
         Ok(match self {
             Firmware::LinuxDirect { .. }
             | Firmware::IgvmLinuxDirect { .. }
@@ -3877,8 +3907,39 @@ pub enum UefiGuest {
     Vhd(BootImageConfig<boot_image_type::Vhd>),
     /// The UEFI test image produced by our guest-test infrastructure.
     GuestTestUefi(ResolvedArtifact),
+    /// A UEFI guest boot disk built lazily at test runtime from resolved artifacts.
+    CustomDisk(CustomUefiDisk),
     /// No guest, just the firmware.
     None,
+}
+
+/// A UEFI guest boot disk constructed lazily when the VM's boot drive is built.
+#[derive(Clone)]
+pub struct CustomUefiDisk {
+    builder: Arc<dyn Fn() -> anyhow::Result<Disk> + Send + Sync>,
+}
+
+impl Debug for CustomUefiDisk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomUefiDisk").finish_non_exhaustive()
+    }
+}
+
+impl CustomUefiDisk {
+    /// Create a lazy UEFI boot disk builder.
+    ///
+    /// `builder` is invoked only during test execution (when constructing the
+    /// VM's boot drive), so it is safe to capture [`ResolvedArtifact`] handles
+    /// obtained during the requirement-collection phase.
+    pub fn new(builder: impl Fn() -> anyhow::Result<Disk> + Send + Sync + 'static) -> Self {
+        Self {
+            builder: Arc::new(builder),
+        }
+    }
+
+    fn build(&self) -> anyhow::Result<Disk> {
+        (self.builder)()
+    }
 }
 
 impl UefiGuest {
@@ -3896,8 +3957,7 @@ impl UefiGuest {
         match self {
             UefiGuest::Vhd(vhd) => Some(vhd.disk_path()),
             UefiGuest::GuestTestUefi(p) => Some(DiskPath::Local(p.get().to_path_buf())),
-            UefiGuest::None => None,
-            UefiGuest::Mshv(_) => None,
+            UefiGuest::CustomDisk(_) | UefiGuest::Mshv(_) | UefiGuest::None => None,
         }
     }
 }

@@ -107,6 +107,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_prep_steps::Node>();
+        ctx.import::<crate::build_opentmk::Node>();
         ctx.import::<crate::build_snp_linux_direct_igvm::Node>();
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
@@ -424,6 +425,24 @@ impl SimpleFlowNode for Node {
             .guest_test_uefi_aarch64
             .then(|| build_guest_test_uefi(CommonArch::Aarch64));
 
+        let mut build_opentmk = |arch| {
+            let output = ctx.reqv(|v| crate::build_opentmk::Request {
+                arch,
+                profile: CommonProfile::from_release(release),
+                out_name: None,
+                opentmk: v,
+            });
+            if copy_extras {
+                copy_to_dir.push((extras_dir.to_owned(), output.map(ctx, |x| x.pdb)));
+            }
+            output
+        };
+
+        let opentmk_x64 = build.opentmk_x64.then(|| build_opentmk(CommonArch::X86_64));
+        let opentmk_aarch64 = build
+            .opentmk_aarch64
+            .then(|| build_opentmk(CommonArch::Aarch64));
+
         let mut build_tmks = |arch| {
             let output = ctx.reqv(|v| crate::build_tmks::Request {
                 arch,
@@ -698,6 +717,8 @@ impl SimpleFlowNode for Node {
             pipette_linux_musl_aarch64,
             guest_test_uefi_x64,
             guest_test_uefi_aarch64,
+            opentmk_x64,
+            opentmk_aarch64,
             openhcl_standard_x64,
             openhcl_standard_aarch64,
             openhcl_standard_dev_x64,

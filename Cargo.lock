@@ -7046,6 +7046,7 @@ name = "petri"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "async-trait",
  "bitfield-struct 0.11.0",
  "blocking",
@@ -11633,6 +11634,8 @@ dependencies = [
  "nvme_resources",
  "nvme_spec",
  "nvme_test",
+ "opentmk_disk",
+ "opentmk_protocol",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_ttrpc_vmservice",

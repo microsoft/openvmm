@@ -190,6 +190,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             driver,
             log_source,
             prebuilt_initrd,
+            com1_log,
         } = resources;
         // Hyper-V petri backend doesn't support linux direct
         assert!(prebuilt_initrd.is_none());
@@ -502,6 +503,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let serial_pipe_path = vm.get_vm_com_port_path(1);
         let serial_log_file = log_source.log_file("guest")?;
+        let _ = com1_log.set(serial_log_file.clone());
         log_tasks.push(driver.spawn(
             "guest-log",
             hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),

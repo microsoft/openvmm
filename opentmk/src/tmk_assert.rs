@@ -6,7 +6,6 @@
 //! JSON format. It also includes utility functions for formatting and writing log messages.
 
 use alloc::string::String;
-use core::fmt::Write;
 
 use serde::Serialize;
 
@@ -69,7 +68,7 @@ where
 
 /// Writes a preformatted record to the logger's serial writer.
 pub(crate) fn write_str(s: &str) {
-    _ = opentmk_core::tmk_logger::LOGGER.get_writer().write_str(s);
+    opentmk_core::tmk_logger::LOGGER.write_str(s);
 }
 
 #[macro_export]

@@ -7,6 +7,7 @@ use crate::build_flowey_hvlite::FloweyHvliteOutput;
 use crate::build_guest_test_uefi::GuestTestUefiOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
+use crate::build_opentmk::OpentmkOutput;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_openvmm_vhost::OpenvmmVhostOutput;
 use crate::build_pipette::PipetteOutput;
@@ -380,6 +381,16 @@ define_vmm_tests_built_artifacts!(
             test_vhd::GUEST_TEST_UEFI_AARCH64
         ),
     ) => GuestTestUefiOutput,
+    opentmk(
+        x64(
+            (OpentmkOutput { efi, pdb }, efi, pdb),
+            opentmk::OPENTMK_EFI_X64
+        ),
+        aarch64(
+            (OpentmkOutput { efi, pdb }, efi, pdb),
+            opentmk::OPENTMK_EFI_AARCH64
+        ),
+    ) => OpentmkOutput,
     openhcl_standard(
         x64(
             (OpenhclIgvmOutput::X64 { igvm_bin }, igvm_bin),
@@ -961,6 +972,7 @@ pub mod vmm_tests_artifact_builders {
             tpm_guest_tests_linux_x64 => TpmGuestTestsOutput,
             // any machine
             guest_test_uefi_x64 => GuestTestUefiOutput,
+            opentmk_x64 => OpentmkOutput,
             tmks_x64 => TmksOutput,
         )
     );

@@ -503,6 +503,9 @@ impl IntoPipeline for CheckinGatesCli {
         // borrowing `pipeline` while the job builder holds a mutable borrow.
         let (pub_incubator, _use_incubator) = pipeline.new_typed_artifact("x64-linux-incubator");
 
+        let (pub_opentmk, use_opentmk) = pipeline.new_typed_artifact("x64-opentmk");
+        vmm_tests_artifacts_windows_x86.use_opentmk_x64 = Some(use_opentmk);
+
         let mut shared_linux_job = pipeline
             .new_job(
                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -571,6 +574,15 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_LINUX_GNU,
                 profile: CommonProfile::from_release(release).into(),
                 incubator,
+            }
+        });
+
+        shared_linux_job = shared_linux_job.publish(pub_opentmk, |opentmk| {
+            flowey_lib_hvlite::build_opentmk::Request {
+                arch: CommonArch::X86_64,
+                profile: CommonProfile::from_release(release),
+                out_name: None,
+                opentmk,
             }
         });
 
@@ -1654,8 +1666,10 @@ impl IntoPipeline for CheckinGatesCli {
         mi_secure_filter
             .push_str(" & !test(ubuntu_2404_server_x64) & !test(windows_datacenter_core_2025_x64)");
 
-        // Run everything that we didn't run in the standard filter
-        let cvm_filter = format!("!({standard_filter})");
+        // Run everything that we didn't run in the standard filter.
+        // The opentmk CVM TPM scenarios are not yet reliable on the CI CVM
+        // runners; run them locally via `cargo xflowey vmm-tests-run`.
+        let cvm_filter = format!("!({standard_filter}) & !test(opentmk_hyperv_openhcl_tpm)");
 
         let windows_x64_cvm_test_artifacts = vec![
             test_vhd::FREE_BSD_13_2_X64.into(),

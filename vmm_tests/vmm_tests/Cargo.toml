@@ -15,6 +15,10 @@ name = "tmks"
 harness = false
 
 [[test]]
+name = "opentmk"
+harness = false
+
+[[test]]
 name = "virt_backend_tests"
 path = "tests/virt_backend_tests/main.rs"
 harness = false
@@ -25,6 +29,8 @@ petri_artifacts_vmm_test.workspace = true
 vmm_test_macros.workspace = true
 vmm_test_igvm_agent.workspace = true
 tmk_tests.workspace = true
+opentmk_disk.workspace = true
+opentmk_protocol.workspace = true
 
 petri_artifacts_common.workspace = true
 petri.workspace = true
