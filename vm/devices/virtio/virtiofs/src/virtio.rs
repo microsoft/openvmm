@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::session::VirtioFsSession;
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
 use anyhow::Context as _;
@@ -66,9 +65,6 @@ pub struct VirtioFsDeviceOptions {
     /// Number of FUSE request queues. Defaults to two and is clamped to the
     /// device-supported range.
     pub num_request_queues: Option<u32>,
-    /// Token used for host filesystem access. `None` uses the process token.
-    #[cfg(windows)]
-    pub user_token: Option<std::os::windows::io::OwnedHandle>,
 }
 
 /// A virtio-fs PCI device.
@@ -79,7 +75,7 @@ pub struct VirtioFsDevice {
     #[inspect(skip)]
     config: VirtioFsDeviceConfig,
     #[inspect(skip)]
-    fs: Arc<VirtioFsSession>,
+    fs: Arc<fuse::Session>,
     #[inspect(skip)]
     workers: Vec<TaskControl<VirtioFsWorker, VirtioFsQueue>>,
     shmem_size: u64,
@@ -115,10 +111,6 @@ impl VirtioFsDevice {
         } else {
             Arc::new(|| {})
         };
-        #[cfg(windows)]
-        let fs = VirtioFsSession::new(fs).with_user_token(options.user_token);
-        #[cfg(not(windows))]
-        let fs = VirtioFsSession::new(fs);
 
         // Copy the tag into the config space (truncate it for now if too long).
         let length = std::cmp::min(tag.len(), config.tag.len());
@@ -128,7 +120,7 @@ impl VirtioFsDevice {
             task_name: format!("virtiofs-{}", tag).into(),
             driver: driver_source.simple(),
             config,
-            fs: Arc::new(fs),
+            fs: Arc::new(fuse::Session::new(fs)),
             workers: Vec::new(),
             shmem_size: options.shared_memory_size,
             shared_memory_region: None,
@@ -258,7 +250,7 @@ impl VirtioDevice for VirtioFsDevice {
 }
 
 struct VirtioFsWorker {
-    fs: Arc<VirtioFsSession>,
+    fs: Arc<fuse::Session>,
     shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     shared_memory_size: u64,
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
@@ -328,7 +320,6 @@ fn process_virtiofs_request(
         mem,
         bytes_written: 0,
     };
-
     let mapper = worker
         .shared_memory_region
         .as_ref()

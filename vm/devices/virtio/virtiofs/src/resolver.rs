@@ -5,6 +5,7 @@
 
 use crate::VirtioFs;
 use crate::virtio::VirtioFsDevice;
+#[cfg(windows)]
 use crate::virtio::VirtioFsDeviceOptions;
 use anyhow::Context as _;
 use lxutil::LxVolumeOptions;
@@ -17,6 +18,7 @@ use virtio_resources::fs::VirtioFsWindowsOptions;
 use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
+use vmcore::vm_task::VmTaskDriverSource;
 
 const VIRTIO_FS_TAG_LEN: usize = 36;
 #[cfg(windows)]
@@ -120,12 +122,11 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                 root_path,
                 mount_options,
                 platform,
-            } => VirtioFsDevice::new(
-                input.driver_source,
-                &tag,
-                platform.open_fs(&root_path, &mount_options)?,
-                platform.device_options(),
-            ),
+            } => {
+                let fs = platform.open_fs(&root_path, &mount_options)?;
+                let driver_source = platform.driver_source(input.driver_source, &tag)?;
+                VirtioFsDevice::new(&driver_source, &tag, fs, Default::default())
+            }
             #[cfg(windows)]
             ParsedVirtioFsBackend::SectionFs { root_path } => VirtioFsDevice::new(
                 input.driver_source,
@@ -162,8 +163,10 @@ cfg_select! {
     windows => {
         use pal::windows::security::duplicate_impersonation_token;
         use pal::windows::security::RevertToSelfGuard;
+        use pal_async::DefaultPool;
         use std::os::windows::io::AsHandle;
         use std::os::windows::io::OwnedHandle;
+        use vmcore::vm_task::SingleDriverBackend;
 
         struct ParsedHostFsPlatform {
             user_token: Option<OwnedHandle>,
@@ -194,12 +197,48 @@ cfg_select! {
                 Ok(VirtioFs::new(root_path, Some(mount_options))?)
             }
 
-            fn device_options(self) -> VirtioFsDeviceOptions {
-                VirtioFsDeviceOptions {
-                    user_token: self.user_token,
-                    ..Default::default()
+            fn driver_source(
+                self,
+                driver_source: &VmTaskDriverSource,
+                tag: &str,
+            ) -> anyhow::Result<VmTaskDriverSource> {
+                match self.user_token {
+                    Some(token) => impersonating_driver_source(format!("virtiofs-{tag}"), token),
+                    None => Ok(driver_source.clone()),
                 }
             }
+        }
+
+        /// Returns a driver source whose tasks and IO run on a new IOCP thread
+        /// that impersonates `token` for the thread's lifetime.
+        ///
+        /// This avoids setting and reverting the thread token for every FUSE
+        /// request. The thread exits once the last driver is dropped.
+        pub(crate) fn impersonating_driver_source(
+            name: String,
+            token: OwnedHandle,
+        ) -> anyhow::Result<VmTaskDriverSource> {
+            let pool = DefaultPool::new();
+            let driver = pool.driver();
+            let (send, recv) = std::sync::mpsc::sync_channel(1);
+            std::thread::Builder::new()
+                .name(name)
+                .spawn(move || {
+                    let _impersonation = match RevertToSelfGuard::impersonate(&token) {
+                        Ok(guard) => guard,
+                        Err(err) => {
+                            let _ = send.send(Err(err));
+                            return;
+                        }
+                    };
+                    let _ = send.send(Ok(()));
+                    pool.run();
+                })
+                .context("failed to spawn virtio-fs impersonation thread")?;
+            recv.recv()
+                .context("virtio-fs impersonation thread exited")?
+                .context("failed to impersonate virtio-fs user token")?;
+            Ok(VmTaskDriverSource::new(SingleDriverBackend::new(driver)))
         }
     }
     _ => {
@@ -220,8 +259,12 @@ cfg_select! {
                 Ok(VirtioFs::new(root_path, Some(mount_options))?)
             }
 
-            fn device_options(self) -> VirtioFsDeviceOptions {
-                Default::default()
+            fn driver_source(
+                self,
+                driver_source: &VmTaskDriverSource,
+                _tag: &str,
+            ) -> anyhow::Result<VmTaskDriverSource> {
+                Ok(driver_source.clone())
             }
         }
     }

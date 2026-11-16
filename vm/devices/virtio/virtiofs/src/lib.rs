@@ -12,7 +12,6 @@ mod integration_tests;
 pub mod resolver;
 #[cfg(windows)]
 mod section;
-mod session;
 #[cfg(test)]
 mod test_helpers;
 mod util;

@@ -66,11 +66,6 @@ struct TestHarness {
 impl TestHarness {
     fn new(driver: &DefaultDriver) -> Self {
         let tmpdir = tempfile::tempdir().unwrap();
-
-        let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
-        init_avail_ring(&mem, AVAIL_ADDR);
-        init_used_ring(&mem, USED_ADDR);
-
         let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let device = VirtioFsDevice::new(
@@ -79,6 +74,17 @@ impl TestHarness {
             fs,
             VirtioFsDeviceOptions::default(),
         );
+        Self::with_device(driver, device, tmpdir)
+    }
+
+    fn with_device(
+        driver: &DefaultDriver,
+        device: VirtioFsDevice,
+        tmpdir: tempfile::TempDir,
+    ) -> Self {
+        let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
+        init_avail_ring(&mem, AVAIL_ADDR);
+        init_used_ring(&mem, USED_ADDR);
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();
@@ -969,15 +975,19 @@ pub(crate) mod user_token {
     // outputs.
     #![expect(unsafe_code)]
 
-    use crate::session::VirtioFsSession;
+    use super::OUT_HEADER_SIZE;
+    use super::TestHarness;
+    use crate::resolver::impersonating_driver_source;
+    use crate::virtio::VirtioFsDevice;
     use fuse::Fuse;
-    use fuse::ReplySender;
     use fuse::Request;
     use fuse::SessionInfo;
     use fuse::protocol::*;
     use pal::windows::security::RevertToSelfGuard;
     use pal::windows::security::duplicate_impersonation_token;
     use pal::windows::security::open_process_token;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
     use std::io;
     use std::os::windows::io::AsHandle;
     use std::os::windows::io::AsRawHandle;
@@ -992,7 +1002,6 @@ pub(crate) mod user_token {
     use windows_sys::Win32::Security;
     use windows_sys::Win32::System::Threading::GetCurrentThread;
     use windows_sys::Win32::System::Threading::OpenThreadToken;
-    use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -1098,13 +1107,17 @@ pub(crate) mod user_token {
     }
 
     impl TokenCheckingFs {
+        /// Counts the call only if it runs under the expected restricted
+        /// token. This does not panic, since it runs on the device thread.
         fn check_identity(&self) {
-            let token = thread_token().unwrap();
-            assert_eq!(token_id(&token), self.token_id);
+            let Ok(token) = thread_token() else {
+                return;
+            };
             // SAFETY: The handle refers to a valid token.
-            let restricted = unsafe { Security::IsTokenRestricted(token.as_raw_handle()) };
-            assert_ne!(restricted, 0);
-            self.calls.fetch_add(1, Ordering::Relaxed);
+            let restricted = unsafe { Security::IsTokenRestricted(token.as_raw_handle()) } != 0;
+            if restricted && token_id(&token) == self.token_id {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -1119,90 +1132,41 @@ pub(crate) mod user_token {
         }
     }
 
-    #[derive(Default)]
-    struct TestSender(Vec<u8>);
-
-    impl ReplySender for TestSender {
-        fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
-            self.0 = bufs.iter().flat_map(|buf| buf.iter().copied()).collect();
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn session_dispatch_impersonates_restricted_token_and_reverts() {
-        assert_eq!(
-            thread_token().unwrap_err().raw_os_error(),
-            Some(ERROR_NO_TOKEN as i32)
-        );
+    #[async_test]
+    async fn device_requests_run_under_user_token(driver: DefaultDriver) {
         let token = restricted_token();
         let calls = Arc::new(AtomicUsize::new(0));
-        let session = VirtioFsSession::new(TokenCheckingFs {
+        let fs = TokenCheckingFs {
             token_id: token_id(&token),
             calls: calls.clone(),
-        })
-        .with_user_token(Some(token));
-        let init = fuse_init_in {
-            major: FUSE_KERNEL_VERSION,
-            minor: FUSE_KERNEL_MINOR_VERSION,
-            ..FromZeros::new_zeroed()
         };
+        let driver_source = impersonating_driver_source("virtiofs-test".into(), token).unwrap();
+        let device = VirtioFsDevice::new(&driver_source, "testfs", fs, Default::default());
+        let mut harness = TestHarness::with_device(&driver, device, tempfile::tempdir().unwrap());
+        harness.enable().await;
+        harness.fuse_init(0).await;
+
         let getattr = fuse_getattr_in::new_zeroed();
-        for (opcode, args, expected_error) in [
-            (FUSE_INIT, init.as_bytes(), 0),
-            (FUSE_GETATTR, getattr.as_bytes(), -lx::Error::EACCES.value()),
-        ] {
-            let header = fuse_in_header {
-                len: (size_of::<fuse_in_header>() + args.len()) as u32,
-                opcode,
-                unique: 1,
-                nodeid: 1,
-                ..FromZeros::new_zeroed()
-            };
-            let mut request = header.as_bytes().to_vec();
-            request.extend_from_slice(args);
-            let mut sender = TestSender::default();
-            session.dispatch(Request::new(request.as_slice()).unwrap(), &mut sender, None);
-            let (reply, _) = fuse_out_header::read_from_prefix(&sender.0).unwrap();
-            assert_eq!(reply.error, expected_error);
-            assert_eq!(
-                thread_token().unwrap_err().raw_os_error(),
-                Some(ERROR_NO_TOKEN as i32)
-            );
-        }
+        let resp_size = OUT_HEADER_SIZE + size_of::<fuse_attr_out>() as u32;
+        let (unique, resp_gpa) =
+            harness.post_fuse_request(2, FUSE_GETATTR, FUSE_ROOT_ID, getattr.as_bytes(), resp_size);
+        harness.wait_for_used().await;
+        let reply = harness.read_out_header(resp_gpa);
+        assert_eq!(reply.unique, unique);
+        assert_eq!(reply.error, -lx::Error::EACCES.value());
+
         assert_eq!(calls.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn session_dispatch_fails_closed_when_impersonation_fails() {
-        // A non-token handle makes impersonation fail.
-        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let session = VirtioFsSession::new(TokenCheckingFs {
-            token_id: (0, 0),
-            calls: calls.clone(),
-        })
-        .with_user_token(Some(file.into()));
-        let getattr = fuse_getattr_in::new_zeroed();
-        let header = fuse_in_header {
-            len: (size_of::<fuse_in_header>() + size_of_val(&getattr)) as u32,
-            opcode: FUSE_GETATTR,
-            unique: 7,
-            nodeid: 1,
-            ..FromZeros::new_zeroed()
-        };
-        let mut request = header.as_bytes().to_vec();
-        request.extend_from_slice(getattr.as_bytes());
-        let mut sender = TestSender::default();
-        session.dispatch(Request::new(request.as_slice()).unwrap(), &mut sender, None);
-
-        let (reply, _) = fuse_out_header::read_from_prefix(&sender.0).unwrap();
-        assert_eq!(reply.unique, 7);
-        assert_eq!(reply.error, -lx::Error::EIO.value());
-        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        // Impersonation is confined to the device thread.
         assert_eq!(
             thread_token().unwrap_err().raw_os_error(),
             Some(ERROR_NO_TOKEN as i32)
         );
+    }
+
+    #[test]
+    fn impersonating_driver_source_fails_closed() {
+        // A non-token handle makes impersonation fail.
+        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        assert!(impersonating_driver_source("virtiofs-test".into(), file.into()).is_err());
     }
 }
