@@ -3959,13 +3959,17 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             pending_event: _,        // TODO TDX
             pending_interruption: _, // TODO TDX
             nmi_pending_count,
-            // TODO TDX: the VMCS holds the kind
-            interrupt_shadow_kind: _,
+            interrupt_shadow_kind,
         } = value;
         // This backend holds at most one pending NMI, so it cannot restore a
         // count of them. Refuse it before changing any state.
         if nmi_pending_count.is_some() {
             return Err(vp_state::Error::Unimplemented("nmi_pending_count"));
+        }
+        // TODO TDX: the VMCS holds the kind, which this backend does not
+        // restore yet. Refuse it before changing any state.
+        if interrupt_shadow_kind.is_some() {
+            return Err(vp_state::Error::Unimplemented("interrupt_shadow_kind"));
         }
         self.vp.backing.cvm.lapics[self.vtl].activity = mp_state;
         self.vp.backing.cvm.lapics[self.vtl].nmi_pending = nmi_pending;
