@@ -20,8 +20,8 @@ pub const ALIGNMENT: usize = 8;
 /// Alignment mask for the entry
 pub const ALIGNMENT_MASK: usize = ALIGNMENT - 1;
 
-/// Maximum allowed size of a single message (4KB)
-pub const MAX_MESSAGE_LENGTH: u16 = 0x1000;
+/// Maximum allowed size of a single message (8KB)
+pub const MAX_MESSAGE_LENGTH: u16 = 0x2000;
 
 /// Errors that occur when parsing log entries from untrusted buffer data
 #[derive(Debug, Error)]
