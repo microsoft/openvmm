@@ -54,3 +54,11 @@ Flowey is architected as a standalone tool with a layered crate structure that s
 - **`flowey_lib_common`**: Ecosystem-wide reusable nodes (installing Rust, running Cargo, downloading tools, etc.) that could be useful across projects outside of OpenVMM.
 - **`flowey_lib_hvlite`**: OpenVMM-specific nodes and workflows that build on the common library primitives.
 - **`flowey_hvlite`**: The OpenVMM pipeline definitions that compose nodes from the libraries above into complete CI/CD workflows.
+
+## Azure DevOps job templates
+
+Pipeline definitions can call `pipeline.ado_use_job_templates()` to emit each job in a separate YAML template instead of embedding every job in the root pipeline. Commit the generated `<pipeline>.job-<n>.yaml` files alongside the root YAML. This is opt-in; existing pipelines keep their single-file output. Templates stay in the same directory as the root so nested relative template references keep working.
+
+`cargo xflowey regen`, `--check`, and runtime validation include the templates. Regeneration removes obsolete generated job templates, while check mode reports missing, modified, or obsolete templates without rewriting them. Pipeline parameters are forwarded to each job template, and extraction runs after any YAML post-processing.
+
+Each generated Azure DevOps YAML file must fit within 512 KiB, including its generated-file header. Job templates avoid the single-file limit but do not bypass Azure DevOps' overall template-expansion limits, including the 100-file include limit. An oversized individual job or oversized root metadata still needs to be reduced.

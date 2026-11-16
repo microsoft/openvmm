@@ -8,6 +8,7 @@
 //! implementations will be used.
 
 pub mod ado_yaml;
+mod ado_yaml_templates;
 // pub mod bash; // not maintained at the moment
 pub mod common_yaml;
 pub mod direct_run;

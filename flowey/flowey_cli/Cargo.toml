@@ -24,5 +24,9 @@ serde_yaml.workspace = true
 toml_edit = { workspace = true, features = ["serde"] }
 xshell.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true
