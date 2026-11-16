@@ -327,7 +327,12 @@ fn vbs_provider_guids() -> anyhow::Result<Vec<(String, String)>> {
 /// such as tests killed on timeout. Returns the number of petri sessions and
 /// of all sessions still running.
 fn clean_stale_sessions() -> anyhow::Result<(usize, usize)> {
-    let output = run("logman", ["query", "-ets"])?;
+    // Querying can fail transiently when another session stops during the
+    // enumeration.
+    let output = run("logman", ["query", "-ets"]).or_else(|_| {
+        std::thread::sleep(Duration::from_secs(1));
+        run("logman", ["query", "-ets"])
+    })?;
     let mut petri_sessions = 0;
     let mut total_sessions = 0;
     for line in output.lines() {
@@ -422,7 +427,9 @@ fn export_channels(output_dir: &Path, start_time: Timestamp) -> anyhow::Result<(
         .lines()
         .map(str::trim)
         .filter(|c| c.starts_with("Microsoft-Windows-Hyper-V-"))
-        .filter(|c| c.ends_with("/Admin") || c.ends_with("/Operational"))
+        // Hyper-V channels are named either `<provider>-Admin` or
+        // `<provider>/Admin`.
+        .filter(|c| c.ends_with("Admin") || c.ends_with("Operational"))
     {
         match run("wevtutil", ["qe", channel, query.as_str(), "/f:text"]) {
             Ok(events) if events.trim().is_empty() => {}
