@@ -3,6 +3,8 @@
 
 //! Nested vm host definitions
 
+#[cfg(target_os = "linux")]
+use anyhow::Context as _;
 use petri::PetriVmBuilder;
 #[cfg(target_os = "linux")]
 use petri::PetriVmmBackend;
@@ -40,6 +42,48 @@ pub(crate) async fn vm_host_mshv(
         .run()
         .await?;
     vm.run_nested_test(&agent, Default::default()).await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Run the L2 test before and after an L1 reboot to exercise used nested state.
+#[cfg(target_os = "linux")]
+async fn reboot_l1(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (mut vm, mut agent) = config
+        .with_nested_virt()
+        .with_no_vmbus()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+
+    let mut previous_boot_id = None;
+    for boot in 0..=1 {
+        agent.ping().await?;
+        let boot_id = agent
+            .unix_shell()
+            .read_file("/proc/sys/kernel/random/boot_id")
+            .await?;
+        anyhow::ensure!(
+            previous_boot_id.as_ref() != Some(&boot_id),
+            "boot {boot}: L1 guest did not reboot"
+        );
+        previous_boot_id = Some(boot_id);
+        tracing::info!(boot, "running L2 test");
+        vm.run_nested_test_with_suffix(
+            &agent,
+            Default::default(),
+            if boot == 0 { "_before" } else { "_after" },
+        )
+        .await
+        .with_context(|| format!("boot {boot}: L2 test failed"))?;
+
+        if boot == 0 {
+            agent.reboot().await?;
+            agent = vm.wait_for_reset().await?;
+        }
+    }
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -107,12 +151,19 @@ async fn reboot_nested_virt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
     Ok(())
 }
 
-/// Keep the nested-enabled L1 running while rebooting a Linux L2 three times.
+/// Reboot a Linux L2 three times. The `reboot_l1` variant reruns this after
+/// rebooting L1, proving L2 can launch after previously used nested state resets.
 #[cfg(target_os = "linux")]
-#[vmm_test_macros::vmm_test(nested(
-    (vm_host, openvmm_linux_direct_x64),
-    (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "nested", openvmm_linux_direct_x64),
-))]
+#[vmm_test_macros::vmm_test(
+    nested(
+        (vm_host, openvmm_linux_direct_x64),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "nested", openvmm_linux_direct_x64),
+    ),
+    nested(
+        (reboot_l1, openvmm_linux_direct_x64, requires(nested_reset)),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "nested", openvmm_linux_direct_x64),
+    ),
+)]
 async fn reboot_l2(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (mut vm, mut agent) = config.run().await?;
     let mut previous_boot_id = None;
