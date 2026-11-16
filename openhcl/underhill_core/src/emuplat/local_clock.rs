@@ -125,7 +125,7 @@ impl LocalClock for UnderhillLocalClock {
     }
 
     fn set_time(&mut self, new_time: LocalClockTime) {
-        let new_skew = new_time - LocalClockTime::from(self.host_time.now());
+        let new_skew = new_time - LocalClockTime::from(self.host_time.query());
         self.offset_from_host_time = new_skew;
 
         // persist the skew in units of 100ns
@@ -240,22 +240,7 @@ mod host_time {
             let now = Instant::now();
             let mut cached_host_time = self.cached_host_time.lock();
             let cached_host_time = &mut *cached_host_time;
-
-            if cached_host_time.refresh.is_none()
-                && now.duration_since(cached_host_time.last_query) >= Duration::from_secs(1)
-            {
-                let get = self.get.clone();
-                cached_host_time.refresh =
-                    Some((now, Box::pin(async move { get.host_time().await })));
-            }
-
-            if let Some((sent, refresh)) = &mut cached_host_time.refresh
-                && let Some(time) = refresh.now_or_never()
-            {
-                cached_host_time.last_query = *sent;
-                cached_host_time.time = time.to_jiff();
-                cached_host_time.refresh = None;
-            }
+            self.refresh(cached_host_time, now);
 
             let time = &cached_host_time.time + now.duration_since(cached_host_time.last_query);
 
@@ -274,6 +259,61 @@ mod host_time {
             time
         }
 
+        /// Send a query if the cached time is a second old, and take the reply
+        /// if it has come in.
+        fn refresh(&self, cached_host_time: &mut CachedHostTime, now: Instant) {
+            if cached_host_time.refresh.is_none()
+                && now.duration_since(cached_host_time.last_query) >= Duration::from_secs(1)
+            {
+                cached_host_time.refresh = Some(self.send(now));
+            }
+
+            if let Some((sent, refresh)) = &mut cached_host_time.refresh
+                && let Some(time) = refresh.now_or_never()
+            {
+                cached_host_time.last_query = *sent;
+                cached_host_time.time = time.to_jiff();
+                cached_host_time.refresh = None;
+            }
+        }
+
+        fn send(&self, now: Instant) -> (Instant, Pin<Box<dyn Future<Output = Time> + Send>>) {
+            let get = self.get.clone();
+            (now, Box::pin(async move { get.host_time().await }))
+        }
+
+        /// Return the host time as of the call, for setting the time. Unlike
+        /// `now`, wait for the host once the cached time is a second old: the
+        /// advanced time falls behind if the host paused the VM, which would
+        /// put the pause into the skew. The reply to a query sent within the
+        /// last second is used, so a pause within a second of that query is
+        /// still missed. Times returned before aren't held, since the time is
+        /// being set.
+        pub fn query(&self) -> Zoned {
+            let now = Instant::now();
+            let mut cached_host_time = self.cached_host_time.lock();
+            let cached_host_time = &mut *cached_host_time;
+            self.refresh(cached_host_time, now);
+
+            if now.duration_since(cached_host_time.last_query) >= Duration::from_secs(1) {
+                let (sent, refresh) = cached_host_time
+                    .refresh
+                    .take()
+                    .filter(|(sent, _)| now.duration_since(*sent) < Duration::from_secs(1))
+                    .unwrap_or_else(|| self.send(now));
+                // TODO: this block_on really ain't great, but since we're
+                // not hammering the GET on _each_ access, it's okay for now...
+                let time = pal_async::local::block_with_io(|_| refresh);
+                cached_host_time.last_query = sent;
+                cached_host_time.time = time.to_jiff();
+            }
+
+            // The time is set as of when the guest wrote it, not when the
+            // reply came in.
+            let time = &cached_host_time.time + now.duration_since(cached_host_time.last_query);
+            cached_host_time.latest = time.clone();
+            time
+        }
     }
 }
 
@@ -347,13 +387,23 @@ mod save_restore {
 
 #[cfg(test)]
 mod tests {
+    use super::UnderhillLocalClock;
+    use super::fetch_skew_from_store;
     use super::host_time::HostSystemTimeAccess;
     use guest_emulation_transport::test_utilities::TestGet;
+    use local_clock::LocalClock;
+    use local_clock::LocalClockTime;
     use pal_async::DefaultDriver;
+    use pal_async::DefaultPool;
     use pal_async::async_test;
+    use pal_async::task::Spawn;
     use pal_async::timer::PolledTimer;
     use std::time::Duration;
+    use std::time::Instant;
+    use std::time::SystemTime;
     use test_with_tracing::test;
+    use vmcore::non_volatile_store::EphemeralNonVolatileStore;
+    use vmcore::save_restore::SaveRestore;
 
     async fn new_get(driver: &DefaultDriver) -> TestGet {
         guest_emulation_transport::test_utilities::new_transport_pair(
@@ -364,6 +414,21 @@ mod tests {
             None,
         )
         .await
+    }
+
+    /// Create a clock with the GED served on its own thread, since setting
+    /// the time waits for the host.
+    async fn new_clock() -> (UnderhillLocalClock, TestGet, DefaultDriver) {
+        let (_, get_driver) = DefaultPool::spawn_on_thread("get");
+        let get = new_get(&get_driver).await;
+        let clock = UnderhillLocalClock::new(
+            get.client.clone(),
+            EphemeralNonVolatileStore::new_boxed(),
+            None,
+        )
+        .await
+        .unwrap();
+        (clock, get, get_driver)
     }
 
     #[async_test]
@@ -411,5 +476,80 @@ mod tests {
             assert!(host_time.now() >= ahead);
         }
         assert!(host_time.cached_host_time.lock().time < ahead);
+    }
+
+    #[async_test]
+    async fn set_time_after_pause(_driver: DefaultDriver) {
+        let (mut clock, get, _) = new_clock().await;
+
+        // Pretend the host paused the VM for an hour, a second after the last
+        // query.
+        {
+            let mut cached_host_time = clock.host_time.cached_host_time.lock();
+            cached_host_time.last_query -= Duration::from_secs(1);
+            cached_host_time.time = &cached_host_time.time - Duration::from_secs(3601);
+        }
+        clock.set_time(SystemTime::now().into());
+        let skew = fetch_skew_from_store(&mut *clock.store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(skew.as_millis().abs() < 100);
+
+        let state = clock.save().unwrap();
+        let mut clock = UnderhillLocalClock::new(
+            get.client.clone(),
+            EphemeralNonVolatileStore::new_boxed(),
+            Some(state),
+        )
+        .await
+        .unwrap();
+        let error = clock.get_time() - LocalClockTime::from(SystemTime::now());
+        assert!(error.as_millis().abs() < 100);
+    }
+
+    #[async_test]
+    async fn set_time_queries_the_host_once(_driver: DefaultDriver) {
+        let (mut clock, _get, _) = new_clock().await;
+        let time = LocalClockTime::from(SystemTime::now());
+
+        // The guest sets the time a register at a time, reading the time
+        // before each write. With the cached time a second old, the first
+        // read sends a query, the first write waits for its reply, and the
+        // rest use the cached time.
+        clock.host_time.cached_host_time.lock().last_query -= Duration::from_secs(1);
+        let before = Instant::now();
+        clock.get_time();
+        let after = Instant::now();
+        for _ in 0..7 {
+            clock.get_time();
+            clock.set_time(time);
+            let last_query = clock.host_time.cached_host_time.lock().last_query;
+            assert!(before <= last_query && last_query <= after);
+        }
+    }
+
+    #[async_test]
+    async fn set_time_does_not_use_an_old_query(_driver: DefaultDriver) {
+        // Block the GED's thread for 1.5s so that a query sent now is still
+        // outstanding a second later.
+        let (mut clock, _get, get_driver) = new_clock().await;
+        let (started, wait) = std::sync::mpsc::channel();
+        get_driver
+            .spawn("block", async move {
+                started.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(1500));
+            })
+            .detach();
+        wait.recv().unwrap();
+
+        // The host may have sampled its time for a query sent a second ago
+        // before pausing the VM, so set the time from a new query.
+        clock.host_time.cached_host_time.lock().last_query -= Duration::from_secs(1);
+        clock.get_time();
+        std::thread::sleep(Duration::from_millis(1100));
+        let before = Instant::now();
+        clock.set_time(LocalClockTime::from(SystemTime::now()));
+        assert!(clock.host_time.cached_host_time.lock().last_query >= before);
     }
 }
