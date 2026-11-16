@@ -665,8 +665,10 @@ impl Rtc {
 
                     let elapsed_millis = elapsed.as_millis();
                     if elapsed_millis >= 1000 {
-                        // Update the date/time and note that we set the update bit now.
-                        data.set_update(true);
+                        // Only report the update if this register was also read in
+                        // the previous second, as the first read after a longer gap
+                        // can land anywhere in the second.
+                        data.set_update(elapsed_millis < 2000);
                         self.sync_clock_to_cmos();
                         // Updates happen at the start of each second.
                         self.last_update_bit_blip = LocalClockTime::from_millis_since_unix_epoch(
@@ -1362,6 +1364,19 @@ mod tests {
         } else {
             panic!("get_cmos_date_time failed");
         }
+    }
+
+    #[test]
+    fn test_uip_sparse_reads() {
+        let (_, _, time, mut rtc) = new_test_rtc();
+        let mut uip = || get_cmos_data(&mut rtc, CmosReg::STATUS_A) & 0x80 != 0;
+
+        // 10.5s (the mock clock starts at 1.337s).
+        time.tick(Duration::from_millis(9163));
+        assert!(!uip());
+        // 11.1s, after the update at 11s.
+        time.tick(Duration::from_millis(600));
+        assert!(uip());
     }
 
     #[test]
