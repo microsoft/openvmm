@@ -152,3 +152,42 @@ fn restore_accepts_the_state_that_kvm_normalizes(
     );
     Ok(())
 }
+
+// A save names the kind of an interrupt shadow only for an STI shadow, and a
+// restore that is given no kind sets a MOV SS shadow, so the shadow of an
+// earlier save, which has no kind, and an STI shadow read back as they were
+// saved, and the restore's check accepts them as they are. An SVM CPU has one
+// kind of shadow, which a save holds no kind for.
+backend_test!(restore_reads_back_an_interrupt_shadow_as_saved, kvm_only, requires: []);
+fn restore_reads_back_an_interrupt_shadow_as_saved(
+    partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let mut kinds = vec![None];
+    if partition.caps().vendor.is_intel_compatible() {
+        kinds.push(Some(vp::InterruptShadowKind::Sti));
+    }
+    let mut state = processor.access_state(Vtl::Vtl0);
+    for interrupt_shadow_kind in kinds {
+        let activity = || vp::Activity {
+            interrupt_shadow: true,
+            interrupt_shadow_kind,
+            ..Default::default()
+        };
+        let saved = Crafted {
+            activity: Some(activity()),
+            ..Default::default()
+        }
+        .into_saved_state()?;
+        state.restore_all(&saved).with_context(|| {
+            format!("restoring an interrupt shadow of kind {interrupt_shadow_kind:?}")
+        })?;
+
+        let restored = state.activity()?;
+        anyhow::ensure!(
+            restored == activity(),
+            "the restored interrupt shadow reads back as {restored:?}"
+        );
+    }
+    Ok(())
+}
