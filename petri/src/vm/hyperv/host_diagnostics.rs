@@ -1,15 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Host-side diagnostics for Hyper-V VMs that can fail before OpenHCL
-//! produces any output.
+//! Host-side ETW diagnostics for Hyper-V VMs, recorded for the lifetime of the
+//! VM into the test output directory.
 //!
-//! For the lifetime of the VM this records the Hyper-V ETW providers involved
-//! in creating and starting a VM, and on drop it decodes the trace and exports
-//! the Hyper-V admin and operational event log channels for the same period
-//! into the test output directory.
+//! * VBS VMs can fail before OpenHCL produces any output. Their trace records
+//!   the Hyper-V providers involved in creating and starting a VM, and on drop
+//!   the Hyper-V admin and operational event log channels are also exported.
+//! * SNP VMs record the hypervisor diagnostics TraceLogging provider, which
+//!   reports the hardware exits and software paths behind
+//!   `HvMessageTypeUnrecoverableException`. The hypervisor buffers these
+//!   events and `hvservice` forwards them to ETW on capture-state requests, so
+//!   a helper process sends those requests periodically and once more before
+//!   the trace stops. The events are only emitted by instrumented hypervisor
+//!   builds, so the host's hypervisor images are recorded as well.
 //!
-//! The trace is a host-wide ETW session, so it also contains events for any
+//! Traces use host-wide ETW sessions, so they also contain events for any
 //! other VMs running concurrently on the host.
 
 use jiff::SignedDuration;
@@ -18,10 +24,14 @@ use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
+use std::process::Stdio;
+use std::time::Duration;
+use std::time::Instant;
 
-/// Hyper-V providers enabled by exact name.
-const PROVIDERS: &[&str] = &[
+/// Hyper-V providers enabled for VBS VMs by exact name.
+const VBS_PROVIDERS: &[&str] = &[
     "Microsoft-Windows-Hyper-V-Worker",
     "Microsoft-Windows-Hyper-V-Chipset",
     "Microsoft-Windows-Hyper-V-VMMS",
@@ -32,19 +42,46 @@ const PROVIDERS: &[&str] = &[
 ];
 
 /// Registered Hyper-V providers whose lowercase names contain any of these are
-/// also enabled.
-const PROVIDER_NAME_KEYWORDS: &[&str] = &["vtl", "igvm", "hcl", "isolat", "paravisor"];
+/// also enabled for VBS VMs.
+const VBS_PROVIDER_NAME_KEYWORDS: &[&str] = &["vtl", "igvm", "hcl", "isolat", "paravisor"];
+
+/// `Microsoft.Windows.HyperV.Hypervisor.Diagnostics`.
+const HYPERVISOR_DIAGNOSTICS_PROVIDER: &str = "{f1c134a0-5523-5865-1aff-b9f82e911cc3}";
+
+const CAPTURE_STATE_SCRIPT: &str = include_str!("etw_capture_state.ps1");
+const CAPTURE_STATE_INTERVAL_SECS: u32 = 5;
+const CAPTURE_STATE_EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 const SESSION_PREFIX: &str = "petri-hv-";
-/// Stay well below the system-wide limit of 64 ETW sessions.
-const MAX_PETRI_SESSIONS: usize = 24;
+/// Matches the maximum number of concurrently running VMM tests.
+const MAX_PETRI_SESSIONS: usize = 16;
+/// Leave room below the default system-wide limit of 64 ETW sessions so that
+/// tracing never starves other components on the host.
+const MAX_TOTAL_SESSIONS: usize = 56;
 const MAX_TRACE_MB: u32 = 256;
 const MAX_DECODE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// The kind of VM being diagnosed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostDiagnosticsKind {
+    Vbs,
+    Snp,
+}
+
+impl HostDiagnosticsKind {
+    fn file_stem(self) -> &'static str {
+        match self {
+            Self::Vbs => "hyperv_etw",
+            Self::Snp => "hv_snp_diag",
+        }
+    }
+}
+
 /// Records Hyper-V host diagnostics until dropped.
 pub(super) struct HostDiagnostics {
+    kind: HostDiagnosticsKind,
     session: Option<String>,
-    etl_path: PathBuf,
+    capture_state: Option<CaptureState>,
     output_dir: PathBuf,
     start_time: Timestamp,
 }
@@ -54,10 +91,9 @@ impl HostDiagnostics {
     ///
     /// Failures are logged and leave collection disabled; they never fail the
     /// test.
-    pub fn start(output_dir: &Path) -> Self {
+    pub fn start(output_dir: &Path, kind: HostDiagnosticsKind) -> Self {
         let start_time = Timestamp::now();
-        let etl_path = output_dir.join("hyperv_etw.etl");
-        let session = start_trace(output_dir, &etl_path)
+        let session = start_trace(output_dir, kind)
             .inspect_err(|e| {
                 tracing::warn!(
                     error = e.as_ref() as &dyn std::error::Error,
@@ -65,32 +101,124 @@ impl HostDiagnostics {
                 )
             })
             .ok();
+        let capture_state = session
+            .as_deref()
+            .filter(|_| kind == HostDiagnosticsKind::Snp)
+            .and_then(|session| {
+                CaptureState::start(output_dir, kind, session)
+                    .inspect_err(|e| {
+                        tracing::warn!(
+                            error = e.as_ref() as &dyn std::error::Error,
+                            "failed to start etw capture-state requests"
+                        )
+                    })
+                    .ok()
+            });
         Self {
+            kind,
             session,
-            etl_path,
+            capture_state,
             output_dir: output_dir.to_owned(),
             start_time,
         }
+    }
+
+    fn path(&self, extension: &str) -> PathBuf {
+        self.output_dir
+            .join(format!("{}.{extension}", self.kind.file_stem()))
     }
 }
 
 impl Drop for HostDiagnostics {
     fn drop(&mut self) {
+        // Drain buffered events into the trace before stopping it.
+        if let Some(capture_state) = self.capture_state.take() {
+            capture_state.finish();
+        }
         if let Some(session) = self.session.take() {
             match run("logman", ["stop", session.as_str(), "-ets"]) {
-                Ok(_) => decode_trace(&self.etl_path, &self.output_dir),
+                Ok(_) => decode_trace(&self.path("etl"), &self.path("xml")),
                 Err(e) => tracing::warn!(
                     error = e.as_ref() as &dyn std::error::Error,
                     "failed to stop hyper-v etw trace"
                 ),
             }
         }
-        if let Err(e) = export_channels(&self.output_dir, self.start_time) {
+        if self.kind == HostDiagnosticsKind::Vbs {
+            if let Err(e) = export_channels(&self.output_dir, self.start_time) {
+                tracing::warn!(
+                    error = e.as_ref() as &dyn std::error::Error,
+                    "failed to export hyper-v event log channels"
+                );
+            }
+        }
+    }
+}
+
+/// A helper process that sends ETW capture-state requests to a session.
+struct CaptureState {
+    child: Child,
+    stop_path: PathBuf,
+}
+
+impl CaptureState {
+    fn start(output_dir: &Path, kind: HostDiagnosticsKind, session: &str) -> anyhow::Result<Self> {
+        let stem = kind.file_stem();
+        let script_path = output_dir.join(format!("{stem}_capture_state.ps1"));
+        fs_err::write(&script_path, CAPTURE_STATE_SCRIPT)?;
+        let stop_path = output_dir.join(format!("{stem}_capture_state.stop"));
+        let stderr = fs_err::File::create(output_dir.join(format!("{stem}_capture_state.err")))?;
+        let child = Command::new("pwsh.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&script_path)
+            .arg("-Session")
+            .arg(session)
+            .arg("-Provider")
+            .arg(HYPERVISOR_DIAGNOSTICS_PROVIDER)
+            .arg("-StopPath")
+            .arg(&stop_path)
+            .arg("-LogPath")
+            .arg(output_dir.join(format!("{stem}_capture_state.log")))
+            .arg("-HypervisorInfoPath")
+            .arg(output_dir.join("hypervisor_image.txt"))
+            .arg("-ParentPid")
+            .arg(std::process::id().to_string())
+            .arg("-IntervalSeconds")
+            .arg(CAPTURE_STATE_INTERVAL_SECS.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr.into_parts().0)
+            .spawn()?;
+        Ok(Self { child, stop_path })
+    }
+
+    /// Requests a final capture state and waits for the helper to exit.
+    fn finish(mut self) {
+        if let Err(e) = fs_err::write(&self.stop_path, "") {
             tracing::warn!(
-                error = e.as_ref() as &dyn std::error::Error,
-                "failed to export hyper-v event log channels"
+                error = &e as &dyn std::error::Error,
+                "failed to signal etw capture-state helper"
             );
         }
+        let deadline = Instant::now() + CAPTURE_STATE_EXIT_TIMEOUT;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(250))
+                }
+                _ => break,
+            }
+        }
+        tracing::warn!("etw capture-state helper did not exit; killing it");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -112,13 +240,21 @@ where
     Ok(stdout)
 }
 
-fn start_trace(output_dir: &Path, etl_path: &Path) -> anyhow::Result<String> {
-    let active = clean_stale_sessions()?;
-    if active >= MAX_PETRI_SESSIONS {
-        anyhow::bail!("{active} petri etw sessions are already running");
+fn start_trace(output_dir: &Path, kind: HostDiagnosticsKind) -> anyhow::Result<String> {
+    let (petri_sessions, total_sessions) = clean_stale_sessions()?;
+    if petri_sessions >= MAX_PETRI_SESSIONS || total_sessions >= MAX_TOTAL_SESSIONS {
+        anyhow::bail!(
+            "too many etw sessions are running ({petri_sessions} petri, {total_sessions} total)"
+        );
     }
 
-    let providers = hyperv_provider_guids()?;
+    let providers = match kind {
+        HostDiagnosticsKind::Vbs => vbs_provider_guids()?,
+        HostDiagnosticsKind::Snp => vec![(
+            "Microsoft.Windows.HyperV.Hypervisor.Diagnostics".to_owned(),
+            HYPERVISOR_DIAGNOSTICS_PROVIDER.to_owned(),
+        )],
+    };
     if providers.is_empty() {
         anyhow::bail!("no hyper-v etw providers are registered");
     }
@@ -127,7 +263,8 @@ fn start_trace(output_dir: &Path, etl_path: &Path) -> anyhow::Result<String> {
         tracing::debug!(name, guid, "enabling hyper-v etw provider");
         writeln!(provider_file, "{guid} 0xffffffffffffffff 0x5")?;
     }
-    let provider_path = output_dir.join("hyperv_etw_providers.txt");
+    let stem = kind.file_stem();
+    let provider_path = output_dir.join(format!("{stem}_providers.txt"));
     fs_err::write(&provider_path, provider_file)?;
 
     let session = format!(
@@ -135,6 +272,7 @@ fn start_trace(output_dir: &Path, etl_path: &Path) -> anyhow::Result<String> {
         std::process::id(),
         guid::Guid::new_random()
     );
+    let etl_path = output_dir.join(format!("{stem}.etl"));
     let max_mb = MAX_TRACE_MB.to_string();
     run(
         "logman",
@@ -163,8 +301,9 @@ fn start_trace(output_dir: &Path, etl_path: &Path) -> anyhow::Result<String> {
     Ok(session)
 }
 
-/// Returns the registered Hyper-V providers to enable, as (name, GUID).
-fn hyperv_provider_guids() -> anyhow::Result<Vec<(String, String)>> {
+/// Returns the registered Hyper-V providers to enable for VBS VMs, as
+/// (name, GUID).
+fn vbs_provider_guids() -> anyhow::Result<Vec<(String, String)>> {
     let output = run("logman", ["query", "providers"])?;
     Ok(output
         .lines()
@@ -176,43 +315,53 @@ fn hyperv_provider_guids() -> anyhow::Result<Vec<(String, String)>> {
             }
             let name = line[..brace].trim();
             let lower = name.to_ascii_lowercase();
-            let wanted = PROVIDERS.iter().any(|p| p.eq_ignore_ascii_case(name))
+            let wanted = VBS_PROVIDERS.iter().any(|p| p.eq_ignore_ascii_case(name))
                 || (lower.starts_with("microsoft-windows-hyper-v-")
-                    && PROVIDER_NAME_KEYWORDS.iter().any(|k| lower.contains(k)));
+                    && VBS_PROVIDER_NAME_KEYWORDS.iter().any(|k| lower.contains(k)));
             wanted.then(|| (name.to_owned(), line[brace..].to_owned()))
         })
         .collect())
 }
 
 /// Stops petri sessions left by processes that exited without stopping them,
-/// such as tests killed on timeout. Returns the number still running.
-fn clean_stale_sessions() -> anyhow::Result<usize> {
+/// such as tests killed on timeout. Returns the number of petri sessions and
+/// of all sessions still running.
+fn clean_stale_sessions() -> anyhow::Result<(usize, usize)> {
     let output = run("logman", ["query", "-ets"])?;
-    let mut active = 0;
-    for name in output
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .filter(|name| name.starts_with(SESSION_PREFIX))
-    {
+    let mut petri_sessions = 0;
+    let mut total_sessions = 0;
+    for line in output.lines() {
+        if line.split_whitespace().last() != Some("Running") {
+            continue;
+        }
+        total_sessions += 1;
+        let Some(name) = line
+            .split_whitespace()
+            .next()
+            .filter(|name| name.starts_with(SESSION_PREFIX))
+        else {
+            continue;
+        };
         let pid = name[SESSION_PREFIX.len()..]
             .split('-')
             .next()
             .and_then(|pid| pid.parse::<u32>().ok());
         let alive = pid.is_none_or(|pid| pid == std::process::id() || process_exists(pid));
         if alive {
-            active += 1;
+            petri_sessions += 1;
         } else if let Err(e) = run("logman", ["stop", name, "-ets"]) {
             tracing::warn!(
                 session = name,
                 error = e.as_ref() as &dyn std::error::Error,
                 "failed to stop stale etw session"
             );
-            active += 1;
+            petri_sessions += 1;
         } else {
             tracing::info!(session = name, "stopped stale etw session");
+            total_sessions -= 1;
         }
     }
-    Ok(active)
+    Ok((petri_sessions, total_sessions))
 }
 
 fn process_exists(pid: u32) -> bool {
@@ -223,7 +372,7 @@ fn process_exists(pid: u32) -> bool {
         .map_or(true, |out| out.contains(&format!("\"{pid}\"")))
 }
 
-fn decode_trace(etl_path: &Path, output_dir: &Path) {
+fn decode_trace(etl_path: &Path, xml_path: &Path) {
     let len = match fs_err::metadata(etl_path) {
         Ok(m) => m.len(),
         Err(e) => {
@@ -241,7 +390,6 @@ fn decode_trace(etl_path: &Path, output_dir: &Path) {
         );
         return;
     }
-    let xml_path = output_dir.join("hyperv_etw.xml");
     if let Err(e) = run(
         "tracerpt",
         [
