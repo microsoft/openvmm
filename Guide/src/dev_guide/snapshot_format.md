@@ -384,8 +384,13 @@ safe side, so the activity records the kind in its optional field 8,
   or a debug exception that the `STI` shadow would let through waits for one
   more instruction.
 
-KVM refuses a kind without a shadow, before it changes the activity. Only a
-damaged or crafted snapshot holds one.
+A restore never drops a kind that it reads, but into AMD's one shadow. A backend
+that cannot hold the kind, MSHV, WHP, or OpenHCL's, refuses the activity, and
+KVM refuses a kind without a shadow. None changes any state before it refuses.
+KVM on an AMD CPU sets its one shadow for the kind, which reads back with none.
+Only a damaged or crafted snapshot reaches any of them: a snapshot restores only
+on the backend and the CPU generation that captured it, and an AMD capture
+records no kind.
 
 ## Extending the format
 

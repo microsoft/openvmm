@@ -283,7 +283,10 @@ holds an NMI or a debug exception off for one more instruction. The snapshot has
 no version for this; see [Fields of an
 element](../../dev_guide/snapshot_format.md#fields-of-an-element). KVM on an AMD
 CPU, whose one kind of shadow has no kind to record, and MSHV and WHP, whose
-interrupt state has one bit for both, record none.
+interrupt state has one bit for both, record none. A backend that cannot hold
+the kind refuses a snapshot that holds one, which only a damaged or crafted
+snapshot of another backend does, since a restore requires the backend that
+captured the snapshot.
 
 For a tiered microVM restore, and for a restore that replaces the network
 policy of a snapshot without a tier, OpenVMM starts device workers with
