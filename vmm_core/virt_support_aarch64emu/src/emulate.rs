@@ -579,6 +579,13 @@ impl<T: EmulatorSupport, U: CpuIo> EmulatorCpu<'_, T, U> {
     }
 
     async fn write_gpa(&mut self, gpa: u64, bytes: &[u8]) -> Result<(), Error> {
+        if self
+            .support
+            .monitor_support()
+            .is_some_and(|m| m.check_write(gpa, bytes))
+        {
+            return Ok(());
+        }
         if self.support.is_gpa_mapped(gpa, true) {
             match bytes.len() {
                 1 => self.gm.write_plain(gpa, &bytes[0]),
@@ -1043,6 +1050,25 @@ mod tests {
     use pal_async::async_test;
     use test_with_tracing::test;
 
+    #[derive(Default)]
+    struct Monitor {
+        writes: std::cell::RefCell<Vec<(u64, Vec<u8>)>>,
+    }
+
+    impl EmulatorMonitorSupport for Monitor {
+        fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+            if gpa != 0x100 {
+                return false;
+            }
+            self.writes.borrow_mut().push((gpa, bytes.to_vec()));
+            true
+        }
+
+        fn check_read(&self, _gpa: u64, _bytes: &mut [u8]) -> bool {
+            false
+        }
+    }
+
     struct Support {
         x: [u64; 31],
         q: [u128; 32],
@@ -1054,6 +1080,7 @@ mod tests {
         denied: Option<(u64, TranslateMode)>,
         initial: Option<InitialTranslation>,
         mapped: bool,
+        monitor: Option<Monitor>,
         events: Vec<HvAarch64PendingEvent>,
         translations: Vec<(u64, TranslateMode)>,
     }
@@ -1071,6 +1098,7 @@ mod tests {
                 denied: None,
                 initial: None,
                 mapped: true,
+                monitor: None,
                 events: Vec::new(),
                 translations: Vec::new(),
             }
@@ -1203,6 +1231,11 @@ mod tests {
         fn inject_pending_event(&mut self, event: HvAarch64PendingEvent) {
             self.events.push(event);
         }
+        fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+            self.monitor
+                .as_ref()
+                .map(|m| m as &dyn EmulatorMonitorSupport)
+        }
         fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
             self.mapped
         }
@@ -1241,6 +1274,101 @@ mod tests {
         hvdef::HvAarch64PendingExceptionEvent::read_from_prefix(support.events[0].as_bytes())
             .unwrap()
             .0
+    }
+
+    #[async_test]
+    async fn monitor_stores_precede_ram_and_mmio_dispatch() {
+        for mapped in [false, true] {
+            for syndrome_decode in [false, true] {
+                for ordered in [false, true] {
+                    for big_endian in [false, true] {
+                        let gm = GuestMemory::allocate(0x1000);
+                        gm.fill_at(0, 0xa5, 0x1000).unwrap();
+                        let mut support = Support {
+                            cpsr: aarch64defs::Cpsr64::new().with_el(1),
+                            sctlr: aarch64defs::SctlrEl1::new().with_ee(big_endian),
+                            initial: syndrome_decode.then_some(InitialTranslation {
+                                gva: 0x4100,
+                                gpa: 0x100,
+                                translate_mode: TranslateMode::Write,
+                            }),
+                            mapped,
+                            monitor: Some(Monitor::default()),
+                            ..Default::default()
+                        };
+                        support.x[0] = 0xfeed_face_1234_5678;
+                        support.x[1] = 0x4100;
+                        let opcode: u32 = if ordered {
+                            0x889f_fc20 // stlr w0, [x1]
+                        } else {
+                            0xb900_0020 // str w0, [x1]
+                        };
+                        let syndrome: EsrEl2 = IssDataAbort::new()
+                            .with_isv(syndrome_decode)
+                            .with_sas(2)
+                            .with_srt(0)
+                            .with_wnr(true)
+                            .with_ar(ordered)
+                            .into();
+                        let intercept = InterceptState {
+                            instruction_bytes: opcode.to_le_bytes(),
+                            instruction_byte_count: if syndrome_decode { 0 } else { 4 },
+                            gpa: Some(0x100),
+                            syndrome: syndrome.with_il(true),
+                            ..Default::default()
+                        };
+                        emulate(&mut support, &intercept, &gm, &Io).await.unwrap();
+                        let expected = if big_endian {
+                            0x1234_5678u32.to_be_bytes()
+                        } else {
+                            0x1234_5678u32.to_le_bytes()
+                        };
+                        assert_eq!(
+                            *support.monitor.as_ref().unwrap().writes.borrow(),
+                            [(0x100, expected.to_vec())]
+                        );
+                        let mut actual = vec![0; 0x1000];
+                        gm.read_at(0, &mut actual).unwrap();
+                        assert!(actual.iter().all(|&b| b == 0xa5));
+                        assert_eq!(support.x[0], 0xfeed_face_1234_5678);
+                        assert_eq!(support.pc, 4);
+                        assert!(support.events.is_empty());
+                        assert_eq!(
+                            support.translations,
+                            if syndrome_decode {
+                                vec![]
+                            } else {
+                                vec![(0x4100, TranslateMode::Write)]
+                            }
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[async_test]
+    async fn non_monitor_stores_still_reach_ram() {
+        let gm = GuestMemory::allocate(0x1000);
+        let mut support = Support {
+            initial: Some(InitialTranslation {
+                gva: 0x4200,
+                gpa: 0x200,
+                translate_mode: TranslateMode::Write,
+            }),
+            monitor: Some(Monitor::default()),
+            ..Default::default()
+        };
+        let mut cpu = EmulatorCpu::new(&gm, &Io, &mut support);
+        cpu.write_physical_memory(0x200, &0x1234_5678u32.to_le_bytes())
+            .await
+            .unwrap();
+        assert_eq!(gm.read_plain::<u32>(0x200).unwrap(), 0x1234_5678);
+        cpu.write_memory(0x4200, &0x8765_4321u32.to_le_bytes(), false)
+            .await
+            .unwrap();
+        assert_eq!(gm.read_plain::<u32>(0x200).unwrap(), 0x8765_4321);
+        assert!(support.monitor.as_ref().unwrap().writes.borrow().is_empty());
     }
 
     #[async_test]
