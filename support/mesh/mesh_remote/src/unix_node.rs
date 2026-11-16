@@ -61,8 +61,6 @@ use std::io::IoSlice;
 use std::os::unix::prelude::*;
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use thiserror::Error;
 use tracing::instrument;
 use unicycle::FuturesUnordered;
@@ -1093,13 +1091,17 @@ fn new_socket_pair() -> Result<(Socket, Socket), io::Error> {
 
 /// An AF_UNIX SOCK_SEQPACKET or SOCK_STREAM connection.
 struct UnixSocket {
-    socket: Mutex<PolledSocket<Socket>>,
+    state: Mutex<SocketState>,
     /// True for SOCK_SEQPACKET, whose packet boundaries the kernel keeps. On
     /// SOCK_STREAM each packet is prefixed with its length.
     seqpacket: bool,
+}
+
+struct SocketState {
+    socket: PolledSocket<Socket>,
     /// Set while the send task is between the `EVENT_FDS` packets of an event
-    /// and the event packet. Only changed with `socket` locked.
-    sending_split_event: AtomicBool,
+    /// and the event packet.
+    sending_split_event: bool,
 }
 
 impl UnixSocket {
@@ -1110,9 +1112,11 @@ impl UnixSocket {
             .map_or(USE_SEQPACKET, |ty| ty == socket2::Type::SEQPACKET);
         let socket = PolledSocket::new(driver, fd).unwrap();
         UnixSocket {
-            socket: Mutex::new(socket),
+            state: Mutex::new(SocketState {
+                socket,
+                sending_split_event: false,
+            }),
             seqpacket,
-            sending_split_event: AtomicBool::new(false),
         }
     }
 
@@ -1127,15 +1131,14 @@ impl UnixSocket {
         if !self.seqpacket || fds.len() > protocol::MAX_FDS_PER_MESSAGE {
             return false;
         }
-        let socket = self.socket.lock();
+        let state = self.state.lock();
         // The receiver gives the descriptors of `EVENT_FDS` packets to the next
-        // event packet, so no packet may land between them. Relaxed is enough:
-        // the flag only changes with the lock held.
-        if self.sending_split_event.load(Ordering::Relaxed) {
+        // event packet, so no packet may land between them.
+        if state.sending_split_event {
             return false;
         }
         unix_socket::send_with_fds(
-            socket.get().as_fd(),
+            state.socket.get().as_fd(),
             &[IoSlice::new(packet)],
             fds.iter().map(|OsResource::Fd(fd)| fd.as_fd()),
         )
@@ -1143,8 +1146,7 @@ impl UnixSocket {
     }
 
     fn set_sending_split_event(&self, value: bool) {
-        let _socket = self.socket.lock();
-        self.sending_split_event.store(value, Ordering::Relaxed);
+        self.state.lock().sending_split_event = value;
     }
 
     /// Sends a packet from the send task. An event with more descriptors than
@@ -1224,8 +1226,9 @@ impl UnixSocket {
             ));
         }
         let n = poll_fn(|cx| {
-            self.socket
+            self.state
                 .lock()
+                .socket
                 .poll_io(cx, InterestSlot::Write, PollEvents::OUT, |socket| {
                     unix_socket::send_with_fds(
                         socket.get().as_fd(),
@@ -1303,8 +1306,9 @@ impl UnixSocket {
         receiver: &mut unix_socket::ScmReceiver,
     ) -> Result<usize, io::Error> {
         let n = poll_fn(|cx| {
-            self.socket
+            self.state
                 .lock()
+                .socket
                 .poll_io(cx, InterestSlot::Read, PollEvents::IN, |socket| {
                     receiver.recv(socket.get().as_fd(), buf)
                 })
@@ -1315,7 +1319,11 @@ impl UnixSocket {
     }
 
     async fn close_write(&self) -> io::Result<()> {
-        self.socket.lock().get().shutdown(std::net::Shutdown::Write)
+        self.state
+            .lock()
+            .socket
+            .get()
+            .shutdown(std::net::Shutdown::Write)
     }
 }
 
