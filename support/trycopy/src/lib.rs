@@ -65,8 +65,10 @@
 //! - The memory may not be mapped at all
 //! - The memory has incorrect protection attributes
 //!
+//! Unaligned compare-exchanges are supported where the platform supports them.
+//! Otherwise, they return an error without accessing memory.
+//!
 //! However, callers must still ensure:
-//! - Pointers are properly aligned for their type (for atomic operations)
 //! - The address space is valid and reserved (even if not committed/mapped)
 //! - Concurrent access doesn't violate Rust's aliasing rules in safe code
 //!
@@ -172,8 +174,10 @@ pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<
 /// using a sequentially-consistent memory ordering.
 ///
 /// Returns `Ok(Ok(new))` if the swap was successful, `Ok(Err(*dest))` if the
-/// swap failed, or `Err(MemoryError::AccessViolation)` if the swap could not be
-/// attempted due to an access violation.
+/// comparison failed, or `Err(MemoryError)` if the access failed.
+///
+/// Unaligned compare-exchanges are supported where the platform supports them.
+/// Otherwise, they return an error without accessing memory.
 ///
 /// Fails at compile time if the size is not 1, 2, 4, or 8 bytes, or if the type
 /// is under-aligned.
@@ -192,6 +196,18 @@ pub unsafe fn try_compare_exchange<T: Copy>(
         // alignment (which is its size).
         assert!(align_of::<T>() >= size_of::<T>());
     };
+    #[cfg(not(target_arch = "x86_64"))]
+    if !dest.addr().is_multiple_of(size_of::<T>()) {
+        return Err(MemoryError {
+            offset: 0,
+            is_write: true,
+            source: AccessError::UnalignedAtomicAccess {
+                address: dest.addr(),
+                len: size_of::<T>(),
+            },
+        });
+    }
+
     // SAFETY: guaranteed by caller
     let ret = unsafe {
         match size_of::<T>() {
@@ -327,6 +343,15 @@ pub unsafe fn try_write_volatile<T>(dest: *mut T, value: &T) -> Result<(), Memor
     }
 }
 
+/// The kind of memory access failure.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum MemoryErrorKind {
+    /// The memory access faulted.
+    AccessViolation,
+    /// The platform does not support the atomic destination's alignment.
+    UnalignedAtomicAccess,
+}
+
 /// Error returned when a memory access fails.
 #[derive(Debug, Error)]
 #[error("failed to {} memory", if self.is_write { "write" } else { "read" })]
@@ -334,14 +359,20 @@ pub struct MemoryError {
     offset: usize,
     is_write: bool,
     #[source]
-    source: OsAccessError,
+    source: AccessError,
 }
 
-#[cfg(windows)]
 #[derive(Debug, Error)]
-enum OsAccessError {
+enum AccessError {
+    #[cfg(windows)]
     #[error("access violation")]
     AccessViolation,
+    #[cfg(unix)]
+    #[error(transparent)]
+    Os(OsAccessError),
+    #[cfg(not(target_arch = "x86_64"))]
+    #[error("unaligned {len}-byte atomic access at address {address:#x}")]
+    UnalignedAtomicAccess { address: usize, len: usize },
 }
 
 #[cfg(unix)]
@@ -379,6 +410,21 @@ impl std::fmt::Display for OsAccessError {
 }
 
 impl MemoryError {
+    /// Returns the kind of memory access failure.
+    pub fn kind(&self) -> MemoryErrorKind {
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            match self.source {
+                AccessError::UnalignedAtomicAccess { .. } => MemoryErrorKind::UnalignedAtomicAccess,
+                _ => MemoryErrorKind::AccessViolation,
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            MemoryErrorKind::AccessViolation
+        }
+    }
+
     fn from_last_failure(src: Option<*const u8>, dest: *mut u8, len: usize) -> Self {
         let failure = LAST_ACCESS_FAILURE.get();
         let (offset, is_write) = if failure.address.is_null() {
@@ -412,16 +458,16 @@ impl MemoryError {
             );
         };
         #[cfg(windows)]
-        let source = OsAccessError::AccessViolation;
+        let source = AccessError::AccessViolation;
         #[cfg(unix)]
-        let source = OsAccessError {
+        let source = AccessError::Os(OsAccessError {
             signal: failure.si_signo,
             si_code: failure.si_code,
             #[cfg(target_arch = "x86_64")]
             exception: failure.trapno,
             #[cfg(target_arch = "aarch64")]
             esr: failure.esr,
-        };
+        });
         Self {
             offset,
             is_write,
@@ -429,8 +475,7 @@ impl MemoryError {
         }
     }
 
-    /// Returns the byte offset into the buffer at which the access violation
-    /// occurred.
+    /// Returns the byte offset into the buffer at which the access failed.
     pub fn offset(&self) -> usize {
         self.offset
     }
@@ -1158,6 +1203,53 @@ mod tests {
         check(0x1234u16, 0x5678, 0x9abc);
         check(0x12345678u32, 0x9abcdef0, 0x01234567);
         check(0x0123456789abcdefu64, 0xfedcba9876543210, 0);
+    }
+
+    #[test]
+    fn test_public_compare_exchange_unaligned() {
+        fn check<T: Copy + PartialEq + std::fmt::Debug>(initial: T, new: T) {
+            for offset in 1..size_of::<T>() {
+                let mut buffer = [0xa5a5a5a5a5a5a5a5u64; 3];
+                let mut expected = buffer;
+                // SAFETY: both ranges are within the exclusively owned buffers.
+                // The raw pointers may be unaligned, but no unaligned references
+                // are created.
+                unsafe {
+                    let dest = buffer.as_mut_ptr().cast::<u8>().add(offset).cast::<T>();
+                    let expected_dest = expected.as_mut_ptr().cast::<u8>().add(offset).cast::<T>();
+                    dest.write_unaligned(initial);
+                    expected_dest.write_unaligned(initial);
+
+                    let result = try_compare_exchange(dest, initial, new);
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.offset(), 0);
+                        assert!(error.is_write);
+                        assert!(matches!(
+                            error.source,
+                            crate::AccessError::UnalignedAtomicAccess { address, len }
+                                if address == dest.addr() && len == size_of::<T>()
+                        ));
+                    }
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        assert_eq!(result.unwrap(), Ok(new));
+                        expected_dest.write_unaligned(new);
+                        assert_eq!(
+                            try_compare_exchange(dest, initial, initial).unwrap(),
+                            Err(new)
+                        );
+                    }
+                    assert_eq!(buffer, expected);
+                }
+            }
+        }
+
+        initialize_try_copy();
+        check(0x1234u16, 0x5678);
+        check(0x12345678u32, 0x9abcdef0);
+        check(0x0123456789abcdefu64, 0xfedcba9876543210);
     }
 
     #[derive(Copy, Clone, Debug)]

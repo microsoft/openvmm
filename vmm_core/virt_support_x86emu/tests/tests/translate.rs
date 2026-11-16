@@ -571,7 +571,7 @@ async fn locked_cross_page_memory() {
             )
             .await;
 
-            if second_gpa == 0x3000 && bytes_in_first_page < 8 {
+            if bytes_in_first_page < 8 && (second_gpa == 0x3000 || !cfg!(target_arch = "x86_64")) {
                 assert!(matches!(
                     result,
                     Err(virt::VpHaltReason::TripleFault { .. })

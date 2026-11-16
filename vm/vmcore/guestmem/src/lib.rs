@@ -1670,24 +1670,29 @@ impl GuestMemory {
             loop {
                 match f(&mut param, mapping) {
                     Ok(t) => return Ok(t),
-                    Err(fault) => {
-                        match self.inner.imp.page_fault(
-                            gpa + fault.offset() as u64,
-                            len - fault.offset(),
-                            access_type == AccessType::Write,
-                            false,
-                        ) {
-                            PageFaultAction::Fail(err) => {
-                                return Err(GuestMemoryBackingError::new(
-                                    err.kind,
-                                    gpa + fault.offset() as u64,
-                                    err.err,
-                                ));
-                            }
-                            PageFaultAction::Retry => {}
-                            PageFaultAction::Fallback => return fallback(&mut param),
+                    Err(fault) => match fault.kind() {
+                        trycopy::MemoryErrorKind::UnalignedAtomicAccess => {
+                            return Err(GuestMemoryBackingError::other(gpa, fault));
                         }
-                    }
+                        trycopy::MemoryErrorKind::AccessViolation => {
+                            match self.inner.imp.page_fault(
+                                gpa + fault.offset() as u64,
+                                len - fault.offset(),
+                                access_type == AccessType::Write,
+                                false,
+                            ) {
+                                PageFaultAction::Fail(err) => {
+                                    return Err(GuestMemoryBackingError::new(
+                                        err.kind,
+                                        gpa + fault.offset() as u64,
+                                        err.err,
+                                    ));
+                                }
+                                PageFaultAction::Retry => {}
+                                PageFaultAction::Fallback => return fallback(&mut param),
+                            }
+                        }
+                    },
                 }
             }
         };
@@ -1879,6 +1884,9 @@ impl GuestMemory {
     }
 
     /// Attempts a sequentially-consistent compare exchange of the value at `gpa`.
+    ///
+    /// Direct accesses to unaligned host addresses are supported where the
+    /// platform supports them; otherwise, they return an error.
     pub fn compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownLayout + Copy>(
         &self,
         gpa: u64,
@@ -2967,6 +2975,41 @@ mod tests {
         gm.read_plain::<u16>(PAGE_SIZE64 * 3 - 1).unwrap_err();
         gm.read_plain::<u8>(PAGE_SIZE64 * 3 - 1).unwrap();
         gm.write_plain::<u8>(PAGE_SIZE64 * 3 - 1, &0).unwrap_err();
+    }
+
+    #[test]
+    fn test_compare_exchange_alignment() {
+        trycopy::initialize_try_copy();
+        let mapping = FaultingMapping::new(PAGE_SIZE * 4);
+        mapping.mapping.alloc(0, PAGE_SIZE).unwrap();
+        let gm = GuestMemory::new("atomic-alignment", mapping);
+        const NEW: u64 = 0x123456789abcdef0;
+        for (offset, gpa) in [(0, 1), (1, 0), (1, 7), (0, 8)] {
+            let view = gm.subrange(offset, 16, false).unwrap();
+            let mut expected = [0xa5; 32];
+            gm.write_at(0, &expected).unwrap();
+
+            let result = view.compare_exchange(gpa, u64::from_ne_bytes([0xa5; 8]), NEW);
+            if !cfg!(target_arch = "x86_64") && !(offset + gpa).is_multiple_of(8) {
+                let error = result.unwrap_err();
+                let source = std::error::Error::source(&error)
+                    .unwrap()
+                    .downcast_ref::<trycopy::MemoryError>()
+                    .unwrap();
+                assert_eq!(
+                    source.kind(),
+                    trycopy::MemoryErrorKind::UnalignedAtomicAccess
+                );
+            } else {
+                assert_eq!(result.unwrap(), Ok(NEW));
+                let start = (offset + gpa) as usize;
+                expected[start..start + 8].copy_from_slice(&NEW.to_ne_bytes());
+            }
+
+            let mut actual = [0; 32];
+            gm.read_at(0, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+        }
     }
 
     #[cfg(feature = "bitmap")]
