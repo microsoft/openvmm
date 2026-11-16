@@ -3,6 +3,7 @@
 
 use super::KvmProcessor;
 use super::regs::register_to_msr;
+use super::shadow;
 use super::xsave;
 use crate::KvmError;
 use crate::KvmPartitionInner;
@@ -311,6 +312,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             }
         };
         let events = self.kvm().get_vcpu_events()?;
+        let (interrupt_shadow, interrupt_shadow_kind) = shadow::from_kvm(events.interrupt.shadow);
 
         // N.B. KVM has no way to get back an extint queued with KVM_INTERRUPT.
         //      PIC interrupts are normally placed in the injected-interrupt
@@ -324,14 +326,13 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             mp_state,
             nmi_pending: events.nmi.pending != 0,
             nmi_masked: events.nmi.masked != 0,
-            interrupt_shadow: events.interrupt.shadow != 0,
+            interrupt_shadow,
             pending_event: None,
             pending_interruption: pending_interruption(&events),
             // Linux before 6.4 reports only whether an NMI is pending, 0 or 1,
             // even when KVM holds two, so a save on such a host holds no count.
             nmi_pending_count: (events.nmi.pending > 1).then_some(events.nmi.pending),
-            // KVM does not tell the kind yet.
-            interrupt_shadow_kind: None,
+            interrupt_shadow_kind,
         })
     }
 
@@ -344,7 +345,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             pending_event,
             pending_interruption,
             nmi_pending_count,
-            interrupt_shadow_kind: _,
+            interrupt_shadow_kind,
         } = *value;
 
         // Reject what KVM cannot restore before changing any activity state:
@@ -356,6 +357,9 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
 
         // And a count of pending NMIs that KVM would not hold.
         check_restorable_nmi_count(value)?;
+
+        // And a kind without a shadow.
+        check_restorable_shadow_kind(value)?;
 
         let state = match mp_state {
             vp::MpState::Running => kvm::KVM_MP_STATE_RUNNABLE,
@@ -393,7 +397,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
                 injected: 0,
                 nr: 0,
                 soft: 0,
-                shadow: interrupt_shadow.into(),
+                shadow: shadow::to_kvm(interrupt_shadow, interrupt_shadow_kind),
             },
             nmi: kvm::kvm_vcpu_events__bindgen_ty_3 {
                 injected: 0,
@@ -888,6 +892,20 @@ fn check_restorable_nmi_count(activity: &vp::Activity) -> Result<(), KvmError> {
     }
 }
 
+/// Refuses an interrupt shadow kind without an interrupt shadow.
+///
+/// A kind describes a shadow, so a save never holds one without the other, and
+/// only a damaged or crafted saved state does. KVM would not keep the kind, so
+/// the VP's next save would not show it, and the restore refuses the state.
+fn check_restorable_shadow_kind(activity: &vp::Activity) -> Result<(), KvmError> {
+    if !activity.interrupt_shadow && activity.interrupt_shadow_kind.is_some() {
+        return Err(KvmError::InvalidState(
+            "an interrupt shadow kind without an interrupt shadow",
+        ));
+    }
+    Ok(())
+}
+
 /// Returns the page that `KVM_SET_LAPIC` takes for `registers`.
 ///
 /// KVM starts a counting timer from the page's current count, so it fires an
@@ -946,6 +964,7 @@ mod tests {
     use super::check_restorable_interruption;
     use super::check_restorable_nmi_count;
     use super::check_restorable_pending_event;
+    use super::check_restorable_shadow_kind;
     use super::check_restored_efer;
     use super::kvm_lapic_page;
     use super::pending_interruption;
@@ -955,6 +974,7 @@ mod tests {
     use virt::CpuidLeafSet;
     use virt::x86::vp::Activity;
     use virt::x86::vp::ApicRegisters;
+    use virt::x86::vp::InterruptShadowKind;
     use virt::x86::vp::PendingEvent;
     use virt::x86::vp::PendingInterruption;
     use x86defs::X64_EFER_LMA;
@@ -1363,6 +1383,24 @@ mod tests {
                 Some(PendingEvent::ExtInt { vector: 0x30 }),
                 pending_interruption
             ));
+        }
+    }
+
+    #[test]
+    fn restore_of_an_interrupt_shadow_kind_without_a_shadow_is_refused() {
+        for interrupt_shadow in [false, true] {
+            for interrupt_shadow_kind in [None, Some(InterruptShadowKind::Sti)] {
+                let result = check_restorable_shadow_kind(&Activity {
+                    interrupt_shadow,
+                    interrupt_shadow_kind,
+                    ..Default::default()
+                });
+                if interrupt_shadow_kind.is_some() && !interrupt_shadow {
+                    assert!(matches!(result, Err(KvmError::InvalidState(_))));
+                } else {
+                    result.unwrap();
+                }
+            }
         }
     }
 }
