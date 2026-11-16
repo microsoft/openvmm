@@ -22,6 +22,7 @@ guid = { workspace = true, features = ["getrandom", "inspect", "mesh"] }
 mesh.workspace = true
 
 anyhow.workspace = true
+async-lock.workspace = true
 async-trait.workspace = true
 inspect.workspace = true
 futures.workspace = true

@@ -146,7 +146,7 @@ async fn handle_dvd_requests(
                         None
                     };
                     if let Some(dvd) = dvd.upgrade() {
-                        dvd.change_media(media);
+                        dvd.change_media(media).await;
                     }
                     anyhow::Ok(())
                 })

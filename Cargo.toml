@@ -512,6 +512,7 @@ tracing-subscriber = "0.3.20"
 
 # --- Async / futures ---
 async-channel = "2.3"
+async-lock = "3.4"
 async-task = "4.4"
 async-trait = "0.1"
 blocking = "1.2"
