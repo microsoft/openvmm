@@ -801,6 +801,15 @@ impl DiskIo for LayeredDisk {
         sector: u64,
         fua: bool,
     ) -> Result<(), DiskError> {
+        // Same order as unmap: an out-of-range request fails with
+        // IllegalBlock even on a read-only disk.
+        let sector_count = (buffers.len() >> self.sector_shift) as u64;
+        if sector
+            .checked_add(sector_count)
+            .is_none_or(|end| end > self.sector_count())
+        {
+            return Err(DiskError::IllegalBlock);
+        }
         if self.read_only {
             return Err(DiskError::ReadOnly);
         }
@@ -1229,6 +1238,10 @@ mod tests {
             Err(disk_backend::DiskError::ReadOnly)
         ));
         // The range check comes before the read-only refusal.
+        assert!(matches!(
+            disk.write_vectored(&buffers.buffer(&mem), 8, false).await,
+            Err(disk_backend::DiskError::IllegalBlock)
+        ));
         assert!(matches!(
             disk.unmap(8, 1, false).await,
             Err(disk_backend::DiskError::IllegalBlock)
