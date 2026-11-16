@@ -757,6 +757,20 @@ impl Partition {
         self.get_property(partition_prop::ProcessorClockFrequency)
     }
 
+    /// Reads the partition's configured processor feature banks.
+    ///
+    /// This does not verify the guest-visible ID registers or cache behavior.
+    pub fn processor_features_banks(&self) -> Result<abi::WHV_PROCESSOR_FEATURES_BANKS> {
+        self.get_property(partition_prop::ProcessorFeaturesBanks)
+    }
+
+    /// Reads the raw configured processor CL-flush-size property.
+    ///
+    /// This property is not a complete ARM CTR/DCZID or cache-hierarchy view.
+    pub fn processor_cl_flush_size(&self) -> Result<u8> {
+        self.get_property(partition_prop::ProcessorClFlushSize)
+    }
+
     #[cfg(target_arch = "x86_64")]
     pub fn apic_frequency(&self) -> Result<u64> {
         self.get_property(partition_prop::InterruptClockFrequency)

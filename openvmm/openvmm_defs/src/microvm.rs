@@ -28,6 +28,10 @@ use vmotherboard::options::BaseChipsetManifest;
 pub const MICROVM_ABI_VERSION: u32 = 1;
 /// Linux memory-block granularity used for microVM restore-time expansion.
 pub const MICROVM_MEMORY_BLOCK_SIZE_BYTES: u64 = 128 * 1024 * 1024;
+/// ARM development binding's fixed GIC distributor base.
+pub const MICROVM_ARM64_GIC_DISTRIBUTOR_BASE: u64 = 0xffff_0000;
+/// ARM development binding's fixed GIC redistributor base.
+pub const MICROVM_ARM64_GIC_REDISTRIBUTORS_BASE: u64 = 0xefff_0000;
 
 /// Returns whether a processor count is valid for the microVM.
 pub const fn microvm_processor_count_supported(processor_count: u32) -> bool {
@@ -38,6 +42,12 @@ pub const fn microvm_processor_count_supported(processor_count: u32) -> bool {
 pub const MICROVM_BASE_COMMAND_LINE: &str = "earlycon=xe9 console=hvc0 reboot=t panic=-1";
 /// Command line when the microVM virtio console is present.
 pub const MICROVM_CONSOLE_COMMAND_LINE: &str = "earlycon=xe9 console=hvc1 reboot=t panic=-1";
+/// ARM microVM uses its existing platform byte channel, without a UART.
+pub const MICROVM_ARM64_COMMAND_LINE: &str =
+    "earlycon=nvx-mmio,0xd1000000 console=hvc0 reboot=t panic=-1";
+/// ARM virtio boot console follows the platform's reserved hvc0.
+pub const MICROVM_ARM64_CONSOLE_COMMAND_LINE: &str =
+    "earlycon=nvx-mmio,0xd1000000 console=hvc1 reboot=t panic=-1";
 /// Maximum size of the effective microVM kernel command line, including its
 /// terminating NUL: the x86 guest kernel's `COMMAND_LINE_SIZE`.
 ///
@@ -233,6 +243,14 @@ pub const fn microvm_virtio_irq(mmio_base: u64) -> Option<u32> {
         MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE => MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ,
         _ => return None,
     })
+}
+
+/// Fixed virtio slot/source index, before the ARM GIC bridge adds its SPI base.
+pub const fn microvm_virtio_slot_index(mmio_base: u64) -> Option<u32> {
+    match microvm_virtio_irq(mmio_base) {
+        Some(irq) => Some(irq - MICROVM_VIRTIO_IRQ_BASE),
+        None => None,
+    }
 }
 /// The microVM publishes no level-triggered virtio IRQs in its MP table.
 pub const MICROVM_LEVEL_TRIGGERED_IRQS: [u32; 0] = [];
@@ -1287,6 +1305,32 @@ pub fn append_microvm_virtio_discovery(
     has_control_console: bool,
     blocks: &[MicrovmSandboxBlockConfig],
 ) -> anyhow::Result<()> {
+    append_microvm_virtio_discovery_for_boot(
+        cmdline,
+        network,
+        filesystems,
+        has_console,
+        has_control_console,
+        blocks,
+        LinuxDirectBootMode::MpTable,
+    )
+}
+
+/// Uses the same policy/bootstrap fields with architecture-owned discovery.
+pub fn append_microvm_virtio_discovery_for_boot(
+    cmdline: &mut String,
+    network: Option<(
+        &MicrovmNetworkConfig,
+        Option<std::net::IpAddr>,
+        Option<MicrovmIngress>,
+    )>,
+    filesystems: &[MicrovmFilesystemConfig],
+    has_console: bool,
+    has_control_console: bool,
+    blocks: &[MicrovmSandboxBlockConfig],
+    boot_mode: LinuxDirectBootMode,
+) -> anyhow::Result<()> {
+    let device_tree = boot_mode == LinuxDirectBootMode::DeviceTree;
     validate_microvm_sandbox_blocks(blocks, ramfs_overlay_requested(cmdline)?)?;
     anyhow::ensure!(
         !cmdline.split_ascii_whitespace().any(|token| {
@@ -1301,24 +1345,26 @@ pub fn append_microvm_virtio_discovery(
     validate_microvm_filesystems(filesystems)?;
 
     use std::fmt::Write as _;
-    if network.is_some() {
+    if network.is_some() && !device_tree {
         write!(
             cmdline,
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_NET_MMIO_BASE:#x}:{MICROVM_VIRTIO_NET_IRQ}"
         )?;
     }
-    write!(
-        cmdline,
-        " {}",
-        MICROVM_FILESYSTEM_SLOTS[0].discovery_token()
-    )?;
-    if has_console {
+    if !device_tree {
+        write!(
+            cmdline,
+            " {}",
+            MICROVM_FILESYSTEM_SLOTS[0].discovery_token()
+        )?;
+    }
+    if has_console && !device_tree {
         write!(
             cmdline,
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONSOLE_IRQ}"
         )?;
     }
-    for block in blocks {
+    for block in blocks.iter().filter(|_| !device_tree) {
         write!(
             cmdline,
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{:#x}:{}",
@@ -1331,10 +1377,14 @@ pub fn append_microvm_virtio_discovery(
             has_console,
             "microVM control console requires the boot virtio-console"
         );
-        write!(
-            cmdline,
-            " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ} {MICROVM_CONTROL_TTY_COMMAND_LINE}"
-        )?;
+        if device_tree {
+            write!(cmdline, " {MICROVM_CONTROL_TTY_COMMAND_LINE}")?;
+        } else {
+            write!(
+                cmdline,
+                " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ} {MICROVM_CONTROL_TTY_COMMAND_LINE}"
+            )?;
+        }
     }
     if let Some((network, gateway_dns, ingress)) = network {
         write!(
@@ -1456,12 +1506,8 @@ fn validate_microvm_command_line(config: &Config) -> anyhow::Result<()> {
         unreachable!("microVM command-line validation requires the microVM profile");
     };
     let cmdline = match &config.load_mode {
-        LoadMode::Linux {
-            cmdline,
-            boot_mode: LinuxDirectBootMode::MpTable,
-            ..
-        } => cmdline,
-        _ => anyhow::bail!("microVM requires Linux MP-table load mode"),
+        LoadMode::Linux { cmdline, .. } => cmdline,
+        _ => anyhow::bail!("microVM requires Linux direct boot"),
     };
     check_microvm_command_line(cmdline)?;
 
@@ -1501,7 +1547,15 @@ fn validate_microvm_command_line(config: &Config) -> anyhow::Result<()> {
         !has_control_console || has_console,
         "microVM control console requires the boot console"
     );
-    let base_tokens = if has_console {
+    let is_arm = matches!(
+        &config.processor_topology.arch,
+        Some(ArchTopologyConfig::Aarch64(_))
+    );
+    let base_tokens = if is_arm && has_console {
+        MICROVM_ARM64_CONSOLE_COMMAND_LINE
+    } else if is_arm {
+        MICROVM_ARM64_COMMAND_LINE
+    } else if has_console {
         MICROVM_CONSOLE_COMMAND_LINE
     } else {
         MICROVM_BASE_COMMAND_LINE
@@ -1543,6 +1597,7 @@ fn validate_microvm_command_line(config: &Config) -> anyhow::Result<()> {
             &[]
         };
         let expected = match prefix {
+            "virtio_mmio.device=" if is_arm => 0,
             "virtio_mmio.device=" => config.virtio_devices.len(),
             "virtnet_ip=" | "virtnet_mask=" | "virtnet_gw=" => usize::from(has_network),
             "virtnet_ip6=" | "virtnet_gw6=" => usize::from(has_network),
@@ -1586,6 +1641,9 @@ fn validate_microvm_command_line(config: &Config) -> anyhow::Result<()> {
             "virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ}"
         ));
         expected_discovery.push(MICROVM_CONTROL_TTY_COMMAND_LINE.to_owned());
+    }
+    if is_arm {
+        expected_discovery.retain(|token| !token.starts_with("virtio_mmio.device="));
     }
     if let Some(network) = &config.microvm.network {
         expected_discovery.extend(
@@ -1661,7 +1719,7 @@ pub fn build_microvm_command_line(
     user_args: &[String],
     has_console: bool,
 ) -> anyhow::Result<String> {
-    build_microvm_command_line_inner(user_args, has_console, false)
+    build_microvm_command_line_for_boot(user_args, has_console, false, LinuxDirectBootMode::MpTable)
 }
 
 /// Builds the microVM command line with control-console tokens reserved.
@@ -1669,7 +1727,7 @@ pub fn build_microvm_control_command_line(
     user_args: &[String],
     has_console: bool,
 ) -> anyhow::Result<String> {
-    build_microvm_command_line_inner(user_args, has_console, true)
+    build_microvm_command_line_for_boot(user_args, has_console, true, LinuxDirectBootMode::MpTable)
 }
 
 /// Appends the host-owned processor capacity to a microVM command line.
@@ -1743,10 +1801,12 @@ fn validate_microvm_control_console_command_line(
     Ok(())
 }
 
-fn build_microvm_command_line_inner(
+/// Builds the shared microVM policy command line for its boot description.
+pub fn build_microvm_command_line_for_boot(
     user_args: &[String],
     has_console: bool,
     reserve_control_console: bool,
+    boot_mode: LinuxDirectBootMode,
 ) -> anyhow::Result<String> {
     for arg in user_args {
         if arg.contains('\0') {
@@ -1794,7 +1854,11 @@ fn build_microvm_command_line_inner(
         }
     }
 
-    let mut cmdline = if has_console {
+    let mut cmdline = if boot_mode == LinuxDirectBootMode::DeviceTree && has_console {
+        MICROVM_ARM64_CONSOLE_COMMAND_LINE
+    } else if boot_mode == LinuxDirectBootMode::DeviceTree {
+        MICROVM_ARM64_COMMAND_LINE
+    } else if has_console {
         MICROVM_CONSOLE_COMMAND_LINE
     } else {
         MICROVM_BASE_COMMAND_LINE
@@ -1847,6 +1911,14 @@ fn validate_machine_load_mode(
     machine_profile: MachineProfile,
     load_mode: &LoadMode,
 ) -> anyhow::Result<()> {
+    validate_machine_load_mode_for_architecture(machine_profile, load_mode, false)
+}
+
+fn validate_machine_load_mode_for_architecture(
+    machine_profile: MachineProfile,
+    load_mode: &LoadMode,
+    is_arm: bool,
+) -> anyhow::Result<()> {
     if machine_profile == MachineProfile::Standard {
         anyhow::ensure!(
             !matches!(
@@ -1870,8 +1942,13 @@ fn validate_machine_load_mode(
             ..
         } => {
             anyhow::ensure!(
-                *boot_mode == LinuxDirectBootMode::MpTable,
-                "microVM Linux direct boot requires MP tables"
+                *boot_mode
+                    == if is_arm {
+                        LinuxDirectBootMode::DeviceTree
+                    } else {
+                        LinuxDirectBootMode::MpTable
+                    },
+                "microVM Linux direct boot requires its architecture-owned boot mode"
             );
             anyhow::ensure!(
                 *isolation == LinuxIsolationConfig::None,
@@ -1937,6 +2014,23 @@ fn validate_microvm_snapshot_memory_ranges(config: &MicrovmConfig) -> anyhow::Re
     Ok(())
 }
 
+/// Rejects explicit MSI controllers that the fixed ARM microVM topology
+/// cannot provide, before profile construction replaces topology overrides.
+pub fn validate_machine_gic_msi(
+    machine_profile: MachineProfile,
+    arch: Option<&ArchTopologyConfig>,
+) -> anyhow::Result<()> {
+    if machine_profile == MachineProfile::Microvm
+        && let Some(ArchTopologyConfig::Aarch64(arm)) = arch
+    {
+        anyhow::ensure!(
+            matches!(arm.gic_msi, crate::config::GicMsiConfig::Auto),
+            "ARM microVM does not support explicit GIC MSI controllers (ITS or GICv2m)"
+        );
+    }
+    Ok(())
+}
+
 /// Validates the microVM machine contract. Standard-machine configurations are unchanged.
 pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> anyhow::Result<()> {
     let MachineProfile::Microvm = config.machine_profile else {
@@ -1966,12 +2060,20 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
         return Ok(());
     };
 
+    validate_machine_gic_msi(
+        config.machine_profile,
+        config.processor_topology.arch.as_ref(),
+    )?;
     validate_microvm_virtio_reservations()?;
     if let Some(network) = &config.microvm.network {
         validate_microvm_network_prefix(network)?;
     }
     validate_microvm_command_line(config)?;
-    validate_machine_load_mode(config.machine_profile, &config.load_mode)?;
+    let is_arm = matches!(
+        &config.processor_topology.arch,
+        Some(ArchTopologyConfig::Aarch64(_))
+    );
+    validate_machine_load_mode_for_architecture(config.machine_profile, &config.load_mode, is_arm)?;
     anyhow::ensure!(
         config.microvm.time_abi.is_some(),
         "the microVM profile requires the NVX time ABI parameters"
@@ -1987,19 +2089,26 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
         "microVM does not support {} vCPUs",
         config.processor_topology.proc_count
     );
+    let has_expected_arch = match &config.processor_topology.arch {
+        Some(ArchTopologyConfig::X86(X86TopologyConfig {
+            apic_id_offset: 0,
+            x2apic: X2ApicConfig::Unsupported,
+        })) => true,
+        Some(ArchTopologyConfig::Aarch64(arm)) => {
+            matches!(&arm.gic_config, Some(crate::config::GicConfig::V3(Some(gic)))
+                if gic.gic_distributor_base == MICROVM_ARM64_GIC_DISTRIBUTOR_BASE
+                    && gic.gic_redistributors_base == MICROVM_ARM64_GIC_REDISTRIBUTORS_BASE)
+                && matches!(arm.pmu_gsiv, crate::config::PmuGsivConfig::Disabled)
+        }
+        _ => false,
+    };
     let has_expected_topology = config.processor_topology.vps_per_socket
         == Some(config.processor_topology.proc_count)
         && config.processor_topology.enable_smt == Some(false)
-        && matches!(
-            &config.processor_topology.arch,
-            Some(ArchTopologyConfig::X86(X86TopologyConfig {
-                apic_id_offset: 0,
-                x2apic: X2ApicConfig::Unsupported,
-            }))
-        );
+        && has_expected_arch;
     anyhow::ensure!(
         has_expected_topology,
-        "microVM requires its fixed x86 APIC topology"
+        "microVM requires its fixed architecture topology"
     );
     anyhow::ensure!(
         config.numa.nodes.len() == 1 && config.numa.distances.is_empty(),
@@ -2009,6 +2118,11 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
         anyhow::bail!("microVM requires RAM");
     };
     let memory_size = memory.mem_size;
+    anyhow::ensure!(
+        !is_arm
+            || (memory_size <= 63 * 1024 * 1024 * 1024 && config.microvm.memory_capacity.is_none()),
+        "ARM microVM requires at most 63 GiB logical RAM and does not support snapshot capacity"
+    );
     if let Some(memory_capacity) = config.microvm.memory_capacity {
         anyhow::ensure!(
             memory_size <= memory_capacity
@@ -2033,7 +2147,7 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
     );
 
     let expected_chipset = BaseChipsetManifest {
-        with_generic_cmos_rtc: true,
+        with_generic_cmos_rtc: !is_arm,
         ..BaseChipsetManifest::empty()
     };
     anyhow::ensure!(
@@ -2041,9 +2155,9 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
         "microVM chipset is not the microVM allowlist"
     );
     anyhow::ensure!(
-        config.chipset_capabilities.with_ioapic
-            && config.chipset_capabilities.with_pic
-            && config.chipset_capabilities.with_pit
+        config.chipset_capabilities.with_ioapic != is_arm
+            && config.chipset_capabilities.with_pic != is_arm
+            && config.chipset_capabilities.with_pit != is_arm
             && !config.chipset_capabilities.with_generic_isa_dma
             && !config.chipset_capabilities.with_psp
             && !config.chipset_capabilities.with_guest_watchdog
@@ -2057,16 +2171,20 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
         .map(|device| (device.name.as_str(), device.resource.id()))
         .collect::<Vec<_>>();
     chipset_ids.sort_unstable();
+    let expected_devices: &[(&str, &str)] = if is_arm {
+        &[("microvm-platform-control", "microvm-platform-control")]
+    } else {
+        &[
+            ("ioapic", "generic-ioapic"),
+            ("microvm-portb", "microvm-portb"),
+            ("microvm-shutdown", "microvm-shutdown"),
+            ("microvm-snapshot-request", "microvm-snapshot-request"),
+            ("pic", "pic"),
+            ("pit", "pit"),
+        ]
+    };
     anyhow::ensure!(
-        chipset_ids
-            == [
-                ("ioapic", "generic-ioapic"),
-                ("microvm-portb", "microvm-portb"),
-                ("microvm-shutdown", "microvm-shutdown"),
-                ("microvm-snapshot-request", "microvm-snapshot-request"),
-                ("pic", "pic"),
-                ("pit", "pit"),
-            ],
+        chipset_ids == expected_devices,
         "microVM chipset-device inventory is not exact"
     );
 
@@ -2168,6 +2286,43 @@ mod tests {
     use super::*;
     use std::fs::File;
 
+    #[test]
+    fn fixed_arm_microvm_rejects_msi_overrides_without_changing_standard_or_x86() {
+        use crate::config::Aarch64TopologyConfig;
+        use crate::config::GicMsiConfig;
+
+        for gic_msi in [
+            GicMsiConfig::Auto,
+            GicMsiConfig::Its,
+            GicMsiConfig::V2m { spi_count: None },
+            GicMsiConfig::V2m {
+                spi_count: Some(64),
+            },
+        ] {
+            let explicit = !matches!(gic_msi, GicMsiConfig::Auto);
+            let arch = ArchTopologyConfig::Aarch64(Aarch64TopologyConfig {
+                gic_msi,
+                ..Default::default()
+            });
+            validate_machine_gic_msi(MachineProfile::Standard, Some(&arch)).unwrap();
+            let result = validate_machine_gic_msi(MachineProfile::Microvm, Some(&arch));
+            if explicit {
+                assert!(result.unwrap_err().to_string().contains("explicit GIC MSI"));
+            } else {
+                result.unwrap();
+            }
+        }
+        validate_machine_gic_msi(MachineProfile::Microvm, None).unwrap();
+        validate_machine_gic_msi(
+            MachineProfile::Microvm,
+            Some(&ArchTopologyConfig::X86(X86TopologyConfig {
+                apic_id_offset: 0,
+                x2apic: X2ApicConfig::Unsupported,
+            })),
+        )
+        .unwrap();
+    }
+
     fn linux_load_mode(
         boot_mode: LinuxDirectBootMode,
         isolation: LinuxIsolationConfig,
@@ -2182,6 +2337,75 @@ mod tests {
             isolation,
             boot_mode,
             smbios: Box::new(smbios),
+        }
+    }
+
+    #[test]
+    fn arm_boot_adapter_preserves_the_x86_validation_matrix() {
+        let arm = linux_load_mode(
+            LinuxDirectBootMode::DeviceTree,
+            LinuxIsolationConfig::None,
+            false,
+            SmbiosConfig::default(),
+        );
+        validate_machine_load_mode_for_architecture(MachineProfile::Microvm, &arm, true).unwrap();
+        assert!(validate_machine_load_mode(MachineProfile::Microvm, &arm).is_err());
+        for mode in [LinuxDirectBootMode::MpTable, LinuxDirectBootMode::Acpi] {
+            assert!(
+                validate_machine_load_mode_for_architecture(
+                    MachineProfile::Microvm,
+                    &linux_load_mode(
+                        mode,
+                        LinuxIsolationConfig::None,
+                        false,
+                        SmbiosConfig::default()
+                    ),
+                    true
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_machine_load_mode_for_architecture(
+                MachineProfile::Microvm,
+                &linux_load_mode(
+                    LinuxDirectBootMode::DeviceTree,
+                    LinuxIsolationConfig::None,
+                    true,
+                    SmbiosConfig::default()
+                ),
+                true
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn arm_uses_platform_then_virtio_console_and_dt_not_duplicate_discovery() {
+        let mode = LinuxDirectBootMode::DeviceTree;
+        let platform = build_microvm_command_line_for_boot(&[], false, false, mode).unwrap();
+        assert_eq!(platform, MICROVM_ARM64_COMMAND_LINE);
+        let mut console =
+            build_microvm_command_line_for_boot(&["init=/init".into()], true, true, mode).unwrap();
+        append_microvm_virtio_discovery_for_boot(&mut console, None, &[], true, true, &[], mode)
+            .unwrap();
+        assert_eq!(
+            console,
+            format!(
+                "{MICROVM_ARM64_CONSOLE_COMMAND_LINE} init=/init {MICROVM_CONTROL_TTY_COMMAND_LINE}"
+            )
+        );
+        assert!(!console.contains("virtio_mmio.device="));
+        assert!(!console.contains("xe9"));
+        assert!(!console.contains("pl011"));
+        for token in [
+            "console=hvc9",
+            "earlycon=pl011,0x1000",
+            "virtio_mmio.device=0x1000@0xd0000000:32",
+        ] {
+            assert!(
+                build_microvm_command_line_for_boot(&[token.into()], true, true, mode).is_err()
+            );
         }
     }
 

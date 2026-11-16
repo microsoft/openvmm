@@ -89,6 +89,22 @@ impl ResourceId<ChipsetDeviceHandleKind> for MicrovmPortbHandle {
     const ID: &'static str = "microvm-portb";
 }
 
+/// ARM MMIO frontend over the existing microVM byte channel and shutdown state.
+#[derive(MeshPayload)]
+pub struct MicrovmPlatformControlHandle {
+    /// Byte-channel resource, retaining its backend, generation and drain.
+    pub portb: MicrovmPortbHandle,
+}
+
+impl ResourceId<ChipsetDeviceHandleKind> for MicrovmPlatformControlHandle {
+    const ID: &'static str = "microvm-platform-control";
+}
+
+/// Fixed ARM microVM platform-control aperture.
+pub const MICROVM_PLATFORM_CONTROL_BASE: u64 = 0xd100_0000;
+/// Size of the ARM microVM platform-control aperture.
+pub const MICROVM_PLATFORM_CONTROL_SIZE: u64 = 0x1000;
+
 /// microVM shutdown control port at `0x604`.
 #[derive(MeshPayload)]
 pub struct MicrovmShutdownHandle;

@@ -3,12 +3,14 @@
 
 //! Resource resolver for microVM chipset devices.
 
+use super::MicrovmPlatformControl;
 use super::MicrovmPortb;
 use super::MicrovmShutdown;
 use super::MicrovmSnapshotRequest;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
+use chipset_resources::microvm::MicrovmPlatformControlHandle;
 use chipset_resources::microvm::MicrovmPortbHandle;
 use chipset_resources::microvm::MicrovmShutdownHandle;
 use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
@@ -40,6 +42,34 @@ pub enum ResolveMicrovmPortbError {
     ResolveBackend(#[source] ResolveError),
     #[error("failed to resolve the platform's time sample source")]
     ResolveTimeSampleSource(#[source] ResolveError),
+    #[error("the platform has no admitted ARM counter/profile time-binding identity")]
+    MissingArm64TimeBinding,
+}
+
+async fn resolve_portb(
+    resolver: &ResourceResolver,
+    resource: MicrovmPortbHandle,
+    input: ResolveChipsetDeviceHandleParams<'_>,
+) -> Result<MicrovmPortb, ResolveMicrovmPortbError> {
+    let io = resolver
+        .resolve(
+            resource.io,
+            ResolveSerialBackendParams {
+                driver: Box::new(input.task_driver_source.simple()),
+                _async_trait_workaround: &(),
+            },
+        )
+        .await
+        .map_err(ResolveMicrovmPortbError::ResolveBackend)?;
+    let source = resolver
+        .resolve::<TimeSampleSourceKind, _>(PlatformResource.into_resource(), ())
+        .await
+        .map_err(ResolveMicrovmPortbError::ResolveTimeSampleSource)?;
+    Ok(
+        MicrovmPortb::new(io.0.into_io(), resource.generation_id, resource.time_abi)
+            .with_output_drain(resource.output_drain)
+            .with_time_sample_source(source.0),
+    )
 }
 
 #[async_trait]
@@ -53,24 +83,43 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmPortbHandle> for Micro
         resource: MicrovmPortbHandle,
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let io = resolver
-            .resolve(
-                resource.io,
-                ResolveSerialBackendParams {
-                    driver: Box::new(input.task_driver_source.simple()),
-                    _async_trait_workaround: &(),
-                },
-            )
+        Ok(resolve_portb(resolver, resource, input).await?.into())
+    }
+}
+
+/// Resolver for the ARM frontend over the existing microVM platform state.
+pub struct MicrovmPlatformControlResolver;
+
+declare_static_async_resolver! {
+    MicrovmPlatformControlResolver,
+    (ChipsetDeviceHandleKind, MicrovmPlatformControlHandle),
+}
+
+#[async_trait]
+impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmPlatformControlHandle>
+    for MicrovmPlatformControlResolver
+{
+    type Output = ResolvedChipsetDevice;
+    type Error = ResolveMicrovmPortbError;
+
+    async fn resolve(
+        &self,
+        resolver: &ResourceResolver,
+        resource: MicrovmPlatformControlHandle,
+        input: ResolveChipsetDeviceHandleParams<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        let portb = resolve_portb(resolver, resource.portb, input).await?;
+        let binding = portb
+            .time_abi
+            .source
+            .as_ref()
+            .and_then(|source| source.arm64_time_binding())
+            .ok_or(ResolveMicrovmPortbError::MissingArm64TimeBinding)?;
+        let power = resolver
+            .resolve::<PowerRequestHandleKind, _>(PlatformResource.into_resource(), ())
             .await
             .map_err(ResolveMicrovmPortbError::ResolveBackend)?;
-        let source = resolver
-            .resolve::<TimeSampleSourceKind, _>(PlatformResource.into_resource(), ())
-            .await
-            .map_err(ResolveMicrovmPortbError::ResolveTimeSampleSource)?;
-        let portb = MicrovmPortb::new(io.0.into_io(), resource.generation_id, resource.time_abi)
-            .with_output_drain(resource.output_drain)
-            .with_time_sample_source(source.0);
-        Ok(portb.into())
+        Ok(MicrovmPlatformControl::new(portb, power, binding).into())
     }
 }
 

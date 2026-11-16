@@ -6,7 +6,6 @@
 use super::BaseChipsetManifest;
 use super::BaseChipsetType;
 use super::Error;
-use super::ErrorInner;
 use super::LayoutConfig;
 use super::MachineArch;
 use super::VmChipsetResult;
@@ -16,8 +15,9 @@ pub(super) fn vmbus_enabled(ty: &BaseChipsetType, default: bool) -> bool {
 }
 
 pub(super) fn build(arch: MachineArch, result: &mut VmChipsetResult) -> Result<(), Error> {
-    if arch != MachineArch::X86_64 {
-        return Err(Error(ErrorInner::UnsupportedArch));
+    if arch == MachineArch::Aarch64 {
+        result.chipset = BaseChipsetManifest::empty();
+        return Ok(());
     }
     result.chipset = BaseChipsetManifest {
         with_generic_cmos_rtc: true,
@@ -69,6 +69,20 @@ mod tests {
         assert!(result.capabilities.with_ioapic);
         assert!(result.capabilities.with_pic);
         assert!(result.capabilities.with_pit);
+        assert!(result.pci_chipset_devices.is_empty());
+        assert!(result.isa_dma_controller.is_none());
+    }
+
+    #[test]
+    fn arm_microvm_has_no_legacy_chipset_or_bus_devices() {
+        let builder = VmManifestBuilder::new(BaseChipsetType::Microvm, MachineArch::Aarch64);
+        assert!(!builder.vmbus);
+        let result = builder.build().unwrap();
+        assert_eq!(result.chipset, super::super::BaseChipsetManifest::empty());
+        assert!(result.chipset_devices.is_empty());
+        assert!(!result.capabilities.with_pic);
+        assert!(!result.capabilities.with_pit);
+        assert!(!result.capabilities.with_ioapic);
         assert!(result.pci_chipset_devices.is_empty());
         assert!(result.isa_dma_controller.is_none());
     }

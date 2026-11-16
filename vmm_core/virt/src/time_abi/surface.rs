@@ -19,10 +19,9 @@ pub fn host_cpu_signature() -> Option<u32> {
     }
 }
 
-/// The CPU surface a backend supports on this host, as
-/// [`TimeAbiBackend::supported_cpu_surface`](super::TimeAbiBackend::supported_cpu_surface)
-/// reports it: what `cpu_profile::HostCpuSurface` holds, in this crate's
-/// types.
+/// The x86 CPU surface a backend supports on this host, as its
+/// `TimeAbiBackend::supported_cpu_surface` reports it: what
+/// `cpu_profile::HostCpuSurface` holds, in this crate's types.
 #[derive(Debug, Clone, Default)]
 pub struct SupportedCpuSurface {
     /// Every CPUID leaf and subleaf the backend can expose, with every

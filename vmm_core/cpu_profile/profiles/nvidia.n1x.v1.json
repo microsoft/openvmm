@@ -1,0 +1,35 @@
+{
+  "vendor": "nvidia",
+  "model_mask": "0x00000000ff0fffd0",
+  "host_match": {
+    "mask": "0x00000000ff0fffd0",
+    "value": "0x00000000410fd850"
+  },
+  "sha256": "sha256:5c819de73c40022de50f199a232c264095fd1d9493ef40e65207b73ff028024a",
+  "profile": {
+    "cache": "native_informational",
+    "fields": [
+      { "mask": "0xffffffffffffffff", "register": "ID_AA64PFR0_EL1", "value": "0x1100000001110011" },
+      { "mask": "0xffffffffff0fffff", "register": "ID_AA64PFR1_EL1", "value": "0x0000000000000020" },
+      { "mask": "0x0000000f000fffff", "register": "ID_AA64PFR2_EL1", "value": "0x0000000000000000" },
+      { "mask": "0xfffffffffffffff0", "register": "ID_AA64ISAR0_EL1", "value": "0x0221111110212120" },
+      { "mask": "0xffffffffffffffff", "register": "ID_AA64ISAR1_EL1", "value": "0x0010111100211002" },
+      { "mask": "0xffffffffffffffff", "register": "ID_AA64ISAR2_EL1", "value": "0x0000000000000000" },
+      { "mask": "0xff00ffffffffffff", "register": "ID_AA64MMFR0_EL1", "value": "0x0000011100101021" },
+      { "mask": "0xffffffffffffffff", "register": "ID_AA64MMFR1_EL1", "value": "0x0000101000201002" },
+      { "mask": "0xffff0fffffffffff", "register": "ID_AA64MMFR2_EL1", "value": "0x0000001100101011" },
+      { "mask": "0xfff0ffffffffffff", "register": "ID_AA64MMFR3_EL1", "value": "0x0000000000000000" },
+      { "mask": "0x0000f0f0ffffffff", "register": "ID_AA64MMFR4_EL1", "value": "0x0000000000000000" },
+      { "mask": "0xffffffffffffffff", "register": "ID_AA64DFR0_EL1", "value": "0x000000f010305008" },
+      { "mask": "0xffffffffffffffff", "register": "ID_AA64DFR1_EL1", "value": "0x0000000000000000" },
+      { "mask": "0x0fffff0f0ffff0ff", "register": "ID_AA64ZFR0_EL1", "value": "0x0000000000000000" },
+      { "mask": "0x9ff1ffff73810001", "register": "ID_AA64SMFR0_EL1", "value": "0x0000000000000000" }
+    ],
+    "guest_model": "0x410fd850",
+    "id": "nvidia.n1x.v1",
+    "ownership": "defined_id_fields=cpu_or_policy;reserved=zero;mpidr_gic=VMM;midr_rv_revidr=native;counter_hz=time",
+    "physical_address_bits": 36,
+    "schema": "nvx.arm64.cpu.v1",
+    "state": "native_fp_simd_pac;no_pmu_sve_sme_mte_nested"
+  }
+}

@@ -21,7 +21,9 @@ describes the source definitions.
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--machine <PROFILE>`: Select the guest-visible machine contract. The
   default is `standard`. `microvm` selects the ACPI-free x86-64 Linux direct
-  microVM, which
+  microVM described below. Native Windows ARM64 also supports the
+  profile-owned ARM64 Linux direct-boot variant described at the end of this
+  option. The x86-64 variant
   runs on KVM, MSHV, or WHP with exactly 1, 2, 4, or 8 vCPUs. On
   Linux, auto-detection prefers MSHV when `/dev/mshv` is available and falls
   back to KVM:
@@ -107,6 +109,21 @@ describes the source definitions.
 
   Snapshots record microVM ABI value 1 and boot layout value 1, and restore
   refuses a snapshot of any other value.
+
+  On native ARM64 Windows/WHP, `microvm` accepts an uncompressed ARM64 Linux
+  `Image`, with the same 1/2/4/8 processor choices and ordinary initramfs,
+  output and device backends. It uses a device tree, GICv3 and the fixed
+  platform-control MMIO page instead of MP tables and PIO. The fixed
+  topology has no MSI controller; explicit `--gic-msi its` or `v2m` requests
+  are rejected instead of being ignored.
+  The compatible guest kernel must support that platform channel (`earlycon=nvx-mmio,0xd1000000`,
+  platform `hvc0`); an optional boot virtio-console is `hvc1`, and the
+  control console remains `hvc2`. Device discovery comes from the device tree,
+  not `virtio_mmio.device=` command-line tokens. There is no PL011 dependency.
+  The approved 36-bit GPA model permits at most 63 GiB of logical RAM, before
+  other layout constraints. ARM snapshot capture/restore is unavailable.
+  Complete firmware cache geometry/sharing is not currently described; the
+  known upstream Linux cacheinfo metadata warning is not suppressed.
 * `--net <IPv4/PREFIX>`: With `--machine microvm`, attach one virtio-net NIC
   at MMIO `0xd0000000`, IRQ 16, on every backend. Prefixes
   `/1` through `/30` are accepted. The first usable subnet address becomes
@@ -635,11 +652,30 @@ describes the source definitions.
   restore uses the snapshot's profile and rejects any
   other; `host` also names a host profile that the snapshot recorded. See
   [Time and CPU compatibility](../../../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility).
+  On ARM64/WHP, `auto` selects the latest matching pinned profile, currently
+  `qualcomm.oryon-x1.v1` for the Oryon X1 guest model class. If no pinned
+  profile matches, it derives a canonical, policy-filtered native host
+  profile and logs a warning, as `host` does explicitly. The native-host
+  policy currently covers Qualcomm guest-visible CPUs with architectural
+  MIDR identification; it does not admit arbitrary vendors or unsupported
+  CPU state. Pinned and host profiles use the same support, programming and actual readback
+  gates before any processor runs. Neither mode is native passthrough or
+  silently drops unavailable requirements. Native PAC is retained; PMU and
+  nested virtualization are withheld. SVE, SME and MTE are not supported by
+  this policy. The actual counter frequency is a separate time contract,
+  not part of the CPU-profile digest. CPUs outside the supported CPU policies
+  and providers that cannot enforce the selected contract fail admission.
 * `--x-time-abi-verify`: Build the microVM partition and run the time ABI
   checks (CPU profile support, effective CPUID, rates) without starting the
   guest, print one `NVX-TIME-ABI-VERIFY:` line, and exit with status 0 or 1.
   Host qualification uses it; it cannot be combined with snapshot capture or
-  restore.
+  restore. On ARM64/WHP, this uses the normal cold-boot inputs and admission
+  gates, but exits before running the Linux guest. Its architecture-specific
+  report identifies the selected profile and digest, actual counter frequency,
+  backend address/feature-bank readbacks and completed effective CPU-register
+  checks; it does not report x86 TSC, LAPIC or MSR fields. Missing or failed
+  evidence fails verification. This is not a UTC synchronization or clock
+  authority check. ARM still rejects `--x-time-abi-test-hook`.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
   `platform`, `workload-start`, or `instance-checkpoint`. The first two are
   reusable clone policies; instance checkpoints use single-use resume policy.

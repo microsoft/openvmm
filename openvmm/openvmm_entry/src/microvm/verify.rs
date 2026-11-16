@@ -37,19 +37,37 @@ pub(crate) async fn report_time_abi_verification(
     let mut inspection = inspect::InspectionBuilder::new("time-abi")
         .depth(Some(1))
         .inspect(inspect::adhoc(|req| worker.inspect(req)));
-    let _ = CancelContext::new()
+    let resolved = CancelContext::new()
         .with_timeout(REPORT_TIMEOUT)
         .until_cancelled(inspection.resolve())
         .await;
     let report = inspection.results();
-    let line = success_line(hypervisor, &report)?;
+    let line = resolved
+        .context("timed out waiting for the worker's time ABI report")
+        .and_then(|_| success_line(hypervisor, &report));
     worker.stop();
-    worker
+    let stopped = worker
         .join()
         .await
-        .context("VM worker failed after time ABI verification")?;
-    println!("{line}");
-    Ok(0)
+        .context("VM worker failed after time ABI verification");
+    let result = match (line, stopped) {
+        (Ok(line), Ok(())) => Ok(line),
+        (Err(err), Ok(())) | (Ok(_), Err(err)) => Err(err),
+        (Err(err), Err(stopped)) => {
+            Err(err.context(format!("worker shutdown also failed: {stopped:#}")))
+        }
+    };
+    match result {
+        Ok(line) => {
+            println!("{line}");
+            Ok(0)
+        }
+        Err(err) => {
+            tracing::error!(error = format!("{err:#}"), "time ABI verification failed");
+            println!("{}", failure_line(hypervisor, &err));
+            Ok(1)
+        }
+    }
 }
 
 /// Returns the string value of `name` in the worker's `time-abi` inspect
@@ -71,9 +89,21 @@ fn report_field(node: &inspect::Node, name: &str) -> anyhow::Result<String> {
     }
 }
 
+fn success_line(hypervisor: &str, node: &inspect::Node) -> anyhow::Result<String> {
+    #[cfg(guest_arch = "x86_64")]
+    {
+        x86_success_line(hypervisor, node)
+    }
+    #[cfg(guest_arch = "aarch64")]
+    {
+        arm_success_line(hypervisor, node)
+    }
+}
+
 /// Formats the line of a passed verification from the worker's `time-abi`
 /// inspect node.
-fn success_line(hypervisor: &str, node: &inspect::Node) -> anyhow::Result<String> {
+#[cfg(any(guest_arch = "x86_64", test))]
+fn x86_success_line(hypervisor: &str, node: &inspect::Node) -> anyhow::Result<String> {
     let field = |name: &str| report_field(node, name);
     Ok(format!(
         "{PREFIX} v=1 status=ok backend={hypervisor} cpu_profile={} tsc_hz={} native_tsc_hz={} lapic_hz={} msr_route={} sync={}",
@@ -83,6 +113,59 @@ fn success_line(hypervisor: &str, node: &inspect::Node) -> anyhow::Result<String
         field("apic_hz")?,
         field("msr_route")?,
         field("sync")?,
+    ))
+}
+
+#[cfg(any(guest_arch = "aarch64", test))]
+fn arm_success_line(hypervisor: &str, node: &inspect::Node) -> anyhow::Result<String> {
+    let field = |name: &str| report_field(node, name);
+    let number = |name: &str| -> anyhow::Result<u64> {
+        field(name)?
+            .parse()
+            .with_context(|| format!("invalid ARM time ABI report field '{name}'"))
+    };
+    let cpu_profile = field("cpu_profile")?;
+    let digest = field("cpu_profile_sha256")?;
+    anyhow::ensure!(
+        !cpu_profile.is_empty()
+            && cpu_profile.len() <= 32
+            && cpu_profile.bytes().all(|c| c.is_ascii_lowercase()
+                || c.is_ascii_digit()
+                || matches!(c, b'-' | b'_' | b'.'))
+            && !matches!(cpu_profile.as_str(), "auto" | "host"),
+        "invalid ARM CPU profile in the time ABI report"
+    );
+    anyhow::ensure!(
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            && digest.bytes().any(|c| c != b'0'),
+        "invalid ARM CPU profile digest in the time ABI report"
+    );
+    let counter_hz = number("counter_hz")?;
+    let native_gpa_bits = number("backend_usable_gpa_bits")?;
+    let configured_gpa_bits = number("configured_gpa_bits")?;
+    let architectural_pa_bits = number("architectural_pa_bits")?;
+    let effective_parange = number("effective_parange")?;
+    let feature_bank_count = number("feature_bank_count")?;
+    let feature_bank0 = number("feature_bank0")?;
+    let feature_bank1 = number("feature_bank1")?;
+    let cpu_id_registers_verified = number("cpu_id_registers_verified")?;
+    anyhow::ensure!(
+        counter_hz > 0
+            && (1..=64).contains(&native_gpa_bits)
+            && (1..=64).contains(&configured_gpa_bits)
+            && configured_gpa_bits == architectural_pa_bits
+            && effective_parange <= 6
+            && feature_bank_count == 2
+            && cpu_id_registers_verified > 0
+            && field("backend_readback")? == "true"
+            && field("effective_cpu")? == "true",
+        "incomplete ARM CPU/time admission evidence"
+    );
+    Ok(format!(
+        "{PREFIX} v=1 status=ok backend={hypervisor} architecture=aarch64 cpu_profile={cpu_profile} cpu_profile_sha256={digest} counter_hz={counter_hz} backend_usable_gpa_bits={native_gpa_bits} configured_gpa_bits={configured_gpa_bits} architectural_pa_bits={architectural_pa_bits} effective_parange={effective_parange} feature_bank_count={feature_bank_count} feature_bank0={feature_bank0} feature_bank1={feature_bank1} cpu_id_registers_verified={cpu_id_registers_verified} backend_readback=verified effective_cpu=verified guest_started=false"
     ))
 }
 
@@ -146,6 +229,7 @@ fn stable_code(detail: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     fn entry(name: &str, value: impl Into<inspect::Value>) -> inspect::Entry {
         inspect::Entry {
@@ -168,16 +252,62 @@ mod tests {
             entry("native_tsc_hz", 2_100_000_000_u64),
         ]);
         assert_eq!(
-            success_line("mshv", &node).unwrap(),
+            x86_success_line("mshv", &node).unwrap(),
             "NVX-TIME-ABI-VERIFY: v=1 status=ok backend=mshv cpu_profile=intel.skylake-sp.v1 tsc_hz=2100000000 native_tsc_hz=2100000000 lapic_hz=200000000 msr_route=ExitToVmm sync=FrozenWrite"
         );
         let inspect::Node::Dir(mut entries) = node else {
             unreachable!()
         };
         entries.retain(|entry| entry.name != "sync");
-        let err = success_line("mshv", &inspect::Node::Dir(entries)).unwrap_err();
+        let err = x86_success_line("mshv", &inspect::Node::Dir(entries)).unwrap_err();
         assert!(err.to_string().contains("'sync'"), "{err}");
-        assert!(success_line("mshv", &inspect::Node::Unevaluated).is_err());
+        assert!(x86_success_line("mshv", &inspect::Node::Unevaluated).is_err());
+    }
+
+    #[test]
+    fn arm_success_requires_complete_native_admission_evidence() {
+        let entries = vec![
+            entry("cpu_profile", "qualcomm.oryon-x1.v1".to_owned()),
+            entry("cpu_profile_sha256", "5a".repeat(32)),
+            entry("counter_hz", 19_200_000_u64),
+            entry("backend_usable_gpa_bits", 39_u32),
+            entry("configured_gpa_bits", 36_u32),
+            entry("architectural_pa_bits", 36_u32),
+            entry("effective_parange", 1_u32),
+            entry("feature_bank_count", 2_u32),
+            entry("feature_bank0", 123_u64),
+            entry("feature_bank1", 456_u64),
+            entry("cpu_id_registers_verified", 15_u32),
+            entry("backend_readback", true),
+            entry("effective_cpu", true),
+        ];
+        let line = arm_success_line("whp", &inspect::Node::Dir(entries.clone())).unwrap();
+        assert_eq!(
+            line,
+            format!(
+                "NVX-TIME-ABI-VERIFY: v=1 status=ok backend=whp architecture=aarch64 cpu_profile=qualcomm.oryon-x1.v1 cpu_profile_sha256={} counter_hz=19200000 backend_usable_gpa_bits=39 configured_gpa_bits=36 architectural_pa_bits=36 effective_parange=1 feature_bank_count=2 feature_bank0=123 feature_bank1=456 cpu_id_registers_verified=15 backend_readback=verified effective_cpu=verified guest_started=false",
+                "5a".repeat(32),
+            )
+        );
+        for missing in 0..entries.len() {
+            let mut partial = entries.clone();
+            partial.remove(missing);
+            assert!(arm_success_line("whp", &inspect::Node::Dir(partial)).is_err());
+        }
+        for invalid in [
+            entry("counter_hz", 0_u64),
+            entry("cpu_profile_sha256", "00".repeat(32)),
+            entry("cpu_id_registers_verified", 0_u32),
+            entry("configured_gpa_bits", 40_u32),
+            entry("backend_readback", false),
+            entry("effective_cpu", false),
+        ] {
+            let mut bad = entries.clone();
+            let index = bad.iter().position(|e| e.name == invalid.name).unwrap();
+            bad[index] = invalid;
+            assert!(arm_success_line("whp", &inspect::Node::Dir(bad)).is_err());
+        }
+        assert!(arm_success_line("whp", &inspect::Node::Unevaluated).is_err());
     }
 
     #[test]

@@ -70,6 +70,7 @@
 //! generation's hosts into its profile, following the dump, strip, and verify
 //! workflow of Firecracker's `cpu-template-helper`.
 
+pub mod aarch64;
 pub mod cpuid;
 pub mod derive;
 pub mod fingerprint;
@@ -95,6 +96,7 @@ mod vendor;
 pub use catalog::AUTO;
 pub use catalog::HOST;
 pub use catalog::PartitionProfile;
+pub use catalog::auto_falls_back_to_host;
 pub use catalog::check_generation;
 pub use catalog::generation_of;
 pub use catalog::host_profile_for_restore;

@@ -32,6 +32,8 @@ vm_resource::register_static_resolvers! {
     chipset::microvm::resolver::MicrovmShutdownResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::microvm::resolver::MicrovmSnapshotRequestResolver,
+    #[cfg(guest_arch = "aarch64")]
+    chipset::microvm::resolver::MicrovmPlatformControlResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::pic::resolver::PicResolver,
     #[cfg(guest_arch = "x86_64")]
