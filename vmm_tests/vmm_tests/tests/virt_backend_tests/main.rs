@@ -23,6 +23,8 @@ cfg_select! {
         #[cfg(target_os = "linux")]
         mod registers;
         #[cfg(target_os = "linux")]
+        mod restore;
+        #[cfg(target_os = "linux")]
         mod save;
         mod speculation;
         mod time;
