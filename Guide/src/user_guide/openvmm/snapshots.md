@@ -272,6 +272,19 @@ KVM never saves, before it changes the VP's activity. Only a damaged or crafted
 snapshot holds one, since a restore requires the backend that captured the
 snapshot.
 
+A KVM VP on an Intel CPU can hold an interrupt shadow of either kind. A `MOV SS`
+or `POP SS` leaves a shadow that also blocks NMIs and suppresses certain debug
+exceptions at the next instruction boundary, and an `STI` that finds `IF` clear
+leaves one that does not. A capture records the kind of an `STI` shadow only,
+and a restore that is given no kind sets a `MOV SS` shadow, as it always did, so
+a snapshot that an earlier OpenVMM captured restores as it did. An earlier
+OpenVMM ignores the kind in a later snapshot and sets a `MOV SS` shadow, which
+holds an NMI or a debug exception off for one more instruction. The snapshot has
+no version for this; see [Fields of an
+element](../../dev_guide/snapshot_format.md#fields-of-an-element). KVM on an AMD
+CPU, whose one kind of shadow has no kind to record, and MSHV and WHP, whose
+interrupt state has one bit for both, record none.
+
 For a tiered microVM restore, and for a restore that replaces the network
 policy of a snapshot without a tier, OpenVMM starts device workers with
 network, control, and filesystem input gated. The guest performs post-restore

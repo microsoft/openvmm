@@ -15,6 +15,7 @@ mod machine_check;
 mod msr_state;
 mod pkru;
 mod regs;
+mod shadow;
 mod smm;
 pub(crate) mod snp;
 #[cfg(test)]
