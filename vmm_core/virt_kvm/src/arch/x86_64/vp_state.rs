@@ -330,6 +330,8 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             // Linux before 6.4 reports only whether an NMI is pending, 0 or 1,
             // even when KVM holds two, so a save on such a host holds no count.
             nmi_pending_count: (events.nmi.pending > 1).then_some(events.nmi.pending),
+            // KVM does not tell the kind yet.
+            interrupt_shadow_kind: None,
         })
     }
 
@@ -342,6 +344,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             pending_event,
             pending_interruption,
             nmi_pending_count,
+            interrupt_shadow_kind: _,
         } = *value;
 
         // Reject what KVM cannot restore before changing any activity state:
