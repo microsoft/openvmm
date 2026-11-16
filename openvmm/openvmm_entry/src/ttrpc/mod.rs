@@ -1551,6 +1551,7 @@ impl VmService {
                 .vmbus
                 .as_mut()
                 .context("HVSocket requires VMBus to be enabled")?;
+            crate::cleanup_socket(hvsocket_config.path.as_ref());
             let listener = UnixListener::bind(&hvsocket_config.path).with_context(|| {
                 format!("failed to bind hvsocket path: {}", hvsocket_config.path)
             })?;
@@ -2724,6 +2725,16 @@ async fn build_pcie_topology(
         });
     }
 
+    // Clean initial paths before creating any listeners. Hot-adds must not
+    // unlink a live device's socket.
+    for (_, device) in &pending_devices {
+        if let Some(vmservice::pcie_device_kind::Kind::Virtio(virtio)) = &device.kind
+            && let Some(vmservice::virtio_device::Kind::Vsock(vsock)) = &virtio.kind
+        {
+            crate::cleanup_socket(vsock.socket_path.as_ref());
+        }
+    }
+
     let mut devices = Vec::new();
     for (port_name, device) in pending_devices {
         let resource = build_pci_device(device, registry, iommufds).await?;
@@ -3353,6 +3364,54 @@ mod tests {
     use vfio_assigned_device_resources::BarAddressConfig;
     #[cfg(target_os = "linux")]
     use vmservice::vfio_bar_address::Source;
+
+    #[test]
+    fn virtio_vsock_reuses_socket_path() {
+        DefaultPool::run_with(async |_| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("vsock");
+            let device = vmservice::VirtioDevice {
+                kind: Some(vmservice::virtio_device::Kind::Vsock(
+                    vmservice::VirtioVsock {
+                        socket_path: path.to_str().unwrap().into(),
+                        guest_cid: None,
+                    },
+                )),
+            };
+            let config = vmservice::PcieTopologyConfig {
+                root_complexes: vec![vmservice::PcieRootComplex {
+                    root_ports: vec![vmservice::PciePort {
+                        attached: Some(vmservice::PcieAttachment {
+                            kind: Some(vmservice::pcie_attachment::Kind::Device(
+                                vmservice::PcieDeviceKind {
+                                    kind: Some(vmservice::pcie_device_kind::Kind::Virtio(
+                                        device.clone(),
+                                    )),
+                                },
+                            )),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let registry = FdRegistry::default();
+            let iommufds = IommufdContexts::default();
+            for _ in 0..2 {
+                let topology = build_pcie_topology(config.clone(), &registry, &iommufds, false)
+                    .await
+                    .unwrap();
+                assert!(
+                    build_virtio_device(device.clone(), &registry)
+                        .await
+                        .is_err()
+                );
+                let _connection = unix_socket::UnixStream::connect(&path).unwrap();
+                drop(topology);
+            }
+        });
+    }
 
     fn service(
         driver: DefaultDriver,
