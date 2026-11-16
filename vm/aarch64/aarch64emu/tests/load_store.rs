@@ -1312,6 +1312,119 @@ async fn unprivileged_accesses_and_byte_zero_shift() {
 }
 
 #[async_test]
+async fn ordered_register_encodings_transfer_values_and_store_widths() {
+    for size in 0..4 {
+        let bytes = 1 << size;
+        let mask = u64::MAX >> (64 - bytes * 8);
+        for load in [false, true] {
+            for limited_order in [false, true] {
+                for (rn, rt) in [(9, 8), (31, 31)] {
+                    let mut cpu = SingleCellCpu {
+                        valid_gva: 0x100,
+                        ..Default::default()
+                    };
+                    cpu.update_sp(0x100);
+                    if rn != 31 {
+                        cpu.update_x(rn, 0x100);
+                        cpu.update_x(rt, 0x8877_6655_4433_80ff);
+                    }
+                    *cpu.mem_val.lock().await = u128::MAX;
+                    // The byte store with rn=9, rt=8 is the STLRB from TPM boot.
+                    let opcode = 0x089f_7c00u32
+                        | size << 30
+                        | u32::from(load) << 22
+                        | u32::from(!limited_order) << 15
+                        | (rn as u32) << 5
+                        | rt as u32;
+                    let intercept = InterceptState {
+                        instruction_bytes: opcode.to_le_bytes(),
+                        instruction_byte_count: 4,
+                        ..Default::default()
+                    };
+                    Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+                    if load {
+                        if rt != 31 {
+                            assert_eq!(cpu.x(rt), mask);
+                        }
+                        assert_eq!(*cpu.mem_val.lock().await, u128::MAX);
+                    } else {
+                        let value = if rt == 31 { 0 } else { 0x8877_6655_4433_80ff };
+                        assert_eq!(
+                            *cpu.mem_val.lock().await,
+                            !(mask as u128) | (value & mask) as u128
+                        );
+                    }
+                    assert_eq!(
+                        cpu.accesses,
+                        [(
+                            0x100,
+                            bytes,
+                            if load {
+                                AccessKind::Read
+                            } else {
+                                AccessKind::Write
+                            }
+                        )]
+                    );
+                    assert!(cpu.comparisons.is_empty());
+                    assert_eq!(cpu.sp(), 0x100);
+                    assert_eq!(cpu.pc(), 4);
+                }
+            }
+        }
+    }
+}
+
+#[async_test]
+async fn ordered_register_alignment_faults_do_not_access_memory() {
+    for size in 1..4 {
+        for load in [false, true] {
+            let mut cpu = SingleCellCpu {
+                valid_gva: 0x101,
+                ..Default::default()
+            };
+            cpu.update_x(9, 0x101);
+            cpu.update_x(8, 0xfeed);
+            let opcode = 0x089f_fd28u32 | size << 30 | u32::from(load) << 22;
+            let intercept = InterceptState {
+                instruction_bytes: opcode.to_le_bytes(),
+                instruction_byte_count: 4,
+                ..Default::default()
+            };
+            let error = Emulator::new(&mut cpu, &intercept).run().await.unwrap_err();
+            let aarch64emu::Error::InstructionException(syndrome, address) = *error else {
+                panic!("expected alignment fault, got {error:?}");
+            };
+            let iss = aarch64defs::IssDataAbort::from(syndrome.iss());
+            assert_eq!(iss.dfsc(), aarch64defs::FaultStatusCode::ALIGNMENT_FAULT);
+            assert_eq!(iss.wnr(), !load);
+            assert_eq!(address, 0x101);
+            assert!(cpu.accesses.is_empty());
+            assert_eq!(cpu.x(8), 0xfeed);
+            assert_eq!(cpu.pc(), 0);
+        }
+    }
+}
+
+#[async_test]
+async fn ordered_register_invalid_encodings_do_not_access_memory() {
+    for opcode in [0x089e_fd28u32, 0x089f_f928, 0x08df_7928] {
+        let mut cpu = SingleCellCpu::default();
+        let intercept = InterceptState {
+            instruction_bytes: opcode.to_le_bytes(),
+            instruction_byte_count: 4,
+            ..Default::default()
+        };
+        assert!(matches!(
+            *Emulator::new(&mut cpu, &intercept).run().await.unwrap_err(),
+            aarch64emu::Error::UnsupportedInstruction(value) if value == opcode
+        ));
+        assert!(cpu.accesses.is_empty());
+        assert_eq!(cpu.pc(), 0);
+    }
+}
+
+#[async_test]
 async fn ordered_unscaled_encodings_transfer_signed_values_and_store_widths() {
     for (opcode, size, expected) in [
         (0xd940_0020u32, 8, 0x8877_6655_4433_80ff),

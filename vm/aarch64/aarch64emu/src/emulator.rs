@@ -195,6 +195,10 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             return Ok(false);
         }
         let len = 1 << iss.sas();
+        if !gpa.is_multiple_of(len as u64) && (iss.ar() || self.inner.cpu.sctlr().a()) {
+            // Decode the instruction to report the virtual fault address.
+            return Ok(false);
+        }
         if (gpa & 0xfff) + len as u64 > 0x1000 {
             return Ok(false);
         }
@@ -213,6 +217,9 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         // Writing to `xzr` has no arch-observable effects, reading returns the all-zero's bit
         // pattern.
         let reg_index = iss.srt();
+        if iss.ar() {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+        }
         if iss.wnr() {
             let data = match reg_index {
                 0..=30 => self.inner.cpu.x(reg_index),
@@ -220,9 +227,6 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 _ => unreachable!(),
             }
             .to_le_bytes();
-            if iss.ar() {
-                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-            }
             self.inner
                 .cpu
                 .write_physical_memory(gpa, &data[..len])
@@ -235,9 +239,6 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 .read_physical_memory(gpa, &mut data[..len], false)
                 .await
                 .map_err(|err| Error::MemoryAccess(gpa, OperationKind::Read, err))?;
-            if iss.ar() {
-                std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
-            }
             let mut data = u64::from_le_bytes(data);
             if sign_extend {
                 let shift = 64 - len * 8;
@@ -249,6 +250,9 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             if reg_index != 31 {
                 self.inner.cpu.update_x(reg_index, data);
             }
+        }
+        if iss.ar() {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
         }
         Ok(true)
     }
@@ -317,7 +321,8 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         // We should not be emulating instructions that don't touch MMIO or PIO, even though we are capable of doing so.
         // If we are asked to do so it is usually indicative of some other problem, so abort so we can track that down.
         let result = match instruction_type {
-            Aarch64DecodeGroup::LoadStore(Aarch64DecodeLoadStoreGroup::UnscaledImmediate)
+            Aarch64DecodeGroup::LoadStore(Aarch64DecodeLoadStoreGroup::Ordered)
+            | Aarch64DecodeGroup::LoadStore(Aarch64DecodeLoadStoreGroup::UnscaledImmediate)
             | Aarch64DecodeGroup::LoadStore(
                 Aarch64DecodeLoadStoreGroup::RegisterUnscaledImmediate,
             )

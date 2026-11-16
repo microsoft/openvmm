@@ -58,7 +58,6 @@ use virt_support_aarch64emu::emulate::EmuTranslateError;
 use virt_support_aarch64emu::emulate::EmuTranslateResult;
 use virt_support_aarch64emu::emulate::EmulatorSupport;
 use zerocopy::FromZeros;
-use zerocopy::IntoBytes;
 
 /// A backing for hypervisor-backed partitions (non-isolated and
 /// software-isolated).
@@ -802,10 +801,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
     }
 
     fn inject_pending_event(&mut self, event_info: HvAarch64PendingEvent) {
-        let regs = [(
-            HvArm64RegisterName::PendingEvent0,
-            u128::from_ne_bytes(event_info.as_bytes().try_into().unwrap()),
-        )];
+        let [reg0, reg1]: [u128; 2] = zerocopy::transmute!(event_info);
+        let regs = [
+            (HvArm64RegisterName::PendingEvent0, reg0),
+            (HvArm64RegisterName::PendingEvent1, reg1),
+        ];
 
         self.vp
             .runner

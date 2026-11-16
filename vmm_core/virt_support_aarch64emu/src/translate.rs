@@ -451,7 +451,16 @@ fn get_next_page_table(
                     || context.check_supervisor_access && pte.pxn_table());
             }
         } else {
-            // check permissions
+            // Access-flag faults take priority over permission faults.
+            if !pte.access_flag()
+                && !context.hardware_access
+                && (context.flags.validate_read
+                    || context.flags.validate_write
+                    || context.flags.validate_execute
+                    || context.flags.set_page_table_bits)
+            {
+                return Err(Error::AccessFlagFault(level));
+            }
             user &= pte.ap_unprivileged();
             writable &= !pte.ap_read_only() || context.hardware_dirty && pte.dbm();
             executable &= !(context.check_user_access && pte.user_no_execute()
@@ -485,18 +494,11 @@ fn get_next_page_table(
                 return Err(Error::PrivilegeViolation(level));
             }
             if context.flags.validate_execute
-                && context.vtom.is_some_and(|vtom| next_address >= vtom)
+                && context.vtom.is_some_and(|vtom| {
+                    next_address + (address & ((1 << page_table.span_shift) - 1)) >= vtom
+                })
             {
                 return Err(Error::PrivilegeViolation(level));
-            }
-            if !pte.access_flag()
-                && !context.hardware_access
-                && (context.flags.validate_read
-                    || context.flags.validate_write
-                    || context.flags.validate_execute
-                    || context.flags.set_page_table_bits)
-            {
-                return Err(Error::AccessFlagFault(level));
             }
         }
 
@@ -595,8 +597,13 @@ pub fn translate_gva_to_gpa(
 ) -> Result<u64, Error> {
     tracing::trace!(gva, ?registers, ?flags, "translating gva");
 
-    // If paging is disabled, just return the GVA as the GPA.
+    // Without paging the GVA is the GPA, but execution must still be encrypted.
     if !registers.sctlr.m() {
+        if flags.validate_execute
+            && matches!(registers.encryption_mode, EncryptionMode::Vtom(vtom) if gva >= vtom)
+        {
+            return Err(Error::PrivilegeViolation(0));
+        }
         return Ok(gva);
     }
 
@@ -815,9 +822,91 @@ mod tests {
                     assert!(!updated.ap_read_only());
                     assert!(updated.user_no_execute());
                     assert!(updated.dbm());
+                } else if ha == 0 {
+                    assert!(matches!(write, Err(Error::AccessFlagFault(3))));
                 } else {
                     assert!(matches!(write, Err(Error::PrivilegeViolation(3))));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn access_flag_faults_precede_permission_faults() {
+        for mode in [
+            TranslateMode::Read,
+            TranslateMode::Write,
+            TranslateMode::Execute,
+        ] {
+            let (gm, mut registers, gva, leaf, _) = mapping(12, 30, false);
+            registers.tcr.set_ha(0);
+            let pte: Pte = gm.read_plain(leaf).unwrap();
+            let pte = pte
+                .with_ap_unprivileged(false)
+                .with_ap_read_only(true)
+                .with_user_no_execute(true);
+            gm.write_plain(leaf, &pte).unwrap();
+            assert!(matches!(
+                translate_gva_to_gpa(
+                    &gm,
+                    gva,
+                    &registers,
+                    flags(mode, TranslatePrivilegeCheck::User),
+                ),
+                Err(Error::AccessFlagFault(3)),
+            ));
+            assert_eq!(gm.read_plain::<Pte>(leaf).unwrap(), pte);
+            gm.write_plain(leaf, &pte.with_access_flag(true)).unwrap();
+            assert!(matches!(
+                translate_gva_to_gpa(
+                    &gm,
+                    gva,
+                    &registers,
+                    flags(mode, TranslatePrivilegeCheck::User),
+                ),
+                Err(Error::PrivilegeViolation(3)),
+            ));
+        }
+    }
+
+    #[test]
+    fn encrypted_execution_checks_the_complete_output_address() {
+        let vtom = 0x10_0000;
+        for paging in [false, true] {
+            let (gm, mut registers, _, _, entries) = mapping(12, 30, false);
+            registers.sctlr.set_m(paging);
+            registers.encryption_mode = EncryptionMode::Vtom(vtom);
+            let block = Pte::new()
+                .with_valid(true)
+                .with_access_flag(true)
+                .with_ap_unprivileged(true)
+                .with_ap_read_only(true);
+            gm.write_plain(entries[0].0, &block).unwrap();
+            for address in [vtom - 4, vtom, vtom + 4] {
+                let result = translate_gva_to_gpa(
+                    &gm,
+                    address,
+                    &registers,
+                    flags(TranslateMode::Execute, TranslatePrivilegeCheck::User),
+                );
+                if address < vtom {
+                    assert_eq!(result.unwrap(), address);
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(Error::PrivilegeViolation(level)) if level == if paging { 2 } else { 0 }
+                    ));
+                }
+                assert_eq!(
+                    translate_gva_to_gpa(
+                        &gm,
+                        address,
+                        &registers,
+                        flags(TranslateMode::Read, TranslatePrivilegeCheck::User),
+                    )
+                    .unwrap(),
+                    address,
+                );
             }
         }
     }

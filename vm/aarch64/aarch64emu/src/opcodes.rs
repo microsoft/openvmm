@@ -257,7 +257,13 @@ impl LoadStoreRegister {
     }
 
     fn opc(&self) -> u8 {
-        ((self.0 >> 22) & 3) as u8
+        // Ordered encodings use bit 23 for o2, leaving only L in opc.
+        let mask = if self.0 & 0x3f80_0000 == 0x0880_0000 {
+            1
+        } else {
+            3
+        };
+        ((self.0 >> 22) & mask) as u8
     }
 
     fn data_size<E>(&self) -> Result<LoadStoreRegisterByteCount, Error<E>> {
@@ -283,6 +289,7 @@ impl LoadStoreRegister {
         emulate: &mut EmulatorOperations<T>,
     ) -> Result<(u64, u64), Box<Error<T::Error>>> {
         let offset = match decode_load_store_group(self.0)? {
+            Aarch64DecodeLoadStoreGroup::Ordered => 0,
             Aarch64DecodeLoadStoreGroup::UnscaledImmediate
             | Aarch64DecodeLoadStoreGroup::RegisterUnprivileged
             | Aarch64DecodeLoadStoreGroup::RegisterUnscaledImmediate
@@ -360,6 +367,11 @@ impl LoadStoreRegister {
         emulate: &mut EmulatorOperations<T>,
     ) -> Result<(), Box<Error<T::Error>>> {
         let op_group = decode_load_store_group(self.0)?;
+        if matches!(op_group, Aarch64DecodeLoadStoreGroup::Ordered)
+            && self.0 & 0x3fbf_7c00 != 0x089f_7c00
+        {
+            return Err(Box::new(Error::UnsupportedInstruction(self.0)));
+        }
         let op = self.size() << 2 | self.opc();
         if op == 14 && !self.is_fp_register() {
             match op_group {
@@ -387,7 +399,10 @@ impl LoadStoreRegister {
         };
         let size = self.data_size()?;
         let register_index = self.rt();
-        let ordered = matches!(op_group, Aarch64DecodeLoadStoreGroup::UnscaledImmediate);
+        let ordered = matches!(
+            op_group,
+            Aarch64DecodeLoadStoreGroup::Ordered | Aarch64DecodeLoadStoreGroup::UnscaledImmediate
+        );
         // Relaxing this requires the guest's LSE2 capability and effective
         // memory attributes, which the backend does not currently expose.
         if ordered && !address.is_multiple_of(1 << self.size()) {
@@ -399,8 +414,10 @@ impl LoadStoreRegister {
                 address,
             )));
         }
-        if ordered && self.opc() == 0 {
-            std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+        // Full barriers preserve Store-Release -> Load-Acquire ordering even
+        // when an adjacent access executes natively.
+        if ordered {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
         }
         tracing::trace!(
             ?op_group,
@@ -509,9 +526,6 @@ impl LoadStoreRegister {
                 } else {
                     new_val
                 };
-                if ordered {
-                    std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
-                }
                 if self.is_fp_register() {
                     emulate.cpu.update_d(register_index, new_val);
                 } else if register_index != 31 {
@@ -519,6 +533,9 @@ impl LoadStoreRegister {
                 }
             }
             _ => return Err(Box::new(Error::UnsupportedInstruction(self.0))),
+        }
+        if ordered {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
         }
         if matches!(
             op_group,
@@ -748,11 +765,16 @@ impl LoadStoreAtomic {
         };
         let rt = self.rt();
         let rs = self.rs();
+        let ordered =
+            !load_only && (self.0 & (1 << 22) != 0 || self.0 & (1 << 23) != 0 && rt != 31);
         let update_val = if rs != 31 {
             emulate.cpu.x(rs) & size_mask
         } else {
             0
         };
+        if ordered {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+        }
         // Retry with fresh data on contention, but give control back after a
         // bounded number of attempts without advancing PC or updating Rt.
         for _ in 0..16 {
@@ -799,9 +821,6 @@ impl LoadStoreAtomic {
                 }
             };
             let new_value = value & !size_mask | new_value & size_mask;
-            if self.0 & (1 << 22) != 0 {
-                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-            }
             let mut success = false;
             emulate
                 .cpu
@@ -816,8 +835,8 @@ impl LoadStoreAtomic {
                     Error::MemoryAccess(address, crate::emulator::OperationKind::Write, e)
                 })?;
             if success {
-                if self.0 & (1 << 23) != 0 && rt != 31 {
-                    std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+                if ordered {
+                    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
                 }
                 if rt != 31 {
                     emulate.cpu.update_x(rt, sized_value);

@@ -980,6 +980,35 @@ pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
     // LDSETx / STSETx. A "fast path" is possible because we can assume the
     // MNF page is always zero-filled.
     if (opcode & 0x3f20fc00) == 0x38203000 {
+        let cpsr = support.cpsr();
+        let sctlr = support.sctlr();
+        let rn = ((opcode >> 5) & 0x1f) as u8;
+        let address = if rn == 31 {
+            support.sp()
+        } else {
+            support.x(rn)
+        };
+        let check_sp_alignment = rn == 31
+            && if cpsr.el() == 0 {
+                sctlr.sa0()
+            } else {
+                sctlr.sa()
+            };
+        let big_endian = if cpsr.el() == 0 {
+            sctlr.e0e()
+        } else {
+            sctlr.ee()
+        };
+        // Leave ordering, byte swapping, and architectural faults to the emulator.
+        if cpsr.aa32()
+            || !support.pc().is_multiple_of(4)
+            || !address.is_multiple_of(1 << (opcode >> 30))
+            || check_sp_alignment && !address.is_multiple_of(16)
+            || big_endian
+            || opcode & (3 << 22) != 0
+        {
+            return None;
+        }
         let mut cpu = EmulatorCpu::new(gm, dev, support);
         let size = (1 << (opcode >> 30)) * 8;
         let rs = (opcode >> 16) as u8 & 0x1f;
@@ -1483,6 +1512,163 @@ mod tests {
         assert_eq!(support.pc, 4);
         assert!(support.events.is_empty());
         assert_eq!(support.translations, [(0x5000, TranslateMode::Read)]);
+    }
+
+    #[async_test]
+    async fn syndrome_stores_preserve_width_endianness_and_zero_register() {
+        for size in 1..4 {
+            let len = 1 << size;
+            for big_endian in [false, true] {
+                for rt in [0, 31] {
+                    let gm = GuestMemory::allocate(0x1000);
+                    gm.fill_at(0, 0xa5, 0x1000).unwrap();
+                    let mut support = Support {
+                        sp: 0xdead_beef,
+                        cpsr: aarch64defs::Cpsr64::new().with_el(1),
+                        sctlr: aarch64defs::SctlrEl1::new().with_ee(big_endian),
+                        initial: Some(InitialTranslation {
+                            gva: 0x4100,
+                            gpa: 0x100,
+                            translate_mode: TranslateMode::Write,
+                        }),
+                        ..Default::default()
+                    };
+                    support.x[0] = 0xfeed_face_1234_5678;
+                    let syndrome: EsrEl2 = IssDataAbort::new()
+                        .with_isv(true)
+                        .with_sas(size)
+                        .with_sf(size == 3)
+                        .with_srt(rt)
+                        .with_wnr(true)
+                        .with_ar(true)
+                        .into();
+                    let intercept = InterceptState {
+                        gpa: Some(0x100),
+                        syndrome: syndrome.with_il(true),
+                        ..Default::default()
+                    };
+                    emulate(&mut support, &intercept, &gm, &Io).await.unwrap();
+                    let value = if rt == 31 { 0u64 } else { support.x[0] };
+                    let mut expected = [0xa5; 16];
+                    if big_endian {
+                        expected[..len].copy_from_slice(&value.to_be_bytes()[8 - len..]);
+                    } else {
+                        expected[..len].copy_from_slice(&value.to_le_bytes()[..len]);
+                    }
+                    let mut actual = [0; 16];
+                    gm.read_at(0x100, &mut actual).unwrap();
+                    assert_eq!(actual, expected);
+                    assert_eq!(support.x[0], 0xfeed_face_1234_5678);
+                    assert_eq!(support.pc, 4);
+                    assert!(support.events.is_empty());
+                    assert!(support.translations.is_empty());
+                }
+            }
+        }
+    }
+
+    #[async_test]
+    async fn syndrome_alignment_faults_preserve_the_virtual_fault_address() {
+        for write in [false, true] {
+            for ordered in [false, true] {
+                let gm = GuestMemory::allocate(0x1000);
+                gm.fill_at(0, 0xa5, 0x1000).unwrap();
+                let mut support = Support {
+                    initial: Some(InitialTranslation {
+                        gva: 0x4101,
+                        gpa: 0x101,
+                        translate_mode: if write {
+                            TranslateMode::Write
+                        } else {
+                            TranslateMode::Read
+                        },
+                    }),
+                    sctlr: aarch64defs::SctlrEl1::new().with_a(!ordered),
+                    ..Default::default()
+                };
+                support.x[0] = 0xfeed;
+                support.x[1] = 0x4101;
+                let opcode: u32 = match (write, ordered) {
+                    (false, false) => 0xb940_0020, // ldr w0, [x1]
+                    (true, false) => 0xb900_0020,  // str w0, [x1]
+                    (false, true) => 0x88df_fc20,  // ldar w0, [x1]
+                    (true, true) => 0x889f_fc20,   // stlr w0, [x1]
+                };
+                let syndrome: EsrEl2 = IssDataAbort::new()
+                    .with_isv(true)
+                    .with_sas(2)
+                    .with_srt(0)
+                    .with_wnr(write)
+                    .with_ar(ordered)
+                    .into();
+                let intercept = InterceptState {
+                    instruction_bytes: opcode.to_le_bytes(),
+                    instruction_byte_count: 4,
+                    gpa: Some(0x101),
+                    syndrome: syndrome.with_il(true),
+                    ..Default::default()
+                };
+                emulate(&mut support, &intercept, &gm, &Io).await.unwrap();
+                let event = exception(&support);
+                let syndrome: EsrEl2 = event.syndrome.into();
+                assert_eq!(syndrome.lower_iss(), FaultStatusCode::ALIGNMENT_FAULT.0);
+                assert_eq!(syndrome.wnr(), write);
+                assert_eq!(event.fault_address, 0x4101);
+                assert_eq!(support.x[0], 0xfeed);
+                assert_eq!(support.pc, 0);
+                assert!(support.translations.is_empty());
+                assert_eq!(gm.read_plain::<u32>(0x101).unwrap(), 0xa5a5_a5a5);
+            }
+        }
+    }
+
+    #[test]
+    fn monitor_fast_path_requires_native_compatible_state() {
+        let gm = GuestMemory::allocate(0x1000);
+        for case in 0..10 {
+            let mut support = Support {
+                sp: 0x100,
+                ..Default::default()
+            };
+            support.x[0] = 0xfeed;
+            support.x[8] = 0x1_0000_0001;
+            support.x[9] = 0x100;
+            let mut opcode = 0xb828_3120; // ldset w8, w0, [x9]
+            match case {
+                0 => support.sctlr.set_e0e(true),
+                1 => {
+                    support.cpsr.set_el(1);
+                    support.sctlr.set_ee(true);
+                }
+                2 => support.x[9] = 0x101,
+                3 | 4 => {
+                    opcode |= 31 << 5;
+                    support.sp = 0x108;
+                    support.cpsr.set_el(case - 3);
+                    support.sctlr.set_sa(true);
+                    support.sctlr.set_sa0(true);
+                }
+                5 => support.pc = 2,
+                6 => support.cpsr.set_aa32(true),
+                7 => opcode |= 1 << 22,
+                8 => opcode |= 1 << 23,
+                9 => (),
+                _ => unreachable!(),
+            }
+            let pc = support.pc;
+            let result = emulate_mnf_write_fast_path(opcode, &mut support, &gm, &Io);
+            if case == 9 {
+                assert_eq!(result, Some(1));
+                assert_eq!(support.x[0], 0);
+                assert_eq!(support.pc, 4);
+            } else {
+                assert_eq!(result, None, "case {case}");
+                assert_eq!(support.x[0], 0xfeed);
+                assert_eq!(support.pc, pc);
+            }
+            assert!(support.events.is_empty());
+            assert!(support.translations.is_empty());
+        }
     }
 
     #[async_test]
