@@ -191,6 +191,10 @@ fn refusing_an_activity_keeps_an_smi(
             mp_state: vp::MpState::Idle,
             ..Default::default()
         },
+        vp::Activity {
+            interrupt_shadow_kind: Some(vp::InterruptShadowKind::Sti),
+            ..Default::default()
+        },
     ] {
         anyhow::ensure!(
             state.set_activity(&crafted).is_err(),
@@ -455,5 +459,68 @@ fn restores_a_queued_exception_as_injected(
             "restoring {queued:?} read back as {restored:?}, not as {injected:?}"
         );
     }
+    Ok(())
+}
+
+// A VP that stops right after an STI that ran with IF clear, or after a MOV SS,
+// holds an interrupt shadow, which blocks maskable interrupts for one
+// instruction. A MOV SS shadow also blocks NMIs and suppresses certain debug
+// exceptions there, as an STI shadow does not. A save names a kind only for an
+// STI shadow, because a restore that is given none sets a MOV SS shadow, as
+// every restore did. So a state with a shadow and no kind, such as every state
+// that an earlier save holds, reads back as saved on every host, and an STI
+// shadow does where KVM tells it. KVM on VMX reports each kind. SVM has one
+// kind of shadow, which KVM reports as both, so a save holds no kind for it,
+// and it restores whatever shadow it is given.
+backend_test!(restores_the_kind_of_an_interrupt_shadow, kvm_only, requires: []);
+fn restores_the_kind_of_an_interrupt_shadow(
+    partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let tells_sti = partition.caps().vendor.is_intel_compatible();
+    let mut state = processor.access_state(Vtl::Vtl0);
+
+    for (saved, read_back) in [
+        (None, None),
+        (
+            Some(vp::InterruptShadowKind::Sti),
+            tells_sti.then_some(vp::InterruptShadowKind::Sti),
+        ),
+    ] {
+        let activity = vp::Activity {
+            interrupt_shadow: true,
+            interrupt_shadow_kind: saved,
+            ..Default::default()
+        };
+        state
+            .set_activity(&activity)
+            .with_context(|| format!("restoring {activity:?} failed"))?;
+        let restored = state.activity()?;
+        let expected = vp::Activity {
+            interrupt_shadow_kind: read_back,
+            ..activity
+        };
+        anyhow::ensure!(
+            restored == expected,
+            "restoring {activity:?} read back as {restored:?}, not {expected:?}"
+        );
+    }
+
+    // A kind describes a shadow, so no save holds one without it. The restore
+    // refuses it before it changes any activity state, the halt included.
+    let before = state.activity()?;
+    let crafted = vp::Activity {
+        mp_state: vp::MpState::Halted,
+        interrupt_shadow_kind: Some(vp::InterruptShadowKind::Sti),
+        ..Default::default()
+    };
+    anyhow::ensure!(
+        state.set_activity(&crafted).is_err(),
+        "restoring a kind without an interrupt shadow succeeded"
+    );
+    anyhow::ensure!(
+        state.activity()? == before,
+        "the refused restore of a kind without an interrupt shadow changed the activity"
+    );
     Ok(())
 }
