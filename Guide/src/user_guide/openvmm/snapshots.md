@@ -259,6 +259,19 @@ that holds at most one pending NMI refuses a snapshot that holds two, which only
 a damaged or crafted snapshot of another backend does, since a restore requires
 the backend that captured the snapshot.
 
+A KVM VP can also hold an exception that it has queued but not injected yet.
+OpenVMM does not enable `KVM_CAP_EXCEPTION_PAYLOAD`, so KVM restores an
+exception only as injected, which the VP delivers when it next runs, as it would
+have delivered the queued one. A save therefore records an exception, queued or
+injected, as the injected one alone, and a restore injects it. A snapshot that
+an earlier OpenVMM captured records a queued exception as both pending and
+injected, which restores the same way, so it restores as before, and an earlier
+OpenVMM restores a later snapshot as it did. A restore refuses any other pending
+exception, which KVM would silently drop, and an injected `#BP` or `#OF`, which
+KVM never saves, before it changes the VP's activity. Only a damaged or crafted
+snapshot holds one, since a restore requires the backend that captured the
+snapshot.
+
 For a tiered microVM restore, and for a restore that replaces the network
 policy of a snapshot without a tier, OpenVMM starts device workers with
 network, control, and filesystem input gated. The guest performs post-restore

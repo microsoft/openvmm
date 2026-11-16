@@ -349,6 +349,20 @@ injected. Neither changes any state before it refuses, and only a damaged or
 crafted snapshot reaches either, since a snapshot restores only on the backend
 that captured it.
 
+An exception needs no field. KVM reports one that it has queued but not injected
+yet as pending and injected both, because OpenVMM does not enable
+`KVM_CAP_EXCEPTION_PAYLOAD`, and restores an exception only as injected, so a
+save records it as the activity's interruption alone and holds no event for it:
+
+- A saved state from a build that predates this holds the exception as both the
+  event and the interruption, and restoring it injects the exception once, as
+  before.
+- A build that predates this restores a later state's interruption as the
+  injected exception, as it restored the pair.
+
+A restore refuses any other pending exception, which KVM would drop, before it
+changes the activity. Only a damaged or crafted snapshot holds one.
+
 ## Extending the format
 
 When adding new fields to `SnapshotManifest`, use the next available mesh
