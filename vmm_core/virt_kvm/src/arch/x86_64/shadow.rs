@@ -44,8 +44,10 @@ pub(super) fn from_kvm(shadow: u8) -> (bool, Option<InterruptShadowKind>) {
 /// before the saved state had a kind. The other way would be unsafe: a MOV SS
 /// shadow that restored as an STI shadow would let an NMI or a debug exception
 /// split the `MOV SS` from the instruction that follows it, which sets the
-/// stack pointer, while an STI shadow that restores as a MOV SS shadow only
-/// delays them by an instruction.
+/// stack pointer, while an STI shadow that restores as a MOV SS shadow holds an
+/// NMI off for one more instruction, and makes an Intel guest CPU skip an
+/// instruction breakpoint at that instruction, which KVM models in
+/// `kvm_is_code_breakpoint_inhibited`.
 ///
 /// SVM sets its one shadow for any value but 0, and KVM reports it as both
 /// kinds, so a restore of the STI kind there reads back with no kind. An SVM
