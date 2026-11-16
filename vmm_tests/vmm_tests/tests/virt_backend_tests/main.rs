@@ -26,6 +26,7 @@ cfg_select! {
         mod restore;
         #[cfg(target_os = "linux")]
         mod save;
+        mod shadow;
         mod speculation;
         mod time;
         #[cfg(target_os = "linux")]
