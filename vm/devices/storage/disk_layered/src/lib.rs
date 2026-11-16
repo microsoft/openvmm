@@ -833,8 +833,15 @@ impl DiskIo for LayeredDisk {
         sector_count: u64,
         block_level_only: bool,
     ) -> Result<(), DiskError> {
-        // Checked before the ignored case so that a read-only disk never
-        // reports a successful unmap.
+        // Check the range first, so an out-of-range request still fails with
+        // IllegalBlock. Then refuse writes on a read-only disk before the
+        // ignored case, so it never reports a successful unmap.
+        if sector_offset
+            .checked_add(sector_count)
+            .is_none_or(|end| end > self.sector_count())
+        {
+            return Err(DiskError::IllegalBlock);
+        }
         if self.read_only {
             return Err(DiskError::ReadOnly);
         }
@@ -1221,6 +1228,11 @@ mod tests {
             disk.unmap(0, 1, false).await,
             Err(disk_backend::DiskError::ReadOnly)
         ));
+        // The range check comes before the read-only refusal.
+        assert!(matches!(
+            disk.unmap(8, 1, false).await,
+            Err(disk_backend::DiskError::IllegalBlock)
+        ));
         assert_eq!(&cache.sectors.lock()[&0].0[..], &[0x5a; 512]);
     }
 
@@ -1245,6 +1257,22 @@ mod tests {
         assert!(matches!(
             disk.unmap(0, 1, false).await,
             Err(disk_backend::DiskError::ReadOnly)
+        ));
+        assert!(matches!(
+            disk.unmap(8, 1, false).await,
+            Err(disk_backend::DiskError::IllegalBlock)
+        ));
+
+        // `Disk` handles an ignored unmap without calling the backend, so it
+        // has to refuse it there too.
+        let disk = disk_backend::Disk::new(disk).unwrap();
+        assert!(matches!(
+            disk.unmap(0, 1, false).await,
+            Err(disk_backend::DiskError::ReadOnly)
+        ));
+        assert!(matches!(
+            disk.unmap(8, 1, false).await,
+            Err(disk_backend::DiskError::IllegalBlock)
         ));
     }
 
