@@ -1701,6 +1701,18 @@ impl UhProcessor<'_, SnpBacked> {
                 };
         }
 
+        let unrecoverable_exit = if has_intercept
+            && self.runner.exit_message().header.typ
+                == HvMessageType::HvMessageTypeUnrecoverableException
+        {
+            Some((
+                *self.runner.exit_message(),
+                *self.runner.offload_flags_mut(),
+            ))
+        } else {
+            None
+        };
+
         let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
 
         // Atomically test and set the guest busy bit. This prevents the untrusted
@@ -1708,6 +1720,108 @@ impl UhProcessor<'_, SnpBacked> {
         // is processing the exit.
         let was_busy = vmsa.guest_busy_bit_test_and_set();
         let exit_int_info_trace = SevEventInjectInfo::from(vmsa.exit_int_info());
+
+        // Capture the exit before reinjection, emulation, or an early return can
+        // change or discard the evidence. Only the guest busy bit has been set.
+        if let Some((message, returned_offload_flags)) = unrecoverable_exit {
+            let payload_len = usize::from(message.header.len);
+            let valid_payload_len = (size_of::<hvdef::HvX64UnrecoverableExceptionMessage>()
+                ..=message.payload_buffer.len())
+                .contains(&payload_len);
+            let intercept_header = valid_payload_len.then(|| {
+                &message
+                    .as_message::<hvdef::HvX64UnrecoverableExceptionMessage>()
+                    .header
+            });
+            tracelimit::error_ratelimited!(
+                CVM_ALLOWED,
+                vp_index = self.inner.vp_info.base.vp_index.index(),
+                ?entered_from_vtl,
+                message_header = ?message.header,
+                valid_payload_len,
+                was_busy,
+                ?activity,
+                current_activity = ?self.backing.cvm.lapics[entered_from_vtl].activity,
+                halt,
+                tlb_halt,
+                offload_enabled,
+                ?offload_flags,
+                ?returned_offload_flags,
+                lazy_eoi,
+                sev_error_code = ?SevExitCode(vmsa.guest_error_code()),
+                "SNP unrecoverable exception exit before SEV exit handling"
+            );
+            tracelimit::error_ratelimited!(
+                CVM_CONFIDENTIAL,
+                vp_index = self.inner.vp_info.base.vp_index.index(),
+                ?entered_from_vtl,
+                intercept_header = ?format_args!("{intercept_header:x?}"),
+                exit_info1 = vmsa.exit_info1(),
+                exit_info2 = vmsa.exit_info2(),
+                ?exit_int_info_trace,
+                event_inject = ?vmsa.event_inject(),
+                last_interrupt_ctrl = ?last_interrupt_ctrl,
+                interrupt_ctrl = ?vmsa.v_intr_cntrl(),
+                sev_features = ?vmsa.sev_features(),
+                secure_avic_control = ?vmsa.secure_avic_control(),
+                vmpl = vmsa.vmpl(),
+                cpl = vmsa.cpl(),
+                rip = vmsa.rip(),
+                next_rip = vmsa.next_rip(),
+                rsp = vmsa.rsp(),
+                rflags = vmsa.rflags(),
+                efer = vmsa.efer(),
+                cr0 = vmsa.cr0(),
+                cr2 = vmsa.cr2(),
+                cr3 = vmsa.cr3(),
+                cr4 = vmsa.cr4(),
+                cs = ?vmsa.cs(),
+                ss = ?vmsa.ss(),
+                gdtr = ?vmsa.gdtr(),
+                idtr = ?vmsa.idtr(),
+                virtual_tom = vmsa.virtual_tom(),
+                "SNP unrecoverable exception VMSA before SEV exit handling; Hyper-V intercept is untrusted"
+            );
+            tracelimit::error_ratelimited!(
+                CVM_CONFIDENTIAL,
+                vp_index = self.inner.vp_info.base.vp_index.index(),
+                ?entered_from_vtl,
+                rax = vmsa.rax(),
+                rbx = vmsa.rbx(),
+                rcx = vmsa.rcx(),
+                rdx = vmsa.rdx(),
+                rbp = vmsa.rbp(),
+                rsi = vmsa.rsi(),
+                rdi = vmsa.rdi(),
+                r8 = vmsa.r8(),
+                r9 = vmsa.r9(),
+                r10 = vmsa.r10(),
+                r11 = vmsa.r11(),
+                r12 = vmsa.r12(),
+                r13 = vmsa.r13(),
+                r14 = vmsa.r14(),
+                r15 = vmsa.r15(),
+                tr = ?vmsa.tr(),
+                ldtr = ?vmsa.ldtr(),
+                dr6 = vmsa.dr6(),
+                dr7 = vmsa.dr7(),
+                s_cet = vmsa.s_cet(),
+                u_cet = vmsa.u_cet(),
+                ssp = vmsa.ssp(),
+                "SNP unrecoverable exception general-purpose, task, debug, and CET registers before SEV exit handling"
+            );
+            tracelimit::error_ratelimited!(
+                CVM_CONFIDENTIAL,
+                vp_index = self.inner.vp_info.base.vp_index.index(),
+                ?entered_from_vtl,
+                payload = ?format_args!("{:02x?}", &message.payload_buffer[..payload_len.min(message.payload_buffer.len())]),
+                ds = ?vmsa.ds(),
+                es = ?vmsa.es(),
+                fs = ?vmsa.fs(),
+                gs = ?vmsa.gs(),
+                "SNP unrecoverable exception untrusted message payload and data segments before SEV exit handling"
+            );
+        }
 
         if was_busy {
             self.backing.general_stats[entered_from_vtl]
@@ -2267,93 +2381,6 @@ impl UhProcessor<'_, SnpBacked> {
                     // message for reflect #VC.
                 }
                 message_type => {
-                    if message_type == HvMessageType::HvMessageTypeUnrecoverableException {
-                        let returned_offload_flags = *self.runner.offload_flags_mut();
-                        let message = self.runner.exit_message();
-                        let intercept_header = &message
-                            .as_message::<hvdef::HvX64UnrecoverableExceptionMessage>()
-                            .header;
-                        let vmsa = self.runner.vmsa(entered_from_vtl);
-                        tracelimit::error_ratelimited!(
-                            CVM_ALLOWED,
-                            vp_index = self.inner.vp_info.base.vp_index.index(),
-                            ?entered_from_vtl,
-                            next_exit_vtl = ?self.backing.cvm.exit_vtl,
-                            message_header = ?message.header,
-                            was_busy,
-                            ?activity,
-                            current_activity = ?self.backing.cvm.lapics[entered_from_vtl].activity,
-                            halt,
-                            tlb_halt,
-                            offload_enabled,
-                            ?offload_flags,
-                            ?returned_offload_flags,
-                            lazy_eoi,
-                            "SNP unrecoverable exception exit"
-                        );
-                        // The VMSA reflects completed SEV exit handling; exit_int_info_trace
-                        // retains the interrupt information captured before reinjection.
-                        tracelimit::error_ratelimited!(
-                            CVM_ALLOWED,
-                            vp_index = self.inner.vp_info.base.vp_index.index(),
-                            ?entered_from_vtl,
-                            intercept_header = ?format_args!("{intercept_header:x?}"),
-                            ?sev_error_code,
-                            exit_info1 = vmsa.exit_info1(),
-                            exit_info2 = vmsa.exit_info2(),
-                            ?exit_int_info_trace,
-                            current_exit_int_info = ?SevEventInjectInfo::from(vmsa.exit_int_info()),
-                            event_inject = ?vmsa.event_inject(),
-                            last_interrupt_ctrl = ?last_interrupt_ctrl,
-                            interrupt_ctrl = ?vmsa.v_intr_cntrl(),
-                            sev_features = ?vmsa.sev_features(),
-                            secure_avic_control = ?vmsa.secure_avic_control(),
-                            vmpl = vmsa.vmpl(),
-                            cpl = vmsa.cpl(),
-                            rip = vmsa.rip(),
-                            next_rip = vmsa.next_rip(),
-                            rsp = vmsa.rsp(),
-                            rflags = vmsa.rflags(),
-                            efer = vmsa.efer(),
-                            cr0 = vmsa.cr0(),
-                            cr2 = vmsa.cr2(),
-                            cr3 = vmsa.cr3(),
-                            cr4 = vmsa.cr4(),
-                            cs = ?vmsa.cs(),
-                            ss = ?vmsa.ss(),
-                            gdtr = ?vmsa.gdtr(),
-                            idtr = ?vmsa.idtr(),
-                            "SNP unrecoverable exception VMSA after SEV exit handling and untrusted Hyper-V intercept"
-                        );
-                        tracelimit::error_ratelimited!(
-                            CVM_ALLOWED,
-                            vp_index = self.inner.vp_info.base.vp_index.index(),
-                            ?entered_from_vtl,
-                            rax = vmsa.rax(),
-                            rbx = vmsa.rbx(),
-                            rcx = vmsa.rcx(),
-                            rdx = vmsa.rdx(),
-                            rbp = vmsa.rbp(),
-                            rsi = vmsa.rsi(),
-                            rdi = vmsa.rdi(),
-                            r8 = vmsa.r8(),
-                            r9 = vmsa.r9(),
-                            r10 = vmsa.r10(),
-                            r11 = vmsa.r11(),
-                            r12 = vmsa.r12(),
-                            r13 = vmsa.r13(),
-                            r14 = vmsa.r14(),
-                            r15 = vmsa.r15(),
-                            tr = ?vmsa.tr(),
-                            ldtr = ?vmsa.ldtr(),
-                            dr6 = vmsa.dr6(),
-                            dr7 = vmsa.dr7(),
-                            s_cet = vmsa.s_cet(),
-                            u_cet = vmsa.u_cet(),
-                            ssp = vmsa.ssp(),
-                            "SNP unrecoverable exception general-purpose, task, debug, and CET registers after SEV exit handling"
-                        );
-                    }
                     tracelimit::error_ratelimited!(
                         CVM_ALLOWED,
                         ?message_type,
