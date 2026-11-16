@@ -619,8 +619,6 @@ enum Error {
     UnsupportedAtomicSize { current: usize, new: usize },
     #[error("compare-exchange spans noncontiguous guest physical pages")]
     NonContiguousAtomicAccess,
-    #[error("unaligned {len}-byte compare-exchange at GPA {gpa:#x}")]
-    UnalignedAtomicAccess { gpa: u64, len: usize },
 }
 
 /// Result of a gva translation in [`EmulatorCpu`]
@@ -971,8 +969,8 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             }
         }
 
-        // Monitor handling can consume the write; RAM otherwise needs a naturally
-        // aligned atomic compare-exchange, while device MMIO ignores the comparison.
+        // Monitor handling can consume the write; RAM otherwise needs an atomic
+        // compare-exchange, while device MMIO ignores the comparison.
         let success = if self
             .support
             .monitor_support()
@@ -980,14 +978,6 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         {
             true
         } else if self.support.is_gpa_mapped(gpa, true) {
-            // Some architectures cannot support unaligned atomics. Reject them
-            // consistently rather than splitting the access and losing atomicity.
-            if !gpa.is_multiple_of(new.len() as u64) {
-                return Err(Error::UnalignedAtomicAccess {
-                    gpa,
-                    len: new.len(),
-                });
-            }
             match (current.len(), new.len()) {
                 (1, 1) => self
                     .gm
@@ -1177,8 +1167,7 @@ fn inject_memory_access_fault<T: EmulatorSupport>(result: &Error, support: &mut 
         }
         Error::Memory(_)
         | Error::UnsupportedAtomicSize { .. }
-        | Error::NonContiguousAtomicAccess
-        | Error::UnalignedAtomicAccess { .. } => false,
+        | Error::NonContiguousAtomicAccess => false,
     }
 }
 
