@@ -1107,9 +1107,16 @@ struct SocketState {
 impl UnixSocket {
     fn new(driver: &dyn SpawnDriver, fd: Socket) -> Self {
         // Frame by the socket's actual type rather than the platform default.
-        let seqpacket = fd
-            .r#type()
-            .map_or(USE_SEQPACKET, |ty| ty == socket2::Type::SEQPACKET);
+        // Guessing would desynchronize the framing with the peer, so a type
+        // that cannot be read, or one that is neither kind, is a caller bug.
+        let ty = fd.r#type().expect("failed to read the socket type");
+        let seqpacket = if ty == socket2::Type::SEQPACKET {
+            true
+        } else if ty == socket2::Type::STREAM {
+            false
+        } else {
+            panic!("unsupported socket type {ty:?}");
+        };
         let socket = PolledSocket::new(driver, fd).unwrap();
         UnixSocket {
             state: Mutex::new(SocketState {
@@ -1815,6 +1822,22 @@ mod tests {
                     "{ty:?}: {err}"
                 );
             }
+        }
+
+        /// The framing follows the socket's own type, and a socket that is
+        /// neither SEQPACKET nor STREAM is refused rather than guessed at.
+        #[async_test]
+        async fn framing_follows_socket_type(driver: DefaultDriver) {
+            for ty in SOCKET_TYPES {
+                let (a, _b) = Socket::pair(Domain::UNIX, ty, None).unwrap();
+                let socket = UnixSocket::new(&driver, a);
+                assert_eq!(socket.seqpacket, ty == Type::SEQPACKET, "{ty:?}");
+            }
+            let (a, _b) = Socket::pair(Domain::UNIX, Type::DGRAM, None).unwrap();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                UnixSocket::new(&driver, a)
+            }));
+            assert!(result.is_err(), "a datagram socket must be refused");
         }
 
         /// While the send task is stuck between the pieces of a split event,
