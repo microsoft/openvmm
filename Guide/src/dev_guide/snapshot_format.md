@@ -369,20 +369,23 @@ KVM on an Intel CPU can hold an interrupt shadow of either kind, which the
 Boolean `interrupt_shadow` cannot say: the shadow that a `MOV SS` or `POP SS`
 leaves also blocks NMIs and suppresses certain debug exceptions at the next
 instruction boundary, and the one that an `STI` leaves, with `IF` clear, does
-not. A restore that is given no kind sets a `MOV SS` shadow, which errs on the
-safe side, so the activity records the kind in its optional field 8,
-`interrupt_shadow_kind`, when the shadow is an `STI` shadow:
+not. A restore of a shadow that is given no kind sets a `MOV SS` shadow, which
+errs on the safe side, and a restore of no shadow sets none, so the activity
+records the kind in its optional field 8, `interrupt_shadow_kind`, when the
+shadow is an `STI` shadow:
 
 - A saved state from a build that predates the field has none, and nor has a
   state whose shadow is a `MOV SS` shadow, or that has no shadow, so restoring
-  it sets a `MOV SS` shadow, as before, and a save encodes every such state byte
-  for byte as an earlier build did. Only KVM on an Intel CPU saves the field,
-  for an `STI` shadow. An AMD CPU has one kind of shadow, and the interrupt
-  state register of MSHV and WHP has one bit for both, so they save none.
+  it sets a `MOV SS` shadow if it has a shadow, and none if it has none, as
+  before, and a save encodes every such state byte for byte as an earlier build
+  did. Only KVM on an Intel CPU saves the field, for an `STI` shadow. An AMD CPU
+  has one kind of shadow, and the interrupt state register of MSHV and WHP has
+  one bit for both, so they save none.
 - A build that predates the field ignores it in a saved state from a later
   build, so it restores an `STI` shadow as a `MOV SS` shadow, as before: an NMI
-  or a debug exception that the `STI` shadow would let through waits for one
-  more instruction.
+  that the `STI` shadow would let through waits for one more instruction, and an
+  instruction breakpoint at that instruction, which a `MOV SS` shadow suppresses
+  on an Intel CPU and an `STI` shadow does not, is lost.
 
 A restore never drops a kind that it reads, but into AMD's one shadow. A backend
 that cannot hold the kind, MSHV, WHP, or OpenHCL's, refuses the activity, and
