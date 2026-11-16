@@ -316,44 +316,17 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         //      PIC interrupts are normally placed in the injected-interrupt
         //      slot instead, which is reported below as a pending
         //      interruption.
-        let event = if events.exception.pending != 0 {
-            Some(vp::PendingEvent::Exception {
-                vector: events.exception.nr,
-                error_code: (events.exception.has_error_code != 0)
-                    .then_some(events.exception.error_code),
-                parameter: if events.exception_has_payload != 0 {
-                    events.exception_payload
-                } else {
-                    0
-                },
-            })
-        } else {
-            None
-        };
-
-        let interruption = if events.exception.injected != 0 {
-            Some(vp::PendingInterruption::Exception {
-                vector: events.exception.nr,
-                error_code: (events.exception.has_error_code != 0)
-                    .then_some(events.exception.error_code),
-            })
-        } else if events.nmi.injected != 0 {
-            Some(vp::PendingInterruption::Nmi)
-        } else if events.interrupt.injected != 0 {
-            Some(vp::PendingInterruption::Interrupt {
-                vector: events.interrupt.nr,
-            })
-        } else {
-            None
-        };
-
+        //
+        // N.B. There is no pending event: an exception, whether KVM has
+        //      injected it or only queued it, is the pending interruption (see
+        //      `pending_interruption`).
         Ok(vp::Activity {
             mp_state,
             nmi_pending: events.nmi.pending != 0,
             nmi_masked: events.nmi.masked != 0,
             interrupt_shadow: events.interrupt.shadow != 0,
-            pending_event: event,
-            pending_interruption: interruption,
+            pending_event: None,
+            pending_interruption: pending_interruption(&events),
             // Linux before 6.4 reports only whether an NMI is pending, 0 or 1,
             // even when KVM holds two, so a save on such a host holds no count.
             nmi_pending_count: (events.nmi.pending > 1).then_some(events.nmi.pending),
@@ -371,21 +344,11 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             nmi_pending_count,
         } = *value;
 
-        // KVM can neither report nor withdraw an extint queued with
-        // KVM_INTERRUPT, so a restored one would be missing from the next save,
-        // and a reset could not discard it. Reject it before changing any
-        // activity state. KVM's own saved state never has one: injected PIC
-        // interrupts are saved as pending interruptions, and queued ones are
-        // not saved. Like any other restore error, this does not undo what
-        // restore_all restored before the activity, such as the registers.
-        if let Some(vp::PendingEvent::ExtInt { .. }) = pending_event {
-            return Err(KvmError::InvalidState(
-                "restoring a pending ExtINT is not supported",
-            ));
-        }
-
-        // Likewise, reject an injected soft exception before changing any
-        // activity state.
+        // Reject what KVM cannot restore before changing any activity state:
+        // a pending event that it cannot hold, and an injected soft exception.
+        // Like any other restore error, this does not undo what restore_all
+        // restored before the activity, such as the registers.
+        check_restorable_pending_event(pending_event, pending_interruption)?;
         check_restorable_interruption(pending_interruption)?;
 
         // And a count of pending NMIs that KVM would not hold.
@@ -442,23 +405,8 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             ..Default::default()
         };
 
-        match pending_event {
-            Some(vp::PendingEvent::Exception {
-                vector,
-                error_code,
-                parameter,
-            }) => {
-                events.exception.pending = true.into();
-                events.exception.nr = vector;
-                events.exception.has_error_code = error_code.is_some().into();
-                events.exception.error_code = error_code.unwrap_or(0);
-                // TODO
-                let _ = parameter;
-            }
-            // Rejected above.
-            Some(vp::PendingEvent::ExtInt { .. }) | None => {}
-        }
-
+        // The pending event is none, or the exception that the pending
+        // interruption holds too, which restores as that injected exception.
         match pending_interruption {
             Some(vp::PendingInterruption::Exception { vector, error_code }) => {
                 events.exception.injected = true.into();
@@ -807,6 +755,76 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 }
 
+/// Returns the pending interruption that `events` holds.
+///
+/// OpenVMM does not enable `KVM_CAP_EXCEPTION_PAYLOAD`, so
+/// `KVM_GET_VCPU_EVENTS` reports an exception that KVM has queued but not
+/// injected yet as pending and injected both, and `KVM_SET_VCPU_EVENTS`
+/// restores an exception only as injected, and drops one that it is given as
+/// pending. A queued exception is delivered when the VP next runs, as an
+/// injected one is, so an exception is the pending interruption alone, whether
+/// KVM has queued it or injected it, and the activity has no pending event for
+/// it.
+fn pending_interruption(events: &kvm::kvm_vcpu_events) -> Option<vp::PendingInterruption> {
+    if events.exception.injected != 0 || events.exception.pending != 0 {
+        Some(vp::PendingInterruption::Exception {
+            vector: events.exception.nr,
+            error_code: (events.exception.has_error_code != 0)
+                .then_some(events.exception.error_code),
+        })
+    } else if events.nmi.injected != 0 {
+        Some(vp::PendingInterruption::Nmi)
+    } else if events.interrupt.injected != 0 {
+        Some(vp::PendingInterruption::Interrupt {
+            vector: events.interrupt.nr,
+        })
+    } else {
+        None
+    }
+}
+
+/// Refuses a pending event that KVM cannot restore.
+///
+/// KVM can neither report nor withdraw an extint queued with `KVM_INTERRUPT`,
+/// so a restored one would be missing from the next save, and a reset could not
+/// discard it. KVM's own saved state never has one: injected PIC interrupts are
+/// saved as pending interruptions, and queued ones are not saved.
+///
+/// Without `KVM_CAP_EXCEPTION_PAYLOAD`, `KVM_SET_VCPU_EVENTS` restores an
+/// exception only as injected: it silently drops one that it is given as
+/// pending, and has no payload to take. So the one pending exception that a
+/// restore can give KVM is the injected exception itself, which an earlier save
+/// recorded for an exception that KVM had queued but not injected yet, as
+/// pending and injected both (see `pending_interruption`), and which restores
+/// once, as injected. Any other pending exception, whose vector or error code
+/// differs from the injected exception's, or that has a payload, comes only
+/// from a damaged or crafted saved state, and KVM would lose it.
+fn check_restorable_pending_event(
+    pending_event: Option<vp::PendingEvent>,
+    pending_interruption: Option<vp::PendingInterruption>,
+) -> Result<(), KvmError> {
+    match (pending_event, pending_interruption) {
+        (None, _) => Ok(()),
+        (Some(vp::PendingEvent::ExtInt { .. }), _) => Err(KvmError::InvalidState(
+            "restoring a pending ExtINT is not supported",
+        )),
+        (
+            Some(vp::PendingEvent::Exception {
+                vector,
+                error_code,
+                parameter: 0,
+            }),
+            Some(vp::PendingInterruption::Exception {
+                vector: injected_vector,
+                error_code: injected_error_code,
+            }),
+        ) if (vector, error_code) == (injected_vector, injected_error_code) => Ok(()),
+        (Some(vp::PendingEvent::Exception { .. }), _) => Err(KvmError::InvalidState(
+            "a pending exception other than the injected one, which KVM cannot restore",
+        )),
+    }
+}
+
 /// Refuses an injected soft exception, #BP or #OF, which KVM cannot restore.
 ///
 /// A soft exception needs the length of the instruction that raised it to be
@@ -924,14 +942,17 @@ mod tests {
     use super::check_restorable_apic_timer;
     use super::check_restorable_interruption;
     use super::check_restorable_nmi_count;
+    use super::check_restorable_pending_event;
     use super::check_restored_efer;
     use super::kvm_lapic_page;
+    use super::pending_interruption;
     use crate::KvmError;
     use test_with_tracing::test;
     use virt::CpuidLeaf;
     use virt::CpuidLeafSet;
     use virt::x86::vp::Activity;
     use virt::x86::vp::ApicRegisters;
+    use virt::x86::vp::PendingEvent;
     use virt::x86::vp::PendingInterruption;
     use x86defs::X64_EFER_LMA;
     use x86defs::X64_EFER_LME;
@@ -1192,6 +1213,153 @@ mod tests {
                 })
                 .unwrap();
             }
+        }
+    }
+
+    fn exception_events(
+        injected: bool,
+        pending: bool,
+        error_code: Option<u32>,
+    ) -> kvm::kvm_vcpu_events {
+        let mut events = kvm::kvm_vcpu_events::default();
+        events.exception.injected = injected.into();
+        events.exception.pending = pending.into();
+        events.exception.nr = 13;
+        events.exception.has_error_code = error_code.is_some().into();
+        events.exception.error_code = error_code.unwrap_or(0);
+        events
+    }
+
+    #[test]
+    fn a_queued_exception_is_saved_once() {
+        let gp = |error_code| {
+            Some(PendingInterruption::Exception {
+                vector: 13,
+                error_code,
+            })
+        };
+        for error_code in [None, Some(0), Some(0x10)] {
+            // Without KVM_CAP_EXCEPTION_PAYLOAD, KVM reports an exception that
+            // it has queued as pending and injected, and one that it has
+            // injected as injected. With it, KVM reports a queued exception as
+            // pending alone.
+            for (injected, pending) in [(true, false), (true, true), (false, true)] {
+                assert_eq!(
+                    pending_interruption(&exception_events(injected, pending, error_code)),
+                    gp(error_code),
+                    "injected {injected}, pending {pending}, error code {error_code:?}"
+                );
+            }
+        }
+        assert_eq!(
+            pending_interruption(&exception_events(false, false, Some(0))),
+            None,
+            "the vector and error code of an exception that KVM has not queued mean nothing"
+        );
+    }
+
+    #[test]
+    fn the_other_pending_interruptions_are_saved_as_before() {
+        assert_eq!(pending_interruption(&kvm::kvm_vcpu_events::default()), None);
+
+        let mut nmi = kvm::kvm_vcpu_events::default();
+        nmi.nmi.injected = 1;
+        assert_eq!(pending_interruption(&nmi), Some(PendingInterruption::Nmi));
+
+        let mut interrupt = kvm::kvm_vcpu_events::default();
+        interrupt.interrupt.injected = 1;
+        interrupt.interrupt.nr = 0x30;
+        assert_eq!(
+            pending_interruption(&interrupt),
+            Some(PendingInterruption::Interrupt { vector: 0x30 })
+        );
+
+        // An exception comes first, as before, then an NMI.
+        interrupt.nmi.injected = 1;
+        assert_eq!(
+            pending_interruption(&interrupt),
+            Some(PendingInterruption::Nmi)
+        );
+        interrupt.exception = exception_events(true, true, None).exception;
+        assert_eq!(
+            pending_interruption(&interrupt),
+            Some(PendingInterruption::Exception {
+                vector: 13,
+                error_code: None
+            })
+        );
+    }
+
+    #[test]
+    fn restore_of_a_pending_event_that_kvm_would_drop_is_refused() {
+        let pending = |vector, error_code, parameter| {
+            Some(PendingEvent::Exception {
+                vector,
+                error_code,
+                parameter,
+            })
+        };
+        let injected = |vector, error_code| {
+            Some(PendingInterruption::Exception { vector, error_code })
+        };
+        let refused = |pending_event, pending_interruption| {
+            matches!(
+                check_restorable_pending_event(pending_event, pending_interruption),
+                Err(KvmError::InvalidState(_))
+            )
+        };
+
+        // No pending event restores, whatever the interruption.
+        for pending_interruption in [
+            None,
+            injected(13, Some(0)),
+            Some(PendingInterruption::Interrupt { vector: 13 }),
+            Some(PendingInterruption::Nmi),
+        ] {
+            check_restorable_pending_event(None, pending_interruption).unwrap();
+        }
+
+        // An exception that an earlier save recorded as pending and injected
+        // both, with or without an error code, restores as the injected one.
+        for error_code in [None, Some(0), Some(0x10)] {
+            check_restorable_pending_event(
+                pending(13, error_code, 0),
+                injected(13, error_code),
+            )
+            .unwrap();
+        }
+
+        // Any other pending exception would be lost: one that is alone, one
+        // beside another interruption or another exception, and one with a
+        // payload.
+        for (pending_event, pending_interruption) in [
+            (pending(13, Some(0), 0), None),
+            (pending(13, Some(0), 0), injected(14, Some(0))),
+            (pending(13, Some(0), 0), injected(13, Some(1))),
+            (pending(13, Some(0), 0), injected(13, None)),
+            (pending(13, None, 0), injected(13, Some(0))),
+            (pending(13, Some(0), 1), injected(13, Some(0))),
+            (
+                pending(13, Some(0), 0),
+                Some(PendingInterruption::Interrupt { vector: 13 }),
+            ),
+            (pending(13, Some(0), 0), Some(PendingInterruption::Nmi)),
+            // A soft exception is never reported, in either form.
+            (pending(3, None, 0), None),
+            (pending(4, None, 0), None),
+        ] {
+            assert!(
+                refused(pending_event, pending_interruption),
+                "{pending_event:?}, {pending_interruption:?}"
+            );
+        }
+
+        // An extint is refused, whatever the interruption.
+        for pending_interruption in [None, injected(13, Some(0))] {
+            assert!(refused(
+                Some(PendingEvent::ExtInt { vector: 0x30 }),
+                pending_interruption
+            ));
         }
     }
 }
@@ -1518,5 +1686,82 @@ mod kvm_tests {
             (-100_000..20 * MS as i64).contains(&late_ns),
             "{late_ns} ns late"
         );
+    }
+}
+
+/// Tests against the host's KVM of what it reports and restores of an
+/// exception, which a VP's activity relies on.
+#[cfg(test)]
+mod exception_kvm_tests {
+    use super::pending_interruption;
+    use kvm::Kvm;
+    use kvm::VmType;
+    use kvm::kvm_vcpu_events;
+    use test_with_tracing::test;
+    use virt::x86::vp::PendingInterruption;
+
+    fn partition() -> kvm::Partition {
+        kvm::init();
+        let mut partition = Kvm::new().unwrap().new_vm(VmType::Default).unwrap();
+        partition.enable_split_irqchip(24).unwrap();
+        partition.add_vp(0).unwrap();
+        partition
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn kvm_reports_a_queued_exception_as_pending_and_injected() {
+        let partition = partition();
+        let vp = partition.vp(0);
+        // Queues a #DB, which KVM injects when the VP next runs.
+        vp.set_guest_debug(kvm::KVM_GUESTDBG_INJECT_DB, [0; 4], 0)
+            .unwrap();
+
+        let events = vp.get_vcpu_events().unwrap();
+        assert_eq!(
+            (
+                events.exception.injected,
+                events.exception.pending,
+                events.exception.nr
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            pending_interruption(&events),
+            Some(PendingInterruption::Exception {
+                vector: 1,
+                error_code: None
+            })
+        );
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn kvm_restores_an_exception_only_as_injected() {
+        // (injected, pending): an exception that KVM injected, one that it
+        // queued, as an earlier save recorded it, and a pending one alone.
+        for (injected, pending) in [(true, false), (true, true), (false, true)] {
+            let partition = partition();
+            let vp = partition.vp(0);
+            let mut events = kvm_vcpu_events::default();
+            events.exception.injected = injected.into();
+            events.exception.pending = pending.into();
+            events.exception.nr = 13;
+            events.exception.has_error_code = 1;
+            vp.set_vcpu_events(&events).unwrap();
+
+            let events = vp.get_vcpu_events().unwrap();
+            // KVM drops an exception that is only pending.
+            assert_eq!(
+                (events.exception.injected, events.exception.pending),
+                (u8::from(injected), 0),
+                "set injected {injected}, pending {pending}"
+            );
+            assert_eq!(
+                pending_interruption(&events).is_some(),
+                injected,
+                "set injected {injected}, pending {pending}"
+            );
+        }
     }
 }

@@ -362,3 +362,98 @@ petri::multitest!(vec![crate::native::kvm::test(
     },
     async |driver, mut hv| restores_two_pending_nmis(&Fixture::new(driver).await?, &mut hv),
 )]);
+
+// Without KVM_CAP_EXCEPTION_PAYLOAD, which OpenVMM does not enable,
+// KVM_SET_VCPU_EVENTS silently drops an exception that it is given as pending,
+// and an exception that it has not injected yet can only be restored as
+// injected. So the restore must refuse a pending exception that would be lost,
+// and leave the activity as it was.
+backend_test!(refuses_a_pending_exception_that_kvm_would_drop, kvm_only, requires: []);
+fn refuses_a_pending_exception_that_kvm_would_drop(
+    _partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let mut state = processor.access_state(Vtl::Vtl0);
+    let before = state.activity()?;
+
+    let pending = |vector, error_code, parameter| vp::PendingEvent::Exception {
+        vector,
+        error_code,
+        parameter,
+    };
+    let injected = |vector, error_code| vp::PendingInterruption::Exception { vector, error_code };
+    for (pending_event, pending_interruption) in [
+        // Alone, or beside an interruption that is not the same exception.
+        (pending(13, Some(0), 0), None),
+        (pending(13, Some(0), 0), Some(injected(14, Some(0)))),
+        (pending(13, Some(0), 0), Some(injected(13, Some(1)))),
+        (
+            pending(13, Some(0), 0),
+            Some(vp::PendingInterruption::Interrupt { vector: 0x30 }),
+        ),
+        (pending(13, Some(0), 0), Some(vp::PendingInterruption::Nmi)),
+        // With a payload, which KVM keeps no more than it keeps a pending
+        // exception.
+        (pending(14, Some(2), 0x1000), Some(injected(14, Some(2)))),
+    ] {
+        // The refused restore changes no activity, the halt included, which a
+        // restore that got as far as the MP state would have set.
+        let crafted = vp::Activity {
+            mp_state: vp::MpState::Halted,
+            pending_event: Some(pending_event),
+            pending_interruption,
+            ..Default::default()
+        };
+        anyhow::ensure!(
+            state.set_activity(&crafted).is_err(),
+            "restoring {crafted:?} succeeded"
+        );
+        anyhow::ensure!(
+            state.activity()? == before,
+            "the refused restore of {crafted:?} changed the activity"
+        );
+    }
+    Ok(())
+}
+
+// An earlier save recorded an exception that KVM had queued, but not injected
+// yet, as pending and injected both. KVM restores that exception once, as
+// injected, so it restores, and the next save records it as the pending
+// interruption alone.
+backend_test!(restores_a_queued_exception_as_injected, kvm_only, requires: []);
+fn restores_a_queued_exception_as_injected(
+    _partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let mut state = processor.access_state(Vtl::Vtl0);
+    for error_code in [None, Some(0)] {
+        let queued = vp::Activity {
+            pending_event: Some(vp::PendingEvent::Exception {
+                vector: 13,
+                error_code,
+                parameter: 0,
+            }),
+            pending_interruption: Some(vp::PendingInterruption::Exception {
+                vector: 13,
+                error_code,
+            }),
+            ..Default::default()
+        };
+        state
+            .set_activity(&queued)
+            .with_context(|| format!("restoring {queued:?} failed"))?;
+        let injected = vp::Activity {
+            pending_interruption: Some(vp::PendingInterruption::Exception {
+                vector: 13,
+                error_code,
+            }),
+            ..Default::default()
+        };
+        let restored = state.activity()?;
+        anyhow::ensure!(
+            restored == injected,
+            "restoring {queued:?} read back as {restored:?}, not as {injected:?}"
+        );
+    }
+    Ok(())
+}
