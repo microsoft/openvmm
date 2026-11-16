@@ -571,6 +571,8 @@ async fn locked_cross_page_memory() {
             )
             .await;
 
+            // Test expectations depend on host support for unaligned atomic accesses.
+            // xtask-fmt allow-target-arch cpu-intrinsic
             if bytes_in_first_page < 8 && (second_gpa == 0x3000 || !cfg!(target_arch = "x86_64")) {
                 assert!(matches!(
                     result,

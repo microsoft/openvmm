@@ -2990,6 +2990,8 @@ mod tests {
             gm.write_at(0, &expected).unwrap();
 
             let result = view.compare_exchange(gpa, u64::from_ne_bytes([0xa5; 8]), NEW);
+            // Test expectations depend on host support for unaligned atomic accesses.
+            // xtask-fmt allow-target-arch cpu-intrinsic
             if !cfg!(target_arch = "x86_64") && !(offset + gpa).is_multiple_of(8) {
                 let error = result.unwrap_err();
                 let source = std::error::Error::source(&error)
