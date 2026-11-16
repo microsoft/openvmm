@@ -3,39 +3,372 @@
 
 //! Test entrypoint for running OpenTMK guest tests.
 //!
-//! Each test boots a VM with a specific OpenTMK test selection patched in by
-//! [`petri::UefiGuest::opentmk`], waits for the guest to stream its results
-//! over COM1, and asserts every check passed.
+//! Each test boots a UEFI VM with a per-test [`opentmk_protocol::TestConfig`]
+//! patched into `opentmk.efi`, streams the guest's `COM1` output through
+//! [`petri::PetriVm::com1`], and drives [`OpenTmkRunner`] (with optional
+//! pre-boot, per-event, and post-run hooks) before tearing down the VM.
 
 #![forbid(unsafe_code)]
-// The shared helpers below are referenced only by platform-gated test modules.
-#![cfg_attr(not(windows), allow(dead_code))]
+// Shared runner helpers are currently exercised by Windows Hyper-V tests.
+#![cfg_attr(not(windows), expect(dead_code))]
 
+use anyhow::Context as _;
+use futures::StreamExt as _;
+use opentmk_protocol::OpenTmkEvent;
+use opentmk_protocol::OpenTmkRun;
+use opentmk_protocol::TestConfig;
+use petri::PetriLogFile;
+use petri::PetriVm;
 use petri::PetriVmArtifacts;
+use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
+use petri::ProcessorTopology;
 use petri_artifacts_common::tags::MachineArch;
+use std::sync::Arc;
 use std::time::Duration;
+use tracing::Level;
 
-/// VP count the guest-side tests assert on.
+/// Default VP count the guest-side OpenTMK tests assert on.
 const OPENTMK_VP_COUNT: u32 = 4;
 
-/// How long to wait for the guest to stream its results before giving up.
+/// Default deadline for an OpenTMK guest to finish streaming results over COM1.
 const OPENTMK_TIMEOUT: Duration = Duration::from_secs(240);
 
-/// Artifacts required to boot an OpenTMK UEFI guest on backend `T`.
-struct OpentmkArtifacts<T: PetriVmmBackend> {
-    vm: PetriVmArtifacts<T>,
-    /// Whether to attach a vTPM to the VM. Required by the `hv_tpm_*` scenarios,
-    /// which expect UEFI to expose the TCG protocol and a TPM command buffer.
-    tpm: bool,
+/// Control flow returned by an [`OpenTmkRunner::on_event`] hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookFlow {
+    /// Continue scanning COM1 (stops automatically once `TEST_END` is seen).
+    Continue,
+    /// Stop scanning COM1 immediately and proceed to `on_complete` and teardown.
+    Stop,
 }
 
-/// Build the embedded config for `test`. Must match `opentmk_protocol::TestConfig`.
+/// Async event hook invoked for each parsed [`OpenTmkEvent`] streamed over COM1.
+trait EventHook<T: PetriVmmBackend> {
+    async fn on_event(
+        &mut self,
+        vm: &mut PetriVm<T>,
+        event: &OpenTmkEvent,
+        run: &mut OpenTmkRun,
+    ) -> anyhow::Result<HookFlow>;
+}
+
+struct NoopEventHook;
+
+impl<T: PetriVmmBackend> EventHook<T> for NoopEventHook {
+    async fn on_event(
+        &mut self,
+        _vm: &mut PetriVm<T>,
+        _event: &OpenTmkEvent,
+        _run: &mut OpenTmkRun,
+    ) -> anyhow::Result<HookFlow> {
+        Ok(HookFlow::Continue)
+    }
+}
+
+struct FnEventHook<F>(F);
+
+impl<T, F> EventHook<T> for FnEventHook<F>
+where
+    T: PetriVmmBackend,
+    F: AsyncFnMut(&mut PetriVm<T>, &OpenTmkEvent, &mut OpenTmkRun) -> anyhow::Result<HookFlow>,
+{
+    async fn on_event(
+        &mut self,
+        vm: &mut PetriVm<T>,
+        event: &OpenTmkEvent,
+        run: &mut OpenTmkRun,
+    ) -> anyhow::Result<HookFlow> {
+        (self.0)(vm, event, run).await
+    }
+}
+
+/// Async completion hook invoked after COM1 scanning finishes and before VM teardown.
+trait CompleteHook<T: PetriVmmBackend> {
+    async fn on_complete(self, vm: &mut PetriVm<T>, run: &OpenTmkRun) -> anyhow::Result<()>;
+}
+
+struct DefaultCompleteHook;
+
+impl<T: PetriVmmBackend> CompleteHook<T> for DefaultCompleteHook {
+    async fn on_complete(self, _vm: &mut PetriVm<T>, run: &OpenTmkRun) -> anyhow::Result<()> {
+        run.evaluate().map_err(Into::into)
+    }
+}
+
+struct FnCompleteHook<F>(F);
+
+impl<T, F> CompleteHook<T> for FnCompleteHook<F>
+where
+    T: PetriVmmBackend,
+    F: AsyncFnOnce(&mut PetriVm<T>, &OpenTmkRun) -> anyhow::Result<()>,
+{
+    async fn on_complete(self, vm: &mut PetriVm<T>, run: &OpenTmkRun) -> anyhow::Result<()> {
+        (self.0)(vm, run).await
+    }
+}
+
+/// Test-side driver for booting an OpenTMK guest, following `vm.com1()`, and
+/// running custom host hooks.
+struct OpenTmkRunner<'a, T: PetriVmmBackend, E = NoopEventHook, C = DefaultCompleteHook> {
+    params: petri::PetriTestParams<'a>,
+    vm_artifacts: PetriVmArtifacts<T>,
+    timeout: Duration,
+    configure: Option<Box<dyn FnOnce(PetriVmBuilder<T>) -> PetriVmBuilder<T> + 'a>>,
+    on_event: E,
+    on_complete: C,
+}
+
+impl<'a, T: PetriVmmBackend> OpenTmkRunner<'a, T, NoopEventHook, DefaultCompleteHook> {
+    /// Creates a runner with default timeout, 4 VPs, no event hook, and default
+    /// pass/fail evaluation.
+    fn new(params: petri::PetriTestParams<'a>, vm_artifacts: PetriVmArtifacts<T>) -> Self {
+        Self {
+            params,
+            vm_artifacts,
+            timeout: OPENTMK_TIMEOUT,
+            configure: None,
+            on_event: NoopEventHook,
+            on_complete: DefaultCompleteHook,
+        }
+    }
+}
+
+impl<'a, T: PetriVmmBackend, E, C> OpenTmkRunner<'a, T, E, C> {
+    /// Overrides the maximum duration to wait for OpenTMK COM1 output.
+    #[expect(dead_code, reason = "hook API for custom OpenTMK tests")]
+    fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Customizes the [`PetriVmBuilder`] prior to booting the VM (e.g. enabling
+    /// a vTPM, adjusting topology, or setting OpenHCL command-line flags).
+    #[expect(dead_code, reason = "hook API for custom OpenTMK tests")]
+    fn configure(mut self, f: impl FnOnce(PetriVmBuilder<T>) -> PetriVmBuilder<T> + 'a) -> Self {
+        self.configure = Some(Box::new(f));
+        self
+    }
+
+    /// Registers an async hook invoked for every [`OpenTmkEvent`] parsed from
+    /// `COM1` while the VM is running.
+    #[expect(dead_code, reason = "hook API for custom OpenTMK tests")]
+    fn on_event<F>(self, f: F) -> OpenTmkRunner<'a, T, FnEventHook<F>, C>
+    where
+        F: AsyncFnMut(&mut PetriVm<T>, &OpenTmkEvent, &mut OpenTmkRun) -> anyhow::Result<HookFlow>,
+    {
+        OpenTmkRunner {
+            params: self.params,
+            vm_artifacts: self.vm_artifacts,
+            timeout: self.timeout,
+            configure: self.configure,
+            on_event: FnEventHook(f),
+            on_complete: self.on_complete,
+        }
+    }
+
+    /// Registers an async completion hook invoked after COM1 scanning ends and
+    /// before VM teardown, replacing default `OpenTmkRun::evaluate` validation.
+    #[expect(dead_code, reason = "hook API for custom OpenTMK tests")]
+    fn on_complete<F>(self, f: F) -> OpenTmkRunner<'a, T, E, FnCompleteHook<F>>
+    where
+        F: AsyncFnOnce(&mut PetriVm<T>, &OpenTmkRun) -> anyhow::Result<()>,
+    {
+        OpenTmkRunner {
+            params: self.params,
+            vm_artifacts: self.vm_artifacts,
+            timeout: self.timeout,
+            configure: self.configure,
+            on_event: self.on_event,
+            on_complete: FnCompleteHook(f),
+        }
+    }
+
+    /// Boots the OpenTMK guest, streams `COM1` events through any registered
+    /// hooks, runs completion evaluation, and tears down the VM.
+    fn run(self) -> anyhow::Result<()>
+    where
+        E: EventHook<T>,
+        C: CompleteHook<T>,
+    {
+        pal_async::DefaultPool::run_with(async |driver| {
+            let opentmk_log = self.params.log_source.log_file("opentmk")?;
+            let mut builder = PetriVmBuilder::new(self.params, self.vm_artifacts, &driver)?
+                .with_expect_no_boot_event()
+                .with_processor_topology(ProcessorTopology {
+                    vp_count: OPENTMK_VP_COUNT,
+                    ..Default::default()
+                });
+            if let Some(configure) = self.configure {
+                builder = configure(builder);
+            }
+
+            let mut vm = builder.run_without_agent().await?;
+            let mut com1 = vm.com1()?;
+            let mut run = OpenTmkRun::default();
+            let mut on_event = self.on_event;
+            let on_complete = self.on_complete;
+            let timeout = self.timeout;
+
+            // Capture the scan/evaluation result so teardown always runs even on
+            // failure: OpenTMK spins after TEST_END rather than powering off.
+            let result: anyhow::Result<()> = async {
+                let timed = mesh::CancelContext::new()
+                    .with_timeout(timeout)
+                    .until_cancelled(async {
+                        while let Some(line) = com1.next().await {
+                            let line = line.trim_end();
+                            if line.is_empty() {
+                                continue;
+                            }
+                            let event = run.apply_line(line);
+                            log_opentmk_event(&opentmk_log, &event);
+
+                            if on_event.on_event(&mut vm, &event, &mut run).await? == HookFlow::Stop
+                            {
+                                break;
+                            }
+                            if run.ended {
+                                break;
+                            }
+                        }
+                        anyhow::Ok(())
+                    })
+                    .await;
+
+                match timed {
+                    Ok(inner) => inner?,
+                    Err(_) => {
+                        opentmk_log.write_entry_fmt(
+                            None,
+                            Level::ERROR,
+                            format_args!("OpenTMK COM1 scan timed out after {timeout:?}"),
+                        );
+                    }
+                }
+
+                on_complete.on_complete(&mut vm, &run).await
+            }
+            .await;
+
+            let teardown_result = vm.teardown().await;
+            result.and(teardown_result)
+        })
+    }
+}
+
+/// Maps an OpenTMK `log::Level` string to a tracing [`Level`].
+fn opentmk_level_to_tracing(level: &str) -> Level {
+    match level {
+        "ERROR" => Level::ERROR,
+        "WARN" => Level::WARN,
+        "INFO" => Level::INFO,
+        "DEBUG" => Level::DEBUG,
+        "TRACE" => Level::TRACE,
+        _ => Level::INFO,
+    }
+}
+
+/// Formats and writes structured [`OpenTmkEvent`] entries to `opentmk.log`.
+///
+/// [`OpenTmkEvent::Raw`] lines (such as UEFI firmware output) are omitted here
+/// because Petri already records raw `COM1` output in `guest.log` / `uefi.log`.
+fn log_opentmk_event(log_file: &PetriLogFile, event: &OpenTmkEvent) {
+    let format_loc = |msg: &str, line: &str| {
+        if line.is_empty() {
+            msg.to_owned()
+        } else {
+            format!("{msg} ({line})")
+        }
+    };
+
+    match event {
+        OpenTmkEvent::TestStart { line } => {
+            log_file.write_entry_fmt(
+                None,
+                Level::INFO,
+                format_args!("{}", format_loc(opentmk_protocol::TEST_START, line)),
+            );
+        }
+        OpenTmkEvent::TestEnd { line } => {
+            log_file.write_entry_fmt(
+                None,
+                Level::INFO,
+                format_args!("{}", format_loc(opentmk_protocol::TEST_END, line)),
+            );
+        }
+        OpenTmkEvent::Log {
+            level,
+            message,
+            line,
+        } => {
+            log_file.write_entry_fmt(
+                None,
+                opentmk_level_to_tracing(level),
+                format_args!("{}", format_loc(message, line)),
+            );
+        }
+        OpenTmkEvent::Panic { message, line } => {
+            log_file.write_entry_fmt(
+                None,
+                Level::ERROR,
+                format_args!("{}", format_loc(message, line)),
+            );
+        }
+        OpenTmkEvent::Assert {
+            expression,
+            description,
+            passed,
+            line,
+        } => {
+            let level = if *passed { Level::INFO } else { Level::ERROR };
+            let status = if *passed { "pass" } else { "FAIL" };
+            let body = if description.is_empty() {
+                format!("assert [{status}] {expression}")
+            } else {
+                format!("assert [{status}] {expression}: {description}")
+            };
+            log_file.write_entry_fmt(None, level, format_args!("{}", format_loc(&body, line)));
+        }
+        OpenTmkEvent::Raw(_) => {}
+    }
+}
+
+/// Serializes the embedded [`TestConfig`] payload for `test`.
 fn opentmk_config_json(test: &str) -> Vec<u8> {
-    // Build via serde_json so the test name is escaped and the payload stays
-    // well-formed if fields are added.
-    serde_json::to_vec(&serde_json::json!({ "backend": "hyperv", "test": test }))
-        .expect("opentmk config serialization cannot fail")
+    serde_json::to_vec(&TestConfig {
+        version: 1,
+        backend: "hyperv".to_owned(),
+        test: test.to_owned(),
+        params: serde_json::Value::Null,
+    })
+    .expect("opentmk config serialization cannot fail")
+}
+
+/// Constructs a lazy [`petri::UefiGuest::CustomDisk`] that patches `config_json`
+/// into the architecture-matched `opentmk.efi` artifact and packages it into a
+/// bootable FAT32 VHD.
+fn opentmk_uefi_guest(
+    resolver: &petri::ArtifactResolver<'_>,
+    arch: MachineArch,
+    config_json: Vec<u8>,
+) -> petri::UefiGuest {
+    use petri_artifacts_vmm_test::artifacts::opentmk::*;
+    let efi = match arch {
+        MachineArch::X86_64 => resolver.require(OPENTMK_EFI_X64).erase(),
+        MachineArch::Aarch64 => resolver.require(OPENTMK_EFI_AARCH64).erase(),
+    };
+    petri::UefiGuest::CustomDisk(petri::CustomUefiDisk::new(move || {
+        let efi_bytes = fs_err::read(efi.get()).context("failed to read opentmk.efi")?;
+        let disk_arch = match arch {
+            MachineArch::X86_64 => opentmk_disk::Arch::X86_64,
+            MachineArch::Aarch64 => opentmk_disk::Arch::Aarch64,
+        };
+        let image =
+            opentmk_disk::build_opentmk_vhd_with_config(&efi_bytes, disk_arch, &config_json)
+                .context("failed to build opentmk boot VHD")?;
+        Ok(petri::Disk::Temporary(Arc::new(image.into_temp_path())))
+    }))
 }
 
 /// Build the host requirements for an OpenTMK test with the given `isolation`.
@@ -65,64 +398,28 @@ fn opentmk_requirements(
 
 /// Resolve the artifacts to boot OpenTMK under OpenHCL, optionally as a
 /// confidential VM. Returns `None` if the host can't run it (non-x86_64).
-///
-/// `tpm` attaches a vTPM to the VM.
 fn resolve_opentmk_openhcl<T: PetriVmmBackend>(
     resolver: &petri::ArtifactResolver<'_>,
     test: &str,
     isolation: Option<petri::IsolationType>,
-    tpm: bool,
-) -> Option<OpentmkArtifacts<T>> {
+) -> Option<PetriVmArtifacts<T>> {
     let arch = MachineArch::host();
     if arch != MachineArch::X86_64 {
         return None;
     }
-    let guest = petri::UefiGuest::opentmk(resolver, arch, &opentmk_config_json(test));
-    let vm = PetriVmArtifacts::new(
+    let guest = opentmk_uefi_guest(resolver, arch, opentmk_config_json(test));
+    PetriVmArtifacts::new(
         resolver,
         petri::Firmware::openhcl_uefi(resolver, arch, guest, isolation),
         arch,
         false,
-    )?;
-    Some(OpentmkArtifacts { vm, tpm })
-}
-
-/// Boot the OpenTMK guest, wait for its COM1 results, and assert every check passed.
-fn run_opentmk_uefi<T: PetriVmmBackend>(
-    params: petri::PetriTestParams<'_>,
-    artifacts: OpentmkArtifacts<T>,
-) -> anyhow::Result<()> {
-    use petri::PetriVmBuilder;
-    use petri::ProcessorTopology;
-    pal_async::DefaultPool::run_with(async |driver| {
-        let mut builder = PetriVmBuilder::new(params, artifacts.vm, &driver)?
-            .with_expect_no_boot_event()
-            .with_processor_topology(ProcessorTopology {
-                vp_count: OPENTMK_VP_COUNT,
-                ..Default::default()
-            });
-        if artifacts.tpm {
-            builder = builder.with_tpm(true);
-        }
-        let mut vm = builder.run_without_agent().await?;
-
-        // Capture the result so teardown always runs, even on failure: OpenTMK
-        // never powers the guest off, so we must not leak a running VM.
-        let result = vm
-            .wait_for_opentmk(OPENTMK_TIMEOUT)
-            .await
-            .and_then(|run| petri::opentmk::evaluate(&run));
-
-        vm.teardown().await?;
-
-        result
-    })
+    )
 }
 
 #[cfg(windows)]
 mod hyperv {
+    use crate::OpenTmkRunner;
     use crate::resolve_opentmk_openhcl;
-    use crate::run_opentmk_uefi;
     use petri::IsolationType;
     use petri::hyperv::HyperVPetriBackend;
 
@@ -143,29 +440,30 @@ mod hyperv {
     }
 
     /// Defines one OpenHCL OpenTMK test per isolation token in the `[..]` list,
-    /// all running the guest-internal scenario `$test`.
-    ///
-    /// Each generated test is named `$base` plus the isolation suffix (`none`
-    /// gets no suffix). `$tpm` attaches a vTPM to the VM.
+    /// all running the guest-internal scenario `$test`, with an optional runner
+    /// customization closure (`|runner| runner.configure(...)...`).
     macro_rules! opentmk_test {
-        ($base:literal, $test:literal, $tpm:expr, [$($iso:tt),+ $(,)?]) => {
+        ($base:literal, $test:literal, [$($iso:tt),+ $(,)?]) => {
+            opentmk_test!($base, $test, [$($iso),+], |runner| runner);
+        };
+        ($base:literal, $test:literal, [$($iso:tt),+ $(,)?], |$runner:ident| $customize:expr) => {
             ::petri::multitest!(vec![
-                $( opentmk_test!(@case $base, $test, $tpm, $iso) ),+
+                $( opentmk_test!(@case $base, $test, $iso, |$runner| $customize) ),+
             ]);
         };
-        (@case $base:literal, $test:literal, $tpm:expr, none) => {
-            opentmk_test!(@build concat!($base), $test, $tpm, none)
+        (@case $base:literal, $test:literal, none, |$runner:ident| $customize:expr) => {
+            opentmk_test!(@build concat!($base), $test, none, |$runner| $customize)
         };
-        (@case $base:literal, $test:literal, $tpm:expr, vbs) => {
-            opentmk_test!(@build concat!($base, "_vbs"), $test, $tpm, vbs)
+        (@case $base:literal, $test:literal, vbs, |$runner:ident| $customize:expr) => {
+            opentmk_test!(@build concat!($base, "_vbs"), $test, vbs, |$runner| $customize)
         };
-        (@case $base:literal, $test:literal, $tpm:expr, snp) => {
-            opentmk_test!(@build concat!($base, "_snp"), $test, $tpm, snp)
+        (@case $base:literal, $test:literal, snp, |$runner:ident| $customize:expr) => {
+            opentmk_test!(@build concat!($base, "_snp"), $test, snp, |$runner| $customize)
         };
-        (@case $base:literal, $test:literal, $tpm:expr, tdx) => {
-            opentmk_test!(@build concat!($base, "_tdx"), $test, $tpm, tdx)
+        (@case $base:literal, $test:literal, tdx, |$runner:ident| $customize:expr) => {
+            opentmk_test!(@build concat!($base, "_tdx"), $test, tdx, |$runner| $customize)
         };
-        (@build $name:expr, $test:literal, $tpm:expr, $iso:tt) => {
+        (@build $name:expr, $test:literal, $iso:tt, |$runner:ident| $customize:expr) => {
             ::petri::SimpleTest::new_sync(
                 $name,
                 |resolver| {
@@ -173,10 +471,12 @@ mod hyperv {
                         resolver,
                         $test,
                         opentmk_isolation!($iso),
-                        $tpm,
                     )
                 },
-                run_opentmk_uefi::<HyperVPetriBackend>,
+                |params, artifacts| {
+                    let $runner = OpenTmkRunner::new(params, artifacts);
+                    ($customize).run()
+                },
             )
             .requirements(crate::opentmk_requirements(opentmk_isolation!($iso)))
             .into()
@@ -186,29 +486,28 @@ mod hyperv {
     opentmk_test!(
         "opentmk_hyperv_openhcl_uefi_x64",
         "hv_processor",
-        false,
         [none, vbs, snp, tdx]
     );
 
     opentmk_test!(
         "opentmk_hyperv_openhcl_memory_protect_read",
         "hv_memory_protect_read",
-        false,
         [none, vbs, snp, tdx]
     );
+
     opentmk_test!(
         "opentmk_hyperv_openhcl_memory_protect_write",
         "hv_memory_protect_write",
-        false,
         [none, vbs, snp, tdx]
     );
+
     opentmk_test!(
         "opentmk_hyperv_openhcl_register_intercept",
         "hv_register_intercept",
-        false,
         [none, vbs, snp, tdx]
     );
 }
+
 #[cfg(windows)]
 fn main() {
     petri::test_main(|name, requirements| {

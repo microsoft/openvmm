@@ -4,7 +4,7 @@
 #![cfg(target_os = "uefi")]
 #[panic_handler]
 fn panic_handler(panic: &core::panic::PanicInfo<'_>) -> ! {
-    log::error!("Panic at runtime: {}", panic);
-    log::warn!("TEST_END");
+    log::error!("{}: {}", opentmk_protocol::PANIC_PREFIX, panic);
+    log::warn!("{}", opentmk_protocol::TEST_END);
     loop {}
 }

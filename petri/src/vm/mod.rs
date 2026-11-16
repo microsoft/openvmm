@@ -412,6 +412,8 @@ pub struct PetriVmResources {
     pub log_source: PetriLogSource,
     /// Pre-built initrd with pipette already injected (skips runtime injection).
     pub prebuilt_initrd: Option<PetriInitrd>,
+    /// Log file capturing the guest's COM1 serial output, if serial logging is configured.
+    pub com1_log: std::sync::OnceLock<crate::PetriLogFile>,
 }
 
 /// Trait for VMM-specific contruction and runtime resources
@@ -730,6 +732,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 driver: driver.clone(),
                 log_source: log_source.clone(),
                 prebuilt_initrd: None,
+                com1_log: std::sync::OnceLock::new(),
             },
 
             guest_quirks,
@@ -2381,6 +2384,19 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.openhcl_diag()?.kmsg().await
     }
 
+    /// Subscribe to the guest's COM1 serial output stream.
+    ///
+    /// Replays buffered lines emitted since boot and streams new lines as they
+    /// arrive. Fails if serial output was not enabled for this VM.
+    pub fn com1(&self) -> anyhow::Result<crate::PetriLogStream> {
+        let log_file = self
+            .resources
+            .com1_log
+            .get()
+            .context("COM1 serial logging is not enabled for this VM")?;
+        Ok(log_file.subscribe())
+    }
+
     /// Gets a live core dump of the OpenHCL process specified by 'name' and
     /// writes it to 'path'
     pub async fn openhcl_core_dump(&self, name: &str, path: &Path) -> anyhow::Result<()> {
@@ -2573,16 +2589,6 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Hot-remove a PCIe device from a named port at runtime.
     pub async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
         self.runtime.remove_pcie_device(port_name).await
-    }
-
-    /// Scan the guest's COM1 output for OpenTMK results, returning once the run
-    /// completes or `timeout` elapses. Requires a [`UefiGuest::OpenTmk`] guest.
-    pub async fn wait_for_opentmk(
-        &mut self,
-        timeout: Duration,
-    ) -> anyhow::Result<crate::opentmk::OpenTmkRun> {
-        tracing::info!("Waiting for OpenTMK results on COM1...");
-        self.runtime.wait_for_opentmk(timeout).await
     }
 
     /// Instruct the OpenHCL to save the state of the VTL2 paravisor. Will fail if the VM
@@ -2883,15 +2889,6 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
         let _ = port_name;
         anyhow::bail!("PCIe hotplug not supported by this backend")
-    }
-    /// Scan the guest's COM1 output for OpenTMK results, returning once the run
-    /// completes or `timeout` elapses.
-    async fn wait_for_opentmk(
-        &mut self,
-        timeout: Duration,
-    ) -> anyhow::Result<crate::opentmk::OpenTmkRun> {
-        let _ = timeout;
-        anyhow::bail!("OpenTMK serial capture not supported by this backend")
     }
 }
 
@@ -3610,22 +3607,6 @@ impl Firmware {
         }
     }
 
-    /// Whether the guest is an OpenTMK test image (results streamed over COM1).
-    // Dead code attribute will be removed with on integration with openvmm on linux
-    #[cfg_attr(not(windows), expect(dead_code))]
-    pub(crate) fn is_opentmk(&self) -> bool {
-        matches!(
-            self,
-            Firmware::Uefi {
-                guest: UefiGuest::OpenTmk(_),
-                ..
-            } | Firmware::OpenhclUefi {
-                guest: UefiGuest::OpenTmk(_),
-                ..
-            }
-        )
-    }
-
     fn os_flavor(&self) -> OsFlavor {
         match self {
             Firmware::LinuxDirect { .. }
@@ -3640,11 +3621,11 @@ impl Firmware {
             }
             | Firmware::IgvmLinuxDirect { .. } => OsFlavor::Linux,
             Firmware::Uefi {
-                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::OpenTmk(_) | UefiGuest::None,
+                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::CustomDisk(_) | UefiGuest::None,
                 ..
             }
             | Firmware::OpenhclUefi {
-                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::OpenTmk(_) | UefiGuest::None,
+                guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::CustomDisk(_) | UefiGuest::None,
                 ..
             } => OsFlavor::Uefi,
             Firmware::Pcat {
@@ -3702,11 +3683,11 @@ impl Firmware {
             | Firmware::IgvmLinuxDirect { .. }
             | Firmware::OpenhclLinuxDirect { .. }
             | Firmware::Uefi {
-                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::OpenTmk(_),
+                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::CustomDisk(_),
                 ..
             }
             | Firmware::OpenhclUefi {
-                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::OpenTmk(_),
+                guest: UefiGuest::GuestTestUefi(_) | UefiGuest::CustomDisk(_),
                 ..
             } => None,
             Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => {
@@ -3841,16 +3822,16 @@ impl Firmware {
             )));
         }
         if let Firmware::Uefi {
-            guest: UefiGuest::OpenTmk(guest),
+            guest: UefiGuest::CustomDisk(custom),
             ..
         }
         | Firmware::OpenhclUefi {
-            guest: UefiGuest::OpenTmk(guest),
+            guest: UefiGuest::CustomDisk(custom),
             ..
         } = self
         {
             return Ok(Some(Drive::new(
-                Some(Disk::Temporary(guest.image())),
+                Some(custom.build().context("building custom UEFI boot disk")?),
                 false,
             )));
         }
@@ -3926,43 +3907,38 @@ pub enum UefiGuest {
     Vhd(BootImageConfig<boot_image_type::Vhd>),
     /// The UEFI test image produced by our guest-test infrastructure.
     GuestTestUefi(ResolvedArtifact),
-    /// The OpenTMK UEFI test application, booted from a runtime-built disk image.
-    OpenTmk(OpenTmkGuest),
+    /// A UEFI guest boot disk built lazily at test runtime from resolved artifacts.
+    CustomDisk(CustomUefiDisk),
     /// No guest, just the firmware.
     None,
 }
 
-/// A lazily-built OpenTMK boot disk.
-///
-/// Holds the `.efi` artifact and per-test config to patch into it. The VHD is
-/// built the first time the boot drive is requested and deleted on drop.
-#[derive(Debug, Clone)]
-pub struct OpenTmkGuest {
-    efi: ResolvedArtifact,
-    arch: MachineArch,
-    config_json: Vec<u8>,
-    image: Arc<std::sync::OnceLock<Arc<TempPath>>>,
+/// A UEFI guest boot disk constructed lazily when the VM's boot drive is built.
+#[derive(Clone)]
+pub struct CustomUefiDisk {
+    builder: Arc<dyn Fn() -> anyhow::Result<Disk> + Send + Sync>,
 }
 
-impl OpenTmkGuest {
-    /// Build (once) and return the bootable OpenTMK VHD.
+impl Debug for CustomUefiDisk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomUefiDisk").finish_non_exhaustive()
+    }
+}
+
+impl CustomUefiDisk {
+    /// Create a lazy UEFI boot disk builder.
     ///
-    /// Panics on read/patch/build failure: these are test-setup failures on
-    /// trusted artifacts, so failing fast keeps the boot-drive path infallible.
-    fn image(&self) -> Arc<TempPath> {
-        self.image
-            .get_or_init(|| {
-                let efi = fs_err::read(self.efi.get()).expect("failed to read opentmk efi");
-                let arch = match self.arch {
-                    MachineArch::X86_64 => opentmk_disk::Arch::X86_64,
-                    MachineArch::Aarch64 => opentmk_disk::Arch::Aarch64,
-                };
-                let image =
-                    opentmk_disk::build_opentmk_vhd_with_config(&efi, arch, &self.config_json)
-                        .expect("failed to build opentmk boot image");
-                Arc::new(image.into_temp_path())
-            })
-            .clone()
+    /// `builder` is invoked only during test execution (when constructing the
+    /// VM's boot drive), so it is safe to capture [`ResolvedArtifact`] handles
+    /// obtained during the requirement-collection phase.
+    pub fn new(builder: impl Fn() -> anyhow::Result<Disk> + Send + Sync + 'static) -> Self {
+        Self {
+            builder: Arc::new(builder),
+        }
+    }
+
+    fn build(&self) -> anyhow::Result<Disk> {
+        (self.builder)()
     }
 }
 
@@ -3977,31 +3953,11 @@ impl UefiGuest {
         UefiGuest::GuestTestUefi(artifact)
     }
 
-    /// Construct a [`UefiGuest::OpenTmk`] configuration.
-    ///
-    /// Registers the `.efi` for `arch` and records `config_json` to patch into
-    /// it; the VHD is built lazily when the boot drive is first requested, so
-    /// this is safe to call while only collecting artifact requirements.
-    /// `config_json` must be a valid `opentmk_protocol::TestConfig`.
-    pub fn opentmk(resolver: &ArtifactResolver<'_>, arch: MachineArch, config_json: &[u8]) -> Self {
-        use petri_artifacts_vmm_test::artifacts::opentmk::*;
-        let efi = match arch {
-            MachineArch::X86_64 => resolver.require(OPENTMK_EFI_X64).erase(),
-            MachineArch::Aarch64 => resolver.require(OPENTMK_EFI_AARCH64).erase(),
-        };
-        UefiGuest::OpenTmk(OpenTmkGuest {
-            efi,
-            arch,
-            config_json: config_json.to_vec(),
-            image: Arc::new(std::sync::OnceLock::new()),
-        })
-    }
-
     fn disk_path(&self) -> Option<DiskPath> {
         match self {
             UefiGuest::Vhd(vhd) => Some(vhd.disk_path()),
             UefiGuest::GuestTestUefi(p) => Some(DiskPath::Local(p.get().to_path_buf())),
-            UefiGuest::OpenTmk(_) | UefiGuest::Mshv(_) | UefiGuest::None => None,
+            UefiGuest::CustomDisk(_) | UefiGuest::Mshv(_) | UefiGuest::None => None,
         }
     }
 }

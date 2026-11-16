@@ -7046,6 +7046,7 @@ name = "petri"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "async-trait",
  "bitfield-struct 0.11.0",
  "blocking",
@@ -7086,7 +7087,6 @@ dependencies = [
  "net_backend_resources",
  "netvsp_resources",
  "nvme_resources",
- "opentmk_disk",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_hypervisors",
@@ -11634,6 +11634,8 @@ dependencies = [
  "nvme_resources",
  "nvme_spec",
  "nvme_test",
+ "opentmk_disk",
+ "opentmk_protocol",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_ttrpc_vmservice",

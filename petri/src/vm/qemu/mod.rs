@@ -163,6 +163,7 @@ impl PetriVmmBackend for QemuPetriBackend {
             driver,
             log_source,
             prebuilt_initrd,
+            com1_log,
         } = resources;
 
         let mut qemu_config = QemuPetriConfig::default();
@@ -200,6 +201,7 @@ impl PetriVmmBackend for QemuPetriBackend {
             .context("failed to create polled pipe for qemu stdout")?;
         // Since we pass `-serial mon:stdio` to qemu, the guest outputs to stdout.
         let qemu_stdout_log_file = log_source.log_file("guest")?;
+        let _ = com1_log.set(qemu_stdout_log_file.clone());
         let qemu_stdout_task = driver.spawn(
             "qemu_stdout",
             crate::log_task(qemu_stdout_log_file, qemu_stdout_pipe, "qemu_stdout"),

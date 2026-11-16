@@ -15,9 +15,9 @@ fn uefi_main() -> Status {
         logging_port: SerialPort::COM1,
     });
     tmk_assert!(r.is_ok(), "init should succeed");
-    log::warn!("TEST_START");
+    log::warn!("{}", opentmk_protocol::TEST_START);
     crate::tests::run_test();
-    log::warn!("TEST_END");
+    log::warn!("{}", opentmk_protocol::TEST_END);
     loop {
         core::hint::spin_loop();
     }

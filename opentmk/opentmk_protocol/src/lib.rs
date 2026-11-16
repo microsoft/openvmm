@@ -1,13 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Shared protocol for the OpenTMK build-time-patchable config region.
-//! Keeps [`OpenTmkConfig`] layout and [`TestConfig`] JSON shared by guest and host.
+//! Shared protocol for the OpenTMK build-time-patchable config region and
+//! serial JSON test report stream.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+
+pub mod report;
+
+pub use report::OpenTmkEvent;
+pub use report::OpenTmkFailure;
+pub use report::OpenTmkRun;
+pub use report::PANIC_PREFIX;
+pub use report::TEST_END;
+pub use report::TEST_START;
 
 use alloc::string::String;
 use serde::Deserialize;

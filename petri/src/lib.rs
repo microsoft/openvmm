@@ -20,7 +20,6 @@ pub mod mshv_image;
 // remain crate-local somehow without violating interface privacy.
 #[expect(missing_docs)]
 pub mod openhcl_diag;
-pub mod opentmk;
 pub mod requirements;
 mod test;
 mod tracing;

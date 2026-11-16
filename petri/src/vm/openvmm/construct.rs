@@ -155,6 +155,7 @@ impl PetriVmConfigOpenVmm {
             driver,
             log_source,
             prebuilt_initrd,
+            com1_log,
         } = resources;
         anyhow::ensure!(
             !properties.use_virtio_console
@@ -237,7 +238,7 @@ impl PetriVmConfigOpenVmm {
                     emulated_serial_config,
                     serial_tasks,
                     linux_direct_serial_agent,
-                } = setup.configure_serial(log_source)?;
+                } = setup.configure_serial(log_source, com1_log)?;
                 (
                     emulated_serial_config,
                     serial_tasks,
@@ -865,7 +866,11 @@ enum VideoDevice {
 }
 
 impl PetriVmConfigSetupCore<'_> {
-    fn configure_serial(&self, logger: &PetriLogSource) -> anyhow::Result<SerialData> {
+    fn configure_serial(
+        &self,
+        logger: &PetriLogSource,
+        com1_log: &std::sync::OnceLock<crate::PetriLogFile>,
+    ) -> anyhow::Result<SerialData> {
         let mut serial_tasks = Vec::new();
 
         let serial0_log_file = logger.log_file(match self.firmware {
@@ -875,6 +880,7 @@ impl PetriVmConfigSetupCore<'_> {
             Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => "pcat",
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => "uefi",
         })?;
+        let _ = com1_log.set(serial0_log_file.clone());
 
         let (serial0_host, serial0) = self
             .create_serial_stream()

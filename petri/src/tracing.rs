@@ -6,17 +6,22 @@ use fs_err::PathExt;
 use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
+use futures::Stream;
 use futures::StreamExt;
 use futures::io::BufReader;
 use jiff::Timestamp;
 use kmsg::KmsgParsedEntry;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io::Read;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Context;
+use std::task::Poll;
 use tracing::Level;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
@@ -106,6 +111,7 @@ impl PetriLogSource {
                         json_log: self.0.json_log.clone(),
                         source: name.clone(),
                         echo: self.0.echo,
+                        subscribers: Default::default(),
                     })))
                     .clone()
             }
@@ -282,12 +288,25 @@ impl JsonLog {
     }
 }
 
+/// Maximum historical lines retained per log file for late subscribers.
+const MAX_HISTORY_LINES: usize = 4096;
+
+/// Maximum queued lines per live subscriber before dropping new lines.
+const MAX_SUBSCRIBER_QUEUE: usize = 4096;
+
+#[derive(Debug, Default)]
+struct LogSubscribers {
+    history: VecDeque<String>,
+    senders: Vec<async_channel::Sender<String>>,
+}
+
 #[derive(Debug)]
 struct LogFileInner {
     file: File,
     json_log: JsonLog,
     source: String,
     echo: bool,
+    subscribers: Mutex<LogSubscribers>,
 }
 
 impl LogFileInner {
@@ -325,6 +344,23 @@ impl std::io::Write for LogWriter<'_> {
     }
 }
 
+/// A stream of entries written to a [`PetriLogFile`].
+///
+/// Replays buffered entries recorded prior to subscription, followed by live
+/// entries as they arrive.
+#[derive(Debug)]
+pub struct PetriLogStream {
+    rx: Pin<Box<async_channel::Receiver<String>>>,
+}
+
+impl Stream for PetriLogStream {
+    type Item = String;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.rx.as_mut().poll_next(cx)
+    }
+}
+
 /// A log file for writing test output.
 ///
 /// Generally, you should use [`tracing`] for test-generated logging. This type
@@ -334,6 +370,22 @@ impl std::io::Write for LogWriter<'_> {
 pub struct PetriLogFile(Arc<LogFileInner>);
 
 impl PetriLogFile {
+    /// Subscribe to entries written to this log file.
+    ///
+    /// Replays up to `MAX_HISTORY_LINES` prior entries in order, then streams
+    /// subsequent entries as they are written.
+    pub fn subscribe(&self) -> PetriLogStream {
+        let mut subs = self.0.subscribers.lock();
+        let queue_len = subs.history.len().max(MAX_SUBSCRIBER_QUEUE);
+        let (tx, rx) = async_channel::bounded(queue_len);
+        for line in &subs.history {
+            tx.try_send(line.clone())
+                .expect("fresh subscriber channel has capacity for history");
+        }
+        subs.senders.push(tx);
+        PetriLogStream { rx: Box::pin(rx) }
+    }
+
     /// Write a log entry with the given format arguments.
     pub fn write_entry_fmt(
         &self,
@@ -341,14 +393,32 @@ impl PetriLogFile {
         level: Level,
         args: std::fmt::Arguments<'_>,
     ) {
+        let entry = format!("{args}");
+        {
+            let mut subs = self.0.subscribers.lock();
+            subs.senders.retain(|tx| match tx.try_send(entry.clone()) {
+                Ok(()) => true,
+                Err(err) if err.is_closed() => false,
+                Err(err) => {
+                    assert!(err.is_full());
+                    true
+                }
+            });
+            if subs.history.len() == MAX_HISTORY_LINES {
+                subs.history.pop_front();
+            }
+            subs.history.push_back(entry.clone());
+        }
         // Convert to a single string to write to the file to ensure the entry
         // does not get interleaved with other log entries.
+        let mut line = entry;
+        line.push('\n');
         let _ = LogWriter {
             inner: &self.0,
             level,
             timestamp,
         }
-        .write_all(format!("{}\n", args).as_bytes());
+        .write_all(line.as_bytes());
     }
 
     /// Write a log entry with the given message.
@@ -534,5 +604,44 @@ mod tests {
         // Test unknown level (fallback)
         assert_eq!(kernel_level_to_tracing_level(8), Level::INFO);
         assert_eq!(kernel_level_to_tracing_level(255), Level::INFO);
+    }
+
+    #[test]
+    fn subscribe_replays_history_and_streams_live_entries() {
+        futures::executor::block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let source = PetriLogSource::file_only(dir.path()).unwrap();
+            let log = source.log_file("guest").unwrap();
+
+            log.write_entry("early-1");
+            log.write_entry("early-2");
+
+            let mut stream = log.subscribe();
+            log.write_entry("live-3");
+
+            assert_eq!(stream.next().await.as_deref(), Some("early-1"));
+            assert_eq!(stream.next().await.as_deref(), Some("early-2"));
+            assert_eq!(stream.next().await.as_deref(), Some("live-3"));
+        });
+    }
+
+    #[test]
+    fn subscribe_evicts_oldest_history_and_prunes_dropped_subscribers() {
+        futures::executor::block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let source = PetriLogSource::file_only(dir.path()).unwrap();
+            let log = source.log_file("guest").unwrap();
+
+            let dropped_stream = log.subscribe();
+            drop(dropped_stream);
+
+            for i in 0..(MAX_HISTORY_LINES + 5) {
+                log.write_entry(format_args!("line-{i}"));
+            }
+            assert_eq!(log.0.subscribers.lock().senders.len(), 0);
+
+            let mut stream = log.subscribe();
+            assert_eq!(stream.next().await.as_deref(), Some("line-5"));
+        });
     }
 }

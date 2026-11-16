@@ -16,7 +16,6 @@ petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
 petri_artifact_resolver_openvmm_known_paths.workspace = true
-opentmk_disk.workspace = true
 initrd_cpio.workspace = true
 chipset_device_worker_defs.workspace = true
 chipset_resources.workspace = true
@@ -69,6 +68,7 @@ unix_socket.workspace = true
 sparse_mmap.workspace = true
 
 anyhow.workspace = true
+async-channel.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
 blocking.workspace = true
