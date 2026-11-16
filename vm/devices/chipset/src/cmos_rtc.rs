@@ -31,6 +31,14 @@ use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
 use vmcore::vmtime::VmTimerPeriodic;
 
+/// How long UIP is set on real hardware: from 244us before an update until
+/// the update, which takes up to 1984us, is done.
+const UPDATE_DURATION: Duration = Duration::from_micros(244 + 1984);
+
+/// UIP is set for the last `UIP_WINDOW_MILLIS` of each second: the update
+/// duration at the time source's millisecond resolution.
+const UIP_WINDOW_MILLIS: i64 = 2;
+
 mod spec {
     //! Definitions pulled directly from the CMOS RTC spec sheet.
 
@@ -183,11 +191,21 @@ pub struct Rtc {
     vmtimer_update: VmTimerPeriodic,
 
     // Runtime book-keeping
+    /// The update window the last status A read was in.
     #[inspect(debug)]
-    last_update_bit_blip: LocalClockTime,
+    update_window: Option<UpdateWindow>,
 
     // Volatile state
     state: RtcState,
+}
+
+/// A window at the end of a second in which UIP is set.
+#[derive(Debug, Copy, Clone)]
+struct UpdateWindow {
+    /// The second the window is at the end of.
+    second: i64,
+    /// The VM time of the first read in the window.
+    since: VmTime,
 }
 
 #[derive(Debug, Inspect)]
@@ -231,6 +249,7 @@ impl ChangeDeviceState for Rtc {
 
     async fn reset(&mut self) {
         self.state = RtcState::new(self.initial_cmos);
+        self.update_window = None;
 
         self.update_timers();
         self.sync_interrupt_line_level();
@@ -323,7 +342,7 @@ impl Rtc {
             vmtimer_periodic: VmTimerPeriodic::new(vmtime_source.access("rtc-periodic")),
             vmtimer_update: VmTimerPeriodic::new(vmtime_source.access("rtc-update")),
 
-            last_update_bit_blip: LocalClockTime::from_millis_since_unix_epoch(0),
+            update_window: None,
 
             state: RtcState::new(initial_cmos),
         }
@@ -635,6 +654,31 @@ impl Rtc {
         }
     }
 
+    /// Returns whether a status A read at time source reading `now` and VM
+    /// time `vm_now` sees an update in progress.
+    ///
+    /// The time registers change at the start of each second, and real
+    /// hardware sets UIP for about 2ms before they change, so UIP is set for
+    /// the last 2ms of each second. As on real hardware, a guest that doesn't
+    /// read during that window doesn't see that update.
+    fn update_in_progress(&mut self, now: LocalClockTime, vm_now: VmTime) -> bool {
+        let millis = now.as_millis_since_unix_epoch();
+        if millis.rem_euclid(1000) < 1000 - UIP_WINDOW_MILLIS {
+            self.update_window = None;
+            return false;
+        }
+
+        // If the time source stops in the window, UIP is only set for as long
+        // as an update takes, and not again until the time leaves the window.
+        let second = millis.div_euclid(1000);
+        let since = match self.update_window {
+            Some(window) if window.second == second => window.since,
+            _ => vm_now,
+        };
+        self.update_window = Some(UpdateWindow { second, since });
+        vm_now.checked_sub(since).unwrap_or_default() < UPDATE_DURATION
+    }
+
     fn get_status_byte(&mut self, addr: CmosReg) -> u8 {
         match addr {
             CmosReg::STATUS_A => {
@@ -646,37 +690,21 @@ impl Rtc {
                 // the rate of other timers such as the TSC.  Guest OSes tend to spin
                 // wait for a rising or falling transition of the bit (typically rising edge),
                 // and then the guest OS will wait for another of the same transition.
-                if !StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]).set() {
+                //
+                // There are no updates while SET is set or the oscillator is
+                // stopped.
+                if !StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]).set()
+                    && data.oscillator_control() == ENABLE_OSCILLATOR_CONTROL
+                {
                     let now = self.real_time_source.get_time();
-                    let elapsed = now - self.last_update_bit_blip;
+                    let vm_now = self.vmtime_alarm.now();
+                    tracing::trace!(?now, "get_status_byte");
 
-                    // check if the programmed time jumped backwards
-                    if elapsed.as_millis().is_negative() {
-                        tracing::debug!("clock jumped backwards between update bit blips");
-                        self.last_update_bit_blip = LocalClockTime::from_millis_since_unix_epoch(0);
-                    }
-
-                    tracing::trace!(
-                        ?self.last_update_bit_blip,
-                        ?now,
-                        ?elapsed,
-                        "get_status_byte"
-                    );
-
-                    let elapsed_millis = elapsed.as_millis();
-                    if elapsed_millis >= 1000 {
-                        // Only report the update if this register was also read in
-                        // the previous second, as the first read after a longer gap
-                        // can land anywhere in the second.
-                        data.set_update(elapsed_millis < 2000);
+                    if self.update_in_progress(now, vm_now) {
+                        data.set_update(true);
                         self.sync_clock_to_cmos();
-                        // Updates happen at the start of each second.
-                        self.last_update_bit_blip = LocalClockTime::from_millis_since_unix_epoch(
-                            now.as_millis_since_unix_epoch().div_euclid(1000) * 1000,
-                        );
                         tracing::trace!(
                             ?data,
-                            ?elapsed,
                             cmos_date_time = ?self.read_cmos_date_time(),
                             "blip'd status a update bit"
                         );
@@ -931,6 +959,7 @@ mod save_restore {
                 addr,
                 cmos: CmosData(cmos),
             };
+            self.update_window = None;
 
             self.update_timers();
             self.sync_interrupt_line_level();
@@ -1208,7 +1237,7 @@ mod tests {
     // Wait for CMOS update strobed rising edge.
     fn wait_for_edge(rtc: &mut Rtc, high: bool, time: MockLocalClockAccessor) -> bool {
         let limit = 5; //seconds
-        let stall_ms = 10; //10ms to pause
+        let stall_ms = 1; //1ms to pause
 
         for _i in 0..(limit * 1000 / stall_ms) {
             let value = get_cmos_data(rtc, CmosReg::STATUS_A);
@@ -1268,7 +1297,7 @@ mod tests {
         assert_eq!(data[0], 0x80);
         assert_eq!(
             get_cmos_data(&mut rtc, CmosReg::STATUS_A),
-            default_state.cmos[CmosReg::STATUS_A] | 0x80
+            default_state.cmos[CmosReg::STATUS_A]
         );
         assert_eq!(
             get_cmos_data(&mut rtc, CmosReg::STATUS_B),
@@ -1309,7 +1338,7 @@ mod tests {
 
         assert_eq!(
             get_cmos_data(&mut rtc, CmosReg::STATUS_A),
-            default_state.cmos[CmosReg::STATUS_A] | 0x80
+            default_state.cmos[CmosReg::STATUS_A]
         );
 
         println!("RTC should move forward when oscillator is enabled (default control mask 010)");
@@ -1341,8 +1370,7 @@ mod tests {
                     wait_for_edge(&mut rtc, false, time.clone())
                         && wait_for_edge(&mut rtc, true, time.clone())
                 );
-                // wait_for_edge polls every 10ms.
-                assert!(time.get_time().as_millis_since_unix_epoch() % 1000 < 10);
+                assert_eq!(time.get_time().as_millis_since_unix_epoch() % 1000, 998);
             }
 
             if let Ok(end) = rtc.get_cmos_date_time() {
@@ -1366,17 +1394,68 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_uip_sparse_reads() {
-        let (_, _, time, mut rtc) = new_test_rtc();
-        let mut uip = || get_cmos_data(&mut rtc, CmosReg::STATUS_A) & 0x80 != 0;
+    fn uip_at(rtc: &mut Rtc, millis: i64) -> bool {
+        rtc.real_time_source
+            .set_time(LocalClockTime::from_millis_since_unix_epoch(millis));
+        get_cmos_data(rtc, CmosReg::STATUS_A) & 0x80 != 0
+    }
 
-        // 10.5s (the mock clock starts at 1.337s).
-        time.tick(Duration::from_millis(9163));
-        assert!(!uip());
-        // 11.1s, after the update at 11s.
-        time.tick(Duration::from_millis(600));
-        assert!(uip());
+    #[test]
+    fn test_uip_read_timing() {
+        // VM time doesn't advance here, so only the time source matters.
+        let (_, _, _, mut rtc) = new_test_rtc();
+
+        // Set for the last 2ms of each second, however the reads are spaced
+        // and after the time moves back.
+        assert!(!uip_at(&mut rtc, 10_500));
+        assert!(!uip_at(&mut rtc, 11_100));
+        assert!(!uip_at(&mut rtc, 11_900));
+        assert!(!uip_at(&mut rtc, 12_000));
+        assert!(!uip_at(&mut rtc, 12_997));
+        assert!(uip_at(&mut rtc, 12_998));
+        assert!(uip_at(&mut rtc, 12_999));
+        assert!(!uip_at(&mut rtc, 13_000));
+        assert!(uip_at(&mut rtc, 20_999));
+        assert!(uip_at(&mut rtc, 15_998));
+        assert!(!uip_at(&mut rtc, 15_500));
+    }
+
+    #[test]
+    fn test_uip_stuck_time_source() {
+        let (mut pool, mut vm_time_keeper, _, mut rtc) = new_test_rtc();
+        pool.run_until(vm_time_keeper.start());
+
+        // UIP is cleared once the time source has been stopped in the window
+        // for longer than an update takes, and stays clear until the next one.
+        assert!(uip_at(&mut rtc, 10_998));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!uip_at(&mut rtc, 10_998));
+        assert!(!uip_at(&mut rtc, 10_999));
+        assert!(uip_at(&mut rtc, 11_998));
+
+        // Once the time has left the window, the next time in it is a new
+        // update, even after the time moves back.
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!uip_at(&mut rtc, 11_500));
+        assert!(uip_at(&mut rtc, 11_998));
+    }
+
+    #[test]
+    fn test_uip_updates_disabled() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+
+        // SET inhibits updates.
+        let status_b = get_cmos_data(&mut rtc, CmosReg::STATUS_B);
+        set_cmos_data(&mut rtc, CmosReg::STATUS_B, status_b | 0x80);
+        assert!(!uip_at(&mut rtc, 10_999));
+        set_cmos_data(&mut rtc, CmosReg::STATUS_B, status_b);
+
+        // So does stopping the oscillator.
+        set_cmos_data(&mut rtc, CmosReg::STATUS_A, 0x66);
+        assert!(!uip_at(&mut rtc, 10_999));
+        set_cmos_data(&mut rtc, CmosReg::STATUS_A, 0x26);
+
+        assert!(uip_at(&mut rtc, 10_999));
     }
 
     #[test]
