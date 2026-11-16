@@ -266,6 +266,12 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         if value.nmi_pending_count.is_some() {
             return Err(ErrorInner::UnsupportedState("nmi_pending_count").into());
         }
+        // MSHV's interrupt state has one bit for both kinds of interrupt
+        // shadow, so it cannot restore a kind. Refuse it before changing any
+        // state.
+        if value.interrupt_shadow_kind.is_some() {
+            return Err(ErrorInner::UnsupportedState("interrupt_shadow_kind").into());
+        }
         self.set_register_state(value)?;
         // The NMI pending bit is not part of the register state; it must
         // be set via the APIC page.
