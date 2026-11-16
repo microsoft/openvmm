@@ -193,6 +193,7 @@ impl WhpProcessor<'_> {
                     pending_event: activity.pending_event,
                     pending_interruption: activity.pending_interruption,
                     nmi_pending_count: None,
+                    interrupt_shadow_kind: None,
                 }
             }
             LocalApicKind::Offloaded => {
@@ -247,6 +248,7 @@ impl WhpProcessor<'_> {
                     pending_event: value.pending_event,
                     pending_interruption: value.pending_interruption,
                     nmi_pending_count: None,
+                    interrupt_shadow_kind: None,
                 };
 
                 self.vp.set_register_state(vtl, &value)?;
