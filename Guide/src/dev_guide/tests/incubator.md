@@ -89,7 +89,8 @@ override the source profile's boot options without rebuilding EFI code.
 
 `--initrd`, `--firmware`, and `--boot-artifacts` accept explicit local inputs.
 RPMs use Flowey's normal persistent cache; missing RPMs are downloaded as
-needed. Cached RPMs and extracted
+needed. Linux provisioning uses `rpm2cpio` and `bsdtar` to extract them.
+Cached RPMs and extracted
 payloads are checked on reuse; corrupt caches fail rather than being trusted.
 Packaged licenses and source URLs/hashes are retained with the extracted
 payloads. No RPM is installed and no package script runs.
