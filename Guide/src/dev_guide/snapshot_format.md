@@ -399,6 +399,15 @@ save records it as the activity's interruption alone and holds no event for it:
 A restore refuses any other pending exception, which KVM would drop, before it
 changes the activity. Only a damaged or crafted snapshot holds one.
 
+Nor does a software interruption need a field, since no save holds one. A
+Hyper-V VP that the hypervisor stops while it delivers a software interrupt
+(`INT n`), a software exception (`INT3` or `INTO`), or a privileged software
+exception (`INT1`) holds the event with the length of the instruction that
+raised it, which the activity has no place for, so MSHV and WHP refuse to save
+it rather than drop it, as they refuse a pending event other than an exception
+or an extint, or one whose vector is not 8 bits. KVM reports no such event: it
+has the guest run the instruction again.
+
 KVM on an Intel CPU can hold an interrupt shadow of either kind, which the
 Boolean `interrupt_shadow` cannot say: the shadow that a `MOV SS` or `POP SS`
 leaves also blocks NMIs and suppresses certain debug exceptions at the next
