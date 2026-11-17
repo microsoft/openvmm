@@ -74,8 +74,10 @@ Linux on SNP reads SMBIOS only after an EFI boot. Its SMBIOS BIOS date lets
 Linux accept a PCIe ECAM above 4 GiB, so the image does not need
 `--pcie-ecam-below-4gb`.
 
-Memory acceptance is lazy. The shim uses the RAM that the host device tree
-describes, and accepts only its ACPI heap, the stack for the EFI stub, a boot
+The required `memory_acceptance` field is `"lazy"` or `"eager"`. With
+`"eager"`, the shim accepts all RAM before it calls the EFI stub. With
+`"lazy"`, the shim uses the RAM that the host device tree describes, and
+accepts only its ACPI heap, the stack for the EFI stub, a boot
 pool for the decompressed kernel, and the omitted RAM below 1 MiB. The UEFI
 memory map reports all other omitted RAM, and all host RAM above the measured
 RAM end, as `EfiUnacceptedMemory`. When the stub needs more memory, the shim

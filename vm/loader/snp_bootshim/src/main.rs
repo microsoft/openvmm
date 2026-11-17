@@ -627,7 +627,7 @@ extern "C" fn start(params_gpa: u64) -> ! {
     }
 
     install_platform_acpi(platform, &devices);
-    vc::install(platform.cpuid_gpa);
+    vc::install_exception_handlers(platform.cpuid_gpa);
 
     let p = platform;
     efi::enter_linux(

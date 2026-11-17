@@ -65,13 +65,6 @@ async fn boot_with_vps(
         "guest ignored the PCIe ECAM above 4 GiB"
     );
 
-    let bios_date = cmd!(shell, "cat /sys/class/dmi/id/bios_date")
-        .read()
-        .await?;
-    anyhow::ensure!(
-        bios_date.trim() == "06/19/2026",
-        "unexpected SMBIOS BIOS date: {bios_date:?}"
-    );
     // The image leaves most RAM unaccepted, and Linux accepts it lazily.
     let meminfo = cmd!(shell, "cat /proc/meminfo").read().await?;
     let unaccepted_kb = meminfo

@@ -27,7 +27,6 @@ use super::tables::Efi;
 use super::tables::Handlers;
 use super::tables::VENDOR_NODE_SIZE;
 use super::tables::crc32;
-use super::tables::field_address;
 use crate::Failure;
 use crate::accept;
 use crate::memory_map::AllocateType;
@@ -38,6 +37,7 @@ use core::cell::RefCell;
 use core::cell::RefMut;
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
+use core::mem::offset_of;
 use core::ops::Deref;
 use core::ptr::with_exposed_provenance;
 use core::ptr::with_exposed_provenance_mut;
@@ -92,6 +92,12 @@ fn efi_address() -> u64 {
     EFI.as_ptr().expose_provenance() as u64
 }
 
+/// Returns the address of the field of the tables at `offset`. This does not
+/// borrow `EFI`, so a service can call it while it holds the tables.
+fn efi_field(offset: usize) -> u64 {
+    efi_address() + offset as u64
+}
+
 fn with_efi<R>(f: impl FnOnce(&mut Efi) -> R) -> R {
     let mut efi = borrow(&EFI);
     // SAFETY: `EFI` starts zeroed, and `Efi` derives `FromZeros`.
@@ -110,8 +116,8 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
 /// unique and needs no handle table.
 fn handles() -> Handles {
     Handles {
-        image: field_address!(efi_address(), loaded_image),
-        initrd: field_address!(efi_address(), initrd_path),
+        image: efi_field(offset_of!(Efi, loaded_image)),
+        initrd: efi_field(offset_of!(Efi, initrd_path)),
     }
 }
 
@@ -325,11 +331,10 @@ extern "efiapi" fn handle_protocol(
     // SAFETY: The caller passes a valid pointer.
     let protocol = unsafe { protocol.read_unaligned() };
     let has_initrd = with_state(|state| state.has_initrd());
-    let base = efi_address();
     let found = match services::find_interface(&handles(), has_initrd, handle as u64, protocol) {
-        Some(Interface::LoadedImage) => field_address!(base, loaded_image),
-        Some(Interface::LoadFile2) => field_address!(base, load_file2),
-        Some(Interface::InitrdDevicePath) => field_address!(base, initrd_path),
+        Some(Interface::LoadedImage) => efi_field(offset_of!(Efi, loaded_image)),
+        Some(Interface::LoadFile2) => efi_field(offset_of!(Efi, load_file2)),
+        Some(Interface::InitrdDevicePath) => efi_field(offset_of!(Efi, initrd_path)),
         None => return code(EfiStatus::UNSUPPORTED),
     };
     // SAFETY: The caller passes a valid pointer.
@@ -571,8 +576,7 @@ fn handlers() -> Handlers {
 /// Sets the boot-services state and builds the tables.
 fn install(map: MemoryMap, boot: &Boot) {
     *borrow(&STATE) = Some(State::new(map, boot.initrd, boot.initrd_size));
-    let base = efi_address();
-    with_efi(|efi| efi.build(base, boot, &handlers()));
+    with_efi(|efi| efi.build(boot, &handlers()));
 }
 
 /// Builds the UEFI environment and calls the Linux EFI stub. Does not
@@ -581,7 +585,7 @@ fn install(map: MemoryMap, boot: &Boot) {
 pub fn enter_linux(map: MemoryMap, boot: &Boot) -> ! {
     install(map, boot);
     let image_handle = handles().image;
-    let system_table = field_address!(efi_address(), system_table);
+    let system_table = efi_field(offset_of!(Efi, system_table));
     // SAFETY: The kernel image is measured and accepted, its entry point
     // follows the UEFI image-entry ABI, and the stack is accepted memory that
     // nothing else uses. The previous RSP is saved on the new stack and
@@ -853,7 +857,7 @@ mod tests {
         );
         assert_eq!(
             load_file2.addr() as u64,
-            field_address!(efi_address(), load_file2)
+            efi_field(offset_of!(Efi, load_file2))
         );
 
         let mut size = 0;
@@ -973,7 +977,7 @@ mod tests {
         let allocate = with_efi(|efi| {
             assert_eq!(
                 efi.system_table.boot_services,
-                field_address!(efi_address(), boot_services)
+                efi_field(offset_of!(Efi, boot_services))
             );
             efi.boot_services.functions[boot_service_index::ALLOCATE_PAGES]
         });

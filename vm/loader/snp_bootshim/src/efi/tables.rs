@@ -144,15 +144,6 @@ pub(super) struct Efi {
     pub rt_properties: EfiRtPropertiesTable,
 }
 
-/// Returns the address of a field of an [`Efi`] at address `base`.
-macro_rules! field_address {
-    ($base:expr, $field:ident) => {
-        $base + core::mem::offset_of!(Efi, $field) as u64
-    };
-}
-#[cfg(any(minimal_rt, test))]
-pub(super) use field_address;
-
 /// What the stub needs to boot Linux.
 #[cfg_attr(
     all(test, not(minimal_rt)),
@@ -184,9 +175,15 @@ pub(super) struct Handlers {
     pub load_file: u64,
 }
 
+/// Returns the address of `field` as the stub sees it.
+fn address<T>(field: &T) -> u64 {
+    core::ptr::from_ref(field).expose_provenance() as u64
+}
+
 impl Efi {
-    /// Fills in every table and protocol. `base` is the address of `self`.
-    pub fn build(&mut self, base: u64, boot: &Boot, handlers: &Handlers) {
+    /// Fills in every table and protocol. The tables point to each other, so
+    /// build them in place, where the stub will read them.
+    pub fn build(&mut self, boot: &Boot, handlers: &Handlers) {
         for (index, c) in "OpenVMM\0".encode_utf16().enumerate() {
             self.firmware_vendor[index] = c;
         }
@@ -202,7 +199,7 @@ impl Efi {
             clear_screen: success,
             set_cursor_position: unsupported,
             enable_cursor: unsupported,
-            mode: field_address!(base, con_out_mode),
+            mode: address(&self.con_out_mode),
         };
         self.con_in = EfiSimpleTextInputProtocol {
             reset: success,
@@ -221,10 +218,7 @@ impl Efi {
             (ACPI_20_TABLE_GUID, boot.rsdp_gpa),
             (SMBIOS3_TABLE_GUID, boot.smbios_gpa),
             (EFI_CC_BLOB_GUID, boot.cc_blob_gpa),
-            (
-                EFI_RT_PROPERTIES_TABLE_GUID,
-                field_address!(base, rt_properties),
-            ),
+            (EFI_RT_PROPERTIES_TABLE_GUID, address(&self.rt_properties)),
         ];
         for (entry, (vendor_guid, vendor_table)) in self.configuration_tables.iter_mut().zip(tables)
         {
@@ -239,7 +233,7 @@ impl Efi {
 
         self.loaded_image = EfiLoadedImageProtocol {
             revision: EFI_LOADED_IMAGE_PROTOCOL_REVISION,
-            system_table: field_address!(base, system_table),
+            system_table: address(&self.system_table),
             load_options_size: boot.cmdline_size as u32,
             load_options: boot.cmdline_gpa,
             image_base: boot.kernel.start(),
@@ -250,13 +244,13 @@ impl Efi {
             ..FromZeros::new_zeroed()
         };
 
-        let con_out = field_address!(base, con_out);
-        let con_in = field_address!(base, con_in);
+        let con_out = address(&self.con_out);
+        let con_in = address(&self.con_in);
         self.system_table = EfiSystemTable {
             signature: EFI_SYSTEM_TABLE_SIGNATURE,
             revision: EFI_2_70_SYSTEM_TABLE_REVISION,
             header_size: size_of::<EfiSystemTable>() as u32,
-            firmware_vendor: field_address!(base, firmware_vendor),
+            firmware_vendor: address(&self.firmware_vendor),
             firmware_revision: 1,
             console_in_handle: con_in,
             con_in,
@@ -264,10 +258,10 @@ impl Efi {
             con_out,
             standard_error_handle: con_out,
             std_err: con_out,
-            runtime_services: field_address!(base, runtime_services),
-            boot_services: field_address!(base, boot_services),
+            runtime_services: address(&self.runtime_services),
+            boot_services: address(&self.boot_services),
             number_of_table_entries: tables.len() as u64,
-            configuration_table: field_address!(base, configuration_tables),
+            configuration_table: address(&self.configuration_tables),
             ..Default::default()
         };
         self.update_system_table_crc();
@@ -316,7 +310,6 @@ mod tests {
     use test_with_tracing::test;
 
     const MB: u64 = 1 << 20;
-    const BASE: u64 = 0x10_0000;
 
     #[test]
     fn crc32_matches_the_standard_check_value() {
@@ -363,9 +356,9 @@ mod tests {
         }
     }
 
-    fn built() -> Efi {
-        let mut efi = Efi::new_zeroed();
-        efi.build(BASE, &boot(), &handlers());
+    fn built() -> Box<Efi> {
+        let mut efi = Box::new(Efi::new_zeroed());
+        efi.build(&boot(), &handlers());
         efi
     }
 
@@ -382,14 +375,8 @@ mod tests {
         let st = &efi.system_table;
         assert_eq!(st.signature, EFI_SYSTEM_TABLE_SIGNATURE);
         assert!(valid_crc(st.as_bytes(), 16));
-        assert_eq!(
-            st.boot_services,
-            BASE + core::mem::offset_of!(Efi, boot_services) as u64
-        );
-        assert_eq!(
-            st.configuration_table,
-            BASE + core::mem::offset_of!(Efi, configuration_tables) as u64
-        );
+        assert_eq!(st.boot_services, address(&efi.boot_services));
+        assert_eq!(st.configuration_table, address(&efi.configuration_tables));
         assert_eq!(st.number_of_table_entries, 4);
         assert_eq!(
             &efi.firmware_vendor[..8],

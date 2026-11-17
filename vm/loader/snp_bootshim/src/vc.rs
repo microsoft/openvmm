@@ -117,12 +117,13 @@ fn handle_vc(
 }
 
 #[cfg(minimal_rt)]
-pub(crate) use guest::install;
+pub(crate) use guest::install_exception_handlers;
 
 #[cfg(minimal_rt)]
 mod guest {
     use crate::Failure;
     use crate::terminate;
+    use x86defs::DescriptorTableRegister;
     use x86defs::Exception;
     use x86defs::IdtAttributes;
     use x86defs::IdtEntry64;
@@ -241,7 +242,7 @@ mod guest {
 
     /// Installs the exception handlers. `cpuid_page` is the GPA of the
     /// measured SNP CPUID page.
-    pub fn install(cpuid_page: u64) {
+    pub fn install_exception_handlers(cpuid_page: u64) {
         let selector: u16;
         // SAFETY: Reading CS has no side effects.
         unsafe {
@@ -262,12 +263,7 @@ mod guest {
             }
         }
 
-        #[repr(C, packed)]
-        struct Descriptor {
-            limit: u16,
-            base: u64,
-        }
-        let descriptor = Descriptor {
+        let descriptor = DescriptorTableRegister {
             limit: (size_of::<Idt>() - 1) as u16,
             base: idt as u64,
         };

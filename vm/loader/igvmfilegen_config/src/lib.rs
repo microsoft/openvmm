@@ -135,19 +135,17 @@ pub enum Image {
         /// The page-table address bit used as the SNP encryption bit.
         c_bit_position: u8,
         /// When the guest's RAM is accepted.
-        #[serde(default)]
         memory_acceptance: SnpMemoryAcceptance,
     },
 }
 
 /// When the SNP Linux-direct bootshim accepts the guest's RAM.
-#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SnpMemoryAcceptance {
     /// The bootshim accepts only the memory that it and the Linux EFI stub
     /// need. It reports all other RAM as unaccepted, and Linux accepts it when
     /// it first uses it. The kernel needs `CONFIG_UNACCEPTED_MEMORY`.
-    #[default]
     Lazy,
     /// The bootshim accepts all RAM before it calls the Linux EFI stub.
     Eager,
