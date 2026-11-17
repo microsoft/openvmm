@@ -27,6 +27,8 @@ cfg_select! {
         #[cfg(target_os = "linux")]
         mod save;
         mod shadow;
+        #[cfg(target_os = "linux")]
+        mod smm;
         mod speculation;
         #[cfg(windows)]
         mod suspend;
