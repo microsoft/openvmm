@@ -13,35 +13,14 @@ use std::ffi::CString;
 use std::io;
 use std::os::unix::prelude::*;
 
-const ID_MAP_CAPACITY: usize = 32;
-
-#[derive(Clone, Copy)]
 struct IdMap {
-    bytes: [u8; ID_MAP_CAPACITY],
-    len: usize,
+    contents: String,
 }
 
 impl IdMap {
     fn new(outer_id: u32) -> Self {
-        let mut bytes = [0; ID_MAP_CAPACITY];
-        bytes[0] = b'0';
-        bytes[1] = b' ';
-        let mut index = 2;
-        let mut divisor = 1_000_000_000;
-        let mut started = false;
-        while divisor != 0 {
-            let digit = (outer_id / divisor) % 10;
-            if digit != 0 || started || divisor == 1 {
-                bytes[index] = b'0' + digit as u8;
-                index += 1;
-                started = true;
-            }
-            divisor /= 10;
-        }
-        bytes[index..index + 3].copy_from_slice(b" 1\n");
         Self {
-            bytes,
-            len: index + 3,
+            contents: format!("0 {outer_id} 1\n"),
         }
     }
 }
@@ -251,14 +230,14 @@ extern "C" fn clone_cb(context: *mut libc::c_void) -> libc::c_int {
     // we were passed a valid pointer.
     let context = unsafe { &mut *(context.cast::<CloneContext<'_>>()) };
 
-    if let Some((uid_map, gid_map)) = context.user_namespace_maps {
+    if let Some((uid_map, gid_map)) = &context.user_namespace_maps {
         if write_proc_file(c"/proc/self/setgroups", b"deny\n") < 0 {
             return errno().0;
         }
-        if write_proc_file(c"/proc/self/uid_map", &uid_map.bytes[..uid_map.len]) < 0 {
+        if write_proc_file(c"/proc/self/uid_map", uid_map.contents.as_bytes()) < 0 {
             return errno().0;
         }
-        if write_proc_file(c"/proc/self/gid_map", &gid_map.bytes[..gid_map.len]) < 0 {
+        if write_proc_file(c"/proc/self/gid_map", gid_map.contents.as_bytes()) < 0 {
             return errno().0;
         }
     }
@@ -481,7 +460,7 @@ mod tests {
             (u32::MAX, "0 4294967295 1\n"),
         ] {
             let map = IdMap::new(id);
-            assert_eq!(&map.bytes[..map.len], expected.as_bytes());
+            assert_eq!(map.contents, expected);
         }
     }
 }
