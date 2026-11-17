@@ -666,15 +666,6 @@ mod weak_mutex_pci {
     pub struct WeakMutexPciDeviceWrapper(Weak<CloseableMutex<dyn ChipsetDevice>>);
 
     impl GenericPciBusDevice for WeakMutexPciDeviceWrapper {
-        fn supports_mmio_forwarding(&mut self) -> bool {
-            self.0.upgrade().is_some_and(|dev| {
-                dev.lock_if_open().is_some_and(|mut dev| {
-                    dev.supports_pci()
-                        .is_some_and(|pci| pci.supports_mmio_forwarding())
-                })
-            })
-        }
-
         fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> Option<IoResult> {
             let dev = self.0.upgrade()?;
             let mut dev = dev.lock_if_open()?;
@@ -885,7 +876,6 @@ mod weak_mutex_pci {
             let mut wrapper = WeakMutexPciDeviceWrapper(Arc::downgrade(&device));
             let _closed = device.close_permanently();
 
-            assert!(!wrapper.supports_mmio_forwarding());
             assert!(wrapper.mmio_read(0x1000, &mut [0; 4]).is_none());
             assert!(wrapper.mmio_write(0x1000, &[0; 4]).is_none());
         }

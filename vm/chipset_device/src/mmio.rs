@@ -32,7 +32,24 @@ pub trait MmioIntercept: ChipsetDevice {
     }
 }
 
-io_region!(RegisterMmioIntercept, ControlMmioIntercept, u64);
+io_region!(
+    RegisterMmioIntercept,
+    ControlMmioIntercept,
+    u64,
+    /// Registers a lower-priority region for complete accesses not claimed by
+    /// an ordinary MMIO region. A selected region takes precedence over the
+    /// chipset's global fallback, even if its device rejects the access.
+    ///
+    /// Returns `None` if range-scoped fallback routing is unsupported.
+    /// Dropping the returned control unmaps the region.
+    fn new_fallback_io_region(
+        &mut self,
+        _region_name: &str,
+        _len: u64,
+    ) -> Option<Box<dyn ControlMmioIntercept>> {
+        None
+    }
+);
 
 /// A zero sized type that has a no-op `impl` of [`RegisterMmioIntercept`].
 ///
@@ -52,14 +69,6 @@ pub struct ExternallyManagedMmioIntercepts;
 impl RegisterMmioIntercept for ExternallyManagedMmioIntercepts {
     fn new_io_region(&mut self, _region_name: &str, _len: u64) -> Box<dyn ControlMmioIntercept> {
         Box::new(())
-    }
-
-    fn new_fallback_io_region(
-        &mut self,
-        _region_name: &str,
-        _len: u64,
-    ) -> Option<Box<dyn ControlMmioIntercept>> {
-        Some(Box::new(()))
     }
 }
 

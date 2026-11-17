@@ -69,20 +69,19 @@ pub mod standard_x86_io_ports {
 ///
 /// PCI devices can optionally implement routing functionality (like switches and bridges)
 /// by providing implementations for the forwarding methods.
+///
+/// MMIO forwarding runs synchronously under the topology's device locks.
+/// Implementations must not re-enter the topology and should return
+/// [`IoResult::Defer`] for asynchronous completion.
 pub trait GenericPciBusDevice: 'static + Send {
-    /// Whether the device accepts MMIO forwarded through PCIe bridge windows
-    /// instead of relying exclusively on registered BAR intercepts.
-    fn supports_mmio_forwarding(&mut self) -> bool {
-        false
-    }
-
     /// Forward a memory read with its bus address intact. `None` indicates
     /// that the backing device is unavailable or cannot forward memory.
     fn mmio_read(&mut self, _addr: u64, _data: &mut [u8]) -> Option<IoResult> {
         None
     }
 
-    /// Forward a memory write with its bus address intact.
+    /// Forward a memory write with its bus address intact. `None` indicates
+    /// that the backing device is unavailable or cannot forward memory.
     fn mmio_write(&mut self, _addr: u64, _data: &[u8]) -> Option<IoResult> {
         None
     }

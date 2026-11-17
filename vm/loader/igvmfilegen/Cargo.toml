@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 igvmfilegen_config.workspace = true
+initrd_cpio.workspace = true
 loader.workspace = true
 loader_defs.workspace = true
 product_policy.workspace = true
@@ -40,6 +41,7 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 crypto = { workspace = true, features = ["test_helpers"] }
+flate2.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

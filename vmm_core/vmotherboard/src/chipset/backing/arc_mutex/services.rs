@@ -334,7 +334,7 @@ mod device_range {
     }
 
     macro_rules! impl_device_range {
-        ($register:ident, $control:ident, $addr:ty) => {
+        ($register:ident, $control:ident, $addr:ty $(, $register_method:item)*) => {
             impl $register for DeviceRangeMapper<$addr> {
                 fn new_io_region(&mut self, region_name: &str, len: $addr) -> Box<dyn $control> {
                     Box::new(DeviceRange {
@@ -348,21 +348,7 @@ mod device_range {
                     })
                 }
 
-                fn new_fallback_io_region(
-                    &mut self,
-                    region_name: &str,
-                    len: $addr,
-                ) -> Option<Box<dyn $control>> {
-                    Some(Box::new(DeviceRange {
-                        ranges: self.ranges.clone(),
-                        region_name: region_name.into(),
-                        len,
-                        addr: None,
-                        dev: self.dev.clone(),
-                        dev_name: self.dev_name.clone(),
-                        fallback: true,
-                    }))
-                }
+                $($register_method)*
             }
 
             impl $control for DeviceRange<$addr> {
@@ -434,7 +420,26 @@ mod device_range {
         };
     }
 
-    impl_device_range!(RegisterMmioIntercept, ControlMmioIntercept, u64);
+    impl_device_range!(
+        RegisterMmioIntercept,
+        ControlMmioIntercept,
+        u64,
+        fn new_fallback_io_region(
+            &mut self,
+            region_name: &str,
+            len: u64,
+        ) -> Option<Box<dyn ControlMmioIntercept>> {
+            Some(Box::new(DeviceRange {
+                ranges: self.ranges.clone(),
+                region_name: region_name.into(),
+                len,
+                addr: None,
+                dev: self.dev.clone(),
+                dev_name: self.dev_name.clone(),
+                fallback: true,
+            }))
+        }
+    );
     impl_device_range!(RegisterPortIoIntercept, ControlPortIoIntercept, u16);
 
     #[cfg(test)]

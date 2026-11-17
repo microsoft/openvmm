@@ -82,24 +82,13 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
 
 /// Shared by `mmio` and `pio`
 macro_rules! io_region {
-    ($register:ident, $control:ident, $addr:ty) => {
+    ($register:ident, $control:ident, $addr:ty $(, $register_method:item)*) => {
         /// A trait to register device-specific IO intercept regions.
         pub trait $register {
             /// Registers a new IO region of the given length.
             fn new_io_region(&mut self, region_name: &str, len: $addr) -> Box<dyn $control>;
 
-            /// Registers a lower-priority region for accesses not claimed by
-            /// an ordinary IO region. Returns `None` if this chipset cannot
-            /// provide range-scoped fallback routing.
-            ///
-            /// Dropping the returned control unmaps the fallback region.
-            fn new_fallback_io_region(
-                &mut self,
-                _region_name: &str,
-                _len: $addr,
-            ) -> Option<Box<dyn $control>> {
-                None
-            }
+            $($register_method)*
         }
 
         /// A trait to map/unmap a device-specific IO memory region.

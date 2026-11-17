@@ -668,7 +668,7 @@ impl PcieDownstreamPort {
     }
 
     /// Whether this bridge currently decodes the whole memory access.
-    pub fn decodes_mmio(&self, addr: u64, len: usize) -> bool {
+    pub(crate) fn decodes_mmio(&self, addr: u64, len: usize) -> bool {
         bridge_decodes_mmio(&self.cfg_space, addr, len)
     }
 
@@ -689,32 +689,26 @@ impl PcieDownstreamPort {
     }
 
     /// Forward a decoded memory read to a downstream fabric.
-    pub fn forward_mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+    pub(crate) fn forward_mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         if !self.decodes_mmio(addr, data.len()) {
             return IoResult::Err(IoError::InvalidRegister);
         }
         let Some((_, device)) = &mut self.link else {
             return IoResult::Err(IoError::InvalidRegister);
         };
-        if !device.supports_mmio_forwarding() {
-            return IoResult::Err(IoError::InvalidRegister);
-        }
         device
             .mmio_read(addr, data)
             .unwrap_or(IoResult::Err(IoError::InvalidRegister))
     }
 
     /// Forward a decoded memory write to a downstream fabric.
-    pub fn forward_mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
+    pub(crate) fn forward_mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
         if !self.decodes_mmio(addr, data.len()) {
             return IoResult::Err(IoError::InvalidRegister);
         }
         let Some((_, device)) = &mut self.link else {
             return IoResult::Err(IoError::InvalidRegister);
         };
-        if !device.supports_mmio_forwarding() {
-            return IoResult::Err(IoError::InvalidRegister);
-        }
         device
             .mmio_write(addr, data)
             .unwrap_or(IoResult::Err(IoError::InvalidRegister))

@@ -113,8 +113,7 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
         nested_test: Option<NestedTestDeps>,
     ) -> Option<Self> {
         // Cross-OS nesting needs shared artifacts because the host cannot query
-        // the nested binary. Windows CI does not yet provision those artifacts.
-        // TODO: enable cross-OS nesting on Windows once provisioning is available.
+        // the nested binary.
         let different_nested_target = nested_test
             .as_ref()
             .map(|t| t.archive.target_triple().unwrap())
@@ -125,7 +124,7 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
 
         if !(T::SUPPORTS_CPU_EMULATION || arch == MachineArch::host())
             || !T::check_compat(&firmware, arch)
-            || different_nested_target && (cfg!(windows) || !T::supports_file_sharing(&firmware))
+            || different_nested_target && !T::supports_file_sharing(&firmware)
         {
             return None;
         }
@@ -275,7 +274,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
 }
 
 /// Petri VM configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PetriVmConfig {
     /// The name of the VM
     pub name: String,
@@ -321,7 +320,7 @@ pub struct GuestShare {
 }
 
 /// PCIe NVMe drive configuration.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PcieNvmeDrive {
     /// PCIe root port name (e.g. "s0rc0rp0").
     pub port_name: String,
@@ -332,7 +331,7 @@ pub struct PcieNvmeDrive {
 }
 
 /// PCIe virtio-blk drive configuration.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PcieVirtioBlkDrive {
     /// PCIe root port name (e.g. "s0rc0rp0").
     pub port_name: String,
@@ -640,11 +639,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
         let isolated_without_paravisor = artifacts.firmware.is_isolated_without_paravisor();
+        let mshv = artifacts.firmware.mshv_boot().is_some();
         let builder = Self::minimal(params.test_name, params.log_source, artifacts, driver)?
             .clear_minimal_mode()
             .with_serial_output()
             .with_capture_inspect_on_failure();
-        if isolated_without_paravisor {
+        if isolated_without_paravisor || mshv {
             Ok(builder)
         } else {
             builder
@@ -865,6 +865,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// [`with_prebuilt_initrd`](Self::with_prebuilt_initrd) for each
     /// iteration.
     pub fn prepare_initrd(&self) -> anyhow::Result<PetriInitrd> {
+        if let Some(boot) = self.config.firmware.mshv_boot() {
+            return boot.prepare_initrd(
+                self.pipette_binary
+                    .as_ref()
+                    .context("mshv initrd preparation requires Pipette")?,
+            );
+        }
         self.prepare_custom_initrd(T::build_custom_init_script)
     }
 
@@ -1182,9 +1189,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 .enable_vpci_boot = true;
         }
 
-        let builder = if let Some(boot_drive) =
-            self.config.firmware.boot_drive(self.use_virtio_vsock)?
-        {
+        let builder = if let Some(boot_drive) = self.config.firmware.boot_drive(
+            self.use_virtio_vsock,
+            self.resources.prebuilt_initrd.as_ref(),
+        )? {
             match self.boot_device_type {
                 BootDeviceType::None => unreachable!(),
                 BootDeviceType::Ide => self.add_ide_drive(
@@ -1344,12 +1352,15 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Whether Petri will inject Pipette as PID 1 init in the initrd.
     ///
-    /// True for non-OpenHCL Linux direct boot when a pipette binary is
-    /// available. Pipette is injected into the initrd via CPIO and set
-    /// as `rdinit=/pipette`.
+    /// True for non-OpenHCL Linux direct boot or an mshv base initrd when a
+    /// Pipette binary is available. Caller-prepared mshv userspace is unchanged.
     fn uses_pipette_as_init(&self) -> bool {
-        self.config.firmware.is_linux_direct()
-            && !self.config.firmware.is_openhcl()
+        ((self.config.firmware.is_linux_direct() && !self.config.firmware.is_openhcl())
+            || self
+                .config
+                .firmware
+                .mshv_boot()
+                .is_some_and(|boot| matches!(&boot.initrd, crate::mshv_boot::MshvInitrd::Base(_))))
             && self.pipette_binary.is_some()
     }
 
@@ -1382,16 +1393,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     async fn run_core(mut self) -> anyhow::Result<PetriVm<T>> {
-        // Add the boot disk now to allow the test to modify the boot type
-        // Add the agent disks now to allow the test to add custom files
-        self = self.add_boot_disk()?.add_agent_disks()?;
-
         // Auto-prepare the initrd with pipette injected if needed.
         // This centralizes the injection logic so backends only ever
         // receive a prebuilt_initrd path.
         if self.uses_pipette_as_init() && self.resources.prebuilt_initrd.is_none() {
             self.resources.prebuilt_initrd = Some(self.prepare_initrd()?);
         }
+        // mshv boot media consumes the prepared userspace.
+        self = self.add_boot_disk()?.add_agent_disks()?;
 
         tracing::debug!(builder = ?self);
 
@@ -1474,6 +1483,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             )
     }
 
+    fn start_watchdog_timer(
+        driver: &DefaultDriver,
+        watchdog_timeout: Option<Duration>,
+    ) -> Option<Task<()>> {
+        watchdog_timeout.map(|timeout| {
+            // Unwind out of the task pool so Petri records a test failure.
+            let timer_driver = driver.clone();
+            driver.spawn("timer-watchdog", async move {
+                PolledTimer::new(&timer_driver).sleep(timeout).await;
+                tracing::error!(?timeout, "Test timeout reached, aborting.");
+                panic!("Test timed out");
+            })
+        })
+    }
+
     fn start_watchdog_tasks(
         resources: &PetriVmResources,
         runtime: &mut T::VmRuntime,
@@ -1482,16 +1506,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     ) -> anyhow::Result<Vec<Task<()>>> {
         let mut tasks = Vec::new();
 
-        if let Some(timeout) = watchdog_timeout {
-            // The panic unwinds out of the task pool, which drops the VM and
-            // triggers the same inspect capture as any other failure.
-            let driver = resources.driver.clone();
-            tasks.push(resources.driver.spawn("timer-watchdog", async move {
-                PolledTimer::new(&driver).sleep(timeout).await;
-                tracing::error!(?timeout, "Test timeout reached, aborting.");
-                panic!("Test timed out");
-            }));
-        }
+        tasks.extend(Self::start_watchdog_timer(
+            &resources.driver,
+            watchdog_timeout,
+        ));
 
         if enable_screenshots {
             if let Some(mut framebuffer_access) = runtime.take_framebuffer_access() {
@@ -2916,7 +2934,7 @@ impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
 }
 
 /// Common processor topology information for the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessorTopology {
     /// The number of virtual processors.
     pub vp_count: u32,
@@ -2971,7 +2989,7 @@ pub enum ApicMode {
 }
 
 /// Common memory configuration information for the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MemoryConfig {
     /// Specifies the amount of memory, in bytes, to assign to the
     /// virtual machine.
@@ -3029,7 +3047,7 @@ impl Default for MemoryConfig {
 }
 
 /// UEFI firmware configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UefiConfig {
     /// Enable secure boot
     pub secure_boot_enabled: bool,
@@ -3106,7 +3124,7 @@ pub enum OpenvmmLogConfig {
 }
 
 /// OpenHCL configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OpenHclConfig {
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
@@ -3185,7 +3203,7 @@ impl Default for OpenHclConfig {
 }
 
 /// TPM configuration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TpmConfig {
     /// Use ephemeral TPM state (do not persist to VMGS)
     pub no_persistent_secrets: bool,
@@ -3249,7 +3267,7 @@ pub enum PetriHardwareSealingPolicy {
 }
 
 /// Source for the IGVM firmware used to load OpenHCL.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IgvmFirmwareSource {
     /// Load the IGVM from the specified file.
     File(ResolvedArtifact),
@@ -3260,7 +3278,7 @@ pub enum IgvmFirmwareSource {
 /// Firmware to load into the test VM.
 // TODO: remove the guests from the firmware enum so that we don't pass them
 // to the VMM backend after we have already used them generically.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Firmware {
     /// Boot Linux directly, without any firmware.
     LinuxDirect {
@@ -3778,7 +3796,21 @@ impl Firmware {
         }
     }
 
-    fn boot_drive(&self, use_virtio_vsock: bool) -> anyhow::Result<Option<Drive>> {
+    fn mshv_boot(&self) -> Option<&MshvBoot> {
+        match self {
+            Firmware::Uefi {
+                guest: UefiGuest::Mshv(boot),
+                ..
+            } => Some(boot),
+            _ => None,
+        }
+    }
+
+    fn boot_drive(
+        &self,
+        use_virtio_vsock: bool,
+        prepared: Option<&PetriInitrd>,
+    ) -> anyhow::Result<Option<Drive>> {
         if let Firmware::Uefi {
             guest: UefiGuest::Mshv(boot),
             ..
@@ -3790,7 +3822,7 @@ impl Firmware {
         {
             return Ok(Some(Drive::new(
                 Some(
-                    boot.build(use_virtio_vsock)
+                    boot.build(use_virtio_vsock, prepared)
                         .context("composing mshv boot disk")?,
                 ),
                 false,
@@ -3836,7 +3868,7 @@ impl Firmware {
 
 /// The guest the VM will boot into. A boot drive with the chosen setup
 /// will be automatically configured.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PcatGuest {
     /// Mount a VHD as the boot drive.
     Vhd(BootImageConfig<boot_image_type::Vhd>),
@@ -3859,7 +3891,7 @@ impl PcatGuest {
 
 /// The guest the VM will boot into. A boot drive with the chosen setup
 /// will be automatically configured.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UefiGuest {
     /// Compose an mshv root-partition boot disk from resolved artifacts and a
     /// prepared initrd. Requires x86-64 UEFI without OpenHCL.
@@ -3906,11 +3938,11 @@ pub mod boot_image_type {
     pub trait BootImageType: private::Sealed {}
 
     /// BootImageConfig for a VHD file
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum Vhd {}
 
     /// BootImageConfig for an ISO file
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum Iso {}
 
     impl BootImageType for Vhd {}
@@ -3918,7 +3950,7 @@ pub mod boot_image_type {
 }
 
 /// Configuration information for the boot drive of the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BootImageConfig<T: boot_image_type::BootImageType> {
     /// Artifact source corresponding to the boot media (local or remote).
     artifact: ResolvedArtifactSource,
@@ -4022,6 +4054,15 @@ pub enum Disk {
     Memory(u64),
     /// Memory differencing disk backed by a VHD (local or remote)
     Differencing(DiskPath),
+    /// Differencing disk backed by a VHD (local or remote) that stores writes
+    /// in a SQLite file, so they persist across VM worker processes. The file
+    /// is created on first use.
+    SqliteDifferencing {
+        /// The base disk.
+        base: DiskPath,
+        /// The SQLite file that stores the writes.
+        dbhd_path: PathBuf,
+    },
     /// Persistent VHD
     Persistent(PathBuf),
     /// Disk backed by a temporary VHD

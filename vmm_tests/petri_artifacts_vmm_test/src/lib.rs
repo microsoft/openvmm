@@ -427,6 +427,12 @@ pub mod artifacts {
             LINUX_DIRECT_TEST_INITRD_AARCH64("initrd", AARCH64),
             /// Test linux direct bzImage kernel for x64 (from OpenVMM deps)
             LINUX_DIRECT_TEST_BZIMAGE_X64("bzImage", X64),
+            /// Module-free mshv root kernel; not the nested child's kernel.
+            MSHV_TEST_KERNEL_X64("mshv-bzImage", X64),
+            /// Development-only UEFI host boot application for the mshv root.
+            MSHV_HOST_BOOT_X64("mshv_host_boot.efi", X64),
+            /// Extracted, licensed mshv hypervisor/loader payload directory.
+            MSHV_BOOT_ARTIFACTS_X64("mshv-boot-artifacts", X64),
             /// PCAT firmware DLL
             PCAT_FIRMWARE_X64("vmfirmwarepcat.dll", X64),
             /// SVGA firmware DLL
@@ -524,6 +530,8 @@ pub mod artifacts {
             LATEST_CVM_X64("openhcl-x64-cvm.bin", X64),
             /// OpenHCL IGVM (using a linux direct-boot test image instead of UEFI)
             LATEST_LINUX_DIRECT_TEST_X64("openhcl-x64-test-linux-direct.bin", X64),
+            /// OpenHCL IGVM with a measured SIVM policy requiring secure boot.
+            LATEST_SIVM_TEST_X64("openhcl-x64-test-sivm.bin", X64),
             /// OpenHCL IGVM last release (using a linux direct-boot test image instead of UEFI)
             LATEST_RELEASE_LINUX_DIRECT_X64("release-2511-x64-direct-openhcl.bin", X64),
             /// OpenHCL IGVM (standard AARCH64)
@@ -537,6 +545,11 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_X64 {}
+
+        impl IsLoadable for LATEST_SIVM_TEST_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+        impl IsOpenhclIgvm for LATEST_SIVM_TEST_X64 {}
 
         impl IsLoadable for LATEST_RELEASE_STANDARD_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;

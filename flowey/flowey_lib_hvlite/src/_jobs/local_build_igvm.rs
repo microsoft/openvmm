@@ -36,7 +36,6 @@ pub struct Customizations {
     pub custom_extra_rootfs: Vec<PathBuf>,
     pub confidential_debug: bool,
     pub disable_secure_avic: bool,
-    pub enable_product_policy: bool,
     pub override_arch: Option<CommonArch>,
     pub override_kernel_pkg: Option<OpenhclKernelPackage>,
     pub override_manifest: Option<PathBuf>,
@@ -100,7 +99,6 @@ impl SimpleFlowNode for Node {
             override_max_trace_level,
             confidential_debug,
             disable_secure_avic,
-            enable_product_policy,
             with_debuginfo,
             with_mi_secure,
             with_perf_tools,
@@ -191,10 +189,6 @@ impl SimpleFlowNode for Node {
 
             if with_mi_secure {
                 openvmm_hcl_features.insert(OpenvmmHclFeature::MiSecure);
-            }
-
-            if enable_product_policy {
-                openvmm_hcl_features.insert(OpenvmmHclFeature::ProductPolicy);
             }
 
             if let Some(arch) = override_arch {

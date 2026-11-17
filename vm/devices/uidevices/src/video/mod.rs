@@ -752,10 +752,6 @@ mod tests {
     struct TestMappedRegion(SparseMapping);
 
     impl MappedMemoryRegion for TestMappedRegion {
-        fn guest_address(&self) -> Option<u64> {
-            None
-        }
-
         fn map(
             &self,
             offset: usize,

@@ -385,7 +385,9 @@ impl<M: RingMem + Unpin> KvpChannel<M> {
                     *state = ReadyState::WaitingResponse(rpc);
                 }
                 ReadyState::WaitingResponse(_) => {
-                    let (status, response) = self.pipe.read_response().await?;
+                    let Some((status, response)) = self.pipe.read_response(versions).await? else {
+                        return Ok(());
+                    };
                     let r = if status == Status::SUCCESS {
                         Ok(())
                     } else {

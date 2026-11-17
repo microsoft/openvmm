@@ -118,10 +118,16 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         .await
     });
 
-    let (_client, devices) =
+    let (client, devices) =
         super::VpciClient::connect(&driver, guest, Box::new(BusWrapper(bus)), mesh::channel().0)
             .await
             .unwrap();
+
+    // The emulated host accepts the newest version the client asks for.
+    assert_eq!(
+        client.protocol_version(),
+        vpci_protocol::ProtocolVersion::RB
+    );
 
     let (device, _removed) = devices
         .into_iter()

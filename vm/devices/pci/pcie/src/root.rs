@@ -1288,14 +1288,9 @@ mod tests {
 
     struct FabricEndpoint {
         traffic: Arc<Mutex<FabricTraffic>>,
-        forwarding: bool,
     }
 
     impl GenericPciBusDevice for FabricEndpoint {
-        fn supports_mmio_forwarding(&mut self) -> bool {
-            self.forwarding
-        }
-
         fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> Option<IoResult> {
             self.traffic.lock().reads.push((addr, data.len()));
             data.fill(0xa5);
@@ -1402,7 +1397,6 @@ mod tests {
             "fabric",
             Box::new(FabricEndpoint {
                 traffic: traffic.clone(),
-                forwarding: true,
             }),
         )
         .unwrap();
@@ -1442,14 +1436,7 @@ mod tests {
 
     #[test]
     fn fabric_apertures_require_fallback_registration_support() {
-        struct OrdinaryMmioRegistration;
-        impl RegisterMmioIntercept for OrdinaryMmioRegistration {
-            fn new_io_region(&mut self, name: &str, len: u64) -> Box<dyn ControlMmioIntercept> {
-                TestPcieMmioRegistration {}.new_io_region(name, len)
-            }
-        }
-
-        let mut register = OrdinaryMmioRegistration;
+        let mut register = chipset_device::mmio::ExternallyManagedMmioIntercepts;
         GenericPcieRootComplex::builder(
             &mut register,
             &mut TestPciePioRegistration,
@@ -1498,7 +1485,6 @@ mod tests {
             "first",
             Box::new(FabricEndpoint {
                 traffic: first.clone(),
-                forwarding: true,
             }),
         )
         .unwrap();
@@ -1521,7 +1507,6 @@ mod tests {
             "second",
             Box::new(FabricEndpoint {
                 traffic: second.clone(),
-                forwarding: true,
             }),
         )
         .unwrap();
@@ -1535,13 +1520,11 @@ mod tests {
     #[test]
     fn unclaimed_mmio_is_not_delivered_to_ordinary_endpoints() {
         let mut rc = fabric_root(1);
-        let traffic = Arc::new(Mutex::new(FabricTraffic::default()));
         rc.add_pcie_device(
             0,
             "ordinary",
-            Box::new(FabricEndpoint {
-                traffic: traffic.clone(),
-                forwarding: false,
+            Box::new(DeferredEndpoint {
+                state: Arc::new(Mutex::new(DeferredEndpointState::new(0))),
             }),
         )
         .unwrap();
@@ -1550,7 +1533,10 @@ mod tests {
             rc.mmio_read(0x8100_0040, &mut [0; 4]),
             IoResult::Err(_)
         ));
-        assert!(traffic.lock().reads.is_empty());
+        assert!(matches!(
+            rc.mmio_write(0x8100_0040, &[1, 2, 3, 4]),
+            IoResult::Err(_)
+        ));
     }
 
     #[test]
@@ -1563,7 +1549,6 @@ mod tests {
                 "fabric",
                 Box::new(FabricEndpoint {
                     traffic: traffic.clone(),
-                    forwarding: true,
                 }),
             )
             .unwrap();
@@ -1586,7 +1571,6 @@ mod tests {
                 "fabric",
                 Box::new(FabricEndpoint {
                     traffic: traffic.clone(),
-                    forwarding: true,
                 }),
             )
             .unwrap();
@@ -1633,7 +1617,6 @@ mod tests {
                 "first",
                 Box::new(FabricEndpoint {
                     traffic: first.clone(),
-                    forwarding: true,
                 }),
             )
             .unwrap();
@@ -1644,7 +1627,6 @@ mod tests {
                 "second",
                 Box::new(FabricEndpoint {
                     traffic: second.clone(),
-                    forwarding: true,
                 }),
             )
             .unwrap();
@@ -1808,10 +1790,6 @@ mod tests {
     struct SwitchAdapter(Arc<Mutex<GenericPcieSwitch>>);
 
     impl GenericPciBusDevice for SwitchAdapter {
-        fn supports_mmio_forwarding(&mut self) -> bool {
-            true
-        }
-
         fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> Option<IoResult> {
             Some(self.0.lock().mmio_read(addr, data))
         }

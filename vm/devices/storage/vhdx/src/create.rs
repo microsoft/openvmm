@@ -112,6 +112,22 @@ impl VhdxParent {
     pub fn absolute_win32_path(&self) -> Option<&str> {
         self.absolute_win32_path.as_deref()
     }
+
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, InvalidFormatReason> {
+        let linkage = format!("{{{}}}", self.linkage);
+        let mut values = vec![(format::PARENT_LOCATOR_KEY_PARENT_LINKAGE, linkage.as_str())];
+        if let Some(path) = self.relative_path() {
+            values.push((format::PARENT_LOCATOR_KEY_RELATIVE_PATH, path));
+        }
+        if let Some(path) = self.absolute_win32_path() {
+            values.push((format::PARENT_LOCATOR_KEY_ABSOLUTE_PATH, path));
+        }
+        if let Some(path) = self.volume_path() {
+            values.push((format::PARENT_LOCATOR_KEY_VOLUME_PATH, path));
+        }
+        build_locator(format::PARENT_LOCATOR_VHDX_TYPE_GUID, &values)
+            .ok_or(InvalidFormatReason::ParentLocatorTooLarge)
+    }
 }
 
 fn validate_parent_path(path: String) -> Result<Option<String>, InvalidFormatReason> {
@@ -419,31 +435,7 @@ pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<
     let mut item_data_offset = format::METADATA_TABLE_SIZE as u32;
 
     let parent_locator = if let DiskType::Differencing(parent) = &params.disk_type {
-        let parent_linkage = format!("{{{}}}", parent.linkage);
-        let mut values = vec![(
-            format::PARENT_LOCATOR_KEY_PARENT_LINKAGE,
-            parent_linkage.as_str(),
-        )];
-        if let Some(relative_path) = &parent.relative_path {
-            values.push((
-                format::PARENT_LOCATOR_KEY_RELATIVE_PATH,
-                relative_path.as_str(),
-            ));
-        }
-        if let Some(absolute_win32_path) = &parent.absolute_win32_path {
-            values.push((
-                format::PARENT_LOCATOR_KEY_ABSOLUTE_PATH,
-                absolute_win32_path.as_str(),
-            ));
-        }
-        if let Some(volume_path) = &parent.volume_path {
-            values.push((format::PARENT_LOCATOR_KEY_VOLUME_PATH, volume_path.as_str()));
-        }
-        Some(
-            build_locator(format::PARENT_LOCATOR_VHDX_TYPE_GUID, &values).ok_or(
-                CreateError::InvalidFormat(InvalidFormatReason::ParentLocatorTooLarge),
-            )?,
-        )
+        Some(parent.encode().map_err(CreateError::InvalidFormat)?)
     } else {
         None
     };
@@ -1130,23 +1122,31 @@ mod tests {
     #[async_test]
     async fn create_rejects_oversized_parent_locator() {
         let original = vec![0xa5; 4096];
-        let file = InMemoryFile::from_snapshot(original.clone());
-        let parent = VhdxParent::unlinked()
-            .with_relative_path("a".repeat(format::MAX_HOSTING_SECTOR_SIZE as usize))
-            .unwrap();
-        let mut params = CreateParams {
-            disk_size: format::GB1,
-            disk_type: DiskType::Differencing(parent),
-            ..Default::default()
-        };
+        for parent in [
+            VhdxParent::unlinked()
+                .with_relative_path("a".repeat(format::MAX_HOSTING_SECTOR_SIZE as usize))
+                .unwrap(),
+            VhdxParent::unlinked()
+                .with_relative_path("r".repeat(32_000))
+                .unwrap()
+                .with_absolute_win32_path("a".repeat(32_000))
+                .unwrap(),
+        ] {
+            let file = InMemoryFile::from_snapshot(original.clone());
+            let mut params = CreateParams {
+                disk_size: format::GB1,
+                disk_type: DiskType::Differencing(parent),
+                ..Default::default()
+            };
 
-        assert!(matches!(
-            create(&file, &mut params).await,
-            Err(CreateError::InvalidFormat(
-                InvalidFormatReason::ParentLocatorTooLarge
-            ))
-        ));
-        assert_eq!(file.snapshot(), original);
+            assert!(matches!(
+                create(&file, &mut params).await,
+                Err(CreateError::InvalidFormat(
+                    InvalidFormatReason::ParentLocatorTooLarge
+                ))
+            ));
+            assert_eq!(file.snapshot(), original);
+        }
     }
 
     #[async_test]

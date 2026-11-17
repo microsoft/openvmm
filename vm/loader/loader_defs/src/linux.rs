@@ -222,6 +222,9 @@ pub struct boot_params {
     pub _pad2: [u8; 4],
     pub tboot_addr: u64,
     pub ist_info: ist_info,
+    /// Physical address of the ACPI RSDP, at zero-page offset 0x070. When it
+    /// is nonzero, Linux 4.20 and later use it instead of searching for the
+    /// RSDP.
     pub acpi_rsdp_addr: u64,
     pub _pad3: [u8; 8],
     pub hd0_info: [u8; 16],

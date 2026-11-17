@@ -14,12 +14,17 @@ use crate::service::diagnostics::log::MAX_MESSAGE_LENGTH;
 pub struct LogAccumulator {
     /// The current log being accumulated (if any)
     current: Option<Log>,
+    /// Discard fragments of an oversized message until a complete entry arrives.
+    discarding: bool,
 }
 
 impl LogAccumulator {
     /// Create a new log accumulator
     pub fn new() -> Self {
-        Self { current: None }
+        Self {
+            current: None,
+            discarding: false,
+        }
     }
 
     /// Feed a log entry into the accumulator
@@ -33,8 +38,25 @@ impl LogAccumulator {
     ///
     /// # Errors
     /// Returns `LogParseError::MessageTooLong` if the accumulated message
-    /// exceeds the maximum length.
+    /// exceeds the maximum length. The oversized message is dropped, including
+    /// subsequent fragments through the entry ending with a newline.
     pub fn feed(&mut self, log: Log) -> Result<(), LogParseError> {
+        if self.discarding {
+            self.discarding = !log.is_complete();
+            return Ok(());
+        }
+
+        let message_length =
+            self.current.as_ref().map_or(0, |log| log.message.len()) + log.message.len();
+        if message_length > MAX_MESSAGE_LENGTH as usize {
+            self.current = None;
+            self.discarding = !log.is_complete();
+            return Err(LogParseError::MessageTooLong(
+                MAX_MESSAGE_LENGTH,
+                message_length as u16,
+            ));
+        }
+
         match self.current.take() {
             None => {
                 // No current message, start accumulating
@@ -44,18 +66,9 @@ impl LogAccumulator {
                 // Append to existing message
                 current.message.push_str(&log.message);
 
-                // Validate total length
-                if current.message.len() > MAX_MESSAGE_LENGTH as usize {
-                    return Err(LogParseError::MessageTooLong(
-                        MAX_MESSAGE_LENGTH,
-                        current.message.len() as u16,
-                    ));
-                }
-
                 self.current = Some(current);
             }
         }
-
         Ok(())
     }
 
