@@ -636,6 +636,26 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         self.set_register_state(value)
     }
 
+    fn svm_msrs(&mut self) -> Result<vp::SvmMsrs, Self::Error> {
+        super::msr_state::svm_msrs(&self.kvm())
+    }
+
+    fn set_svm_msrs(&mut self, value: &vp::SvmMsrs) -> Result<(), Self::Error> {
+        super::msr_state::set_svm_msrs(
+            &self.kvm(),
+            value,
+            self.vp.partition.caps.physical_address_width,
+        )
+    }
+
+    fn osvw(&mut self) -> Result<vp::Osvw, Self::Error> {
+        super::msr_state::osvw(&self.kvm())
+    }
+
+    fn set_osvw(&mut self, value: &vp::Osvw) -> Result<(), Self::Error> {
+        super::msr_state::set_osvw(&self.kvm(), value)
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }

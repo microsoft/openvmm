@@ -3,7 +3,8 @@
 
 //! Guest-free contract tests of the guest-writable MSRs that a save holds beyond
 //! the registers: the feature and power controls, `IA32_UMWAIT_CONTROL`,
-//! `IA32_BNDCFGS`, `IA32_DEBUGCTL`, and the machine-check state.
+//! `IA32_BNDCFGS`, `IA32_DEBUGCTL`, the machine-check state, and AMD's SVM and
+//! OSVW MSRs.
 //!
 //! A guest writes these MSRs at boot, a new VP starts without what it wrote,
 //! and a restore into a new VP must give the guest back what it saved.
@@ -180,6 +181,124 @@ fn bndcfgs_survives_a_save_and_restore(
         "the restore did not give the guest its configuration: saved {:#x}, restored {:#x}",
         written.value,
         restored.value
+    );
+    Ok(())
+}
+
+// KVM on an AMD host keeps a guest's VM_CR and VM_HSAVE_PA, though the guest's
+// CPUID has no SVM, and a new VP holds 0 in each.
+backend_test!(svm_msrs_survive_a_save_and_restore, requires: [svm_msrs]);
+fn svm_msrs_survive_a_save_and_restore(
+    _partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let mut state = processor.access_state(Vtl::Vtl0);
+    anyhow::ensure!(
+        state.svm_msrs()? == vp::SvmMsrs::default(),
+        "a new VP does not hold the reset values of VM_CR and VM_HSAVE_PA: {:#x?}",
+        state.svm_msrs()?
+    );
+
+    // DPD and DIS_A20M in VM_CR, and a host save area at 0x5000. SVMDIS would
+    // stay set for the life of the vCPU, as KVM keeps it once set.
+    let written = vp::SvmMsrs {
+        vm_cr: 0x5,
+        vm_hsave_pa: 0x5000,
+    };
+    state.set_svm_msrs(&written)?;
+    state.commit()?;
+    anyhow::ensure!(
+        state.svm_msrs()? == written,
+        "the VP does not hold the values that were just set"
+    );
+
+    let saved = save(&mut state)?;
+    state.set_svm_msrs(&vp::SvmMsrs::default())?;
+    state.commit()?;
+
+    // A host save area that is not page-aligned, which a guest cannot write,
+    // is refused, and writes nothing.
+    anyhow::ensure!(
+        state
+            .set_svm_msrs(&vp::SvmMsrs {
+                vm_cr: 0x1,
+                vm_hsave_pa: 0x5008,
+            })
+            .is_err(),
+        "a VM_HSAVE_PA that is not page-aligned is restored"
+    );
+    anyhow::ensure!(
+        state.svm_msrs()? == vp::SvmMsrs::default(),
+        "a refused state changed the VP: {:#x?}",
+        state.svm_msrs()?
+    );
+
+    restore(&mut state, &saved)?;
+    let restored = state.svm_msrs()?;
+    anyhow::ensure!(
+        restored == written,
+        "the restore did not give the guest its values: saved {written:#x?}, restored {restored:#x?}"
+    );
+    Ok(())
+}
+
+// A guest whose CPUID enumerates OSVW can write AMD's OSVW MSRs, whose values a
+// new VP takes from the backend: KVM derives them from the host's.
+backend_test!(osvw_survives_a_save_and_restore, requires: [osvw]);
+fn osvw_survives_a_save_and_restore(
+    _partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let mut state = processor.access_state(Vtl::Vtl0);
+    let new_vp = state.osvw()?;
+
+    let written = vp::Osvw {
+        id_length: new_vp.id_length.wrapping_add(4),
+        status: new_vp.status ^ 0x5,
+    };
+    state.set_osvw(&written)?;
+    state.commit()?;
+    anyhow::ensure!(
+        state.osvw()? == written,
+        "the VP does not hold the values that were just set"
+    );
+
+    let saved = save(&mut state)?;
+    state.set_osvw(&new_vp)?;
+    state.commit()?;
+
+    restore(&mut state, &saved)?;
+    let restored = state.osvw()?;
+    anyhow::ensure!(
+        restored == written,
+        "the restore did not give the guest its values: saved {written:#x?}, restored {restored:#x?}"
+    );
+    Ok(())
+}
+
+// A VM reset puts back the OSVW values that a new VP holds, as a reboot's
+// firmware would write them again, not the reset value of the MSRs, 0.
+backend_test!(a_reset_returns_osvw_to_what_a_new_vp_holds, requires: [osvw]);
+fn a_reset_returns_osvw_to_what_a_new_vp_holds(
+    _partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let new_vp = processor.access_state(Vtl::Vtl0).osvw()?;
+    {
+        let mut state = processor.access_state(Vtl::Vtl0);
+        state.set_osvw(&vp::Osvw {
+            id_length: new_vp.id_length.wrapping_add(4),
+            status: new_vp.status ^ 0x5,
+        })?;
+        state.commit()?;
+    }
+
+    processor.reset()?;
+
+    let reset = processor.access_state(Vtl::Vtl0).osvw()?;
+    anyhow::ensure!(
+        reset == new_vp,
+        "the reset did not give the VP the values of a new VP: new {new_vp:#x?}, reset {reset:#x?}"
     );
     Ok(())
 }
