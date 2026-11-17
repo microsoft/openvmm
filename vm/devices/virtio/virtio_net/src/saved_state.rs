@@ -89,19 +89,21 @@ impl NicBuilder {
 }
 
 impl Device {
-    /// Checks and resets the saved queue-pair state before `start_queue`
-    /// starts queue `pair_idx`/`is_rx`.
+    /// Checks the saved queue-pair state before `start_queue` starts queue
+    /// `pair_idx`/`is_rx`.
+    ///
+    /// The queue-pair lifecycle that the last stop or restore recorded stays
+    /// as it is: the next stop of a started pair records it again, and a start
+    /// that fails leaves it for the next save, as the transport keeps the
+    /// saved progress of the queues that do not start.
     pub(crate) fn prepare_queue_start(
-        &mut self,
+        &self,
         pair_idx: usize,
         is_rx: bool,
         features: &VirtioDeviceFeatures,
     ) -> anyhow::Result<()> {
         let feature_banks = [features.bank(0), features.bank(1)];
         match self.pairs.get(pair_idx) {
-            Some(QueuePairState::Empty) => {
-                self.lifecycle.stopped_queue_count = 0;
-            }
             Some(QueuePairState::Stopped { rx, tx }) => {
                 anyhow::ensure!(
                     rx.is_none() && tx.is_none(),
@@ -113,7 +115,6 @@ impl Device {
                         "virtio-net negotiated features changed while restarting queues"
                     );
                 }
-                self.lifecycle.stopped_queue_count = 0;
             }
             Some(QueuePairState::HalfOpen {
                 is_rx: pending_is_rx,

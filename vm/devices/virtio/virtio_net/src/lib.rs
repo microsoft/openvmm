@@ -405,17 +405,29 @@ impl VirtioDevice for Device {
 
                 let guest_memory = resources.guest_memory.clone();
                 let queue_size = resources.params.size;
-                let queue_event = PolledWait::new(driver, resources.event)
-                    .context("failed creating queue event")?;
-                let queue = VirtioQueue::new(
-                    *features,
-                    resources.params,
-                    resources.guest_memory,
-                    resources.notify,
-                    queue_event,
-                    initial_state,
-                )
-                .context("failed creating virtio net queue")?;
+                let queue = PolledWait::new(driver, resources.event)
+                    .context("failed creating queue event")
+                    .and_then(|queue_event| {
+                        VirtioQueue::new(
+                            *features,
+                            resources.params,
+                            resources.guest_memory,
+                            resources.notify,
+                            queue_event,
+                            initial_state,
+                        )
+                        .context("failed creating virtio net queue")
+                    });
+                let queue = match queue {
+                    Ok(queue) => queue,
+                    Err(err) => {
+                        // The pair does not start, so its first queue, which
+                        // has not run, stops with it, and the transport keeps
+                        // the progress that it saved for both.
+                        self.pairs[pair_idx] = QueuePairState::Empty;
+                        return Err(err);
+                    }
+                };
 
                 // Both queues are successfully constructed; extract the first and form the pair.
                 let first_pair = !self
