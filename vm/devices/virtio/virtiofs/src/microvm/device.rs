@@ -710,4 +710,60 @@ mod tests {
         transport.stop().await;
         transport.save().await.unwrap();
     }
+
+    /// The restore of the transport reopens the host files of the handles
+    /// that the guest held open, so a file that is gone from the host fails
+    /// the restore itself, before any queue starts, rather than the start
+    /// that follows it.
+    #[async_test]
+    async fn transport_restore_fails_when_an_open_file_is_gone(driver: DefaultDriver) {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("data"), b"data").unwrap();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let device = VirtioFsDevice::new_microvm_hostfs(
+            &driver_source,
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(root.path()).unwrap(),
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            MicroVmOwnerMode::Vmm,
+            root.path(),
+            None,
+        )
+        .unwrap();
+        {
+            let fs = device.stateful_fs.as_ref().unwrap();
+            let (data, _) = fs
+                .get_inode(fuse::protocol::FUSE_ROOT_ID)
+                .unwrap()
+                .lookup_child(lx::LxStr::from_bytes(b"data"))
+                .unwrap();
+            let (data, _) = fs.insert_inode(data).unwrap();
+            fs.insert_file(data.open(lx::O_RDONLY).unwrap()).unwrap();
+        }
+        let mut source = VirtioMmioDevice::new(
+            Box::new(device),
+            &driver,
+            GuestMemory::empty(),
+            LineInterrupt::detached(),
+            None,
+            0,
+            0x1000,
+        )
+        .unwrap();
+        source.quiesce_input().await.unwrap();
+        source.stop().await;
+        let saved = source.save().await.unwrap();
+        source.teardown().await;
+
+        std::fs::remove_file(root.path().join("data")).unwrap();
+        let mut destination = microvm_transport(&driver, root.path());
+        let error = destination.restore(saved).await.unwrap_err();
+        assert!(
+            format!("{:#}", anyhow::Error::from(error)).contains("cannot be reopened"),
+            "the restore failed for another reason"
+        );
+    }
 }
