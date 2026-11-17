@@ -443,11 +443,20 @@ impl LoadedVm {
     /// quiesce, and releases the snapshot boundary. This is the only request
     /// that runs a quiesced VM again.
     ///
+    /// The VM must be at a snapshot boundary: outside one, the request is
+    /// rejected before it starts anything, since it would start a paused VM
+    /// without what an ordinary resume does first, such as measuring the time
+    /// ABI's guest TSC offset or gating a restored VM's host input.
+    ///
     /// A unit whose task does not answer leaves the units that did start
     /// stopped again, and fails the rollback. A unit that such a unit depends
     /// on, or that does not answer its stop, stays running instead, and the
     /// worker then tears the VM down.
     pub(super) async fn resume_after_failed_snapshot(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.snapshot_boundary.transaction_complete.is_some(),
+            "no active microVM snapshot boundary"
+        );
         self.state_units.start().await?;
         self.running = true;
         self.release_snapshot_boundary().await?;
