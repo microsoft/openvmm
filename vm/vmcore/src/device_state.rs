@@ -75,8 +75,11 @@ pub trait ChangeDeviceState {
     ///
     /// Callers call this after each [`Self::start`], before any other state
     /// change, and stop the device again if it fails. A device that fails
-    /// keeps the state that it had before the start, so that stopping it
-    /// leaves it as it was and a later start can try again.
+    /// keeps the state that it had before the start, apart from the progress
+    /// of a part of it that did start, such as a queue that completed pending
+    /// requests before another queue failed, so that stopping it records a
+    /// consistent state, which a save keeps and from which a later start can
+    /// try again.
     ///
     /// The default reports success, for devices whose start cannot fail.
     fn confirm_start(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
