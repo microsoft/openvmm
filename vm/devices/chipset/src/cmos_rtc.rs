@@ -550,7 +550,7 @@ impl Rtc {
             if data != old_data {
                 // make sure the cmos time is up-to-date
                 if addr.depends_on_rtc(self.century_reg) {
-                    self.sync_clock_to_cmos();
+                    self.sync_clock_to_cmos_for_update();
                 }
 
                 self.state.cmos[addr] = data;
@@ -735,6 +735,17 @@ impl Rtc {
     /// Update the CMOS RTC registers with the current time from the backing
     /// `real_time_source`.
     fn sync_clock_to_cmos(&mut self) {
+        self.sync_clock_to_cmos_inner(false)
+    }
+
+    /// Like `sync_clock_to_cmos`, before the guest changes some of the time
+    /// registers: the others are written back with them, so they must be up to
+    /// date.
+    fn sync_clock_to_cmos_for_update(&mut self) {
+        self.sync_clock_to_cmos_inner(true)
+    }
+
+    fn sync_clock_to_cmos_inner(&mut self, update: bool) {
         if StatusRegA::from(self.state.cmos[CmosReg::STATUS_A]).oscillator_control()
             != ENABLE_OSCILLATOR_CONTROL
         {
@@ -747,7 +758,11 @@ impl Rtc {
             return;
         }
 
-        let real_time = self.real_time_source.get_time();
+        let real_time = if update {
+            self.real_time_source.get_time_for_update()
+        } else {
+            self.real_time_source.get_time()
+        };
         let Ok(clock_time): Result<jiff::Timestamp, _> = real_time.try_into() else {
             tracelimit::warn_ratelimited!(
                 ?real_time,
@@ -938,6 +953,7 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use local_clock::LocalClock;
     use local_clock::MockLocalClock;
     use local_clock::MockLocalClockAccessor;
     use parking_lot::Mutex;
@@ -1132,6 +1148,60 @@ mod tests {
         rtc.io_write(RtcIoPort::ADDR.0, &temp).unwrap();
         rtc.io_read(RtcIoPort::DATA.0, &mut temp).unwrap();
         temp[0]
+    }
+
+    /// A clock whose time read for an update is an hour after the one read
+    /// otherwise, as when a host pause hasn't been caught up with yet.
+    #[derive(Inspect)]
+    struct StaleClock {
+        #[inspect(skip)]
+        set: Arc<Mutex<Option<LocalClockTime>>>,
+    }
+
+    const STALE_MILLIS: i64 = 1_700_000_000_000;
+
+    impl LocalClock for StaleClock {
+        fn get_time(&mut self) -> LocalClockTime {
+            LocalClockTime::from_millis_since_unix_epoch(STALE_MILLIS)
+        }
+
+        fn get_time_for_update(&mut self) -> LocalClockTime {
+            LocalClockTime::from_millis_since_unix_epoch(STALE_MILLIS + 3_600_000)
+        }
+
+        fn set_time(&mut self, new_time: LocalClockTime) {
+            *self.set.lock() = Some(new_time);
+        }
+    }
+
+    #[test]
+    fn partial_write_uses_time_read_for_update() {
+        let mut pool = pal_async::DefaultPool::new();
+        let driver = pool.driver();
+        let vm_time_keeper = vmcore::vmtime::VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let vm_time_source = pool
+            .run_until(vm_time_keeper.builder().build(&driver))
+            .unwrap();
+        let set = Arc::new(Mutex::new(None));
+        let mut rtc = Rtc::new(
+            Box::new(StaleClock { set: set.clone() }),
+            LineInterrupt::detached(),
+            &vm_time_source,
+            0x32,
+            None,
+            false,
+        );
+
+        // Write the seconds only: the other fields come from the time read for
+        // the update.
+        let seconds = get_cmos_data(&mut rtc, CmosReg::SECOND);
+        set_cmos_data(&mut rtc, CmosReg::SECOND, seconds ^ 1);
+        let set = set.lock().unwrap();
+        let change = set - LocalClockTime::from_millis_since_unix_epoch(STALE_MILLIS);
+        assert!(
+            (change.as_millis() - 3_600_000).abs() < 60_000,
+            "{change:?}"
+        );
     }
 
     fn set_cmos_data(rtc: &mut Rtc, addr: CmosReg, data: u8) {

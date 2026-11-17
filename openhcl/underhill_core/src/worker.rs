@@ -2574,6 +2574,8 @@ async fn new_underhill_vm(
     let rtc_time_source = ArcMutexUnderhillLocalClock(Arc::new(Mutex::new(
         UnderhillLocalClock::new(
             get_client.clone(),
+            virt::Hv1::reference_time_source(&*partition)
+                .context("no reference time source for the RTC")?,
             if let Some(vmgs_client) = vmgs_client.as_ref() {
                 vmgs_client
                     .as_non_volatile_store(vmgs::FileId::RTC_SKEW, false)

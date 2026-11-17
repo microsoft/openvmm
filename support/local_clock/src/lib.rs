@@ -83,6 +83,15 @@ pub trait LocalClock: Send {
     /// even when the device / platform itself has shutdown / been paused.
     fn get_time(&mut self) -> LocalClockTime;
 
+    /// Return the current clock time, to set the time from it with some
+    /// fields changed.
+    ///
+    /// Unlike `get_time`, this may wait for an up-to-date time, since the
+    /// fields that aren't changed are set too.
+    fn get_time_for_update(&mut self) -> LocalClockTime {
+        self.get_time()
+    }
+
     /// Set the current clock time.
     fn set_time(&mut self, new_time: LocalClockTime);
 }
