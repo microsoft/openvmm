@@ -686,4 +686,19 @@ mod tests {
         proxy.stop().await;
         stop_worker(&mut proxy).await;
     }
+
+    /// A device whose worker has ended does not start: its start and the
+    /// changes of its input gate fail, rather than succeed without the
+    /// device.
+    #[async_test]
+    async fn requests_to_an_ended_worker_fail(driver: DefaultDriver) {
+        let vmtime = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut proxy = new_proxy(&vmtime, &driver).await;
+        stop_worker(&mut proxy).await;
+
+        proxy.start();
+        assert!(proxy.confirm_start().await.is_err());
+        assert!(proxy.quiesce_input().await.is_err());
+        assert!(proxy.resume_input().await.is_err());
+    }
 }
