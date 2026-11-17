@@ -39,6 +39,8 @@ struct CpuState {
     misc_msrs: Option<vp::MiscMsrs>,
     #[mesh(20)]
     machine_check: Option<vp::MachineCheck>,
+    #[mesh(21)]
+    bndcfgs: Option<vp::Bndcfgs>,
     #[mesh(100)]
     synic: Option<vp::SyntheticMsrs>,
 }
@@ -75,7 +77,7 @@ fn refuses_unsupported_cpu_state(
     let mut state = processor.access_state(Vtl::Vtl0);
     let before = state.registers()?;
 
-    let elements: [(&str, bool, fn(&mut CpuState)); 6] = [
+    let elements: [(&str, bool, fn(&mut CpuState)); 7] = [
         ("synic", true, |s| s.synic = Some(Default::default())),
         ("spec_ctrl", !caps.spec_ctrl, |s| {
             s.spec_ctrl = Some(Default::default())
@@ -91,6 +93,9 @@ fn refuses_unsupported_cpu_state(
         }),
         ("machine_check", !caps.machine_check, |s| {
             s.machine_check = Some(Default::default())
+        }),
+        ("bndcfgs", !caps.bndcfgs, |s| {
+            s.bndcfgs = Some(Default::default())
         }),
     ];
     for (element, lacked, add) in elements {

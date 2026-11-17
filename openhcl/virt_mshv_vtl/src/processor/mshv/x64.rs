@@ -1717,6 +1717,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         Err(vp_state::Error::Unimplemented("machine_check"))
     }
 
+    fn bndcfgs(&mut self) -> Result<vp::Bndcfgs, Self::Error> {
+        Err(vp_state::Error::Unimplemented("bndcfgs"))
+    }
+
+    fn set_bndcfgs(&mut self, _value: &vp::Bndcfgs) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("bndcfgs"))
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }

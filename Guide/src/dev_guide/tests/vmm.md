@@ -60,12 +60,14 @@ The other guest-writable MSRs that the VP state holds, where the backend can
 access them, have cases of their own in `msr_state.rs`:
 `misc_msrs_survive_a_save_and_restore`,
 `umwait_control_survives_a_save_and_restore` (which needs a host with WAITPKG),
+`bndcfgs_survives_a_save_and_restore` (which needs a host with MPX),
 `debug_ctl_survives_a_save_and_restore`, and
 `machine_check_state_survives_a_save_and_restore`, each of which sets the state,
 saves it, changes the VP, and restores it, and two that check that a reset
 returns the feature MSRs and the machine-check state to what a new VP holds.
-MSHV and WHP hold `IA32_UMWAIT_CONTROL`, whose case runs there on a host with
-WAITPKG, and none of the other elements, so their cases report ignored there.
+MSHV and WHP hold `IA32_UMWAIT_CONTROL` and `IA32_BNDCFGS`, whose cases run
+there on a host with WAITPKG or MPX, and none of the other elements, so their
+cases report ignored there.
 A restore refuses a saved state that holds an element that the partition lacks,
 such as SynIC state for a partition without Hyper-V enlightenments: it fails
 with an error that names the element, before it changes any state.

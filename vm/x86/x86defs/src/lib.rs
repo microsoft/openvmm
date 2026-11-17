@@ -302,6 +302,8 @@ pub const X86X_MSR_MTRR_DEF_TYPE: u32 = 0x2ff;
 /// has four, `CTL`, `STATUS`, `ADDR`, and `MISC`, in that order.
 pub const X86X_MSR_MC0_CTL: u32 = 0x400;
 
+/// `IA32_BNDCFGS`, MPX's supervisor-mode configuration.
+pub const X86X_MSR_BNDCFGS: u32 = 0xd90;
 pub const X86X_MSR_XSS: u32 = 0xda0;
 
 pub const X86X_IA32_MSR_RAPL_POWER_UNIT: u32 = 0x606;
