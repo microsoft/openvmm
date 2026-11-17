@@ -455,7 +455,7 @@ pub struct Pipeline {
     ado_bootstrap_template: Option<Box<AdoBootstrapTemplate>>,
     ado_variables: BTreeMap<String, String>,
     ado_post_process_yaml_cb: Option<Box<dyn FnOnce(serde_yaml::Value) -> serde_yaml::Value>>,
-    ado_job_templates: bool,
+    ado_step_templates: bool,
     gh_name: Option<String>,
     gh_schedule_triggers: Vec<GhScheduleTriggers>,
     gh_ci_triggers: Option<GhCiTriggers>,
@@ -540,16 +540,18 @@ impl Pipeline {
         self
     }
 
-    /// (ADO only) Emit each job in a separate generated YAML template.
+    /// (ADO only) Emit literal steps in separate generated YAML templates.
     ///
-    /// Templates are written alongside the pipeline as `<pipeline>.job-<n>.yaml`.
+    /// Templates are written alongside the pipeline as `<pipeline>.steps-<n>.yaml`.
     /// Commit these files with the root pipeline. Regeneration, `--check`,
     /// and runtime validation include every template.
     ///
     /// Extraction runs after [`Self::ado_post_process_yaml`]. Top-level jobs,
     /// stage jobs, and stage jobs under `extends.parameters.stages` are supported.
-    pub fn ado_use_job_templates(&mut self) -> &mut Self {
-        self.ado_job_templates = true;
+    /// Job metadata, existing includes, and steps containing `${{` expressions
+    /// remain inline to preserve their original template expansion context.
+    pub fn ado_use_step_templates(&mut self) -> &mut Self {
+        self.ado_step_templates = true;
         self
     }
 
@@ -1641,7 +1643,7 @@ pub mod internal {
         pub ado_resources_repository: Vec<InternalAdoResourcesRepository>,
         pub ado_post_process_yaml_cb:
             Option<Box<dyn FnOnce(serde_yaml::Value) -> serde_yaml::Value>>,
-        pub ado_job_templates: bool,
+        pub ado_step_templates: bool,
         pub ado_variables: BTreeMap<String, String>,
         pub ado_job_id_overrides: BTreeMap<usize, String>,
         pub gh_name: Option<String>,
@@ -1674,7 +1676,7 @@ pub mod internal {
                 ado_pr_triggers,
                 ado_resources_repository,
                 ado_post_process_yaml_cb,
-                ado_job_templates,
+                ado_step_templates,
                 ado_variables,
                 ado_job_id_overrides,
                 gh_name,
@@ -1708,7 +1710,7 @@ pub mod internal {
                 ado_bootstrap_template,
                 ado_resources_repository,
                 ado_post_process_yaml_cb,
-                ado_job_templates,
+                ado_step_templates,
                 ado_variables,
                 ado_job_id_overrides,
                 gh_name,

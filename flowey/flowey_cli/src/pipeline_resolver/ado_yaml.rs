@@ -37,7 +37,7 @@ use std::path::Path;
 /// downstream flowey nodes to fail.
 const FLOWEY_TEMP_DIR: &str = "$(Build.StagingDirectory)/.flowey-internal";
 
-/// Emit a pipeline as ADO YAML, optionally with generated job templates.
+/// Emit a pipeline as ADO YAML, optionally with generated step templates.
 pub fn ado_yaml(
     pipeline: ResolvedPipeline,
     runtime_debug_log: bool,
@@ -61,7 +61,7 @@ pub fn ado_yaml(
         ado_bootstrap_template,
         ado_resources_repository,
         ado_post_process_yaml_cb,
-        ado_job_templates,
+        ado_step_templates,
         ado_variables,
         ref ado_job_id_overrides,
         gh_name: _,
@@ -843,7 +843,7 @@ EOF
             repo_root,
             pipeline_file,
             ado_post_process_yaml_cb,
-            ado_job_templates,
+            ado_step_templates,
         ),
         CheckMode::None => write_generated_yaml_and_json(
             &ado_pipeline,
@@ -851,7 +851,7 @@ EOF
             repo_root,
             pipeline_file,
             ado_post_process_yaml_cb,
-            ado_job_templates,
+            ado_step_templates,
         ),
     }
 }

@@ -55,10 +55,12 @@ Flowey is architected as a standalone tool with a layered crate structure that s
 - **`flowey_lib_hvlite`**: OpenVMM-specific nodes and workflows that build on the common library primitives.
 - **`flowey_hvlite`**: The OpenVMM pipeline definitions that compose nodes from the libraries above into complete CI/CD workflows.
 
-## Azure DevOps job templates
+## Azure DevOps step templates
 
-Pipeline definitions can call `pipeline.ado_use_job_templates()` to emit each job in a separate YAML template instead of embedding every job in the root pipeline. Commit the generated `<pipeline>.job-<n>.yaml` files alongside the root YAML. This is opt-in; existing pipelines keep their single-file output. Templates stay in the same directory as the root so nested relative template references keep working.
+Pipeline definitions can call `pipeline.ado_use_step_templates()` to emit consecutive literal steps in separate YAML templates. Commit the generated `<pipeline>.steps-<n>.yaml` files alongside the root YAML. This is opt-in; existing pipelines keep their single-file output.
 
-`cargo xflowey regen`, `--check`, and runtime validation include the templates. Regeneration removes obsolete generated job templates, while check mode reports missing, modified, or obsolete templates without rewriting them. Pipeline parameters are forwarded to each job template, and extraction runs after any YAML post-processing.
+Extraction runs after YAML post-processing. Jobs and their variables, dependencies, and conditions stay in the root pipeline. Existing template references and steps containing `${{` expressions also stay inline: moving them into templates can change Azure DevOps' compile-time variable scope. Generated templates therefore need no parameters, including for pipelines using `stringList`.
 
-Each generated Azure DevOps YAML file must fit within 512 KiB, including its generated-file header. Job templates avoid the single-file limit but do not bypass Azure DevOps' overall template-expansion limits, including the 100-file include limit. An oversized individual job or oversized root metadata still needs to be reduced.
+`cargo xflowey regen`, `--check`, and runtime validation include the templates. Regeneration removes obsolete generated step templates while preserving referenced templates, and refuses to overwrite files that are not owned by this pipeline's generator. Check mode reports missing, modified, or obsolete templates without rewriting them.
+
+Each generated Azure DevOps YAML file must fit within 512 KiB, including its generated-file header. Large groups of literal steps are split into multiple files. Templates avoid the single-file limit but do not bypass Azure DevOps' overall template-expansion limits, including the 100-file include limit. An oversized individual step, inline expressions, or oversized root metadata still needs to be reduced.

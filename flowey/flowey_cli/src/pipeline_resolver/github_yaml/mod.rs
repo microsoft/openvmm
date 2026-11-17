@@ -66,7 +66,7 @@ pub fn github_yaml(
         ado_bootstrap_template: _,
         ado_resources_repository: _,
         ado_post_process_yaml_cb: _,
-        ado_job_templates: _,
+        ado_step_templates: _,
         ado_variables: _,
         ado_job_id_overrides: _,
     } = pipeline;
