@@ -3007,6 +3007,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("machine_check"))
     }
 
+    fn bndcfgs(&mut self) -> Result<vp::Bndcfgs, Self::Error> {
+        Err(vp_state::Error::Unimplemented("bndcfgs"))
+    }
+
+    fn set_bndcfgs(&mut self, _value: &vp::Bndcfgs) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("bndcfgs"))
+    }
+
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         Ok(vp::Cet { scet: vmsa.s_cet() })

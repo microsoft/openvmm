@@ -270,6 +270,14 @@ mod x86 {
             Err(Error::UnsupportedState("machine_check"))
         }
 
+        fn bndcfgs(&mut self) -> Result<vp::Bndcfgs, Self::Error> {
+            self.run.vp.get_register_state(self.vtl)
+        }
+
+        fn set_bndcfgs(&mut self, value: &vp::Bndcfgs) -> Result<(), Self::Error> {
+            self.run.vp.set_register_state(self.vtl, value)
+        }
+
         fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
             match self.run.state.vtls[self.vtl].hv {
                 Some(_) => {

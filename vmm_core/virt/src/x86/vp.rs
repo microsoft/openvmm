@@ -2220,6 +2220,53 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for MachineCheck {
     }
 }
 
+/// The architectural IA32_BNDCFGS MSR, which holds MPX's supervisor-mode
+/// configuration: whether MPX is enabled at CPL 0, whether `BNDPRESERVE`
+/// keeps the bound registers across a branch, and the base of the bound
+/// directory.
+///
+/// The guest can write it only if its CPUID enumerates MPX, which
+/// [`X86PartitionCapabilities::bndcfgs`] records, so the saved state holds it
+/// only then. The user-mode configuration, BNDCFGU, and the bound registers
+/// are part of the XSAVE state. A VP that never saw a write holds 0, the reset
+/// value.
+#[repr(C)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+pub struct Bndcfgs {
+    #[mesh(1)]
+    #[inspect(hex)]
+    pub value: u64,
+}
+
+impl HvRegisterState<HvX64RegisterName, 1> for Bndcfgs {
+    fn names(&self) -> &'static [HvX64RegisterName; 1] {
+        &[HvX64RegisterName::Bndcfgs]
+    }
+
+    fn get_values<'a>(&self, it: impl Iterator<Item = &'a mut HvRegisterValue>) {
+        for (dest, src) in it.zip([self.value]) {
+            *dest = src.into();
+        }
+    }
+
+    fn set_values(&mut self, it: impl Iterator<Item = HvRegisterValue>) {
+        for (src, dest) in it.zip([&mut self.value]) {
+            *dest = src.as_u64();
+        }
+    }
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for Bndcfgs {
+    fn is_present(caps: &X86PartitionCapabilities) -> bool {
+        caps.bndcfgs
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self::default()
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
@@ -2607,6 +2654,7 @@ state_trait! {
     (18, "debug_ctl", debug_ctl, set_debug_ctl, DebugCtl),
     (19, "misc_msrs", misc_msrs, set_misc_msrs, MiscMsrs),
     (20, "machine_check", machine_check, set_machine_check, MachineCheck),
+    (21, "bndcfgs", bndcfgs, set_bndcfgs, Bndcfgs),
 
     // Synic state
     (100, "synic", synic_msrs, set_synic_msrs, SyntheticMsrs),
@@ -3027,6 +3075,53 @@ mod tests {
                 bytes
             );
         }
+    }
+
+    #[test]
+    fn bndcfgs_needs_no_version_to_coexist_with_earlier_builds() {
+        let earlier = || EarlierVpSavedState {
+            tsc: Some(Tsc { value: 7 }),
+            tsc_aux: Some(TscAux { value: 3 }),
+        };
+        let current = |bndcfgs| VpSavedState {
+            tsc: Some(Tsc { value: 7 }),
+            tsc_aux: Some(TscAux { value: 3 }),
+            bndcfgs,
+            ..Default::default()
+        };
+
+        // A saved state of an earlier build holds no IA32_BNDCFGS, so
+        // restoring it sets none.
+        assert_eq!(
+            mesh_protobuf::decode::<VpSavedState>(&mesh_protobuf::encode(earlier())).unwrap(),
+            current(None)
+        );
+        // An earlier build reads the saved state of this one and ignores the
+        // element.
+        assert_eq!(
+            mesh_protobuf::decode::<EarlierVpSavedState>(&mesh_protobuf::encode(current(Some(
+                Bndcfgs { value: 0x1003 }
+            ))))
+            .unwrap(),
+            earlier()
+        );
+
+        // The element is field 21 of the saved state, a message with the value
+        // in its field 1: bytes that every build that holds it reads, and that
+        // no later change may alter.
+        let bytes = [0xaa, 0x01, 0x03, 0x08, 0x83, 0x20];
+        let state = VpSavedState {
+            bndcfgs: Some(Bndcfgs { value: 0x1003 }),
+            ..Default::default()
+        };
+        assert_eq!(mesh_protobuf::encode(state), bytes);
+        assert_eq!(
+            mesh_protobuf::decode::<VpSavedState>(&bytes).unwrap(),
+            VpSavedState {
+                bndcfgs: Some(Bndcfgs { value: 0x1003 }),
+                ..Default::default()
+            }
+        );
     }
 
     /// The components beyond x87 and SSE of the XSAVE layout of the tests of

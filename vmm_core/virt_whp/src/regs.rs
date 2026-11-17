@@ -90,6 +90,7 @@ mod x86_64 {
                 HvX64RegisterName::TscAux => whp::abi::WHvX64RegisterTscAux,
                 HvX64RegisterName::SpecCtrl => whp::abi::WHvX64RegisterSpecCtrl,
                 HvX64RegisterName::UmwaitControl => whp::abi::WHvX64RegisterUnwaitControl,
+                HvX64RegisterName::Bndcfgs => whp::abi::WHvX64RegisterBndcfgs,
 
                 HvX64RegisterName::Pat => whp::abi::WHvX64RegisterPat,
                 HvX64RegisterName::MsrMtrrDefType => whp::abi::WHvX64RegisterMsrMtrrDefType,
