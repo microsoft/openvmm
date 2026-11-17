@@ -93,9 +93,10 @@ pub trait VirtioDevice: InspectMut + Send {
     /// transport fails DRIVER_OK; when the VM starts, the transport fails the
     /// confirmation of the start, and the VM stops the device again before
     /// any vCPU runs, which keeps the progress of the queues that did start.
-    /// A device whose start fails keeps the private state that it saves as
-    /// it was before the start, so that a save of the stopped VM matches the
-    /// queue progress that the transport keeps.
+    /// A device whose start fails keeps the private state that it saves in
+    /// step with the queue progress that the transport keeps, which includes
+    /// the requests that a queue that did start completed before the stop, so
+    /// that a save of the stopped VM restores.
     /// Acquire the host resources that restored state refers to in
     /// [`restore_device`](Self::restore_device) instead, so that a missing
     /// one fails the restore.
