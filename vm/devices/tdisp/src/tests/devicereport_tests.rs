@@ -35,6 +35,7 @@ fn two_range_report() -> TdiReportStruct {
                 range_id: 4,
             },
         ],
+        device_specific_info: Vec::new(),
     }
 }
 
@@ -68,29 +69,67 @@ fn range_count_comes_from_the_range_list() {
     let report = two_range_report();
     let buffer = serialize_tdi_report(&report);
 
-    // The header, then one entry per range.
+    // The header, one entry per range, then the device specific info length.
     assert_eq!(
         buffer.len(),
-        TDI_REPORT_HEADER_SIZE + 2 * size_of::<TdispTdiReportMmioInterfaceInfo>()
+        TDI_REPORT_HEADER_SIZE
+            + 2 * size_of::<TdispTdiReportMmioInterfaceInfo>()
+            + size_of::<u32>()
     );
 }
 
 #[test]
-fn a_report_with_no_ranges_is_just_the_header() {
+fn a_report_with_no_ranges_is_the_header_and_a_zero_length() {
     let report = TdiReportStruct {
         interface_info: TdispTdiReportInterfaceInfo::new(),
         msi_x_message_control: 0,
         lnr_control: 0,
         tph_control: 0,
         mmio_interface_info: Vec::new(),
+        device_specific_info: Vec::new(),
     };
 
     let buffer = serialize_tdi_report(&report);
-    assert_eq!(buffer.len(), TDI_REPORT_HEADER_SIZE);
+    // The header, no ranges, then a device specific info length of zero.
+    assert_eq!(buffer.len(), TDI_REPORT_HEADER_SIZE + size_of::<u32>());
     assert!(
         deserialize_tdi_report(&buffer)
             .unwrap()
             .mmio_interface_info
             .is_empty()
     );
+}
+
+#[test]
+fn device_specific_info_survives_a_round_trip() {
+    let mut report = two_range_report();
+    report.device_specific_info = vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00];
+
+    let parsed = deserialize_tdi_report(&serialize_tdi_report(&report)).unwrap();
+    assert_eq!(parsed.device_specific_info, report.device_specific_info);
+}
+
+#[test]
+fn a_report_ending_after_the_ranges_has_no_device_specific_info() {
+    let report = two_range_report();
+    let mut buffer = serialize_tdi_report(&report);
+
+    // Not every device appends the length, so a report may end here.
+    buffer.truncate(buffer.len() - size_of::<u32>());
+
+    let parsed = deserialize_tdi_report(&buffer).unwrap();
+    assert_eq!(parsed.mmio_interface_info.len(), 2);
+    assert!(parsed.device_specific_info.is_empty());
+}
+
+#[test]
+fn a_device_specific_info_length_past_the_end_is_rejected() {
+    let report = two_range_report();
+    let mut buffer = serialize_tdi_report(&report);
+
+    // Claim eight bytes of device specific info without supplying any.
+    let len_offset = buffer.len() - size_of::<u32>();
+    buffer[len_offset..].copy_from_slice(&8u32.to_ne_bytes());
+
+    assert!(deserialize_tdi_report(&buffer).is_err());
 }

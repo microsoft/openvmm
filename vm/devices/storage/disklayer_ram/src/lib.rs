@@ -374,19 +374,12 @@ impl LayerIo for RamDiskLayer {
             // region, so allow it.
             state.zero_after = state.zero_after.min(sector_offset);
         }
-        // Sadly, there appears to be no way to remove a range of entries
-        // from a btree map.
-        let mut next_sector = sector_offset;
         let end = sector_offset + sector_count;
-        while next_sector < end {
-            let Some((&sector, _)) = state.data.range_mut(next_sector..).next() else {
-                break;
-            };
-            if sector >= end {
-                break;
-            }
-            state.data.remove(&sector);
-            next_sector = sector + 1;
+        if sector_offset < end {
+            state
+                .data
+                .extract_if(sector_offset..end, |_, _| true)
+                .for_each(drop);
         }
         Ok(())
     }
@@ -637,6 +630,33 @@ mod tests {
             let mut buf = [0u8; SECTOR_USIZE];
             guest_mem.read_at(s as u64 * SECTOR_U64, &mut buf).unwrap();
             assert_eq!(buf, [0u8; SECTOR_USIZE]);
+        }
+    }
+
+    #[async_test]
+    async fn test_unmap_sparse_range() {
+        let guest_mem = GuestMemory::allocate(SECTOR_USIZE);
+        for (offset, count, expected) in [
+            (1, 0, &[0, 2, 4, 7][..]),
+            (1, 1, &[0, 2, 4, 7][..]),
+            (2, 2, &[0, 4, 7][..]),
+            (1, 6, &[0, 7][..]),
+            (0, 8, &[][..]),
+            (8, 0, &[0, 2, 4, 7][..]),
+        ] {
+            let mut layer = RamDiskLayer::new(8 * SECTOR_U64).unwrap();
+            for sector in [0, 2, 4, 7] {
+                write_layer(&guest_mem, &mut layer, sector, 1, 0).await;
+            }
+
+            layer.unmap(offset, count, false, true).await.unwrap();
+
+            assert_eq!(
+                layer.state.read().data.keys().copied().collect::<Vec<_>>(),
+                expected,
+                "unmap {offset}..{}",
+                offset + count,
+            );
         }
     }
 

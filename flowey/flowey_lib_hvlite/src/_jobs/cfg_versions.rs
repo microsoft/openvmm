@@ -19,19 +19,20 @@ use std::collections::BTreeMap;
 pub const AZCOPY: &str = "10.27.1";
 pub const AZURE_CLI: &str = "2.56.0";
 pub const CARGO_HACK: &str = "0.6.45";
+pub const CARGO_LLVM_COV: &str = "0.8.5";
 pub const DOTNET: &str = "8.0";
 pub const FUZZ: &str = "0.12.0";
 pub const GH_CLI: &str = "2.52.0";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
-pub const MU_MSVM: &str = "26.0.36";
+pub const MU_MSVM: &str = "26.0.44";
 pub const NEXTEST: &str = "0.9.133";
 pub const NODEJS: &str = "24.x";
 // None disables hcl-dev builds and tests; Some(version) enables them.
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.5";
-pub const OPENVMM_DEPS: &str = "0.3.0-155";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.7";
+pub const OPENVMM_DEPS: &str = "0.3.0-185";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
@@ -50,6 +51,10 @@ flowey_request! {
         },
         /// Override UEFI mu_msvm with a local MSVM.fd path for this architecture
         LocalUefi(CommonArch, ReadVar<PathBuf>),
+        /// Temporary mshv root bzImage override, separate from child kernels.
+        LocalMshvKernel(ReadVar<PathBuf>),
+        /// Use extracted MSHV payloads instead of Linux RPM acquisition.
+        LocalMshvBootArtifacts(ReadVar<PathBuf>),
     }
 }
 
@@ -64,6 +69,7 @@ impl FlowNode for Node {
         ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
+        ctx.import::<crate::resolve_mshv_boot_artifacts::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::cfg_rustup_version::Node>();
@@ -77,6 +83,7 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_cargo_hack::Node>();
+        ctx.import::<flowey_lib_common::install_cargo_llvm_cov::Node>();
         ctx.import::<flowey_lib_common::install_dotnet_cli::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
     }
@@ -87,6 +94,8 @@ impl FlowNode for Node {
         let mut local_protoc: Option<ReadVar<PathBuf>> = None;
         let mut local_kernel: BTreeMap<CommonArch, (ReadVar<PathBuf>, ReadVar<PathBuf>)> = BTreeMap::new();
         let mut local_uefi: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
+        let mut local_mshv_kernel = None;
+        let mut local_mshv_boot_artifacts = None;
 
         for req in requests {
             match req {
@@ -126,7 +135,17 @@ impl FlowNode for Node {
                     }
                     local_uefi.insert(arch, path);
                 }
+                Request::LocalMshvKernel(path) => {
+                    anyhow::ensure!(local_mshv_kernel.replace(path).is_none(), "mshv kernel override specified more than once");
+                }
+                Request::LocalMshvBootArtifacts(path) => {
+                    anyhow::ensure!(local_mshv_boot_artifacts.replace(path).is_none(), "MSHV boot artifact override specified more than once");
+                }
             }
+        }
+
+        if let Some(path) = local_mshv_boot_artifacts {
+            ctx.config(crate::resolve_mshv_boot_artifacts::Config { local_path: Some(ConfigVar(path)) });
         }
 
         // Track whether we have local paths for openvmm_deps and protoc
@@ -209,12 +228,25 @@ impl FlowNode for Node {
                 ..Default::default()
             });
         }
-        // The test Linux kernel and shared test initrd are always pulled
+        // By default, test Linux kernels and the shared test initrd are pulled
         // from the openvmm-deps GitHub release; `LocalOpenvmmDeps` only
         // overrides the (non-kernel/initrd) openvmm-deps tarball, since the
         // 0.3.0 split moved the kernel and initrd into their own artifacts.
         ctx.config(crate::resolve_openvmm_test_linux_kernel::Config {
             version: Some(OPENVMM_DEPS.into()),
+            local_files: local_mshv_kernel
+                .map(|path| {
+                    (
+                        (
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage,
+                            CommonArch::X86_64,
+                            crate::resolve_openvmm_test_linux_kernel::LinuxTestKernelVersion::MshvTest,
+                        ),
+                        ConfigVar(path),
+                    )
+                })
+                .into_iter()
+                .collect(),
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_initrd::Config {
@@ -243,6 +275,9 @@ impl FlowNode for Node {
         });
         ctx.config(flowey_lib_common::install_cargo_hack::Config {
             version: Some(CARGO_HACK.into()),
+        });
+        ctx.config(flowey_lib_common::install_cargo_llvm_cov::Config {
+            version: Some(CARGO_LLVM_COV.into()),
         });
         ctx.config(flowey_lib_common::download_cargo_nextest::Config {
             version: Some(NEXTEST.into()),

@@ -17,10 +17,19 @@ blob, or a layered composition of multiple backends.
 | Vhd1Disk | [`disk_vhd1`](https://openvmm.dev/rustdoc/linux/disk_vhd1/index.html) | VHD1 fixed file | Cross-platform | Parses VHD footer for geometry. |
 | VhdmpDisk | `disk_vhdmp` | Windows vhdmp driver | Windows | Dynamic and differencing VHD/VHDX. |
 | VhdxDisk | [`vhdx`](vhdx.md) | VHDX file | Cross-platform | Pure-Rust VHDX parser. Dynamic, fixed, and differencing. |
+| FlatVmdkDisk | [`disk_vmdk`](vmdk.md) | VMDK extents | Cross-platform | Flat and read-only. Supports the `monolithicFlat` and `twoGbMaxExtentFlat` disk types. |
 | BlobDisk | [`disk_blob`](https://openvmm.dev/rustdoc/linux/disk_blob/index.html) | HTTP / Azure Blob | Cross-platform | Read-only. HTTP range requests. |
 | BlockDeviceDisk | [`disk_blockdevice`](https://openvmm.dev/rustdoc/linux/disk_blockdevice/index.html) | Linux block device or file | Linux | io_uring, resize via uevent, PR passthrough. Default for raw files on Linux in both OpenHCL and OpenVMM. |
 | NvmeDisk | [`disk_nvme`](https://openvmm.dev/rustdoc/linux/disk_nvme/index.html) | Physical NVMe (VFIO) | Linux/Windows | User-mode NVMe driver. Resize via AEN. |
 | StripedDisk | [`disk_striped`](https://openvmm.dev/rustdoc/linux/disk_striped/index.html) | Multiple Disks | Cross-platform | Stripes data across underlying disks. |
+
+On Windows, `disk_vhdmp` forwards guest discard through
+[`RawSCSIVirtualDisk`](https://learn.microsoft.com/en-us/windows/win32/api/virtdisk/nf-virtdisk-rawscsivirtualdisk)
+using the existing virtual-disk handle, without exposing a host disk device.
+It queries SCSI provisioning and block-limit pages before enabling UNMAP,
+and only promises zero reads when the driver advertises that guarantee.
+Discard makes space eligible for reclamation; shrinking the backing file may
+still require a separate compaction operation.
 
 ## Decorators
 
@@ -52,3 +61,27 @@ The [storage pipeline](../architecture/devices/storage.md) page covers
 the full architecture: how frontends, backends, decorators, and the
 layered disk model connect, plus cross-cutting concerns like online
 disk resize and virtual optical media.
+
+## Test disks
+
+Use [`disk_hook`](https://openvmm.dev/rustdoc/linux/disk_hook/index.html)
+as a dev-dependency when a test needs a configurable disk or I/O hooks.
+`HookDisk::new` creates a sparse RAM disk using `disklayer_ram`, and
+`HookDisk::wrap` decorates an existing `Disk` while forwarding its
+capabilities. Use `new` directly instead of wrapping a RAM disk.
+
+Configure a `HookDisk`, then call `into_disk` and keep the returned `Disk`
+in fixtures. Cloning that handle is cheap and shares storage and hook
+state. The crate re-exports `Disk` and `DiskError`, so callers that
+need to name those types do not need a direct `disk_backend` dependency.
+
+`with_sync_hook` and `with_async_hook` install a callback for recording
+operations or injecting failures. Either method replaces any previously
+installed hook. Hooks run before each operation, receive operation
+parameters rather than disk contents, and can return a `DiskError` to
+prevent the operation. Returning `Ok(())` continues normal I/O.
+
+Metadata overrides change what the frontend sees, not the backing
+disk's capabilities. In particular, only advertise zeroing unmaps if
+the backend implements them. Ignored unmaps are not forwarded by `Disk`
+and do not invoke the hook.

@@ -18,8 +18,7 @@ pub enum FirmwareFlavor {
 impl FirmwareFlavor {
     fn default_for_arch(arch: CommonArch) -> Self {
         match arch {
-            CommonArch::X86_64 => Self::LegacyVs2022,
-            CommonArch::Aarch64 => Self::LegacyClangPdb,
+            CommonArch::X86_64 | CommonArch::Aarch64 => Self::LegacyClangPdb,
         }
     }
 

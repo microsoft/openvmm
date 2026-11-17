@@ -16,7 +16,6 @@ pub use spec_services::NvramResult;
 pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
-use crate::UefiDevice;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use firmware_uefi_custom_vars::BaseTemplate;
@@ -25,6 +24,7 @@ use firmware_uefi_custom_vars::FinalVars;
 use firmware_uefi_custom_vars::Signature;
 use firmware_uefi_custom_vars::UefiVarsDeltaJson;
 use firmware_uefi_resources::platform::VsmConfig;
+use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guid::Guid;
 use inspect::Inspect;
@@ -818,82 +818,22 @@ mod tests {
     /// or reports [`EfiStatus::DEVICE_ERROR`] after that read fails. The length gate
     /// returns [`EfiStatus::INVALID_PARAMETER`] without allocating.
     #[async_test]
-    async fn oversized_guest_nvram_buffers_are_rejected(driver: pal_async::DefaultDriver) {
-        use firmware_uefi_resources::platform::UefiEvent;
-        use firmware_uefi_resources::platform::UefiLogger;
-        use guestmem::GuestMemory;
+    async fn oversized_guest_nvram_buffers_are_rejected() {
         use std::mem::size_of;
         use uefi_specs::hyperv::nvram::NvramCommand;
         use uefi_specs::hyperv::nvram::NvramCommandDescriptor;
         use uefi_specs::hyperv::nvram::NvramDebugStringCommand;
         use uefi_specs::hyperv::nvram::NvramVariableCommand;
         use uefi_specs::uefi::nvram::EfiVariableAttributes;
-        use vmcore::vmtime::VmTime;
-        use vmcore::vmtime::VmTimeKeeper;
-        use watchdog_core::platform::WatchdogCallback;
-        use watchdog_core::platform::WatchdogPlatform;
         use zerocopy::Immutable;
         use zerocopy::IntoBytes;
         use zerocopy::KnownLayout;
 
-        struct TestLogger;
-        impl UefiLogger for TestLogger {
-            fn log_event(&self, _event: UefiEvent) {}
-        }
-
-        struct TestWatchdog;
-        #[async_trait::async_trait]
-        impl WatchdogPlatform for TestWatchdog {
-            async fn on_timeout(&mut self) {}
-            async fn read_and_clear_boot_status(&mut self) -> bool {
-                false
-            }
-            fn add_callback(&mut self, _callback: Box<dyn WatchdogCallback>) {}
-        }
-
         let gm = GuestMemory::allocate(64 * 1024);
-        let keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
-        let vmtime = keeper.builder().build(&driver).await.unwrap();
-        let (_genid_send, generation_id_recv) = mesh::channel();
-        let (_watchdog_send, watchdog_recv) = mesh::channel();
-
-        let mut dev = UefiDevice {
-            use_mmio: false,
-            command_set: firmware_uefi_resources::UefiCommandSet::X64,
-            diagnostics_rate_limit: None,
-            gm: gm.clone(),
-            address: 0,
-            watchdog_recv,
-            service: crate::UefiDeviceServices {
-                nvram: nvram_services(InMemoryNvram::new()),
-                event_log: crate::service::event_log::EventLogServices::new(Box::new(TestLogger)),
-                uefi_watchdog: crate::service::uefi_watchdog::UefiWatchdogServices::new(
-                    vmtime.access("uefi-watchdog"),
-                    Box::new(TestWatchdog),
-                    false,
-                )
-                .await,
-                generation_id: generation_id::GenerationId::new(
-                    [0; 16],
-                    generation_id::GenerationIdRuntimeDeps {
-                        gm: gm.clone(),
-                        generation_id_recv,
-                        notify_interrupt: vmcore::line_interrupt::LineInterrupt::detached(),
-                    },
-                ),
-                time: crate::service::time::TimeServices::new(Box::new(
-                    local_clock::MockLocalClock::new(),
-                )),
-                diagnostics: crate::service::diagnostics::DiagnosticsServices::new(
-                    firmware_uefi_resources::LogLevel::make_default(),
-                ),
-            },
-        };
-        // The watchdog time source is backed by this keeper.
-        let _keeper = keeper;
+        let mut nvram = nvram_services(InMemoryNvram::new());
 
         async fn issue(
-            dev: &mut UefiDevice,
+            nvram: &mut NvramServices,
             gm: &GuestMemory,
             command: NvramCommand,
             cmd: &(impl IntoBytes + Immutable + KnownLayout),
@@ -910,7 +850,7 @@ mod tests {
             .unwrap();
             gm.write_plain(desc_addr + size_of::<NvramCommandDescriptor>() as u64, cmd)
                 .unwrap();
-            dev.nvram_handle_command(desc_addr).await;
+            nvram.handle_command(gm, desc_addr).await;
             EfiStatus::from(
                 gm.read_plain::<NvramCommandDescriptor>(desc_addr)
                     .unwrap()
@@ -927,14 +867,14 @@ mod tests {
             data_bytes: u32::MAX,
         };
         assert_eq!(
-            issue(&mut dev, &gm, NvramCommand::SET_VARIABLE, &oversized_set).await,
+            issue(&mut nvram, &gm, NvramCommand::SET_VARIABLE, &oversized_set).await,
             EfiStatus::INVALID_PARAMETER
         );
 
         let mut just_over_cap = oversized_set;
         just_over_cap.data_bytes = MAX_NVRAM_COMMAND_BUFFER_SIZE + 1;
         assert_eq!(
-            issue(&mut dev, &gm, NvramCommand::SET_VARIABLE, &just_over_cap).await,
+            issue(&mut nvram, &gm, NvramCommand::SET_VARIABLE, &just_over_cap).await,
             EfiStatus::INVALID_PARAMETER
         );
 
@@ -948,7 +888,7 @@ mod tests {
         };
         assert_eq!(
             issue(
-                &mut dev,
+                &mut nvram,
                 &gm,
                 NvramCommand::SET_VARIABLE,
                 &oversized_data_with_unreadable_name
@@ -966,12 +906,12 @@ mod tests {
             data_bytes: 0,
         };
         assert_eq!(
-            issue(&mut dev, &gm, NvramCommand::GET_VARIABLE, &oversized_name).await,
+            issue(&mut nvram, &gm, NvramCommand::GET_VARIABLE, &oversized_name).await,
             EfiStatus::INVALID_PARAMETER
         );
         assert_eq!(
             issue(
-                &mut dev,
+                &mut nvram,
                 &gm,
                 NvramCommand::GET_NEXT_VARIABLE_NAME,
                 &oversized_name
@@ -982,7 +922,7 @@ mod tests {
 
         assert_eq!(
             issue(
-                &mut dev,
+                &mut nvram,
                 &gm,
                 NvramCommand::DEBUG_STRING,
                 &NvramDebugStringCommand {
@@ -1004,7 +944,7 @@ mod tests {
         gm.write_at(data_addr, data).unwrap();
         assert_eq!(
             issue(
-                &mut dev,
+                &mut nvram,
                 &gm,
                 NvramCommand::SET_VARIABLE,
                 &NvramVariableCommand {
@@ -1244,11 +1184,13 @@ mod tests {
     }
 }
 
-impl UefiDevice {
-    pub(crate) async fn nvram_handle_command(&mut self, desc_addr: u64) {
+impl NvramServices {
+    /// Runs the Hyper-V NVRAM command whose descriptor is at `desc_addr` and writes
+    /// its status back into the descriptor.
+    pub(crate) async fn handle_command(&mut self, gm: &GuestMemory, desc_addr: u64) {
         use uefi_specs::hyperv::nvram::NvramCommandDescriptor;
 
-        let mut desc: NvramCommandDescriptor = match self.gm.read_plain(desc_addr) {
+        let mut desc: NvramCommandDescriptor = match gm.read_plain(desc_addr) {
             Ok(desc) => desc,
             Err(err) => {
                 tracelimit::warn_ratelimited!(
@@ -1259,7 +1201,7 @@ impl UefiDevice {
             }
         };
 
-        let status = match self.handle_nvram_command_inner(desc_addr, desc).await {
+        let status = match self.handle_command_inner(gm, desc_addr, desc).await {
             Ok(status) => status,
             Err(err) => {
                 tracelimit::warn_ratelimited!(
@@ -1273,7 +1215,7 @@ impl UefiDevice {
         // write back status into guest memory
         desc.status = status.into();
 
-        if let Err(err) = self.gm.write_plain(desc_addr, &desc) {
+        if let Err(err) = gm.write_plain(desc_addr, &desc) {
             tracelimit::warn_ratelimited!(
                 error = &err as &dyn std::error::Error,
                 "Could not write NvramCommandDescriptor into guest memory",
@@ -1281,8 +1223,9 @@ impl UefiDevice {
         }
     }
 
-    async fn handle_nvram_command_inner(
+    async fn handle_command_inner(
         &mut self,
+        gm: &GuestMemory,
         desc_addr: u64,
         desc: uefi_specs::hyperv::nvram::NvramCommandDescriptor,
     ) -> Result<EfiStatus, GuestMemoryError> {
@@ -1293,23 +1236,20 @@ impl UefiDevice {
 
         let (status, err) = match desc.command {
             NvramCommand::GET_VARIABLE => {
-                let mut command: NvramVariableCommand = self.gm.read_plain(command_addr)?;
+                let mut command: NvramVariableCommand = gm.read_plain(command_addr)?;
 
                 let name = if command.name_address.get() != 0 {
                     let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
                         return Ok(EfiStatus::INVALID_PARAMETER);
                     };
                     let mut buf = vec![0; name_len];
-                    self.gm
-                        .read_at(command.name_address.into(), buf.as_mut_slice())?;
+                    gm.read_at(command.name_address.into(), buf.as_mut_slice())?;
                     Some(buf)
                 } else {
                     None
                 };
 
                 let NvramResult(data, status, err) = self
-                    .service
-                    .nvram
                     .services
                     .uefi_get_variable(
                         name.as_deref(),
@@ -1321,19 +1261,18 @@ impl UefiDevice {
                     .await;
 
                 // writeback updated command struct
-                self.gm.write_plain(command_addr, &command)?;
+                gm.write_plain(command_addr, &command)?;
 
                 // write any data to provided guest memory location
                 // (bounds checking is performed within `nvram.get_variable`)
                 if let Some(data) = data {
-                    self.gm
-                        .write_at(command.data_address.get(), data.as_bytes())?;
+                    gm.write_at(command.data_address.get(), data.as_bytes())?;
                 }
 
                 (status, err)
             }
             NvramCommand::SET_VARIABLE => {
-                let command: NvramVariableCommand = self.gm.read_plain(command_addr)?;
+                let command: NvramVariableCommand = gm.read_plain(command_addr)?;
 
                 let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
                     return Ok(EfiStatus::INVALID_PARAMETER);
@@ -1344,8 +1283,7 @@ impl UefiDevice {
 
                 let name = if command.name_address.get() != 0 {
                     let mut buf = vec![0; name_len];
-                    self.gm
-                        .read_at(command.name_address.into(), buf.as_mut_slice())?;
+                    gm.read_at(command.name_address.into(), buf.as_mut_slice())?;
                     Some(buf)
                 } else {
                     None
@@ -1353,16 +1291,13 @@ impl UefiDevice {
 
                 let data = if command.data_address.get() != 0 {
                     let mut buf = vec![0; data_len];
-                    self.gm
-                        .read_at(command.data_address.into(), buf.as_mut_slice())?;
+                    gm.read_at(command.data_address.into(), buf.as_mut_slice())?;
                     Some(buf)
                 } else {
                     None
                 };
 
                 let NvramResult((), status, err) = self
-                    .service
-                    .nvram
                     .services
                     .uefi_set_variable(
                         name.as_deref(),
@@ -1376,7 +1311,7 @@ impl UefiDevice {
                 (status, err)
             }
             NvramCommand::GET_FIRST_VARIABLE_NAME | NvramCommand::GET_NEXT_VARIABLE_NAME => {
-                let mut command: NvramVariableCommand = self.gm.read_plain(command_addr)?;
+                let mut command: NvramVariableCommand = gm.read_plain(command_addr)?;
 
                 let name = if desc.command == NvramCommand::GET_NEXT_VARIABLE_NAME {
                     if command.name_address.get() != 0 {
@@ -1384,8 +1319,7 @@ impl UefiDevice {
                             return Ok(EfiStatus::INVALID_PARAMETER);
                         };
                         let mut buf = vec![0; name_len];
-                        self.gm
-                            .read_at(command.name_address.into(), buf.as_mut_slice())?;
+                        gm.read_at(command.name_address.into(), buf.as_mut_slice())?;
                         Some(buf)
                     } else {
                         None
@@ -1400,8 +1334,6 @@ impl UefiDevice {
                 };
 
                 let NvramResult(data, status, err) = self
-                    .service
-                    .nvram
                     .services
                     .uefi_get_next_variable(
                         &mut command.name_bytes,
@@ -1415,40 +1347,38 @@ impl UefiDevice {
                 if let Some((name, vendor)) = data {
                     command.vendor_guid = vendor;
 
-                    self.gm
-                        .write_at(command.name_address.get(), name.as_bytes())?;
+                    gm.write_at(command.name_address.get(), name.as_bytes())?;
                 }
 
                 // writeback updated command struct
-                self.gm.write_at(command_addr, command.as_bytes())?;
+                gm.write_at(command_addr, command.as_bytes())?;
 
                 (status, err)
             }
             NvramCommand::QUERY_INFO => (EfiStatus::UNSUPPORTED, None),
             NvramCommand::SIGNAL_RUNTIME => {
                 use uefi_specs::hyperv::nvram::NvramSignalRuntimeCommand;
-                let command: NvramSignalRuntimeCommand = self.gm.read_plain(command_addr)?;
+                let command: NvramSignalRuntimeCommand = gm.read_plain(command_addr)?;
 
                 if !command.flags.vsm_aware() {
-                    if let Some(vsm) = &self.service.nvram.vsm_config {
+                    if let Some(vsm) = &self.vsm_config {
                         tracelimit::info_ratelimited!("Revoking guest vsm");
                         vsm.revoke_guest_vsm()
                     }
                 }
-                self.service.nvram.services.exit_boot_services();
+                self.services.exit_boot_services();
 
                 (EfiStatus::SUCCESS, None)
             }
             NvramCommand::DEBUG_STRING => {
                 let command: uefi_specs::hyperv::nvram::NvramDebugStringCommand =
-                    self.gm.read_plain(command_addr)?;
+                    gm.read_plain(command_addr)?;
 
                 let Some(data_len) = nvram_command_buffer_len(command.len) else {
                     return Ok(EfiStatus::INVALID_PARAMETER);
                 };
                 let mut data = vec![0u16; data_len / 2];
-                self.gm
-                    .read_at(command.address.into(), data.as_mut_bytes())?;
+                gm.read_at(command.address.into(), data.as_mut_bytes())?;
 
                 tracing::trace!(
                     target: "uefi-nvram-guest-debug",

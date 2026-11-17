@@ -3,6 +3,7 @@
 
 //! SHA-384 implementation using the Windows BCrypt API.
 
+use super::SHA_384_OUTPUT_SIZE_BYTES;
 use windows::Win32::Security::Cryptography::BCRYPT_HASH_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_SHA384_ALG_HANDLE;
 use windows::Win32::Security::Cryptography::BCryptCreateHash;
@@ -32,8 +33,8 @@ impl Sha384 {
         }
     }
 
-    pub fn finish(self) -> [u8; 48] {
-        let mut out = [0u8; 48];
+    pub fn finish(self) -> [u8; SHA_384_OUTPUT_SIZE_BYTES] {
+        let mut out = [0u8; SHA_384_OUTPUT_SIZE_BYTES];
         // SAFETY: handle is valid and owned; output buffer matches the SHA-384
         // digest size. The call cannot fail for valid inputs.
         unsafe {

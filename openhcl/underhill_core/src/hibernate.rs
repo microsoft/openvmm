@@ -28,8 +28,12 @@ pub enum Token {
 }
 
 impl Token {
-    /// Written when the current firmware hibernates; bump per release.
-    pub const CURRENT: Self = Self::Hibernated { major: 1, minor: 9 };
+    /// Written when the current firmware hibernates: the UEFI (mu_msvm)
+    /// `major.minor`. Bump when that changes.
+    pub const CURRENT: Self = Self::Hibernated {
+        major: 26,
+        minor: 0,
+    };
     /// Written when the firmware version is unknown (e.g. after servicing).
     pub const UNKNOWN: Self = Self::Hibernated { major: 1, minor: 0 };
 }
@@ -118,9 +122,9 @@ pub async fn delete_token(vmgs_client: &vmgs_broker::VmgsClient) {
 /// behind.
 pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<Token> {
     match vmgs_client.read_file(vmgs::FileId::HIBERNATION_TOKEN).await {
-        Ok(buf) => match <[u8; 8]>::try_from(buf.as_slice()) {
-            Ok(bytes) => {
-                let token = Token::from(u64::from_le_bytes(bytes));
+        Ok(buf) => match buf.as_slice().as_array() {
+            Some(bytes) => {
+                let token = Token::from(u64::from_le_bytes(*bytes));
                 tracing::info!(
                     CVM_ALLOWED,
                     %token,
@@ -128,7 +132,7 @@ pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<Token> 
                 );
                 Some(token)
             }
-            Err(_) => {
+            None => {
                 tracing::warn!(
                     CVM_ALLOWED,
                     "hibernation enabled: corrupt hibernation token found"
@@ -157,16 +161,17 @@ pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<Token> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disklayer_ram::ram_disk;
+    use disk_hook::HookDisk;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Task;
+    use test_with_tracing::test;
     use vmgs::Vmgs;
     use vmgs_broker::VmgsClient;
     use vmgs_broker::spawn_vmgs_broker;
 
     async fn new_client(driver: &DefaultDriver) -> (VmgsClient, Task<()>) {
-        let disk = ram_disk(4 * 1024 * 1024, false).unwrap();
+        let disk = HookDisk::new(4 * 1024 * 1024, 512).into_disk();
         let vmgs = Vmgs::format_new(disk, None).await.unwrap();
         spawn_vmgs_broker(driver.clone(), vmgs)
     }
@@ -175,6 +180,18 @@ mod tests {
     async fn read_absent_is_none(driver: DefaultDriver) {
         let (client, _task) = new_client(&driver).await;
         assert_eq!(read_token(&client).await, None);
+    }
+
+    #[async_test]
+    async fn read_invalid_length_is_none(driver: DefaultDriver) {
+        let (client, _task) = new_client(&driver).await;
+        for len in [7, 9] {
+            client
+                .write_file(vmgs::FileId::HIBERNATION_TOKEN, vec![0; len])
+                .await
+                .unwrap();
+            assert_eq!(read_token(&client).await, None);
+        }
     }
 
     #[async_test]
@@ -196,8 +213,25 @@ mod tests {
     #[test]
     fn constants_encode_as_expected() {
         assert_eq!(u64::from(Token::NotHibernated), 0);
-        assert_eq!(u64::from(Token::CURRENT), 0x0109);
+        assert_eq!(u64::from(Token::CURRENT), 0x1A00);
         assert_eq!(u64::from(Token::UNKNOWN), 0x0100);
+    }
+
+    #[test]
+    fn current_matches_pinned_mu_msvm() {
+        let versions = include_str!("../../../flowey/flowey_lib_hvlite/src/_jobs/cfg_versions.rs");
+        let pinned = versions
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("pub const MU_MSVM: &str = \""))
+            .and_then(|rest| rest.strip_suffix("\";"))
+            .expect("MU_MSVM pin not found");
+        let mut parts = pinned.split('.').map(|part| part.parse::<u8>().unwrap());
+        let (major, minor) = (parts.next().unwrap(), parts.next().unwrap());
+        assert_eq!(
+            Token::CURRENT,
+            Token::Hibernated { major, minor },
+            "Token::CURRENT must match the pinned mu_msvm {pinned}; bump it"
+        );
     }
 
     #[test]

@@ -13,5 +13,9 @@ lxutil.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

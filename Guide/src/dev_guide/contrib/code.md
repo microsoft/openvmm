@@ -37,6 +37,17 @@ Assuming you've followed the [suggested dev env setup](../getting_started/sugges
 and set up `rust-analyzer` to format-on-save, you should rarely have to think
 about formatting in `.rs` files.
 
+## Protocol Buffers enums
+
+_Checked Automatically:_ **No**
+
+Follow the [Protocol Buffers enum conventions] when authoring or reviewing
+OpenVMM-owned `.proto` schemas, including gRPC and ttrpc APIs. The rules
+are maintained in the path-specific Copilot instructions so contributors
+and automated reviewers use the same source of truth.
+
+[Protocol Buffers enum conventions]: https://github.com/microsoft/openvmm/blob/main/.github/instructions/protobuf.instructions.md
+
 ## Custom Lints
 
 _Checked Automatically:_ **Yes** (via [`cargo xtask fmt --pass lints`](../dev_tools/xtask.md))
@@ -479,3 +490,18 @@ control over when to use this more resource-intensive testing.
 
 Only repository maintainers can add labels to PRs. If you need release gates
 run on your PR, ask a maintainer to add the `release-ci-required` label for you.
+
+## Patina Workflow
+
+To run release-mode check-in gates with Patina ClangPDB UEFI firmware:
+
+1. Ensure your PR targets `main` or `release/*` and is not a draft.
+2. Ask a repository maintainer to add the `needs-patina` label.
+3. The **OpenVMM Patina Nightly** workflow starts automatically for your PR.
+
+New commits rerun the workflow while the label remains present. To trigger
+another run without pushing a commit, remove and re-add the label. Draft PRs
+run when marked ready for review if the label is already present.
+
+The same workflow also runs on its nightly schedule and supports manual runs
+through GitHub Actions, without requiring a PR label.

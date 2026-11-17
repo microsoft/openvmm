@@ -5,7 +5,7 @@
 
 use flowey::pipeline::prelude::*;
 
-use super::gh_pools::LINUX_IMAGE_AMD64;
+use super::gh_pools::LINUX_IMAGE_AMD64_PREPPED;
 use super::gh_pools::WINDOWS_IMAGE_AMD64_V2;
 
 pub const AMD_V6_POOL_1ES: &str = "openvmm-ado-amd-westus2-v6";
@@ -35,7 +35,7 @@ pub fn windows_intel_v6_1es() -> AdoPool {
 }
 
 pub fn linux_amd_v6_1es() -> AdoPool {
-    ado_pool_with_image_1es(AMD_V6_POOL_1ES, LINUX_IMAGE_AMD64)
+    ado_pool_with_image_1es(AMD_V6_POOL_1ES, LINUX_IMAGE_AMD64_PREPPED)
 }
 
 pub fn default_windows() -> AdoPool {

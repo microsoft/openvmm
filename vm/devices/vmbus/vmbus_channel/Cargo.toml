@@ -6,6 +6,9 @@ name = "vmbus_channel"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+test_helpers = []
+
 [dependencies]
 vmbus_core.workspace = true
 vmbus_ring.workspace = true

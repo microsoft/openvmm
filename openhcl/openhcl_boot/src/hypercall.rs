@@ -9,7 +9,6 @@ use crate::arch::TdxHypercallPage;
 use crate::arch::tdx::invoke_tdcall_hypercall;
 use crate::single_threaded::SingleThreaded;
 use arrayvec::ArrayVec;
-use cfg_if::cfg_if;
 use core::cell::RefCell;
 use core::cell::UnsafeCell;
 use core::mem::size_of;
@@ -140,16 +139,15 @@ impl HvCall {
             //
             // This should be revisited as more isolation-specific flows are added to
             // the shim
-            cfg_if! {
-                if #[cfg(target_arch = "x86_64")] {
+            cfg_select! {
+                target_arch = "x86_64" => {
                     if self.tdx_io_page.is_some() {
                         self.uninitialize_tdx()
-                    }
-                    else {
+                    } else {
                         crate::arch::hypercall::uninitialize();
                     }
                 }
-                else {
+                _ => {
                     crate::arch::hypercall::uninitialize();
                 }
             }

@@ -135,6 +135,27 @@ mod unix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+
+    #[test]
+    fn test_allocation_contents_shared_through_atomic_view() {
+        let mut allocation = Allocation::new(4096).unwrap();
+        assert!(allocation.iter().all(|&b| b == 0));
+        allocation[7..9].copy_from_slice(&[0x12, 0x34]);
+        assert_eq!(&allocation[7..9], &[0x12, 0x34]);
+
+        let shared = SharedMem::new(allocation);
+        assert_eq!(shared[7].load(Ordering::Relaxed), 0x12);
+        assert_eq!(shared[8].fetch_add(1, Ordering::Relaxed), 0x34);
+        assert_eq!(shared[8].load(Ordering::Relaxed), 0x35);
+        assert_eq!(shared[9].load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_allocation_rejects_zero_size() {
+        assert!(Allocation::new(0).is_err());
+    }
 
     #[test]
     fn test_alloc_free() -> Result<(), Box<dyn std::error::Error>> {

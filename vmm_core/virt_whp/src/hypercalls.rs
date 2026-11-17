@@ -1616,10 +1616,7 @@ mod x86 {
                             return Err(HvError::InvalidParameter);
                         }
 
-                        // SAFETY: HvRegisterValue and WHV_REGISTER_VALUE are the same.
-                        unsafe {
-                            std::mem::transmute::<WHV_REGISTER_VALUE, HvRegisterValue>(whp_value[0])
-                        }
+                        HvRegisterValue::from(u128::from(whp_value[0].0))
                     } else {
                         tracing::error!(name = ?reg, "unknown register name for get_vp_registers");
                         return Err(HvError::InvalidParameter);
@@ -1736,10 +1733,7 @@ mod x86 {
                             return Err(HvError::AccessDenied);
                         }
 
-                        // SAFETY: HvRegisterValue and WHV_REGISTER_VALUE are the same.
-                        let whp_value = unsafe {
-                            std::mem::transmute::<HvRegisterValue, WHV_REGISTER_VALUE>(*value)
-                        };
+                        let whp_value = WHV_REGISTER_VALUE(value.as_u128().into());
                         if let Err(err) =
                             self.vp.whp(Vtl::Vtl0).set_registers(&[name], &[whp_value])
                         {
@@ -1931,11 +1925,7 @@ mod aarch64 {
                                 err.hv_result()
                                     .map_or(HvError::InvalidParameter, HvError::from)
                             })?;
-                        unsafe {
-                            std::mem::transmute::<whp::abi::WHV_REGISTER_VALUE, HvRegisterValue>(
-                                value[0],
-                            )
-                        }
+                        HvRegisterValue::from(u128::from(value[0].0))
                     } else {
                         tracelimit::warn_ratelimited!(name = ?reg, "unknown register name for get_vp_registers");
                         return Err(HvError::InvalidParameter);
@@ -1952,9 +1942,7 @@ mod aarch64 {
             value: &HvRegisterValue,
         ) -> HvResult<()> {
             if let Some(reg) = Self::hypervisor_owned_reg(name.into()) {
-                let value = unsafe {
-                    std::mem::transmute::<HvRegisterValue, whp::abi::WHV_REGISTER_VALUE>(*value)
-                };
+                let value = whp::abi::WHV_REGISTER_VALUE(value.as_u128().into());
                 self.current_whp()
                     .set_registers(&[reg], &[value])
                     .map_err(|err| {

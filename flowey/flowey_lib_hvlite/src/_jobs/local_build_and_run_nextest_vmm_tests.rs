@@ -101,12 +101,15 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::build_guest_test_uefi::Node>();
+        ctx.import::<crate::build_mshv_host_boot::Node>();
+        ctx.import::<crate::resolve_mshv_boot_artifacts::Node>();
         ctx.import::<crate::build_nextest_vmm_tests::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
         ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_prep_steps::Node>();
+        ctx.import::<crate::build_snp_linux_direct_igvm::Node>();
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
         ctx.import::<crate::build_tpm_guest_tests::Node>();
@@ -149,7 +152,7 @@ impl SimpleFlowNode for Node {
         let test_label = build_test_label(&target_triple);
 
         // this is kind of a hack, since the artifacts will still appear in an
-        // ouput directly labeled MSVC, but it allows for windows-gnu local
+        // output directly labeled MSVC, but it allows for windows-gnu local
         // builds to continue to work without defining new windows-gnu artifact
         // variants for everything.
         let windows_guest_environment = match windows_guest_platform {
@@ -269,6 +272,14 @@ impl SimpleFlowNode for Node {
         let openhcl_linux_direct_x64 = build
             .openhcl_linux_direct_x64
             .then(|| build_openhcl(OpenhclIgvmRecipe::X64TestLinuxDirect));
+        let openhcl_sivm_x64 = build
+            .openhcl_sivm_x64
+            .then(|| build_openhcl(OpenhclIgvmRecipe::X64TestSivm));
+        let snp_linux_direct_igvm_x64 = build.snp_linux_direct_igvm_x64.then(|| {
+            ctx.reqv(|v| crate::build_snp_linux_direct_igvm::Request {
+                snp_linux_direct_igvm: v,
+            })
+        });
 
         let mut build_vmfirmwareigvm = |openhcl_igvm| {
             ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
@@ -414,6 +425,18 @@ impl SimpleFlowNode for Node {
         let guest_test_uefi_aarch64 = build
             .guest_test_uefi_aarch64
             .then(|| build_guest_test_uefi(CommonArch::Aarch64));
+        let mshv_host_boot_x64 = build.mshv_host_boot_x64.then(|| {
+            ctx.reqv(|host_boot| crate::build_mshv_host_boot::Request {
+                profile: CommonProfile::from_release(release),
+                host_boot,
+            })
+        });
+        let mshv_boot_artifacts_x64 = build.mshv_boot_artifacts_x64.then(|| {
+            ctx.reqv(|artifacts| crate::resolve_mshv_boot_artifacts::Request {
+                arch: CommonArch::X86_64,
+                artifacts,
+            })
+        });
 
         let mut build_tmks = |arch| {
             let output = ctx.reqv(|v| crate::build_tmks::Request {
@@ -656,11 +679,15 @@ impl SimpleFlowNode for Node {
         let flowey_hvlite_linux_x64 = build
             .flowey_hvlite_linux_x64
             .then(|| build_flowey_hvlite(VmmTestsBuiltArtifacts::flowey_hvlite_linux_x64_target()));
+        let flowey_hvlite_linux_musl_x64 = build.flowey_hvlite_linux_musl_x64.then(|| {
+            build_flowey_hvlite(VmmTestsBuiltArtifacts::flowey_hvlite_linux_musl_x64_target())
+        });
 
         let built_artifacts = VmmTestsBuiltArtifacts {
             flowey_hvlite_windows_x64,
             flowey_hvlite_windows_aarch64,
             flowey_hvlite_linux_x64,
+            flowey_hvlite_linux_musl_x64,
             nextest_vmm_tests_archive_windows_x64,
             nextest_vmm_tests_archive_windows_aarch64,
             nextest_vmm_tests_archive_linux_x64,
@@ -684,6 +711,8 @@ impl SimpleFlowNode for Node {
             pipette_linux_musl_x64,
             pipette_linux_musl_aarch64,
             guest_test_uefi_x64,
+            mshv_host_boot_x64,
+            mshv_boot_artifacts_x64,
             guest_test_uefi_aarch64,
             openhcl_standard_x64,
             openhcl_standard_aarch64,
@@ -692,6 +721,8 @@ impl SimpleFlowNode for Node {
             openhcl_cvm_x64,
             vmfirmwareigvm_cvm_x64,
             openhcl_linux_direct_x64,
+            openhcl_sivm_x64,
+            snp_linux_direct_igvm_x64,
             tmks_x64,
             tmks_aarch64,
             tmk_vmm_windows_x64,
@@ -786,6 +817,7 @@ impl SimpleFlowNode for Node {
                         CommonTriple::AARCH64_WINDOWS_MSVC => "windows-aarch64",
                         CommonTriple::X86_64_WINDOWS_MSVC => "windows-x64",
                         CommonTriple::X86_64_LINUX_GNU => "linux-x64",
+                        CommonTriple::X86_64_LINUX_MUSL => "linux-musl-x64",
                         CommonTriple::AARCH64_LINUX_MUSL => "linux-aarch64-musl",
                         _ => unreachable!(),
                     };

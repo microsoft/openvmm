@@ -583,7 +583,7 @@ impl PcatBiosDevice {
             }
             PcatAddress::WAIT_NANO100 => {
                 return Ok(Some(
-                    self.defer_wait(Duration::from_nanos(data as u64 * 100)),
+                    self.defer_wait(Duration::from_nanos_u128(u128::from(data) * 100)),
                 ));
             }
             PcatAddress::GENERATION_ID_PTR_LOW => self.generation_id.write_generation_id_low(data),

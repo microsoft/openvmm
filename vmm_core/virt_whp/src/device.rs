@@ -130,8 +130,8 @@ impl MapVpciInterrupt for Device {
         let (index, m) = match interrupts.iter_mut().enumerate().find(|(_, m)| m.is_none()) {
             Some((index, m)) => (index, m),
             None => {
-                interrupts.push(None);
-                (interrupts.len() - 1, interrupts.last_mut().unwrap())
+                let index = interrupts.len();
+                (index, interrupts.push_mut(None))
             }
         };
 

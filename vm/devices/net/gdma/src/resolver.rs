@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Resource resolver for the nvme controller.
+//! Resource resolver for the GDMA device.
 
 use crate::GdmaDevice;
 use crate::VportConfig;

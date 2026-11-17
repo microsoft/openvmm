@@ -26,6 +26,7 @@ use crate::TestArtifactRequirements;
 use crate::TestArtifacts;
 use crate::requirements::HostContext;
 use crate::requirements::TestCaseRequirements;
+use crate::requirements::TestRequirement;
 use crate::requirements::can_run_test_with_context;
 use crate::tracing::try_init_tracing;
 use anyhow::Context as _;
@@ -166,6 +167,7 @@ impl Test {
     fn run(
         &self,
         resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
+        unstable: bool,
     ) -> anyhow::Result<()> {
         let name = self.name();
         let artifacts = resolve(&name, self.artifact_requirements.clone())
@@ -222,7 +224,7 @@ impl Test {
             };
             Err(err)
         });
-        logger.log_test_result(&r, self.test.0.unstable().is_some());
+        logger.log_test_result(&r, unstable);
 
         for hook in post_test_hooks {
             tracing::info!(name = hook.name(), "Running post-test hook");
@@ -243,10 +245,12 @@ impl Test {
     fn trial(
         self,
         resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
+        host_context: &HostContext,
     ) -> libtest_mimic::Trial {
+        let unstable = self.test.0.unstable(host_context).map(str::to_owned);
         libtest_mimic::Trial::test(self.name(), move || {
-            let unstable = self.test.0.unstable();
-            match self.run(resolve) {
+            let unstable = unstable.as_deref();
+            match self.run(resolve, unstable.is_some()) {
                 Ok(()) => Ok(()),
                 Err(err) => {
                     let Some(reason) = unstable else {
@@ -289,8 +293,8 @@ pub trait RunTest: Send {
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
     /// Returns the host requirements of the current test, if any.
     fn host_requirements(&self) -> Option<&TestCaseRequirements>;
-    /// If this test is unstable, the reason why; `None` if stable.
-    fn unstable(&self) -> Option<&str>;
+    /// Returns the reason this test is unstable on this host, or `None` if stable.
+    fn unstable(&self, host_context: &HostContext) -> Option<&str>;
     /// Whether this test is ignored (skipped by default, like a libtest
     /// `#[ignore]` test).
     fn ignored(&self) -> bool;
@@ -301,7 +305,7 @@ trait DynRunTest: Send {
     fn artifact_requirements(&self) -> Option<TestArtifactRequirements>;
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()>;
     fn host_requirements(&self) -> Option<&TestCaseRequirements>;
-    fn unstable(&self) -> Option<&str>;
+    fn unstable(&self, host_context: &HostContext) -> Option<&str>;
     fn ignored(&self) -> bool;
 }
 
@@ -327,8 +331,8 @@ impl<T: RunTest> DynRunTest for T {
         self.host_requirements()
     }
 
-    fn unstable(&self) -> Option<&str> {
-        self.unstable()
+    fn unstable(&self, host_context: &HostContext) -> Option<&str> {
+        self.unstable(host_context)
     }
 
     fn ignored(&self) -> bool {
@@ -402,7 +406,7 @@ pub struct SimpleTest<A, F> {
     run: F,
     /// Optional test requirements
     pub host_requirements: Option<TestCaseRequirements>,
-    unstable: Option<&'static str>,
+    unstable: Option<(&'static str, TestRequirement)>,
     ignored: bool,
     remote_policy: RemoteAccess,
 }
@@ -442,7 +446,7 @@ where
             // before the failure is reported.
             drop(driver);
             pool.run();
-            match r.and_then(|r| r) {
+            match r.flatten() {
                 Ok(r) => r,
                 Err(panic) => std::panic::resume_unwind(panic),
             }
@@ -494,8 +498,16 @@ impl<A, F> SimpleTest<A, F> {
     ///
     /// `reason` documents why the test is unstable and is logged when an
     /// unstable failure is ignored.
-    pub fn unstable(mut self, reason: &'static str) -> Self {
-        self.unstable = Some(reason);
+    pub fn unstable(self, reason: &'static str) -> Self {
+        self.unstable_on(reason, TestRequirement::Any)
+    }
+
+    /// Marks this test as unstable only on hosts that satisfy `requirement`.
+    ///
+    /// On other hosts the test still runs, but failures remain gating.
+    /// This does not change the test's host eligibility requirements.
+    pub fn unstable_on(mut self, reason: &'static str, requirement: TestRequirement) -> Self {
+        self.unstable = Some((reason, requirement));
         self
     }
 
@@ -538,8 +550,11 @@ where
         self.host_requirements.as_ref()
     }
 
-    fn unstable(&self) -> Option<&str> {
+    fn unstable(&self, host_context: &HostContext) -> Option<&str> {
         self.unstable
+            .as_ref()
+            .filter(|(_, requirement)| requirement.is_satisfied(host_context))
+            .map(|(reason, _)| *reason)
     }
 
     fn ignored(&self) -> bool {
@@ -656,9 +671,148 @@ pub fn test_main(
         .map(|test| {
             let can_run = can_run_test_with_context(test.test.0.host_requirements(), &host_context);
             let ignored = test.test.0.ignored();
-            test.trial(resolve).with_ignored_flag(!can_run || ignored)
+            test.trial(resolve, &host_context)
+                .with_ignored_flag(!can_run || ignored)
         })
         .collect();
 
     libtest_mimic::run(&args.inner, trials).exit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::requirements::ExecutionEnvironment;
+    use crate::requirements::OpenVmmHypervisor;
+    use crate::requirements::Vendor;
+    use test_with_tracing::test;
+
+    fn host_context(hypervisor: Option<OpenVmmHypervisor>) -> HostContext {
+        HostContext {
+            vm_host_info: None,
+            vendor: Vendor::Intel,
+            execution_environment: ExecutionEnvironment::Baremetal,
+            vpci_supported: false,
+            openvmm_hypervisor: hypervisor,
+        }
+    }
+
+    #[test]
+    fn instability_matches_the_host_without_restricting_eligibility() {
+        let test = SimpleTest::new_sync(
+            "conditional_unstable",
+            |_| Some(()),
+            |_, ()| Ok::<_, anyhow::Error>(()),
+        )
+        .unstable_on(
+            "MSHV pause hang",
+            TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Mshv),
+        );
+        let test = TestCase::new(test);
+        for hypervisor in [
+            Some(OpenVmmHypervisor::Mshv),
+            Some(OpenVmmHypervisor::Kvm),
+            Some(OpenVmmHypervisor::Whp),
+            None,
+        ] {
+            let context = host_context(hypervisor);
+            assert!(can_run_test_with_context(
+                test.0.host_requirements(),
+                &context
+            ));
+            assert_eq!(
+                test.0.unstable(&context),
+                (hypervisor == Some(OpenVmmHypervisor::Mshv)).then_some("MSHV pause hang")
+            );
+        }
+    }
+
+    #[test]
+    fn instability_can_combine_backend_and_host_requirements() {
+        let test = SimpleTest::new_sync(
+            "conditional_unstable",
+            |_| Some(()),
+            |_, ()| Ok::<_, anyhow::Error>(()),
+        )
+        .unstable_on(
+            "Intel nested MSHV only",
+            TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Mshv)
+                .and(TestRequirement::Vendor(Vendor::Intel))
+                .and(TestRequirement::ExecutionEnvironment(
+                    ExecutionEnvironment::Nested,
+                )),
+        );
+        let mut context = host_context(Some(OpenVmmHypervisor::Mshv));
+        assert_eq!(RunTest::unstable(&test, &context), None);
+        context.execution_environment = ExecutionEnvironment::Nested;
+        assert_eq!(
+            RunTest::unstable(&test, &context),
+            Some("Intel nested MSHV only")
+        );
+        context.vendor = Vendor::Amd;
+        assert_eq!(RunTest::unstable(&test, &context), None);
+    }
+
+    #[test]
+    fn unconditional_and_stable_tests_keep_their_behavior() {
+        let stable =
+            SimpleTest::new_sync("stable", |_| Some(()), |_, ()| Ok::<_, anyhow::Error>(()));
+        let unstable = SimpleTest::new_sync(
+            "unconditional_unstable",
+            |_| Some(()),
+            |_, ()| Ok::<_, anyhow::Error>(()),
+        )
+        .unstable_on("conditional", TestRequirement::Any.not())
+        .unstable("all hosts");
+        for hypervisor in [
+            None,
+            Some(OpenVmmHypervisor::Mshv),
+            Some(OpenVmmHypervisor::Kvm),
+        ] {
+            let context = host_context(hypervisor);
+            assert_eq!(RunTest::unstable(&stable, &context), None);
+            assert_eq!(RunTest::unstable(&unstable, &context), Some("all hosts"));
+        }
+    }
+
+    #[test]
+    fn conditional_instability_controls_failure_reporting() {
+        let ignore_unstable =
+            std::env::var(petri_artifacts_core::env::PETRI_IGNORE_UNSTABLE_FAILURES)
+                .ok()
+                .is_some_and(|v| !v.is_empty() && v != "0");
+        for hypervisor in [OpenVmmHypervisor::Mshv, OpenVmmHypervisor::Kvm] {
+            let test = Test {
+                module: "petri",
+                test: SimpleTest::new_sync(
+                    "reported_failure",
+                    |_| Some(()),
+                    |_, ()| Ok::<_, anyhow::Error>(()),
+                )
+                .unstable_on(
+                    "MSHV only",
+                    TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Mshv),
+                )
+                .into(),
+                artifact_requirements: TestArtifactRequirements::new(),
+            };
+            let trial = test.trial(
+                |_, _| anyhow::bail!("artifact resolution failed"),
+                &host_context(Some(hypervisor)),
+            );
+            let result = libtest_mimic::run(
+                &libtest_mimic::Arguments {
+                    test_threads: Some(1),
+                    quiet: true,
+                    ..Default::default()
+                },
+                vec![trial],
+            );
+            assert_eq!(result.num_ignored, 0);
+            assert_eq!(
+                result.has_failed(),
+                !(hypervisor == OpenVmmHypervisor::Mshv && ignore_unstable),
+            );
+        }
+    }
 }

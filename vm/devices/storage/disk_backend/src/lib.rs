@@ -587,10 +587,7 @@ trait DynDisk: Send + Sync + Inspect {
     fn wait_resize<'a>(
         &'a self,
         sector_count: u64,
-    ) -> Pin<Box<dyn 'a + Send + Future<Output = u64>>> {
-        let _ = sector_count;
-        Box::pin(std::future::pending())
-    }
+    ) -> Pin<Box<dyn 'a + Send + Future<Output = u64>>>;
 }
 
 impl<T: DiskIo> DynDisk for T {
@@ -634,5 +631,12 @@ impl<T: DiskIo> DynDisk for T {
 
     fn sync_cache(&self) -> IoFuture<'_> {
         StackFuture::from_or_box(self.sync_cache())
+    }
+
+    fn wait_resize<'a>(
+        &'a self,
+        sector_count: u64,
+    ) -> Pin<Box<dyn 'a + Send + Future<Output = u64>>> {
+        Box::pin(DiskIo::wait_resize(self, sector_count))
     }
 }

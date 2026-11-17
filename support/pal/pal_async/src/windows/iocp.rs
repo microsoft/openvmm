@@ -332,6 +332,8 @@ impl PollWait for Wait {
         match &mut inner.state {
             WaitState::Waiting(waker) => {
                 if self.packet.cancel(false) {
+                    let _old = std::mem::replace(&mut inner.state, WaitState::NotWaiting);
+                    drop(inner);
                     // SAFETY: releasing the reference acquired in poll_wait().
                     drop(unsafe { Arc::from_raw(Arc::as_ptr(&self.op)) });
                     Poll::Ready(false)

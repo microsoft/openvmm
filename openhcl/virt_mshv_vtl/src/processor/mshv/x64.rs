@@ -1634,6 +1634,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         self.set_register_state(value)
     }
 
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
         self.get_register_state()
     }

@@ -156,9 +156,9 @@ macro_rules! define_tmk_test {
                 name.split_at(i + 2).1
             };
 
-            // UNSAFETY: needed to specify the link section for the test.
-            #[expect(unsafe_code)]
-            #[unsafe(link_section = "tmk_tests")]
+            // UNSAFETY: the ELF test section is only needed in the bare-metal payload.
+            #[cfg_attr(minimal_rt, expect(unsafe_code))]
+            #[cfg_attr(minimal_rt, unsafe(link_section = "tmk_tests"))]
             #[used]
             static TEST: $crate::TestDescriptor = $crate::TestDescriptor {
                 name: NAME,

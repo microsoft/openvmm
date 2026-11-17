@@ -61,6 +61,7 @@ use zerocopy::Unalign;
 pub struct VpciClient {
     req: mesh::Sender<WorkerRequest>,
     task: Task<()>,
+    protocol_version: protocol::ProtocolVersion,
 }
 
 impl Inspect for VpciClient {
@@ -921,9 +922,16 @@ impl VpciClient {
         let this = Self {
             req: req_send,
             task,
+            protocol_version: version,
         };
 
         Ok((this, init_devices))
+    }
+
+    /// The VPCI protocol version the host negotiated for this bus. It is fixed
+    /// for the life of the connection.
+    pub fn protocol_version(&self) -> protocol::ProtocolVersion {
+        self.protocol_version
     }
 
     /// Shuts down the VPCI bus client.

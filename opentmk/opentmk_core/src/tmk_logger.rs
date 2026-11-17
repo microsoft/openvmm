@@ -17,13 +17,13 @@ use spin::Mutex;
 use spin::MutexGuard;
 
 #[cfg(target_arch = "x86_64")]
-use crate::arch::serial::InstrIoAccess;
-#[cfg(target_arch = "x86_64")]
-use crate::arch::serial::Serial;
-#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::SerialPort;
 #[cfg(target_arch = "aarch64")]
 use minimal_rt::arch::Serial;
+#[cfg(target_arch = "x86_64")]
+use uart_16550::Uart16550Tty;
+#[cfg(target_arch = "x86_64")]
+use uart_16550::backend::PioBackend;
 
 #[derive(Serialize)]
 struct LogEntry {
@@ -109,11 +109,9 @@ where
 }
 
 #[cfg(target_arch = "x86_64")]
-type SerialPortWriter = Serial<InstrIoAccess>;
-#[cfg(target_arch = "x86_64")]
 /// The global logger instance for x86_64 architecture, using COM2 serial port.
-pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
-    TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
+pub static LOGGER: TmkLogger<Mutex<Uart16550Tty<PioBackend>>> =
+    TmkLogger::new(Uart16550Tty::from_inner(SerialPort::COM2.uart()));
 
 #[cfg(target_arch = "aarch64")]
 /// The global logger instance for aarch64 architecture, using the default serial implementation.

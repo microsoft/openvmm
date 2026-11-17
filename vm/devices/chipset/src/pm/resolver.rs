@@ -134,6 +134,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, HyperVPowerManagementDeviceHa
                 default_pio_dynamic: resource.pio_base,
             }),
             deps.pm_timer_assist,
+            None,
         );
 
         register_gpe0_lines(input.configure, &pm);

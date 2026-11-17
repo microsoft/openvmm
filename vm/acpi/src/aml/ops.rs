@@ -133,6 +133,22 @@ impl OperationObject for CreateDWordFieldOp {
     }
 }
 
+/// An AML device notification.
+pub struct NotifyOp {
+    /// Pre-serialized object receiving the notification.
+    pub object: Vec<u8>,
+    /// Pre-serialized notification value.
+    pub value: Vec<u8>,
+}
+
+impl OperationObject for NotifyOp {
+    fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
+        byte_stream.push(0x86); // NotifyOp
+        byte_stream.extend_from_slice(&self.object);
+        byte_stream.extend_from_slice(&self.value);
+    }
+}
+
 /// An AML operation to return from a procedure.
 pub struct ReturnOp {
     pub result: Vec<u8>,
@@ -145,28 +161,22 @@ impl OperationObject for ReturnOp {
     }
 }
 
-/// An AML Notify operation (`Notify(object, value)`).
-pub struct NotifyOp {
-    /// Encoded name of the object to notify (see `encode_name`).
-    pub object: Vec<u8>,
-    /// The notification value, e.g. 0x80 for a device-specific change.
-    pub value: u64,
-}
-
-impl OperationObject for NotifyOp {
-    fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
-        byte_stream.push(0x86); // NotifyOp
-        byte_stream.extend_from_slice(&self.object);
-        byte_stream.extend_from_slice(&super::helpers::encode_integer(self.value));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::aml::encode_integer;
     use crate::aml::test_helpers::verify_expected_bytes;
     use alloc::vec;
+    use test_with_tracing::test;
+
+    #[test]
+    fn verify_notify_operation() {
+        let op = NotifyOp {
+            object: vec![b'P', b'B', b'T', b'N'],
+            value: encode_integer(0x80),
+        };
+        verify_expected_bytes(&op.to_bytes(), &[0x86, b'P', b'B', b'T', b'N', 0x0a, 0x80]);
+    }
 
     #[test]
     fn verify_and_operation() {

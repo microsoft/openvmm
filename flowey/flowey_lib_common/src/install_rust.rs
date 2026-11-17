@@ -206,24 +206,41 @@ impl FlowNodeWithConfig for Node {
                                   ctx: &mut NodeCtx<'_>| {
             if write_cargo_bin.is_some() || !ensure_installed.is_empty() {
                 if auto_install || matches!(ctx.backend(), FlowBackend::Github) {
-                    let added_to_path = if matches!(ctx.backend(), FlowBackend::Github) {
-                        Some(ctx.emit_rust_step("add default cargo home to path", |_| {
-                            |_| {
-                                let default_cargo_home = home::home_dir()
-                                    .context("Unable to get home dir")?
-                                    .join(".cargo")
-                                    .join("bin");
-                                let github_path = std::env::var("GITHUB_PATH")?;
-                                let mut github_path =
-                                    fs_err::File::options().append(true).open(github_path)?;
-                                github_path
-                                    .write_all(default_cargo_home.as_os_str().as_encoded_bytes())?;
-                                log::info!("Added {} to PATH", default_cargo_home.display());
+                    let added_to_path = match ctx.backend() {
+                        FlowBackend::Github | FlowBackend::Ado => {
+                            // Run in a separate step so the CI agent updates PATH before
+                            // the installer invokes the newly installed tools.
+                            Some(ctx.emit_rust_step("add default cargo home to path", |_| {
+                            |rt| {
+                                // Preserve the resolved home across snippets with different working directories.
+                                let cargo_home = home::cargo_home()?;
+                                let cargo_bin = cargo_home.join("bin");
+                                let cargo_home = cargo_home
+                                    .to_str()
+                                    .context("Cargo home path is not valid UTF-8")?;
+                                if matches!(rt.backend(), FlowBackend::Ado) {
+                                    println!(
+                                        "##vso[task.setvariable variable=CARGO_HOME]{cargo_home}"
+                                    );
+                                    println!("##vso[task.prependpath]{}", cargo_bin.display());
+                                } else {
+                                    rt.dangerous_gh_set_global_env_var(
+                                        cargo_home.to_owned(),
+                                        "CARGO_HOME".to_owned(),
+                                    )?;
+                                    let github_path = std::env::var("GITHUB_PATH")?;
+                                    let mut github_path =
+                                        fs_err::File::options().append(true).open(github_path)?;
+                                    github_path
+                                        .write_all(cargo_bin.as_os_str().as_encoded_bytes())?;
+                                    github_path.write_all(b"\n")?;
+                                }
+                                log::info!("Added {} to PATH", cargo_bin.display());
                                 Ok(())
                             }
                         }))
-                    } else {
-                        None
+                        }
+                        _ => None,
                     };
 
                     let rust_toolchain = rust_toolchain.clone();

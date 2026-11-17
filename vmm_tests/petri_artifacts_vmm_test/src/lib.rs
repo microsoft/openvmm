@@ -338,6 +338,8 @@ pub mod artifacts {
             FLOWEY_HVLITE_WINDOWS_X64("flowey_hvlite.exe", WINDOWS_X64),
             /// Linux x86_64 build of `flowey_hvlite`.
             FLOWEY_HVLITE_LINUX_X64("flowey_hvlite", LINUX_X64),
+            /// Linux musl x86_64 build of `flowey_hvlite`.
+            FLOWEY_HVLITE_LINUX_X64_MUSL("flowey_hvlite", LINUX_X64_MUSL),
             /// Windows aarch64 build of `flowey_hvlite`.
             FLOWEY_HVLITE_WINDOWS_AARCH64("flowey_hvlite.exe", WINDOWS_AARCH64),
             /// Windows x86_64 build of the `prep_steps` binary.
@@ -425,6 +427,12 @@ pub mod artifacts {
             LINUX_DIRECT_TEST_INITRD_AARCH64("initrd", AARCH64),
             /// Test linux direct bzImage kernel for x64 (from OpenVMM deps)
             LINUX_DIRECT_TEST_BZIMAGE_X64("bzImage", X64),
+            /// Module-free mshv root kernel; not the nested child's kernel.
+            MSHV_TEST_KERNEL_X64("mshv-bzImage", X64),
+            /// Development-only UEFI host boot application for the mshv root.
+            MSHV_HOST_BOOT_X64("mshv_host_boot.efi", X64),
+            /// Extracted, licensed mshv hypervisor/loader payload directory.
+            MSHV_BOOT_ARTIFACTS_X64("mshv-boot-artifacts", X64),
             /// PCAT firmware DLL
             PCAT_FIRMWARE_X64("vmfirmwarepcat.dll", X64),
             /// SVGA firmware DLL
@@ -488,6 +496,22 @@ pub mod artifacts {
         }
     }
 
+    /// SNP Linux-direct IGVM artifacts.
+    pub mod snp_igvm {
+        use petri_artifacts_common::tags::IsLoadable;
+        use petri_artifacts_common::tags::MachineArch;
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// SNP Linux-direct IGVM for x86_64.
+            SNP_LINUX_DIRECT_IGVM_X64("snp-linux-direct.bin", X64),
+        }
+
+        impl IsLoadable for SNP_LINUX_DIRECT_IGVM_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+    }
+
     /// OpenHCL IGVM artifacts
     pub mod openhcl_igvm {
         use petri_artifacts_common::tags::IsLoadable;
@@ -506,6 +530,8 @@ pub mod artifacts {
             LATEST_CVM_X64("openhcl-x64-cvm.bin", X64),
             /// OpenHCL IGVM (using a linux direct-boot test image instead of UEFI)
             LATEST_LINUX_DIRECT_TEST_X64("openhcl-x64-test-linux-direct.bin", X64),
+            /// OpenHCL IGVM with a measured SIVM policy requiring secure boot.
+            LATEST_SIVM_TEST_X64("openhcl-x64-test-sivm.bin", X64),
             /// OpenHCL IGVM last release (using a linux direct-boot test image instead of UEFI)
             LATEST_RELEASE_LINUX_DIRECT_X64("release-2511-x64-direct-openhcl.bin", X64),
             /// OpenHCL IGVM (standard AARCH64)
@@ -519,6 +545,11 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_X64 {}
+
+        impl IsLoadable for LATEST_SIVM_TEST_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+        impl IsOpenhclIgvm for LATEST_SIVM_TEST_X64 {}
 
         impl IsLoadable for LATEST_RELEASE_STANDARD_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
@@ -816,11 +847,10 @@ pub mod artifacts {
         declare_vmm_test_images! {
             /// Windows 11 Enterprise ARM64 24H2
             WINDOWS_11_ENTERPRISE_AARCH64(
-                "windows11preview-arm64-win11-24h2-ent-26100.3775.250406-1.vhdx",
-                24398266368,
+                "windows11preview-arm64-win11-24h2-ent-26100.9725.261024.vhd",
+                136367309312,
                 "Windows11EnterpriseAarch64Vhdx",
-                // blob disk does not support VHDX files
-                DOES_NOT_SUPPORT_BLOB_DISK,
+                SUPPORTS_BLOB_DISK,
             )
         }
 

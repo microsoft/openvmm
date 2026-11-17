@@ -105,7 +105,7 @@ fn validate_ranges_with_metadata(ranges: &[MemoryRangeWithNode]) -> Result<(), E
 /// non-overlapping.
 fn validate_ranges_core<T>(ranges: &[T], getter: impl Fn(&T) -> &MemoryRange) -> Result<(), Error> {
     if ranges.iter().any(|x| getter(x).is_empty())
-        || !ranges.iter().zip(ranges.iter().skip(1)).all(|(x, y)| {
+        || !ranges.array_windows().all(|[x, y]| {
             let x = getter(x);
             let y = getter(y);
             x <= y && !x.overlaps(y)
@@ -327,11 +327,7 @@ impl MemoryLayout {
         all_ranges.sort();
         validate_ranges(&all_ranges)?;
 
-        if all_ranges
-            .iter()
-            .zip(all_ranges.iter().skip(1))
-            .any(|(x, y)| x.overlaps(y))
-        {
+        if all_ranges.array_windows().any(|[x, y]| x.overlaps(y)) {
             return Err(Error::BadMemoryRanges);
         }
 

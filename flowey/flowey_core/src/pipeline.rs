@@ -86,6 +86,12 @@ fn linux_distro() -> FlowPlatformLinuxDistro {
             FlowPlatformLinuxDistro::AzureLinux
         } else if etc_os_release.contains("ID=arch") {
             FlowPlatformLinuxDistro::Arch
+        } else if etc_os_release
+            .lines()
+            .find_map(|line| line.strip_prefix("ID="))
+            .is_some_and(|id| id.trim_matches(['"', '\'']).starts_with("opensuse"))
+        {
+            FlowPlatformLinuxDistro::OpenSuse
         } else {
             FlowPlatformLinuxDistro::Unknown
         }

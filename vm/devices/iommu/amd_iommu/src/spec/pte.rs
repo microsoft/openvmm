@@ -184,6 +184,22 @@ impl IommuPte {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn mode7_first_zero_boundaries() {
+        for bit in 0..64 {
+            let raw = !(1u64 << bit);
+            let expected = if (12..52).contains(&bit) {
+                Some(1u64 << (bit + 1))
+            } else {
+                None
+            };
+            assert_eq!(IommuPte::mode7_page_size(raw), expected, "bit {bit}");
+        }
+        assert_eq!(IommuPte::mode7_page_size(u64::MAX), None);
+        assert_eq!(IommuPte::mode7_page_size(0), Some(1 << 13));
+    }
 
     #[test]
     fn test_pte_size() {

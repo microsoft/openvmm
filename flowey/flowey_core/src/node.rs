@@ -1042,6 +1042,8 @@ pub enum FlowPlatformLinuxDistro {
     AzureLinux,
     /// Arch Linux (including WSL2)
     Arch,
+    /// openSUSE (including WSL2)
+    OpenSuse,
     /// Nix environment (detected via IN_NIX_SHELL env var or having a `/nix/store` in PATH)
     Nix,
     /// An unknown distribution
@@ -1888,6 +1890,17 @@ pub mod steps {
             /// `build.BuildNumber`
             pub const BUILD_BUILD_NUMBER: AdoRuntimeVar = AdoRuntimeVar::new("build.BuildNumber");
 
+            /// `Build.BuildId`
+            pub const BUILD_BUILD_ID: AdoRuntimeVar = AdoRuntimeVar::new("Build.BuildId");
+
+            /// `System.CollectionUri`
+            pub const SYSTEM_COLLECTION_URI: AdoRuntimeVar =
+                AdoRuntimeVar::new("System.CollectionUri");
+
+            /// `System.TeamProjectId`
+            pub const SYSTEM_TEAM_PROJECT_ID: AdoRuntimeVar =
+                AdoRuntimeVar::new("System.TeamProjectId");
+
             /// `System.AccessToken`
             pub const SYSTEM_ACCESS_TOKEN: AdoRuntimeVar =
                 AdoRuntimeVar::new_secret("System.AccessToken");
@@ -2504,7 +2517,7 @@ impl std::fmt::Debug for NodeHandle {
 }
 
 impl NodeHandle {
-    pub fn from_type<N: FlowNodeBase + 'static>() -> NodeHandle {
+    pub const fn from_type<N: FlowNodeBase + 'static>() -> NodeHandle {
         NodeHandle(std::any::TypeId::of::<N>())
     }
 
@@ -2533,7 +2546,7 @@ impl NodeHandle {
 
     /// Return a dummy NodeHandle, which will panic if `new_erased_node` is ever
     /// called on it.
-    pub fn dummy() -> NodeHandle {
+    pub const fn dummy() -> NodeHandle {
         NodeHandle(std::any::TypeId::of::<()>())
     }
 }

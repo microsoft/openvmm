@@ -70,10 +70,10 @@ pub struct EvtEntry {
     pub header: EvtHeader,
     /// StreamID of the faulting device.
     pub sid: u32,
-    /// Fault flags (RnW, S2, CLASS, etc.).
-    pub flags: EvtFlags,
     /// Reserved / STAG.
     pub _stag: u32,
+    /// Fault flags (RnW, S2, CLASS, etc.).
+    pub flags: EvtFlags,
     /// Faulting input address (64-bit).
     pub input_addr: u64,
     /// Fetch address or reserved (64-bit).
@@ -87,33 +87,35 @@ pub struct EvtHeader {
     /// Event type.
     #[bits(8)]
     pub event_id: EventId,
-    #[bits(2)]
+    #[bits(3)]
     _reserved0: u32,
     /// SubstreamID valid.
     pub ssv: bool,
-    #[bits(1)]
-    _reserved1: u32,
     /// SubstreamID (upper bits).
     #[bits(20)]
     pub ssid: u32,
 }
 
-/// Event entry flags (third 32-bit word).
+/// Event entry flags (fourth 32-bit word, bits `[127:96]`).
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct EvtFlags {
+    #[bits(1)]
+    _reserved0: u32,
     /// Privileged/Unprivileged.
     pub pnu: bool,
     /// Instruction/Data.
     pub ind: bool,
     /// Read (true) / Write (false).
     pub rnw: bool,
+    #[bits(3)]
+    _reserved1: u32,
     /// Stage 2 fault (false = S1 fault).
     pub s2: bool,
     /// Fault class.
     #[bits(2)]
     pub class: u8,
-    #[bits(26)]
+    #[bits(22)]
     _reserved: u32,
 }
 
@@ -171,7 +173,8 @@ impl EvtEntry {
         Self {
             header: EvtHeader::new().with_event_id(EventId::F_ADDR_SIZE),
             sid,
-            flags: EvtFlags::new().with_rnw(!write),
+            // Stage-1 address-size faults use CLASS=IN (§7.3.14).
+            flags: EvtFlags::new().with_rnw(!write).with_class(0b10),
             input_addr: iova,
             ..Self::new()
         }
@@ -194,11 +197,23 @@ impl EvtEntry {
             ..Self::new()
         }
     }
+
+    /// Creates a fault for a terminated default-substream transaction.
+    pub fn stream_disabled(sid: u32, iova: u64, write: bool) -> Self {
+        Self {
+            header: EvtHeader::new().with_event_id(EventId::F_STREAM_DISABLED),
+            sid,
+            flags: EvtFlags::new().with_rnw(!write),
+            input_addr: iova,
+            ..Self::new()
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn test_event_ids() {

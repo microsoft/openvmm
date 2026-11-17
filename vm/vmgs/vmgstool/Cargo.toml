@@ -26,7 +26,7 @@ guid.workspace = true
 hcl_compat_uefi_nvram_storage.workspace = true
 pal_async.workspace = true
 uefi_nvram_specvars.workspace = true
-uefi_specs.workspace = true
+uefi_specs = { workspace = true, features = ["std"] }
 vmgs.workspace = true
 vmgs_format.workspace = true
 

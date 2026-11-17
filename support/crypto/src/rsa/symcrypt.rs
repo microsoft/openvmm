@@ -107,7 +107,12 @@ impl RsaKeyPairInner {
         Ok(super::RsaPrivateKeyComponents {
             modulus: blob.modulus,
             public_exponent: blob.pub_exp,
-            private_exponent: blob.private_exp,
+            // The private exponent is exported at modulus width.
+            private_exponent: crate::helpers::unpad_component(&blob.private_exp).ok_or(
+                RsaError(crate::BackendError::Invalid(
+                    "exported RSA private key has an empty or zero private exponent",
+                )),
+            )?,
             prime1: blob.p,
             prime2: blob.q,
         })
@@ -162,6 +167,27 @@ impl RsaKeyPairInner {
 pub struct RsaPublicKeyInner(pub(crate) RsaKey);
 
 impl RsaPublicKeyInner {
+    pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, RsaError> {
+        let key = pkcs1::RsaPublicKey::from_der(der)
+            .map_err(|e| der_err(e, "parsing the PKCS#1 DER public key"))?;
+        Self::from_components(key.modulus.as_bytes(), key.public_exponent.as_bytes())
+    }
+
+    pub fn to_pkcs1_der(&self) -> Result<Vec<u8>, RsaError> {
+        use der::Encode;
+        use der::asn1::UintRef;
+
+        let components = self.to_components()?;
+        let key = pkcs1::RsaPublicKey {
+            modulus: UintRef::new(&components.modulus)
+                .map_err(|e| der_err(e, "encoding the modulus"))?,
+            public_exponent: UintRef::new(&components.public_exponent)
+                .map_err(|e| der_err(e, "encoding the public exponent"))?,
+        };
+        key.to_der()
+            .map_err(|e| der_err(e, "encoding the public key as PKCS#1 DER"))
+    }
+
     pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
         let key = RsaKey::set_public_key(n, e, RsaKeyUsage::SignAndEncrypt)
             .map_err(|e| err(e, "constructing the RSA public key from its components"))?;
@@ -237,11 +263,14 @@ impl RsaPublicKeyInner {
         self.0.get_size_of_modulus() as usize
     }
 
-    pub fn to_components(&self) -> RsaPublicKeyComponents {
-        let blob = self.0.export_public_key_blob().unwrap();
-        RsaPublicKeyComponents {
+    pub fn to_components(&self) -> Result<RsaPublicKeyComponents, RsaError> {
+        let blob = self
+            .0
+            .export_public_key_blob()
+            .map_err(|e| err(e, "exporting the RSA public key blob"))?;
+        Ok(RsaPublicKeyComponents {
             modulus: blob.modulus,
             public_exponent: blob.pub_exp,
-        }
+        })
     }
 }

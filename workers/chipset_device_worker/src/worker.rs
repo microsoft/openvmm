@@ -33,7 +33,7 @@ use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
-use vmcore::save_restore::ProtobufSaveRestore;
+use vmcore::save_restore::AsyncProtobufSaveRestore;
 
 /// Worker ID for ChipsetDevice workers.
 pub(crate) const fn remote_chipset_device_worker_id<T: RemoteDynamicResolvers>()
@@ -67,6 +67,7 @@ pub(crate) struct RemoteChipsetDeviceHandleParams {
 /// This worker wraps any device implementing ChipsetDevice and handles
 /// device operations sent via mesh channels.
 pub struct RemoteChipsetDeviceWorker<T> {
+    running: bool,
     device: ErasedChipsetDevice,
     pool: Option<DefaultPool>,
     req_recv: mesh::Receiver<DeviceRequest>,
@@ -172,6 +173,7 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
         });
 
         Ok(Self {
+            running: false,
             device,
             pool: Some(pool),
             req_recv,
@@ -195,7 +197,9 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                 }
 
                 let event = std::future::poll_fn(|cx| {
-                    if let Some(poll_device) = self.device.supports_poll_device() {
+                    if self.running
+                        && let Some(poll_device) = self.device.supports_poll_device()
+                    {
                         poll_device.poll_device(cx);
                     }
 
@@ -245,6 +249,11 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                             deferred.inspect(&mut self.device);
                         }
                         WorkerRpc::Stop => {
+                            if self.running {
+                                self.device.stop().await;
+                                self.running = false;
+                            }
+                            self.device.teardown().await;
                             return Ok(());
                         }
                         WorkerRpc::Restart(rpc) => {
@@ -252,9 +261,25 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                         }
                     },
                     WorkerEvent::DeviceRequest(req) => match req {
-                        DeviceRequest::Start => self.device.start(),
+                        DeviceRequest::Start => {
+                            self.device.start();
+                            self.running = true;
+                        }
+                        DeviceRequest::Teardown(rpc) => {
+                            assert!(
+                                !self.running,
+                                "remote device must be stopped before teardown"
+                            );
+                            self.device.teardown().await;
+                            drop(self.deferred_reads);
+                            drop(self.deferred_writes);
+                            rpc.complete(());
+                            return Ok(());
+                        }
                         DeviceRequest::Stop(rpc) => {
-                            rpc.handle(async |()| self.device.stop().await).await
+                            self.device.stop().await;
+                            self.running = false;
+                            rpc.complete(());
                         }
                         DeviceRequest::Reset(rpc) => {
                             self.deferred_reads.clear();
@@ -319,10 +344,12 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                             self.handle_write_result(id, result);
                         }
                         DeviceRequest::Save(rpc) => {
-                            rpc.handle_failable_sync(|()| self.device.save())
+                            rpc.handle_failable(async |()| self.device.save().await)
+                                .await
                         }
                         DeviceRequest::Restore(rpc) => {
-                            rpc.handle_failable_sync(|state| self.device.restore(state))
+                            rpc.handle_failable(async |state| self.device.restore(state).await)
+                                .await
                         }
                     },
                 }

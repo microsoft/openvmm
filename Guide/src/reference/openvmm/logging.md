@@ -24,6 +24,29 @@ Trace events that can be triggered repeatedly by guest interactions are
 rate-limited by default. To disable rate limiting (useful for debugging), set
 `OPENVMM_DISABLE_TRACING_RATELIMITS=1`.
 
+### OpenTelemetry
+
+Build OpenVMM with the `otel` feature, then set `OPENVMM_OTEL=1` to emit
+enabled spans through the platform's native tracing subsystem: ETW on Windows
+and `user_events` on GNU/Linux. Other platforms do not currently have a native
+OpenTelemetry trace sink. For example:
+
+```shell
+cargo build -p openvmm --features otel
+
+OPENVMM_OTEL=1 \
+OTEL_RESOURCE_ATTRIBUTES="service.instance.id=boot-test-42" \
+target/debug/openvmm [...]
+```
+
+The native events preserve OpenTelemetry trace and span identifiers. They are
+not sent directly to an OpenTelemetry Collector or Jaeger; a platform-specific
+agent must collect and forward them. Windows emits `Span` events from provider
+`openvmm`, and Linux emits the `user_events:openvmm_L4K1` tracepoint. On Linux,
+the process must have write access to the tracefs `user_events_data` file;
+OpenTelemetry initialization fails if `user_events` is unavailable or not
+writable.
+
 ## Configuring OpenHCL Trace Logging
 
 OpenHCL also supports `EnvFilter`-style trace logging, configured via the

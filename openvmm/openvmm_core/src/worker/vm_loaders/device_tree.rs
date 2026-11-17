@@ -9,6 +9,7 @@ use fdt::builder::Builder;
 use fdt::builder::Nest;
 use fdt::builder::StringId;
 use memory_range::MemoryRange;
+use openvmm_defs::config::IgvmPersonality;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use serial_uart_resources::UartId;
 use thiserror::Error;
@@ -94,6 +95,8 @@ pub(crate) struct IgvmBoot<'a> {
     pub protectable_ram: &'a [MemoryRange],
     pub vmbus_redirect: bool,
     pub entropy: Option<&'a [u8]>,
+    /// The firmware that the IGVM file contains. Only OpenHCL gets `/openhcl`.
+    pub personality: IgvmPersonality,
 }
 
 /// Settings for the device tree that a Linux kernel receives.
@@ -246,7 +249,9 @@ impl<'a, T: DeviceTreeArch> DeviceTreeBuilder<'a, T> {
                     self.dt_uarts,
                 )?;
                 root = emit_chosen(root, &p, self.command_line, self.console, None)?;
-                root = emit_openhcl(root, &p, igvm.vtl2_base_address, igvm.entropy)?;
+                if igvm.personality == IgvmPersonality::Openhcl {
+                    root = emit_openhcl(root, &p, igvm.vtl2_base_address, igvm.entropy)?;
+                }
             }
             DeviceTreeBootType::LinuxDirect(linux) => {
                 root = emit_linux_bus(root, &p, linux.low_mmio, linux.high_mmio, self.dt_uarts)?;
@@ -529,11 +534,11 @@ fn partition_memory(
         }
     }
     if ram
-        .windows(2)
-        .any(|pair| pair[0].range.end() > pair[1].range.start())
+        .array_windows()
+        .any(|[left, right]| left.range.end() > right.range.start())
         || protectable
-            .windows(2)
-            .any(|pair| pair[0].start() > pair[1].start())
+            .array_windows()
+            .any(|[left, right]| left.start() > right.start())
     {
         return Err(DeviceTreeError::Memory);
     }
@@ -1073,6 +1078,7 @@ mod tests {
             base: 0x7000_0000,
             event_gsiv: 35,
             gerr_gsiv: 36,
+            ats_supported: false,
             reserved_iova_ranges: vec![],
         }
     }
@@ -1084,6 +1090,7 @@ mod tests {
             protectable_ram: &[],
             vmbus_redirect: false,
             entropy: None,
+            personality: IgvmPersonality::Openhcl,
         }
     }
 
@@ -1211,6 +1218,37 @@ mod tests {
             .build(),
             Err(DeviceTreeError::ConsoleNotInDeviceTree)
         ));
+    }
+
+    #[test]
+    fn only_openhcl_gets_openhcl_node() {
+        let topology = TopologyBuilder::new_x86().build(2).unwrap();
+        for personality in [
+            IgvmPersonality::Openhcl,
+            IgvmPersonality::Uefi,
+            IgvmPersonality::LinuxDirect,
+        ] {
+            let dt = DeviceTreeBuilder::new(
+                &topology,
+                RAM,
+                COMS,
+                &[],
+                0x10000,
+                DeviceTreeBootType::Igvm(IgvmBoot {
+                    personality,
+                    ..igvm_boot()
+                }),
+            )
+            .build()
+            .unwrap();
+            let has_openhcl = Parser::new(&dt)
+                .unwrap()
+                .root()
+                .unwrap()
+                .children()
+                .any(|child| child.unwrap().name == "openhcl");
+            assert_eq!(has_openhcl, personality == IgvmPersonality::Openhcl);
+        }
     }
 
     #[test]

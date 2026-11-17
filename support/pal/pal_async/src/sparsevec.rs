@@ -24,11 +24,14 @@ impl<T> SparseVec<T> {
 
     /// Adds an entry, returning its index.
     pub fn add(&mut self, t: T) -> usize {
-        let index = self.0.iter().position(|x| x.is_none()).unwrap_or_else(|| {
-            self.0.push(None);
-            self.0.len() - 1
-        });
-        self.0[index] = Some(t);
+        let (index, entry) = match self.0.iter_mut().enumerate().find(|(_, x)| x.is_none()) {
+            Some((index, entry)) => (index, entry),
+            None => {
+                let index = self.0.len();
+                (index, self.0.push_mut(None))
+            }
+        };
+        *entry = Some(t);
         index
     }
 
@@ -69,5 +72,35 @@ impl<T> Index<usize> for SparseVec<T> {
 impl<T> IndexMut<usize> for SparseVec<T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         self.0.get_mut(index).and_then(Option::as_mut).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SparseVec;
+    use test_with_tracing::test;
+
+    #[test]
+    fn add_appends_entries() {
+        let mut entries = SparseVec::new();
+        assert_eq!(entries.add(String::from("first")), 0);
+        assert_eq!(entries.add(String::from("second")), 1);
+        assert_eq!(entries[0], "first");
+        assert_eq!(entries[1], "second");
+    }
+
+    #[test]
+    fn add_reuses_first_vacancy() {
+        let mut entries = SparseVec::new();
+        assert_eq!(entries.add(String::from("first")), 0);
+        assert_eq!(entries.add(String::from("second")), 1);
+        assert_eq!(entries.add(String::from("third")), 2);
+        assert_eq!(entries.remove(0), "first");
+        assert_eq!(entries.remove(2), "third");
+        assert_eq!(entries.add(String::from("replacement")), 0);
+        assert_eq!(entries[0], "replacement");
+        assert_eq!(entries[1], "second");
+        assert_eq!(entries.add(String::from("another")), 2);
+        assert_eq!(entries[2], "another");
     }
 }

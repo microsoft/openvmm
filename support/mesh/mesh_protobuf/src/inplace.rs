@@ -51,10 +51,7 @@ impl<'a, T> InplaceOption<'a, T> {
         if self.init {
             self.init = false;
             // SAFETY: val is initialized
-            unsafe {
-                let val = core::ptr::read(&*self.val);
-                Some(val.assume_init())
-            }
+            Some(unsafe { self.val.assume_init_read() })
         } else {
             None
         }
@@ -166,9 +163,8 @@ impl<T> InplaceOption<'_, Box<T>> {
         let r = f(&mut inplace);
         if inplace.forget() {
             drop(inplace);
-            // SAFETY: T has the same layout as MaybeUninit<T>, and the value is
-            // known to be initialized.
-            let b = unsafe { Box::from_raw(Box::into_raw(boxed).cast::<T>()) };
+            // SAFETY: the value is known to be initialized.
+            let b = unsafe { boxed.assume_init() };
             self.set(b);
         }
         r
@@ -204,9 +200,8 @@ impl<T: Clone> InplaceOption<'_, Arc<T>> {
         let r = f(&mut inplace);
         if inplace.forget() {
             drop(inplace);
-            // SAFETY: T has the same layout as MaybeUninit<T>, and the value is
-            // known to be initialized.
-            let a = unsafe { Arc::from_raw(Arc::into_raw(arced).cast::<T>()) };
+            // SAFETY: the value is known to be initialized.
+            let a = unsafe { arced.assume_init() };
             self.set(a);
         }
         r
@@ -269,12 +264,15 @@ mod tests {
     use alloc::string::String;
     use alloc::string::ToString;
     use alloc::sync::Arc;
+    use test_with_tracing::test;
 
     #[test]
     fn test_inplace_some() {
         let v = "test".to_string();
         inplace_some!(v);
         assert_eq!(&v.take().unwrap(), "test");
+        assert!(v.is_none());
+        assert!(v.take().is_none());
     }
 
     #[test]
@@ -302,12 +300,77 @@ mod tests {
     #[test]
     fn test_updates() {
         let v = Arc::new(Box::new(1234));
+        let arc_ptr = Arc::as_ptr(&v);
+        let box_ptr = core::ptr::from_ref(&**v);
         inplace_some!(v);
         v.update_arc(|v| {
             v.update_box(|v| {
                 v.set(5678);
             });
         });
-        assert_eq!(**v.take().unwrap(), 5678);
+        let v = v.take().unwrap();
+        assert_eq!(**v, 5678);
+        assert_eq!(Arc::as_ptr(&v), arc_ptr);
+        assert_eq!(core::ptr::from_ref(&**v), box_ptr);
+    }
+
+    #[test]
+    fn test_take_transfers_ownership_once() {
+        let value = Arc::new(1234);
+        let v = value.clone();
+        inplace_some!(v);
+        let taken = v.take().unwrap();
+        assert!(v.take().is_none());
+        drop(v);
+        assert_eq!(Arc::strong_count(&value), 2);
+        drop(taken);
+        assert_eq!(Arc::strong_count(&value), 1);
+    }
+
+    #[test]
+    fn test_updates_uninitialized() {
+        inplace_none!(boxed: Box<u32>);
+        boxed.update_box(|v| {
+            assert!(v.is_none());
+            v.set(1234);
+        });
+        assert_eq!(*boxed.take().unwrap(), 1234);
+
+        inplace_none!(arced: Arc<u32>);
+        arced.update_arc(|v| {
+            assert!(v.is_none());
+            v.set(5678);
+        });
+        assert_eq!(*arced.take().unwrap(), 5678);
+    }
+
+    #[test]
+    fn test_updates_clear_values() {
+        let value = Arc::new(1234);
+        let boxed = Box::new(value.clone());
+        inplace_some!(boxed);
+        boxed.update_box(|v| v.clear());
+        assert!(boxed.is_none());
+        assert_eq!(Arc::strong_count(&value), 1);
+
+        let arced = Arc::new(value.clone());
+        inplace_some!(arced);
+        arced.update_arc(|v| v.clear());
+        assert!(arced.is_none());
+        assert_eq!(Arc::strong_count(&value), 1);
+    }
+
+    #[test]
+    fn test_update_arc_preserves_shared_value() {
+        let original = Arc::new(1234);
+        let v = original.clone();
+        inplace_some!(v);
+        v.update_arc(|v| {
+            *v.as_mut().unwrap() = 5678;
+        });
+        let v = v.take().unwrap();
+        assert_eq!(*original, 1234);
+        assert_eq!(*v, 5678);
+        assert!(!Arc::ptr_eq(&original, &v));
     }
 }

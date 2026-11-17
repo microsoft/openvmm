@@ -23,6 +23,11 @@
 # https://nexte.st/docs/configuration/per-test-overrides/#override-precedence
 # https://nexte.st/docs/configuration/?h=hierar#hierarchical-configuration
 
+# Hack to work around incorrect thread count on large machines
+[[profile.ci-large.overrides]]
+filter = 'package(~vmm_tests)'
+threads-required = 1
+
 [[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
@@ -60,7 +65,12 @@ slow-timeout = { period = "10m" }
 [[profile.ci.overrides]]
 # allow loom based tests more time, as they take a while
 filter = 'test(loom)'
-slow-timeout = { period = "30s", terminate-after = 2 }
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[[profile.agent.overrides]]
+# Give loom tests the same budget as CI.
+filter = 'test(loom)'
+slow-timeout = { period = "60s", terminate-after = 2 }
 
 # Profile for AI agent runs. Minimizes output noise: only prints slow, failing,
 # and flaky tests. Agents should use: cargo nextest run -p <pkg> --profile agent
@@ -86,6 +96,13 @@ failure-output = "final"
 # Do not cancel the test run on the first failure.
 fail-fast = false
 
+[profile.ci-large]
+inherits = "ci"
+
 [profile.ci.junit]
+path = "junit.xml"
+store-success-output = "true"
+
+[profile.ci-large.junit]
 path = "junit.xml"
 store-success-output = "true"

@@ -14,6 +14,9 @@ pub mod resources;
 pub mod simple;
 pub mod stream;
 
+#[cfg(feature = "test_helpers")]
+pub mod test_helpers;
+
 pub use stream::TaggedStream;
 
 use std::sync::Arc;
@@ -54,6 +57,13 @@ pub struct ChannelClosed;
 pub fn connected_async_channels(
     ring_size: usize,
 ) -> (RawAsyncChannel<FlatRingMem>, RawAsyncChannel<FlatRingMem>) {
+    connected_channels(FlatRingMem::new(ring_size), FlatRingMem::new(ring_size))
+}
+
+fn connected_channels<M: RingMem + Clone>(
+    host_in: M,
+    guest_in: M,
+) -> (RawAsyncChannel<M>, RawAsyncChannel<M>) {
     #[derive(Default)]
     struct EventWithDoneInner {
         event: SlimEvent,
@@ -98,8 +108,8 @@ pub fn connected_async_channels(
         remote: host_notify.local.clone(),
         close_on_drop: true,
     };
-    let (host_in_ring, guest_out_ring) = make_ring_pair(ring_size);
-    let (guest_in_ring, host_out_ring) = make_ring_pair(ring_size);
+    let (host_in_ring, guest_out_ring) = make_ring_pair(host_in);
+    let (guest_in_ring, host_out_ring) = make_ring_pair(guest_in);
 
     let host = RawAsyncChannel {
         in_ring: host_in_ring,
@@ -114,10 +124,9 @@ pub fn connected_async_channels(
     (host, guest)
 }
 
-fn make_ring_pair(size: usize) -> (IncomingRing<FlatRingMem>, OutgoingRing<FlatRingMem>) {
-    let flat_mem = FlatRingMem::new(size);
-    let ring1 = IncomingRing::new(flat_mem.clone()).unwrap();
-    let ring2 = OutgoingRing::new(flat_mem).unwrap();
+fn make_ring_pair<M: RingMem + Clone>(mem: M) -> (IncomingRing<M>, OutgoingRing<M>) {
+    let ring1 = IncomingRing::new(mem.clone()).unwrap();
+    let ring2 = OutgoingRing::new(mem).unwrap();
     (ring1, ring2)
 }
 

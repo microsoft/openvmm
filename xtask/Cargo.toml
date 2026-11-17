@@ -24,13 +24,18 @@ heck.workspace = true
 ignore.workspace = true
 log.workspace = true
 object = { workspace = true, features = ["read_core", "elf", "std"] }
+proc-macro2 = { workspace = true, features = ["span-locations"] }
 petri_artifacts_vmm_test.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"]}
+syn = { workspace = true, features = ["full", "visit"] }
 toml_edit = { workspace = true, features = ["serde"] }
 walkdir.workspace = true
 which.workspace = true
 xshell.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

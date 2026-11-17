@@ -182,6 +182,22 @@ open_enum! {
         TWO_LEVEL_4K = 0b01,
         /// 2-level CD table, 64KB L2.
         TWO_LEVEL_64K = 0b10,
+        /// Reserved encoding that behaves as a linear CD table.
+        RESERVED = 0b11,
+    }
+}
+
+open_enum! {
+    /// STE behavior for transactions without a SubstreamID.
+    pub enum S1Dss: u8 {
+        /// Terminate the transaction.
+        TERMINATE = 0b00,
+        /// Bypass stage 1.
+        BYPASS = 0b01,
+        /// Translate using context descriptor zero.
+        SSID0 = 0b10,
+        /// Reserved encoding that behaves as terminate.
+        RESERVED = 0b11,
     }
 }
 

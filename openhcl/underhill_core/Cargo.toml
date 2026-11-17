@@ -7,8 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-# Enable per-VM measured product policy (decode + validation).
-product_policy = ["dep:product_policy"]
 # Enable profiler support
 profiler = ["dep:profiler_worker", "diag_server/profiler"]
 # Enable profiler tracing (heap profiling) support
@@ -126,7 +124,7 @@ hvdef.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
 loader_defs = { workspace = true, features = ["inspect", "save_restore"] }
-product_policy = { workspace = true, features = ["inspect"], optional = true }
+product_policy = { workspace = true, features = ["inspect"] }
 loader.workspace = true
 memory_range.workspace = true
 vm_topology.workspace = true
@@ -164,7 +162,6 @@ vmsocket.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 blocking.workspace = true
-cfg-if.workspace = true
 fs-err.workspace = true
 futures-concurrency.workspace = true
 futures.workspace = true
@@ -188,10 +185,12 @@ aarch64defs.workspace = true
 firmware_pcat.workspace = true
 
 [dev-dependencies]
-disklayer_ram.workspace = true
+disk_hook.workspace = true
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
-test_with_tracing.workspace = true
 nvme_spec.workspace = true
+page_pool_alloc.workspace = true
+tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

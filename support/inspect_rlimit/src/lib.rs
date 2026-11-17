@@ -9,7 +9,6 @@
 
 //! [`Inspect`] support for process rlimits.
 
-use cfg_if::cfg_if;
 use inspect::Inspect;
 use inspect::ValueKind;
 use libc::rlimit;
@@ -35,10 +34,11 @@ impl InspectRlimit {
     }
 }
 
-cfg_if! {
-    if #[cfg(target_env = "gnu")] {
+cfg_select! {
+    target_env = "gnu" => {
         type Resource = libc::__rlimit_resource_t;
-    } else {
+    }
+    _ => {
         type Resource = libc::c_int;
     }
 }

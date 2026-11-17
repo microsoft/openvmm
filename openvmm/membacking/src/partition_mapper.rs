@@ -69,7 +69,7 @@ impl PartitionMapper {
             return Ok(());
         };
 
-        let addr = range.start().checked_add(self.offset).unwrap();
+        let addr = range.start().strict_add(self.offset);
         let size = range.len() as usize;
         let data = self.mapper.as_ptr().wrapping_add(range.start() as usize);
 
@@ -137,7 +137,7 @@ impl PartitionMapper {
     pub fn unmap_region(&mut self, range: MemoryRange) {
         if let Some(partition) = self.partition.upgrade() {
             partition
-                .unmap_range(range.start().checked_add(self.offset).unwrap(), range.len())
+                .unmap_range(range.start().strict_add(self.offset), range.len())
                 .expect("unmap cannot fail");
         }
     }

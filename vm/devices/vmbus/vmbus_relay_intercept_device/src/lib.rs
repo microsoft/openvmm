@@ -103,6 +103,9 @@ pub trait SimpleVmbusClientDevice {
 
 pub trait SimpleVmbusClientDeviceAsync: SimpleVmbusClientDevice + 'static + Send + Sync {
     /// Runs an open channel until `stop` is signaled.
+    ///
+    /// Check for stop at cancel-safe work boundaries even when channel work
+    /// remains continuously ready.
     fn run(
         &mut self,
         stop: &mut StopTask<'_>,
@@ -207,6 +210,7 @@ impl<T: SimpleVmbusClientDeviceAsync> AsyncRun<T::Runner> for RelayDeviceTask<T>
         stop: &mut StopTask<'_>,
         runner: &mut T::Runner,
     ) -> Result<(), Cancelled> {
+        stop.check()?;
         self.0.run(stop, runner).await
     }
 }
@@ -243,7 +247,9 @@ impl<T: SimpleVmbusClientDeviceAsync> AsyncRun<SimpleVmbusClientDeviceTaskState>
         stop: &mut StopTask<'_>,
         state: &mut SimpleVmbusClientDeviceTaskState,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(self.process_messages(state)).await?;
+        let check = stop.check_handle()?;
+        stop.until_stopped(self.process_messages(state, &check))
+            .await??;
         state
             .send_disconnected
             .take()
@@ -564,8 +570,13 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
     /// Handle vmbus messages from the host and control messages from the
     /// device wrapper.
-    pub async fn process_messages(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
+    pub async fn process_messages(
+        &mut self,
+        state: &mut SimpleVmbusClientDeviceTaskState,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
         loop {
+            check.check()?;
             #[expect(clippy::large_enum_variant)]
             enum Event {
                 Request(InterceptChannelRequest),
@@ -616,6 +627,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
                 }
             }
         }
+        Ok(())
     }
 }
 

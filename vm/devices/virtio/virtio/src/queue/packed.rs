@@ -16,6 +16,7 @@ use spec::EventSuppressionFlags;
 use spec::PackedDescriptor;
 use spec::PackedEventSuppression;
 use std::sync::atomic;
+use zerocopy::IntoBytes;
 
 pub struct PackedQueueCompletionContext {
     buffer_id: u16,
@@ -48,6 +49,7 @@ pub(crate) struct PackedQueueGetWork {
     next_avail_index: u16,
     wrapped_bit: bool,
     next_is_available: bool,
+    use_event_index: bool,
 }
 
 impl PackedQueueGetWork {
@@ -60,7 +62,7 @@ impl PackedQueueGetWork {
     }
 
     pub fn new(
-        _features: VirtioDeviceFeatures,
+        features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
         initial_index: u16,
@@ -83,6 +85,7 @@ impl PackedQueueGetWork {
             next_avail_index: initial_index,
             wrapped_bit: initial_wrap,
             next_is_available: false,
+            use_event_index: features.ring_event_idx(),
         })
     }
 
@@ -122,9 +125,22 @@ impl PackedQueueGetWork {
     /// sleep), or `false` if new data arrived during arming (caller should
     /// retry).
     pub fn arm_kick(&mut self) -> Result<bool, QueueError> {
-        let enable_event = PackedEventSuppression::new().with_flags(EventSuppressionFlags::Enabled);
+        let enable_event = if self.use_event_index {
+            PackedEventSuppression::new()
+                .with_flags(EventSuppressionFlags::DescriptorIndex)
+                .with_offset(self.next_avail_index)
+                .with_wrap(self.wrapped_bit)
+        } else {
+            PackedEventSuppression::new().with_flags(EventSuppressionFlags::Enabled)
+        };
+        // Publish the requested cursor before enabling index-based kicks.
+        let event_bytes = enable_event.as_bytes();
         self.device_event
-            .write_plain(0, &enable_event)
+            .write_at(0, &event_bytes[..2])
+            .map_err(QueueError::Memory)?;
+        atomic::fence(atomic::Ordering::Release);
+        self.device_event
+            .write_at(2, &event_bytes[2..])
             .map_err(QueueError::Memory)?;
         // Ensure the event enable is visible before checking the descriptor.
         atomic::fence(atomic::Ordering::SeqCst);
@@ -133,6 +149,7 @@ impl PackedQueueGetWork {
             self.suppress_kicks()?;
             return Ok(false);
         }
+
         Ok(true)
     }
 
@@ -257,5 +274,85 @@ impl PackedQueueCompleteWork {
             raw
         };
         Ok(send_signal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn kick_event_tracks_negotiated_index_and_wrap() {
+        for use_event_index in [false, true] {
+            for (initial_index, initial_wrap) in [(0, true), (3, true), (0, false), (3, false)] {
+                let memory = GuestMemory::allocate(8192);
+                let params = QueueParams {
+                    size: 4,
+                    enable: true,
+                    desc_addr: 0,
+                    avail_addr: 4096,
+                    used_addr: 4100,
+                };
+                let mut queue = PackedQueueGetWork::new(
+                    VirtioDeviceFeatures::new().with_ring_event_idx(use_event_index),
+                    memory.clone(),
+                    params,
+                    initial_index,
+                    initial_wrap,
+                )
+                .unwrap();
+                for step in 0..2 {
+                    let raw_index = initial_index + step;
+                    let index = raw_index % params.size;
+                    let wrap = initial_wrap ^ (raw_index >= params.size);
+                    assert!(queue.arm_kick().unwrap());
+                    let event: PackedEventSuppression =
+                        memory.read_plain(params.used_addr).unwrap();
+                    if use_event_index {
+                        assert_eq!(event.flags(), EventSuppressionFlags::DescriptorIndex);
+                        assert_eq!(event.offset(), index);
+                        assert_eq!(event.wrap(), wrap);
+                    } else {
+                        assert_eq!(event.flags(), EventSuppressionFlags::Enabled);
+                    }
+                    queue.advance(1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arming_rechecks_available_work_and_suppresses_kicks() {
+        for use_event_index in [false, true] {
+            let memory = GuestMemory::allocate(8192);
+            let params = QueueParams {
+                size: 4,
+                enable: true,
+                desc_addr: 0,
+                avail_addr: 4096,
+                used_addr: 4100,
+            };
+            let mut queue = PackedQueueGetWork::new(
+                VirtioDeviceFeatures::new().with_ring_event_idx(use_event_index),
+                memory.clone(),
+                params,
+                0,
+                true,
+            )
+            .unwrap();
+            assert!(queue.arm_kick().unwrap());
+            memory
+                .write_plain(
+                    params.desc_addr,
+                    &PackedDescriptor::new()
+                        .with_flags(DescriptorFlags::new().with_available(true)),
+                )
+                .unwrap();
+            assert!(!queue.arm_kick().unwrap());
+            assert_eq!(queue.is_available().unwrap(), Some(0));
+            let event: PackedEventSuppression = memory.read_plain(params.used_addr).unwrap();
+            assert_eq!(event.flags(), EventSuppressionFlags::Disabled);
+        }
     }
 }

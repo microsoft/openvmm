@@ -34,6 +34,59 @@ operating systems, firmwares, and VMMs (including Hyper-V, which is useful
 for testing certain OpenHCL features that aren't supported when using
 OpenVMM as the host VMM).
 
+### Backend contract tests (no guest)
+
+The `virt_backend_tests` executable in the `vmm_tests` package tests the public
+`virt` interfaces directly on native x86_64 KVM, MSHV, and WHP backends. These
+are hardware-dependent integration tests, not ordinary unit tests. They use
+Petri for registration, host eligibility, logs, and results, but do not use its
+VM builders, launch OpenVMM, load guest artifacts, or execute a VP.
+
+Each backend has independently reported cases for initially frozen clocks,
+freeze/thaw transitions, reset values, and serialized restoration of clocks,
+countdown timers, and TSC deadlines. Reference time is checked when the backend
+advertises access to it. Initial clock values need not be zero; zero is expected
+only after an explicit reset.
+Countdown readback while paused describes the captured snapshot, not whether
+the native timer is still running.
+
+The contract functions operate on the public `virt` interfaces. Each function
+has an adjacent `backend_test!` declaration that registers it with Petri for
+each native backend and lists the capabilities it requires. For example:
+
+```rust,ignore
+backend_test!(clock_restore, requires: [time_control, reset]);
+backend_test!(synic_timers_restore, hv1: true, requires: [time_control, hv1]);
+```
+
+Add the function and its declaration in the relevant test module; there is no
+central case enum or registration table to update. Shared helpers construct
+the partition and bind its single VP before invoking the function. Cases have
+names such as `time::kvm::initial_frozen` and `time::whp::clock_restore`.
+Fixtures default to unenlightened; `hv1: true` enables Hv1, using native
+enlightenment offload on WHP.
+The clock contracts also have separately named Hv1-enabled cases:
+`initial_frozen_hv1`, `freeze_thaw_hv1`, `reset_clocks_hv1`, and
+`clock_restore_hv1`. These reuse the unenlightened contracts to check reference
+time as well as TSC, and require Hv1 in addition to each contract's other
+capabilities.
+Host requirements select the matching backend. Execution-host discovery probes
+the selected fixture's capabilities so unsupported time control, reset, Hv1,
+or TSC-deadline cases are reported as ignored, not passed. Probe errors fail the
+selected tests rather than hiding them. Artifact-only discovery does not create
+partitions.
+
+CI packages this executable in the existing `vmm_tests` nextest archive and runs
+it on the eligible hypervisor hosts, rather than in the ordinary unit-test jobs.
+
+Use the existing VMM-test runner to select the executable:
+
+```bash
+cargo xflowey vmm-tests-run --filter 'binary(virt_backend_tests)'
+```
+
+Add `--build-only` to build without running the tests.
+
 ### "heavy" tests
 
 The global [nextest.toml](https://github.com/microsoft/openvmm/blob/main/.config/nextest.toml)
@@ -84,6 +137,10 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 }
 ```
 
+For OpenVMM tests, use a test-wide marker such as
+`unstable(on = mshv, reason = "Backend-specific failures")` to limit instability
+to one backend. The test still runs as stable on other backends.
+
 Unstable tests run in the same CI job as stable tests. In CI the
 `PETRI_IGNORE_UNSTABLE_FAILURES` environment variable is set, so when an unstable
 test fails the CI run passes with a warning. Outside of CI that variable is not
@@ -133,6 +190,15 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 
 ### Nested Tests
 
+On Linux hosts, OpenVMM and QEMU automatically share nested test artifacts and
+results with Linux guests over 9p. OpenVMM also supports directory sharing with
+Linux guests on Windows when the nested artifacts are provisioned, as in CI.
+Other supported nesting configurations
+continue staging artifacts on the agent disk and
+copying results back through Pipette. Tests do not need to allocate PCIe ports
+for the shares. OpenVMM skips its automatic startup save/restore verification
+when shares are attached because 9p does not support saving device state.
+
 Petri supports writing nested tests by defining a function to create the L1 VM host using Petri and annotating the L2 test definition as follows:
 
 ```rust,ignore
@@ -165,6 +231,51 @@ async fn my_vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 
 ```
 
+#### mshv root hosts
+
+On x86-64 Linux with KVM or Windows with WHP and nested virtualization enabled,
+`openvmm_uefi_x64(mshv)` describes an mshv root host. The host function applies
+`with_mshv_platform`; ordinary native nesting runs the musl L2 test inside it.
+Petri prepares the root's agent initrd, networking, clock, and CA setup without
+invoking the standalone Incubator CLI. The root kernel, development EFI host
+boot application, and licensed hypervisor payloads have distinct typed
+artifacts.
+
+Flowey resolves the published `mshv-test` kernel, builds `mshv_host_boot.efi`,
+and provisions the compatible hypervisor payloads. Linux provisioning uses
+`rpm2cpio` and `bsdtar`; RPM packages and their scripts are never installed
+or executed. Run the native test from a Linux or WSL host with:
+
+```bash
+filter='test(=multiarch::openvmm_linux_x64_boot_on_openvmm_uefi_x64_mshv_vm_host_mshv)'
+cargo xflowey vmm-tests-run --filter "$filter"
+```
+
+Use `--mshv-kernel path/to/mshv/bzImage` to override only the root kernel,
+independently of child kernels and their release pins. Runtime inputs remain
+offline; the shared Flowey nodes acquire payloads and build the EFI host boot
+application during preparation. See
+[Incubator's boot-artifact
+requirements](incubator.md#mshv-boot-artifacts-and-kernel) for the compatible
+kernel/payload contract and development-only trust model.
+
+CI extracts the payloads in the x64 Linux build job and publishes them,
+including licenses and source hashes, as `x64-mshv-boot-artifacts`.
+The x64 KVM and standard Windows x64 test jobs consume that artifact and the
+EFI host boot application. MSHV host jobs exclude the root test because that
+backend does not support another level of nested virtualization.
+
+Native Windows `vmm-tests-run` does not support discovering Linux child tests.
+Selections that include them, including `all()`, are rejected before building
+or querying the Linux test binary. Use a Linux or WSL host, or exclude those
+nested tests with `--filter`. This restriction does not apply to CI's prebuilt
+artifact path; Windows CI workers need no RPM tools.
+
+Use `--mshv-boot-artifacts path/to/mshv-boot-artifacts` to supply extracted
+payloads instead of preparing them from RPMs. Guest HTTPS access uses the
+host's root certificates; `SSL_CERT_FILE` can select an explicit PEM bundle
+instead.
+
 ## Running VMM Tests (Flowey)
 
 The easiest way to run VMM tests locally is `cargo xflowey vmm-tests-run`. It
@@ -188,6 +299,7 @@ build for a different platform. The supported targets are:
 | `windows-x64` | Windows x86_64 (Hyper-V / WHP) |
 | `windows-aarch64` | Windows ARM64 (Hyper-V / WHP) |
 | `linux-x64` | Linux x86_64 |
+| `linux-musl-x64` | Linux x86_64 with statically linked musl binaries |
 
 **Cross-compiling for Windows from WSL2** is fully supported, you can build
 and run Windows VMM tests directly from your WSL2 shell. This requires the

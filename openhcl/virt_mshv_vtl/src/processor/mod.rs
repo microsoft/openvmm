@@ -8,8 +8,8 @@ pub mod mshv;
 mod nice;
 mod vp_state;
 
-cfg_if::cfg_if! {
-    if #[cfg(guest_arch = "x86_64")] {
+cfg_select! {
+    guest_arch = "x86_64" => {
         mod hardware_cvm;
         pub mod snp;
         pub mod tdx;
@@ -20,20 +20,22 @@ cfg_if::cfg_if! {
         use hv1_emulator::synic::ProcessorSynic;
         use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
+        use virt::vp::AccessVpState;
         use virt::vp::MpState;
         use virt::x86::MsrError;
         use virt_support_apic::LocalApic;
         use virt_support_x86emu::translate::TranslationRegisters;
-        use virt::vp::AccessVpState;
         use zerocopy::IntoBytes;
-    } else if #[cfg(guest_arch = "aarch64")] {
+    }
+    guest_arch = "aarch64" => {
         pub mod cca;
+        use hv1_emulator::synic::ProcessorSynic;
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
-        use virt_support_aarch64emu::translate::TranslationRegisters;
         use hvdef::HvRegisterCrInterceptControl;
-        use hv1_emulator::synic::ProcessorSynic;
-    } else {
+        use virt_support_aarch64emu::translate::TranslationRegisters;
+    }
+    _ => {
         compile_error!("unsupported guest architecture");
     }
 }

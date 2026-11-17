@@ -9,6 +9,7 @@ use flowey::node::prelude::GhPermissionValue;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::download_and_run_nextest_vmm_tests::VmmTestsProfile;
+use flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile;
 
 /// A pipeline for repeated running VMM tests to determine the frequency of
 /// failures
@@ -67,7 +68,7 @@ impl IntoPipeline for BurnInCli {
         struct VmmTestJobParams<'a> {
             platform: FlowPlatform,
             arch: FlowArch,
-            gh_pool: GhRunner,
+            gh_pool: (GhRunner, NextestProfile),
             label: &'a str,
             profile: VmmTestsProfile,
         }
@@ -87,6 +88,8 @@ impl IntoPipeline for BurnInCli {
             label: "x64-windows-all-snp",
             profile: VmmTestsProfile::X64WindowsAll,
         }] {
+            let (gh_pool, nextest_profile) = gh_pool;
+
             pipeline
                 .new_job(platform, arch, format!("run vmm-tests [{label}]"))
                 .gh_set_pool(gh_pool)
@@ -94,6 +97,7 @@ impl IntoPipeline for BurnInCli {
                     flowey_lib_hvlite::_jobs::download_and_run_nextest_vmm_tests::Params {
                         label: label.into(),
                         profile,
+                        nextest_profile,
                         repetitions: std::num::NonZeroU64::new(25).unwrap(),
                         done: ctx.new_done_handle(),
                     }

@@ -238,7 +238,7 @@ impl FlowNode for Node {
                     // Make a converted path relative/portable if requested.
                     let make_portable_path = |path: PathBuf| -> anyhow::Result<PathBuf> {
                         let path = if portable {
-                            if windows_target {
+                            if windows_via_wsl2 {
                                 let working_dir_trimmed =
                                     working_dir_win.as_ref().unwrap().trim_end_matches('\\');
                                 let path_win = path.display().to_string();
@@ -386,8 +386,8 @@ impl FlowNode for Node {
     }
 }
 
-// shared with `cargo_nextest_archive`
-pub(crate) fn cargo_nextest_build_args_and_env(
+/// Resolve the shared build arguments and environment for nextest invocations.
+pub fn cargo_nextest_build_args_and_env(
     cargo_flags: crate::cfg_cargo_common_flags::Flags,
     cargo_profile: CargoBuildProfile,
     target: target_lexicon::Triple,

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use super::StalledIo;
+use super::core::QueueDoorbell;
 use super::core::TransportOps;
 use super::core::VirtioTransportCore;
 use super::task::ConfigReadCompletion;
@@ -83,10 +84,14 @@ impl TransportOps for MmioTransport {
         self.interrupt_state.lock().update(false, !0);
     }
 
-    fn doorbell_region(&mut self) -> Option<(u64, u32)> {
+    fn queue_doorbell(&mut self, index: u16) -> Option<QueueDoorbell> {
         let base = (*self.fixed_mmio_region.1.start() & !0xfff)
             + VirtioMmioRegister::QUEUE_NOTIFY.0 as u64;
-        Some((base, 4))
+        Some(QueueDoorbell {
+            address: base,
+            value: Some(index.into()),
+            length: Some(4),
+        })
     }
 }
 
@@ -365,6 +370,10 @@ impl ChangeDeviceState for VirtioMmioDevice {
 
     async fn reset(&mut self) {
         self.core.reset(&mut self.mmio).await;
+    }
+
+    async fn teardown(self) {
+        self.core.teardown().await;
     }
 }
 

@@ -361,7 +361,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             edx: 0,
         };
 
-        let x2_apic_shift = 31 - vps_per_socket.leading_zeros().min(31);
+        let x2_apic_shift = vps_per_socket.highest_one().unwrap_or(0);
 
         let topology_subleaf1 = CpuidResult {
             eax: cpuid::ExtendedTopologyEax::new()

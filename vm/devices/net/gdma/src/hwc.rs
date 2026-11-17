@@ -46,6 +46,7 @@ use gdma_defs::HwcInitTypeData;
 use gdma_defs::HwcRxOob;
 use gdma_defs::HwcTxOob;
 use gdma_defs::PAGE_SIZE64;
+use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use guestmem::Limit;
 use guestmem::MemoryRead;
@@ -71,6 +72,7 @@ pub struct HwControl {
     cq_id: u32,
     sq_id: u32,
     rq_id: u32,
+    pending_sqe: Option<Wqe>,
 
     bnic_enabled: bool,
 }
@@ -189,114 +191,135 @@ impl HwControl {
             cq_id,
             sq_id,
             rq_id,
+            pending_sqe: None,
 
             bnic_enabled: false,
         })
     }
 
-    async fn process(&mut self, devices: &mut Devices) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        devices: &mut Devices,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), task_control::Cancelled> {
         tracing::info!("starting hwc");
 
         loop {
-            let sqe = poll_fn(|cx| self.state.queues.poll_sq(self.sq_id, cx)).await;
-            let (rqe_offset, rqe) = poll_fn(|cx| self.state.queues.poll_rq(self.rq_id, cx)).await;
-
-            let queues = self.state.queues.clone();
-            let tx_oob = HwcTxOob::read_from_prefix(sqe.oob())
-                .map_err(|_| anyhow!("reading tx oob"))?
-                .0; // TODO: zerocopy: map_err, use-rest-of-range, use error details in the returned `anyhow!` (https://github.com/microsoft/openvmm/issues/759)
-            if tx_oob.flags3.vscq_id() != self.cq_id {
-                anyhow::bail!(
-                    "mismatched cq id: {} != {}",
-                    tx_oob.flags3.vscq_id(),
-                    self.cq_id
+            check.check()?;
+            if let Err(err) = self.process_request(devices).await {
+                tracing::error!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "hwc failure"
                 );
+                return Ok(());
             }
-
-            if tx_oob.flags4.vsq_id() != self.sq_id {
-                anyhow::bail!(
-                    "mismatched sq id: {} != {}",
-                    tx_oob.flags4.vsq_id(),
-                    self.sq_id
-                );
-            }
-
-            let read = sqe.access(&queues.gm);
-            let hdr: GdmaReqHdr = read
-                .clone()
-                .read_plain()
-                .context("reading request message header")?;
-
-            if hdr.req.msg_size as u64 > PAGE_SIZE64 {
-                anyhow::bail!(
-                    "request message size {} exceeds page size {PAGE_SIZE64}",
-                    hdr.req.msg_size
-                );
-            }
-            if hdr.resp.msg_size as u64 > PAGE_SIZE64 {
-                anyhow::bail!(
-                    "response message size {} exceeds page size {PAGE_SIZE64}",
-                    hdr.resp.msg_size
-                );
-            }
-
-            let mut read = MemoryRead::limit(read, hdr.req.msg_size as usize);
-            read.skip(size_of_val(&hdr))
-                .context("message size too small")?;
-
-            let mut write = MemoryWrite::limit(rqe.access(&queues.gm), hdr.resp.msg_size as usize);
-            let mut header_write = write.clone();
-            write
-                .skip(size_of::<GdmaRespHdr>())
-                .context("response message too small")?;
-
-            let r = match hdr.req.msg_type >> 16 {
-                0 => self.handle_req(&hdr, read, write),
-                _ => {
-                    // Device specific.
-                    if hdr.dev_id == BNIC_DEV_ID && self.bnic_enabled {
-                        devices
-                            .bnic
-                            .handle_req(&mut self.state, &hdr, read, write)
-                            .await
-                    } else {
-                        Err(anyhow!("unknown device {:?}", hdr.dev_id))
-                    }
-                }
-            };
-
-            let (status, response_len) = match r {
-                Ok(response_len) => (0, response_len),
-                Err(err) => {
-                    tracing::warn!(msg_type = hdr.req.msg_type, dev_id = ?hdr.dev_id, error = err.as_ref() as &dyn std::error::Error, "req error");
-                    (1, 0)
-                }
-            };
-
-            self.state.queues.post_cq(self.cq_id, &[], self.sq_id, true);
-
-            let resp = GdmaRespHdr {
-                response: hdr.resp,
-                dev_id: hdr.dev_id,
-                activity_id: hdr.activity_id,
-                status,
-                reserved: 0,
-            };
-
-            header_write
-                .write(resp.as_bytes())
-                .context("writing response message header")?;
-
-            let rx_oob = HwcRxOob {
-                wqe_addr_low_or_offset: rqe_offset,
-                tx_oob_data_size: (size_of_val(&resp) + response_len) as u32,
-                ..FromZeros::new_zeroed()
-            };
-
-            self.state
-                .queues
-                .post_cq(self.cq_id, rx_oob.as_bytes(), self.rq_id, false);
         }
+    }
+
+    async fn process_request(&mut self, devices: &mut Devices) -> anyhow::Result<()> {
+        // Retain accepted work if cancellation interrupts the wait for an RQE.
+        if self.pending_sqe.is_none() {
+            self.pending_sqe = Some(poll_fn(|cx| self.state.queues.poll_sq(self.sq_id, cx)).await);
+        }
+        let (rqe_offset, rqe) = poll_fn(|cx| self.state.queues.poll_rq(self.rq_id, cx)).await;
+        let sqe = self.pending_sqe.take().unwrap();
+
+        let queues = self.state.queues.clone();
+        let tx_oob = HwcTxOob::read_from_prefix(sqe.oob())
+            .map_err(|_| anyhow!("reading tx oob"))?
+            .0; // TODO: zerocopy: map_err, use-rest-of-range, use error details in the returned `anyhow!` (https://github.com/microsoft/openvmm/issues/759)
+        if tx_oob.flags3.vscq_id() != self.cq_id {
+            anyhow::bail!(
+                "mismatched cq id: {} != {}",
+                tx_oob.flags3.vscq_id(),
+                self.cq_id
+            );
+        }
+
+        if tx_oob.flags4.vsq_id() != self.sq_id {
+            anyhow::bail!(
+                "mismatched sq id: {} != {}",
+                tx_oob.flags4.vsq_id(),
+                self.sq_id
+            );
+        }
+
+        let read = sqe.access(&queues.gm);
+        let hdr: GdmaReqHdr = read
+            .clone()
+            .read_plain()
+            .context("reading request message header")?;
+
+        if hdr.req.msg_size as u64 > PAGE_SIZE64 {
+            anyhow::bail!(
+                "request message size {} exceeds page size {PAGE_SIZE64}",
+                hdr.req.msg_size
+            );
+        }
+        if hdr.resp.msg_size as u64 > PAGE_SIZE64 {
+            anyhow::bail!(
+                "response message size {} exceeds page size {PAGE_SIZE64}",
+                hdr.resp.msg_size
+            );
+        }
+
+        let mut read = MemoryRead::limit(read, hdr.req.msg_size as usize);
+        read.skip(size_of_val(&hdr))
+            .context("message size too small")?;
+
+        let mut write = MemoryWrite::limit(rqe.access(&queues.gm), hdr.resp.msg_size as usize);
+        let mut header_write = write.clone();
+        write
+            .skip(size_of::<GdmaRespHdr>())
+            .context("response message too small")?;
+
+        let r = match hdr.req.msg_type >> 16 {
+            0 => self.handle_req(&hdr, read, write),
+            _ => {
+                // Device specific.
+                if hdr.dev_id == BNIC_DEV_ID && self.bnic_enabled {
+                    devices
+                        .bnic
+                        .handle_req(&mut self.state, &hdr, read, write)
+                        .await
+                } else {
+                    Err(anyhow!("unknown device {:?}", hdr.dev_id))
+                }
+            }
+        };
+
+        let (status, response_len) = match r {
+            Ok(response_len) => (0, response_len),
+            Err(err) => {
+                tracing::warn!(msg_type = hdr.req.msg_type, dev_id = ?hdr.dev_id, error = err.as_ref() as &dyn std::error::Error, "req error");
+                (1, 0)
+            }
+        };
+
+        self.state.queues.post_cq(self.cq_id, &[], self.sq_id, true);
+
+        let resp = GdmaRespHdr {
+            response: hdr.resp,
+            dev_id: hdr.dev_id,
+            activity_id: hdr.activity_id,
+            status,
+            reserved: 0,
+        };
+
+        header_write
+            .write(resp.as_bytes())
+            .context("writing response message header")?;
+
+        let rx_oob = HwcRxOob {
+            wqe_addr_low_or_offset: rqe_offset,
+            tx_oob_data_size: (size_of_val(&resp) + response_len) as u32,
+            ..FromZeros::new_zeroed()
+        };
+
+        self.state
+            .queues
+            .post_cq(self.cq_id, rx_oob.as_bytes(), self.rq_id, false);
+        Ok(())
     }
 
     fn handle_req(
@@ -515,14 +538,336 @@ impl AsyncRun<HwControl> for Devices {
         stop: &mut StopTask<'_>,
         hwc: &mut HwControl,
     ) -> Result<(), task_control::Cancelled> {
-        stop.until_stopped(async {
-            if let Err(err) = hwc.process(self).await {
-                tracing::error!(
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "hwc failure"
+        let check = stop.check_handle()?;
+        stop.until_stopped(hwc.process(self, &check)).await?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VportConfig;
+    use crate::bnic::BnicConfig;
+    use crate::test_helpers as helper;
+    use chipset_device::pci::ByteEnabledDwordWrite;
+    use gdma_defs::CqEqDoorbellValue;
+    use gdma_defs::Cqe;
+    use gdma_defs::Eqe;
+    use gdma_defs::WqDoorbellValue;
+    use net_backend::loopback::LoopbackEndpoint;
+    use net_backend_resources::mac_address::MacAddress;
+    use pal_async::DefaultPool;
+    use parking_lot::Mutex;
+    use pci_core::capabilities::PciCapability;
+    use pci_core::capabilities::msix::MsixEmulator;
+    use pci_core::msi::MsiConnection;
+    use pci_core::msi::SignalMsi;
+    use task_control::TaskControl;
+    use test_with_tracing::test;
+
+    impl SignalMsi for helper::StopHook {
+        fn signal_msi(&self, _: Option<u32>, _: u64, _: u32) {
+            self.fire();
+        }
+    }
+
+    struct StopWhenBlocked {
+        devices: Devices,
+        hook: Arc<helper::StopHook>,
+    }
+
+    impl AsyncRun<HwControl> for StopWhenBlocked {
+        async fn run(
+            &mut self,
+            stop: &mut StopTask<'_>,
+            hwc: &mut HwControl,
+        ) -> Result<(), task_control::Cancelled> {
+            let mut run = std::pin::pin!(self.devices.run(stop, hwc));
+            poll_fn(|cx| {
+                let result = Future::poll(run.as_mut(), cx);
+                if result.is_pending() {
+                    self.hook.fire();
+                }
+                result
+            })
+            .await
+        }
+    }
+
+    #[test]
+    fn accepted_sqe_survives_stop_while_waiting_for_rqe_and_is_processed_once() {
+        let mut pool = DefaultPool::new();
+        let completed = Arc::new(helper::StopHook::default());
+        let blocked = Arc::new(helper::StopHook::default());
+        let connection = MsiConnection::new();
+        connection.connect(completed.clone());
+        let (mut msix, mut capability) = MsixEmulator::new(4, 64, &connection.target());
+        let queues = helper::queues(&pool, Some(&msix));
+        let hwc = HwControl::new(
+            queues.clone(),
+            helper::SQ,
+            helper::RQ,
+            helper::CQ,
+            helper::EQ,
+            0,
+        )
+        .unwrap();
+        let event_eq = queues.alloc_eq(helper::region(0x6000), 0).unwrap();
+        msix.write_u32(12, 0);
+        capability.write(
+            0,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x8000_0000),
+        );
+        let request = GdmaReqHdr {
+            req: gdma_defs::GdmaMsgHdr {
+                msg_type: GdmaRequestType::GDMA_GENERATE_TEST_EQE.0,
+                msg_size: (size_of::<GdmaReqHdr>() + size_of::<GdmaGenerateTestEventReq>()) as u32,
+                ..FromZeros::new_zeroed()
+            },
+            resp: gdma_defs::GdmaMsgHdr {
+                hwc_msg_id: 7,
+                msg_size: size_of::<GdmaRespHdr>() as u32,
+                ..FromZeros::new_zeroed()
+            },
+            dev_id: HWC_DEV_ID,
+            activity_id: 42,
+        };
+        queues.gm.write_plain(0x5000, &request).unwrap();
+        queues
+            .gm
+            .write_plain(
+                0x5000 + size_of::<GdmaReqHdr>() as u64,
+                &GdmaGenerateTestEventReq {
+                    queue_index: event_eq,
+                },
+            )
+            .unwrap();
+        let oob = HwcTxOob {
+            flags3: gdma_defs::HwcTxOobFlags3::new().with_vscq_id(hwc.cq_id),
+            flags4: gdma_defs::HwcTxOobFlags4::new().with_vsq_id(hwc.sq_id),
+            ..FromZeros::new_zeroed()
+        };
+        let sq_len = helper::write_wqe(
+            &queues,
+            helper::SQ,
+            oob.as_bytes(),
+            0x5000,
+            request.req.msg_size,
+        );
+        let sq_id = hwc.sq_id;
+        let rq_id = hwc.rq_id;
+        queues.doorbell_sq(WqDoorbellValue::new().with_id(sq_id).with_tail(sq_len));
+        let worker = StopWhenBlocked {
+            devices: Devices {
+                bnic: BasicNic::new(
+                    vec![VportConfig {
+                        mac_address: MacAddress::new([0; 6]),
+                        endpoint: Box::new(LoopbackEndpoint::new()),
+                    }],
+                    BnicConfig::default(),
+                ),
+            },
+            hook: blocked.clone(),
+        };
+        let control = Arc::new(Mutex::new(TaskControl::new(worker)));
+        control
+            .lock()
+            .insert(pool.driver(), "gdma-hwc-blocked", hwc);
+        let signal = blocked.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        // The worker really consumed the only SQE, but cannot process it yet.
+        assert!(queues.poll_sq(sq_id, &mut cx).is_pending());
+        let cqe: Cqe = queues.gm.read_plain(helper::CQ).unwrap();
+        assert_eq!(cqe.params.owner_count(), 0);
+        let event: Eqe = queues.gm.read_plain(0x6000).unwrap();
+        assert_eq!(event.params.owner_count(), 0);
+
+        let rq_len = helper::write_wqe(&queues, helper::RQ, &[], 0x7000, request.resp.msg_size);
+        queues.doorbell_rq(WqDoorbellValue::new().with_id(rq_id).with_tail(rq_len));
+        let signal = completed.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        let response: GdmaRespHdr = queues.gm.read_plain(0x7000).unwrap();
+        assert_eq!(response.status, 0);
+        assert_eq!(response.activity_id, 42);
+        assert_eq!(response.response.hwc_msg_id, 7);
+        for (index, send, wq) in [(0, true, sq_id), (1, false, rq_id)] {
+            let cqe: Cqe = queues
+                .gm
+                .read_plain(helper::CQ + index * size_of::<Cqe>() as u64)
+                .unwrap();
+            assert_eq!(cqe.params.owner_count(), 1);
+            assert_eq!(cqe.params.is_send_wq(), send);
+            assert_eq!(cqe.params.wq_number(), wq);
+        }
+        let event: Eqe = queues.gm.read_plain(0x6000).unwrap();
+        assert_eq!(event.params.owner_count(), 1);
+        assert_eq!(event.params.event_type(), GDMA_EQE_TEST_EVENT);
+
+        // A spare RQE and another restart must not replay the accepted SQE.
+        let extra_len = helper::write_wqe(
+            &queues,
+            helper::RQ + rq_len as u64,
+            &[],
+            0x7100,
+            request.resp.msg_size,
+        );
+        queues.doorbell_rq(
+            WqDoorbellValue::new()
+                .with_id(rq_id)
+                .with_tail(rq_len + extra_len),
+        );
+        let signal = blocked.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        let cqe: Cqe = queues
+            .gm
+            .read_plain(helper::CQ + 2 * size_of::<Cqe>() as u64)
+            .unwrap();
+        assert_eq!(cqe.params.owner_count(), 0);
+        let event: Eqe = queues
+            .gm
+            .read_plain(0x6000 + size_of::<Eqe>() as u64)
+            .unwrap();
+        assert_eq!(event.params.owner_count(), 0);
+        let response: GdmaRespHdr = queues.gm.read_plain(0x7100).unwrap();
+        assert_eq!(response.activity_id, 0);
+        assert!(queues.poll_rq(rq_id, &mut cx).is_ready());
+    }
+
+    #[test]
+    fn ready_requests_finish_publication_before_cancelling_and_resume() {
+        let mut pool = DefaultPool::new();
+        let hook = Arc::new(helper::StopHook::default());
+        let connection = MsiConnection::new();
+        connection.connect(hook.clone());
+        let (mut msix, mut capability) = MsixEmulator::new(4, 64, &connection.target());
+        let queues = helper::queues(&pool, Some(&msix));
+        let hwc = HwControl::new(
+            queues.clone(),
+            helper::SQ,
+            helper::RQ,
+            helper::CQ,
+            helper::EQ,
+            0,
+        )
+        .unwrap();
+        let event_eq = queues.alloc_eq(helper::region(0x6000), 0).unwrap();
+        // Enable real MSI delivery only after HWC initialization. The test EQ's
+        // interrupt requests stop from inside handle_req, before CQ publication.
+        msix.write_u32(12, 0);
+        capability.write(
+            0,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x8000_0000),
+        );
+
+        let oob = HwcTxOob {
+            flags3: gdma_defs::HwcTxOobFlags3::new().with_vscq_id(hwc.cq_id),
+            flags4: gdma_defs::HwcTxOobFlags4::new().with_vsq_id(hwc.sq_id),
+            ..FromZeros::new_zeroed()
+        };
+        let mut sq_tail = 0;
+        let mut rq_tail = 0;
+        for index in 0..2 {
+            let req = GdmaReqHdr {
+                req: gdma_defs::GdmaMsgHdr {
+                    msg_type: GdmaRequestType::GDMA_GENERATE_TEST_EQE.0,
+                    msg_size: (size_of::<GdmaReqHdr>() + size_of::<GdmaGenerateTestEventReq>())
+                        as u32,
+                    ..FromZeros::new_zeroed()
+                },
+                resp: gdma_defs::GdmaMsgHdr {
+                    hwc_msg_id: index as u16,
+                    msg_size: size_of::<GdmaRespHdr>() as u32,
+                    ..FromZeros::new_zeroed()
+                },
+                dev_id: HWC_DEV_ID,
+                activity_id: index as u32 + 1,
+            };
+            let request_gpa = 0x5000 + index * 0x100;
+            queues.gm.write_plain(request_gpa, &req).unwrap();
+            queues
+                .gm
+                .write_plain(
+                    request_gpa + size_of::<GdmaReqHdr>() as u64,
+                    &GdmaGenerateTestEventReq {
+                        queue_index: event_eq,
+                    },
                 )
+                .unwrap();
+            sq_tail += helper::write_wqe(
+                &queues,
+                helper::SQ + sq_tail as u64,
+                oob.as_bytes(),
+                request_gpa,
+                req.req.msg_size,
+            );
+            rq_tail += helper::write_wqe(
+                &queues,
+                helper::RQ + rq_tail as u64,
+                &[],
+                0x7000 + index * 0x100,
+                req.resp.msg_size,
+            );
+        }
+        queues.doorbell_sq(WqDoorbellValue::new().with_id(hwc.sq_id).with_tail(sq_tail));
+        queues.doorbell_rq(WqDoorbellValue::new().with_id(hwc.rq_id).with_tail(rq_tail));
+        let devices = Devices {
+            bnic: BasicNic::new(
+                vec![VportConfig {
+                    mac_address: MacAddress::new([0; 6]),
+                    endpoint: Box::new(LoopbackEndpoint::new()),
+                }],
+                BnicConfig::default(),
+            ),
+        };
+        let control = Arc::new(Mutex::new(TaskControl::new(devices)));
+        control.lock().insert(pool.driver(), "gdma-hwc", hwc);
+
+        for index in 0..2 {
+            let signal = hook.arm(&control);
+            assert!(control.lock().start());
+            helper::stopped(&mut pool, &control, signal);
+            let control = control.lock();
+            let hwc = control.state().unwrap();
+            let response: GdmaRespHdr = queues.gm.read_plain(0x7000 + index * 0x100).unwrap();
+            assert_eq!(response.status, 0);
+            assert_eq!(response.activity_id, index as u32 + 1);
+            assert_eq!(response.response.hwc_msg_id, index as u16);
+            for (entry, send, wq) in [
+                (index * 2, true, hwc.sq_id),
+                (index * 2 + 1, false, hwc.rq_id),
+            ] {
+                let cqe: Cqe = queues
+                    .gm
+                    .read_plain(helper::CQ + entry * size_of::<Cqe>() as u64)
+                    .unwrap();
+                assert_eq!(cqe.params.owner_count(), 1);
+                assert_eq!(cqe.params.is_send_wq(), send);
+                assert_eq!(cqe.params.wq_number(), wq);
+                if !send {
+                    let rx_oob = HwcRxOob::read_from_prefix(&cqe.data).unwrap().0;
+                    assert_eq!(rx_oob.tx_oob_data_size, size_of::<GdmaRespHdr>() as u32);
+                    assert_eq!(rx_oob.wqe_addr_low_or_offset, index as u32 * 32);
+                }
             }
-        })
-        .await
+            let next: Cqe = queues
+                .gm
+                .read_plain(helper::CQ + (index + 1) * 2 * size_of::<Cqe>() as u64)
+                .unwrap();
+            assert_eq!(next.params.owner_count(), 0);
+            if index == 0 {
+                let next_response: GdmaRespHdr = queues.gm.read_plain(0x7100).unwrap();
+                assert_eq!(next_response.activity_id, 0);
+                queues.doorbell_eq(
+                    CqEqDoorbellValue::new()
+                        .with_id(event_eq)
+                        .with_tail(PAGE_SIZE64 as u32 / size_of::<Eqe>() as u32 + 1)
+                        .with_arm(true),
+                );
+            }
+        }
     }
 }

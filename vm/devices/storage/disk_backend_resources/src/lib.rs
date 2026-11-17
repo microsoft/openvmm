@@ -69,6 +69,41 @@ impl ResourceId<DiskHandleKind> for FixedVhd1DiskHandle {
     const ID: &'static str = "fixed_vhd1";
 }
 
+/// Handle for a flat VMDK disk.
+#[derive(MeshPayload)]
+pub struct FlatVmdkDiskHandle {
+    /// Open host files referenced by the descriptor.
+    pub files: Vec<std::fs::File>,
+    /// Ordered virtual-disk extents.
+    pub extents: Vec<FlatVmdkExtent>,
+}
+
+impl ResourceId<DiskHandleKind> for FlatVmdkDiskHandle {
+    const ID: &'static str = "vmdk_flat";
+}
+
+/// One flat VMDK extent.
+#[derive(MeshPayload)]
+pub struct FlatVmdkExtent {
+    /// Index into [`FlatVmdkDiskHandle::files`].
+    pub file_index: u32,
+    /// Access mode declared by the descriptor.
+    pub access: VmdkExtentAccess,
+    /// Number of 512-byte sectors in this extent.
+    pub sector_count: u64,
+    /// First 512-byte sector read from the source file.
+    pub source_start_sector: u64,
+}
+
+/// Access mode declared for a VMDK extent.
+#[derive(MeshPayload)]
+pub enum VmdkExtentAccess {
+    /// The descriptor permits reads and writes.
+    ReadWrite,
+    /// The descriptor permits only reads.
+    ReadOnly,
+}
+
 /// Disk configuration for a striped disk.
 #[derive(MeshPayload)]
 pub struct StripedDiskHandle {

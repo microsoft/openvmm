@@ -546,7 +546,7 @@ impl HyperVNewCustomVMArgs {
                 PetriVmgsResource::ReprovisionOnFailure(_) => {
                     HyperVGuestStateLifetime::ReprovisionOnFailure
                 }
-                PetriVmgsResource::Reprovision(_) => HyperVGuestStateLifetime::Reprovision,
+                PetriVmgsResource::ReprovisionSingle(_) => HyperVGuestStateLifetime::Reprovision,
                 PetriVmgsResource::Ephemeral => HyperVGuestStateLifetime::Ephemeral,
             }),
             vmbus_message_redirection: firmware.openhcl_config().map(|c| c.vmbus_redirect),

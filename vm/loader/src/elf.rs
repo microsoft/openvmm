@@ -48,10 +48,18 @@ pub enum Error {
     },
     #[error("failed to parse ELF program header")]
     InvalidProgramHeader(#[source] object::read::Error),
+    #[error("ELF image contains no non-empty loadable segments")]
+    NoLoadableSegments,
     #[error("adding load offset {load_offset} to paddr {p_paddr} overflowed")]
     LoadOffsetOverflow { load_offset: u64, p_paddr: u64 },
     #[error("invalid ELF program header memory offset {mem_offset}, below start {start_address}")]
     InvalidProgramHeaderMemoryOffset { mem_offset: u64, start_address: u64 },
+    #[error(
+        "ELF program header memory range at {mem_offset:#x} with size {p_memsz:#x} cannot be represented"
+    )]
+    InvalidProgramHeaderMemoryRange { mem_offset: u64, p_memsz: u64 },
+    #[error("ELF entry address {entry:#x} is not in a non-empty loadable segment")]
+    EntryPointNotInLoadableSegment { entry: u64 },
     #[error(
         "adding reloc bias {reloc_bias} and load offset {load_offset} to paddr {p_paddr} overflowed"
     )]
@@ -139,6 +147,12 @@ where
     let phdrs = ehdr
         .program_headers(LE, &reader)
         .map_err(Error::InvalidProgramHeader)?;
+    if !phdrs
+        .iter()
+        .any(|phdr| phdr.p_type.get(LE) == elf::PT_LOAD && phdr.p_memsz.get(LE) != 0)
+    {
+        return Err(Error::NoLoadableSegments);
+    }
 
     // For PIC kernels, calculate load offset by checking lowest paddr in program headers.
     // If it is below start_address, relocate kernel upward. Handles both:
@@ -149,7 +163,7 @@ where
     let load_offset = if assume_pic {
         let mut lowest_paddr = u64::MAX;
         for phdr in phdrs {
-            if phdr.p_type.get(LE) == elf::PT_LOAD {
+            if phdr.p_type.get(LE) == elf::PT_LOAD && phdr.p_memsz.get(LE) != 0 {
                 let p_paddr = phdr.p_paddr.get(LE);
                 lowest_paddr = lowest_paddr.min(p_paddr);
             }
@@ -185,6 +199,8 @@ where
         p_paddr: u64,
         p_filesz: u64,
         p_memsz: u64,
+        mem_offset: u64,
+        mem_end: u64,
     }
     let mut segments = Vec::new();
 
@@ -194,7 +210,8 @@ where
 
         // Read in each section pointed to by the program headers.
         for phdr in phdrs {
-            if phdr.p_type.get(LE) != elf::PT_LOAD {
+            let p_memsz = phdr.p_memsz.get(LE);
+            if phdr.p_type.get(LE) != elf::PT_LOAD || p_memsz == 0 {
                 continue;
             }
 
@@ -213,19 +230,31 @@ where
                 });
             }
 
-            let page_mask = HV_PAGE_SIZE - 1;
-            let page_base = mem_offset / HV_PAGE_SIZE;
-            let page_count: u64 =
-                ((mem_offset & page_mask) + phdr.p_memsz.get(LE) + page_mask) / HV_PAGE_SIZE;
+            let mem_end =
+                mem_offset
+                    .checked_add(p_memsz)
+                    .ok_or(Error::InvalidProgramHeaderMemoryRange {
+                        mem_offset,
+                        p_memsz,
+                    })?;
+            let page_base = mem_offset & !(HV_PAGE_SIZE - 1);
+            let page_end = mem_end.checked_next_multiple_of(HV_PAGE_SIZE).ok_or(
+                Error::InvalidProgramHeaderMemoryRange {
+                    mem_offset,
+                    p_memsz,
+                },
+            )?;
 
-            lowest_addr = lowest_addr.min(page_base * HV_PAGE_SIZE);
-            last_offset = last_offset.max((page_base + page_count) * HV_PAGE_SIZE);
+            lowest_addr = lowest_addr.min(page_base);
+            last_offset = last_offset.max(page_end);
 
             segments.push(SegmentInfo {
                 p_offset: phdr.p_offset.get(LE),
                 p_paddr,
                 p_filesz: phdr.p_filesz.get(LE),
-                p_memsz: phdr.p_memsz.get(LE),
+                p_memsz,
+                mem_offset,
+                mem_end,
             });
         }
 
@@ -239,6 +268,23 @@ where
             },
         )
     };
+    let relocated_entry = entry
+        .checked_sub(reloc_bias)
+        .ok_or(Error::InvalidEntryAddress {
+            e_entry,
+            start_address,
+            load_offset,
+        })?;
+    if !segments.iter().any(|seg| {
+        seg.mem_offset
+            .checked_sub(reloc_bias)
+            .zip(seg.mem_end.checked_sub(reloc_bias))
+            .is_some_and(|(start, end)| (start..end).contains(&relocated_entry))
+    }) {
+        return Err(Error::EntryPointNotInLoadableSegment {
+            entry: relocated_entry,
+        });
+    }
 
     // Drop the reader to release the borrow on kernel_image.
     drop(reader);
@@ -246,19 +292,14 @@ where
     // During the second pass, import each segment.
     let mut buf = ChunkBuf::new();
     for seg in &segments {
-        let mem_offset = seg
-            .p_paddr
-            .checked_add(load_offset)
-            .ok_or(Error::LoadOffsetOverflow {
-                load_offset,
-                p_paddr: seg.p_paddr,
-            })?
-            .checked_sub(reloc_bias)
-            .ok_or(Error::RelocBiasOverflow {
-                load_offset,
-                reloc_bias,
-                p_paddr: seg.p_paddr,
-            })?;
+        let mem_offset =
+            seg.mem_offset
+                .checked_sub(reloc_bias)
+                .ok_or(Error::RelocBiasOverflow {
+                    load_offset,
+                    reloc_bias,
+                    p_paddr: seg.p_paddr,
+                })?;
 
         if mem_offset < start_address {
             return Err(Error::InvalidProgramHeaderMemoryOffset {
@@ -287,6 +328,6 @@ where
     Ok(LoadInfo {
         minimum_address_used: lowest_addr - reloc_bias,
         next_available_address: last_offset - reloc_bias,
-        entrypoint: entry - reloc_bias,
+        entrypoint: relocated_entry,
     })
 }

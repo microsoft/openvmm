@@ -4,10 +4,45 @@
 use super::SYNTHETIC_ROOT_FH;
 use crate::VirtioFs;
 use crate::inode;
+use crate::inode::VirtioFsVolume;
+use crate::test_helpers::decode_dir_entries;
+use fuse::Fuse;
 use fuse::protocol::FUSE_ROOT_ID;
 use lxutil::LxVolumeOptions;
 use std::sync::Arc;
 use test_with_tracing::test;
+
+fn assert_config_errno(error: crate::CreateError, expected: lx::Error) {
+    match error {
+        crate::CreateError::Filesystem(actual) => assert_eq!(actual, expected),
+        other => panic!("expected configuration errno {expected}, got {other}"),
+    }
+}
+
+#[test]
+fn setup_failures_preserve_error_sources() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing_root = tmp.path().join("missing");
+    let aggregate = VirtioFs::new_aggregate();
+    for error in [
+        VirtioFs::new(&missing_root, None).err().unwrap(),
+        aggregate
+            .add_child("share", &missing_root, None)
+            .unwrap_err(),
+    ] {
+        assert!(matches!(error, crate::CreateError::Volume(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("failed to initialize filesystem volume")
+        );
+        let cause = std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<lx::Error>()
+            .expect("filesystem setup must preserve the OS error");
+        assert_eq!(*cause, lx::Error::ENOENT);
+    }
+}
 
 #[test]
 fn aggregate_child_registry() {
@@ -24,9 +59,9 @@ fn aggregate_child_registry() {
     fs.add_child("share_b", b.path(), None).unwrap();
 
     // Duplicate names are rejected.
-    assert_eq!(
+    assert_config_errno(
         fs.add_child("share_a", a.path(), None).unwrap_err(),
-        lx::Error::EEXIST
+        lx::Error::EEXIST,
     );
 
     // Each child gets a distinct, non-zero volume id (0 is reserved for
@@ -66,9 +101,9 @@ fn aggregate_operations_are_scoped_to_aggregate_mode() {
     let a = tempfile::tempdir().unwrap();
     let fs = VirtioFs::new(a.path(), None).unwrap();
     assert!(!fs.is_synthetic_root_handle(FUSE_ROOT_ID, SYNTHETIC_ROOT_FH));
-    assert_eq!(
+    assert_config_errno(
         fs.add_child("x", a.path(), None).unwrap_err(),
-        lx::Error::EINVAL
+        lx::Error::EINVAL,
     );
     assert_eq!(fs.remove_child("x").unwrap_err(), lx::Error::EINVAL);
 }
@@ -79,17 +114,17 @@ fn add_child_validates_name() {
     let fs = VirtioFs::new_aggregate();
 
     for name in ["", ".", "..", "a/b", "a\0b"] {
-        assert_eq!(
+        assert_config_errno(
             fs.add_child(name, root.path(), None).unwrap_err(),
-            lx::Error::EINVAL
+            lx::Error::EINVAL,
         );
     }
 
     fs.add_child(&"a".repeat(255), root.path(), None).unwrap();
-    assert_eq!(
+    assert_config_errno(
         fs.add_child(&"b".repeat(256), root.path(), None)
             .unwrap_err(),
-        lx::Error::ENAMETOOLONG
+        lx::Error::ENAMETOOLONG,
     );
 }
 
@@ -187,12 +222,56 @@ fn add_child_rejected_after_teardown() {
     fs.begin_teardown();
 
     // Once tearing down, no further children can be added.
-    assert_eq!(
+    assert_config_errno(
         fs.add_child("after", a.path(), None).unwrap_err(),
-        lx::Error::EAGAIN
+        lx::Error::EAGAIN,
     );
     assert_eq!(
         fs.inner.aggregate().unwrap().registry.read().entries.len(),
         1
     );
+}
+
+#[test]
+fn failed_synthetic_root_readdirplus_returns_entries_holding_references() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let fs = VirtioFs::new_aggregate();
+    fs.add_child("first", first.path(), None).unwrap();
+    fs.add_child("second", second.path(), None).unwrap();
+    let second_volume_id = fs.inner.aggregate().unwrap().registry.read().entries[1]
+        .volume
+        .id();
+
+    // Look up the first child's root, and fail the second's with a host error.
+    let mut lookup = |volume: Arc<VirtioFsVolume>| {
+        if volume.id() == second_volume_id {
+            Err(lx::Error::EIO)
+        } else {
+            fs.insert_child_root_entry(volume)
+        }
+    };
+
+    // The read stops at the second child, but still returns the first child,
+    // whose entry holds the reference its lookup took.
+    let reply = fs
+        .read_synthetic_root_dir_with(0, 4096, true, &mut lookup)
+        .unwrap();
+    let entries = decode_dir_entries(&reply);
+    let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+    assert_eq!(names, [".", "..", "first"]);
+    let node_id = FUSE_ROOT_ID + 1;
+    assert_eq!(entries[2].node_id, node_id);
+
+    // The next read starts at the second child, so the guest gets the error.
+    assert_eq!(
+        fs.read_synthetic_root_dir_with(entries[2].offset, 4096, true, &mut lookup)
+            .unwrap_err(),
+        lx::Error::EIO
+    );
+
+    // The guest's forget for the entry it received releases the first child's
+    // root.
+    fs.forget(node_id, 1);
+    assert!(fs.get_inode(node_id).is_err(), "inode leaked");
 }

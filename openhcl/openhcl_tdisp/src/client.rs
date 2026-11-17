@@ -1417,6 +1417,7 @@ mod tests {
             lnr_control: 0,
             tph_control: 0,
             mmio_interface_info: ranges,
+            device_specific_info: Vec::new(),
         }
     }
 

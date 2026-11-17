@@ -166,6 +166,25 @@ impl RsaKeyPairInner {
 pub struct RsaPublicKeyInner(pub(crate) RsaPublicKey);
 
 impl RsaPublicKeyInner {
+    pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, RsaError> {
+        use pkcs1::DecodeRsaPublicKey;
+
+        RsaPublicKey::from_pkcs1_der(der)
+            .map(Self)
+            .map_err(|e| RsaError(e.into(), "parsing the PKCS#1 DER public key"))
+    }
+
+    pub fn to_pkcs1_der(&self) -> Result<Vec<u8>, RsaError> {
+        use pkcs1::EncodeRsaPublicKey;
+
+        Ok(self
+            .0
+            .to_pkcs1_der()
+            .map_err(|e| RsaError(e.into(), "encoding the public key as PKCS#1 DER"))?
+            .as_bytes()
+            .to_vec())
+    }
+
     pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
         let key = RsaPublicKey::new(
             rsa::BoxedUint::from_be_slice_vartime(n),
@@ -258,10 +277,10 @@ impl RsaPublicKeyInner {
         self.0.size()
     }
 
-    pub fn to_components(&self) -> RsaPublicKeyComponents {
-        RsaPublicKeyComponents {
+    pub fn to_components(&self) -> Result<RsaPublicKeyComponents, RsaError> {
+        Ok(RsaPublicKeyComponents {
             modulus: self.0.n().to_be_bytes_trimmed_vartime().to_vec(),
             public_exponent: self.0.e().to_be_bytes_trimmed_vartime().to_vec(),
-        }
+        })
     }
 }

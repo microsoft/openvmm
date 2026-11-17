@@ -6,16 +6,18 @@
 pub mod aarch64;
 pub mod x86;
 
-cfg_if::cfg_if! {
-    if #[cfg(guest_arch = "aarch64")] {
+cfg_select! {
+    guest_arch = "aarch64" => {
         pub use aarch64 as arch;
         pub use aarch64::Aarch64Topology as TargetTopology;
         pub use aarch64::Aarch64VpInfo as TargetVpInfo;
-    } else if #[cfg(guest_arch = "x86_64")] {
+    }
+    guest_arch = "x86_64" => {
         pub use x86 as arch;
         pub use x86::X86Topology as TargetTopology;
         pub use x86::X86VpInfo as TargetVpInfo;
-    } else {
+    }
+    _ => {
         compile_error!("Unsupported architecture");
     }
 }

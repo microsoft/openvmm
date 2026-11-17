@@ -7,28 +7,28 @@
 // and handling their return values.
 #![expect(unsafe_code)]
 
-use cfg_if::cfg_if;
-
 pub mod local;
 pub mod pipe;
 pub mod process;
 pub mod wait;
 
-cfg_if! {
-    if #[cfg(target_os = "linux")] {
+cfg_select! {
+    target_os = "linux" => {
         pub mod epoll;
         mod epoll_uring;
 
         pub use epoll::EpollDriver as DefaultDriver;
         pub use epoll::EpollPool as DefaultPool;
         pub use epoll::WeakEpollDriver as WeakDefaultDriver;
-    } else if #[cfg(target_os = "macos")] {
+    }
+    target_os = "macos" => {
         pub mod kqueue;
 
         pub use kqueue::KqueueDriver as DefaultDriver;
         pub use kqueue::KqueuePool as DefaultPool;
         pub use kqueue::WeakKqueueDriver as WeakDefaultDriver;
     }
+    _ => {}
 }
 
 pub(crate) fn monotonic_nanos_now() -> u64 {

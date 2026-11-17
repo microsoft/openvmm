@@ -84,6 +84,7 @@ impl SimpleFlowNode for Node {
                         "libssl-dev".into(),
                         "pkg-config".into(),
                         "protobuf-compiler".into(),
+                        "libprotobuf-dev".into(),
                     ],
                     done: v,
                 }),

@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 get_resources.workspace = true
 
-cfg-if.workspace = true
 clap = { workspace = true, features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -29,6 +28,9 @@ windows-sys = { workspace = true, features = [
 [build-dependencies]
 cc.workspace = true
 serde_json = { workspace = true, features = ["std"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

@@ -23,17 +23,31 @@ const QID_SIZE: usize = 13;
 p9_protocol_messages! {
     6 Tlerror ecode[4];
     7 Rlerror ecode[4];
+    8 Tstatfs fid[4];
+    9 Rstatfs r#type[4] bsize[4] blocks[8] bfree[8] bavail[8] files[8] ffree[8] fsid[8] namelen[4];
     12 Tlopen fid[4] flags[4];
     13 Rlopen qid[q] iounit[4];
     14 Tlcreate fid[4] name[n] flags[4] mode[4] gid[4];
     15 Rlcreate qid[q] iounit[4];
+    16 Tsymlink fid[4] name[n] symtgt[s] gid[4];
+    17 Rsymlink qid[q];
+    22 Treadlink fid[4];
+    23 Rreadlink target[s];
     24 Tgetattr fid[4] request_mask[8];
     25 Rgetattr valid[8] qid[q] mode[4] uid[4] gid[4] nlink[8] rdev[8] size[8] blksize[8] blocks[8] atime_sec[8] atime_nsec[8]
         mtime_sec[8] mtime_nsec[8] ctime_sec[8] ctime_nsec[8] btime_sec[8] btime_nsec[8] r#gen[8] data_version[8];
     26 Tsetattr fid[4] valid[4] mode[4] uid[4] gid[4] size[8] atime_sec[8] atime_nsec[8] mtime_sec[8] mtime_nsec[8];
     27 Rsetattr;
+    30 Txattrwalk fid[4] newfid[4] name[s];
+    31 Rxattrwalk size[8];
+    32 Txattrcreate fid[4] name[s] size[8] flags[4];
+    33 Rxattrcreate;
     40 Treaddir fid[4] offset[8] count[4];
     41 Rreaddir count[4]; // data[count]
+    50 Tfsync fid[4] datasync[4];
+    51 Rfsync;
+    70 Tlink dfid[4] fid[4] name[n];
+    71 Rlink;
     72 Tmkdir dfid[4] name[n] mode[4] gid[4];
     73 Rmkdir qid[q];
     76 Tunlinkat dfid[4] name[n] flags[4];
@@ -61,8 +75,25 @@ pub const QID_TYPE_SYMLINK: u8 = 0x02;
 pub const QID_TYPE_DIRECTORY: u8 = 0x80;
 
 // Flags used by the Tlopen message.
-// N.B. Omitted flags match their Linux equivalent.
+pub const OPEN_FLAG_ACCESS_MASK: u32 = 0o3;
+pub const OPEN_FLAG_RDONLY: u32 = 0o0;
+pub const OPEN_FLAG_WRONLY: u32 = 0o1;
+pub const OPEN_FLAG_RDWR: u32 = 0o2;
+pub const OPEN_FLAG_NOACCESS: u32 = 0o3;
+pub const OPEN_FLAG_CREAT: u32 = 0o100;
+pub const OPEN_FLAG_EXCL: u32 = 0o200;
+pub const OPEN_FLAG_TRUNC: u32 = 0o1000;
+pub const OPEN_FLAG_APPEND: u32 = 0o2000;
+pub const OPEN_FLAG_NONBLOCK: u32 = 0o4000;
+pub const OPEN_FLAG_DSYNC: u32 = 0o10000;
+pub const OPEN_FLAG_SYNC: u32 = 0o4000000;
+pub const OPEN_FLAG_NOATIME: u32 = 0o1000000;
+pub const OPEN_FLAG_DIRECT: u32 = 0o40000;
+pub const OPEN_FLAG_NOCTTY: u32 = 0o400;
+pub const OPEN_FLAG_CLOEXEC: u32 = 0o2000000;
+pub const OPEN_FLAG_LARGEFILE: u32 = 0o100000;
 pub const OPEN_FLAG_DIRECTORY: u32 = 0o200000;
+pub const OPEN_FLAG_NOFOLLOW: u32 = 0o400000;
 
 // The header of a 9p protocol message.
 pub struct Header {
