@@ -283,8 +283,14 @@ backend:
   follows `IA32_MCG_STATUS`, and the number of banks is the one that the VP's
   `IA32_MCG_CAP` reports.
 
-The MSHV, WHP, and OpenHCL backends do not have elements 17 through 20, and
-clear their capabilities.
+The MSHV and WHP backends hold `umwait_control` as a register of the VP, as
+they hold `spec_ctrl`, where the guest's CPUID enumerates WAITPKG, which the
+hypervisor then presents to the guest; MSHV clears it for an SNP guest, as KVM
+does. They do not have elements 18 through 20, and clear their capabilities:
+the Microsoft hypervisor keeps none of those registers for a guest to write
+(it drops the guest's writes of `IA32_DEBUGCTL` and `IA32_MISC_ENABLE`, raises
+#GP for `MSR_MISC_FEATURES_ENABLES` and `IA32_POWER_CTL`, and gives the guest
+no machine-check banks). OpenHCL does not have elements 17 through 20.
 
 A saved state restores only into a partition that has every element that it
 holds. A destination whose backend lacks one, such as a host whose KVM does not
