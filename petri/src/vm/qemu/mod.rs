@@ -532,6 +532,7 @@ pub fn build_qemu_command(
     assert!(pcie_nvme_drives.is_empty());
     assert!(pcie_virtio_blk_drives.is_empty());
     assert!(physical_nvme_devices.is_empty());
+    assert!(firmware.isolation().is_none());
 
     let mut cmd = Command::new(binary);
 
@@ -658,6 +659,7 @@ mod tests {
             arch: MachineArch::Aarch64,
             host_log_levels: None,
             firmware: Firmware::LinuxDirect {
+                isolation: None,
                 kernel: ResolvedArtifact::from_local_path("kernel with spaces".into()),
                 initrd: ResolvedArtifact::from_local_path("base-initrd".into()),
             },

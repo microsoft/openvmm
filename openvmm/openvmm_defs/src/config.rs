@@ -410,6 +410,8 @@ pub enum GicMsiConfig {
         /// platform-specific value when `None`.
         spi_count: Option<u32>,
     },
+    /// Disable GIC MSI
+    Disabled,
 }
 
 /// IOMMU configuration for a single PCIe root complex.

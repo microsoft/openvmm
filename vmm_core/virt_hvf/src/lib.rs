@@ -200,6 +200,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                 // Apple Silicon does not support aarch32.
                 supports_aarch32_el0: false,
                 vendor: Vendor::ARM,
+                shared_gpa_bit: None,
             },
             virt_timer_ppi: self.config.processor_topology.virt_timer_ppi(),
             vps: self

@@ -71,6 +71,7 @@ mod tests {
             PetriVmArtifacts {
                 backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
                 firmware: Firmware::Uefi {
+                    isolation: None,
                     uefi_firmware: ResolvedArtifact::from_local_path(firmware.to_path_buf()),
                     guest,
                     uefi_config: UefiConfig {
@@ -263,6 +264,7 @@ mod tests {
                     PetriVmArtifacts {
                         backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
                         firmware: Firmware::LinuxDirect {
+                            isolation: None,
                             kernel: ResolvedArtifact::from_local_path(base.clone()),
                             initrd: ResolvedArtifact::from_local_path(base.clone()),
                         },
@@ -338,6 +340,7 @@ mod tests {
                     PetriVmArtifacts {
                         backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
                         firmware: Firmware::LinuxDirect {
+                            isolation: None,
                             kernel: ResolvedArtifact::from_local_path(input.clone()),
                             initrd: ResolvedArtifact::from_local_path(input.clone()),
                         },
@@ -397,6 +400,7 @@ mod tests {
                 PetriVmArtifacts {
                     backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
                     firmware: Firmware::LinuxDirect {
+                        isolation: None,
                         kernel: ResolvedArtifact::from_local_path(base.clone()),
                         initrd: ResolvedArtifact::from_local_path(base.clone()),
                     },

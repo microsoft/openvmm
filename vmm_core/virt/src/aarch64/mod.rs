@@ -40,6 +40,8 @@ pub struct Aarch64PartitionCapabilities {
     pub supports_aarch32_el0: bool,
     #[inspect(display)]
     pub vendor: Vendor,
+    /// Shared GPA bit for CCA
+    pub shared_gpa_bit: Option<u64>,
 }
 
 #[derive(Error, Debug)]
