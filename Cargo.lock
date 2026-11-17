@@ -9792,6 +9792,7 @@ dependencies = [
  "get_helpers",
  "get_protocol",
  "getrandom 0.4.2",
+ "guest_emulation_device",
  "guest_emulation_transport",
  "guestmem",
  "guid",

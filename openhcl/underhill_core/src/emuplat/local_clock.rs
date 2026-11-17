@@ -30,6 +30,9 @@ pub struct UnderhillLocalClock {
     store: Box<dyn NonVolatileStore>,
     host_time: HostSystemTimeAccess,
     offset_from_host_time: LocalClockDelta,
+    /// Whether to set the skew to the host's time zone offset once the host
+    /// has been queried, as there is no saved skew.
+    default_skew: bool,
     #[inspect(skip)]
     reference_time: ReferenceTimeSource,
 }
@@ -40,62 +43,42 @@ impl std::fmt::Debug for UnderhillLocalClock {
             store: _,
             host_time,
             offset_from_host_time,
+            default_skew,
             reference_time: _,
         } = self;
 
         f.debug_struct("UnderhillLocalClock")
             .field("host_time", host_time)
             .field("offset_from_host_time", offset_from_host_time)
+            .field("default_skew", default_skew)
             .finish()
     }
 }
 
 impl UnderhillLocalClock {
-    /// Create a new [`UnderhillLocalClock`]. Resolves immediately if provided
-    /// with `saved_state`, and waits for the host time otherwise.
+    /// Create a new [`UnderhillLocalClock`]. The host time is queried on the
+    /// first access.
     pub async fn new(
         get: guest_emulation_transport::GuestEmulationTransportClient,
         reference_time: ReferenceTimeSource,
         store: Box<dyn NonVolatileStore>,
         saved_state: Option<<Self as SaveRestore>::SavedState>,
     ) -> anyhow::Result<Self> {
-        let host_time = HostSystemTimeAccess::new(get);
-
         let mut this = Self {
             store,
-            host_time,
+            host_time: HostSystemTimeAccess::new(get),
             offset_from_host_time: LocalClockDelta::default(),
+            default_skew: false,
             reference_time,
         };
 
         match saved_state {
             Some(state) => this.restore(state)?,
-            None => {
-                this.host_time.init().await;
-                this.offset_from_host_time = match fetch_skew_from_store(&mut this.store).await? {
-                    Some(skew) => skew,
-                    None => {
-                        // If there is no existing host time offset, default to using
-                        // the host's provided timezone offset.
-                        //
-                        // Hosts _could_ choose to pass time as UTC, but in Hyper-V,
-                        // this is set to the host's _local_ time, as this allows
-                        // Windows guests to report the correct time on first boot.
-                        // Windows assumes the time stored in the RTC is the machine's
-                        // _local_ time, whereas Linux assume the time stored in the RTC
-                        // stores UTC.
-                        let skew = this.host_time.now().offset();
-                        let skew = LocalClockDelta::from_millis(skew.seconds() as i64 * 1000);
-                        tracing::info!(
-                            CVM_ALLOWED,
-                            ?skew,
-                            "no saved skew found: defaulting to host local time"
-                        );
-                        skew
-                    }
-                }
-            }
-        };
+            None => match fetch_skew_from_store(&mut this.store).await? {
+                Some(skew) => this.offset_from_host_time = skew,
+                None => this.default_skew = true,
+            },
+        }
 
         // prevent guests from persisting an RTC time in the distant past,
         // which could be used to circumvent time-based licensing checks.
@@ -109,6 +92,29 @@ impl UnderhillLocalClock {
         }
 
         Ok(this)
+    }
+
+    /// Set the skew to the host's time zone offset if there is no saved skew.
+    fn set_default_skew(&mut self, host_time: &jiff::Zoned) {
+        if std::mem::take(&mut self.default_skew) {
+            // If there is no existing host time offset, default to using
+            // the host's provided timezone offset.
+            //
+            // Hosts _could_ choose to pass time as UTC, but in Hyper-V,
+            // this is set to the host's _local_ time, as this allows
+            // Windows guests to report the correct time on first boot.
+            // Windows assumes the time stored in the RTC is the machine's
+            // _local_ time, whereas Linux assume the time stored in the RTC
+            // stores UTC.
+            let skew = host_time.offset();
+            let skew = LocalClockDelta::from_millis(skew.seconds() as i64 * 1000);
+            tracing::info!(
+                CVM_ALLOWED,
+                ?skew,
+                "no saved skew found: defaulting to host local time"
+            );
+            self.offset_from_host_time = skew;
+        }
     }
 }
 
@@ -129,7 +135,9 @@ async fn fetch_skew_from_store(
 
 impl LocalClock for UnderhillLocalClock {
     fn get_time(&mut self) -> LocalClockTime {
-        LocalClockTime::from(self.host_time.now()) + self.offset_from_host_time
+        let host_time = self.host_time.now();
+        self.set_default_skew(&host_time);
+        LocalClockTime::from(host_time) + self.offset_from_host_time
     }
 
     fn get_time_for_update(&mut self) -> LocalClockTime {
@@ -143,6 +151,7 @@ impl LocalClock for UnderhillLocalClock {
     fn set_time(&mut self, new_time: LocalClockTime) {
         let new_skew = new_time - LocalClockTime::from(self.host_time.query());
         self.offset_from_host_time = new_skew;
+        self.default_skew = false;
 
         // persist the skew in units of 100ns
         let raw_skew: i64 = new_skew.as_millis() * 10_000; // millis to 100ns units
@@ -280,13 +289,6 @@ mod host_time {
                 cached_host_time: Mutex::new(None),
                 held: None,
             }
-        }
-
-        /// Wait for the host time.
-        pub async fn init(&mut self) {
-            let sent = Instant::now();
-            let time = self.get.host_time().await.to_jiff();
-            *self.cached_host_time.get_mut() = Some(self.first(sent, time));
         }
 
         /// Take the time restored from servicing, which is refreshed on the
@@ -528,6 +530,12 @@ mod save_restore {
             /// time by the time servicing took.
             #[mesh(4)]
             pub reference_time: Option<u64>,
+            /// Whether the skew is still to be set to the host's time zone
+            /// offset. Older versions don't know this, so servicing back to
+            /// one before the RTC has been accessed since a cold boot leaves
+            /// the RTC at UTC rather than the host's local time.
+            #[mesh(5)]
+            pub default_skew: bool,
         }
     }
 
@@ -543,6 +551,7 @@ mod save_restore {
                     .map(|latest| latest.as_millisecond()),
                 host_time_millis: self.host_time.sample().map(|time| time.as_millisecond()),
                 reference_time: Some(self.reference_time.now().ref_time),
+                default_skew: self.default_skew,
             })
         }
 
@@ -552,9 +561,11 @@ mod save_restore {
                 latest_host_time_millis,
                 host_time_millis,
                 reference_time,
+                default_skew,
             } = state;
 
             self.offset_from_host_time = LocalClockDelta::from_millis(offset_from_host_time_millis);
+            self.default_skew = default_skew;
             if let (Some(time), Some(reference_time)) = (host_time_millis, reference_time) {
                 let elapsed_100ns = self
                     .reference_time
@@ -587,6 +598,8 @@ mod tests {
     use super::fetch_skew_from_store;
     use super::host_time::CachedHostTime;
     use super::host_time::HostSystemTimeAccess;
+    use guest_emulation_device::test_utilities::Event;
+    use guest_emulation_device::test_utilities::TestGetResponses;
     use guest_emulation_transport::test_utilities::TestGet;
     use jiff::Zoned;
     use local_clock::LocalClock;
@@ -611,6 +624,7 @@ mod tests {
     use vmcore::reference_time::ReferenceTimeResult;
     use vmcore::reference_time::ReferenceTimeSource;
     use vmcore::save_restore::SaveRestore;
+    use zerocopy::IntoBytes;
 
     async fn new_get(driver: &DefaultDriver) -> TestGet {
         guest_emulation_transport::test_utilities::new_transport_pair(
@@ -623,11 +637,19 @@ mod tests {
         .await
     }
 
-    /// Create a host time access with the first query answered.
-    async fn new_host_time(get: &TestGet) -> HostSystemTimeAccess {
-        let mut host_time = HostSystemTimeAccess::new(get.client.clone());
-        host_time.init().await;
-        host_time
+    /// Create a host time access with the first query answered. The GED is
+    /// served by this thread, so make the query on another one.
+    async fn new_host_time(driver: &DefaultDriver, get: &TestGet) -> HostSystemTimeAccess {
+        let host_time = HostSystemTimeAccess::new(get.client.clone());
+        let thread = std::thread::spawn(move || {
+            host_time.now();
+            host_time
+        });
+        let mut timer = PolledTimer::new(driver);
+        while !thread.is_finished() {
+            timer.sleep(Duration::from_millis(1)).await;
+        }
+        thread.join().unwrap()
     }
 
     /// A partition reference time that only moves when the test says so.
@@ -652,13 +674,12 @@ mod tests {
         })
     }
 
-    /// Create a clock with the GED served on its own thread, since setting
-    /// the time waits for the host. With no skew stored, creating the clock
-    /// queries the host.
+    /// Create a clock with the GED served on its own thread, since the first
+    /// access and setting the time wait for the host, and read it once.
     async fn new_clock() -> (UnderhillLocalClock, TestGet, DefaultDriver) {
         let (_, get_driver) = DefaultPool::spawn_on_thread("get");
         let get = new_get(&get_driver).await;
-        let clock = UnderhillLocalClock::new(
+        let mut clock = UnderhillLocalClock::new(
             get.client.clone(),
             reference_time(&Default::default()),
             EphemeralNonVolatileStore::new_boxed(),
@@ -666,6 +687,7 @@ mod tests {
         )
         .await
         .unwrap();
+        clock.get_time();
         (clock, get, get_driver)
     }
 
@@ -676,7 +698,7 @@ mod tests {
     #[async_test]
     async fn stale_time_does_not_wait_for_host(driver: DefaultDriver) {
         let get = new_get(&driver).await;
-        let host_time = new_host_time(&get).await;
+        let host_time = new_host_time(&driver, &get).await;
         let initial = host_time.now();
 
         // The host is served by this thread, so it can't respond until the
@@ -701,7 +723,7 @@ mod tests {
     #[async_test]
     async fn correction_does_not_go_backwards(driver: DefaultDriver) {
         let get = new_get(&driver).await;
-        let host_time = new_host_time(&get).await;
+        let host_time = new_host_time(&driver, &get).await;
 
         // Pretend the local clock ran 800ms ahead of the host over the
         // last second.
@@ -725,7 +747,7 @@ mod tests {
     #[async_test]
     async fn slow_reply_does_not_move_time(driver: DefaultDriver) {
         let get = new_get(&driver).await;
-        let host_time = new_host_time(&get).await;
+        let host_time = new_host_time(&driver, &get).await;
 
         // The host is served by this thread, so blocking it delays when the
         // host samples its time.
@@ -748,7 +770,7 @@ mod tests {
     #[async_test]
     async fn reply_is_timed_when_it_comes_in(driver: DefaultDriver) {
         let get = new_get(&driver).await;
-        let host_time = new_host_time(&get).await;
+        let host_time = new_host_time(&driver, &get).await;
 
         // Pretend the host paused the VM for an hour, and nothing reads the
         // time for a while after the reply to the next query comes in.
@@ -872,25 +894,82 @@ mod tests {
     }
 
     #[async_test]
-    async fn first_read_after_old_restore_waits_for_host(_driver: DefaultDriver) {
+    async fn first_read_waits_for_host(_driver: DefaultDriver) {
         let (mut clock, get, get_driver) = new_clock().await;
         // A state saved before the host time was saved.
-        let mut state = clock.save().unwrap();
-        state.host_time_millis = None;
-        state.reference_time = None;
+        let mut old_state = clock.save().unwrap();
+        old_state.host_time_millis = None;
+        old_state.reference_time = None;
 
-        // Block the GED's thread for 1s.
-        let (started, wait) = std::sync::mpsc::channel();
-        get_driver
-            .spawn("block", async move {
-                started.send(()).unwrap();
-                std::thread::sleep(Duration::from_secs(1));
-            })
-            .detach();
-        wait.recv().unwrap();
+        // On a cold boot and on restoring the old state, creating the clock
+        // doesn't query the host, and the first read waits for it.
+        for state in [None, Some(old_state)] {
+            // Block the GED's thread for 1s.
+            let (started, wait) = std::sync::mpsc::channel();
+            get_driver
+                .spawn("block", async move {
+                    started.send(()).unwrap();
+                    std::thread::sleep(Duration::from_secs(1));
+                })
+                .detach();
+            wait.recv().unwrap();
 
-        // Restoring doesn't query the host, and the first read waits for it.
-        let before = Instant::now();
+            let before = Instant::now();
+            let mut clock = UnderhillLocalClock::new(
+                get.client.clone(),
+                reference_time(&Default::default()),
+                EphemeralNonVolatileStore::new_boxed(),
+                state,
+            )
+            .await
+            .unwrap();
+            assert!(before.elapsed() < Duration::from_millis(500));
+            let time = clock.get_time();
+            assert!(before.elapsed() >= Duration::from_millis(900));
+            let error =
+                time - clock.offset_from_host_time - LocalClockTime::from(SystemTime::now());
+            assert!(error.as_millis().abs() < 100);
+        }
+    }
+
+    #[async_test]
+    async fn default_skew_is_host_time_zone(_driver: DefaultDriver) {
+        // The host is at UTC+8, so that the skew isn't zero on any machine.
+        let since_windows_epoch = jiff::civil::date(1601, 1, 1)
+            .at(0, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .unwrap()
+            .timestamp()
+            .duration_until(jiff::Timestamp::now());
+        let time = get_protocol::TimeResponse::new(
+            0,
+            (since_windows_epoch.as_nanos() / 100) as i64,
+            -8 * 60,
+            false,
+        );
+        let (_, get_driver) = DefaultPool::spawn_on_thread("get");
+        let get = guest_emulation_transport::test_utilities::new_transport_pair(
+            get_driver,
+            Some(vec![TestGetResponses::new(Event::Response(
+                time.as_bytes().to_vec(),
+            ))]),
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        // With no skew stored, the skew is set from the first host time, even
+        // when servicing comes before it.
+        let mut clock = UnderhillLocalClock::new(
+            get.client.clone(),
+            reference_time(&Default::default()),
+            EphemeralNonVolatileStore::new_boxed(),
+            None,
+        )
+        .await
+        .unwrap();
+        let state = clock.save().unwrap();
         let mut clock = UnderhillLocalClock::new(
             get.client.clone(),
             reference_time(&Default::default()),
@@ -899,11 +978,11 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(before.elapsed() < Duration::from_millis(500));
-        let time = clock.get_time();
-        assert!(before.elapsed() >= Duration::from_millis(900));
-        let error = time - clock.offset_from_host_time - LocalClockTime::from(SystemTime::now());
-        assert!(error.as_millis().abs() < 100);
+        clock.get_time();
+        assert_eq!(
+            clock.offset_from_host_time,
+            LocalClockDelta::from_millis(8 * 60 * 60 * 1000)
+        );
     }
 
     #[async_test]

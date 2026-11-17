@@ -186,6 +186,7 @@ firmware_pcat.workspace = true
 
 [dev-dependencies]
 disk_hook.workspace = true
+guest_emulation_device = { workspace = true, features = ["test_utilities"] }
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 nvme_spec.workspace = true
 page_pool_alloc.workspace = true
