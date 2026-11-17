@@ -628,6 +628,14 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         super::machine_check::restore(&self.kvm(), value, self.vp.partition.mce_cmci_supported)
     }
 
+    fn bndcfgs(&mut self) -> Result<vp::Bndcfgs, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_bndcfgs(&mut self, value: &vp::Bndcfgs) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }

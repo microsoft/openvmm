@@ -30,15 +30,18 @@ fn saveable(msr_index_list: &[u32], snp: bool, msrs: &[u32]) -> bool {
 }
 
 /// Sets the capabilities of the MSR state that this backend holds beyond
-/// `IA32_SPEC_CTRL`: it clears `umwait_control`, which `from_cpuid` derived
-/// from the guest's CPUID, for a host that lacks the MSR, and sets those that
-/// no CPUID bit decides, where the host has the MSRs.
+/// `IA32_SPEC_CTRL`: it clears `umwait_control` and `bndcfgs`, which
+/// `from_cpuid` derived from the guest's CPUID, for a host that lacks the MSR,
+/// and sets those that no CPUID bit decides, where the host has the MSRs.
 pub(super) fn set_capabilities(
     caps: &mut X86PartitionCapabilities,
     msr_index_list: &[u32],
     snp: bool,
 ) {
     caps.umwait_control &= saveable(msr_index_list, snp, &[x86defs::X86X_MSR_UMWAIT_CONTROL]);
+    // KVM lists `IA32_BNDCFGS` only where it exposes MPX, which needs the
+    // host to enable MPX's state components, as Linux does on a CPU with MPX.
+    caps.bndcfgs &= saveable(msr_index_list, snp, &[x86defs::X86X_MSR_BNDCFGS]);
     // `IA32_DEBUGCTL` is the exception to the host's list: KVM virtualizes it
     // for every vCPU, and `KVM_GET_MSRS` and `KVM_SET_MSRS` reach it on every
     // kernel that the time ABI supports, Linux 5.16 and later. A write fails
@@ -97,6 +100,11 @@ mod tests {
     /// Returns the capabilities of a CPU whose CPUID has `waitpkg`, with every
     /// state that no CPUID bit decides left to the backend.
     pub(super) fn caps(waitpkg: bool) -> X86PartitionCapabilities {
+        caps_with(waitpkg, false)
+    }
+
+    /// Returns the capabilities of a CPU whose CPUID has `waitpkg` and `mpx`.
+    fn caps_with(waitpkg: bool, mpx: bool) -> X86PartitionCapabilities {
         let topology = vm_topology::processor::TopologyBuilder::new_x86()
             .build(1)
             .unwrap();
@@ -106,7 +114,7 @@ mod tests {
             &mut |leaf, subleaf| match (leaf, subleaf) {
                 (0, _) => [7, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
                 (1, _) => [0, 0, u32::from(x2apic) << 21, 0],
-                (7, 0) => [0, 0, u32::from(waitpkg) << 5, 0],
+                (7, 0) => [0, u32::from(mpx) << 14, u32::from(waitpkg) << 5, 0],
                 _ => [0; 4],
             },
         )
@@ -191,6 +199,25 @@ mod tests {
         set_capabilities(&mut caps, &FULL_LIST, true);
         assert_eq!(gates(&caps), (false, false, false, false));
     }
+
+    #[test]
+    fn bndcfgs_needs_mpx_in_the_guest_and_the_msr_on_the_host() {
+        let with_bndcfgs = [&FULL_LIST[..], &[x86defs::X86X_MSR_BNDCFGS]].concat();
+        let bndcfgs = |mpx, list: &[u32], snp| {
+            let mut caps = caps_with(false, mpx);
+            set_capabilities(&mut caps, list, snp);
+            caps.bndcfgs
+        };
+        // A guest with MPX, on a host whose KVM exposes it and so lists the
+        // MSR.
+        assert!(bndcfgs(true, &with_bndcfgs, false));
+        // A host whose KVM does not list it, as one without MPX, holds none.
+        assert!(!bndcfgs(true, &FULL_LIST, false));
+        // Without MPX in the guest's CPUID, the guest cannot write the MSR.
+        assert!(!bndcfgs(false, &with_bndcfgs, false));
+        // Nor can KVM read an SNP guest's.
+        assert!(!bndcfgs(true, &with_bndcfgs, true));
+    }
 }
 
 /// Tests against the host's KVM.
@@ -272,11 +299,14 @@ mod kvm_tests {
         vm.add_vp(0).unwrap();
         let vp = vm.vp(0);
 
-        // KVM has IA32_DEBUGCTL on every host, and IA32_UMWAIT_CONTROL on a
-        // host with WAITPKG.
+        // KVM has IA32_DEBUGCTL on every host, IA32_UMWAIT_CONTROL on a host
+        // with WAITPKG, and IA32_BNDCFGS on a host with MPX.
         let mut registers = vec![(HvX64RegisterName::DebugCtl, 0x1d9)];
         if list.contains(&0xe1) {
             registers.push((HvX64RegisterName::UmwaitControl, 0xe1));
+        }
+        if list.contains(&0xd90) {
+            registers.push((HvX64RegisterName::Bndcfgs, 0xd90));
         }
         for (name, msr) in registers {
             assert_eq!(super::super::regs::register_to_msr(name).unwrap(), msr);
@@ -290,6 +320,14 @@ mod kvm_tests {
             let mut value = [0];
             vp.get_msrs(&[0xe1], &mut value).unwrap();
             assert_eq!(value, [0x1005]);
+        }
+        if list.contains(&0xd90) {
+            // MPX enabled at CPL 0, with BNDPRESERVE, and a bound directory
+            // at 0x1000.
+            vp.set_msrs(&[(0xd90, 0x1003)]).unwrap();
+            let mut value = [0];
+            vp.get_msrs(&[0xd90], &mut value).unwrap();
+            assert_eq!(value, [0x1003]);
         }
     }
 }

@@ -3,7 +3,7 @@
 
 //! Guest-free contract tests of the guest-writable MSRs that a save holds beyond
 //! the registers: the feature and power controls, `IA32_UMWAIT_CONTROL`,
-//! `IA32_DEBUGCTL`, and the machine-check state.
+//! `IA32_BNDCFGS`, `IA32_DEBUGCTL`, and the machine-check state.
 //!
 //! A guest writes these MSRs at boot, a new VP starts without what it wrote,
 //! and a restore into a new VP must give the guest back what it saved.
@@ -146,6 +146,43 @@ fn umwait_control_survives_a_save_and_restore(
 /// The controls of IA32_DEBUGCTL that a backend may keep, which are LBR, BTF,
 /// BUS_LOCK_DETECT, FREEZE_LBRS_ON_PMI, and RTM_DEBUG.
 const DEBUG_CONTROLS: [u64; 5] = [1 << 0, 1 << 1, 1 << 2, 1 << 11, 1 << 15];
+
+// A guest whose CPUID enumerates MPX can enable it at CPL 0 through
+// IA32_BNDCFGS, which a new VP holds as 0.
+backend_test!(bndcfgs_survives_a_save_and_restore, requires: [bndcfgs]);
+fn bndcfgs_survives_a_save_and_restore(
+    _partition: &impl Partition,
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let mut state = processor.access_state(Vtl::Vtl0);
+    anyhow::ensure!(
+        state.bndcfgs()? == vp::Bndcfgs::default(),
+        "a new VP does not hold the reset value of IA32_BNDCFGS"
+    );
+
+    // MPX enabled, with BNDPRESERVE, and a bound directory at 0x1000.
+    let written = vp::Bndcfgs { value: 0x1003 };
+    state.set_bndcfgs(&written)?;
+    state.commit()?;
+    anyhow::ensure!(
+        state.bndcfgs()? == written,
+        "the VP does not hold the value that was just set"
+    );
+
+    let saved = save(&mut state)?;
+    state.set_bndcfgs(&vp::Bndcfgs::default())?;
+    state.commit()?;
+
+    restore(&mut state, &saved)?;
+    let restored = state.bndcfgs()?;
+    anyhow::ensure!(
+        restored == written,
+        "the restore did not give the guest its configuration: saved {:#x}, restored {:#x}",
+        written.value,
+        restored.value
+    );
+    Ok(())
+}
 
 // A backend drops the controls that its host or its guest's CPUID does not
 // enumerate, so the test saves the controls that the VP keeps. Linux sets

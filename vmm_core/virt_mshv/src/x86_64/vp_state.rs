@@ -475,6 +475,14 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         Err(ErrorInner::UnsupportedState("machine_check").into())
     }
 
+    fn bndcfgs(&mut self) -> Result<vp::Bndcfgs, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_bndcfgs(&mut self, value: &vp::Bndcfgs) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }
