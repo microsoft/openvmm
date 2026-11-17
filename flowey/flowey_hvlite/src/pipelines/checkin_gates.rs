@@ -1728,16 +1728,25 @@ impl IntoPipeline for CheckinGatesCli {
             }
 
             vmm_tests_run_job = vmm_tests_run_job.dep_on(|ctx| {
+                // Diagnostics for SNP reset timeouts: run the AMD SNP job
+                // with more tests in parallel, as main does, and capture
+                // unfiltered Hyper-V host logs.
+                let is_amd_snp = label == "x64-windows-amd-snp";
                 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
                     junit_test_label: test_label,
                     nextest_vmm_tests_archive: ctx.use_typed_artifact(use_vmm_tests_archive),
                     target: target.as_triple(),
-                    nextest_profile: flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                    nextest_profile: if is_amd_snp {
+                        flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::CiLarge
+                    } else {
+                        flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci
+                    },
                     nextest_filter_expr: Some(nextest_filter_expr),
                     dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
                     test_artifacts,
                     incubator_profile: incubator_profile.map(Into::into),
                     fail_job_on_test_fail: true,
+                    capture_hyperv_host_logs: is_amd_snp,
                     artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
                     prep_steps_variants,
                     hugetlb_2mb_overcommit_pages,

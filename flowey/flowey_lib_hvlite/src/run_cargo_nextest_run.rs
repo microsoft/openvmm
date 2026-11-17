@@ -16,6 +16,8 @@ use std::collections::BTreeMap;
 pub enum NextestProfile {
     Default,
     Ci,
+    /// `ci` with one thread per VMM test, for hosts with many cores.
+    CiLarge,
 }
 
 impl NextestProfile {
@@ -23,6 +25,7 @@ impl NextestProfile {
         match self {
             NextestProfile::Default => "default",
             NextestProfile::Ci => "ci",
+            NextestProfile::CiLarge => "ci-large",
         }
     }
 }

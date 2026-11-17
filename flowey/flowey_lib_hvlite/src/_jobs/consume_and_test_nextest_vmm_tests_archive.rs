@@ -115,6 +115,9 @@ flowey_request! {
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
+        /// Capture unfiltered Hyper-V host logs for the test run (Windows
+        /// only).
+        pub capture_hyperv_host_logs: bool,
         /// If provided, also publish junit.xml test results as an artifact.
         pub artifact_dir: Option<ReadVar<PathBuf>>,
         pub done: WriteVar<SideEffect>,
@@ -127,6 +130,7 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
+        ctx.import::<crate::capture_hyperv_host_logs::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
@@ -154,6 +158,7 @@ impl SimpleFlowNode for Node {
             dep_artifact_dirs,
             test_artifacts,
             fail_job_on_test_fail,
+            capture_hyperv_host_logs,
             incubator_profile,
             prep_steps_variants,
             hugetlb_2mb_overcommit_pages,
@@ -274,6 +279,17 @@ impl SimpleFlowNode for Node {
             );
         }
 
+        let capture_hyperv_host_logs =
+            capture_hyperv_host_logs && matches!(ctx.platform(), FlowPlatform::Windows);
+        if capture_hyperv_host_logs {
+            pre_run_deps.push(
+                ctx.reqv(|done| crate::capture_hyperv_host_logs::Request::Start {
+                    output_dir: test_log_path.clone(),
+                    done,
+                }),
+            );
+        }
+
         if !prep_steps_variants.is_empty() {
             let prep_steps = register_prep_steps.expect("Test run indicated prep_steps was needed but built prep_steps binary was not given");
             for variant in &prep_steps_variants {
@@ -388,6 +404,19 @@ impl SimpleFlowNode for Node {
         // Bind the externally generated output paths together with the results
         // to create a dependency on the VMM tests having actually run.
         let test_log_path = test_log_path.depending_on(ctx, &results);
+
+        // Export the host logs into the test output before it is published.
+        let test_log_path = if capture_hyperv_host_logs {
+            let after_tests = results.map(ctx, |_| ());
+            let captured = ctx.reqv(|done| crate::capture_hyperv_host_logs::Request::Stop {
+                output_dir: test_log_path.clone(),
+                after_tests,
+                done,
+            });
+            test_log_path.depending_on(ctx, &captured)
+        } else {
+            test_log_path
+        };
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
