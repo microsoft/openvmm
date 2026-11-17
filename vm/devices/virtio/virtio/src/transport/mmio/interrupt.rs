@@ -11,6 +11,13 @@
 //! read yet. In [`VirtioMmioInterruptMode::SharedStatus`] mode the status lives
 //! in a guest-memory word, and each zero-to-nonzero transition pulses the
 //! interrupt line.
+//!
+//! A restore holds a legacy interrupt line until the device starts: it restores
+//! the status without driving the line, since the interrupt controller that the
+//! line reaches may itself still be restoring, and the start then drives the
+//! line to the restored level. A shared-status line only pulses as the device
+//! raises the status, so a restore drives it not at all: the pulse of the
+//! status that the saved word reports was sent before the save.
 
 use super::InterruptState;
 use super::MmioTransport;
@@ -95,6 +102,9 @@ pub(super) struct StatusDelivery {
     used_buffer_generation: u64,
     observed_used_buffer_generation: Option<u64>,
     shared_status: Option<SharedInterruptStatus>,
+    /// Whether a restore holds the legacy interrupt line until the device
+    /// starts.
+    held: bool,
 }
 
 impl StatusDelivery {
@@ -122,6 +132,13 @@ impl StatusDelivery {
             }
         }
         false
+    }
+
+    /// Drives the level of a legacy interrupt line, unless a restore holds it.
+    pub(super) fn set_level(&self, interrupt: &LineInterrupt, high: bool) {
+        if !self.held {
+            interrupt.set_level(high);
+        }
     }
 }
 
@@ -196,6 +213,7 @@ pub(super) fn setup(
             used_buffer_generation: 0,
             observed_used_buffer_generation: None,
             shared_status,
+            held: false,
         },
         AckDoorbellSetup {
             #[cfg(target_os = "linux")]
@@ -350,21 +368,29 @@ impl InterruptState {
         }
     }
 
-    /// Restores the saved interrupt status.
+    /// Restores the saved interrupt status without driving the line: a legacy
+    /// line keeps its level until [`Self::release_hold`] drives it to the
+    /// restored status.
     pub(super) fn restore_status(&mut self, status: u32) -> Result<(), RestoreError> {
         if let Some(shared_status) = &self.delivery.shared_status {
             shared_status
                 .store(status)
                 .map_err(|error| RestoreError::InvalidSavedState(error.into()))?;
-            self.interrupt.set_level(false);
         } else {
             self.status = status;
             self.delivery.used_buffer_generation = 0;
             self.delivery.observed_used_buffer_generation =
                 (self.status & VIRTIO_MMIO_INTERRUPT_STATUS_USED_BUFFER != 0).then_some(0);
-            self.interrupt.set_level(self.status != 0);
+            self.delivery.held = true;
         }
         Ok(())
+    }
+
+    /// Ends the hold of a restore: drives a legacy line to the restored level.
+    fn release_hold(&mut self) {
+        if std::mem::take(&mut self.delivery.held) {
+            self.interrupt.set_level(self.status != 0);
+        }
     }
 }
 
@@ -379,6 +405,11 @@ impl MmioTransport {
         self.lock_interrupt_state().read_status()
     }
 
+    /// Releases the interrupt line that a restore holds, as the device starts.
+    pub(super) fn release_held_interrupt(&self) {
+        self.lock_interrupt_state().release_hold();
+    }
+
     pub(super) fn reset_interrupt_state(&self) {
         let mut state = self.lock_interrupt_state();
         if let Some(shared_status) = &state.delivery.shared_status {
@@ -389,6 +420,7 @@ impl MmioTransport {
         state.status = 0;
         state.delivery.used_buffer_generation = 0;
         state.delivery.observed_used_buffer_generation = None;
+        state.delivery.held = false;
         state.interrupt.set_level(false);
     }
 }
@@ -417,10 +449,12 @@ mod tests {
     struct CountingInterruptTarget {
         high: AtomicBool,
         pulses: AtomicUsize,
+        calls: AtomicUsize,
     }
 
     impl LineSetTarget for CountingInterruptTarget {
         fn set_irq(&self, _vector: u32, high: bool) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             self.high.store(high, Ordering::SeqCst);
             if high {
                 self.pulses.fetch_add(1, Ordering::SeqCst);
@@ -442,8 +476,72 @@ mod tests {
                     guest_memory: guest_memory.clone(),
                     gpa: 0,
                 }),
+                held: false,
             },
         }
+    }
+
+    fn legacy_interrupt_state(target: Arc<CountingInterruptTarget>) -> InterruptState {
+        InterruptState {
+            interrupt: LineInterrupt::new_with_target("legacy-test", target, 0),
+            status: 0,
+            delivery: StatusDelivery {
+                used_buffer_generation: 0,
+                observed_used_buffer_generation: None,
+                shared_status: None,
+                held: false,
+            },
+        }
+    }
+
+    /// A restore drives no legacy line, even when its status or a change
+    /// during the hold asserts the interrupt; the release drives the line to
+    /// the status's level, once.
+    #[test]
+    fn restore_holds_the_legacy_line_until_release() {
+        let target = Arc::new(CountingInterruptTarget::default());
+        let mut state = legacy_interrupt_state(target.clone());
+
+        state
+            .restore_status(VIRTIO_MMIO_INTERRUPT_STATUS_USED_BUFFER)
+            .unwrap();
+        state.update(true, VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE);
+        assert_eq!(target.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(state.read_status(), 3);
+
+        state.release_hold();
+        assert_eq!(target.calls.load(Ordering::SeqCst), 1);
+        assert!(target.high.load(Ordering::SeqCst));
+        state.release_hold();
+        assert_eq!(target.calls.load(Ordering::SeqCst), 1);
+
+        // A restored status of zero leaves the line low.
+        let target = Arc::new(CountingInterruptTarget::default());
+        let mut state = legacy_interrupt_state(target.clone());
+        state.restore_status(0).unwrap();
+        state.release_hold();
+        assert!(!target.high.load(Ordering::SeqCst));
+        assert_eq!(target.pulses.load(Ordering::SeqCst), 0);
+    }
+
+    /// A restore drives a shared-status line not at all, and neither does the
+    /// release, although the restored word reports a status: its pulse was
+    /// sent before the save.
+    #[test]
+    fn restore_drives_no_shared_status_line() {
+        let guest_memory = GuestMemory::allocate(0x1000);
+        let target = Arc::new(CountingInterruptTarget::default());
+        let mut state = shared_interrupt_state(&guest_memory, target.clone());
+
+        state
+            .restore_status(VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE)
+            .unwrap();
+        assert_eq!(
+            state.read_status(),
+            VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE
+        );
+        state.release_hold();
+        assert_eq!(target.calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
