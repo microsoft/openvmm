@@ -444,11 +444,11 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn umwait_control(&mut self) -> Result<vp::UmwaitControl, Self::Error> {
-        Err(ErrorInner::UnsupportedState("umwait_control").into())
+        self.get_register_state()
     }
 
-    fn set_umwait_control(&mut self, _value: &vp::UmwaitControl) -> Result<(), Self::Error> {
-        Err(ErrorInner::UnsupportedState("umwait_control").into())
+    fn set_umwait_control(&mut self, value: &vp::UmwaitControl) -> Result<(), Self::Error> {
+        self.set_register_state(value)
     }
 
     fn debug_ctl(&mut self) -> Result<vp::DebugCtl, Self::Error> {
