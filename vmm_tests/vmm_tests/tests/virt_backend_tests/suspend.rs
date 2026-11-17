@@ -5,9 +5,10 @@
 //!
 //! A VP that was saved halted, or idle, runs no instruction when it is
 //! restored, until something wakes it, and then resumes after the instruction
-//! that suspended it. The guest of these tests is real-mode code that suspends
-//! its own VP, since a hypervisor does not keep a suspend state that the VMM
-//! writes, and a VP that was never run has none of its own.
+//! that suspended it. The guest of these tests is code that suspends its own
+//! VP, in real mode, and in 64-bit mode with paging for one case, since a
+//! hypervisor does not keep a suspend state that the VMM writes, and a VP that
+//! was never run has none of its own.
 
 use super::fixture::Fixture;
 use anyhow::Context as _;
@@ -98,12 +99,26 @@ impl Suspend {
     }
 }
 
+/// The mode that the guest's code runs in.
+#[derive(Clone, Copy, Debug)]
+enum Mode {
+    /// Real mode, with paging off, as a VP starts.
+    Real,
+    /// 64-bit mode with paging on, through page tables that are the fixture's
+    /// page alone: its first entry maps the page at every level, so that
+    /// translating the address of the code walks four levels of tables.
+    Long,
+}
+
 /// What wakes the restored VP.
 #[derive(Clone, Copy, Debug)]
 enum Wake {
     Nmi,
     /// The fixed interrupt, which a VP with interrupts disabled holds back.
     Vector,
+    /// Nothing, as the guest of the 64-bit mode has no handlers: the VP is only
+    /// watched for running on.
+    Never,
 }
 
 impl Wake {
@@ -111,6 +126,7 @@ impl Wake {
         let (mode, vector) = match self {
             Self::Nmi => (DeliveryMode::NMI, 0),
             Self::Vector => (DeliveryMode::FIXED, VECTOR),
+            Self::Never => return,
         };
         partition.request_msi(
             Vtl::Vtl0,
@@ -120,10 +136,11 @@ impl Wake {
 
     /// The marks of a VP that the wake-up resumed after its suspending
     /// instruction: the handler's, and the guest's.
-    fn marks(self) -> [u8; 2] {
+    fn marks(self) -> Option<[u8; 2]> {
         match self {
-            Self::Nmi => [NMI_MARK, WOKEN_MARK],
-            Self::Vector => [VECTOR_MARK, WOKEN_MARK],
+            Self::Nmi => Some([NMI_MARK, WOKEN_MARK]),
+            Self::Vector => Some([VECTOR_MARK, WOKEN_MARK]),
+            Self::Never => None,
         }
     }
 }
@@ -147,10 +164,11 @@ enum When {
     BeforeRun,
 }
 
-/// One case: how the guest suspends its VP, where the saved state is restored,
-/// and what wakes the restored VP, when.
+/// One case: the mode of the guest, how it suspends its VP, where the saved
+/// state is restored, and what wakes the restored VP, when.
 #[derive(Clone, Copy, Debug)]
 struct Case {
+    mode: Mode,
     suspend: Suspend,
     target: Target,
     wake: Wake,
@@ -272,9 +290,10 @@ fn run_while<T: Send>(
     watched.map_err(|_| anyhow::anyhow!("the watcher of the VP panicked"))
 }
 
-/// Writes the guest into the fixture's page: the code of `suspend`, and the
-/// handlers of the NMI and of the interrupt, which real-mode vectors point at.
-fn write_guest(fixture: &Fixture, suspend: Suspend) -> anyhow::Result<()> {
+/// Writes the guest into the fixture's page: the code of `case`, and the
+/// handlers of the NMI and of the interrupt, which real-mode vectors point at,
+/// and, for the 64-bit mode, the page tables.
+fn write_guest(fixture: &Fixture, case: Case) -> anyhow::Result<()> {
     let memory = fixture.memory();
     let vector = |vector: u8, handler: u16| {
         let [low, high] = handler.to_le_bytes();
@@ -286,25 +305,51 @@ fn write_guest(fixture: &Fixture, suspend: Suspend) -> anyhow::Result<()> {
         // mov al, mark; out MARK_PORT, al; iret
         memory.write_at(handler.into(), &[0xb0, mark, 0xe6, MARK_PORT as u8, 0xcf])?;
     }
-    memory.write_at(CODE.into(), &suspend.code())?;
+    memory.write_at(CODE.into(), &case.suspend.code())?;
+    if let Mode::Long = case.mode {
+        // Present and writable, and the page itself at every level.
+        memory.write_at(0, &0x3u64.to_le_bytes())?;
+    }
     Ok(())
 }
 
-/// Points the VP at the guest's code, and software-enables its APIC, since a
-/// disabled one drops the fixed interrupt.
-fn start_guest(processor: &mut impl Processor) -> anyhow::Result<()> {
+/// Points the VP at the guest's code, in the guest's mode, and software-enables
+/// its APIC, since a disabled one drops the fixed interrupt.
+fn start_guest(processor: &mut impl Processor, mode: Mode) -> anyhow::Result<()> {
     let mut state = processor.access_state(Vtl::Vtl0);
     let registers = state.registers()?;
-    state.set_registers(&vp::Registers {
-        cs: SegmentRegister {
-            base: 0,
-            limit: 0xffff,
-            selector: 0,
-            attributes: 0x9b,
+    state.set_registers(&match mode {
+        Mode::Real => vp::Registers {
+            cs: SegmentRegister {
+                base: 0,
+                limit: 0xffff,
+                selector: 0,
+                attributes: 0x9b,
+            },
+            rip: CODE.into(),
+            rsp: STACK,
+            ..registers
         },
-        rip: CODE.into(),
-        rsp: STACK,
-        ..registers
+        Mode::Long => vp::Registers {
+            // A 64-bit code segment, which no descriptor table holds, since
+            // nothing reloads it.
+            cs: SegmentRegister {
+                base: 0,
+                limit: !0,
+                selector: 8,
+                attributes: 0xa09b,
+            },
+            cr0: x86defs::X64_CR0_PG
+                | x86defs::X64_CR0_NE
+                | x86defs::X64_CR0_ET
+                | x86defs::X64_CR0_PE,
+            cr3: 0,
+            cr4: x86defs::X64_CR4_PAE,
+            efer: x86defs::X64_EFER_LME | x86defs::X64_EFER_LMA,
+            rip: CODE.into(),
+            rsp: STACK,
+            ..registers
+        },
     })?;
     let apic = state.apic()?;
     let mut registers = *apic.registers();
@@ -379,7 +424,17 @@ fn check_restored(
         case.wake.request(partition);
     }
     let (io, mut watch) = guest_io();
-    let woken = case.wake.marks();
+    let Some(woken) = case.wake.marks() else {
+        let marks = run_while(partition, processor, &io, || {
+            watch.wait(SUSPENDED_FOR, |marks| !marks.is_empty())
+        })?;
+        anyhow::ensure!(
+            marks.is_empty(),
+            "the VP marked {:?} after {case:?}: it was running past its suspending instruction",
+            String::from_utf8_lossy(&marks)
+        );
+        return Ok(());
+    };
     let marks = run_while(partition, processor, &io, || {
         if let When::AfterRun = case.when {
             let marks = watch.wait(SUSPENDED_FOR, |marks| !marks.is_empty());
@@ -413,11 +468,11 @@ fn run_case<H: Hypervisor>(
 where
     H::Partition: Partition + PartitionMemoryMapper,
 {
-    write_guest(fixture, case.suspend)?;
+    write_guest(fixture, case)?;
 
     let (partition, mut binder) = fixture.build(hv, hv1)?;
     let mut processor = binder.bind()?;
-    start_guest(&mut processor)?;
+    start_guest(&mut processor, case.mode)?;
     run_until_suspended(&partition, &mut processor, case.suspend)?;
     let saved = processor
         .access_state(Vtl::Vtl0)
@@ -470,12 +525,15 @@ fn whp_test(name: &'static str, hv1: bool, case: Case) -> petri::TestCase {
 // holds when the wake-up is already pending as the VP first runs too, as the
 // vector of a LAPIC timer that expired during the downtime is: taken before
 // the `hlt`, it would return to it and leave the VP suspended with nothing to
-// wake it. The cases register for WHP alone; KVM and MSHV have none yet.
+// wake it. The cases register for WHP alone; KVM and MSHV have none yet. One
+// case runs the guest in 64-bit mode with paging, as Linux does, so that
+// finding the instruction before RIP takes a walk of page tables.
 petri::multitest!(vec![
     whp_test(
         "whp::halted_vp_with_interrupts_off_stays_halted_in_a_fresh_partition",
         false,
         Case {
+            mode: Mode::Real,
             suspend: Suspend::Halt { interrupts: false },
             target: Target::FreshPartition,
             wake: Wake::Nmi,
@@ -486,6 +544,7 @@ petri::multitest!(vec![
         "whp::halted_vp_with_interrupts_on_stays_halted_in_a_fresh_partition",
         false,
         Case {
+            mode: Mode::Real,
             suspend: Suspend::Halt { interrupts: true },
             target: Target::FreshPartition,
             wake: Wake::Vector,
@@ -496,6 +555,7 @@ petri::multitest!(vec![
         "whp::halted_vp_with_interrupts_off_stays_halted_when_restored_onto_itself",
         false,
         Case {
+            mode: Mode::Real,
             suspend: Suspend::Halt { interrupts: false },
             target: Target::SameVp,
             wake: Wake::Nmi,
@@ -506,6 +566,7 @@ petri::multitest!(vec![
         "whp::halted_vp_with_interrupts_on_stays_halted_when_restored_onto_itself",
         false,
         Case {
+            mode: Mode::Real,
             suspend: Suspend::Halt { interrupts: true },
             target: Target::SameVp,
             wake: Wake::Vector,
@@ -516,6 +577,7 @@ petri::multitest!(vec![
         "whp::halted_vp_takes_a_pending_nmi_after_its_hlt",
         false,
         Case {
+            mode: Mode::Real,
             suspend: Suspend::Halt { interrupts: false },
             target: Target::FreshPartition,
             wake: Wake::Nmi,
@@ -526,6 +588,7 @@ petri::multitest!(vec![
         "whp::halted_vp_takes_a_pending_interrupt_after_its_hlt",
         false,
         Case {
+            mode: Mode::Real,
             suspend: Suspend::Halt { interrupts: true },
             target: Target::FreshPartition,
             wake: Wake::Vector,
@@ -533,9 +596,21 @@ petri::multitest!(vec![
         },
     ),
     whp_test(
+        "whp::halted_vp_in_64_bit_mode_with_paging_stays_halted_in_a_fresh_partition",
+        false,
+        Case {
+            mode: Mode::Long,
+            suspend: Suspend::Halt { interrupts: false },
+            target: Target::FreshPartition,
+            wake: Wake::Never,
+            when: When::AfterRun,
+        },
+    ),
+    whp_test(
         "whp::idle_vp_stays_idle_in_a_fresh_partition_hv1",
         true,
         Case {
+            mode: Mode::Real,
             suspend: Suspend::Idle,
             target: Target::FreshPartition,
             wake: Wake::Nmi,
@@ -546,6 +621,7 @@ petri::multitest!(vec![
         "whp::idle_vp_takes_a_pending_nmi_after_its_rdmsr_hv1",
         true,
         Case {
+            mode: Mode::Real,
             suspend: Suspend::Idle,
             target: Target::FreshPartition,
             wake: Wake::Nmi,
