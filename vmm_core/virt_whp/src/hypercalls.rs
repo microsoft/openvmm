@@ -1745,6 +1745,9 @@ mod x86 {
                             );
                             return Err(HvError::InvalidParameter);
                         }
+                        if reg == HvX64RegisterName::InternalActivityState {
+                            self.state.vtls[Vtl::Vtl0].restored_suspend = None;
+                        }
                     } else {
                         tracing::error!(name = ?reg, "unknown register name for set_vp_registers");
                         return Err(HvError::InvalidParameter);
