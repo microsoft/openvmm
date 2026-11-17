@@ -1451,6 +1451,26 @@ fn validate_microvm_network_prefix(network: &MicrovmNetworkConfig) -> anyhow::Re
     Ok(())
 }
 
+/// Checks that a network identity is the one that [`MicrovmNetworkConfig`]'s
+/// `FromStr` builds from its IPv4 address and prefix, as the CLI and the
+/// snapshot restore do: a prefix from /1 to /30, an address that is not its
+/// subnet's network, broadcast, or gateway address, and the gateway, MAC
+/// addresses, and IPv6 identity that the address and prefix derive. An
+/// identity decoded from a mesh message is not checked by `FromStr`, and the
+/// command-line check builds the guest's network tokens from its fields.
+fn validate_microvm_network_identity(network: &MicrovmNetworkConfig) -> anyhow::Result<()> {
+    validate_microvm_network_prefix(network)?;
+    let spec = format!("{}/{}", network.guest_ipv4, network.prefix_length);
+    let derived = spec.parse::<MicrovmNetworkConfig>().map_err(|error| {
+        anyhow::anyhow!("microVM static network identity {spec} is invalid: {error}")
+    })?;
+    anyhow::ensure!(
+        *network == derived,
+        "microVM static network identity is not the one that {spec} derives"
+    );
+    Ok(())
+}
+
 fn validate_microvm_command_line(config: &Config) -> anyhow::Result<()> {
     let MachineProfile::Microvm = config.machine_profile else {
         unreachable!("microVM command-line validation requires the microVM profile");
@@ -1968,7 +1988,7 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
 
     validate_microvm_virtio_reservations()?;
     if let Some(network) = &config.microvm.network {
-        validate_microvm_network_prefix(network)?;
+        validate_microvm_network_identity(network)?;
     }
     validate_microvm_command_line(config)?;
     validate_machine_load_mode(config.machine_profile, &config.load_mode)?;
@@ -2592,6 +2612,102 @@ mod tests {
                 format!("10.0.0.2/{prefix_length}").parse().unwrap();
             validate_microvm_network_prefix(&network).unwrap();
             validate_microvm_command_line(&microvm_config_with_network(&network)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_network_identity_that_its_address_and_prefix_do_not_derive_is_rejected() {
+        // `valid_microvm_config`'s configuration with `network` and the
+        // command line that the controller builds for it, which the
+        // command-line check accepts whatever the identity.
+        let config_with = |network: MicrovmNetworkConfig| {
+            let mut config = valid_microvm_config();
+            config.load_mode = microvm_config_with_network(&network).load_mode;
+            config.microvm.network = Some(network);
+            validate_microvm_command_line(&config).unwrap();
+            config
+        };
+
+        // A launch message that no parser checked can carry any identity.
+        let parsed: MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let with_address = |address: &str, reason: &str| {
+            (
+                MicrovmNetworkConfig {
+                    guest_ipv4: address.parse().unwrap(),
+                    ..parsed.clone()
+                },
+                format!("microVM static network identity {address}/24 is invalid: {reason}"),
+            )
+        };
+        let not_derived = |network| {
+            (
+                network,
+                "microVM static network identity is not the one that 10.0.0.2/24 derives"
+                    .to_owned(),
+            )
+        };
+        let with_ipv6 = |ipv6| MicrovmNetworkConfig {
+            ipv6,
+            ..parsed.clone()
+        };
+        let other_mac = MacAddress::new([0x52, 0x54, 0x00, 0x00, 0x00, 0x03]);
+        let mut cases = vec![
+            with_address(
+                "10.0.0.0",
+                "guest IPv4 address 10.0.0.0 is the subnet network address",
+            ),
+            with_address(
+                "10.0.0.255",
+                "guest IPv4 address 10.0.0.255 is the subnet broadcast address",
+            ),
+            with_address(
+                "10.0.0.1",
+                "guest IPv4 address 10.0.0.1 collides with the derived gateway",
+            ),
+            not_derived(MicrovmNetworkConfig {
+                derived_gateway_ipv4: "10.0.0.254".parse().unwrap(),
+                ..parsed.clone()
+            }),
+            not_derived(MicrovmNetworkConfig {
+                guest_mac: other_mac,
+                ..parsed.clone()
+            }),
+            not_derived(MicrovmNetworkConfig {
+                gateway_mac: other_mac,
+                ..parsed.clone()
+            }),
+            not_derived(with_ipv6(MicrovmIpv6Config {
+                guest_ipv6: "fd00::a00:3".parse().unwrap(),
+                ..parsed.ipv6
+            })),
+            not_derived(with_ipv6(MicrovmIpv6Config {
+                derived_gateway_ipv6: "fd00::a00:fe".parse().unwrap(),
+                ..parsed.ipv6
+            })),
+        ];
+        // /24 derives /120. The others include prefixes that a guest could
+        // configure, up to /128, and ones that no IPv6 address can carry.
+        for prefix_length in [0, 96, 119, 121, 126, 127, 128, 129, 255] {
+            cases.push(not_derived(with_ipv6(MicrovmIpv6Config {
+                prefix_length,
+                ..parsed.ipv6
+            })));
+        }
+        for (network, error) in cases {
+            assert_eq!(
+                validate_machine_config(&config_with(network), None)
+                    .unwrap_err()
+                    .to_string(),
+                error
+            );
+        }
+
+        // Every identity that the parser builds passes.
+        for spec in (1..=30)
+            .map(|prefix_length| format!("10.0.0.2/{prefix_length}"))
+            .chain(["192.168.5.37/28".to_owned(), "172.16.0.9/12".to_owned()])
+        {
+            validate_machine_config(&config_with(spec.parse().unwrap()), None).unwrap();
         }
     }
 
