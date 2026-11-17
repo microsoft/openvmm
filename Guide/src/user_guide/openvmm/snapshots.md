@@ -172,6 +172,15 @@ SEV-SNP VM, keeps its RAM in the normal address space alone, since KVM does not
 support SMM with private memory. A capture that meets a vCPU in its handler
 fails, and the guest can request it again once the handler has executed `RSM`.
 
+A save on MSHV or WHP fails for a vCPU that the hypervisor stopped while it
+delivered a software interrupt (`INT n`), a software exception (`INT3` or
+`INTO`), or a privileged software exception (`INT1`): the hypervisor holds the
+event with the length of the instruction that raised it, which the saved state
+has no place for, so a restore would lose it. KVM holds no such event, and runs
+the instruction again instead. A guest-requested capture that fails this way
+rolls back, so the guest continues, takes the event, and can request the
+capture again.
+
 While a guest-requested snapshot boundary is held, VM-worker management RPCs
 that can change VM state are rejected rather than queued. This includes memory
 writes, pause/resume, reset, interrupt injection, hotplug, and state dumps.
