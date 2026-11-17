@@ -407,6 +407,7 @@ fn validate_snapshot_directory(
 
 #[cfg(test)]
 mod tests {
+    use super::super::SnapshotExpectations;
     use super::super::format::SNAPSHOT_RESTORE_POLICY_CLONE;
     use super::super::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
     use super::super::format::SNAPSHOT_TIER_WORKLOAD_START;
@@ -419,6 +420,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::super::publish::write_snapshot_from_owned_memory_and_scratch_files;
     use super::super::tests::test_manifest;
+    use super::super::validate_expectations;
     use super::*;
     use mesh::payload::Protobuf;
     use mesh::payload::Timestamp;
@@ -788,6 +790,116 @@ mod tests {
                 "{error}"
             );
             assert!(error.contains("recapture the snapshot"), "{error}");
+        }
+    }
+
+    /// A manifest's snapshot ID, field 18, alone, as `SnapshotManifest`
+    /// encodes it.
+    #[derive(Protobuf)]
+    #[mesh(package = "openvmm.snapshot")]
+    struct SnapshotIdField {
+        #[mesh(18, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+        snapshot_id: guid::Guid,
+    }
+
+    /// Encodes `manifest` without its snapshot ID, field 18, which it encodes
+    /// last, as the manifests of version 2 that predate the field are encoded.
+    fn encode_without_snapshot_id(manifest: SnapshotManifest) -> Vec<u8> {
+        let id = mesh::payload::encode(SnapshotIdField {
+            snapshot_id: manifest.snapshot_id,
+        });
+        mesh::payload::encode(manifest)
+            .strip_suffix(id.as_slice())
+            .expect("the manifest encodes its snapshot ID last")
+            .to_vec()
+    }
+
+    /// The manifest of a snapshot of [`test_manifest`] whose saved state is
+    /// `b"state"`, as [`read_errors_with_manifest`] writes one, without its
+    /// snapshot ID.
+    fn test_manifest_without_snapshot_id() -> Vec<u8> {
+        let mut manifest = test_manifest();
+        manifest.state_size_bytes = b"state".len() as u64;
+        encode_without_snapshot_id(manifest)
+    }
+
+    /// A manifest of this format without a snapshot ID, field 18, as one of
+    /// version 2 that predates the field is, reads with the zero ID, which
+    /// stands for none, as a microVM capture's zero ID does: a restore that
+    /// expects no ID accepts it, and one that expects an ID refuses it.
+    #[test]
+    fn read_snapshot_reads_a_manifest_without_a_snapshot_id_as_none() {
+        let expected = test_manifest().snapshot_id;
+        assert!(!expected.is_zero());
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let mem_path = dir.path().join("memory.bin");
+        std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
+        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
+        std::fs::write(
+            snap_dir.join(MANIFEST_FILE_NAME),
+            test_manifest_without_snapshot_id(),
+        )
+        .unwrap();
+
+        let (manifest, state) = read_snapshot(&snap_dir, 1024).unwrap();
+        assert!(manifest.snapshot_id.is_zero());
+        assert_eq!(state, b"state");
+        assert!(
+            read_snapshot_manifest(&snap_dir)
+                .unwrap()
+                .snapshot_id
+                .is_zero()
+        );
+        validate_expectations(&manifest, &SnapshotExpectations::default()).unwrap();
+        let error = validate_expectations(
+            &manifest,
+            &SnapshotExpectations {
+                snapshot_id: Some(expected),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("snapshot ID"), "{error}");
+    }
+
+    /// A manifest of this format whose snapshot ID, field 18, is not a GUID of
+    /// 16 bytes is malformed, and restore refuses it by its ID before it
+    /// decodes the rest. A manifest of another version, whose field 18 this
+    /// format does not define, is refused by its version first.
+    #[test]
+    fn read_snapshot_refuses_a_malformed_snapshot_id() {
+        // Field 18's key, (18 << 3) | its wire type, is a varint of two bytes:
+        // 0x92 0x01 for a length-delimited field, and 0x90 0x01 for an integer.
+        let malformed = [
+            vec![0x92, 0x01, 0],
+            [&[0x92, 0x01, 15][..], &[0xa5; 15]].concat(),
+            [&[0x92, 0x01, 17][..], &[0xa5; 17]].concat(),
+            vec![0x90, 0x01, 5],
+        ];
+        let mut other_version = test_manifest();
+        other_version.version = 3;
+        other_version.state_size_bytes = b"state".len() as u64;
+        let other_version = encode_without_snapshot_id(other_version);
+        for field in &malformed {
+            let manifest = [test_manifest_without_snapshot_id().as_slice(), field].concat();
+            for error in read_errors_with_manifest(&manifest) {
+                assert!(
+                    error.contains(
+                        "snapshot manifest is malformed: its snapshot ID, field 18, \
+                         is not a GUID of 16 bytes"
+                    ),
+                    "{error}"
+                );
+                assert!(!error.contains("[E_SNAPSHOT_VERSION]"), "{error}");
+            }
+            let manifest = [other_version.as_slice(), field].concat();
+            for error in read_errors_with_manifest(&manifest) {
+                assert!(error.contains("[E_SNAPSHOT_VERSION]"), "{error}");
+                assert!(
+                    error.contains("snapshot manifest version 3 is not supported"),
+                    "{error}"
+                );
+            }
         }
     }
 
