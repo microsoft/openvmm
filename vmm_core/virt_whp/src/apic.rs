@@ -320,12 +320,17 @@ impl WhpProcessor<'_> {
     /// with. Once it has suspended, the VP is as it was saved.
     ///
     /// The instruction runs in an interrupt shadow, as one after an `sti` does,
-    /// so that nothing is taken before the VP has suspended: an interrupt or an
-    /// NMI taken first would return to the instruction, and the VP would
-    /// suspend again with nothing left to wake it, where it would have resumed
-    /// after the instruction. The restore of an LAPIC timer that expired during
-    /// the downtime queues such an interrupt. The shadow ends with the
-    /// instruction.
+    /// so that nothing is taken before the VP has suspended: an interrupt taken
+    /// first would return to the instruction, and the VP would suspend again
+    /// with nothing left to wake it, where it would have resumed after the
+    /// instruction. The restore of an LAPIC timer that expired during the
+    /// downtime queues such an interrupt. The shadow ends with the instruction.
+    ///
+    /// An NMI that is pending, and not masked, wakes the VP, as it would the one
+    /// that was saved suspended, so the VP is left to take it first, and to
+    /// resume after the instruction as the NMI's return leaves it. In the
+    /// shadow, the hypervisor of an AMD host suspends the VP with the NMI still
+    /// pending, and nothing wakes it.
     ///
     /// Until the VP runs, the VMM reads the state that it restored:
     /// `save_activity` reports the restored suspend state, and RIP is not
@@ -368,6 +373,15 @@ impl WhpProcessor<'_> {
             return Ok(());
         }
 
+        let interrupt_state = hvdef::HvX64InterruptStateRegister::from(interrupt_state);
+        if !interrupt_state.nmi_masked()
+            && vp::ApicRegisters::from_page(&whp.get_apic().for_op("get apic state")?)
+                .hv_apic_nmi_pending()
+        {
+            tracing::debug!(?mp_state, rip, "a pending nmi wakes a restored vp");
+            return Ok(());
+        }
+
         // An interruption that the VP delivers before the instruction would
         // return to it. The VP runs on after the restore with one pending
         // anyway, so leave it.
@@ -394,7 +408,6 @@ impl WhpProcessor<'_> {
         };
 
         tracing::debug!(?mp_state, rip, "suspending a restored vp again");
-        let interrupt_state = hvdef::HvX64InterruptStateRegister::from(interrupt_state);
         set_registers!(
             whp,
             [
