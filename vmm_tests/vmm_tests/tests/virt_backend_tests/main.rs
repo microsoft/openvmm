@@ -28,6 +28,8 @@ cfg_select! {
         mod save;
         mod shadow;
         mod speculation;
+        #[cfg(windows)]
+        mod suspend;
         mod time;
         mod unsupported_state;
         #[cfg(target_os = "linux")]
