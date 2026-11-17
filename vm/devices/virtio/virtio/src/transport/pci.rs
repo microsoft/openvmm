@@ -3,6 +3,8 @@
 
 //! PCI transport for virtio devices
 
+mod interrupt;
+
 use self::capabilities::*;
 use super::StalledIo;
 use super::core::QueueDoorbell;
@@ -154,6 +156,8 @@ struct PciTransport {
     #[inspect(hex)]
     notify_offset: u32,
     notify_length: u32,
+    /// Whether a restore holds the INTx line until the device starts.
+    held: bool,
 }
 
 impl TransportOps for PciTransport {
@@ -186,6 +190,9 @@ impl TransportOps for PciTransport {
                 interrupt.deliver();
             }
             InterruptKind::Msix(_) => (),
+            // A restore holds the line until the device starts, which drives
+            // it to the status.
+            InterruptKind::IntX(_) if self.held => (),
             InterruptKind::IntX(line) => line.set_level(true),
         }
     }
@@ -196,6 +203,7 @@ impl TransportOps for PciTransport {
             line.set_level(false);
         }
         self.msix_config_vector = 0;
+        self.held = false;
     }
 
     fn queue_doorbell(&mut self, index: u16) -> Option<QueueDoorbell> {
@@ -391,6 +399,7 @@ impl VirtioPciDevice {
                 device_register_length: traits.device_register_length,
                 notify_offset,
                 notify_length,
+                held: false,
             },
         })
     }
@@ -834,6 +843,7 @@ impl VirtioPciDevice {
 
 impl ChangeDeviceState for VirtioPciDevice {
     fn start(&mut self) {
+        self.pci.release_held_interrupts();
         self.core.start(&mut self.pci);
     }
 
@@ -994,12 +1004,10 @@ mod saved_state {
                 saved_queue_count,
             )?;
 
-            // Restore PCI-specific interrupt state.
-            *self.pci.interrupt_status.lock() = state.interrupt_status;
-            if let InterruptKind::IntX(line) = &self.pci.interrupt_kind {
-                line.set_level(state.interrupt_status != 0);
-            }
-            self.pci.msix_config_vector = state.msix_config_vector;
+            // Restore PCI-specific interrupt state, holding the interrupt
+            // outputs until the device starts.
+            self.pci
+                .restore_interrupts(state.interrupt_status, state.msix_config_vector);
 
             self.core.restore_device_state(state.device_state).await
         }
