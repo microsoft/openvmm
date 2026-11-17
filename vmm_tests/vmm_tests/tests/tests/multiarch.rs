@@ -1113,6 +1113,7 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
         .with_uefi_frontpage(true)
         .with_efi_diagnostics_log_level(EfiDiagnosticsLogLevel::Info)
         .with_efi_diagnostics_rate_limit(0)
+        .with_openhcl_command_line("log_buf_len=1M")
         .run_without_agent()
         .await?;
 
