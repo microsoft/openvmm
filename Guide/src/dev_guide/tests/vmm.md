@@ -41,8 +41,8 @@ The `virt_backend_tests` executable in the `vmm_tests` package tests the public
 are hardware-dependent integration tests, not ordinary unit tests. They use
 Petri for registration, host eligibility, logs, and results, but do not use its
 VM builders, launch OpenVMM, or load guest artifacts. Only the `suspend` module
-executes a VP, and then a few bytes of real-mode code that the test writes into
-the fixture's page.
+executes a VP, and then a few bytes of code that the test writes into the
+fixture's page, which run in real mode or, for one case, in 64-bit mode.
 
 Each backend has independently reported cases for initially frozen clocks,
 freeze/thaw transitions, reset values, and serialized restoration of clocks,

@@ -1677,6 +1677,7 @@ mod x86 {
                                         .whp(Vtl::Vtl0)
                                         .set_register(whp::Register64::InternalActivityState, 0)
                                         .unwrap();
+                                    self.state.vtls[Vtl::Vtl0].restored_suspend = None;
                                 }
                             }
                         }

@@ -29,6 +29,9 @@ use virt_support_apic::ApicClient;
 use virt_support_apic::ApicWork;
 use virt_support_apic::LocalApic;
 use virt_support_apic::LocalApicSet;
+use virt_support_x86emu::translate::TranslateFlags;
+use virt_support_x86emu::translate::TranslatePrivilegeCheck;
+use virt_support_x86emu::translate::translate_gva_to_gpa;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeAccess;
 use whp::get_registers;
@@ -328,7 +331,10 @@ impl WhpProcessor<'_> {
     /// `save_activity` reports the restored suspend state, and RIP is not
     /// moved, since the VMM can still write the registers or the activity. A
     /// VP whose RIP does not follow the suspending instruction, as one that
-    /// was not saved after it ran, is left as the restore wrote it.
+    /// was not saved after it ran, is left as the restore wrote it. A stop that
+    /// cancels the run before the VP runs the instruction leaves it as set up
+    /// here, about to run it in the shadow, which a save reads as that, and a
+    /// restore runs to the same result.
     pub(crate) fn resuspend_restored_vp(&mut self) -> Result<(), Error> {
         let vtl = self.state.active_vtl;
         let Some(mp_state) = self.state.vtls[vtl].restored_suspend.take() else {
@@ -420,16 +426,49 @@ impl WhpProcessor<'_> {
             } else {
                 cs_base.wrapping_add(offset) & 0xffff_ffff
             };
-            let Ok(Ok(gpa)) = self.vp.whp(vtl).translate_gva(
-                gva,
-                whp::abi::WHvTranslateGvaFlagValidateExecute
-                    | whp::abi::WHvTranslateGvaFlagPrivilegeExempt,
-            ) else {
+            let Some(gpa) = self.translate_for_execute(vtl, gva) else {
                 return false;
             };
             let mut byte = [0];
             self.vp.partition.gm.read_at(gpa, &mut byte).is_ok() && byte[0] == expected
         })
+    }
+
+    /// Translates the linear address `gva` to the GPA that the VP executes from,
+    /// whatever its privilege level, or returns `None` where it cannot.
+    ///
+    /// The walk of the page tables reads them from guest memory, which does not
+    /// need the hypervisor to have the RAM that holds them registered, as a lazy
+    /// restore leaves most of it until the VP first touches it. With nested
+    /// virtualization, the hypervisor's nested paging state decides instead, as
+    /// it does for the emulator.
+    fn translate_for_execute(&self, vtl: Vtl, gva: u64) -> Option<u64> {
+        if self.vp.partition.caps.nested_virt {
+            self.translate_gva_via_hypervisor(
+                vtl,
+                gva,
+                whp::abi::WHvTranslateGvaFlagValidateExecute
+                    | whp::abi::WHvTranslateGvaFlagPrivilegeExempt,
+            )
+            .ok()
+        } else {
+            translate_gva_to_gpa(
+                &self.vp.partition.gm,
+                gva,
+                &self.translation_registers(vtl),
+                TranslateFlags {
+                    validate_execute: true,
+                    validate_read: false,
+                    validate_write: false,
+                    override_smap: false,
+                    enforce_smap: false,
+                    privilege_check: TranslatePrivilegeCheck::None,
+                    set_page_table_bits: false,
+                },
+            )
+            .ok()
+            .map(|result| result.gpa)
+        }
     }
 
     pub(crate) fn save_apic(&mut self, vtl: Vtl) -> Result<vp::Apic, Error> {
@@ -817,6 +856,7 @@ impl WhpProcessor<'_> {
                 ]
             )
             .unwrap();
+            self.state.vtls[vtl].restored_suspend = None;
         }
 
         true

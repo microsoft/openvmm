@@ -289,8 +289,8 @@ struct PerVtlRunState {
     vp_assist_page: u64,
     /// The halt or idle suspend state that a restore of the VP's activity
     /// wrote, which the VP's next run establishes again (see
-    /// `WhpProcessor::resuspend_restored_vp`). Only used with the
-    /// hypervisor's APIC.
+    /// `WhpProcessor::resuspend_restored_vp`). Dropped as soon as anything else
+    /// sets the VP's activity. Only used with the hypervisor's APIC.
     #[cfg(guest_arch = "x86_64")]
     #[inspect(debug)]
     restored_suspend: Option<virt::x86::vp::MpState>,
