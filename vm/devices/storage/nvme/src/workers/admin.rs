@@ -536,6 +536,11 @@ impl AdminHandler {
                 tracing::trace!(?opcode, ?command, "command");
 
                 let result = match opcode {
+                    // Admin commands over PCIe always use PRPs (NVMe Base 2.1
+                    // Figure 91), so any other PSDT is an unsupported value.
+                    _ if command.cdw0.psdt() != 0 => Err(NvmeError::do_not_retry(
+                        spec::Status::INVALID_FIELD_IN_COMMAND,
+                    )),
                     spec::AdminOpcode::IDENTIFY => self
                         .handle_identify(state, &command)
                         .map(|()| Some(Default::default())),
