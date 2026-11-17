@@ -439,26 +439,22 @@ impl MapperTask {
         // other targets so the shared parameter doesn't warn.
         let _ = deferred_protect;
         let map_result = cfg_select! {
-            windows => {
-                self.inner.mapping.map_view_of_file_access(
-                    range.start() as usize,
-                    range.len() as usize,
-                    mappable,
-                    file_offset,
-                    protect,
-                    access,
-                    numa_node,
-                )
-            }
-            _ => {
-                self.inner.mapping.map_file(
-                    range.start() as usize,
-                    range.len() as usize,
-                    mappable,
-                    file_offset,
-                    writable,
-                )
-            }
+            windows => self.inner.mapping.map_view_of_file_access(
+                range.start() as usize,
+                range.len() as usize,
+                mappable,
+                file_offset,
+                protect,
+                access,
+                numa_node,
+            ),
+            _ => self.inner.mapping.map_file(
+                range.start() as usize,
+                range.len() as usize,
+                mappable,
+                file_offset,
+                writable,
+            ),
         };
 
         if let Err(e) = map_result {
@@ -523,7 +519,10 @@ impl MapperTask {
                 let _ = numa_node;
             }
             _ => {
-                assert!(numa_node.is_none(), "NUMA not supported on this platform; should have been rejected at build time");
+                assert!(
+                    numa_node.is_none(),
+                    "NUMA not supported on this platform; should have been rejected at build time"
+                );
             }
         }
 
@@ -713,7 +712,10 @@ impl MapperInner {
             }
             _ => {
                 let _ = deferred_protect;
-                assert!(numa_node.is_none(), "NUMA not supported on this platform; should have been rejected at build time");
+                assert!(
+                    numa_node.is_none(),
+                    "NUMA not supported on this platform; should have been rejected at build time"
+                );
                 self.mapping.alloc(offset, len)
             }
         }
