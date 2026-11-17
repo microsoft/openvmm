@@ -168,6 +168,13 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     lapic_preemption_timer: bool,
 
+    /// Whether every RAM slot is also registered in KVM's address space 1,
+    /// which a VP uses while in SMM. A guest can send itself an SMI, and a VP
+    /// that takes one saves its state at SMBASE, which is in RAM, through that
+    /// address space: with no RAM there, KVM marks the whole VM dead.
+    #[cfg(guest_arch = "x86_64")]
+    smm_address_space: bool,
+
     /// The GIC device fd, kept alive for the VM lifetime.
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]

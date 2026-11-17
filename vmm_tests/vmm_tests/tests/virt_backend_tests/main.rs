@@ -51,6 +51,8 @@ mod save;
     any(target_os = "linux", windows)
 ))]
 mod shadow;
+#[cfg(all(guest_arch = "x86_64", guest_is_native, target_os = "linux"))]
+mod smm;
 #[cfg(all(
     guest_arch = "x86_64",
     guest_is_native,

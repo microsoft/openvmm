@@ -690,6 +690,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                 unreachable!()
             }
         };
+        let smm_address_space = memory_backing_mode.maps_smm_address_space(&self.vm)?;
 
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
@@ -725,6 +726,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
             mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
             lapic_preemption_timer: lapic_timer::kvm_may_use_preemption_timer(),
+            smm_address_space,
             synic_ports: Default::default(),
             time_abi,
         });

@@ -40,9 +40,10 @@ The `virt_backend_tests` executable in the `vmm_tests` package tests the public
 `virt` interfaces directly on native x86_64 KVM, MSHV, and WHP backends. These
 are hardware-dependent integration tests, not ordinary unit tests. They use
 Petri for registration, host eligibility, logs, and results, but do not use its
-VM builders, launch OpenVMM, or load guest artifacts. Only the `suspend` module
-executes a VP, and then a few bytes of code that the test writes into the
-fixture's page, which run in real mode or, for one case, in 64-bit mode.
+VM builders, launch OpenVMM, or load guest artifacts. Only the `suspend` and
+`smm` modules execute a VP, and then a few bytes of code that the test writes
+into the fixture's RAM, which run in real mode or, for one case of `suspend`, in
+64-bit mode; the code of `smm` is an SMI handler, which runs in SMM.
 
 Each backend has independently reported cases for initially frozen clocks,
 freeze/thaw transitions, reset values, and serialized restoration of clocks,
@@ -81,6 +82,14 @@ that was saved and into a VP of a new partition. Each registers by hand, since
 it builds a second partition, and the wake-up, an NMI or a fixed interrupt, also
 reaches the restored VP before it first runs, as the vector of a LAPIC timer
 that expired during a snapshot's downtime does.
+A guest can send itself an SMI, and KVM takes the VP into SMM, where it saves
+the state that the SMI interrupts into the RAM at SMBASE through its SMM address
+space, and marks the whole VM dead when no RAM is mapped there. The KVM-only
+case `a_guest_smi_enters_smm_instead_of_killing_the_vm`, in `smm.rs`, sends a VP
+an SMI and runs it, which must execute the handler that the test wrote at the
+SMI entry point of the default SMBASE, 0x8000 above it, and then checks that a
+save refuses the VP in SMM. It needs a fixture with room for SMBASE, so it
+registers by hand.
 
 The contract functions operate on the public `virt` interfaces. Each function
 has an adjacent `backend_test!` declaration that registers it with Petri for
