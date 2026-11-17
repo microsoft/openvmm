@@ -87,6 +87,12 @@ pub const KCS_COMMAND_WRITE_END: u8 = 0x62;
 /// KCS Read Next control byte.
 pub const KCS_DATA_READ_NEXT: u8 = 0x68;
 
+/// KCS interface status code: transaction aborted by Get Status/Abort.
+pub const KCS_STATUS_ABORTED_BY_COMMAND: u8 = 0x01;
+
+/// KCS interface status code: unrecognized KCS control code.
+pub const KCS_STATUS_ILLEGAL_CONTROL_CODE: u8 = 0x02;
+
 /// IPMI application network function.
 pub const NETFN_APPLICATION: u8 = 0x06;
 

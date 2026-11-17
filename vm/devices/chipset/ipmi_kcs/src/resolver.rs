@@ -5,7 +5,7 @@
 
 use crate::IpmiKcs;
 use crate::MonotonicClock;
-use crate::TrustedClock;
+use crate::WallClock;
 use crate::device::IpmiKcsDevice;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
@@ -38,7 +38,7 @@ declare_static_async_resolver! {
 /// Error resolving an IPMI KCS device.
 #[derive(Debug, Error)]
 pub enum ResolveIpmiKcsError {
-    /// The trusted time source could not be resolved.
+    /// The wall-clock time source could not be resolved.
     #[error("failed to resolve IPMI KCS time source")]
     TimeSource(#[source] ResolveError),
     /// The SEL event sink could not be resolved.
@@ -46,9 +46,9 @@ pub enum ResolveIpmiKcsError {
     EventSink(#[source] ResolveError),
 }
 
-struct TrustedClockAdapter(Box<dyn InspectableLocalClock>);
+struct WallClockAdapter(Box<dyn InspectableLocalClock>);
 
-impl TrustedClock for TrustedClockAdapter {
+impl WallClock for WallClockAdapter {
     fn unix_seconds(&mut self) -> i64 {
         self.0
             .get_time()
@@ -82,7 +82,7 @@ async fn resolve_core(
         .map_err(ResolveIpmiKcsError::EventSink)?;
 
     Ok(IpmiKcs::with_event_sink(
-        Box::new(TrustedClockAdapter(time_source)),
+        Box::new(WallClockAdapter(time_source)),
         Box::new(VmTimeClock(vmtime)),
         event_sink,
     ))

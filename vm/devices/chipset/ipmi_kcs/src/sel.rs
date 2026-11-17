@@ -203,8 +203,8 @@ impl IpmiKcs {
         let Some(record_id) = self.allocate_record_id() else {
             return completion(out, COMPLETION_SEL_FULL);
         };
-        let trusted_seconds = self.clock.unix_seconds();
-        let timestamp = adjusted_timestamp(trusted_seconds, self.sel.time_offset_seconds);
+        let wall_seconds = self.clock.unix_seconds();
+        let timestamp = adjusted_timestamp(wall_seconds, self.sel.time_offset_seconds);
         record[0..2].copy_from_slice(&record_id.to_le_bytes());
         // OEM non-timestamped records carry payload in the timestamp bytes.
         if record[2] < SEL_RECORD_TYPE_OEM_NON_TIMESTAMPED {
@@ -254,9 +254,9 @@ impl IpmiKcs {
                 self.sel.records.clear();
                 self.sel.next_record_id = 1;
                 self.sel.last_addition_timestamp = 0;
-                let trusted_seconds = self.clock.unix_seconds();
+                let wall_seconds = self.clock.unix_seconds();
                 self.sel.last_erase_timestamp =
-                    adjusted_timestamp(trusted_seconds, self.sel.time_offset_seconds);
+                    adjusted_timestamp(wall_seconds, self.sel.time_offset_seconds);
             }
             CLEAR_SEL_GET_STATUS => {}
             _ => return completion(out, COMPLETION_INVALID_DATA_FIELD),
@@ -272,13 +272,13 @@ impl IpmiKcs {
     }
 
     fn get_sel_time(&mut self, out: &mut [u8; KCS_MESSAGE_MAX]) -> usize {
-        let trusted_seconds = self.clock.unix_seconds();
+        let wall_seconds = self.clock.unix_seconds();
         write_response(
             out,
             &GetSelTimeResponse {
                 completion_code: COMPLETION_SUCCESS,
                 timestamp: U32::new(adjusted_timestamp(
-                    trusted_seconds,
+                    wall_seconds,
                     self.sel.time_offset_seconds,
                 )),
             },
@@ -337,7 +337,7 @@ fn increment_record_id(record_id: u16) -> u16 {
     normalize_record_id(record_id.wrapping_add(1))
 }
 
-fn adjusted_timestamp(trusted_seconds: i64, offset_seconds: i64) -> u32 {
-    let adjusted = trusted_seconds.saturating_add(offset_seconds);
+fn adjusted_timestamp(wall_seconds: i64, offset_seconds: i64) -> u32 {
+    let adjusted = wall_seconds.saturating_add(offset_seconds);
     if adjusted < 0 { 0 } else { adjusted as u32 }
 }

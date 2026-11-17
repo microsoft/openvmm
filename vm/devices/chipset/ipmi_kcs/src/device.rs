@@ -190,7 +190,7 @@ mod tests {
     use crate::KCS_STATE_IDLE;
     use crate::KCS_STATE_READ;
     use crate::STATUS_STATE_MASK;
-    use crate::TrustedClock;
+    use crate::WallClock;
     use ipmi_protocol::COMMAND_GET_DEVICE_ID;
     use ipmi_protocol::NETFN_APPLICATION;
     use std::sync::Arc;
@@ -207,7 +207,7 @@ mod tests {
         }
     }
 
-    impl TrustedClock for FakeClock {
+    impl WallClock for FakeClock {
         fn unix_seconds(&mut self) -> i64 {
             self.0.load(Ordering::Relaxed)
         }

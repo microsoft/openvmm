@@ -72,7 +72,7 @@ enum SavedStateValidationError {
     EmptyReadResponse,
     #[error("write-end-pending is set outside write state")]
     InvalidWriteEndPending,
-    #[error("abort-pending requires an empty write state")]
+    #[error("abort-pending requires a write state with only a staged status code")]
     InvalidAbortPending,
     #[error("SEL count {count} does not match {records} saved records")]
     SelCountMismatch { count: usize, records: usize },
@@ -186,7 +186,12 @@ fn validate_saved_state(state: SavedState) -> Result<RestoredState, SavedStateVa
     if write_end_pending && kcs_state != KCS_STATE_WRITE {
         return Err(SavedStateValidationError::InvalidWriteEndPending);
     }
-    if abort_pending && (kcs_state != KCS_STATE_WRITE || write_end_pending || !request.is_empty()) {
+    if abort_pending
+        && (kcs_state != KCS_STATE_WRITE
+            || write_end_pending
+            || !request.is_empty()
+            || response.len() != 1)
+    {
         return Err(SavedStateValidationError::InvalidAbortPending);
     }
 

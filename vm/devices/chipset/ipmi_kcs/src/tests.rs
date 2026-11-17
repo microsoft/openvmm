@@ -31,7 +31,7 @@ impl FakeClock {
     }
 }
 
-impl TrustedClock for FakeClock {
+impl WallClock for FakeClock {
     fn unix_seconds(&mut self) -> i64 {
         self.0.load(Ordering::Relaxed)
     }
@@ -201,7 +201,7 @@ fn abort_exposes_status_byte_then_returns_idle() {
     device.write_data(0);
     assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
     assert_ne!(device.read_status() & STATUS_OBF, 0);
-    assert_eq!(device.read_data(), 0xff);
+    assert_eq!(device.read_data(), KCS_STATUS_ABORTED_BY_COMMAND);
 
     device.write_data(KCS_DATA_READ_NEXT);
     assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_IDLE);
@@ -232,7 +232,7 @@ fn abort_recovers_from_read_and_error_states() {
         assert_eq!(device.read_data(), 0);
         device.write_data(0);
         assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
-        assert_eq!(device.read_data(), 0xff);
+        assert_eq!(device.read_data(), KCS_STATUS_ABORTED_BY_COMMAND);
         device.write_data(KCS_DATA_READ_NEXT);
         assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_IDLE);
         assert_eq!(device.read_data(), 0);
@@ -256,7 +256,7 @@ fn malformed_kcs_sequences_are_handled_without_panicking() {
     assert_eq!(device.read_data(), 0);
     device.write_data(0);
     assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
-    assert_eq!(device.read_data(), 0xff);
+    assert_eq!(device.read_data(), KCS_STATUS_ILLEGAL_CONTROL_CODE);
 
     device.reset();
     device.write_command(KCS_COMMAND_WRITE_END);
@@ -852,7 +852,7 @@ fn save_restore_preserves_abort_phase() {
     assert_eq!(restored.read_status() & STATUS_STATE_MASK, KCS_STATE_WRITE);
     restored.write_data(0);
     assert_eq!(restored.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
-    assert_eq!(restored.read_data(), 0xff);
+    assert_eq!(restored.read_data(), KCS_STATUS_ABORTED_BY_COMMAND);
     restored.write_data(KCS_DATA_READ_NEXT);
     assert_eq!(restored.read_status() & STATUS_STATE_MASK, KCS_STATE_IDLE);
 }
