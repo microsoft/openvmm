@@ -255,22 +255,25 @@ or group of MSRs that a VP holds and a fresh VP does not:
 | 19 | `misc_msrs` | `IA32_MISC_ENABLE`, `MSR_MISC_FEATURES_ENABLES` (CPUID faulting), and `IA32_POWER_CTL` | the backend has them (KVM) |
 | 20 | `machine_check` | `IA32_MCG_STATUS`, `IA32_MCG_CTL`, and the control, status, address, miscellaneous, and CMCI control registers of each machine-check bank | the backend has them (KVM) |
 | 21 | `bndcfgs` | `IA32_BNDCFGS` | the guest's CPUID enumerates MPX |
+| 22 | `svm_msrs` | AMD's `VM_CR` and `VM_HSAVE_PA` | the backend has them (KVM on an AMD host) |
+| 23 | `osvw` | AMD's `OSVW_ID_LENGTH` and `OSVW_STATUS` | the guest's CPUID enumerates OSVW, and the backend keeps them (KVM on an AMD host) |
 
 A partition has an element only where the guest can have the state and the
 backend can access it, which the partition's capabilities record. The guest's
-CPUID decides the first for `spec_ctrl`, `umwait_control`, and `bndcfgs`; no
-CPUID bit decides it for the other elements, whose MSRs every CPU has. For the
-KVM backend:
+CPUID decides the first for `spec_ctrl`, `umwait_control`, `bndcfgs`, and
+`osvw`; no CPUID bit decides it for the other elements, whose MSRs every CPU of
+the vendor has. For the KVM backend:
 
-- It can access an MSR only if the host's `KVM_GET_MSR_INDEX_LIST` lists it, so
-  a host without the MSR, such as one without WAITPKG, holds no element for it
-  instead of failing every save. KVM lists `IA32_BNDCFGS` where it exposes MPX,
+- It can access an MSR only if the host's `KVM_GET_MSR_INDEX_LIST` lists it,
+  except for the ones below that KVM keeps without listing them, so a host
+  without the MSR, such as one without WAITPKG, holds no element for it instead
+  of failing every save. KVM lists `IA32_BNDCFGS` where it exposes MPX,
   which it does on a host with MPX: the kernel still enables MPX's state
   components in the host's XCR0 for KVM's guests, although it dropped MPX for
   its own processes in Linux 5.6.
 - It can access none of them for an SNP guest, whose registers live in an
   encrypted VMSA.
-- `IA32_DEBUGCTL` is the exception to the list. Every KVM virtualizes it, and
+- `IA32_DEBUGCTL` is an exception to the list. Every KVM virtualizes it, and
   `KVM_GET_MSRS` and `KVM_SET_MSRS` reach it on every kernel that the time ABI
   supports, Linux 5.16 and later: the vendor code fails a write only for a bit
   that KVM does not support (VMX, which drops BTF and LBR instead) or that is
@@ -286,6 +289,24 @@ KVM backend:
 - KVM does not list the registers of the machine-check banks, so `machine_check`
   follows `IA32_MCG_STATUS`, and the number of banks is the one that the VP's
   `IA32_MCG_CAP` reports.
+- On an AMD host, KVM keeps a guest's `VM_CR` and `VM_HSAVE_PA` whatever the
+  guest's CPUID says, though no CPU profile enumerates SVM. It lists
+  `VM_HSAVE_PA`, and not `VM_CR`, but it lists `VM_HSAVE_PA` wherever the host
+  can read it, as an Intel host can under a hypervisor that reads it as 0,
+  where KVM has no `VM_CR`. So `svm_msrs` needs KVM to run on SVM, as the vendor
+  of its supported CPUID shows, as well as the MSR in its list. A guest can
+  only write a page address that it has to `VM_HSAVE_PA`, while KVM takes any
+  value from the host, and cannot set `VM_CR`'s `SVMDIS` while `EFER.SVME` is
+  set, which KVM refuses from the host only after it has set `SVMDIS`, so a
+  restore refuses either before it writes either MSR. Once a guest sets
+  `VM_CR`'s `SVMDIS`, KVM keeps `SVMDIS` and `LOCK` for the life of the vCPU,
+  so a VM reset leaves them set, as it did before the element; a restore into
+  a new VP sets them as the guest saved them.
+- KVM keeps the OSVW MSRs for a vCPU whose CPUID enumerates OSVW, as every AMD
+  CPU profile does, where KVM supports OSVW, as it does on an AMD host, and
+  lists neither, so `osvw` follows the guest's CPUID and KVM's supported CPUID.
+  A new VP holds values that KVM derives from the host's, which a snapshot
+  replaces with the ones that the guest saw, and which a VM reset puts back.
 
 The MSHV and WHP backends hold `umwait_control` and `bndcfgs` as registers of
 the VP, as they hold `spec_ctrl`, where the guest's CPUID enumerates WAITPKG or
@@ -294,7 +315,10 @@ SNP guest, as KVM does. They do not have elements 18 through 20, and clear their
 capabilities: the Microsoft hypervisor keeps none of those registers for a guest
 to write (it drops the guest's writes of `IA32_DEBUGCTL` and `IA32_MISC_ENABLE`,
 raises #GP for `MSR_MISC_FEATURES_ENABLES` and `IA32_POWER_CTL`, and gives the
-guest no machine-check banks). OpenHCL does not have elements 17 through 21.
+guest no machine-check banks). They do not have elements 22 and 23 either: on
+WHP, OpenVMM serves a guest's accesses of the OSVW MSRs itself, reading them as
+0 and refusing writes, and neither backend reads AMD's SVM MSRs. OpenHCL does
+not have elements 17 through 23.
 
 A saved state restores only into a partition that has every element that it
 holds. A destination whose backend lacks one, such as a host whose KVM does not
@@ -316,21 +340,19 @@ also fails for a state that holds a value that KVM refuses, such as a bank
 control other than 0 or all ones (bit 0 and bit 10 may be clear), which no guest
 writes, after it has written the registers that precede it.
 
-Some guest-writable state has no element:
+Some guest-writable state has no element: AMD's legacy performance counters,
+`0xc0010000` through `0xc0010007`, hold state only on an AMD host whose KVM
+virtual PMU is on. A time ABI guest has no PMU, so the KVM backend raises #GP
+for them instead (see [Time and CPU
+compatibility](../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility)),
+and a snapshot of another guest does not hold their state.
 
-- `MSR_VM_HSAVE_PA` belongs to SVM, which no CPU profile enumerates. A guest
-  without SVM cannot run VMRUN, so nothing uses the MSR.
-- AMD's legacy performance counters, `0xc0010000` through `0xc0010007`, hold
-  state only on an AMD host whose KVM virtual PMU is on. A time ABI guest has no
-  PMU, so the KVM backend raises #GP for them instead (see [Time and CPU
-  compatibility](../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility)),
-  and a snapshot of another guest does not hold their state.
-
-A snapshot from an earlier build holds none of elements 17 through 21, so a
+A snapshot from an earlier build holds none of elements 17 through 23, so a
 restore leaves those MSRs as `bind` set them, as it did before:
 `IA32_MISC_ENABLE` at the Microsoft hypervisor's value, the machine-check banks
-as a new VP has them, and the other MSRs at 0. An earlier build ignores the
-elements of a later snapshot in the same way.
+as a new VP has them, the OSVW MSRs at KVM's values for the host, and the other
+MSRs at 0. An earlier build ignores the elements of a later snapshot in the same
+way.
 
 ### Fields of an element
 

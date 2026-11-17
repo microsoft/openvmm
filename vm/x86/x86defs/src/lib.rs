@@ -348,6 +348,8 @@ pub const X86X_AMD_MSR_HW_CFG: u32 = 0xC0010015;
 pub const X86X_AMD_MSR_NB_CFG: u32 = 0xC001001F;
 pub const X86X_AMD_MSR_VM_CR: u32 = 0xC0010114;
 pub const X86X_AMD_MSR_IGNNE: u32 = 0xC0010115;
+/// `VM_HSAVE_PA`, the physical address of SVM's host save area.
+pub const X86X_AMD_MSR_VM_HSAVE_PA: u32 = 0xC0010117;
 pub const X86X_AMD_MSR_GHCB: u32 = 0xC0010130;
 pub const X86X_AMD_MSR_SEV: u32 = 0xC0010131;
 pub const X86X_AMD_MSR_SECURE_AVIC_CONTROL: u32 = 0xc0010138;

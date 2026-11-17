@@ -563,6 +563,12 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             return Err(SnpError::InvalidVmsaGpa(config.bsp.gpa).into());
         }
 
+        // What the host's KVM keeps beyond the MSRs that it lists, as its
+        // supported CPUID says: whether it runs on SVM and supports OSVW.
+        let kvm_support = msr_state::KvmSupport::from_supported_cpuid(|leaf, subleaf| {
+            self.cpuid.result(leaf, subleaf, &[0; 4])
+        });
+
         let cpuid = match &self.config.time_abi {
             Some(time_abi) => time_abi::partition_cpuid(&time_abi.cpuid),
             None => {
@@ -650,7 +656,12 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         // SNP guest's from its encrypted VMSA.
         caps.spec_ctrl &=
             self.sev.is_none() && self.msr_index_list.contains(&x86defs::X86X_MSR_SPEC_CTRL);
-        msr_state::set_capabilities(&mut caps, &self.msr_index_list, self.sev.is_some());
+        msr_state::set_capabilities(
+            &mut caps,
+            &self.msr_index_list,
+            kvm_support,
+            self.sev.is_some(),
+        );
 
         let mut gsi_routing = GsiRouting::new();
 
@@ -1217,6 +1228,15 @@ impl virt::BindProcessor for KvmProcessorBinder {
             time_abi.set_arch_capabilities(&kvm)?;
         }
 
+        // KVM gives the vCPU OSVW values that it derives from the host's, and
+        // lets them be read only once the vCPU's CPUID enumerates OSVW.
+        let osvw_at_bind = self
+            .partition
+            .caps
+            .osvw
+            .then(|| msr_state::osvw(&kvm))
+            .transpose()?;
+
         let mut vp = KvmProcessor {
             partition: &self.partition,
             inner,
@@ -1232,6 +1252,7 @@ impl virt::BindProcessor for KvmProcessorBinder {
             vmtime: &mut self.vmtime,
             interrupt_window_stale: true,
             timer_at_stop: None,
+            osvw_at_bind,
         };
 
         // 1. Reset the APIC state to clear the directed EOI bit, which is
@@ -1303,9 +1324,33 @@ pub struct KvmProcessor<'a> {
     /// its LAPIC state is set.
     #[inspect(skip)]
     timer_at_stop: Option<lapic_timer::TimerAtStop>,
+    /// AMD's OSVW MSRs as KVM gave them to the vCPU, deriving them from the
+    /// host's, where the partition holds them, which a reset puts back.
+    #[inspect(skip)]
+    osvw_at_bind: Option<virt::x86::vp::Osvw>,
 }
 
 impl KvmProcessor<'_> {
+    /// Resets the VP's state to what a new VP holds. The state's reset value
+    /// of the OSVW MSRs is 0, a CPU's before its firmware runs, but a new vCPU
+    /// holds the values that KVM derives from the host's, which a reboot's
+    /// firmware would write again, so the reset puts those back.
+    fn reset_state(&mut self) -> Result<(), virt::state::StateError<KvmError>> {
+        let vp_info = self.inner.vp_info;
+        let osvw_at_bind = self.osvw_at_bind;
+        let mut state = self.access_state(Vtl::Vtl0);
+        state.reset_all(&vp_info)?;
+        if let Some(osvw) = osvw_at_bind {
+            state
+                .set_osvw(&osvw)
+                .map_err(|err| virt::state::StateError::Access {
+                    phase: "reset osvw",
+                    err,
+                })?;
+        }
+        Ok(())
+    }
+
     /// Delivers any pending PIC interrupt.
     ///
     /// The VP must be known to be stopped and must have an open interrupt
@@ -2208,8 +2253,7 @@ impl<'p> Processor for KvmProcessor<'p> {
     }
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
-        let vp_info = self.inner.vp_info;
-        self.access_state(Vtl::Vtl0).reset_all(&vp_info)
+        self.reset_state()
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
