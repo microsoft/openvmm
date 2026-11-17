@@ -440,10 +440,22 @@ records no kind.
 
 ## Extending the format
 
-When adding new fields to `SnapshotManifest`, use the next available mesh
-tag number other than 18, 19, and 20: upstream OpenVMM assigns field 18 to
-the `snapshot_id` that its SaveVM API records, and reserves fields 19 and 20
-for `compatibility_bundle_digest` and `memory_artifacts`.
+The manifest, `SnapshotManifest`, shares its field numbers with upstream
+OpenVMM's manifest, version 1, as this table shows. The messages of the device
+state in `state.bin`, such as the `virt.x86.VpSavedState` of
+[VP state elements](#vp-state-elements), number their fields on their own.
+
+| Fields | Holder |
+| --- | --- |
+| 1-7 | Upstream's manifest: `version`, `created_at`, `openvmm_version`, `memory_size_bytes`, `vp_count`, `page_size`, and `architecture` |
+| 8-15 | This format: `state_size_bytes`, `machine_contract`, `format_magic`, `saved_state_schema_version`, `saved_state_root_type`, `snapshot_tier`, `restore_policy`, and `consumed_config_sections` |
+| 16, 17 | Free |
+| 18 | Upstream's `snapshot_id`, which its SaveVM API records |
+| 19, 20 | Reserved by upstream for `compatibility_bundle_digest` and `memory_artifacts` |
+| 21 and later | Free |
+
+When adding new fields to `SnapshotManifest`, use the next free mesh tag
+number, never 19 or 20.
 The protobuf encoding is forward-compatible: older readers will
 ignore unknown fields. However, removing or reordering existing fields is a
 breaking change. See [Save State](contrib/save-state.md) for the full set of
