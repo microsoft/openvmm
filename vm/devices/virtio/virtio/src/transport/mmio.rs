@@ -70,7 +70,7 @@ impl InterruptState {
         } else {
             self.status &= !bits;
         }
-        self.interrupt.set_level(self.status != 0);
+        self.delivery.set_level(&self.interrupt, self.status != 0);
     }
 }
 
@@ -416,6 +416,7 @@ impl VirtioMmioDevice {
 
 impl ChangeDeviceState for VirtioMmioDevice {
     fn start(&mut self) {
+        self.mmio.release_held_interrupt();
         self.core.start(&mut self.mmio);
     }
 
@@ -515,7 +516,6 @@ mod saved_state {
             &mut self,
             state: Self::SavedState,
         ) -> Result<(), vmcore::save_restore::RestoreError> {
-            self.mmio.reset_interrupt_state();
             let saved_queue_count = state.queues.len();
             self.core.restore_common(
                 &mut self.mmio,
@@ -525,7 +525,8 @@ mod saved_state {
                 saved_queue_count,
             )?;
 
-            // Restore MMIO-specific interrupt state.
+            // Restore MMIO-specific interrupt state, holding the interrupt
+            // line until the device starts.
             {
                 let mut is = self.mmio.interrupt_state.lock();
                 is.restore_status(state.interrupt_status)?;

@@ -250,13 +250,17 @@ the complete frame.
 Restore completes the restoration of every device before any vCPU runs, even
 when the VM stays paused: invalid device state, or a host resource that a
 device's state refers to and that OpenVMM cannot reacquire, fails the restore
-itself. Restoring starts no virtqueue. Each device starts its queues when the
-VM first runs, and the resume waits for them before any vCPU runs. A queue that
-fails to start then, such as one whose network backend cannot create its
-queues, fails the resume: OpenVMM stops the devices that started again and
-logs the failure, no vCPU runs, and the restore publishes no readiness event.
-The devices keep their restored state, so a later resume starts their queues
-again, and a save of the paused VM saves that state.
+itself. Restoring starts no virtqueue, and no virtio device drives its interrupt
+line: one whose line holds a level, as a legacy virtio-mmio device's line or a
+PCI device's INTx does, drives the line to the status that it restored only when
+the VM first runs, once every device and interrupt controller has restored its
+state. Each device starts its queues when the VM first runs, and the resume
+waits for them before any vCPU runs. A queue that fails to start then, such as
+one whose network backend cannot create its queues, fails the resume: OpenVMM
+stops the devices that started again and logs the failure, no vCPU runs, and the
+restore publishes no readiness event. The devices keep their restored state, so
+a later resume starts their queues again, and a save of the paused VM saves that
+state.
 
 A restore gives a KVM VP the NMIs that it held pending at capture, which can be
 two: a second NMI that reached the VP before it ran, which KVM injects once the
