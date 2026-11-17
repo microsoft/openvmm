@@ -64,7 +64,8 @@ access them, have cases of their own in `msr_state.rs`:
 `machine_check_state_survives_a_save_and_restore`, each of which sets the state,
 saves it, changes the VP, and restores it, and two that check that a reset
 returns the feature MSRs and the machine-check state to what a new VP holds.
-MSHV and WHP do not hold these elements, so these cases report ignored there.
+MSHV and WHP hold `IA32_UMWAIT_CONTROL`, whose case runs there on a host with
+WAITPKG, and none of the other elements, so their cases report ignored there.
 A restore refuses a saved state that holds an element that the partition lacks,
 such as SynIC state for a partition without Hyper-V enlightenments: it fails
 with an error that names the element, before it changes any state.
