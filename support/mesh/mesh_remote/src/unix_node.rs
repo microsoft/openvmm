@@ -198,13 +198,19 @@ async fn run_follower(
                 let handle = handle.unwrap_or_else(|| local_node.get_remote_handle(target_id));
 
                 if let Some(fd) = fd {
-                    start_connection(
-                        tasks,
-                        local_node,
-                        target_id,
-                        handle,
-                        UnixSocket::new(driver, fd),
-                    );
+                    match UnixSocket::new(driver, fd) {
+                        Ok(socket) => {
+                            start_connection(tasks, local_node, target_id, handle, socket);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                ?target_id,
+                                error = &err as &dyn std::error::Error,
+                                "failed to initialize connection from leader",
+                            );
+                            handle.fail(err);
+                        }
+                    }
                 } else {
                     tracing::warn!(?target_id, "leader provided failed connection");
                 }
@@ -274,7 +280,9 @@ async fn run_leader(
                 }
                 LeaderRequest::Invite(port, send) => {
                     tracing::debug!(?remote_id, "invitation request");
-                    match new_socket_pair() {
+                    match new_socket_pair()
+                        .and_then(|(left, right)| Ok((UnixSocket::new(driver, left)?, right)))
+                    {
                         Ok((left, right)) => {
                             let (leader_send, leader_recv) = channel();
                             let (follower_send, follower_recv) = channel();
@@ -284,13 +292,7 @@ async fn run_leader(
                             };
                             let local_port_id = PortId::new();
                             let handle = local_node.add_remote(remote_addr.node);
-                            start_connection(
-                                tasks,
-                                local_node,
-                                remote_addr.node,
-                                handle,
-                                UnixSocket::new(driver, left),
-                            );
+                            start_connection(tasks, local_node, remote_addr.node, handle, left);
                             let init_send = OneshotSender::<InitialMessage>::from(
                                 local_node.add_port(local_port_id, remote_addr),
                             );
@@ -321,7 +323,7 @@ async fn run_leader(
                         Err(err) => {
                             tracing::error!(
                                 error = &err as &dyn std::error::Error,
-                                "failed to create socket pair",
+                                "failed to initialize invitation socket pair",
                             );
                         }
                     }
@@ -981,6 +983,9 @@ impl UnixNode {
 
     /// Joins an existing mesh via an invitation, briding `port` with the
     /// initial port.
+    ///
+    /// Returns an error if the invitation socket cannot be initialized or the
+    /// initial message cannot be received.
     pub async fn join(
         driver: impl SpawnDriver,
         invitation: Invitation,
@@ -995,6 +1000,8 @@ impl UnixNode {
         invitation: Invitation,
         port: Port,
     ) -> Result<Self, JoinError> {
+        let socket =
+            UnixSocket::new(driver.as_ref(), invitation.fd.into()).map_err(JoinError::Socket)?;
         let (to_leader_send, to_leader_recv) = channel();
         let (from_leader_send, from_leader_recv) = channel();
         let this = Self::with_id(
@@ -1017,10 +1024,10 @@ impl UnixNode {
             &this.local_node,
             invitation.address.remote_addr.node,
             handle,
-            UnixSocket::new(this.driver.as_ref(), invitation.fd.into()),
+            socket,
         );
 
-        let init_message = init_recv.await.map_err(JoinError)?;
+        let init_message = init_recv.await.map_err(JoinError::Receive)?;
         to_leader_recv.bridge(init_message.leader_send);
         from_leader_send.bridge(init_message.follower_recv);
         port.bridge(init_message.user_port);
@@ -1055,8 +1062,14 @@ impl UnixNode {
 
 /// An error returned by [`UnixNode::join`].
 #[derive(Debug, Error)]
-#[error("failed to accept invitation")]
-pub struct JoinError(#[source] RecvError);
+pub enum JoinError {
+    /// The invitation socket could not be initialized.
+    #[error("failed to initialize invitation socket")]
+    Socket(#[source] io::Error),
+    /// The initial message could not be received.
+    #[error("failed to accept invitation")]
+    Receive(#[source] RecvError),
+}
 
 /// The connector used when the mesh needs to connect to a previously-recognized
 /// node. Sends a message to the leader node to get a new socket to communicate
@@ -1105,26 +1118,34 @@ struct SocketState {
 }
 
 impl UnixSocket {
-    fn new(driver: &dyn SpawnDriver, fd: Socket) -> Self {
+    fn new(driver: &dyn SpawnDriver, fd: Socket) -> io::Result<Self> {
         // Frame by the socket's actual type rather than the platform default.
-        // Guessing would desynchronize the framing with the peer, so a type
-        // that cannot be read, or one that is neither kind, is a caller bug.
-        let ty = fd.r#type().expect("failed to read the socket type");
+        // Guessing would desynchronize the framing with the peer.
+        let ty = fd.r#type()?;
         let seqpacket = if ty == socket2::Type::SEQPACKET {
             true
         } else if ty == socket2::Type::STREAM {
             false
         } else {
-            panic!("unsupported socket type {ty:?}");
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("unsupported socket type {ty:?}"),
+            ));
         };
-        let socket = PolledSocket::new(driver, fd).unwrap();
-        UnixSocket {
+        if !fd.peer_addr()?.is_unix() {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "socket peer is not AF_UNIX",
+            ));
+        }
+        let socket = PolledSocket::new(driver, fd)?;
+        Ok(UnixSocket {
             state: Mutex::new(SocketState {
                 socket,
                 sending_split_event: false,
             }),
             seqpacket,
-        }
+        })
     }
 
     /// Sends a whole packet from the calling thread without waiting, for the
@@ -1437,6 +1458,50 @@ mod tests {
     }
 
     #[async_test]
+    async fn test_join_non_socket_invitation(driver: DefaultDriver) {
+        let leader = UnixNode::new(driver.clone());
+        let (send, recv) = channel::<()>();
+        let mut invitation = leader.invite(send.into()).await.unwrap();
+        invitation.fd = std::fs::File::open("/dev/null").unwrap().into();
+        let (send2, recv2) = channel::<()>();
+        let err = UnixNode::join(driver, invitation, recv2.into())
+            .await
+            .err()
+            .unwrap();
+        let super::JoinError::Socket(err) = err else {
+            panic!("expected socket initialization failure, got {err}");
+        };
+        assert_eq!(err.raw_os_error(), Some(libc::ENOTSOCK));
+        drop((recv, send2));
+        leader.shutdown().await;
+    }
+
+    #[async_test]
+    async fn test_socket_rejects_invalid_endpoints(driver: DefaultDriver) {
+        use socket2::Domain;
+        use socket2::Socket;
+        use socket2::Type;
+        use std::io::ErrorKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(dir.path().join("socket")).unwrap();
+        let tcp_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let tcp = std::net::TcpStream::connect(tcp_listener.local_addr().unwrap()).unwrap();
+
+        for (socket, kind) in [
+            (
+                Socket::new(Domain::UNIX, Type::STREAM, None).unwrap(),
+                ErrorKind::NotConnected,
+            ),
+            (Socket::from(listener), ErrorKind::NotConnected),
+            (Socket::from(tcp), ErrorKind::InvalidInput),
+        ] {
+            let err = super::UnixSocket::new(&driver, socket).err().unwrap();
+            assert_eq!(err.kind(), kind);
+        }
+    }
+
+    #[async_test]
     async fn test_three(driver: DefaultDriver) {
         let (p1, p2) = channel::<u32>();
         let (p3, mut p4) = channel::<u32>();
@@ -1672,7 +1737,7 @@ mod tests {
                     node,
                     remote_id,
                     handle,
-                    UnixSocket::new(driver, socket),
+                    UnixSocket::new(driver, socket).unwrap(),
                 );
             }
         }
@@ -1715,6 +1780,38 @@ mod tests {
                 );
                 (send.into(), recv.into())
             }
+        }
+
+        #[async_test]
+        async fn follower_rejects_invalid_socket(driver: DefaultDriver) {
+            let node = new_node();
+            let remote_id = NodeId::new();
+            let handle = node.add_remote(remote_id);
+            let mut recv = Receiver::<u32>::from(node.add_port(
+                PortId::new(),
+                Address {
+                    node: remote_id,
+                    port: PortId::new(),
+                },
+            ));
+            let pending = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::from([
+                (remote_id, handle),
+            ])));
+            let (send, requests) = channel();
+            let (socket, _peer) = Socket::pair(Domain::UNIX, Type::DGRAM, None).unwrap();
+            send.send(crate::unix_node::FollowerRequest::Connect(
+                remote_id,
+                Some(socket),
+            ));
+            drop(send);
+            let (tasks, _task_recv) = channel();
+            crate::unix_node::run_follower(&driver, &node, requests, pending.clone(), &tasks).await;
+            assert!(pending.lock().is_empty());
+            let err = recv.recv().await.unwrap_err();
+            assert!(
+                error_chain(&err).contains("unsupported socket type"),
+                "{err:?}"
+            );
         }
 
         #[derive(Protobuf)]
@@ -1805,7 +1902,7 @@ mod tests {
             raise_fd_limit();
             for ty in SOCKET_TYPES {
                 let (a, _b) = Socket::pair(Domain::UNIX, ty, None).unwrap();
-                let socket = UnixSocket::new(&driver, a);
+                let socket = UnixSocket::new(&driver, a).unwrap();
                 let (readers, _writers) = pipes(1);
                 let fds: Vec<_> = (0..MAX_FDS_PER_EVENT + 1)
                     .map(|_| OsResource::Fd(readers[0].try_clone().unwrap()))
@@ -1830,14 +1927,12 @@ mod tests {
         async fn framing_follows_socket_type(driver: DefaultDriver) {
             for ty in SOCKET_TYPES {
                 let (a, _b) = Socket::pair(Domain::UNIX, ty, None).unwrap();
-                let socket = UnixSocket::new(&driver, a);
+                let socket = UnixSocket::new(&driver, a).unwrap();
                 assert_eq!(socket.seqpacket, ty == Type::SEQPACKET, "{ty:?}");
             }
             let (a, _b) = Socket::pair(Domain::UNIX, Type::DGRAM, None).unwrap();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                UnixSocket::new(&driver, a)
-            }));
-            assert!(result.is_err(), "a datagram socket must be refused");
+            let err = UnixSocket::new(&driver, a).err().unwrap();
+            assert_eq!(err.kind(), ErrorKind::InvalidInput);
         }
 
         /// While the send task is stuck between the pieces of a split event,
@@ -1848,7 +1943,7 @@ mod tests {
             raise_fd_limit();
             let (a, raw) = Socket::pair(Domain::UNIX, Type::SEQPACKET, None).unwrap();
             raw.set_nonblocking(true).unwrap();
-            let socket = UnixSocket::new(&driver, a);
+            let socket = UnixSocket::new(&driver, a).unwrap();
             let mut receiver = unix_socket::ScmReceiver::new(64);
             let mut buf = [0u8; 64];
             let mut read_packet = |packets: &mut Vec<(u8, u32, usize)>| -> bool {
