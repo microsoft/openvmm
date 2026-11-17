@@ -9,6 +9,7 @@
 mod dma;
 mod input_gate;
 mod interrupt;
+mod restore_interrupt;
 mod saved_state;
 mod start;
 

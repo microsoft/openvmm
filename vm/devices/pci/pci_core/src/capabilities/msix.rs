@@ -216,6 +216,24 @@ impl MsiInterrupt {
         was_pending
     }
 
+    /// Returns whether an interrupt is pending, as
+    /// [`drain_pending`](Self::drain_pending) does, but leaves it pending.
+    pub fn holds_pending(&self) -> bool {
+        let state = self.0.lock();
+        if state.pending {
+            return true;
+        }
+        match &state.route {
+            Some(route) if route.consume_pending() => {
+                // Put the interrupt back on the route's event, which the
+                // route delivers once it is enabled again.
+                route.event().signal();
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn interrupt(&self) -> Interrupt {
         Interrupt::from_target(MsiInterruptTarget(self.0.clone()))
     }
@@ -578,7 +596,14 @@ mod save_restore {
                                 address,
                                 data,
                                 control,
-                                is_pending,
+                                // An interrupt that a masked vector received
+                                // stays in its MSI interrupt until the guest
+                                // reads the pending bits. Save the bit that
+                                // the read returns, and leave the interrupt
+                                // where it is, so that the save changes
+                                // nothing that the guest sees.
+                                is_pending: is_pending
+                                    || (!vec.is_enabled(state.enabled) && vec.msi.holds_pending()),
                             }
                         })
                         .collect()
@@ -606,6 +631,18 @@ mod save_restore {
                     data: new_vec.data,
                     control: new_vec.control,
                     is_pending: new_vec.is_pending,
+                };
+                // Program the vector's delivery as the guest's writes of the
+                // table did before the save, so that the restored vector
+                // delivers to its message. Deliver nothing now: a vector that
+                // the restore leaves masked keeps its pending bit for its
+                // unmask, and an interrupt that the destination latched before
+                // the restore is not part of the restored state.
+                vec.msi.drain_pending();
+                if vec.is_enabled(enabled) {
+                    vec.msi.enable(vec.state.address, vec.state.data, false);
+                } else {
+                    vec.msi.disable();
                 }
             }
 
@@ -902,5 +939,88 @@ mod tests {
             address: 0xFEE00000,
             data: 0x99
         }));
+    }
+
+    /// A restore programs each vector as the guest programmed it before the
+    /// save, without a write of the table, and delivers nothing itself: an
+    /// unmasked vector delivers its next interrupt to its message, and a
+    /// masked one keeps the interrupt that it received before the save until
+    /// the guest unmasks it, although the guest never read its pending bit.
+    #[test]
+    fn restore_programs_vectors_without_delivering() {
+        use vmcore::save_restore::ProtobufSaveRestore;
+
+        let source_conn = MsiConnection::new();
+        let (mut source, mut source_cap) = MsixEmulator::new(2, 2, &source_conn.target());
+        source_conn.connect(TestPciInterruptController::new().signal_msi());
+        write_cap_u32(&mut source_cap, 0, 0x80000000);
+        for vector in 0..2u64 {
+            source.write_u32(vector * 16, 0xFEE00000);
+            source.write_u32(vector * 16 + 8, 0x40 + vector as u32);
+        }
+        // Vector 0 is unmasked, and vector 1 stays masked with an interrupt
+        // pending.
+        source.write_u32(12, 0);
+        source.interrupt(1).unwrap().deliver();
+        let saved = source_cap.save().unwrap();
+
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, &msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+        cap.restore(saved).unwrap();
+        assert_eq!(msi_controller.get_next_interrupt(), None);
+        assert_eq!(msix.read_u32(32), 2);
+
+        msix.interrupt(0).unwrap().deliver();
+        assert_eq!(
+            msi_controller.get_next_interrupt(),
+            Some((0xFEE00000, 0x40))
+        );
+        msix.write_u32(16 + 12, 0);
+        assert_eq!(
+            msi_controller.get_next_interrupt(),
+            Some((0xFEE00000, 0x41))
+        );
+        assert_eq!(msi_controller.get_next_interrupt(), None);
+        assert_eq!(msix.read_u32(32), 0);
+    }
+
+    /// A save records the interrupt that a masked vector holds, on its route's
+    /// event or in its MSI interrupt, and leaves it there, so that the save
+    /// changes nothing that the guest sees: the restored capability reports
+    /// both pending bits, and the saved one delivers its route's interrupt
+    /// once, on the route, when the guest unmasks the vector, although
+    /// another interrupt arrived after the save.
+    #[test]
+    fn save_leaves_masked_interrupts_pending() {
+        use vmcore::save_restore::ProtobufSaveRestore;
+
+        let (irqfd, _calls) = mock_irqfd(1);
+        let msi_conn = MsiConnection::new();
+        msi_conn.connect_irqfd(irqfd);
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, &msi_conn.target());
+        let msi_controller = TestPciInterruptController::new();
+        msi_conn.connect(msi_controller.signal_msi());
+        // Vector 0 holds its interrupt on its route's event, and vector 1 in
+        // its MSI interrupt.
+        let event = msix.interrupt(0).unwrap().event().unwrap().clone();
+        write_cap_u32(&mut cap, 0, 0x80000000);
+        msix.write_u32(0, 0xFEE00000);
+        msix.write_u32(8, 0x40);
+        event.signal();
+        msix.interrupt(1).unwrap().deliver();
+        let saved = cap.save().unwrap();
+
+        let restored_conn = MsiConnection::new();
+        let (restored, mut restored_cap) = MsixEmulator::new(2, 2, &restored_conn.target());
+        restored_conn.connect(TestPciInterruptController::new().signal_msi());
+        restored_cap.restore(saved).unwrap();
+        assert_eq!(restored.read_u32(32), 3);
+
+        event.signal();
+        msix.write_u32(12, 0);
+        assert_eq!(msi_controller.get_next_interrupt(), None);
+        assert!(event.try_wait());
     }
 }
