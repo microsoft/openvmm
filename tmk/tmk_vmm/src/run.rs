@@ -500,8 +500,9 @@ impl CpuIo for IoHandler<'_> {
             return;
         }
 
+        // The single VP rechecks pending interrupts after this MMIO exit.
         #[cfg(guest_arch = "aarch64")]
-        if self.gic.write(address, data) {
+        if self.gic.write(address, data, |_| {}) {
             return;
         }
         tracing::info!(vp = vp.index(), address, data = widen(data), "write mmio");

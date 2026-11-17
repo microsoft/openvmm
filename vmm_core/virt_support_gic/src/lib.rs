@@ -120,8 +120,9 @@ impl GicV3Model {
         self.distributor.read(address, data)
     }
 
-    pub fn write(&self, address: u64, data: &[u8]) -> bool {
-        self.distributor.write(address, data)
+    /// Writes a GIC MMIO register, notifying target VP indices for software-pended SPIs.
+    pub fn write(&self, address: u64, data: &[u8], wake: impl FnMut(usize)) -> bool {
+        self.distributor.write(address, data, wake)
     }
 
     pub fn set_spi_irq(&self, intid: u32, high: bool) -> Vec<VpIndex> {
@@ -915,7 +916,7 @@ mod gicd {
             }
         }
 
-        fn write32(&self, address: GicdRegister, value: u32) -> bool {
+        fn write32(&self, address: GicdRegister, value: u32, mut wake: impl FnMut(usize)) -> bool {
             assert!(address.0 & 3 == 0);
             match address {
                 GicdRegister::CTLR => {
@@ -954,10 +955,33 @@ mod gicd {
                 r if GicdRegister::ISPENDR.contains(&r.0) => {
                     let n = (r.0 & 0x7f) / 4;
                     if n != 0 {
-                        let mut state = self.state.lock();
-                        if let Some(pending) = state.pending.get_mut(n as usize) {
-                            *pending |= value;
-                            Self::update_pending_word_summary(&mut state, n as usize);
+                        let mut targets = Vec::new();
+                        {
+                            let mut state = self.state.lock();
+                            if let Some(pending) = state.pending.get_mut(n as usize) {
+                                *pending |= value;
+                                Self::update_pending_word_summary(&mut state, n as usize);
+                                let mut bits = value;
+                                while bits != 0 {
+                                    let bit = bits.trailing_zeros();
+                                    bits &= bits - 1;
+                                    let intid = u32::from(n) * 32 + bit;
+                                    if intid <= self.max_spi_intid {
+                                        targets.extend(
+                                            self.target_vps_for_spi(&state, intid)
+                                                .into_iter()
+                                                .map(|vp| vp.index() as usize),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        // Notify after releasing the state lock so a target VP
+                        // can immediately recheck its pending interrupts.
+                        targets.sort_unstable();
+                        targets.dedup();
+                        for index in targets {
+                            wake(index);
                         }
                     }
                 }
@@ -1216,9 +1240,10 @@ mod gicd {
             }
         }
 
-        pub fn write(&self, address: u64, data: &[u8]) -> bool {
+        /// Writes a GIC MMIO register, invoking `wake` outside the distributor state lock.
+        pub fn write(&self, address: u64, data: &[u8], wake: impl FnMut(usize)) -> bool {
             if self.gicd_range.contains_addr(address) {
-                self.write_gicd(address - self.gicd_range.start(), data);
+                self.write_gicd(address - self.gicd_range.start(), data, wake);
             } else if self.gicr_range.contains_addr(address) {
                 let vp = (address - self.gicr_range.start()) / aarch64defs::GIC_REDISTRIBUTOR_SIZE;
                 if let Some(gicr) = self.gicr.get(vp as usize) {
@@ -1236,7 +1261,7 @@ mod gicd {
             true
         }
 
-        fn write_gicd(&self, address: u64, data: &[u8]) {
+        fn write_gicd(&self, address: u64, data: &[u8], wake: impl FnMut(usize)) {
             if address & (data.len() as u64 - 1) != 0 {
                 tracing::warn!(address, ?data, "gicd write unaligned access");
                 return;
@@ -1244,7 +1269,7 @@ mod gicd {
             let address = GicdRegister(address as u16);
             let handled = match data.len() {
                 1 => self.write8(address, u8::from_ne_bytes(data.try_into().unwrap())),
-                4 => self.write32(address, u32::from_ne_bytes(data.try_into().unwrap())),
+                4 => self.write32(address, u32::from_ne_bytes(data.try_into().unwrap()), wake),
                 8 => self.write64(address, u64::from_ne_bytes(data.try_into().unwrap())),
                 _ => false,
             };
@@ -1370,7 +1395,7 @@ mod gicd {
             // this distributor implements only INTIDs 0 through 255.
             let unimplemented_enable = GicdRegister(GicdRegister::ISENABLER0.0 + 8 * 4);
             assert_eq!(distributor.read32(unimplemented_enable), Some(0));
-            assert!(distributor.write32(unimplemented_enable, u32::MAX));
+            assert!(distributor.write32(unimplemented_enable, u32::MAX, |_| {}));
             assert_eq!(distributor.read32(unimplemented_enable), Some(0));
 
             // Aff3 selects the second redistributor rather than the
@@ -1399,7 +1424,7 @@ mod gicd {
                 + u64::from(vp.index()) * aarch64defs::GIC_REDISTRIBUTOR_SIZE
                 + aarch64defs::GIC_REDISTRIBUTOR_FRAME_SIZE
                 + u64::from(register);
-            assert!(distributor.write(address, &value.to_ne_bytes()));
+            assert!(distributor.write(address, &value.to_ne_bytes(), |_| {}));
         }
 
         fn write_gicr_sgi(distributor: &Distributor, register: u16, value: u32) {
@@ -1427,6 +1452,7 @@ mod gicd {
                     .with_enable_grp0(group0)
                     .with_enable_grp1_non_secure(group1)
                     .into(),
+                |_| {},
             );
         }
 
@@ -1439,6 +1465,7 @@ mod gicd {
             assert!(distributor.write32(
                 GicdRegister(register.0 + (intid / 32 * 4) as u16),
                 1 << (intid & 31),
+                |_| {},
             ));
         }
 
@@ -1458,8 +1485,12 @@ mod gicd {
             let mut gicr = distributor.add_redistributor(0, true);
             let mask = (1 << (32 & 31)) | (1 << (63 & 31));
             set_group_enables(&distributor, false, true);
-            assert!(distributor.write32(GicdRegister(GicdRegister::IGROUPR0.0 + 4), mask));
-            assert!(distributor.write32(GicdRegister(GicdRegister::ISENABLER0.0 + 4), mask));
+            assert!(distributor.write32(GicdRegister(GicdRegister::IGROUPR0.0 + 4), mask, |_| {}));
+            assert!(distributor.write32(
+                GicdRegister(GicdRegister::ISENABLER0.0 + 4),
+                mask,
+                |_| {}
+            ));
             assert_eq!(distributor.ack(&mut gicr, true), 1023);
 
             set_software_pending_spi(&distributor, 32, true);
@@ -1488,8 +1519,8 @@ mod gicd {
             let route_register = GicdRegister(GicdRegister::IROUTER0.0 + (TEST_SPI * 8) as u16);
 
             set_group_enables(&distributor, false, true);
-            assert!(distributor.write32(group_register, mask));
-            assert!(distributor.write32(enable_register, mask));
+            assert!(distributor.write32(group_register, mask, |_| {}));
+            assert!(distributor.write32(enable_register, mask, |_| {}));
             assert!(distributor.write64(route_register, 1));
 
             assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp1]);
@@ -1514,6 +1545,65 @@ mod gicd {
         }
 
         #[test]
+        fn software_pending_spi_mmio_wakes_routed_vps() {
+            for (route, expected_wakes) in [(1, vec![1]), (1 << 31, vec![0, 1])] {
+                let mut distributor = empty_test_distributor();
+                let gicr0 = distributor.add_redistributor(0, false);
+                let gicr1 = distributor.add_redistributor(1, true);
+                let mask = 0b11;
+                set_group_enables(&distributor, false, true);
+                assert!(distributor.write32(
+                    GicdRegister(GicdRegister::IGROUPR0.0 + 4),
+                    mask,
+                    |_| {},
+                ));
+                assert!(distributor.write32(
+                    GicdRegister(GicdRegister::ISENABLER0.0 + 4),
+                    mask,
+                    |_| {},
+                ));
+                for intid in [TEST_SPI, TEST_SPI + 1] {
+                    assert!(distributor.write64(
+                        GicdRegister(GicdRegister::IROUTER0.0 + (intid * 8) as u16),
+                        route,
+                    ));
+                }
+                assert!(!distributor.irq_pending(&gicr0, true));
+                assert!(!distributor.irq_pending(&gicr1, true));
+
+                let mut wakes = Vec::new();
+                assert!(distributor.write(
+                    u64::from(GicdRegister::ISPENDR0.0 + 4),
+                    &mask.to_ne_bytes(),
+                    |index| wakes.push(index),
+                ));
+                assert_eq!(wakes, expected_wakes);
+                assert_eq!(
+                    distributor.irq_pending(&gicr0, true),
+                    route & (1 << 31) != 0
+                );
+                assert!(distributor.irq_pending(&gicr1, true));
+
+                // Clearing requests, setting no bits, and writing private or
+                // unimplemented SPI words do not notify a VP.
+                for (register, value) in [
+                    (GicdRegister::ICPENDR0.0 + 4, mask),
+                    (GicdRegister::ISPENDR0.0 + 4, 0),
+                    (GicdRegister::ISPENDR0.0, u32::MAX),
+                    (GicdRegister::ISPENDR0.0 + 8, 1),
+                ] {
+                    assert!(
+                        distributor.write(u64::from(register), &value.to_ne_bytes(), |_| {
+                            panic!("unexpected wake for register {register:#x}")
+                        })
+                    );
+                }
+                assert!(!distributor.irq_pending(&gicr0, true));
+                assert!(!distributor.irq_pending(&gicr1, true));
+            }
+        }
+
+        #[test]
         fn single_security_state_group_registers_are_coherent() {
             let distributor = test_distributor();
 
@@ -1525,6 +1615,7 @@ mod gicd {
                         .with_enable_grp1_non_secure(true)
                         .with_enable_grp1_secure(true)
                         .into(),
+                    |_| {},
                 )
             );
             let ctlr = GicdCtlr::from(distributor.read32(GicdRegister::CTLR).unwrap());
@@ -1535,7 +1626,7 @@ mod gicd {
             assert!(ctlr.are());
 
             let gicd_igrpmodr1 = GicdRegister(GicdRegister::IGRPMODR0.0 + 4);
-            assert!(distributor.write32(gicd_igrpmodr1, u32::MAX));
+            assert!(distributor.write32(gicd_igrpmodr1, u32::MAX, |_| {}));
             assert_eq!(distributor.read32(gicd_igrpmodr1), Some(0));
 
             write_gicr_sgi(&distributor, GicrSgiRegister::IGRPMODR0.0, u32::MAX);
@@ -1604,8 +1695,13 @@ mod gicd {
             assert!(distributor.write32(
                 GicdRegister(GicdRegister::IGROUPR0.0 + 4),
                 1 << (GROUP1_SPI & 31),
+                |_| {},
             ));
-            assert!(distributor.write32(GicdRegister(GicdRegister::ISENABLER0.0 + 4), 0b11));
+            assert!(distributor.write32(
+                GicdRegister(GicdRegister::ISENABLER0.0 + 4),
+                0b11,
+                |_| {}
+            ));
             assert_eq!(distributor.set_spi_irq(GROUP0_SPI, true), [vp]);
             assert_eq!(distributor.set_spi_irq(GROUP1_SPI, true), [vp]);
             assert!(distributor.irq_pending(&gicr, false));
@@ -1625,9 +1721,9 @@ mod gicd {
             let group_register = GicdRegister(GicdRegister::IGROUPR0.0 + 4);
             let enable_register = GicdRegister(GicdRegister::ISENABLER0.0 + 4);
             let pending_register = GicdRegister(GicdRegister::ISPENDR0.0 + 4);
-            assert!(distributor.write32(group_register, 1 << (GROUP1_INTID & 31)));
-            assert!(distributor.write32(enable_register, 0b11));
-            assert!(distributor.write32(pending_register, 0b11));
+            assert!(distributor.write32(group_register, 1 << (GROUP1_INTID & 31), |_| {}));
+            assert!(distributor.write32(enable_register, 0b11, |_| {}));
+            assert!(distributor.write32(pending_register, 0b11, |_| {}));
 
             let select = || {
                 let state = distributor.state.lock();
@@ -1814,9 +1910,9 @@ mod gicd {
             let enable_register = GicdRegister(GicdRegister::ISENABLER0.0 + 4);
             let pending_register = GicdRegister(GicdRegister::ISPENDR0.0 + 4);
             let active_register = GicdRegister(GicdRegister::ISACTIVER0.0 + 4);
-            assert!(distributor.write32(group_register, 0b10));
-            assert!(distributor.write32(enable_register, 0b11));
-            assert!(distributor.write32(pending_register, 0b11));
+            assert!(distributor.write32(group_register, 0b10, |_| {}));
+            assert!(distributor.write32(enable_register, 0b11, |_| {}));
+            assert!(distributor.write32(pending_register, 0b11, |_| {}));
 
             set_group_enables(&distributor, false, true);
             assert!(!distributor.irq_pending(&gicr, false));
@@ -1921,9 +2017,11 @@ mod gicd {
                 let distributor = test_distributor();
                 let mask = 1 << (TEST_SPI & 31);
                 if !enabled {
-                    assert!(
-                        distributor.write32(GicdRegister(GicdRegister::ICENABLER0.0 + 4), mask,)
-                    );
+                    assert!(distributor.write32(
+                        GicdRegister(GicdRegister::ICENABLER0.0 + 4),
+                        mask,
+                        |_| {},
+                    ));
                 }
                 assert_spi_pending_word(&distributor, 1, 0);
 
@@ -1959,15 +2057,27 @@ mod gicd {
             let edge_mask = (1 << (47 & 31)) | (1 << (48 & 31));
 
             // Mix level and edge SPIs across both ICFGR words in a pending word.
-            assert!(distributor.write32(GicdRegister(GicdRegister::ICFGR0.0 + 2 * 4), 1 << 31,));
-            assert!(distributor.write32(GicdRegister(GicdRegister::ICFGR0.0 + 3 * 4), 1 << 1,));
+            assert!(distributor.write32(
+                GicdRegister(GicdRegister::ICFGR0.0 + 2 * 4),
+                1 << 31,
+                |_| {},
+            ));
+            assert!(distributor.write32(
+                GicdRegister(GicdRegister::ICFGR0.0 + 3 * 4),
+                1 << 1,
+                |_| {},
+            ));
             for intid in [32, 47, 48, 63] {
                 distributor.set_spi_irq(intid, true);
             }
             assert_spi_pending_word(&distributor, 1, level_mask | edge_mask);
 
             // A high edge input must not recreate a cleared edge latch.
-            assert!(distributor.write32(GicdRegister(GicdRegister::ICPENDR0.0 + 4), u32::MAX,));
+            assert!(distributor.write32(
+                GicdRegister(GicdRegister::ICPENDR0.0 + 4),
+                u32::MAX,
+                |_| {},
+            ));
             assert_spi_pending_word(&distributor, 1, level_mask);
             for intid in [47, 48] {
                 distributor.set_spi_irq(intid, true);
@@ -1985,7 +2095,11 @@ mod gicd {
                 distributor.set_spi_irq(intid, false);
             }
             assert_spi_pending_word(&distributor, 1, edge_mask);
-            assert!(distributor.write32(GicdRegister(GicdRegister::ICPENDR0.0 + 4), u32::MAX,));
+            assert!(distributor.write32(
+                GicdRegister(GicdRegister::ICPENDR0.0 + 4),
+                u32::MAX,
+                |_| {},
+            ));
             assert_spi_pending_word(&distributor, 1, 0);
 
             // Private and unimplemented distributor pending words remain RAZ.
@@ -2332,6 +2446,7 @@ mod gicd {
                                 assert!(distributor.write32(
                                     GicdRegister(register.0 + (intid / 32 * 4) as u16),
                                     mask,
+                                    |_| {},
                                 ));
                             }
                         };
@@ -3254,18 +3369,22 @@ mod tests {
         assert!(distributor.write(
             u64::from(GicdRegister::CTLR.0),
             &u32::from(GicdCtlr::new().with_enable_grp1_non_secure(true)).to_le_bytes(),
+            |_| {},
         ));
         assert!(distributor.write(
             u64::from(GicdRegister::IGROUPR.start) + u64::from(intid / 32 * 4),
             &(1u32 << (intid & 31)).to_le_bytes(),
+            |_| {},
         ));
         assert!(distributor.write(
             u64::from(GicdRegister::ICFGR.start) + u64::from(intid / 16 * 4),
             &(u32::from(edge) << ((intid & 15) * 2 + 1)).to_le_bytes(),
+            |_| {},
         ));
         assert!(distributor.write(
             u64::from(GicdRegister::ISENABLER.start) + u64::from(intid / 32 * 4),
             &(1u32 << (intid & 31)).to_le_bytes(),
+            |_| {},
         ));
         (distributor, redistributor)
     }
@@ -3305,7 +3424,7 @@ mod tests {
     fn priority_write_preserves_level_triggered_spi_configuration() {
         let (distributor, mut redistributor) = spi(130, false);
         let address = u64::from(GicdRegister::IPRIORITYR.start) + 8 * 4;
-        assert!(distributor.write(address, &0xa0a0a0a0u32.to_le_bytes()));
+        assert!(distributor.write(address, &0xa0a0a0a0u32.to_le_bytes(), |_| {}));
         let mut priority = [0; 4];
         assert!(distributor.read(address, &mut priority));
         assert_eq!(u32::from_le_bytes(priority), 0xa0a0a0a0);

@@ -1304,11 +1304,11 @@ impl<'p> Processor for HvfProcessor<'p> {
                                     _ => unreachable!(),
                                 }
                                 .to_ne_bytes();
-                                if !self
-                                    .partition
-                                    .gicd
-                                    .write(exception.physical_address, &data[..len])
-                                {
+                                if !self.partition.gicd.write(
+                                    exception.physical_address,
+                                    &data[..len],
+                                    |index| self.partition.vps[index].wake(),
+                                ) {
                                     dev.write_mmio(
                                         vp_index,
                                         exception.physical_address,
