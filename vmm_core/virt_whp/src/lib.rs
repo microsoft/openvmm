@@ -1417,8 +1417,6 @@ impl WhpPartitionInner {
             let mut caps = caps.map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
             caps.tsc_deadline &= matches!(vtl0.lapic, LocalApicKind::Offloaded);
-            // The VP state access does not hold UMWAIT_CONTROL.
-            caps.umwait_control = false;
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
             caps.nested_virt = nested_virt;

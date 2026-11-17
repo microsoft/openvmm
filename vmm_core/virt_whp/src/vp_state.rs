@@ -239,11 +239,11 @@ mod x86 {
         }
 
         fn umwait_control(&mut self) -> Result<vp::UmwaitControl, Self::Error> {
-            Err(Error::UnsupportedState("umwait_control"))
+            self.run.vp.get_register_state(self.vtl)
         }
 
-        fn set_umwait_control(&mut self, _value: &vp::UmwaitControl) -> Result<(), Self::Error> {
-            Err(Error::UnsupportedState("umwait_control"))
+        fn set_umwait_control(&mut self, value: &vp::UmwaitControl) -> Result<(), Self::Error> {
+            self.run.vp.set_register_state(self.vtl, value)
         }
 
         fn debug_ctl(&mut self) -> Result<vp::DebugCtl, Self::Error> {
