@@ -9,6 +9,7 @@ mod macros;
 
 pub const PROTOCOL_VERSION: &str = "9P2000.L";
 pub const HEADER_SIZE: usize = 7;
+pub const MINIMUM_RESPONSE_BUFFER_SIZE: usize = HEADER_SIZE + size_of::<u32>();
 const QID_SIZE: usize = 13;
 
 // These messages use the format:
@@ -302,11 +303,15 @@ pub struct SliceWriter<'a> {
 
 impl<'a> SliceWriter<'a> {
     // Creat an instance to write after the header.
-    pub fn new(slice: &'a mut [u8]) -> SliceWriter<'a> {
-        SliceWriter {
+    pub fn new(slice: &'a mut [u8]) -> lx::Result<SliceWriter<'a>> {
+        if slice.len() < MINIMUM_RESPONSE_BUFFER_SIZE {
+            return Err(lx::Error::EINVAL);
+        }
+
+        Ok(SliceWriter {
             slice,
             offset: HEADER_SIZE,
-        }
+        })
     }
 
     // Creat an instance that doesn't skip the header.
@@ -427,16 +432,18 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
-    fn slice_writer_peek_checks_offset_and_range() {
-        for capacity in 0..HEADER_SIZE {
-            let mut buf = vec![0; capacity];
-            let mut writer = SliceWriter::new(&mut buf);
-            assert_eq!(writer.peek(..), Err(lx::Error::EINVAL));
-            assert_eq!(writer.peek(0..0), Err(lx::Error::EINVAL));
+    fn slice_writer_rejects_short_buffers() {
+        for capacity in 0..MINIMUM_RESPONSE_BUFFER_SIZE {
+            let mut buf = vec![0xcc; capacity];
+            assert!(matches!(SliceWriter::new(&mut buf), Err(lx::Error::EINVAL)));
+            assert_eq!(buf, vec![0xcc; capacity]);
         }
+    }
 
+    #[test]
+    fn slice_writer_peek_checks_range() {
         let mut buf = [0; HEADER_SIZE + 4];
-        let mut writer = SliceWriter::new(&mut buf);
+        let mut writer = SliceWriter::new(&mut buf).unwrap();
         assert_eq!(writer.peek(0..5), Err(lx::Error::EINVAL));
         writer.peek(0..4).unwrap().copy_from_slice(b"data");
         assert_eq!(writer.size(), HEADER_SIZE);
@@ -449,7 +456,7 @@ mod tests {
     #[test]
     fn slice_writer_next_doesnt_advance_on_error() {
         let mut buf = vec![0u8; HEADER_SIZE + 4];
-        let mut w = SliceWriter::new(&mut buf);
+        let mut w = SliceWriter::new(&mut buf).unwrap();
 
         // This succeeds and moves offset to HEADER_SIZE + 2.
         w.next(2).unwrap();

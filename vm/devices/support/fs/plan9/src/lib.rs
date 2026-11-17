@@ -24,7 +24,6 @@ use std::sync::atomic::Ordering;
 
 const MINIMUM_REQUEST_BUFFER_SIZE: u32 = 4096;
 const MAXIMUM_REQUEST_BUFFER_SIZE: u32 = 256 * 1024;
-const MINIMUM_RESPONSE_BUFFER_SIZE: usize = HEADER_SIZE + size_of::<u32>();
 
 // The maximum size of an IO request (0 means no limit).
 const IO_UNIT: u32 = 0;
@@ -59,15 +58,11 @@ impl Plan9FileSystem {
 
     // Process a message received from virtio.
     pub fn process_message(&self, message: &[u8], response: &mut [u8]) -> lx::Result<usize> {
-        if response.len() < MINIMUM_RESPONSE_BUFFER_SIZE {
-            return Err(Error::EINVAL);
-        }
-
+        let mut writer = SliceWriter::new(response)?;
         let mut reader = SliceReader::new(message);
         let header = reader.header()?;
         reader.limit(header.size as usize)?;
 
-        let mut writer = SliceWriter::new(response);
         if let Err(errno) = self.handle_message(&header, reader, &mut writer) {
             writer.reset();
             writer.u32(errno.value() as u32)?;
@@ -438,7 +433,7 @@ mod tests {
 
     fn request(message_type: u8, fields: impl FnOnce(&mut SliceWriter<'_>)) -> Vec<u8> {
         let mut request = vec![0; 128];
-        let mut writer = SliceWriter::new(&mut request);
+        let mut writer = SliceWriter::new(&mut request).unwrap();
         fields(&mut writer);
         writer.header(message_type, TAG).unwrap();
         let size = writer.size();
@@ -449,7 +444,7 @@ mod tests {
     fn xattr_requests() -> [Vec<u8>; 3] {
         [(30, "security.capability"), (30, ""), (32, "user.test")].map(|(message_type, name)| {
             let mut request = vec![0; 128];
-            let mut writer = SliceWriter::new(&mut request);
+            let mut writer = SliceWriter::new(&mut request).unwrap();
             writer.u32(1).unwrap();
             if message_type == 30 {
                 writer.u32(2).unwrap();
