@@ -205,17 +205,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-lock"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0876700b0d007ad25d5508865a4259c3af9af6d296bf663a0d586d0bc3369f6f"
-dependencies = [
- "event-listener",
- "event-listener-strategy",
- "pin-project-lite",
-]
-
-[[package]]
 name = "async-task"
 version = "4.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7803,11 +7792,11 @@ name = "scsidisk"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-lock",
  "async-trait",
  "disk_backend",
  "disk_hook",
  "disk_prwrap",
+ "event-listener",
  "futures",
  "getrandom 0.4.2",
  "guestmem",
