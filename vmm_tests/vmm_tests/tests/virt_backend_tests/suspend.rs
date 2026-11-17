@@ -422,6 +422,11 @@ fn check_restored(
 
     if let When::BeforeRun = case.when {
         case.wake.request(partition);
+        if let Wake::Nmi = case.wake {
+            // The VP takes the NMI that it holds pending as it first runs.
+            let pending = processor.access_state(Vtl::Vtl0).activity()?.nmi_pending;
+            anyhow::ensure!(pending, "the VP does not hold the NMI as pending");
+        }
     }
     let (io, mut watch) = guest_io();
     let Some(woken) = case.wake.marks() else {
@@ -522,10 +527,11 @@ fn whp_test(name: &'static str, hv1: bool, case: Case) -> petri::TestCase {
 // expects that. A restored VP must stay suspended, whether the restore is into
 // the VP that was saved or into a new partition's, as a snapshot's is, until
 // something wakes it, and then resume after its suspending instruction. That
-// holds when the wake-up is already pending as the VP first runs too, as the
-// vector of a LAPIC timer that expired during the downtime is: taken before
-// the `hlt`, it would return to it and leave the VP suspended with nothing to
-// wake it. The cases register for WHP alone; KVM and MSHV have none yet. One
+// holds when the wake-up is already pending as the VP first runs too. An NMI
+// wakes the VP at once. An interrupt, as the vector of a LAPIC timer that
+// expired during the downtime is, must not be taken before the `hlt`, which it
+// would return to, leaving the VP suspended with nothing to wake it. The cases
+// register for WHP alone; KVM and MSHV have none yet. One
 // case runs the guest in 64-bit mode with paging, as Linux does, so that
 // finding the instruction before RIP takes a walk of page tables.
 petri::multitest!(vec![
