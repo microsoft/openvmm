@@ -48,7 +48,6 @@ pub(crate) async fn vm_host_mshv(
 }
 
 /// Run the L2 test before and after an L1 reboot to exercise used nested state.
-#[cfg(target_os = "linux")]
 async fn reboot_l1(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (mut vm, mut agent) = config
         .with_nested_virt()
@@ -92,7 +91,6 @@ async fn reboot_l1(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Resul
 /// Reboot a two-VP Linux L1 three times with nesting enabled and VMBus disabled.
 /// Check changed boot IDs, connectivity, and VMX/SVM exposure on both VPs.
 /// This does not launch an L2; `reboot_l2` separately exercises an L2 reboot.
-#[cfg(target_os = "linux")]
 #[vmm_test_macros::vmm_test_with(
     openvmm,
     requires(nested_virt, nested_reset),

@@ -68,6 +68,7 @@ pub fn kvm_nested_state_available() -> bool {
 }
 
 /// Returns whether MSHV supports partition scrub on this machine.
+/// TODO: Remove when dom0 Kernel ships with this IOCTL
 pub fn mshv_partition_scrub_available() -> bool {
     #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native))]
     {
