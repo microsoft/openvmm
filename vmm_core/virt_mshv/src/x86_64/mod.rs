@@ -530,6 +530,8 @@ impl MshvPartitionInner {
             spec_ctrl: false,
             umwait_control: false,
             bndcfgs: false,
+            osvw: false,
+            svm_msrs: false,
             debug_ctl: false,
             misc_msrs: false,
             machine_check: false,
