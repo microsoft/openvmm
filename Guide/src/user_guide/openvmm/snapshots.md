@@ -193,7 +193,9 @@ released; ordinary paused VMs are not subject to this restriction.
 The snapshot lifecycle RPCs must follow the capture's order. The worker
 rejects a snapshot quiesce outside a guest-requested boundary, without
 stopping the VM, and refuses to release the boundary of a VM that it has
-quiesced, which only the rollback of a failed capture runs again.
+quiesced, which only the rollback of a failed capture runs again. It also
+rejects a rollback outside a boundary without starting the VM, so a paused VM
+runs again only through a resume.
 
 ## Restoring a snapshot
 
