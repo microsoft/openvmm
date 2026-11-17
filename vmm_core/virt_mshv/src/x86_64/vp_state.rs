@@ -5,6 +5,7 @@ use crate::Error;
 use crate::ErrorInner;
 use crate::MshvProcessor;
 use crate::VcpuFdExt;
+use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
 use mshv_bindings::MSHV_VP_STATE_SIEFP;
@@ -47,7 +48,17 @@ impl MshvProcessor<'_> {
         T: HvRegisterState<HvX64RegisterName, N>,
     {
         let mut regs = T::default();
-        let mut assoc = regs.names().map(|name| HvRegisterAssoc {
+        let values = self.get_register_values(regs.names())?;
+        regs.set_values(values.into_iter());
+        Ok(regs)
+    }
+
+    /// Returns the values of the registers that `names` lists, in its order.
+    pub(crate) fn get_register_values<const N: usize>(
+        &self,
+        names: &[HvX64RegisterName; N],
+    ) -> Result<[HvRegisterValue; N], Error> {
+        let mut assoc = names.map(|name| HvRegisterAssoc {
             name: name.into(),
             pad: [0; 3],
             value: FromZeros::new_zeroed(),
@@ -58,8 +69,7 @@ impl MshvProcessor<'_> {
             .get_hvdef_regs(&mut assoc[..])
             .map_err(ErrorInner::Register)?;
 
-        regs.set_values(assoc.iter().map(|assoc| assoc.value));
-        Ok(regs)
+        Ok(assoc.map(|assoc| assoc.value))
     }
 
     fn set_state(&self, ty: u32, data: &[u8]) -> Result<(), Error> {
@@ -253,7 +263,12 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn activity(&mut self) -> Result<vp::Activity, Self::Error> {
-        let mut activity: vp::Activity = self.get_register_state()?;
+        // The hypervisor can hold a pending interruption that the activity
+        // cannot, such as a software interrupt that it is delivering, so the
+        // save refuses it rather than drop it.
+        let values = self.get_register_values(vp::Activity::default().names())?;
+        let mut activity =
+            vp::Activity::from_hv_values(values).map_err(ErrorInner::UnsupportedState)?;
         // The NMI pending bit is not part of the register state; it lives
         // in the APIC page.
         activity.nmi_pending = self.get_lapic()?.hv_apic_nmi_pending();
