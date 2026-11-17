@@ -36,7 +36,13 @@ snapshot has no machine contract. Tiered microVM snapshots record capture
 tier, clone/resume policy, and consumed configuration sections. Field 18 holds
 the snapshot ID that SaveVM and the command line's `save-snapshot` generate,
 which RestoreVM can require; a microVM capture records the zero ID, which
-stands for none.
+stands for none. A manifest without the field, such as one of version 2 that
+predates it, reads with the zero ID too, which RestoreVM refuses only when it
+expects an ID. Restore decodes the ID alone, after the magic, and refuses a
+manifest whose field 18 is not a GUID of 16 bytes as malformed before it
+decodes the rest. The ID joined version 2 without a new version: it moves no
+field and changes no field's type, and a manifest without it keeps its
+meaning.
 
 The format is a local machine-state contract, not an authenticated container.
 Every snapshot receives the same regular-file, no-follow/no-reparse, bounded

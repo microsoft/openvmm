@@ -122,6 +122,15 @@ struct ManifestFormatMagic {
     format_magic: Vec<u8>,
 }
 
+/// The snapshot ID of a manifest of [`MANIFEST_VERSION`], which it keeps in
+/// field 18 as [`SnapshotManifest`] does.
+#[derive(Protobuf)]
+#[mesh(package = "openvmm.snapshot")]
+struct ManifestSnapshotId {
+    #[mesh(18, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+    snapshot_id: guid::Guid,
+}
+
 /// Decodes a manifest of this format, one that [`validate_manifest_header`]
 /// accepts.
 ///
@@ -131,6 +140,11 @@ struct ManifestFormatMagic {
 /// and refuses any other version or magic with `E_SNAPSHOT_VERSION` before it
 /// decodes the rest. The magic comes second, since only the formats of this
 /// version agree on the type of field 10.
+///
+/// It then decodes the snapshot ID alone, so that it refuses a manifest whose
+/// field 18 is not a GUID of 16 bytes as malformed by its ID, rather than as
+/// a manifest that failed to decode. A manifest without the field, such as one
+/// of this version that predates it, has the zero ID, which stands for none.
 pub(super) fn decode_manifest(bytes: &[u8]) -> anyhow::Result<SnapshotManifest> {
     let ManifestVersion { version } =
         mesh::payload::decode(bytes).context("failed to decode snapshot manifest")?;
@@ -138,6 +152,11 @@ pub(super) fn decode_manifest(bytes: &[u8]) -> anyhow::Result<SnapshotManifest> 
     let ManifestFormatMagic { format_magic } =
         mesh::payload::decode(bytes).context("failed to decode snapshot manifest")?;
     validate_format_magic(&format_magic)?;
+    // Decoding the version read every field's key and length, so only the
+    // snapshot ID's type or length can fail this decode.
+    let ManifestSnapshotId { snapshot_id: _ } = mesh::payload::decode(bytes).context(
+        "snapshot manifest is malformed: its snapshot ID, field 18, is not a GUID of 16 bytes",
+    )?;
     let manifest: SnapshotManifest =
         mesh::payload::decode(bytes).context("failed to decode snapshot manifest")?;
     validate_manifest_header(&manifest)?;
