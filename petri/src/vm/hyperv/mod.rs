@@ -364,18 +364,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let supports_com3 = {
             // Hyper-V VBS VMs don't work with COM3 enabled.
             // Hypervisor support is needed for this to work.
-            //
-            // Hyper-V VBS VMs on AMD hosts fail before OpenHCL can be reached
-            // through diag_client, so try COM3 for non-TPM VBS tests to capture
-            // early boot output. Intel hosts, where VBS boots, show whether
-            // COM3 carries OpenHCL output for VBS VMs at all. TPM tests keep
-            // the default configuration.
-            let is_vbs = matches!(config.firmware.isolation(), Some(IsolationType::Vbs));
-            let try_vbs_com3 = is_vbs && !config.name.contains("::tpm");
-            if try_vbs_com3 {
-                tracing::info!("trying COM3 for hyper-v vbs vm");
-            }
-            let is_not_vbs = !is_vbs || try_vbs_com3;
+            let is_not_vbs = !matches!(config.firmware.isolation(), Some(IsolationType::Vbs));
 
             // The Hyper-V serial device for ARM doesn't support additional
             // serial ports yet.

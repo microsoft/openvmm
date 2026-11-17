@@ -4,7 +4,6 @@
 //! Provides an interface for creating and managing Hyper-V VMs
 
 use super::host_diagnostics::HostDiagnostics;
-use super::host_diagnostics::HostDiagnosticsKind;
 use super::hvc;
 use super::hvc::VmState;
 use super::powershell;
@@ -107,15 +106,14 @@ impl HyperVVM {
             }
         }
 
-        // Hyper-V VBS VMs can fail before OpenHCL produces any output, and SNP
-        // VMs can receive unexplained unrecoverable exception intercepts, so
-        // record host-side diagnostics for their lifetime.
-        let host_diagnostics = match args.guest_state_isolation_type {
-            Some(powershell::HyperVGuestStateIsolationType::Vbs) => Some(HostDiagnosticsKind::Vbs),
-            Some(powershell::HyperVGuestStateIsolationType::Snp) => Some(HostDiagnosticsKind::Snp),
-            _ => None,
-        }
-        .map(|kind| HostDiagnostics::start(logger.output_dir(), kind));
+        // SNP VMs can receive unrecoverable exception intercepts whose cause
+        // is only visible to the hypervisor, so trace hypervisor diagnostics
+        // for their lifetime.
+        let host_diagnostics = matches!(
+            args.guest_state_isolation_type,
+            Some(powershell::HyperVGuestStateIsolationType::Snp)
+        )
+        .then(|| HostDiagnostics::start(logger.output_dir()));
 
         args.make_compatible().await?;
         let vmid = powershell::run_new_customvm(&ps_mod, args).await?;
