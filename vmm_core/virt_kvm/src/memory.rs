@@ -19,6 +19,12 @@ use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use thiserror::Error;
 
+/// The bits of a memory slot ID that select KVM's address space 1, the one a
+/// vCPU uses while in SMM: KVM takes the address space from the upper 16 bits
+/// of the ID that `KVM_SET_USER_MEMORY_REGION` is given.
+#[cfg(guest_arch = "x86_64")]
+const SMM_ADDRESS_SPACE_SLOT_BITS: u32 = 1 << 16;
+
 #[derive(Debug, Error)]
 pub enum MemoryError {
     #[error("kvm memory operation failed")]
@@ -151,6 +157,32 @@ impl KvmMemoryBackingMode {
             initial_private,
         }))
     }
+
+    /// Returns whether RAM that is mapped with this backing is also registered
+    /// in KVM's address space 1, which a vCPU uses while in SMM.
+    ///
+    /// A vCPU that takes an SMI saves its state at SMBASE, which is in RAM,
+    /// through that address space, and KVM marks the whole VM dead when there
+    /// is no slot there. A guest can send itself an SMI, and KVM leaves
+    /// userspace no way to refuse one, so each RAM slot needs a mirror there,
+    /// of all of RAM and not of the default SMBASE alone, since a guest can
+    /// relocate SMBASE.
+    ///
+    /// KVM reports a second address space only where it has SMM built in, and
+    /// not for a VM with private memory, which it does not support SMM with and
+    /// for which it takes no slot in address space 1.
+    #[cfg(guest_arch = "x86_64")]
+    pub(crate) fn maps_smm_address_space(&self, kvm: &kvm::Partition) -> Result<bool, MemoryError> {
+        match self {
+            Self::Userspace => {
+                let address_spaces = kvm
+                    .check_extension(kvm::KVM_CAP_MULTI_ADDRESS_SPACE)
+                    .map_err(kvm::Error::CheckExtension)?;
+                Ok(address_spaces > 1)
+            }
+            Self::GuestMemfd(_) => Ok(false),
+        }
+    }
 }
 
 impl KvmPartitionInner {
@@ -208,6 +240,8 @@ impl KvmPartitionInner {
         }
         let (guest_memfd_offset, private_attributes_set) = match backing {
             KvmMemoryBacking::Userspace => {
+                #[cfg(guest_arch = "x86_64")]
+                let remapped = state.ranges[slot_to_use].is_some();
                 // SAFETY: `map_region` requires its caller to keep
                 // `data..data+size` valid until this guest-physical range is
                 // unmapped or the partition is destroyed.
@@ -220,6 +254,30 @@ impl KvmPartitionInner {
                         readonly,
                     )?
                 };
+                // SAFETY: as above.
+                #[cfg(guest_arch = "x86_64")]
+                if let Err(err) =
+                    unsafe { self.set_smm_slot(slot_to_use, data, size, addr, readonly) }
+                {
+                    // Leave the range unmapped rather than mapped in address
+                    // space 0 alone. A slot that was already mapped has a
+                    // mirror, which a new one does not.
+                    // SAFETY: clearing a slot removes the memory reference.
+                    unsafe {
+                        self.kvm.set_user_memory_region(
+                            slot_to_use as u32,
+                            std::ptr::null_mut(),
+                            0,
+                            0,
+                            false,
+                        )?;
+                        if remapped {
+                            self.clear_smm_slot(slot_to_use)?;
+                        }
+                    }
+                    state.ranges[slot_to_use] = None;
+                    return Err(err.into());
+                }
                 (None, false)
             }
             #[cfg(guest_arch = "x86_64")]
@@ -308,8 +366,73 @@ impl KvmPartitionInner {
             // SAFETY: the caller ensures clearing this slot is valid.
             unsafe {
                 self.kvm
-                    .set_user_memory_region(slot as u32, std::ptr::null_mut(), 0, 0, false)
-            }
+                    .set_user_memory_region(slot as u32, std::ptr::null_mut(), 0, 0, false)?
+            };
+            // The slot's mirror goes with it.
+            // SAFETY: the caller ensures clearing this slot is valid.
+            #[cfg(guest_arch = "x86_64")]
+            unsafe {
+                self.clear_smm_slot(slot)?
+            };
+            Ok(())
+        }
+    }
+
+    /// Registers a slot's range in KVM's address space 1, which a vCPU uses
+    /// while in SMM, as it is in address space 0, when the partition maps RAM
+    /// there too (`smm_address_space`).
+    ///
+    /// # Safety
+    ///
+    /// `data..data+size` must be and remain an allocated VA range until the
+    /// slot is cleared or the partition is destroyed, as for the slot's
+    /// registration in address space 0.
+    #[cfg(guest_arch = "x86_64")]
+    unsafe fn set_smm_slot(
+        &self,
+        slot: usize,
+        data: *mut u8,
+        size: usize,
+        addr: u64,
+        readonly: bool,
+    ) -> Result<(), kvm::Error> {
+        if !self.smm_address_space {
+            return Ok(());
+        }
+        // SAFETY: the caller keeps `data..data+size` valid for as long as KVM
+        // may reference the slot.
+        unsafe {
+            self.kvm.set_user_memory_region(
+                slot as u32 | SMM_ADDRESS_SPACE_SLOT_BITS,
+                data,
+                size,
+                addr,
+                readonly,
+            )
+        }
+    }
+
+    /// Clears a slot's mirror in KVM's address space 1, when the partition has
+    /// one (`smm_address_space`). KVM refuses to clear a slot that is not
+    /// there.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that clearing the target slot is valid.
+    #[cfg(guest_arch = "x86_64")]
+    unsafe fn clear_smm_slot(&self, slot: usize) -> Result<(), kvm::Error> {
+        if !self.smm_address_space {
+            return Ok(());
+        }
+        // SAFETY: the caller ensures clearing this slot is valid.
+        unsafe {
+            self.kvm.set_user_memory_region(
+                slot as u32 | SMM_ADDRESS_SPACE_SLOT_BITS,
+                std::ptr::null_mut(),
+                0,
+                0,
+                false,
+            )
         }
     }
 

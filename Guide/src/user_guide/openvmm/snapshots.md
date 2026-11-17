@@ -161,13 +161,16 @@ that the SMI interrupted. A guest-requested capture that fails this way rolls
 back, so the guest continues and takes the SMI as it would have without the
 capture.
 
-OpenVMM maps guest RAM only in KVM's normal address space, and none in its SMM
-address space. With RAM mapped that way, KVM could not save the state that an
-SMI interrupts when a vCPU took the SMI: on Linux 6.18.57, `KVM_RUN` failed with
-`EIO`, and so did the next `KVM_GET_VCPU_EVENTS`, which is how KVM marks a VM
-dead. A guest that sends an SMI therefore ends its own VM, and the refusal keeps
-a capture from restoring a VM that would have ended. Mapping memory for SMM
-would change that, and this paragraph with it.
+Where KVM has SMM, OpenVMM maps guest RAM into both of KVM's address spaces, the
+normal one and the one that a vCPU uses while in SMM, so that a guest that sends
+itself an SMI takes it and runs its own handler, from RAM at SMBASE, until the
+handler executes `RSM`. A vCPU that takes an SMI saves the state that it
+interrupts at SMBASE through the SMM address space, and KVM marks the VM dead
+when no RAM is there: `KVM_RUN` fails with `EIO`, and so does every later ioctl
+of the vCPU, as observed on Linux 6.18.57. A VM with private memory, such as an
+SEV-SNP VM, keeps its RAM in the normal address space alone, since KVM does not
+support SMM with private memory. A capture that meets a vCPU in its handler
+fails, and the guest can request it again once the handler has executed `RSM`.
 
 While a guest-requested snapshot boundary is held, VM-worker management RPCs
 that can change VM state are rejected rather than queued. This includes memory

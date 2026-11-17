@@ -1222,6 +1222,11 @@ impl Partition {
 
     /// Sets or clears a userspace memory slot.
     ///
+    /// KVM takes the address space of the slot from the upper 16 bits of
+    /// `slot`, and the slot's ID in that address space from the lower 16. On
+    /// x86, address space 1 is the one that a vCPU uses while in SMM, which is
+    /// empty unless a slot is set there.
+    ///
     /// # Safety
     ///
     /// If `size` is nonzero, `data..data + size` must be a valid userspace
@@ -1253,6 +1258,9 @@ impl Partition {
     }
 
     /// Sets or clears a userspace memory slot with optional guestmemfd backing.
+    ///
+    /// `slot` selects the address space as it does for
+    /// [`Self::set_user_memory_region`].
     ///
     /// # Safety
     ///
