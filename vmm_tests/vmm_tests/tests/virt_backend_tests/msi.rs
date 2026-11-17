@@ -85,10 +85,11 @@ fn ensure_only_fixed_arrived(
 // hold: KVM reads a halted VP as running, and a running VP's next HLT returns
 // at once. So no backend may act on an interrupt of that mode that the VMM
 // hands over as an MSI or as an IO-APIC input. The VP is halted, which is
-// where KVM reports the wake-up; MSHV and WHP read the halted state of a VP
-// that has not run as running, so the test checks a running VP there. The
-// fixed interrupt after each interrupt of the reserved mode shows that the
-// path delivers.
+// where KVM reports the wake-up. MSHV reads the halted state of a VP that has
+// not run as running, so the test checks a running VP there; WHP's hypervisor
+// reads it so too, but its backend reports the halted state that it restored
+// until the VP runs. The fixed interrupt after each interrupt of the reserved
+// mode shows that the path delivers.
 backend_test!(a_reserved_delivery_mode_delivers_nothing, requires: []);
 fn a_reserved_delivery_mode_delivers_nothing(
     partition: &impl X86Partition,

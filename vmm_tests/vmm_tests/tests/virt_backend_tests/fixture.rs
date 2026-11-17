@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Shared single-VP fixture with one mapped page of RAM but no VP execution.
+//! Shared single-VP fixture with one mapped page of RAM. It does not run the
+//! VP: a test that runs a guest writes it to the page and runs the VP itself.
 
 // UNSAFETY: Mapping the fixture's RAM into the partition.
 #![expect(unsafe_code)]
@@ -47,6 +48,12 @@ impl Fixture {
             time_source,
             _keeper: keeper,
         })
+    }
+
+    /// The RAM that every partition that the fixture builds maps, which a
+    /// test that runs a guest writes the guest to.
+    pub(crate) fn memory(&self) -> &GuestMemory {
+        &self.memory
     }
 
     pub(crate) fn build<'a, H: Hypervisor>(
