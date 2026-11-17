@@ -272,6 +272,15 @@ impl TestHarness {
     /// Replaces the harness device with one built for save and restore over a
     /// [`ForkMockEndpoint`].
     pub(super) fn new_save_restore(driver: &DefaultDriver) -> Self {
+        Self::new_save_restore_over(driver, |endpoint| endpoint)
+    }
+
+    /// Replaces the harness device with one built for save and restore over
+    /// the endpoint that `wrap` makes of a [`ForkMockEndpoint`].
+    pub(super) fn new_save_restore_over(
+        driver: &DefaultDriver,
+        wrap: impl FnOnce(Box<dyn Endpoint>) -> Box<dyn Endpoint>,
+    ) -> Self {
         let mut harness = Self::new(driver);
         let (queue_tx, queue_handle_rx) = mesh::channel();
         let (queue_config_tx, queue_config_rx) = mesh::channel();
@@ -297,7 +306,7 @@ impl TestHarness {
                 },
                 (1 << 5) | (1 << 32),
             )
-            .build(&driver_source, Box::new(endpoint), mac)
+            .build(&driver_source, wrap(Box::new(endpoint)), mac)
             .unwrap();
         harness.queue_handle_rx = queue_handle_rx;
         harness.queue_config_rx = queue_config_rx;
