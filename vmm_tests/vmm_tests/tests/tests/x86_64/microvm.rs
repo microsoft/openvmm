@@ -358,3 +358,34 @@ async fn snapshot_quiesce_requires_a_boundary(
     );
     vm.teardown().await
 }
+
+/// The VM worker rolls a microVM's snapshot back only at the snapshot
+/// boundary that holds the VM: outside one, the rollback is rejected and
+/// leaves a paused VM stopped, since it would start the VM without what an
+/// ordinary resume does first, which then starts it.
+#[openvmm_test_no_agent(linux_direct_x64)]
+async fn snapshot_rollback_requires_a_boundary(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const READY: &[u8] = b"SNAPSHOT-GUEST-READY\n";
+
+    let mut vm = run_snapshot_controller_guest(config, &portb_output(READY)?).await?;
+
+    CancelContext::new()
+        .with_timeout(BOOT_TIMEOUT)
+        .until_cancelled(vm.backend().wait_for_microvm_portb_bytes(READY))
+        .await
+        .context("timed out waiting for the microVM guest to boot")??;
+    vm.backend().pause().await?;
+    let rollback = vm.backend().resume_microvm_after_failed_snapshot().await;
+    let state = partition_unit_state(&vm).await?;
+    assert!(
+        rollback.is_err() && state == "stopped",
+        "a snapshot rollback outside a snapshot boundary returned {rollback:?}, and left \
+         the paused VM's partition {state}"
+    );
+
+    vm.backend().resume().await?;
+    assert_eq!(partition_unit_state(&vm).await?, "running");
+    vm.teardown().await
+}
