@@ -2509,10 +2509,11 @@ impl UhPartition {
         // implement the architectural TSC-deadline MSR.
         caps.tsc_deadline &= !isolation.is_hardware_isolated();
         // The VP state access of OpenHCL does not hold SPEC_CTRL,
-        // UMWAIT_CONTROL, or BNDCFGS.
+        // UMWAIT_CONTROL, BNDCFGS, or AMD's OSVW MSRs.
         caps.spec_ctrl = false;
         caps.umwait_control = false;
         caps.bndcfgs = false;
+        caps.osvw = false;
         match isolation {
             IsolationType::Tdx => {
                 assert_eq!(caps.vtom.is_some(), !hide_isolation);

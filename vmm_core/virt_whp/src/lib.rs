@@ -1417,6 +1417,10 @@ impl WhpPartitionInner {
             let mut caps = caps.map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
             caps.tsc_deadline &= matches!(vtl0.lapic, LocalApicKind::Offloaded);
+            // The hypervisor leaves a guest's accesses of AMD's OSVW MSRs to
+            // the VMM, which reads them as 0 and refuses writes, so the VP
+            // holds no OSVW state to save.
+            caps.osvw = false;
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
             caps.nested_virt = nested_virt;

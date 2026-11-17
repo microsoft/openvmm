@@ -483,6 +483,22 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.set_register_state(value)
     }
 
+    fn svm_msrs(&mut self) -> Result<vp::SvmMsrs, Self::Error> {
+        Err(ErrorInner::UnsupportedState("svm_msrs").into())
+    }
+
+    fn set_svm_msrs(&mut self, _value: &vp::SvmMsrs) -> Result<(), Self::Error> {
+        Err(ErrorInner::UnsupportedState("svm_msrs").into())
+    }
+
+    fn osvw(&mut self) -> Result<vp::Osvw, Self::Error> {
+        Err(ErrorInner::UnsupportedState("osvw").into())
+    }
+
+    fn set_osvw(&mut self, _value: &vp::Osvw) -> Result<(), Self::Error> {
+        Err(ErrorInner::UnsupportedState("osvw").into())
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }

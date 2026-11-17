@@ -2267,6 +2267,83 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Bndcfgs {
     }
 }
 
+/// AMD's OS-visible workaround MSRs, `OSVW_ID_LENGTH` and `OSVW_STATUS`, which
+/// say which errata, by their OSVW IDs, a processor has.
+///
+/// Firmware writes them on a CPU, and so can the guest, if its CPUID enumerates
+/// OSVW, which [`X86PartitionCapabilities::osvw`] records, so the saved state
+/// holds them only then. Their reset value is 0, as on a CPU before its
+/// firmware runs, but a backend gives a new VP values of its own, which it puts
+/// back after a VM reset, as a reboot's firmware would write them again: KVM
+/// derives them from the host's.
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+#[inspect(hex)]
+pub struct Osvw {
+    /// `OSVW_ID_LENGTH`.
+    #[mesh(1)]
+    pub id_length: u64,
+    /// `OSVW_STATUS`.
+    #[mesh(2)]
+    pub status: u64,
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for Osvw {
+    fn is_present(caps: &X86PartitionCapabilities) -> bool {
+        caps.osvw
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self::default()
+    }
+
+    // A new VP holds the backend's values, which KVM derives from the host's,
+    // not the reset value.
+    fn can_compare(_caps: &X86PartitionCapabilities) -> bool {
+        false
+    }
+}
+
+/// AMD's SVM control MSR, `VM_CR`, and the address of SVM's host save area,
+/// `VM_HSAVE_PA`.
+///
+/// A backend that lets a guest write them holds them in the VP, and
+/// [`X86PartitionCapabilities::svm_msrs`] records that the saved state holds
+/// them. KVM on an AMD host does, whether or not the guest's CPUID enumerates
+/// SVM. A VP that never saw a write holds 0 in each, the reset value. A guest
+/// can only write a page-aligned `VM_HSAVE_PA`, and cannot set `VM_CR`'s
+/// `SVMDIS` while `EFER.SVME` is set, and a restore refuses either, which only
+/// a damaged or crafted saved state holds. A restore into a new VP sets both as
+/// the guest saved them.
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Protobuf, Inspect)]
+#[mesh(package = "virt.x86")]
+#[inspect(hex)]
+pub struct SvmMsrs {
+    /// `VM_CR`.
+    #[mesh(1)]
+    pub vm_cr: u64,
+    /// `VM_HSAVE_PA`.
+    #[mesh(2)]
+    pub vm_hsave_pa: u64,
+}
+
+impl StateElement<X86PartitionCapabilities, X86VpInfo> for SvmMsrs {
+    fn is_present(caps: &X86PartitionCapabilities) -> bool {
+        caps.svm_msrs
+    }
+
+    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        Self::default()
+    }
+
+    // Once a guest sets VM_CR's SVMDIS, KVM keeps SVMDIS and LOCK for the life
+    // of the vCPU, so neither a reset nor a restore into that VP can set
+    // another value of them.
+    fn can_compare(_caps: &X86PartitionCapabilities) -> bool {
+        false
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
@@ -2655,6 +2732,8 @@ state_trait! {
     (19, "misc_msrs", misc_msrs, set_misc_msrs, MiscMsrs),
     (20, "machine_check", machine_check, set_machine_check, MachineCheck),
     (21, "bndcfgs", bndcfgs, set_bndcfgs, Bndcfgs),
+    (22, "svm_msrs", svm_msrs, set_svm_msrs, SvmMsrs),
+    (23, "osvw", osvw, set_osvw, Osvw),
 
     // Synic state
     (100, "synic", synic_msrs, set_synic_msrs, SyntheticMsrs),
@@ -3122,6 +3201,71 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn the_amd_msr_elements_need_no_version_to_coexist_with_earlier_builds() {
+        let earlier = || EarlierVpSavedState {
+            tsc: Some(Tsc { value: 7 }),
+            tsc_aux: Some(TscAux { value: 3 }),
+        };
+        let svm_msrs = SvmMsrs {
+            vm_cr: 0x5,
+            vm_hsave_pa: 0x5000,
+        };
+        let osvw = Osvw {
+            id_length: 5,
+            status: 2,
+        };
+        let current = |svm_msrs, osvw| VpSavedState {
+            tsc: Some(Tsc { value: 7 }),
+            tsc_aux: Some(TscAux { value: 3 }),
+            svm_msrs,
+            osvw,
+            ..Default::default()
+        };
+
+        // A saved state of an earlier build holds neither element, so
+        // restoring it sets neither.
+        assert_eq!(
+            mesh_protobuf::decode::<VpSavedState>(&mesh_protobuf::encode(earlier())).unwrap(),
+            current(None, None)
+        );
+        // An earlier build reads the saved state of this one and ignores them.
+        assert_eq!(
+            mesh_protobuf::decode::<EarlierVpSavedState>(&mesh_protobuf::encode(current(
+                Some(svm_msrs),
+                Some(osvw)
+            )))
+            .unwrap(),
+            earlier()
+        );
+
+        // Each element is a message in a field of the saved state, 22 and 23,
+        // which these bytes pin: every build that holds the element reads
+        // them, and no later change may alter them.
+        for (state, bytes) in [
+            (
+                VpSavedState {
+                    svm_msrs: Some(svm_msrs),
+                    ..Default::default()
+                },
+                &[0xb2, 0x01, 0x06, 0x08, 0x05, 0x10, 0x80, 0xa0, 0x01][..],
+            ),
+            (
+                VpSavedState {
+                    osvw: Some(osvw),
+                    ..Default::default()
+                },
+                &[0xba, 0x01, 0x04, 0x08, 0x05, 0x10, 0x02],
+            ),
+        ] {
+            assert_eq!(mesh_protobuf::encode(state), bytes);
+            assert_eq!(
+                mesh_protobuf::encode(mesh_protobuf::decode::<VpSavedState>(bytes).unwrap()),
+                bytes
+            );
+        }
     }
 
     /// The components beyond x87 and SSE of the XSAVE layout of the tests of

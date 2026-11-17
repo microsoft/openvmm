@@ -1725,6 +1725,22 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
         Err(vp_state::Error::Unimplemented("bndcfgs"))
     }
 
+    fn svm_msrs(&mut self) -> Result<vp::SvmMsrs, Self::Error> {
+        Err(vp_state::Error::Unimplemented("svm_msrs"))
+    }
+
+    fn set_svm_msrs(&mut self, _value: &vp::SvmMsrs) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("svm_msrs"))
+    }
+
+    fn osvw(&mut self) -> Result<vp::Osvw, Self::Error> {
+        Err(vp_state::Error::Unimplemented("osvw"))
+    }
+
+    fn set_osvw(&mut self, _value: &vp::Osvw) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("osvw"))
+    }
+
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
         self.get_register_state()
     }

@@ -832,7 +832,8 @@ immediately with a clear error if any active device does not support it.
   A snapshot from a build that predates one of them leaves that state as a new
   VP has it, and a build that predates it ignores it in a later snapshot, so
   neither restore fails, and neither keeps what the guest wrote. Only a backend
-  that can access an MSR saves it, KVM only on a host that lists the MSR, and
+  that can access an MSR saves it: KVM where the host lists the MSR, or, for
+  AMD's `VM_CR` and OSVW MSRs, which KVM does not list, where it keeps them, and
   MSHV and WHP only `IA32_SPEC_CTRL`, `IA32_UMWAIT_CONTROL`, and
   `IA32_BNDCFGS`, the only ones of these MSRs that their hypervisor keeps for a
   guest; a snapshot restores only on a host that can access every MSR that it

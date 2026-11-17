@@ -238,6 +238,8 @@ impl MshvPartitionInner {
         caps.spec_ctrl &= self.isolation_type() == virt::IsolationType::None;
         caps.umwait_control &= self.isolation_type() == virt::IsolationType::None;
         caps.bndcfgs &= self.isolation_type() == virt::IsolationType::None;
+        // The VP state access does not hold AMD's OSVW MSRs.
+        caps.osvw = false;
         caps.xsaves_state_bv_broken = true;
         // Ordinary state access does not freeze the partition clock.
         caps.can_freeze_time = false;

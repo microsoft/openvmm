@@ -90,6 +90,17 @@ pub struct X86PartitionCapabilities {
     /// `IA32_BNDCFGS`, which the VP's saved state then holds. Backends without
     /// access to the MSR must clear this even if guest CPUID enumerates MPX.
     pub bndcfgs: bool,
+    /// The guest's CPUID enumerates OSVW, so the guest can write AMD's
+    /// `OSVW_ID_LENGTH` and `OSVW_STATUS`, which the VP's saved state then
+    /// holds. Backends that do not keep what the guest writes must clear this
+    /// even if guest CPUID enumerates OSVW.
+    pub osvw: bool,
+    /// The backend holds the guest's `VM_CR` and `VM_HSAVE_PA`, AMD's SVM
+    /// control and host save area MSRs, in the VP's saved state. No CPUID bit
+    /// decides whether the guest can write them: KVM on an AMD host takes a
+    /// guest's writes of both whether or not its CPUID enumerates SVM. So
+    /// `from_cpuid` leaves this clear, and a backend that keeps them sets it.
+    pub svm_msrs: bool,
     /// The backend holds the guest's `IA32_DEBUGCTL` in the VP's saved state.
     /// No CPUID bit decides whether the guest can write the MSR, which every
     /// CPU has, so `from_cpuid` leaves this clear and a backend that can
@@ -182,6 +193,8 @@ impl X86PartitionCapabilities {
             spec_ctrl: false,
             umwait_control: false,
             bndcfgs: false,
+            osvw: false,
+            svm_msrs: false,
             debug_ctl: false,
             misc_msrs: false,
             machine_check: false,
@@ -319,16 +332,18 @@ impl X86PartitionCapabilities {
         }
 
         let extended_max_function = f(CpuidFunction::ExtendedMaxFunction.0, 0)[0];
+        let extended_version_and_features =
+            if extended_max_function >= CpuidFunction::ExtendedVersionAndFeatures.0 {
+                f(CpuidFunction::ExtendedVersionAndFeatures.0, 0)
+            } else {
+                Default::default()
+            };
 
         this.tsc_aux = {
-            let rdtscp = if extended_max_function >= CpuidFunction::ExtendedVersionAndFeatures.0 {
-                x86defs::cpuid::ExtendedVersionAndFeaturesEdx::from(
-                    f(CpuidFunction::ExtendedVersionAndFeatures.0, 0)[3],
-                )
-                .rdtscp()
-            } else {
-                false
-            };
+            let rdtscp = x86defs::cpuid::ExtendedVersionAndFeaturesEdx::from(
+                extended_version_and_features[3],
+            )
+            .rdtscp();
 
             let rdpid =
                 x86defs::cpuid::ExtendedFeatureSubleaf0Ecx::from(extended_features[2]).rd_pid();
@@ -347,6 +362,7 @@ impl X86PartitionCapabilities {
         this.spec_ctrl = enumerates_spec_ctrl(extended_features, address_space_sizes);
         this.umwait_control = enumerates_waitpkg(extended_features);
         this.bndcfgs = enumerates_mpx(extended_features);
+        this.osvw = enumerates_osvw(extended_version_and_features);
 
         Ok(this)
     }
@@ -648,6 +664,16 @@ pub fn enumerates_waitpkg(extended_features: [u32; 4]) -> bool {
 /// such leaf.
 pub fn enumerates_mpx(extended_features: [u32; 4]) -> bool {
     x86defs::cpuid::ExtendedFeatureSubleaf0Ebx::from(extended_features[1]).mpx()
+}
+
+/// Returns whether CPUID enumerates OSVW, AMD's OS-visible workarounds, so
+/// that a guest can write `OSVW_ID_LENGTH` and `OSVW_STATUS`:
+/// `CPUID.0x80000001:ECX[9]`.
+///
+/// `extended_version_and_features` is the result of `CPUID.0x80000001`, zero
+/// if the CPU has no such leaf.
+pub fn enumerates_osvw(extended_version_and_features: [u32; 4]) -> bool {
+    x86defs::cpuid::ExtendedVersionAndFeaturesEcx::from(extended_version_and_features[2]).osvw()
 }
 
 #[cfg(test)]
@@ -1023,6 +1049,24 @@ mod tests {
         assert!(!caps.debug_ctl);
         assert!(!caps.misc_msrs);
         assert!(!caps.machine_check);
+        // KVM on an AMD host takes a guest's writes of VM_CR and VM_HSAVE_PA
+        // whether or not its CPUID enumerates SVM.
+        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+            .build(1)
+            .unwrap();
+        let x2apic = topology.apic_mode() != ApicMode::XApic;
+        let with_svm = X86PartitionCapabilities::from_cpuid(
+            &topology,
+            &mut |leaf, subleaf| match (leaf, subleaf) {
+                (0, _) => [0xd, 0x6874_7541, 0x444d_4163, 0x6974_6e65],
+                (1, _) => [0, 0, u32::from(x2apic) << 21, 0],
+                (0x8000_0000, _) => [0x8000_0001, 0, 0, 0],
+                (0x8000_0001, _) => [0, 0, !0, !0],
+                _ => [0; 4],
+            },
+        )
+        .unwrap();
+        assert!(!with_svm.svm_msrs);
     }
 
     #[test]
@@ -1071,6 +1115,56 @@ mod tests {
     fn bndcfgs_state_is_present_for_the_profiles_that_enumerate_mpx() {
         for (id, caps) in pinned_profile_capabilities() {
             assert_eq!(caps.bndcfgs, id == "intel.skylake-sp.v1", "{id}");
+        }
+    }
+
+    #[test]
+    fn osvw_is_bit_9_of_the_extended_version_and_features_ecx() {
+        for bit in 0..32 {
+            assert_eq!(
+                enumerates_osvw([0, 0, 1 << bit, 0]),
+                bit == 9,
+                "CPUID.0x80000001:ECX[{bit}]"
+            );
+        }
+        // The other registers of the leaf enumerate none.
+        assert!(!enumerates_osvw([!0, !0, 0, !0]));
+    }
+
+    #[test]
+    fn osvw_state_needs_osvw_in_a_leaf_that_the_cpu_has() {
+        const OSVW: u32 = 1 << 9;
+        let has_osvw = |max_extended, ext1_ecx| {
+            let topology = vm_topology::processor::TopologyBuilder::new_x86()
+                .build(1)
+                .unwrap();
+            let x2apic = topology.apic_mode() != ApicMode::XApic;
+            X86PartitionCapabilities::from_cpuid(&topology, &mut |leaf, subleaf| match (
+                leaf, subleaf,
+            ) {
+                (0, _) => [0xd, 0x6874_7541, 0x444d_4163, 0x6974_6e65],
+                (1, _) => [0, 0, u32::from(x2apic) << 21, 0],
+                (0x8000_0000, _) => [max_extended, 0, 0, 0],
+                (0x8000_0001, 0) => [0, 0, ext1_ecx, 0],
+                _ => [0; 4],
+            })
+            .unwrap()
+            .osvw
+        };
+        assert!(!has_osvw(0x8000_0008, 0));
+        assert!(!has_osvw(0x8000_0008, !OSVW));
+        assert!(has_osvw(0x8000_0008, OSVW));
+        // A leaf above the highest is not CPUID's to enumerate.
+        assert!(!has_osvw(0x8000_0000, OSVW));
+    }
+
+    /// The pinned profiles whose CPUID enumerates OSVW: every AMD profile, and
+    /// no Intel one.
+    #[test]
+    #[cfg(guest_arch = "x86_64")]
+    fn osvw_state_is_present_for_the_profiles_that_enumerate_it() {
+        for (id, caps) in pinned_profile_capabilities() {
+            assert_eq!(caps.osvw, id.starts_with("amd."), "{id}");
         }
     }
 }
