@@ -61,10 +61,13 @@ access them, have cases of their own in `msr_state.rs`:
 `misc_msrs_survive_a_save_and_restore`,
 `umwait_control_survives_a_save_and_restore` (which needs a host with WAITPKG),
 `bndcfgs_survives_a_save_and_restore` (which needs a host with MPX),
+`svm_msrs_survive_a_save_and_restore` and `osvw_survives_a_save_and_restore`
+(which need an AMD host),
 `debug_ctl_survives_a_save_and_restore`, and
 `machine_check_state_survives_a_save_and_restore`, each of which sets the state,
-saves it, changes the VP, and restores it, and two that check that a reset
-returns the feature MSRs and the machine-check state to what a new VP holds.
+saves it, changes the VP, and restores it, and three that check that a reset
+returns the feature MSRs, the machine-check state, and the OSVW MSRs to what a
+new VP holds.
 MSHV and WHP hold `IA32_UMWAIT_CONTROL` and `IA32_BNDCFGS`, whose cases run
 there on a host with WAITPKG or MPX, and none of the other elements, so their
 cases report ignored there.

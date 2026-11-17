@@ -278,6 +278,22 @@ mod x86 {
             self.run.vp.set_register_state(self.vtl, value)
         }
 
+        fn svm_msrs(&mut self) -> Result<vp::SvmMsrs, Self::Error> {
+            Err(Error::UnsupportedState("svm_msrs"))
+        }
+
+        fn set_svm_msrs(&mut self, _value: &vp::SvmMsrs) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedState("svm_msrs"))
+        }
+
+        fn osvw(&mut self) -> Result<vp::Osvw, Self::Error> {
+            Err(Error::UnsupportedState("osvw"))
+        }
+
+        fn set_osvw(&mut self, _value: &vp::Osvw) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedState("osvw"))
+        }
+
         fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
             match self.run.state.vtls[self.vtl].hv {
                 Some(_) => {
