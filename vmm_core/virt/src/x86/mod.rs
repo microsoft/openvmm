@@ -86,6 +86,10 @@ pub struct X86PartitionCapabilities {
     /// without access to the MSR must clear this even if guest CPUID
     /// enumerates WAITPKG.
     pub umwait_control: bool,
+    /// The guest's CPUID enumerates MPX, so the guest can write
+    /// `IA32_BNDCFGS`, which the VP's saved state then holds. Backends without
+    /// access to the MSR must clear this even if guest CPUID enumerates MPX.
+    pub bndcfgs: bool,
     /// The backend holds the guest's `IA32_DEBUGCTL` in the VP's saved state.
     /// No CPUID bit decides whether the guest can write the MSR, which every
     /// CPU has, so `from_cpuid` leaves this clear and a backend that can
@@ -177,6 +181,7 @@ impl X86PartitionCapabilities {
             tsc_aux: false,
             spec_ctrl: false,
             umwait_control: false,
+            bndcfgs: false,
             debug_ctl: false,
             misc_msrs: false,
             machine_check: false,
@@ -341,6 +346,7 @@ impl X86PartitionCapabilities {
             };
         this.spec_ctrl = enumerates_spec_ctrl(extended_features, address_space_sizes);
         this.umwait_control = enumerates_waitpkg(extended_features);
+        this.bndcfgs = enumerates_mpx(extended_features);
 
         Ok(this)
     }
@@ -633,6 +639,15 @@ pub fn enumerates_spec_ctrl(extended_features: [u32; 4], address_space_sizes: [u
 /// such leaf.
 pub fn enumerates_waitpkg(extended_features: [u32; 4]) -> bool {
     x86defs::cpuid::ExtendedFeatureSubleaf0Ecx::from(extended_features[2]).umwait_tpause()
+}
+
+/// Returns whether CPUID enumerates MPX, so that a guest can write
+/// `IA32_BNDCFGS`: `CPUID.(7,0):EBX[14]`.
+///
+/// `extended_features` is the result of `CPUID.(7,0)`, zero if the CPU has no
+/// such leaf.
+pub fn enumerates_mpx(extended_features: [u32; 4]) -> bool {
+    x86defs::cpuid::ExtendedFeatureSubleaf0Ebx::from(extended_features[1]).mpx()
 }
 
 #[cfg(test)]
@@ -1008,6 +1023,55 @@ mod tests {
         assert!(!caps.debug_ctl);
         assert!(!caps.misc_msrs);
         assert!(!caps.machine_check);
+    }
+
+    #[test]
+    fn mpx_is_bit_14_of_the_extended_features_ebx() {
+        for bit in 0..32 {
+            assert_eq!(
+                enumerates_mpx([0, 1 << bit, 0, 0]),
+                bit == 14,
+                "CPUID.(7,0):EBX[{bit}]"
+            );
+        }
+        // The other registers of the leaf enumerate none.
+        assert!(!enumerates_mpx([!0, 0, !0, !0]));
+    }
+
+    #[test]
+    fn bndcfgs_state_needs_mpx_in_a_leaf_that_the_cpu_has() {
+        const MPX: u32 = 1 << 14;
+        let has_bndcfgs = |max_function, leaf7_ebx| {
+            let topology = vm_topology::processor::TopologyBuilder::new_x86()
+                .build(1)
+                .unwrap();
+            let x2apic = topology.apic_mode() != ApicMode::XApic;
+            X86PartitionCapabilities::from_cpuid(&topology, &mut |leaf, subleaf| match (
+                leaf, subleaf,
+            ) {
+                (0, _) => [max_function, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
+                (1, _) => [0, 0, u32::from(x2apic) << 21, 0],
+                (7, 0) => [0, leaf7_ebx, 0, 0],
+                _ => [0; 4],
+            })
+            .unwrap()
+            .bndcfgs
+        };
+        assert!(!has_bndcfgs(0xd, 0));
+        assert!(!has_bndcfgs(0xd, !MPX));
+        assert!(has_bndcfgs(0xd, MPX));
+        // A leaf above the highest is not CPUID's to enumerate.
+        assert!(!has_bndcfgs(6, MPX));
+    }
+
+    /// The pinned profiles whose CPUID enumerates MPX: the Skylake-SP CPUs
+    /// have it, and every later Intel generation and every AMD one lacks it.
+    #[test]
+    #[cfg(guest_arch = "x86_64")]
+    fn bndcfgs_state_is_present_for_the_profiles_that_enumerate_mpx() {
+        for (id, caps) in pinned_profile_capabilities() {
+            assert_eq!(caps.bndcfgs, id == "intel.skylake-sp.v1", "{id}");
+        }
     }
 }
 

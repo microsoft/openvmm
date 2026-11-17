@@ -57,6 +57,7 @@ pub const fn register_to_msr(name: HvX64RegisterName) -> Result<u32, NoRegisterM
         HvX64RegisterName::SpecCtrl => x86defs::X86X_MSR_SPEC_CTRL,
         HvX64RegisterName::UmwaitControl => x86defs::X86X_MSR_UMWAIT_CONTROL,
         HvX64RegisterName::DebugCtl => x86defs::X86X_MSR_DEBUGCTL,
+        HvX64RegisterName::Bndcfgs => x86defs::X86X_MSR_BNDCFGS,
 
         HvX64RegisterName::Xss => x86defs::X86X_MSR_XSS,
         HvX64RegisterName::UCet => x86defs::X86X_MSR_U_CET,

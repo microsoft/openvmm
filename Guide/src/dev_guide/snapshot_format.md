@@ -254,16 +254,20 @@ or group of MSRs that a VP holds and a fresh VP does not:
 | 18 | `debug_ctl` | `IA32_DEBUGCTL` | the backend has it (KVM) |
 | 19 | `misc_msrs` | `IA32_MISC_ENABLE`, `MSR_MISC_FEATURES_ENABLES` (CPUID faulting), and `IA32_POWER_CTL` | the backend has them (KVM) |
 | 20 | `machine_check` | `IA32_MCG_STATUS`, `IA32_MCG_CTL`, and the control, status, address, miscellaneous, and CMCI control registers of each machine-check bank | the backend has them (KVM) |
+| 21 | `bndcfgs` | `IA32_BNDCFGS` | the guest's CPUID enumerates MPX |
 
 A partition has an element only where the guest can have the state and the
 backend can access it, which the partition's capabilities record. The guest's
-CPUID decides the first for `spec_ctrl` and `umwait_control`; no CPUID bit
-decides it for the other elements, whose MSRs every CPU has. For the KVM
-backend:
+CPUID decides the first for `spec_ctrl`, `umwait_control`, and `bndcfgs`; no
+CPUID bit decides it for the other elements, whose MSRs every CPU has. For the
+KVM backend:
 
 - It can access an MSR only if the host's `KVM_GET_MSR_INDEX_LIST` lists it, so
   a host without the MSR, such as one without WAITPKG, holds no element for it
-  instead of failing every save.
+  instead of failing every save. KVM lists `IA32_BNDCFGS` where it exposes MPX,
+  which it does on a host with MPX: the kernel still enables MPX's state
+  components in the host's XCR0 for KVM's guests, although it dropped MPX for
+  its own processes in Linux 5.6.
 - It can access none of them for an SNP guest, whose registers live in an
   encrypted VMSA.
 - `IA32_DEBUGCTL` is the exception to the list. Every KVM virtualizes it, and
@@ -283,14 +287,14 @@ backend:
   follows `IA32_MCG_STATUS`, and the number of banks is the one that the VP's
   `IA32_MCG_CAP` reports.
 
-The MSHV and WHP backends hold `umwait_control` as a register of the VP, as
-they hold `spec_ctrl`, where the guest's CPUID enumerates WAITPKG, which the
-hypervisor then presents to the guest; MSHV clears it for an SNP guest, as KVM
-does. They do not have elements 18 through 20, and clear their capabilities:
-the Microsoft hypervisor keeps none of those registers for a guest to write
-(it drops the guest's writes of `IA32_DEBUGCTL` and `IA32_MISC_ENABLE`, raises
-#GP for `MSR_MISC_FEATURES_ENABLES` and `IA32_POWER_CTL`, and gives the guest
-no machine-check banks). OpenHCL does not have elements 17 through 20.
+The MSHV and WHP backends hold `umwait_control` and `bndcfgs` as registers of
+the VP, as they hold `spec_ctrl`, where the guest's CPUID enumerates WAITPKG or
+MPX, which the hypervisor then presents to the guest; MSHV clears them for an
+SNP guest, as KVM does. They do not have elements 18 through 20, and clear their
+capabilities: the Microsoft hypervisor keeps none of those registers for a guest
+to write (it drops the guest's writes of `IA32_DEBUGCTL` and `IA32_MISC_ENABLE`,
+raises #GP for `MSR_MISC_FEATURES_ENABLES` and `IA32_POWER_CTL`, and gives the
+guest no machine-check banks). OpenHCL does not have elements 17 through 21.
 
 A saved state restores only into a partition that has every element that it
 holds. A destination whose backend lacks one, such as a host whose KVM does not
@@ -314,11 +318,6 @@ writes, after it has written the registers that precede it.
 
 Some guest-writable state has no element:
 
-- `IA32_BNDCFGS` belongs to MPX, which only the Skylake-SP CPU profile
-  enumerates. Since Linux 5.6, the kernel does not enable the MPX state
-  components in the host's XCR0, which KVM needs to expose MPX, so that CPU
-  profile cannot run on a KVM host that the time ABI supports, which needs
-  Linux 5.16.
 - `MSR_VM_HSAVE_PA` belongs to SVM, which no CPU profile enumerates. A guest
   without SVM cannot run VMRUN, so nothing uses the MSR.
 - AMD's legacy performance counters, `0xc0010000` through `0xc0010007`, hold
@@ -327,7 +326,7 @@ Some guest-writable state has no element:
   compatibility](../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility)),
   and a snapshot of another guest does not hold their state.
 
-A snapshot from an earlier build holds none of elements 17 through 20, so a
+A snapshot from an earlier build holds none of elements 17 through 21, so a
 restore leaves those MSRs as `bind` set them, as it did before:
 `IA32_MISC_ENABLE` at the Microsoft hypervisor's value, the machine-check banks
 as a new VP has them, and the other MSRs at 0. An earlier build ignores the
