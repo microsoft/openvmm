@@ -52,6 +52,7 @@ impl Fixture {
 
     /// The RAM that every partition that the fixture builds maps, which a
     /// test that runs a guest writes the guest to.
+    #[cfg(windows)]
     pub(crate) fn memory(&self) -> &GuestMemory {
         &self.memory
     }
