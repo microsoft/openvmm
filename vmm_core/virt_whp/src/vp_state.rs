@@ -62,7 +62,18 @@ impl WhpVpRef<'_> {
         T: HvRegisterState<R, N>,
     {
         let mut regs = T::default();
-        let names = regs.names().map(|name| hv_register_to_whp(name).unwrap());
+        let values = self.get_register_values(vtl, regs.names())?;
+        regs.set_values(values.into_iter());
+        Ok(regs)
+    }
+
+    /// Returns the values of the registers that `names` lists, in its order.
+    pub(crate) fn get_register_values<R: ToWhpRegister, const N: usize>(
+        &self,
+        vtl: Vtl,
+        names: &[R; N],
+    ) -> Result<[HvRegisterValue; N], Error> {
+        let names = names.map(|name| hv_register_to_whp(name).unwrap());
         let mut values = [HvRegisterValue::new_zeroed(); N];
         self.whp(vtl)
             .get_registers(&names, unsafe {
@@ -71,8 +82,7 @@ impl WhpVpRef<'_> {
                 )
             })
             .for_op("get registers")?;
-        regs.set_values(values.into_iter());
-        Ok(regs)
+        Ok(values)
     }
 }
 

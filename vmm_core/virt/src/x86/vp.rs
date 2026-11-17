@@ -627,10 +627,30 @@ impl HvRegisterState<HvX64RegisterName, 4> for Activity {
     }
 
     fn set_values(&mut self, mut it: impl Iterator<Item = HvRegisterValue>) {
-        let activity = HvInternalActivityRegister::from(it.next().unwrap().as_u64());
-        let interruption = HvX64PendingInterruptionRegister::from(it.next().unwrap().as_u64());
-        let interrupt_state = HvX64InterruptStateRegister::from(it.next().unwrap().as_u64());
-        let event = HvX64PendingEventReg0::from(it.next().unwrap().as_u128());
+        let values = std::array::from_fn(|_| it.next().unwrap());
+        *self = Self::from_hv_values(values)
+            .unwrap_or_else(|unsupported| panic!("unhandled activity: {unsupported}"));
+    }
+}
+
+impl Activity {
+    /// Returns the activity that the values of the Hyper-V registers that
+    /// [`HvRegisterState::names`] lists for it hold, in that order, or names
+    /// what of them it cannot hold, which a save refuses rather than drop.
+    ///
+    /// The activity holds a pending interruption that is an external
+    /// interrupt, an NMI, or a hardware exception, and a pending event that is
+    /// an exception or an extint, each with an 8-bit vector. A Hyper-V VP can
+    /// also hold, while it delivers one, a software interrupt (`INT n`), a
+    /// privileged software exception (`INT1`), or a software exception (`INT3`
+    /// or `INTO`), which the hypervisor delivers with the length of the
+    /// instruction that raised it, and which the activity has no way to hold.
+    pub fn from_hv_values(values: [HvRegisterValue; 4]) -> Result<Self, &'static str> {
+        let [activity, interruption, interrupt_state, event] = values;
+        let activity = HvInternalActivityRegister::from(activity.as_u64());
+        let interruption = HvX64PendingInterruptionRegister::from(interruption.as_u64());
+        let interrupt_state = HvX64InterruptStateRegister::from(interrupt_state.as_u64());
+        let event = HvX64PendingEventReg0::from(event.as_u128());
 
         let mp_state = if activity.startup_suspend() {
             MpState::WaitForSipi
@@ -642,61 +662,81 @@ impl HvRegisterState<HvX64RegisterName, 4> for Activity {
             MpState::Running
         };
 
-        let pending_event = event.event_pending().then(|| match event.event_type() {
-            hvdef::HV_X64_PENDING_EVENT_EXCEPTION => {
-                let event = HvX64PendingExceptionEvent::from(u128::from(event));
-                PendingEvent::Exception {
-                    vector: event.vector().try_into().expect("exception code is 8 bits"),
-                    error_code: event.deliver_error_code().then(|| event.error_code()),
-                    parameter: event.exception_parameter(),
-                }
-            }
-            hvdef::HV_X64_PENDING_EVENT_EXT_INT => {
-                let event = HvX64PendingExtIntEvent::from(u128::from(event));
-                PendingEvent::ExtInt {
-                    vector: event.vector(),
-                }
-            }
-            ty => panic!("unhandled event type: {}", ty),
-        });
-
-        let pending_interruption = interruption.interruption_pending().then(|| {
-            match HvX64PendingInterruptionType(interruption.interruption_type()) {
-                HvX64PendingInterruptionType::HV_X64_PENDING_INTERRUPT => {
-                    PendingInterruption::Interrupt {
-                        vector: interruption
-                            .interruption_vector()
-                            .try_into()
-                            .expect("x86 vector is 8 bits"),
-                    }
-                }
-                HvX64PendingInterruptionType::HV_X64_PENDING_NMI => PendingInterruption::Nmi,
-                HvX64PendingInterruptionType::HV_X64_PENDING_EXCEPTION => {
-                    PendingInterruption::Exception {
-                        vector: interruption
-                            .interruption_vector()
-                            .try_into()
-                            .expect("exception code is 8 bits"),
-                        error_code: interruption
-                            .deliver_error_code()
-                            .then(|| interruption.error_code()),
-                    }
-                }
-                ty => panic!("unhandled interruption type: {ty:?}"),
-            }
-        });
-
-        *self = Self {
+        Ok(Self {
             mp_state,
             nmi_pending: false,
             nmi_masked: interrupt_state.nmi_masked(),
             interrupt_shadow: interrupt_state.interrupt_shadow(),
-            pending_event,
-            pending_interruption,
+            pending_event: event
+                .event_pending()
+                .then(|| pending_event_from_hv(event))
+                .transpose()?,
+            pending_interruption: interruption
+                .interruption_pending()
+                .then(|| pending_interruption_from_hv(interruption))
+                .transpose()?,
             nmi_pending_count: None,
             // The interrupt state register has one bit for both kinds.
             interrupt_shadow_kind: None,
-        };
+        })
+    }
+}
+
+/// Returns the pending event that `event`, which is pending, holds, or names
+/// what of it the activity cannot hold.
+fn pending_event_from_hv(event: HvX64PendingEventReg0) -> Result<PendingEvent, &'static str> {
+    match event.event_type() {
+        hvdef::HV_X64_PENDING_EVENT_EXCEPTION => {
+            let event = HvX64PendingExceptionEvent::from(u128::from(event));
+            Ok(PendingEvent::Exception {
+                vector: event
+                    .vector()
+                    .try_into()
+                    .map_err(|_| "a pending exception event whose vector is not 8 bits")?,
+                error_code: event.deliver_error_code().then(|| event.error_code()),
+                parameter: event.exception_parameter(),
+            })
+        }
+        hvdef::HV_X64_PENDING_EVENT_EXT_INT => {
+            let event = HvX64PendingExtIntEvent::from(u128::from(event));
+            Ok(PendingEvent::ExtInt {
+                vector: event.vector(),
+            })
+        }
+        _ => Err("a pending event other than an exception or an extint"),
+    }
+}
+
+/// Returns the pending interruption that `interruption`, which is pending,
+/// holds, or names what of it the activity cannot hold.
+fn pending_interruption_from_hv(
+    interruption: HvX64PendingInterruptionRegister,
+) -> Result<PendingInterruption, &'static str> {
+    use HvX64PendingInterruptionType as Type;
+
+    let vector = || {
+        interruption
+            .interruption_vector()
+            .try_into()
+            .map_err(|_| "a pending interruption whose vector is not 8 bits")
+    };
+    match Type(interruption.interruption_type()) {
+        Type::HV_X64_PENDING_INTERRUPT => Ok(PendingInterruption::Interrupt { vector: vector()? }),
+        Type::HV_X64_PENDING_NMI => Ok(PendingInterruption::Nmi),
+        Type::HV_X64_PENDING_EXCEPTION => Ok(PendingInterruption::Exception {
+            vector: vector()?,
+            error_code: interruption
+                .deliver_error_code()
+                .then(|| interruption.error_code()),
+        }),
+        Type::HV_X64_PENDING_SOFTWARE_INTERRUPT => Err("a pending software interrupt (INT n)"),
+        Type::HV_X64_PENDING_PRIVILEGED_SOFTWARE_EXCEPTION => {
+            Err("a pending privileged software exception (INT1)")
+        }
+        Type::HV_X64_PENDING_SOFTWARE_EXCEPTION => {
+            Err("a pending software exception (INT3 or INTO)")
+        }
+        _ => Err("a pending interruption of a type that Hyper-V does not define"),
     }
 }
 
@@ -4145,5 +4185,128 @@ mod tests {
         read.set_values(values(Some(InterruptShadowKind::Sti)).into_iter());
         assert!(read.interrupt_shadow);
         assert_eq!(read.interrupt_shadow_kind, None);
+    }
+
+    /// The activity registers' values with `interruption` in the pending
+    /// interruption register and `event` in the pending event register.
+    fn activity_values(
+        interruption: HvX64PendingInterruptionRegister,
+        event: u128,
+    ) -> [HvRegisterValue; 4] {
+        [
+            0u64.into(),
+            u64::from(interruption).into(),
+            0u64.into(),
+            event.into(),
+        ]
+    }
+
+    #[test]
+    fn activity_registers_read_back_as_written() {
+        for (pending_interruption, pending_event) in [
+            (None, None),
+            (Some(PendingInterruption::Interrupt { vector: 0x30 }), None),
+            (Some(PendingInterruption::Nmi), None),
+            (
+                Some(PendingInterruption::Exception {
+                    vector: 14,
+                    error_code: Some(2),
+                }),
+                Some(PendingEvent::Exception {
+                    vector: 14,
+                    error_code: Some(2),
+                    parameter: 0x1000,
+                }),
+            ),
+            (None, Some(PendingEvent::ExtInt { vector: 0x20 })),
+        ] {
+            let written = Activity {
+                mp_state: MpState::Halted,
+                nmi_masked: true,
+                pending_event,
+                pending_interruption,
+                ..Default::default()
+            };
+            let mut values = [HvRegisterValue::from(0u64); 4];
+            written.get_values(values.iter_mut());
+            assert_eq!(Activity::from_hv_values(values), Ok(written));
+        }
+    }
+
+    #[test]
+    fn activity_registers_refuse_what_the_activity_cannot_hold() {
+        let pending = |ty: u8| {
+            HvX64PendingInterruptionRegister::new()
+                .with_interruption_pending(true)
+                .with_interruption_type(ty)
+                .with_instruction_length(2)
+                .with_interruption_vector(0x80)
+        };
+        // A software interrupt, privileged software exception, or software
+        // exception, which the hypervisor delivers with an instruction length,
+        // and the types that Hyper-V does not define.
+        for (ty, refused) in [
+            (4, "a pending software interrupt (INT n)"),
+            (5, "a pending privileged software exception (INT1)"),
+            (6, "a pending software exception (INT3 or INTO)"),
+            (
+                1,
+                "a pending interruption of a type that Hyper-V does not define",
+            ),
+            (
+                7,
+                "a pending interruption of a type that Hyper-V does not define",
+            ),
+        ] {
+            assert_eq!(
+                Activity::from_hv_values(activity_values(pending(ty), 0)),
+                Err(refused),
+                "type {ty}"
+            );
+        }
+        // An interruption that is not pending has no type.
+        assert_eq!(
+            Activity::from_hv_values(activity_values(
+                pending(4).with_interruption_pending(false),
+                0
+            )),
+            Ok(Activity::default())
+        );
+        // A vector beyond 8 bits.
+        assert!(
+            Activity::from_hv_values(activity_values(
+                pending(0).with_interruption_vector(0x100),
+                0
+            ))
+            .is_err()
+        );
+
+        // A pending event other than an exception or an extint, such as a
+        // memory intercept or hypercall output, and an exception whose vector
+        // is beyond 8 bits.
+        for ty in [1, 2, 3, 4, 6, 7] {
+            let event = HvX64PendingEventReg0::new()
+                .with_event_pending(true)
+                .with_event_type(ty);
+            assert_eq!(
+                Activity::from_hv_values(activity_values(
+                    HvX64PendingInterruptionRegister::new(),
+                    event.into()
+                )),
+                Err("a pending event other than an exception or an extint"),
+                "type {ty}"
+            );
+        }
+        let exception = HvX64PendingExceptionEvent::new()
+            .with_event_pending(true)
+            .with_event_type(hvdef::HV_X64_PENDING_EVENT_EXCEPTION)
+            .with_vector(0x100);
+        assert!(
+            Activity::from_hv_values(activity_values(
+                HvX64PendingInterruptionRegister::new(),
+                exception.into()
+            ))
+            .is_err()
+        );
     }
 }

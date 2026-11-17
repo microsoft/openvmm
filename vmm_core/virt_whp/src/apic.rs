@@ -23,6 +23,7 @@ use std::sync::atomic::Ordering;
 use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
+use virt::state::HvRegisterState;
 use virt::x86::MsrError;
 use virt::x86::vp;
 use virt_support_apic::ApicClient;
@@ -180,9 +181,16 @@ impl<T: CpuIo> ApicClient for WhpApicClient<'_, T> {
 
 impl WhpProcessor<'_> {
     pub(crate) fn save_activity(&mut self, vtl: Vtl) -> Result<vp::Activity, Error> {
+        // The hypervisor can hold a pending interruption that the activity
+        // cannot, such as a software interrupt that it is delivering, so the
+        // save refuses it rather than drop it.
+        let values = self
+            .vp
+            .get_register_values(vtl, vp::Activity::default().names())?;
+        let registers = vp::Activity::from_hv_values(values).map_err(Error::UnsupportedState)?;
         let activity = match self.vp.partition.vtlp(vtl).lapic {
             LocalApicKind::Emulated(_) => {
-                let activity: vp::Activity = self.vp.get_register_state(vtl)?;
+                let activity = registers;
                 let lapic = self.state.vtls[vtl].lapic.as_ref().unwrap();
                 vp::Activity {
                     mp_state: if lapic.startup_suspend {
@@ -203,7 +211,7 @@ impl WhpProcessor<'_> {
             }
             LocalApicKind::Offloaded => {
                 // Get the NMI pending bit from the APIC.
-                let mut activity: vp::Activity = self.vp.get_register_state(vtl)?;
+                let mut activity = registers;
                 let apic = vp::ApicRegisters::from_page(
                     &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
                 );
