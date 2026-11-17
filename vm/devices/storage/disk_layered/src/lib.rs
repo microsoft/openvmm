@@ -801,6 +801,18 @@ impl DiskIo for LayeredDisk {
         sector: u64,
         fua: bool,
     ) -> Result<(), DiskError> {
+        // Same order as unmap: an out-of-range request fails with
+        // IllegalBlock even on a read-only disk.
+        let sector_count = (buffers.len() >> self.sector_shift) as u64;
+        if sector
+            .checked_add(sector_count)
+            .is_none_or(|end| end > self.sector_count())
+        {
+            return Err(DiskError::IllegalBlock);
+        }
+        if self.read_only {
+            return Err(DiskError::ReadOnly);
+        }
         for layer in &self.layers {
             layer.backing.write(buffers, sector, fua, false).await?;
             if !layer.write_through {
@@ -830,6 +842,18 @@ impl DiskIo for LayeredDisk {
         sector_count: u64,
         block_level_only: bool,
     ) -> Result<(), DiskError> {
+        // Check the range first, so an out-of-range request still fails with
+        // IllegalBlock. Then refuse writes on a read-only disk before the
+        // ignored case, so it never reports a successful unmap.
+        if sector_offset
+            .checked_add(sector_count)
+            .is_none_or(|end| end > self.sector_count())
+        {
+            return Err(DiskError::IllegalBlock);
+        }
+        if self.read_only {
+            return Err(DiskError::ReadOnly);
+        }
         if self.unmap_behavior == UnmapBehavior::Ignored {
             return Ok(());
         }
@@ -1174,6 +1198,95 @@ mod tests {
             assert_eq!(&data[..512], &[expected[0]; 512]);
             assert_eq!(&data[512..1024], &[expected[1]; 512]);
         }
+    }
+
+    #[async_test]
+    async fn test_read_only_refuses_writes() {
+        let bottom = Arc::new(TestLayer::new(8));
+        bottom
+            .sectors
+            .lock()
+            .insert(0, Data(vec![0x5a; 512].into()));
+        let cache = Arc::new(TestLayer::new(8));
+        let layers = vec![
+            LayerConfiguration {
+                layer: DiskLayer::new(cache.clone()),
+                read_cache: true,
+                write_through: false,
+            },
+            LayerConfiguration {
+                layer: DiskLayer::new(bottom),
+                read_cache: false,
+                write_through: false,
+            },
+        ];
+        let disk = LayeredDisk::new(true, layers).await.unwrap();
+        let mut mem = GuestMemory::allocate(512);
+        let buffers = OwnedRequestBuffers::linear(0, 512, true);
+
+        // Reads still populate the read cache.
+        disk.read_vectored(&buffers.buffer(&mem), 0).await.unwrap();
+        assert_eq!(&cache.sectors.lock()[&0].0[..], &[0x5a; 512]);
+
+        mem.inner_buf_mut().unwrap().fill(0xa5);
+        assert!(matches!(
+            disk.write_vectored(&buffers.buffer(&mem), 0, false).await,
+            Err(disk_backend::DiskError::ReadOnly)
+        ));
+        assert!(matches!(
+            disk.unmap(0, 1, false).await,
+            Err(disk_backend::DiskError::ReadOnly)
+        ));
+        // The range check comes before the read-only refusal.
+        assert!(matches!(
+            disk.write_vectored(&buffers.buffer(&mem), 8, false).await,
+            Err(disk_backend::DiskError::IllegalBlock)
+        ));
+        assert!(matches!(
+            disk.unmap(8, 1, false).await,
+            Err(disk_backend::DiskError::IllegalBlock)
+        ));
+        assert_eq!(&cache.sectors.lock()[&0].0[..], &[0x5a; 512]);
+    }
+
+    #[async_test]
+    async fn test_read_only_refuses_ignored_unmap() {
+        // A write-through layer whose unmap does not zero makes the disk
+        // ignore unmap. A read-only disk must still refuse it.
+        let layers = vec![
+            LayerConfiguration {
+                layer: DiskLayer::new(Arc::new(TestLayer::new(8))),
+                read_cache: false,
+                write_through: true,
+            },
+            LayerConfiguration {
+                layer: DiskLayer::new(Arc::new(TestLayer::new(8))),
+                read_cache: false,
+                write_through: false,
+            },
+        ];
+        let disk = LayeredDisk::new(true, layers).await.unwrap();
+        assert_eq!(disk.unmap_behavior(), UnmapBehavior::Ignored);
+        assert!(matches!(
+            disk.unmap(0, 1, false).await,
+            Err(disk_backend::DiskError::ReadOnly)
+        ));
+        assert!(matches!(
+            disk.unmap(8, 1, false).await,
+            Err(disk_backend::DiskError::IllegalBlock)
+        ));
+
+        // `Disk` handles an ignored unmap without calling the backend, so it
+        // has to refuse it there too.
+        let disk = disk_backend::Disk::new(disk).unwrap();
+        assert!(matches!(
+            disk.unmap(0, 1, false).await,
+            Err(disk_backend::DiskError::ReadOnly)
+        ));
+        assert!(matches!(
+            disk.unmap(8, 1, false).await,
+            Err(disk_backend::DiskError::IllegalBlock)
+        ));
     }
 
     #[async_test]
