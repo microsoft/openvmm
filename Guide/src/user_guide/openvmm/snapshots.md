@@ -833,8 +833,8 @@ immediately with a clear error if any active device does not support it.
   VP has it, and a build that predates it ignores it in a later snapshot, so
   neither restore fails, and neither keeps what the guest wrote. Only a backend
   that can access an MSR saves it, KVM only on a host that lists the MSR, and
-  MSHV and WHP only `IA32_SPEC_CTRL` and `IA32_UMWAIT_CONTROL`, the only ones of
-  these MSRs that their hypervisor keeps for a guest; a snapshot restores only
-  on a host that can access every MSR that it holds: on another host, the
-  restore is refused, with an error that names the element, before it changes
-  the VP.
+  MSHV and WHP only `IA32_SPEC_CTRL`, `IA32_UMWAIT_CONTROL`, and
+  `IA32_BNDCFGS`, the only ones of these MSRs that their hypervisor keeps for a
+  guest; a snapshot restores only on a host that can access every MSR that it
+  holds: on another host, the restore is refused, with an error that names the
+  element, before it changes the VP.
