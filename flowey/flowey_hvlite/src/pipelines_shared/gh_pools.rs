@@ -112,7 +112,7 @@ pub fn windows_tdx_gnr_self_hosted_baremetal() -> (GhRunner, NextestProfile) {
             "GNR".to_string(),
             "Baremetal".to_string(),
         ]),
-        NextestProfile::CiLarge,
+        NextestProfile::Ci,
     )
 }
 
@@ -125,7 +125,7 @@ pub fn windows_snp_self_hosted_baremetal() -> (GhRunner, NextestProfile) {
             "SNP".to_string(),
             "Baremetal".to_string(),
         ]),
-        NextestProfile::CiLarge,
+        NextestProfile::Ci,
     )
 }
 
