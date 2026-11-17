@@ -256,7 +256,7 @@ fails to start then, such as one whose network backend cannot create its
 queues, fails the resume: OpenVMM stops the devices that started again and
 logs the failure, no vCPU runs, and the restore publishes no readiness event.
 The devices keep their restored state, so a later resume starts their queues
-again.
+again, and a save of the paused VM saves that state.
 
 A restore gives a KVM VP the NMIs that it held pending at capture, which can be
 two: a second NMI that reached the VP before it ran, which KVM injects once the
