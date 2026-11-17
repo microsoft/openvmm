@@ -18,5 +18,8 @@ x86defs.workspace = true
 
 tracing = { workspace = true, optional = true }
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true
