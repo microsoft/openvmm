@@ -40,7 +40,9 @@ The `virt_backend_tests` executable in the `vmm_tests` package tests the public
 `virt` interfaces directly on native x86_64 KVM, MSHV, and WHP backends. These
 are hardware-dependent integration tests, not ordinary unit tests. They use
 Petri for registration, host eligibility, logs, and results, but do not use its
-VM builders, launch OpenVMM, load guest artifacts, or execute a VP.
+VM builders, launch OpenVMM, or load guest artifacts. Only the `suspend` module
+executes a VP, and then a few bytes of real-mode code that the test writes into
+the fixture's page.
 
 Each backend has independently reported cases for initially frozen clocks,
 freeze/thaw transitions, reset values, and serialized restoration of clocks,
@@ -70,6 +72,15 @@ with an error that names the element, before it changes any state.
 one at a time, and check this. The first also checks that the registers keep
 their values, and tries `IA32_SPEC_CTRL` and the MSRs above in addition to SynIC
 state, skipping each that the fixture's partition holds.
+A VP that was saved halted, or idle, stays suspended after a restore until
+something wakes it, and then resumes after its suspending instruction. The
+cases of `suspend.rs` check this on WHP, which needs them since its hypervisor
+does not keep a suspend state that a restore writes: only a VP that suspended
+itself stays suspended, so the cases run the VP, and they restore into the VP
+that was saved and into a VP of a new partition. Each registers by hand, since
+it builds a second partition, and the wake-up, an NMI or a fixed interrupt, also
+reaches the restored VP before it first runs, as the vector of a LAPIC timer
+that expired during a snapshot's downtime does.
 
 The contract functions operate on the public `virt` interfaces. Each function
 has an adjacent `backend_test!` declaration that registers it with Petri for
