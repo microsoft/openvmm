@@ -1,8 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Shared single-VP fixture with one mapped page of RAM. It does not run the
-//! VP: a test that runs a guest writes it to the page and runs the VP itself.
+//! Shared single-VP fixture with mapped RAM, one page unless a test asks for
+//! more. It does not run the VP: a test that runs a guest writes it to the RAM
+//! and runs the VP itself.
 
 // UNSAFETY: Mapping the fixture's RAM into the partition.
 #![expect(unsafe_code)]
@@ -34,11 +35,16 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) async fn new(driver: DefaultDriver) -> anyhow::Result<Self> {
+        Self::with_ram(driver, 4096).await
+    }
+
+    /// A fixture whose RAM is `ram_size` bytes at guest address 0.
+    pub(crate) async fn with_ram(driver: DefaultDriver, ram_size: u64) -> anyhow::Result<Self> {
         let topology = TopologyBuilder::new_x86()
             .x2apic(X2ApicState::Supported)
             .build(1)?;
-        let memory_layout = MemoryLayout::new(4096, &[], &[], &[], None)?;
-        let memory = GuestMemory::allocate(4096);
+        let memory_layout = MemoryLayout::new(ram_size, &[], &[], &[], None)?;
+        let memory = GuestMemory::allocate(ram_size as usize);
         let keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
         let time_source = keeper.builder().build(&driver).await?;
         Ok(Self {
@@ -52,7 +58,7 @@ impl Fixture {
 
     /// The RAM that every partition that the fixture builds maps, which a
     /// test that runs a guest writes the guest to.
-    #[cfg(windows)]
+    #[cfg(any(target_os = "linux", windows))]
     pub(crate) fn memory(&self) -> &GuestMemory {
         &self.memory
     }
