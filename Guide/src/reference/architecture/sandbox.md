@@ -70,10 +70,9 @@ There are three API stages and a small pre-exec step in the process builder:
    additional restrictions. Linux currently supports additional seccomp
    denials synchronized across all threads; path revocation is unsupported.
 
-PAL preserves its vfork-based launch path. Its pre-exec callback shares the
-parent's address space and must not allocate, lock, trace, or construct policy.
-Namespace mappings use precomputed data and libc operations. Rich setup belongs
-after `execve`, in the fresh, single-threaded worker image.
+PAL's pre-exec setup is limited to the launch configuration prepared by the
+control process. Policy construction and rich sandbox setup belong after
+execution of the worker image, while the worker is still single-threaded.
 
 The Linux sandbox is not fully established at process creation. The loader,
 runtime startup, and code through successful `apply` are trusted bootstrap.

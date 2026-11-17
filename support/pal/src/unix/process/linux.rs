@@ -215,16 +215,21 @@ impl Drop for ChildStackGuard {
 /// Runs in the cloned process to set up the process environment and exec the
 /// new binary.
 ///
-/// This function must not use the heap or call any functions that might. It
-/// also has only a small amount of stack space available. It should avoid using
-/// OS functionality via the std crate and should use libc directly.
+/// With CLONE_VM | CLONE_VFORK, the child shares the parent's address space
+/// while the spawning thread is suspended. This function and anything it calls
+/// must not allocate, deallocate, acquire locks, trace, or unwind. Borrowing
+/// parent-prepared heap data is allowed, but the child must not drop its owners.
+/// Only a small amount of stack space is available. Use libc directly for OS
+/// operations rather than std wrappers; libc calls must also satisfy these
+/// restrictions. Rich sandbox setup belongs after exec, not in this callback.
 ///
 /// Returns the exit code for the new process. If this function does not update
 /// context's result, then the exit code will be the Linux errno value
 /// associated with the error.
 //
-// N.B. this should be unsafe but the libc crate neglected to mark the clone
-// callback appropriately.
+// libc::clone requires a safe callback signature. The caller must still pass
+// a valid, aligned CloneContext pointer and ensure exclusive access to that
+// context and its mutable borrows for the duration of this callback.
 extern "C" fn clone_cb(context: *mut libc::c_void) -> libc::c_int {
     // SAFETY: Context is temporarily owned by this function, and we know
     // we were passed a valid pointer.
