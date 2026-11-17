@@ -205,6 +205,14 @@ impl WhpProcessor<'_> {
                     &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
                 );
                 activity.nmi_pending = apic.hv_apic_nmi_pending();
+                // The hypervisor can read back a suspend state that a restore
+                // wrote as running (see `resuspend_restored_vp`), but the VP
+                // is suspended as restored until it runs.
+                if let Some(restored) = self.state.vtls[vtl].restored_suspend {
+                    if activity.mp_state == vp::MpState::Running {
+                        activity.mp_state = restored;
+                    }
+                }
                 activity
             }
         };
@@ -263,6 +271,12 @@ impl WhpProcessor<'_> {
             }
             LocalApicKind::Offloaded => {
                 self.vp.set_register_state(vtl, value)?;
+                // The hypervisor does not keep a suspend state that this
+                // writes; see `resuspend_restored_vp`.
+                self.state.vtls[vtl].restored_suspend = match value.mp_state {
+                    vp::MpState::Halted | vp::MpState::Idle => Some(value.mp_state),
+                    vp::MpState::Running | vp::MpState::WaitForSipi => None,
+                };
                 // Set the NMI pending bit via the APIC.
                 let mut apic = vp::ApicRegisters::from_page(
                     &self.vp.whp(vtl).get_apic().for_op("get apic state")?,
@@ -277,6 +291,145 @@ impl WhpProcessor<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Makes a VP that was restored suspended suspend itself again, just before
+    /// it runs, by running the instruction that suspended it again.
+    ///
+    /// With the hypervisor's APIC, WHP keeps a suspend state that the VMM wrote
+    /// only until the VMM writes more of the VP's state: the VMM's write of the
+    /// APIC page can end a suspension that it set with the activity register or,
+    /// for a VP that suspended itself, one that follows a write of its RFLAGS,
+    /// and a suspension that it sets after the APIC page is dropped. So
+    /// `restore_all`, which writes the registers, the activity, and then the
+    /// APIC page, can leave a VP that runs on after its `hlt` (or its `rdmsr`
+    /// of `HV_X64_MSR_GUEST_IDLE`) when it first runs, whether it restores into
+    /// the VP that it was saved from or into a new partition's, although the
+    /// activity still reads back as suspended. A guest that halts with its
+    /// interrupts enabled gets a wake-up that it tolerates, but one that halts
+    /// with them disabled never expects one: Linux halts an offlined processor
+    /// so, and the processor would run on.
+    ///
+    /// The hypervisor keeps a VP suspended when the VP runs the suspending
+    /// instruction itself after the VMM's last write of its state. So this puts
+    /// RIP back onto that instruction, and lets the VP run it again, with the
+    /// registers, the APIC state, and the pending interrupts that it was saved
+    /// with. Once it has suspended, the VP is as it was saved.
+    ///
+    /// The instruction runs in an interrupt shadow, as one after an `sti` does,
+    /// so that nothing is taken before the VP has suspended: an interrupt or an
+    /// NMI taken first would return to the instruction, and the VP would
+    /// suspend again with nothing left to wake it, where it would have resumed
+    /// after the instruction. The restore of an LAPIC timer that expired during
+    /// the downtime queues such an interrupt. The shadow ends with the
+    /// instruction.
+    ///
+    /// Until the VP runs, the VMM reads the state that it restored:
+    /// `save_activity` reports the restored suspend state, and RIP is not
+    /// moved, since the VMM can still write the registers or the activity. A
+    /// VP whose RIP does not follow the suspending instruction, as one that
+    /// was not saved after it ran, is left as the restore wrote it.
+    pub(crate) fn resuspend_restored_vp(&mut self) -> Result<(), Error> {
+        let vtl = self.state.active_vtl;
+        let Some(mp_state) = self.state.vtls[vtl].restored_suspend.take() else {
+            return Ok(());
+        };
+        let instruction: &[u8] = match mp_state {
+            vp::MpState::Halted => &[0xf4],     // hlt
+            vp::MpState::Idle => &[0x0f, 0x32], // rdmsr
+            vp::MpState::Running | vp::MpState::WaitForSipi => return Ok(()),
+        };
+
+        let whp = self.vp.whp(vtl);
+        let (cs, rip, efer, rcx, activity, interrupt_state, pending_interruption, pending_event) =
+            get_registers!(
+                whp,
+                [
+                    whp::RegisterSegment::Cs,
+                    whp::Register64::Rip,
+                    whp::Register64::Efer,
+                    whp::Register64::Rcx,
+                    whp::Register64::InternalActivityState,
+                    whp::Register64::InterruptState,
+                    whp::Register64::PendingInterruption,
+                    whp::Register128::PendingEvent,
+                ]
+            )
+            .for_op("get registers")?;
+
+        // An INIT that the VP took since the restore makes it wait for a SIPI.
+        if hvdef::HvInternalActivityRegister::from(activity).startup_suspend() {
+            return Ok(());
+        }
+
+        // An interruption that the VP delivers before the instruction would
+        // return to it. The VP runs on after the restore with one pending
+        // anyway, so leave it.
+        let interrupted = HvX64PendingInterruptionRegister::from(pending_interruption)
+            .interruption_pending()
+            || HvX64PendingEventReg0::from(pending_event).event_pending();
+        // The VP idles in the `rdmsr` of the idle MSR, whose index it still holds.
+        let wrong_msr = mp_state == vp::MpState::Idle && rcx as u32 != hvdef::HV_X64_MSR_GUEST_IDLE;
+        let start = rip.checked_sub(instruction.len() as u64).filter(|&start| {
+            let long_mode = efer & x86defs::X64_EFER_LMA != 0
+                && x86defs::SegmentAttributes::from(cs.Attributes).long();
+            !interrupted
+                && !wrong_msr
+                && self.is_instruction_at(vtl, long_mode, cs.Base, start, instruction)
+        });
+        let Some(start) = start else {
+            tracelimit::warn_ratelimited!(
+                ?mp_state,
+                rip,
+                "cannot suspend a restored vp again: its suspending instruction does not \
+                 precede rip, or an interruption is pending; the hypervisor may run it on"
+            );
+            return Ok(());
+        };
+
+        tracing::debug!(?mp_state, rip, "suspending a restored vp again");
+        let interrupt_state = hvdef::HvX64InterruptStateRegister::from(interrupt_state);
+        set_registers!(
+            whp,
+            [
+                (whp::Register64::InternalActivityState, 0),
+                (whp::Register64::Rip, start),
+                (
+                    whp::Register64::InterruptState,
+                    u64::from(interrupt_state.with_interrupt_shadow(true))
+                ),
+            ]
+        )
+        .for_op("set registers")?;
+        Ok(())
+    }
+
+    /// Returns whether guest memory holds `instruction` at the offset `start`
+    /// of the code segment whose base is `cs_base`, where the VP can execute it.
+    fn is_instruction_at(
+        &self,
+        vtl: Vtl,
+        long_mode: bool,
+        cs_base: u64,
+        start: u64,
+        instruction: &[u8],
+    ) -> bool {
+        instruction.iter().zip(start..).all(|(&expected, offset)| {
+            let gva = if long_mode {
+                offset
+            } else {
+                cs_base.wrapping_add(offset) & 0xffff_ffff
+            };
+            let Ok(Ok(gpa)) = self.vp.whp(vtl).translate_gva(
+                gva,
+                whp::abi::WHvTranslateGvaFlagValidateExecute
+                    | whp::abi::WHvTranslateGvaFlagPrivilegeExempt,
+            ) else {
+                return false;
+            };
+            let mut byte = [0];
+            self.vp.partition.gm.read_at(gpa, &mut byte).is_ok() && byte[0] == expected
+        })
     }
 
     pub(crate) fn save_apic(&mut self, vtl: Vtl) -> Result<vp::Apic, Error> {

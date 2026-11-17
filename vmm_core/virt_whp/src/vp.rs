@@ -382,6 +382,12 @@ impl<'a> WhpProcessor<'a> {
             // Set the lazy EOI bit just before running.
             let lazy_eoi = self.sync_lazy_eoi();
 
+            // The hypervisor does not keep a suspend state that a restore
+            // wrote, so have the VP suspend itself again.
+            #[cfg(guest_arch = "x86_64")]
+            self.resuspend_restored_vp()
+                .map_err(|err| dev.fatal_error(err.into()))?;
+
             let mut runner = self.current_whp().runner();
             let exit = runner
                 .run()

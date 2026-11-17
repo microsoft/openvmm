@@ -287,6 +287,13 @@ struct PerVtlRunState {
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     // Only used when `hv` is `None`.
     vp_assist_page: u64,
+    /// The halt or idle suspend state that a restore of the VP's activity
+    /// wrote, which the VP's next run establishes again (see
+    /// `WhpProcessor::resuspend_restored_vp`). Only used with the
+    /// hypervisor's APIC.
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(debug)]
+    restored_suspend: Option<virt::x86::vp::MpState>,
 }
 
 impl PerVtlRunState {
@@ -307,6 +314,8 @@ impl PerVtlRunState {
             },
             deliverability_notifications: 0.into(),
             vp_assist_page: 0,
+            #[cfg(guest_arch = "x86_64")]
+            restored_suspend: None,
         }
     }
 
@@ -397,6 +406,8 @@ impl PerVtlRunState {
             hv,
             deliverability_notifications,
             vp_assist_page,
+            #[cfg(guest_arch = "x86_64")]
+            restored_suspend,
         } = self;
 
         #[cfg(guest_arch = "x86_64")]
@@ -413,6 +424,10 @@ impl PerVtlRunState {
 
         *deliverability_notifications = 0.into();
         *vp_assist_page = 0;
+        #[cfg(guest_arch = "x86_64")]
+        {
+            *restored_suspend = None;
+        }
     }
 }
 
