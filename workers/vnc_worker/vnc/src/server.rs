@@ -795,7 +795,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 // Collect dirty rectangles. Time the collect + encode (the
                 // tile-size-sensitive compute), excluding the socket write.
                 let proc_start = Instant::now();
-                let dirty = update_state.collect_dirty(
+                let mut dirty = update_state.collect_dirty(
                     &mut self.fb,
                     &mut self.dirty_recv,
                     cs.force_full_update,
@@ -803,10 +803,17 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 );
 
                 if !dirty.rects.is_empty() || cs.send_cursor {
+                    let wire_encoding = if cs.supports_zrle {
+                        WireEncoding::Zrle
+                    } else if cs.supports_zlib {
+                        WireEncoding::Zlib
+                    } else {
+                        WireEncoding::Raw
+                    };
                     tracing::trace!(
                         dirty_rects = dirty.rects.len(),
                         source = dirty.source.as_str(),
-                        encoding = if cs.supports_zlib { "zlib" } else { "raw" },
+                        encoding = ?wire_encoding,
                         "sending update"
                     );
                     if dirty.source == DirtySource::Full && !update_state.prev_fb.is_empty() {
@@ -826,28 +833,30 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     encoder.output_buf.clear();
 
                     let extra_rects = if cs.send_cursor { 1u16 } else { 0 };
-                    // Cap rectangle count to u16::MAX (the wire field width) to
-                    // prevent overflow.
                     let max_data_rects = (u16::MAX - extra_rects) as usize;
-                    let send_rects = dirty.rects.len().min(max_data_rects);
+                    if dirty.rects.len() > max_data_rects {
+                        // Send the complete cached frame now rather than drop
+                        // rectangles and require another request to repair it.
+                        tracing::debug!(
+                            total = dirty.rects.len(),
+                            "dirty rect count exceeds wire limit, sending full frame"
+                        );
+                        dirty.rects.clear();
+                        dirty.rects.push(crate::Rect {
+                            x: 0,
+                            y: 0,
+                            w: cs.width,
+                            h: cs.height,
+                        });
+                    }
                     encoder.output_buf.extend_from_slice(
                         rfb::FramebufferUpdate {
                             message_type: rfb::SC_MESSAGE_TYPE_FRAMEBUFFER_UPDATE,
                             padding: 0,
-                            rectangle_count: (send_rects as u16 + extra_rects).into(),
+                            rectangle_count: (dirty.rects.len() as u16 + extra_rects).into(),
                         }
                         .as_bytes(),
                     );
-                    if dirty.rects.len() > max_data_rects {
-                        // Some rects will be dropped. Force a full refresh
-                        // on the next cycle to cover the missing regions.
-                        cs.force_full_update = true;
-                        tracing::warn!(
-                            total = dirty.rects.len(),
-                            sent = send_rects,
-                            "dirty rect count exceeds u16::MAX, forcing full refresh next cycle"
-                        );
-                    }
 
                     if cs.send_cursor {
                         cs.send_cursor = false;
@@ -866,17 +875,9 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         encoder.output_buf.extend_from_slice(&mask);
                     }
 
-                    // Prefer ZRLE, then zlib, then uncompressed raw.
-                    let wire_encoding = if cs.supports_zrle {
-                        WireEncoding::Zrle
-                    } else if cs.supports_zlib {
-                        WireEncoding::Zlib
-                    } else {
-                        WireEncoding::Raw
-                    };
                     let mut bytes_sent: usize = 0;
 
-                    for r in dirty.rects.iter().take(send_rects) {
+                    for r in &dirty.rects {
                         debug_assert!(
                             r.x + r.w <= cs.width && r.y + r.h <= cs.height,
                             "dirty rect ({},{} {}x{}) exceeds framebuffer ({}x{})",
@@ -1424,6 +1425,25 @@ mod tests {
     where
         F: FnOnce(TcpStream, SharedFramebuffer) + Send + 'static,
     {
+        run_server_test_with_tile_size(
+            fb,
+            dirty_recv,
+            missed_dirty,
+            TileSizeMode::Fixed(16),
+            client,
+        )
+    }
+
+    fn run_server_test_with_tile_size<F>(
+        fb: SharedFramebuffer,
+        dirty_recv: Option<DirtyRectReceiver>,
+        missed_dirty: Option<Arc<AtomicBool>>,
+        tile_size_mode: TileSizeMode,
+        client: F,
+    ) -> (Result<(), Error>, Vec<InputEvent>)
+    where
+        F: FnOnce(TcpStream, SharedFramebuffer) + Send + 'static,
+    {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -1454,7 +1474,7 @@ mod tests {
                 input,
                 dirty_recv,
                 missed_dirty,
-                TileSizeMode::Fixed(16),
+                tile_size_mode,
             );
             let mut updater = server.updater();
             let mut timer = PolledTimer::new(&driver);
@@ -1527,6 +1547,40 @@ mod tests {
 
         assert!(matches!(result, Ok(())), "{result:?}");
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn e2e_small_tiles_exceeding_rectangle_limit_send_complete_frame() {
+        let fb = SharedFramebuffer::new(1024, 1024, 0);
+        let (result, _) = run_server_test_with_tile_size(
+            fb,
+            None,
+            None,
+            TileSizeMode::Fixed(2),
+            |mut stream, fb| {
+                handshake(&mut stream, rfb::PROTOCOL_VERSION_38);
+                send_framebuffer_update_request(&mut stream, false, 1024, 1024);
+                read_framebuffer_update(&mut stream);
+
+                // 131,072 isolated dirty tiles exceed the wire rectangle limit.
+                let expected: Vec<u32> = (0..1024 * 1024)
+                    .map(|i| u32::from((i % 1024 / 2 + i / 1024 / 2) % 2 == 0))
+                    .collect();
+                fb.0.lock().pixels.copy_from_slice(&expected);
+                send_set_encodings(&mut stream, &[rfb::EncodingType::CURSOR]);
+                send_framebuffer_update_request(&mut stream, true, 1024, 1024);
+                let rects = read_framebuffer_update(&mut stream);
+                assert_eq!(rects.len(), 2);
+                assert_eq!(rects[0].encoding(), rfb::EncodingType::CURSOR);
+                assert_eq!(rects[1].encoding(), rfb::EncodingType::RAW);
+                assert_eq!(rects[1].header.x.get(), 0);
+                assert_eq!(rects[1].header.y.get(), 0);
+                assert_eq!(rects[1].header.width.get(), 1024);
+                assert_eq!(rects[1].header.height.get(), 1024);
+                assert_eq!(rects[1].payload, expected.as_bytes());
+            },
+        );
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]

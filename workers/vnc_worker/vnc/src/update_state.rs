@@ -139,7 +139,6 @@ impl UpdateState {
                         // and stop polling the dead channel.
                         if self.device_dirty_seen {
                             tracing::info!("dirty channel closed, falling back to tile diff");
-                            self.device_dirty_seen = false;
                         }
                         *dirty_recv = None;
                         break;
@@ -147,33 +146,27 @@ impl UpdateState {
                 }
             }
         }
-        if got_device_dirty {
-            self.device_dirty_seen = true;
-        }
-
         // A dropped dirty broadcast (our channel was full) forces a full
         // refresh to prevent permanently stale regions.
-        if let Some(missed) = missed_dirty {
-            if missed.swap(false, Ordering::Relaxed) {
-                full_update = true;
-                // A dropped broadcast left gaps in cur_fb, so re-read in full
-                // rather than serving the incomplete copy.
-                cur_fb_stale = true;
-                // A dropped broadcast means the device is producing dirt, so
-                // mark it as driving cur_fb (otherwise a client recovering only
-                // via this path reverts to the full tile-diff scan each idle
-                // cycle).
-                self.device_dirty_seen = true;
-                tracing::debug!("missed dirty broadcast, forcing full refresh");
-            }
+        let missed_dirty = missed_dirty
+            .as_ref()
+            .is_some_and(|missed| missed.swap(false, Ordering::Relaxed));
+        if missed_dirty {
+            full_update = true;
+            cur_fb_stale = true;
+            tracing::debug!("missed dirty broadcast, forcing full refresh");
         }
+        // Closure wins over both the final queued rectangles and overflow
+        // recovery: neither can promise future dirty notifications.
+        self.device_dirty_seen =
+            dirty_recv.is_some() && (self.device_dirty_seen || got_device_dirty || missed_dirty);
 
         let source = if cur_fb_stale {
             // cur_fb is unusable (first frame, resolution change, or a dropped
             // broadcast left gaps): re-read the whole framebuffer.
             self.full_refresh_from_vram(fb);
             DirtySource::Full
-        } else if got_device_dirty || (full_update && self.device_dirty_seen) {
+        } else if self.device_dirty_seen && (got_device_dirty || full_update) {
             // Bring the complete previous frame into cur_fb so non-dirty regions
             // are already correct, then read only this cycle's dirty columns. A
             // client-requested full refresh lands here too when the device keeps
@@ -613,6 +606,52 @@ mod tests {
         // The outside pixel was not read (we only read the dirty columns), so
         // it keeps the previous frame's value from the cur_fb/prev_fb swap.
         assert_eq!(state.cur_fb[5 * 64 + 5], 0);
+    }
+
+    #[test]
+    fn closed_dirty_channel_keeps_tile_diff_fallback() {
+        for queued_dirty in [false, true] {
+            for missed in [false, true] {
+                for force_full in [false, true] {
+                    let mut fb = MockFramebuffer::new(32, 32, 0);
+                    let mut state = UpdateState::new(16);
+                    state.set_resolution(32, 32);
+                    let (tx, rx) = async_channel::bounded(4);
+                    let mut dirty_recv = Some(rx);
+                    tx.try_send(Arc::new(vec![])).unwrap();
+                    state.collect_dirty(&mut fb, &mut dirty_recv, true, &None);
+                    state.commit();
+
+                    if queued_dirty {
+                        tx.try_send(Arc::new(vec![video_core::DirtyRect {
+                            left: 0,
+                            top: 0,
+                            right: 16,
+                            bottom: 16,
+                        }]))
+                        .unwrap();
+                    }
+                    drop(tx);
+                    let missed_dirty = Some(Arc::new(AtomicBool::new(missed)));
+                    // This change is outside the final queued dirty rectangle.
+                    fb.set(31, 31, 1);
+                    let result =
+                        state.collect_dirty(&mut fb, &mut dirty_recv, force_full, &missed_dirty);
+                    assert!(!result.rects.is_empty());
+                    assert_eq!(state.cur_fb[31 * 32 + 31], 1);
+                    assert!(dirty_recv.is_none());
+                    state.commit();
+
+                    fb.set(31, 31, 2);
+                    let result =
+                        state.collect_dirty(&mut fb, &mut dirty_recv, false, &missed_dirty);
+                    assert_eq!(result.source, DirtySource::Diff);
+                    assert!(!result.rects.is_empty());
+                    assert_eq!(state.cur_fb[31 * 32 + 31], 2);
+                    state.commit();
+                }
+            }
+        }
     }
 
     #[test]

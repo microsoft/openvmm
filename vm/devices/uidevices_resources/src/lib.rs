@@ -55,7 +55,7 @@ pub struct SynthVideoHandle {
     pub framebuffer: Resource<FramebufferHandleKind>,
     /// Channels to the consumer (the VNC worker), or `None` when no consumer is
     /// wired up; the device then leaves the guest at its default (everything
-    /// enabled) and never sends a `FeatureChange`.
+    /// enabled).
     pub channels: Option<SynthVideoDeviceChannels>,
 }
 

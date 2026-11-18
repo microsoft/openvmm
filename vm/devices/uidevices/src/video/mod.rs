@@ -169,9 +169,8 @@ pub struct Video {
     /// value to the guest via a synthvid `FeatureChange`. `None` leaves the
     /// guest at its default (everything enabled).
     updates_needed_recv: Option<mesh::Receiver<bool>>,
-    /// Last update-reporting demand seen, persisted across channel reopen and
-    /// save/restore so a re-handshake while idle re-disables reporting without
-    /// waiting for the next demand value. Defaults to `true`.
+    /// Last update-reporting demand seen, retained across task restarts and
+    /// channel reopen. Defaults to `true`.
     last_updates_needed: bool,
 }
 
@@ -517,18 +516,15 @@ async fn process_channel(
     framebuffer: &mut Box<dyn FramebufferControl>,
     dirty_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
     updates_needed_recv: &mut Option<mesh::Receiver<bool>>,
-    last_updates_needed: &mut bool,
+    updates_needed: &mut bool,
     check: &task_control::StopCheck<'_>,
 ) -> Result<(), Error> {
-    // Whether the guest should currently report screen/pointer updates. Seeded
-    // from the demand persisted on the device so a channel reopen or
-    // save/restore (which restarts this function) picks up the last value. A
-    // FeatureChange is sent below only when the value diverges from what the
-    // guest believes; with no demand channel wired up it never changes.
-    let mut updates_needed = *last_updates_needed;
-    // What the guest currently believes, used to avoid redundant
-    // FeatureChanges. The post-handshake guest default is everything-enabled.
-    let mut synced_updates: Option<bool> = Some(true);
+    // A resumed/restored active channel may have reporting disabled. Reconcile
+    // once on restart rather than assuming the post-handshake enabled default.
+    let mut synced_updates = match state {
+        ChannelState::Active { .. } => None,
+        _ => Some(true),
+    };
     // Count of updates received from the guest while disabled, to detect a
     // guest that ignores the FeatureChange. Reset whenever updates are enabled.
     let mut updates_while_disabled: u32 = 0;
@@ -589,7 +585,7 @@ async fn process_channel(
                     if let Some(recv) = updates_needed_recv.as_mut() {
                         loop {
                             match recv.try_recv() {
-                                Ok(v) => updates_needed = v,
+                                Ok(v) => *updates_needed = v,
                                 Err(mesh::TryRecvError::Empty) => break,
                                 // Sender dropped; stop managing the feature and
                                 // leave the guest at its last known state.
@@ -599,18 +595,15 @@ async fn process_channel(
                                 }
                             }
                         }
-                        if updates_needed_recv.is_some() && synced_updates != Some(updates_needed) {
-                            send_feature_change(channel, updates_needed).await?;
-                            synced_updates = Some(updates_needed);
-                            tracing::debug!(updates_needed, "sent synthvid FeatureChange to guest");
-                        }
                     }
-                    if updates_needed {
+                    if synced_updates != Some(*updates_needed) {
+                        send_feature_change(channel, *updates_needed).await?;
+                        synced_updates = Some(*updates_needed);
+                        tracing::debug!(updates_needed, "sent synthvid FeatureChange to guest");
+                    }
+                    if *updates_needed {
                         updates_while_disabled = 0;
                     }
-                    // Persist the settled demand on the device so a later channel
-                    // reopen or save/restore seeds from it.
-                    *last_updates_needed = updates_needed;
 
                     // Wait for the next guest packet, or for a demand change
                     // that should re-sync the update features on the next pass.
@@ -630,7 +623,7 @@ async fn process_channel(
                             d = demand.fuse() => {
                                 match d {
                                     Ok(v) => {
-                                        updates_needed = v;
+                                        *updates_needed = v;
                                         None
                                     }
                                     Err(_) => {
@@ -678,7 +671,7 @@ async fn process_channel(
                         }
                         Request::PointerPosition { is_visible, x, y } => {
                             let _ = (is_visible, x, y);
-                            if !updates_needed {
+                            if !*updates_needed {
                                 note_update_while_disabled(
                                     &mut updates_while_disabled,
                                     "pointer-position",
@@ -686,7 +679,7 @@ async fn process_channel(
                             }
                         }
                         Request::PointerShape => {
-                            if !updates_needed {
+                            if !*updates_needed {
                                 note_update_while_disabled(
                                     &mut updates_while_disabled,
                                     "pointer-shape",
@@ -695,7 +688,7 @@ async fn process_channel(
                         }
                         Request::Dirt(rects) => {
                             // Skip forwarding while no consumer is watching.
-                            if updates_needed {
+                            if *updates_needed {
                                 if let Some(send) = dirty_send {
                                     let dirty: Vec<DirtyRect> = rects
                                         .iter()
@@ -857,6 +850,7 @@ mod tests {
             _: &mut (),
         ) -> Result<(), task_control::Cancelled> {
             let check = stop.check_handle()?;
+            let mut updates_needed = true;
             match stop
                 .until_stopped(process_channel(
                     &mut self.channel,
@@ -864,6 +858,8 @@ mod tests {
                     &mut self.packets,
                     &mut self.control,
                     &None,
+                    &mut None,
+                    &mut updates_needed,
                     &check,
                 ))
                 .await?
@@ -1291,6 +1287,95 @@ mod tests {
 
         drop(guest);
         worker.await.unwrap();
+    }
+
+    #[async_test]
+    async fn test_feature_change_reconciles_after_task_restart(_driver: DefaultDriver) {
+        let (mut host, mut guest) = connected_message_pipes(16384);
+        let (_device, mut control, _view) = framebuffer_fixture();
+        let (send, recv) = mesh::channel();
+        let mut updates_needed_recv = Some(recv);
+        let mut last_updates_needed = true;
+        let mut state = ChannelState::Active {
+            version: Version {
+                major: protocol::VERSION_MAJOR,
+                minor: protocol::VERSION_MINOR_BLUE,
+            },
+            substate: ActiveState::ReadRequest,
+        };
+        let mut packet_buf = PacketBuffer::new();
+
+        // Dropping each pending process future models pause/resume on the
+        // same active channel, including a demand change while paused.
+        for needed in [false, false, true] {
+            send.send(needed);
+            {
+                let process = std::pin::pin!(process_channel(
+                    &mut host,
+                    &mut state,
+                    &mut packet_buf,
+                    &mut control,
+                    &None,
+                    &mut updates_needed_recv,
+                    &mut last_updates_needed,
+                ));
+                assert!(futures::poll!(process).is_pending());
+            }
+            assert_eq!(last_updates_needed, needed);
+            let fc = recv_feature_change(&mut guest).now_or_never().unwrap();
+            assert_eq!(fc.is_dirt_needed, needed as u8);
+            assert_eq!(fc.is_pointer_position_updates_needed, needed as u8);
+            assert_eq!(fc.is_pointer_shape_updates_needed, needed as u8);
+            assert_eq!(fc.is_video_situation_updates_needed, 1);
+        }
+    }
+
+    #[async_test]
+    async fn test_feature_change_retains_demand_when_send_is_cancelled(_driver: DefaultDriver) {
+        let (mut host, _guest) = connected_message_pipes(16384);
+        let (_device, mut control, _view) = framebuffer_fixture();
+        let (send, recv) = mesh::channel();
+        let mut updates_needed_recv = Some(recv);
+        let mut last_updates_needed = true;
+        let mut state = ChannelState::Active {
+            version: Version {
+                major: protocol::VERSION_MAJOR,
+                minor: protocol::VERSION_MINOR_BLUE,
+            },
+            substate: ActiveState::ReadRequest,
+        };
+        let mut packet_buf = PacketBuffer::new();
+
+        // Fill the outbound ring so the feature send cannot complete.
+        let packet =
+            [0; size_of::<protocol::MessageHeader>() + size_of::<protocol::FeatureChangeMessage>()];
+        loop {
+            let send = std::pin::pin!(host.send(&packet));
+            match futures::poll!(send) {
+                std::task::Poll::Ready(result) => {
+                    result.unwrap();
+                }
+                std::task::Poll::Pending => break,
+            }
+        }
+        send.send(false);
+        {
+            let process = std::pin::pin!(process_channel(
+                &mut host,
+                &mut state,
+                &mut packet_buf,
+                &mut control,
+                &None,
+                &mut updates_needed_recv,
+                &mut last_updates_needed,
+            ));
+            assert!(futures::poll!(process).is_pending());
+        }
+        assert!(!last_updates_needed);
+        assert!(matches!(
+            updates_needed_recv.as_mut().unwrap().try_recv(),
+            Err(mesh::TryRecvError::Empty)
+        ));
     }
 
     #[async_test]

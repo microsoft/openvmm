@@ -192,6 +192,9 @@ Once device dirty rects have been received at least once (`device_dirty_seen`),
 subsequent empty cycles skip the VRAM read entirely. This reduces an idle
 1080p desktop from 8MB/frame/client to 0 bytes.
 
+If the dirty channel closes, the client resumes tile-diff scanning, even if
+the final batch contains rectangles or an overflow requires a recovery refresh.
+
 ### Suppressing Guest Reporting When No Client Is Connected
 
 The optimization above still lets the guest generate and send dirty
@@ -209,15 +212,12 @@ The device also drops any dirt that arrives while reporting is disabled, and
 logs a rate-limited warning if a guest keeps sending it, which indicates the
 guest is not honoring the request.
 
-The device side defaults to the guest's enabled state and only disables when
-the coordinator signals "no client". This keeps a connected client working
-across a guest reboot or video-driver reload: those re-open the synthvid
-channel and reset the device's per-connection state, but the coordinator does
-not re-signal (the client never left), so the guest keeps reporting. The flip
-side is that a reopen while no client is connected leaves the guest reporting
-to nobody. The coordinator corrects this on its own: if it receives device
-dirt while it has zero clients, it re-sends "no client", which settles in one
-cycle (the device then drops further dirt at the gate).
+The device retains the latest demand across task restarts and channel reopen,
+so a guest reboot or video-driver reload does not require another client
+connect/disconnect event. Resuming an already-active channel re-sends the
+current feature settings once: the guest may still have reporting disabled,
+and demand may have changed while the VM was paused. Consumed demand is stored
+before awaiting the feature send, so cancellation cannot lose it.
 
 ## Multi-Client Architecture
 
@@ -345,6 +345,11 @@ The entire `FramebufferUpdate` message (header + cursor + all rect data) is
 accumulated in `Encoder.output_buf` and sent with a single
 `socket.write_all()`. This reduces async write calls from O(rects * 3) to
 O(1) per update cycle.
+
+If the merged dirty rectangles exceed the RFB message's 16-bit rectangle
+count, the server sends the complete cached frame as one data rectangle
+instead. It reserves a slot for a pending cursor rectangle and does not
+re-read VRAM or defer missing regions to another client request.
 
 ### Zlib Compression
 
