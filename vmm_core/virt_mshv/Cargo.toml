@@ -33,7 +33,6 @@ mshv-bindings = { workspace = true, features = ["with-serde", "fam-wrappers"] }
 mshv-ioctls.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
-signal-hook.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
