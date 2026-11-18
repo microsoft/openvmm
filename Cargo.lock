@@ -7796,7 +7796,6 @@ dependencies = [
  "disk_backend",
  "disk_hook",
  "disk_prwrap",
- "event-listener",
  "futures",
  "getrandom 0.4.2",
  "guestmem",

@@ -11,12 +11,10 @@ use crate::ScsiSavedState;
 use crate::SenseDataSlot;
 use disk_backend::Disk;
 use disk_backend::DiskError;
-use event_listener::Event;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use parking_lot::Mutex;
-use parking_lot::RwLock;
 use scsi::AdditionalSenseCode;
 use scsi::FeatureNumber::FeaturePowerManagement;
 use scsi::FeatureNumber::FeatureRealTimeStreaming;
@@ -42,95 +40,15 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-#[derive(Clone)]
 enum Media {
     Unloaded,
     Loaded(Disk),
 }
 
 pub struct SimpleScsiDvd {
-    media: Arc<RwLock<Media>>,
+    media: Arc<futures::lock::Mutex<Media>>,
     media_state: Arc<Mutex<MediaState>>,
     sense_data: SenseDataSlot,
-    commands: CommandGate,
-}
-
-/// Lets commands run concurrently, and lets a media change wait for the
-/// running commands while it holds off new ones.
-#[derive(Default)]
-struct CommandGate {
-    state: Mutex<GateState>,
-    event: Event,
-}
-
-#[derive(Default)]
-struct GateState {
-    running: usize,
-    changing: bool,
-}
-
-impl CommandGate {
-    /// Waits for any media change to finish and counts a command as running.
-    async fn enter(&self) -> CommandGuard<'_> {
-        loop {
-            let listener = self.event.listen();
-            {
-                let mut state = self.state.lock();
-                if !state.changing {
-                    state.running += 1;
-                    return CommandGuard(self);
-                }
-            }
-            listener.await;
-        }
-    }
-
-    /// Holds off new commands and waits for the running ones to finish.
-    async fn close(&self) -> ChangeGuard<'_> {
-        // One change at a time.
-        loop {
-            let listener = self.event.listen();
-            {
-                let mut state = self.state.lock();
-                if !state.changing {
-                    state.changing = true;
-                    break;
-                }
-            }
-            listener.await;
-        }
-        // Commands are let in again when this is dropped, also if the wait
-        // below is cancelled.
-        let guard = ChangeGuard(self);
-        loop {
-            let listener = self.event.listen();
-            if self.state.lock().running == 0 {
-                return guard;
-            }
-            listener.await;
-        }
-    }
-}
-
-struct CommandGuard<'a>(&'a CommandGate);
-
-impl Drop for CommandGuard<'_> {
-    fn drop(&mut self) {
-        let mut state = self.0.state.lock();
-        state.running -= 1;
-        if state.running == 0 {
-            self.0.event.notify(usize::MAX);
-        }
-    }
-}
-
-struct ChangeGuard<'a>(&'a CommandGate);
-
-impl Drop for ChangeGuard<'_> {
-    fn drop(&mut self) {
-        self.0.state.lock().changing = false;
-        self.0.event.notify(usize::MAX);
-    }
 }
 
 #[derive(Debug, Default)]
@@ -189,17 +107,16 @@ impl AsyncScsiDisk for SimpleScsiDvd {
             let op = request.scsiop();
 
             if op == ScsiOp::START_STOP_UNIT {
-                // This one can change the media, so it closes the gate itself.
+                // This one can change the media, so it takes the media lock
+                // itself.
                 let result = self.handle_start_stop_unit(request).await;
                 return self.process_result(result, op);
             }
 
-            // The media cannot change while the command runs: a media change
-            // waits for the running commands to finish, and new commands wait
-            // for the change. So this copy stays the drive's media until the
-            // command is done, without holding `media` across the disk I/O.
-            let _command = self.commands.enter().await;
-            let media = self.media.read().clone();
+            // Hold the media for the whole command, including its disk I/O, so
+            // that it cannot change while the command runs. Commands on this
+            // drive run one at a time.
+            let media = self.media.lock().await;
             let result = match op {
                 ScsiOp::INQUIRY => self.handle_inquiry_iso(external_data, request),
                 ScsiOp::TEST_UNIT_READY => self.handle_test_unit_ready_iso(),
@@ -255,9 +172,8 @@ impl inspect::Inspect for SimpleScsiDvd {
 
         resp.field("drive_state", self.media_state.lock().drive_state);
 
-        resp.field("media_change_pending", self.commands.state.lock().changing);
-
-        if let Media::Loaded(disk) = &*self.media.read() {
+        // Skip the backend while a command or a media change holds the media.
+        if let Some(Media::Loaded(disk)) = self.media.try_lock().as_deref() {
             resp.field("backend", disk);
         }
     }
@@ -271,13 +187,13 @@ impl SimpleScsiDvd {
 
         let (media, pending_medium_event, drive_state) = if let Some(disk) = disk {
             (
-                RwLock::new(Media::Loaded(disk)).into(),
+                futures::lock::Mutex::new(Media::Loaded(disk)).into(),
                 IsoMediumEvent::MediaToMedia,
                 DriveState::MediumPresentTrayClosed,
             )
         } else {
             (
-                RwLock::new(Media::Unloaded).into(),
+                futures::lock::Mutex::new(Media::Unloaded).into(),
                 IsoMediumEvent::MediaToNoMedia,
                 DriveState::MediumNotPresentTrayClosed,
             )
@@ -291,7 +207,6 @@ impl SimpleScsiDvd {
                 ..Default::default()
             })),
             sense_data: SenseDataSlot::default(),
-            commands: CommandGate::default(),
         }
     }
 
@@ -301,8 +216,7 @@ impl SimpleScsiDvd {
     pub async fn change_media(&self, disk: Option<Disk>) {
         if let Some(disk) = disk {
             // Insert medium
-            let _change = self.commands.close().await;
-            let mut media = self.media.write();
+            let mut media = self.media.lock().await;
 
             let mut media_state = self.media_state.lock();
             media_state.drive_state = DriveState::MediumPresentTrayOpen;
@@ -313,8 +227,7 @@ impl SimpleScsiDvd {
             tracing::debug!("completed host initiated insert");
         } else {
             // Eject medium
-            let _change = self.commands.close().await;
-            let mut media = self.media.write();
+            let mut media = self.media.lock().await;
             let mut media_state = self.media_state.lock();
 
             // This will cause the next GESN or TUR command to report medium removal
@@ -1040,13 +953,12 @@ impl SimpleScsiDvd {
             (false, false) => (), // stop the disc, do nothing here
             (false, true) => (),  // start the disc and make ready for access, do nothing here
             (true, false) => {
-                // Ejecting changes the drive state and the media, so wait for
-                // the commands that use them to finish.
-                let change = self.commands.close().await;
                 let mut previous_media = None;
                 {
-                    // Take `media` before `media_state`, as `change_media` does.
-                    let mut media = self.media.write();
+                    // Ejecting changes the drive state and the media, so wait
+                    // for the commands that use them to finish. Take `media`
+                    // before `media_state`, as `change_media` does.
+                    let mut media = self.media.lock().await;
                     let mut media_state = self.media_state.lock();
                     // eject the disc if permitted
                     if !media_state.prevent {
@@ -1072,9 +984,6 @@ impl SimpleScsiDvd {
                         ));
                     }
                 }
-                // The disk has left the drive, so other commands need not wait
-                // for the backend eject.
-                drop(change);
                 if let Some(media) = previous_media {
                     if let Media::Loaded(disk) = media {
                         if let Err(e) = disk.eject().await {
@@ -2512,7 +2421,6 @@ mod tests {
     use crate::ScsiSaveRestore;
     use crate::ScsiSavedState;
     use crate::scsi;
-    use crate::scsidvd::CommandGate;
     use crate::scsidvd::ISO_SECTOR_SIZE;
     use crate::scsidvd::SimpleScsiDvd;
     use disk_backend::Disk;
@@ -2521,6 +2429,8 @@ mod tests {
     use disk_backend::UnmapBehavior;
     use disk_hook::DiskOperation;
     use disk_hook::HookDisk;
+    use futures::FutureExt;
+    use futures::future::LocalBoxFuture;
     use guestmem::GuestMemory;
     use inspect::Inspect;
     use pal_async::async_test;
@@ -2534,13 +2444,11 @@ mod tests {
     use scsi_core::save_restore::DriveState;
     use scsi_core::save_restore::IsoMediumEvent;
     use scsi_core::save_restore::ScsiDvdSavedState;
-    use std::pin::pin;
     use std::sync::Arc;
     use std::sync::Barrier;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc;
-    use std::task::Poll;
     use std::time::Duration;
     use test_with_tracing::test;
     use zerocopy::IntoBytes;
@@ -2566,7 +2474,7 @@ mod tests {
         let scsi_dvd = SimpleScsiDvd::new(Some(disk.with_read_only(read_only).into_disk()));
         let sector_shift = ISO_SECTOR_SIZE.trailing_zeros() as u8;
         assert_eq!(scsi_dvd.sector_shift(), sector_shift);
-        if let Media::Loaded(disk) = &*scsi_dvd.media.read() {
+        if let Media::Loaded(disk) = &*scsi_dvd.media.lock().await {
             assert_eq!(iso_sector_count(disk), sector_count / disk_balancer(disk));
             assert_eq!(disk.is_read_only(), read_only);
             assert_eq!(disk.sector_size(), sector_size);
@@ -2857,7 +2765,7 @@ mod tests {
             fill_repeat_data_buffer(&mut data, sector_size as usize);
 
             let sector_count =
-                iso_sector_count(scsi_dvd.loaded_disk(&scsi_dvd.media.read()).unwrap());
+                iso_sector_count(scsi_dvd.loaded_disk(&*scsi_dvd.media.lock().await).unwrap());
             for start_lba in [0, 3, sector_count - u64::from(lba_count)] {
                 guest_mem.fill_at(0, 0xff, len).unwrap();
                 let request = make_cdb16_request(ScsiOp::READ16, start_lba, lba_count);
@@ -2978,13 +2886,13 @@ mod tests {
 
     /// Runs `request` on a drive whose media is `disk(pause)`, with the disk
     /// calling `pause` where the command should stop. While the command is
-    /// stopped, runs `change` on another thread and checks that the change
-    /// waits for the command. Returns the command's status and the first four
-    /// bytes it transferred.
+    /// stopped, starts `change` and checks that the change waits for the
+    /// command. Returns the command's status and the first four bytes it
+    /// transferred.
     fn check_media_change_waits_for_command(
         disk: impl FnOnce(Box<dyn Fn() + Send + Sync>) -> Disk,
         request: Request,
-        change: fn(&SimpleScsiDvd),
+        change: fn(&SimpleScsiDvd) -> LocalBoxFuture<'_, ()>,
     ) -> (scsi::ScsiStatus, [u8; 4]) {
         let barrier = Arc::new(Barrier::new(2));
         let disk = disk(Box::new({
@@ -3015,29 +2923,15 @@ mod tests {
             }
         });
         barrier.wait();
-        let (change_done, change_result) = mpsc::channel();
-        std::thread::spawn({
-            let scsi_dvd = scsi_dvd.clone();
-            move || {
-                change(&scsi_dvd);
-                change_done.send(()).unwrap();
-            }
-        });
-        let change_waits = || {
-            let state = scsi_dvd.commands.state.lock();
-            state.changing && state.running > 0
-        };
-        while !change_waits() {
-            assert!(
-                change_result.try_recv().is_err(),
-                "the media change did not wait for the command"
-            );
-            std::thread::yield_now();
-        }
+        let mut change = change(&scsi_dvd);
+        assert!(
+            change.as_mut().now_or_never().is_none(),
+            "the media change did not wait for the command"
+        );
         assert_eq!(
             scsi_dvd
                 .media_state
-                .try_lock_for(Duration::from_secs(10))
+                .try_lock()
                 .expect("the media change holds the media state")
                 .drive_state,
             DriveState::MediumPresentTrayClosed
@@ -3049,20 +2943,21 @@ mod tests {
         let result = command_result
             .recv_timeout(Duration::from_secs(10))
             .expect("the command did not finish");
-        change_result
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the media change did not finish");
+        pal_async::local::block_on(change);
         assert_eq!(
             scsi_dvd.media_state.lock().drive_state,
             DriveState::MediumNotPresentTrayOpen
         );
-        assert!(matches!(*scsi_dvd.media.read(), Media::Unloaded));
+        assert!(matches!(
+            *scsi_dvd.media.try_lock().unwrap(),
+            Media::Unloaded
+        ));
         result
     }
 
     /// Checks that `change` waits for READ CAPACITY while it asks the disk for
     /// its size, and for READ16 while its disk read is in flight.
-    fn check_media_change_waits_for_commands(change: fn(&SimpleScsiDvd)) {
+    fn check_media_change_waits_for_commands(change: fn(&SimpleScsiDvd) -> LocalBoxFuture<'_, ()>) {
         let result = check_media_change_waits_for_command(
             |pause| Disk::new(SectorCountHookDisk(pause)).unwrap(),
             make_request(&[ScsiOp::READ_CAPACITY.0]),
@@ -3098,46 +2993,22 @@ mod tests {
 
     #[test]
     fn host_eject_waits_for_running_commands() {
-        check_media_change_waits_for_commands(|scsi_dvd| {
-            pal_async::local::block_on(scsi_dvd.change_media(None));
-        });
+        check_media_change_waits_for_commands(|scsi_dvd| scsi_dvd.change_media(None).boxed_local());
     }
 
     #[test]
     fn guest_eject_waits_for_running_commands() {
         check_media_change_waits_for_commands(|scsi_dvd| {
-            let external_data = OwnedRequestBuffers::new(&[0]);
-            let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
-            let result = pal_async::local::block_on(
-                scsi_dvd.execute_scsi(&external_data.buffer(&guest_mem), &make_eject_request()),
-            );
-            assert_eq!(result.scsi_status, scsi::ScsiStatus::GOOD);
+            async move {
+                let external_data = OwnedRequestBuffers::new(&[0]);
+                let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+                let result = scsi_dvd
+                    .execute_scsi(&external_data.buffer(&guest_mem), &make_eject_request())
+                    .await;
+                assert_eq!(result.scsi_status, scsi::ScsiStatus::GOOD);
+            }
+            .boxed_local()
         });
-    }
-
-    #[async_test]
-    async fn validate_command_gate() {
-        let gate = CommandGate::default();
-        let command = gate.enter().await;
-        // A change waits for the running command and holds off new ones.
-        let mut change = pin!(gate.close());
-        assert!(futures::poll!(change.as_mut()).is_pending());
-        let mut next = pin!(gate.enter());
-        assert!(futures::poll!(next.as_mut()).is_pending());
-        drop(command);
-        let Poll::Ready(change) = futures::poll!(change) else {
-            panic!("the change did not go through");
-        };
-        assert!(futures::poll!(next.as_mut()).is_pending());
-        drop(change);
-        let Poll::Ready(command) = futures::poll!(next) else {
-            panic!("the command did not get in after the change");
-        };
-
-        // A change that is dropped while it waits lets commands in again.
-        assert!(futures::poll!(pin!(gate.close())).is_pending());
-        drop(command);
-        assert!(futures::poll!(pin!(gate.enter())).is_ready());
     }
 
     #[async_test]
@@ -3146,7 +3017,7 @@ mod tests {
         // The drive state says that the medium is present but there is none,
         // as can happen after a restore: the drive state is restored, the
         // media is not.
-        *scsi_dvd.media.write() = Media::Unloaded;
+        *scsi_dvd.media.lock().await = Media::Unloaded;
 
         let external_data = OwnedRequestBuffers::linear(0, ISO_SECTOR_SIZE as usize, true);
         let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
