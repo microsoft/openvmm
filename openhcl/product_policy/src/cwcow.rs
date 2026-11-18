@@ -46,19 +46,11 @@ pub struct CwcowPolicy {
     #[mesh(6)]
     pub require_secure_avic: bool,
 
-    /// From the device policy file: the PCI devices that the VPCI relay may
-    /// expose to VTL0.
+    /// From the device policy file: the VPCI relay settings. Unset means no
+    /// allowed devices and [`crate::VpciRelayMode::DefaultOff`].
     #[mesh(7)]
     #[cfg_attr(feature = "manifest", serde(skip))]
-    #[cfg_attr(feature = "inspect", inspect(skip))]
-    pub allowed_pci_devices: Vec<crate::AllowedPciDevice>,
-
-    /// From the device policy file: when OpenHCL runs the VPCI relay. Unset
-    /// means [`crate::VpciRelayMode::DefaultOff`].
-    #[mesh(8)]
-    #[cfg_attr(feature = "manifest", serde(skip))]
-    #[cfg_attr(feature = "inspect", inspect(skip))]
-    pub vpci_relay: Option<crate::VpciRelayMode>,
+    pub vpci_relay: Option<crate::VpciRelayPolicy>,
 }
 
 impl crate::uefi_security_policy::UefiSecurityPolicyParams for CwcowPolicy {

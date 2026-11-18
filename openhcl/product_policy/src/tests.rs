@@ -220,7 +220,7 @@ mod serde_tests {
     /// Devices come only from the device policy file, never the manifest JSON.
     #[test]
     fn deserialize_rejects_devices() {
-        assert!(from_json(r#"{"azure":{"allowed_pci_devices":[]}}"#).is_err());
+        assert!(from_json(r#"{"azure":{"vpci_relay":{}}}"#).is_err());
     }
 }
 

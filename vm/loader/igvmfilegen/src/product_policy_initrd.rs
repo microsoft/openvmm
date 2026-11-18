@@ -78,14 +78,14 @@ fn load_device_policy(path: &std::path::Path, policy: &mut ProductPolicy) -> any
         Some(device) if *device != any => Ok(device.clone()),
         _ => anyhow::bail!("{name:?} isn't defined or sets no IDs in {devices_path:?}"),
     };
-    policy.set_device_policy(
-        device_policy
+    policy.set_vpci_relay(product_policy::VpciRelayPolicy {
+        allowed_pci_devices: device_policy
             .allowed_pci_devices
             .iter()
             .map(device)
             .collect::<anyhow::Result<_>>()?,
-        device_policy.vpci_relay,
-    );
+        mode: device_policy.vpci_relay.unwrap_or_default(),
+    });
     Ok(())
 }
 

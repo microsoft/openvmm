@@ -74,9 +74,10 @@ vpci_relay = "default_on"
 - `"must_be_on"`: always. The environment variable can't turn it off, and
   OpenHCL fails to boot if the relay can't run.
 
-The environment variable comes from the kernel command line, which only the
-image's measured command line can set unless the image lets the host append to
-it (see `static_command_line` in the manifest).
+The environment variable comes from the kernel command line. The host can add to
+it only if the manifest sets `static_command_line` to false and OpenHCL trusts
+the host: the guest isn't isolated, or the image's measured command line enables
+confidential debugging. Otherwise only the measured command line sets it.
 
 The catalog defines each device once, with any of `vendor_id`, `device_id`,
 `revision_id`, `base_class`, `sub_class`, and `prog_if`. A field that is left
