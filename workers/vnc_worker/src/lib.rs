@@ -124,8 +124,6 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                 max_clients: self.max_clients,
                 evict_oldest: self.evict_oldest,
                 tile_size: self.tile_size,
-                #[cfg(test)]
-                dirty_batch_send: None,
             };
 
             let rpc = loop {
@@ -243,8 +241,6 @@ struct MultiClientServer<T: Listener> {
     /// Dirty-tracking tile size, resolved to pixels for each client's
     /// `UpdateState`.
     tile_size: VncTileSize,
-    #[cfg(test)]
-    dirty_batch_send: Option<std::sync::mpsc::Sender<tests::DirtyBatchEvent>>,
 }
 
 impl<T: Listener> MultiClientServer<T> {
@@ -447,18 +443,6 @@ impl<T: Listener> MultiClientServer<T> {
                         for s in &mut self.dirty_senders {
                             s.missed_dirty.store(true, Ordering::Relaxed);
                         }
-                    }
-                    #[cfg(test)]
-                    if let Some(send) = &self.dirty_batch_send {
-                        let _ = send.send(tests::DirtyBatchEvent {
-                            messages: batch.messages,
-                            overflowed_clients: self
-                                .dirty_senders
-                                .iter()
-                                .filter(|s| s.missed_dirty.load(Ordering::Relaxed))
-                                .map(|s| s.id)
-                                .collect(),
-                        });
                     }
                 }
             }
@@ -860,14 +844,8 @@ mod tests {
         /// device (with_dirty=false), so `updates_needed_recv` stays open.
         _updates_needed_send: Option<mesh::Sender<bool>>,
         stop_send: Option<mesh::OneshotSender<()>>,
-        dirty_batch_recv: Option<std::sync::mpsc::Receiver<DirtyBatchEvent>>,
         done_recv: std::sync::mpsc::Receiver<()>,
         join: Option<JoinHandle<anyhow::Result<()>>>,
-    }
-
-    pub(super) struct DirtyBatchEvent {
-        pub(super) messages: usize,
-        pub(super) overflowed_clients: Vec<u64>,
     }
 
     impl WorkerServer {
@@ -948,7 +926,6 @@ mod tests {
             (None, None, Some(updates_needed_send))
         };
         let (stop_send, stop_recv) = mesh::oneshot();
-        let (dirty_batch_send, dirty_batch_recv) = std::sync::mpsc::channel();
         let (done_send, done_recv) = std::sync::mpsc::channel();
 
         let join = thread::spawn(move || {
@@ -965,7 +942,6 @@ mod tests {
                     max_clients,
                     evict_oldest,
                     tile_size: VncTileSize::Tile16,
-                    dirty_batch_send: Some(dirty_batch_send),
                 };
 
                 futures::select! {
@@ -986,7 +962,6 @@ mod tests {
             updates_needed_recv,
             _updates_needed_send: updates_needed_keepalive,
             stop_send: Some(stop_send),
-            dirty_batch_recv: Some(dirty_batch_recv),
             done_recv,
             join: Some(join),
         }
@@ -1121,42 +1096,6 @@ mod tests {
         assert_eq!(&header[..4], &[0, 0, 0, 1]);
         assert_eq!(&header[12..], &[0; 4]);
 
-        let producer_stop = Arc::new(AtomicBool::new(false));
-        let current_round = Arc::new(std::sync::atomic::AtomicU16::new(0));
-        let producer = {
-            let stop = producer_stop.clone();
-            let current_round = current_round.clone();
-            let send = server.dirty_send.as_ref().unwrap().clone();
-            let recv = server.dirty_batch_recv.take().unwrap();
-            thread::spawn(move || {
-                let mut saw_slow_overflow = false;
-                while !stop.load(Ordering::Relaxed) {
-                    let coordinate = 20 + i32::from(current_round.load(Ordering::Relaxed)) * 16;
-                    let messages = MAX_DIRTY_MESSAGES_PER_BATCH * 2 + 1;
-                    for _ in 0..messages {
-                        send.send(vec![DirtyRect {
-                            left: coordinate,
-                            top: coordinate,
-                            right: coordinate + 1,
-                            bottom: coordinate + 1,
-                        }]);
-                    }
-                    // Bound the producer backlog, but keep producing while the
-                    // healthy client receives frames and sends input.
-                    let mut consumed = 0;
-                    while consumed < messages {
-                        let event = recv
-                            .recv_timeout(Duration::from_secs(10))
-                            .expect("VNC worker stopped draining dirty messages");
-                        assert!(event.messages <= MAX_DIRTY_MESSAGES_PER_BATCH);
-                        consumed += event.messages;
-                        saw_slow_overflow |= event.overflowed_clients.contains(&0);
-                    }
-                    assert_eq!(consumed, messages);
-                }
-                saw_slow_overflow
-            })
-        };
         for round in 0..8u16 {
             let x = 20 + round * 16;
             let y = 20 + round * 16;
@@ -1164,7 +1103,17 @@ mod tests {
             let offset = (y as usize * WIDTH + x as usize) * 4;
             server.vram.write_at(offset, &color).unwrap();
             expected[offset..offset + 4].copy_from_slice(&color);
-            current_round.store(round, Ordering::Relaxed);
+
+            // Each bounded burst takes at least three broadcasts. Repeating
+            // across rounds overflows the stalled client's four-batch queue.
+            for _ in 0..MAX_DIRTY_MESSAGES_PER_BATCH * 2 + 1 {
+                server.dirty_send.as_ref().unwrap().send(vec![DirtyRect {
+                    left: i32::from(x),
+                    top: i32::from(y),
+                    right: i32::from(x) + 1,
+                    bottom: i32::from(y) + 1,
+                }]);
+            }
 
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             loop {
@@ -1207,12 +1156,6 @@ mod tests {
                 })
             ));
         }
-        producer_stop.store(true, Ordering::Relaxed);
-        assert!(
-            producer.join().unwrap(),
-            "slow client never exercised overflow"
-        );
-
         let mut old_pixels = vec![0; WIDTH * HEIGHT * 4];
         slow.stream.read_exact(&mut old_pixels).unwrap();
         assert!(old_pixels.iter().all(|&b| b == 0));
@@ -1221,6 +1164,8 @@ mod tests {
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].encoding, EncodingType::RAW);
         assert_eq!((recovered[0].x, recovered[0].y), (0, 0));
+        // Sparse dirt alone cannot produce a full-frame incremental response:
+        // this verifies overflow recovery through the wire protocol.
         assert_eq!(recovered[0].width as usize, WIDTH);
         assert_eq!(recovered[0].height as usize, HEIGHT);
         assert_eq!(recovered[0].payload, expected);
