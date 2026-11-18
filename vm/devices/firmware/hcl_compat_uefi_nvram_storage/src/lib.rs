@@ -627,6 +627,92 @@ mod test {
     }
 
     #[async_test]
+    async fn storage_limit_rejects_writes_without_mutation() {
+        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var").as_bytes()).unwrap();
+        let timestamp = EFI_TIME::default();
+        let vendors: [Guid; 4] = std::array::from_fn(|_| Guid::new_random());
+        let entry_overhead = size_of::<format::NvramVariable>() + name.as_bytes().len();
+        let data = vec![0x5a; MAXIMUM_NVRAM_SIZE / vendors.len() - entry_overhead];
+        let mut nvram = HclCompatNvram::new(EphemeralStorageBackend::default(), None);
+
+        for &vendor in &vendors {
+            nvram
+                .set_variable(name, vendor, 0x1234, data.clone(), timestamp)
+                .await
+                .unwrap();
+        }
+        let persisted = nvram.storage.0.clone().unwrap();
+        assert_eq!(persisted.len(), MAXIMUM_NVRAM_SIZE);
+
+        let new_vendor = Guid::new_random();
+        assert!(matches!(
+            nvram
+                .set_variable(name, new_vendor, 0x5678, vec![1], timestamp)
+                .await,
+            Err(NvramStorageError::OutOfSpace)
+        ));
+        assert!(
+            nvram
+                .get_variable(name, new_vendor)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        assert!(matches!(
+            nvram
+                .set_variable(name, vendors[0], 0x5678, vec![1; data.len() + 1], timestamp)
+                .await,
+            Err(NvramStorageError::OutOfSpace)
+        ));
+        assert!(matches!(
+            nvram
+                .append_variable(name, vendors[0], vec![1], timestamp)
+                .await,
+            Err(NvramStorageError::OutOfSpace)
+        ));
+        assert_eq!(
+            nvram.get_variable(name, vendors[0]).await.unwrap(),
+            Some((0x1234, data.clone(), timestamp))
+        );
+        assert_eq!(nvram.storage.0.as_ref(), Some(&persisted));
+
+        nvram
+            .set_variable(name, vendors[0], 0x1234, vec![0x5a], timestamp)
+            .await
+            .unwrap();
+        assert!(
+            nvram
+                .append_variable(name, vendors[0], vec![0x5a; data.len() - 1], timestamp)
+                .await
+                .unwrap()
+        );
+        assert_eq!(nvram.storage.0.as_ref(), Some(&persisted));
+
+        assert!(nvram.remove_variable(name, vendors[0]).await.unwrap());
+        nvram
+            .set_variable(name, new_vendor, 0x1234, data.clone(), timestamp)
+            .await
+            .unwrap();
+        assert_eq!(nvram.storage.0.as_ref().unwrap().len(), MAXIMUM_NVRAM_SIZE);
+
+        let mut reloaded = HclCompatNvram::new(nvram.storage, None);
+        assert!(
+            reloaded
+                .get_variable(name, vendors[0])
+                .await
+                .unwrap()
+                .is_none()
+        );
+        for vendor in vendors[1..].iter().copied().chain([new_vendor]) {
+            assert_eq!(
+                reloaded.get_variable(name, vendor).await.unwrap(),
+                Some((0x1234, data.clone(), timestamp))
+            );
+        }
+    }
+
+    #[async_test]
     async fn load_reload() {
         let mut storage = EphemeralStorageBackend::default();
 

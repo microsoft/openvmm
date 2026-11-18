@@ -748,11 +748,154 @@ mod tests {
         }
     }
 
-    fn nvram_services(storage: InMemoryNvram) -> NvramServices {
+    fn nvram_services(storage: impl VmmNvramStorage + 'static) -> NvramServices {
         let storage: Box<dyn VmmNvramStorage> = Box::new(storage);
         NvramServices {
             vsm_config: None,
             services: NvramSpecServices::new(storage),
+        }
+    }
+
+    #[async_test]
+    async fn full_nvram_guest_writes_return_out_of_resources() {
+        use hcl_compat_uefi_nvram_storage::HclCompatNvram;
+        use hcl_compat_uefi_nvram_storage::storage_backend::StorageBackend;
+        use hcl_compat_uefi_nvram_storage::storage_backend::StorageBackendError;
+        use uefi_specs::hyperv::nvram::NvramCommand;
+        use uefi_specs::hyperv::nvram::NvramCommandDescriptor;
+        use uefi_specs::hyperv::nvram::NvramVariableCommand;
+        use uefi_specs::uefi::nvram::EfiVariableAttributes;
+
+        #[derive(Default)]
+        struct TestStorage(Option<Vec<u8>>);
+
+        #[async_trait::async_trait]
+        impl StorageBackend for TestStorage {
+            async fn persist(&mut self, data: Vec<u8>) -> Result<(), StorageBackendError> {
+                self.0 = Some(data);
+                Ok(())
+            }
+
+            async fn restore(&mut self) -> Result<Option<Vec<u8>>, StorageBackendError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        async fn set_variable(
+            nvram: &mut NvramServices,
+            gm: &GuestMemory,
+            vendor: Guid,
+            attributes: u32,
+            data: &[u8],
+        ) -> EfiStatus {
+            let name = wchz!(u16, "var").as_bytes();
+            gm.write_at(0x2000, name).unwrap();
+            gm.write_at(0x3000, data).unwrap();
+            gm.write_plain(
+                0x1000,
+                &NvramCommandDescriptor {
+                    command: NvramCommand::SET_VARIABLE,
+                    status: EfiStatus::DEVICE_ERROR.into(),
+                },
+            )
+            .unwrap();
+            gm.write_plain(
+                0x1000 + size_of::<NvramCommandDescriptor>() as u64,
+                &NvramVariableCommand {
+                    attributes,
+                    name_address: 0x2000.into(),
+                    name_bytes: name.len() as u32,
+                    vendor_guid: vendor,
+                    data_address: 0x3000.into(),
+                    data_bytes: data.len() as u32,
+                },
+            )
+            .unwrap();
+            nvram.handle_command(gm, 0x1000).await;
+            EfiStatus::from(
+                gm.read_plain::<NvramCommandDescriptor>(0x1000)
+                    .unwrap()
+                    .status,
+            )
+        }
+
+        let gm = GuestMemory::allocate(64 * 1024);
+        let mut nvram = nvram_services(HclCompatNvram::new(TestStorage::default(), None));
+        let vendors: [Guid; 4] = std::array::from_fn(|_| Guid::new_random());
+        let attributes = EfiVariableAttributes::new()
+            .with_non_volatile(true)
+            .with_bootservice_access(true)
+            .with_runtime_access(true);
+        let data = vec![0x5a; 32 * 1024 - 48 - wchz!(u16, "var").as_bytes().len()];
+        nvram.services.prepare_for_boot();
+
+        for &vendor in &vendors {
+            assert_eq!(
+                set_variable(&mut nvram, &gm, vendor, attributes.into(), &data).await,
+                EfiStatus::SUCCESS
+            );
+        }
+
+        for runtime in [false, true] {
+            if runtime {
+                nvram.services.exit_boot_services();
+            }
+            assert_eq!(
+                set_variable(&mut nvram, &gm, Guid::new_random(), attributes.into(), &[1],).await,
+                EfiStatus::OUT_OF_RESOURCES
+            );
+            assert_eq!(
+                set_variable(
+                    &mut nvram,
+                    &gm,
+                    vendors[0],
+                    attributes.into(),
+                    &vec![1; data.len() + 1],
+                )
+                .await,
+                EfiStatus::OUT_OF_RESOURCES
+            );
+            assert_eq!(
+                set_variable(
+                    &mut nvram,
+                    &gm,
+                    vendors[0],
+                    attributes.with_append_write(true).into(),
+                    &[1],
+                )
+                .await,
+                EfiStatus::OUT_OF_RESOURCES
+            );
+            assert_eq!(
+                set_variable(
+                    &mut nvram,
+                    &gm,
+                    vendors[0],
+                    attributes.into(),
+                    &vec![1; 32 * 1024 + 1],
+                )
+                .await,
+                EfiStatus::INVALID_PARAMETER
+            );
+            assert_eq!(
+                set_variable(
+                    &mut nvram,
+                    &gm,
+                    vendors[0],
+                    attributes.with_append_write(true).into(),
+                    &vec![1; 32 * 1024 - data.len() + 1],
+                )
+                .await,
+                EfiStatus::INVALID_PARAMETER
+            );
+            let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var").as_bytes()).unwrap();
+            let (stored_attributes, stored_data) = nvram
+                .services
+                .get_variable_ucs2(vendors[0], name)
+                .await
+                .unwrap();
+            assert_eq!(stored_attributes, u32::from(attributes));
+            assert_eq!(stored_data, data);
         }
     }
 
