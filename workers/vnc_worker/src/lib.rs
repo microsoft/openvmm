@@ -171,6 +171,47 @@ struct ClientDirtySender {
     missed_dirty: Arc<AtomicBool>,
 }
 
+const MAX_DIRTY_MESSAGES_PER_BATCH: usize = 64;
+const MAX_COALESCED_DIRTY_RECTS: usize = 32768;
+
+struct DirtyBatch {
+    messages: usize,
+    /// None means consumed rectangles were discarded and clients must resync.
+    rects: Option<Vec<video_core::DirtyRect>>,
+}
+
+impl DirtyBatch {
+    fn drain(
+        mut rects: Vec<video_core::DirtyRect>,
+        recv: &mut mesh::Receiver<Vec<video_core::DirtyRect>>,
+    ) -> Self {
+        let mut messages = 1;
+        if rects.len() > MAX_COALESCED_DIRTY_RECTS {
+            return Self {
+                messages,
+                rects: None,
+            };
+        }
+        while messages < MAX_DIRTY_MESSAGES_PER_BATCH && rects.len() < MAX_COALESCED_DIRTY_RECTS {
+            let Ok(next) = recv.try_recv() else {
+                break;
+            };
+            messages += 1;
+            if next.len() > MAX_COALESCED_DIRTY_RECTS - rects.len() {
+                return Self {
+                    messages,
+                    rects: None,
+                };
+            }
+            rects.extend(next);
+        }
+        Self {
+            messages,
+            rects: Some(rects),
+        }
+    }
+}
+
 /// A multi-client VNC server that accepts and manages concurrent connections.
 struct MultiClientServer<T: Listener> {
     listener: PolledSocket<T>,
@@ -229,19 +270,10 @@ impl<T: Listener> MultiClientServer<T> {
         enum Event<A> {
             Accepted(A),
             ClientDone(u64),
-            // A drained batch of device messages: one Vec per message queued on
-            // the mesh channel when serviced. The batch length is the backlog.
-            DirtyRects(Vec<Vec<video_core::DirtyRect>>),
+            DirtyRects(DirtyBatch),
         }
 
         let mut device_dirty_seen = false;
-        // High-water mark of the dirty-rect channel backlog.
-        let mut dirty_backlog_max = 0usize;
-        // Ceiling for the rate-limited alarm in the dirty-rect handler below.
-        const MAX_DIRTY_BACKLOG: usize = 1000;
-        // Cap on coalesced dirty rects per broadcast. Above it, skip the
-        // broadcast and flag every client for one full refresh.
-        const MAX_COALESCED_DIRTY_RECTS: usize = 32768;
 
         // Force the device to a known state on (re)start: no clients yet.
         self.signal_updates_needed(false);
@@ -252,16 +284,14 @@ impl<T: Listener> MultiClientServer<T> {
             let synth_video = &mut self.synth_video;
 
             // Optional future for dirty rect reception (pending if no video device).
-            // Block for the first message, then drain the rest via try_recv.
+            // Bound each drain before returning to client/accept selection.
             let dirty_fut = async {
                 match synth_video {
-                    Some(channels) => channels.dirty_recv.recv().await.map(|first| {
-                        let mut batch = vec![first];
-                        while let Ok(rects) = channels.dirty_recv.try_recv() {
-                            batch.push(rects);
-                        }
-                        batch
-                    }),
+                    Some(channels) => channels
+                        .dirty_recv
+                        .recv()
+                        .await
+                        .map(|first| DirtyBatch::drain(first, &mut channels.dirty_recv)),
                     None => std::future::pending().await,
                 }
             };
@@ -287,10 +317,7 @@ impl<T: Listener> MultiClientServer<T> {
                         // Upstream dirty channel closed (video device reset or
                         // teardown). Drop the whole video connection so clients
                         // fall back to tile diff.
-                        tracing::warn!(
-                            backlog_max = dirty_backlog_max,
-                            "device dirty channel closed, falling back to tile diff"
-                        );
+                        tracing::warn!("device dirty channel closed, falling back to tile diff");
                         self.synth_video = None;
                         // Close all per-client dirty senders so clients reset
                         // device_dirty_seen.
@@ -361,12 +388,7 @@ impl<T: Listener> MultiClientServer<T> {
                     // Last client gone: tell the guest it can stop reporting.
                     self.signal_presence(was_empty);
                 }
-                Event::DirtyRects(mut batch) => {
-                    // Record the high-water mark before any early-out.
-                    let backlog = batch.len();
-                    if backlog > dirty_backlog_max {
-                        dirty_backlog_max = backlog;
-                    }
+                Event::DirtyRects(batch) => {
                     if self.abort_senders.is_empty() {
                         // Dirt with no clients means the device's synthvid channel
                         // re-handshaked while idle (guest reboot or video-driver
@@ -383,46 +405,18 @@ impl<T: Listener> MultiClientServer<T> {
                         device_dirty_seen = true;
                         tracing::info!("device dirty rects active, preferring over tile diff");
                     }
-                    if backlog > MAX_DIRTY_BACKLOG {
-                        // Should be unreachable: the drain reads the whole queue
-                        // each wakeup, so depth only grows if the consumer is
-                        // wedged.
-                        tracelimit::error_ratelimited!(
-                            backlog,
-                            backlog_max = dirty_backlog_max,
-                            limit = MAX_DIRTY_BACKLOG,
-                            "device dirty channel backlog exceeded limit (consumer wedged, mesh queue growing unbounded)"
-                        );
-                    } else if backlog > 1 {
-                        tracing::debug!(
-                            backlog,
-                            rects_total = batch.iter().map(|r| r.len()).sum::<usize>(),
-                            backlog_max = dirty_backlog_max,
-                            "device dirty channel backlog above 1 (producer outpacing consumer)"
-                        );
-                    } else {
-                        tracing::trace!(backlog, "device dirty channel drained");
-                    }
-                    // Coalesce the drained batch into one broadcast. Concatenating
-                    // is lossless: each client merges rects into its own bitmap
-                    // before encoding.
-                    let merged: Vec<video_core::DirtyRect> = if batch.len() == 1 {
-                        batch.pop().expect("batch has exactly one element")
-                    } else {
-                        batch.into_iter().flatten().collect()
-                    };
-                    if merged.len() > MAX_COALESCED_DIRTY_RECTS {
-                        // Pathologically large dirty set. Skip the broadcast and
-                        // have every client do one full refresh.
+                    if batch.messages == MAX_DIRTY_MESSAGES_PER_BATCH {
                         tracelimit::warn_ratelimited!(
-                            rects = merged.len(),
-                            cap = MAX_COALESCED_DIRTY_RECTS,
-                            "coalesced dirty exceeds cap, forcing full refresh on all clients"
+                            messages = batch.messages,
+                            "device dirty drain reached message limit"
                         );
-                        for s in &mut self.dirty_senders {
-                            s.missed_dirty.store(true, Ordering::Relaxed);
-                        }
-                    } else {
+                    } else if batch.messages > 1 {
+                        tracing::debug!(
+                            messages = batch.messages,
+                            "coalesced device dirty messages"
+                        );
+                    }
+                    if let Some(merged) = batch.rects {
                         let rects = Arc::new(merged);
                         for s in &mut self.dirty_senders {
                             if s.sender.try_send(Arc::clone(&rects)).is_err() {
@@ -439,6 +433,16 @@ impl<T: Listener> MultiClientServer<T> {
                             clients = self.dirty_senders.len(),
                             "broadcast coalesced device dirty rects"
                         );
+                    } else {
+                        // Pathologically large dirty set. Skip the broadcast and
+                        // have every client do one full refresh.
+                        tracelimit::warn_ratelimited!(
+                            cap = MAX_COALESCED_DIRTY_RECTS,
+                            "coalesced dirty exceeds cap, forcing full refresh on all clients"
+                        );
+                        for s in &mut self.dirty_senders {
+                            s.missed_dirty.store(true, Ordering::Relaxed);
+                        }
                     }
                 }
             }
@@ -612,6 +616,69 @@ mod tests {
     use video_core::DirtyRect;
     use video_core::FramebufferFormat;
     use vnc::EncodingType;
+
+    const TEST_DIRTY_RECT: DirtyRect = DirtyRect {
+        left: 0,
+        top: 0,
+        right: 16,
+        bottom: 16,
+    };
+
+    #[test]
+    fn dirty_drain_limits_messages_and_preserves_remainder() {
+        for rects in [vec![], vec![TEST_DIRTY_RECT]] {
+            let (send, mut recv) = mesh::channel();
+            for _ in 0..MAX_DIRTY_MESSAGES_PER_BATCH {
+                send.send(rects.clone());
+            }
+            let batch = DirtyBatch::drain(rects.clone(), &mut recv);
+            assert_eq!(batch.messages, MAX_DIRTY_MESSAGES_PER_BATCH);
+            assert_eq!(
+                batch.rects.unwrap().len(),
+                MAX_DIRTY_MESSAGES_PER_BATCH * rects.len()
+            );
+            assert_eq!(recv.try_recv().unwrap().len(), rects.len());
+            assert!(matches!(recv.try_recv(), Err(mesh::TryRecvError::Empty)));
+        }
+    }
+
+    #[test]
+    fn dirty_drain_stops_at_exact_rectangle_limit() {
+        let (send, mut recv) = mesh::channel();
+        send.send(vec![TEST_DIRTY_RECT]);
+        send.send(vec![DirtyRect {
+            left: 16,
+            ..TEST_DIRTY_RECT
+        }]);
+        let batch = DirtyBatch::drain(
+            vec![TEST_DIRTY_RECT; MAX_COALESCED_DIRTY_RECTS - 1],
+            &mut recv,
+        );
+        assert_eq!(batch.messages, 2);
+        assert_eq!(batch.rects.unwrap().len(), MAX_COALESCED_DIRTY_RECTS);
+        assert_eq!(recv.try_recv().unwrap()[0].left, 16);
+    }
+
+    #[test]
+    fn dirty_drain_discards_overflow_without_consuming_later_messages() {
+        for oversized_first in [false, true] {
+            let (send, mut recv) = mesh::channel();
+            let first = if oversized_first {
+                vec![TEST_DIRTY_RECT; MAX_COALESCED_DIRTY_RECTS + 1]
+            } else {
+                send.send(vec![TEST_DIRTY_RECT; MAX_COALESCED_DIRTY_RECTS]);
+                vec![TEST_DIRTY_RECT]
+            };
+            send.send(vec![DirtyRect {
+                left: 16,
+                ..TEST_DIRTY_RECT
+            }]);
+            let batch = DirtyBatch::drain(first, &mut recv);
+            assert_eq!(batch.messages, if oversized_first { 1 } else { 2 });
+            assert!(batch.rects.is_none());
+            assert_eq!(recv.try_recv().unwrap()[0].left, 16);
+        }
+    }
 
     #[derive(Debug)]
     struct UpdateRect {

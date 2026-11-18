@@ -261,17 +261,19 @@ block the accept loop and add latency to every new connection.
 
 The coordinator receives device dirty rects on its `synth_video` channel and
 broadcasts them to all clients via per-client `mpsc::Sender<Arc<Vec<DirtyRect>>>`.
-It drains the whole channel backlog on each wakeup and tracks the high-water
-mark. If the unbounded mesh queue ever climbs past `MAX_DIRTY_BACKLOG`, which
-means a wedged consumer, it logs a rate-limited error.
+Each drain consumes at most 64 messages and accumulates at most 32,768
+rectangles before returning to client/accept selection. Remaining messages
+stay queued for later drains; the upstream mesh queue is still unbounded.
+Reaching the message limit logs a rate-limited warning.
 
 The drained backlog is coalesced into a single broadcast: a backlog of N
 messages costs one send, not N. Concatenating is lossless because each client
 merges rects into its own bitmap before encoding. Broadcasting per-message
 instead overflows the small bounded per-client channel on a backlog burst, which
-forces a full-screen retransmit every cycle. A coalesced set larger than
-`MAX_COALESCED_DIRTY_RECTS` is dropped in favor of one full refresh (bounded by
-the screen size).
+forces a full-screen retransmit every cycle. A message that would exceed
+`MAX_COALESCED_DIRTY_RECTS` ends the drain without being concatenated. Its
+rectangles and the accumulated set are dropped in favor of one full refresh
+(bounded by the screen size).
 
 - `Arc` wrapping avoids cloning the rect Vec per client (ref-count bump only)
 - If a client's channel is full (slow consumer), `missed_dirty` is set with a
