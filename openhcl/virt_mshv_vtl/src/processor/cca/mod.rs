@@ -207,7 +207,6 @@ impl From<u64> for PlaneExitReason {
 }
 
 struct CcaLocalInterruptExit {
-    system_register_trap: Option<(IssSystem, u64, u64)>,
     virtual_timer_asserted: bool,
     gic_maintenance_status: u64,
 }
@@ -256,19 +255,7 @@ impl<'a> CcaExit<'a> {
     }
 
     fn local_interrupt_exit(&self) -> CcaLocalInterruptExit {
-        let esr_el2 = self.esr_el2();
-        let exception_class = self.esr_el2_class();
-        let system_register_trap =
-            matches!(exception_class, ExceptionClass::SystemRegister).then(|| {
-                let iss = IssSystem::from(esr_el2.iss());
-                let value = self
-                    .gpr_or_zero_register(iss.rt())
-                    .expect("ISS Rt is a valid AArch64 register index");
-                (iss, value, self.0.esr_el2)
-            });
-
         CcaLocalInterruptExit {
-            system_register_trap,
             virtual_timer_asserted: self.virtual_timer_asserted(),
             gic_maintenance_status: self.0.gicv3_misr,
         }
@@ -573,9 +560,9 @@ impl BackingPrivate for CcaBacked {
                 cca_exit.virtual_timer_asserted(),
             );
             let exit_reason = cca_exit.exit_reason();
-            let esr_el2 = cca_exit.esr_el2();
             match exit_reason {
                 PlaneExitReason::Sync => {
+                    let esr_el2 = cca_exit.esr_el2();
                     match cca_exit.esr_el2_class() {
                         ExceptionClass::DataAbort => {
                             let iss = IssDataAbort::from(esr_el2.iss());
@@ -740,9 +727,10 @@ impl BackingPrivate for CcaBacked {
                     }
                 }
                 PlaneExitReason::Irq => {
+                    // ESR_EL2 can retain a previous synchronous syndrome on IRQ
+                    // exits. Only inspect the timer and GIC maintenance state.
                     let irq_exit = cca_exit.local_interrupt_exit();
-                    this.request_asserted_local_interrupts(vtl, irq_exit)
-                        .map_err(|e| dev.fatal_error(e.into()))?;
+                    this.request_asserted_local_interrupts(irq_exit);
                 }
                 PlaneExitReason::Unknown(exit_reason) => {
                     tracing::warn!(exit_reason, "unsupported CCA plane exit reason");
@@ -834,13 +822,9 @@ impl UhProcessor<'_, CcaBacked> {
 
     /// Handles interrupt-controller events reported by a CCA local IRQ exit.
     ///
-    /// Trapped ICC SGI writes are emulated through the software GIC. Unsupported
-    /// system-register traps return an error; other sources are traced here.
-    fn request_asserted_local_interrupts(
-        &mut self,
-        vtl: GuestVtl,
-        irq_exit: CcaLocalInterruptExit,
-    ) -> Result<(), CcaUnsupportedExit> {
+    /// Timer state has already been applied to the software GIC, and maintenance
+    /// state is reconciled when the interrupt controller is polled.
+    fn request_asserted_local_interrupts(&mut self, irq_exit: CcaLocalInterruptExit) {
         if irq_exit.gic_maintenance_status != 0 {
             tracing::trace!(
                 misr = irq_exit.gic_maintenance_status,
@@ -848,13 +832,9 @@ impl UhProcessor<'_, CcaBacked> {
             );
         }
 
-        if let Some((iss, value, esr_el2)) = irq_exit.system_register_trap {
-            self.handle_system_register_trap(vtl, iss, value, esr_el2)?;
-        } else if !irq_exit.virtual_timer_asserted && irq_exit.gic_maintenance_status == 0 {
+        if !irq_exit.virtual_timer_asserted && irq_exit.gic_maintenance_status == 0 {
             tracing::trace!("CCA IRQ exit had an unrecognized local interrupt source");
         }
-
-        Ok(())
     }
 
     /// Emulates a trapped write to a supported ICC register.
