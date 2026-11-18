@@ -281,12 +281,19 @@ impl<'a> CcaExit<'a> {
 /// ICH_VTR_EL2.ListRegs contains the zero-based implemented count. The GIC
 /// architecture limits the usable count to 16. Reject configurations that
 /// exceed the RSI ABI rather than silently dropping the excess LRs.
+/// At least two LRs are required because UIE asserts with zero or one valid LR,
+/// so a full one-LR bank cannot clear underflow maintenance while overflow exists.
 fn gic_num_lrs(gicv3_vtr: u64) -> Result<usize, Error> {
     let reported = usize::from(IchVtrEl2::from(gicv3_vtr).list_regs()) + 1;
+    let minimum = 2;
     let maximum = aarch64defs::rsi::RSI_PLANE_GIC_NUM_LRS;
 
-    if reported > maximum {
-        return Err(Error::UnsupportedCcaGicListRegisterCount { reported, maximum });
+    if !(minimum..=maximum).contains(&reported) {
+        return Err(Error::UnsupportedCcaGicListRegisterCount {
+            reported,
+            minimum,
+            maximum,
+        });
     }
 
     Ok(reported)
@@ -1473,18 +1480,29 @@ mod tests {
     }
 
     #[test]
-    fn lr_count_comes_from_vtr_and_is_validated_against_rsi_capacity() {
+    fn lr_count_comes_from_vtr_and_is_validated_against_supported_range() {
         let vtr = |list_regs| u64::from(IchVtrEl2::new().with_list_regs(list_regs));
-        assert!(matches!(gic_num_lrs(vtr(0)), Ok(1)));
-        assert!(matches!(gic_num_lrs(vtr(3)), Ok(4)));
-        assert!(matches!(gic_num_lrs(vtr(15)), Ok(16)));
         assert!(matches!(
-            gic_num_lrs(vtr(31)),
+            gic_num_lrs(vtr(0)),
             Err(Error::UnsupportedCcaGicListRegisterCount {
-                reported: 32,
-                maximum: 16
+                reported: 1,
+                minimum: 2,
+                maximum: 16,
             })
         ));
+        assert!(matches!(gic_num_lrs(vtr(1)), Ok(2)));
+        assert!(matches!(gic_num_lrs(vtr(3)), Ok(4)));
+        assert!(matches!(gic_num_lrs(vtr(15)), Ok(16)));
+        for (list_regs, reported) in [(16, 17), (31, 32)] {
+            assert!(matches!(
+                gic_num_lrs(vtr(list_regs)),
+                Err(Error::UnsupportedCcaGicListRegisterCount {
+                    reported: count,
+                    minimum: 2,
+                    maximum: 16,
+                }) if count == reported
+            ));
+        }
     }
 
     #[test]
