@@ -497,30 +497,37 @@ pub fn tdcall_page_attr_wr(
     attributes: TdgMemPageGpaAttr,
     mask: TdgMemPageAttrWriteR8,
 ) -> Result<(), TdCallResultCode> {
+    const MAX_ATTEMPTS: usize = 64;
+
     #[cfg(feature = "tracing")]
     tracing::trace!(?mapping, ?attributes, ?mask, "tdcall_page_attr_wr");
 
-    let input = TdcallInput {
-        leaf: TdCallLeaf::MEM_PAGE_ATTR_WR,
-        rcx: mapping.into(),
-        rdx: attributes.into(),
-        r8: mask.into(),
-        r9: 0,
-        r10: 0,
-        r11: 0,
-        r12: 0,
-        r13: 0,
-        r14: 0,
-        r15: 0,
-    };
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let input = TdcallInput {
+            leaf: TdCallLeaf::MEM_PAGE_ATTR_WR,
+            rcx: mapping.into(),
+            rdx: attributes.into(),
+            r8: mask.into(),
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+        };
 
-    let output = call.tdcall(input);
+        let output = call.tdcall(input);
 
-    // TODO TDX: RCX and RDX also contain info that could be returned
+        // TODO TDX: RCX and RDX also contain info that could be returned
 
-    match output.rax.code() {
-        TdCallResultCode::SUCCESS => Ok(()),
-        val => Err(val),
+        match output.rax.code() {
+            TdCallResultCode::OPERAND_BUSY if attempts < MAX_ATTEMPTS => {}
+            TdCallResultCode::SUCCESS => break Ok(()),
+            val => break Err(val),
+        }
     }
 }
 
@@ -1173,7 +1180,84 @@ fn for_each_tdcall_page<E>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
     use x86defs::tdx::TdispInterfaceState;
+
+    struct AttrWriteTdcall {
+        busy_calls: usize,
+        calls: usize,
+        final_status: TdCallResultCode,
+    }
+
+    impl Tdcall for AttrWriteTdcall {
+        fn tdcall(&mut self, input: TdcallInput) -> TdcallOutput {
+            assert_eq!(input.leaf, TdCallLeaf::MEM_PAGE_ATTR_WR);
+            assert_eq!(input.rcx, 0x2000);
+            assert_eq!(input.rdx, 0x800f_0000);
+            assert_eq!(input.r8, 0x000f_0000);
+            assert_eq!(input.r9, 0);
+            assert_eq!(input.r10, 0);
+            assert_eq!(input.r11, 0);
+            assert_eq!(input.r12, 0);
+            assert_eq!(input.r13, 0);
+            assert_eq!(input.r14, 0);
+            assert_eq!(input.r15, 0);
+
+            self.calls += 1;
+            TdcallOutput {
+                rax: TdCallResult::new().with_code(if self.calls <= self.busy_calls {
+                    TdCallResultCode::OPERAND_BUSY
+                } else {
+                    self.final_status
+                }),
+                rcx: 0,
+                rdx: 0,
+                r8: 0,
+                r10: 0,
+                r11: 0,
+            }
+        }
+    }
+
+    #[test]
+    fn page_attr_wr_retries_busy() {
+        for (busy_calls, final_status, expected, expected_calls) in [
+            (0, TdCallResultCode::SUCCESS, Ok(()), 1),
+            (63, TdCallResultCode::SUCCESS, Ok(()), 64),
+            (
+                64,
+                TdCallResultCode::SUCCESS,
+                Err(TdCallResultCode::OPERAND_BUSY),
+                64,
+            ),
+            (
+                0,
+                TdCallResultCode::OPERAND_INVALID,
+                Err(TdCallResultCode::OPERAND_INVALID),
+                1,
+            ),
+            (
+                2,
+                TdCallResultCode::PAGE_SIZE_MISMATCH,
+                Err(TdCallResultCode::PAGE_SIZE_MISMATCH),
+                3,
+            ),
+        ] {
+            let mut call = AttrWriteTdcall {
+                busy_calls,
+                calls: 0,
+                final_status,
+            };
+            let result = tdcall_page_attr_wr(
+                &mut call,
+                TdgMemPageAttrWriteRcx::from(0x2000),
+                TdgMemPageGpaAttr::from(0x800f_0000),
+                TdgMemPageAttrWriteR8::from(0x000f_0000),
+            );
+            assert_eq!(result, expected);
+            assert_eq!(call.calls, expected_calls);
+        }
+    }
 
     /// A [`Tdcall`] that records the input it was handed and replays a canned
     /// output, so the tests can assert on register encoding without a TDX host.
