@@ -589,7 +589,9 @@ mod save_restore {
                     .saturating_sub(reference_time);
                 let time = jiff::Timestamp::from_millisecond(time)
                     .and_then(|time| {
-                        time.checked_add(std::time::Duration::from_nanos(elapsed_100ns * 100))
+                        time.checked_add(std::time::Duration::from_nanos_u128(
+                            u128::from(elapsed_100ns) * 100,
+                        ))
                     })
                     .map_err(|err| RestoreError::InvalidSavedState(err.into()))?;
                 self.host_time.restore(time);
@@ -1046,6 +1048,41 @@ mod tests {
             - LocalClockTime::from(SystemTime::now());
         assert!(error.as_millis().abs() < 100, "{error:?}");
         release.send(()).unwrap();
+    }
+
+    #[async_test]
+    async fn restore_after_large_reference_time_change(_driver: DefaultDriver) {
+        let (mut clock, get, _) = new_clock().await;
+        let restore = async |state, ticks| {
+            UnderhillLocalClock::new(
+                get.client.clone(),
+                reference_time(&Arc::new(AtomicU64::new(ticks))),
+                EphemeralNonVolatileStore::new_boxed(),
+                Some(state),
+            )
+            .await
+        };
+
+        // A thousand years of reference time is more nanoseconds than fit in
+        // a u64, and still advances the time.
+        let state = clock.save().unwrap();
+        let saved = jiff::Timestamp::from_millisecond(state.host_time_millis.unwrap()).unwrap();
+        let years = Duration::from_secs(1000 * 365 * 24 * 60 * 60);
+        let ticks = (years.as_nanos() / 100) as u64;
+        let restored = restore(state, ticks).await.unwrap();
+        let error = restored
+            .host_time
+            .sample()
+            .unwrap()
+            .duration_since(saved + years);
+        assert!(
+            !error.is_negative() && error < jiff::SignedDuration::from_millis(100),
+            "{error:?}"
+        );
+
+        // A change that takes the time out of range fails the restore.
+        let state = clock.save().unwrap();
+        assert!(restore(state, 1 << 63).await.is_err());
     }
 
     #[async_test]
