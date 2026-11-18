@@ -234,13 +234,14 @@ impl PetriVmmBackend for QemuPetriBackend {
 
 /// Copy a cached firmware template into disposable writable flash.
 pub fn copy_firmware_vars(template: &Path) -> anyhow::Result<Arc<TempPath>> {
-    let vars = tempfile::Builder::new()
+    let mut vars = tempfile::Builder::new()
         .prefix("petri-flash1-")
         .tempfile()
-        .context("failed to create disposable firmware flash")?
-        .into_temp_path();
-    fs_err::copy(template, &vars).context("failed to copy writable firmware flash template")?;
-    Ok(Arc::new(vars))
+        .context("failed to create disposable firmware flash")?;
+    let mut template = fs_err::File::open(template)?;
+    std::io::copy(&mut template, vars.as_file_mut())
+        .context("failed to copy writable firmware flash template")?;
+    Ok(Arc::new(vars.into_temp_path()))
 }
 
 impl QemuPetriConfig {
@@ -740,6 +741,33 @@ pub fn build_qemu_command(
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[cfg(unix)]
+    #[test]
+    fn copies_read_only_firmware_vars_into_private_writable_flash() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir()?;
+        let template = directory.path().join("flash1.fd");
+        let contents = b"firmware variables";
+        fs_err::write(&template, contents)?;
+        fs_err::set_permissions(&template, std::fs::Permissions::from_mode(0o444))?;
+
+        let vars = copy_firmware_vars(&template)?;
+        let vars_path: &Path = vars.as_ref().as_ref();
+        assert_eq!(fs_err::read(vars_path)?, contents);
+        assert_eq!(
+            fs_err::metadata(vars_path)?.permissions().mode() & 0o777,
+            0o600
+        );
+        fs_err::write(vars_path, b"updated firmware variables")?;
+        assert_eq!(fs_err::read(&template)?, contents);
+        assert_eq!(
+            fs_err::metadata(&template)?.permissions().mode() & 0o777,
+            0o444
+        );
+        Ok(())
+    }
 
     fn linux_direct_config() -> PetriVmConfig {
         PetriVmConfig {
