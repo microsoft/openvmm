@@ -238,10 +238,10 @@ mod host_time {
         /// An outstanding query: when it was sent, when it was last woken, and
         /// the reply.
         #[inspect(with = "Option::is_some")]
-        refresh: Option<Refresh>,
+        pub(super) refresh: Option<Refresh>,
     }
 
-    type Refresh = (
+    pub(super) type Refresh = (
         Instant,
         Arc<WokenAt>,
         Pin<Box<dyn Future<Output = Time> + Send>>,
@@ -276,11 +276,11 @@ mod host_time {
             // that a slow reply doesn't move the time by however long the host
             // took.
             let reply = reply.to_jiff();
-            let advanced = &self.time + now.duration_since(self.anchor);
+            let advanced = advance(&self.time, now.duration_since(self.anchor));
             self.time = advanced
                 .clamp(
-                    &reply + now.duration_since(replied),
-                    &reply + now.duration_since(sent),
+                    advance(&reply, now.duration_since(replied)),
+                    advance(&reply, now.duration_since(sent)),
                 )
                 .with_time_zone(reply.time_zone().clone());
             self.anchor = now;
@@ -289,8 +289,24 @@ mod host_time {
         }
     }
 
+    /// Return `time` advanced by `elapsed`. A host time this close to the
+    /// latest time that can be represented stops there, rather than
+    /// panicking.
+    pub(super) fn advance(time: &Zoned, elapsed: Duration) -> Zoned {
+        time.checked_add(elapsed)
+            .unwrap_or_else(|_| Timestamp::MAX.to_zoned(time.time_zone().clone()))
+    }
+
+    /// Return `time` moved back by `elapsed`, stopping at the earliest time
+    /// that can be represented.
+    pub(super) fn rewind(time: &Zoned, elapsed: Duration) -> Zoned {
+        time.checked_sub(elapsed)
+            .unwrap_or_else(|_| Timestamp::MIN.to_zoned(time.time_zone().clone()))
+    }
+
     /// Records when a query was last woken, which is when its reply came in.
-    struct WokenAt(Mutex<Option<Instant>>);
+    #[derive(Default)]
+    pub(super) struct WokenAt(Mutex<Option<Instant>>);
 
     impl Wake for WokenAt {
         fn wake(self: Arc<Self>) {
@@ -354,7 +370,7 @@ mod host_time {
                 .lock()
                 .as_ref()
                 .map(|cached_host_time| {
-                    (&cached_host_time.time + cached_host_time.anchor.elapsed()).timestamp()
+                    advance(&cached_host_time.time, cached_host_time.anchor.elapsed()).timestamp()
                 })
         }
 
@@ -383,7 +399,10 @@ mod host_time {
             let now = Instant::now();
             self.refresh(cached_host_time, now);
 
-            let time = &cached_host_time.time + now.duration_since(cached_host_time.anchor);
+            let time = advance(
+                &cached_host_time.time,
+                now.duration_since(cached_host_time.anchor),
+            );
 
             // The local clock may run ahead of the host between queries, so a
             // reply can put the time behind what was returned before. Hold it
@@ -424,7 +443,7 @@ mod host_time {
             let get = self.get.clone();
             (
                 now,
-                Arc::new(WokenAt(Mutex::new(None))),
+                Default::default(),
                 Box::pin(async move { get.host_time().await }),
             )
         }
@@ -457,9 +476,15 @@ mod host_time {
             // The time is set as of when the guest wrote it, not when the
             // reply came in.
             if now >= cached_host_time.anchor {
-                &cached_host_time.time + now.duration_since(cached_host_time.anchor)
+                advance(
+                    &cached_host_time.time,
+                    now.duration_since(cached_host_time.anchor),
+                )
             } else {
-                &cached_host_time.time - cached_host_time.anchor.duration_since(now)
+                rewind(
+                    &cached_host_time.time,
+                    cached_host_time.anchor.duration_since(now),
+                )
             }
         }
 
@@ -596,13 +621,12 @@ mod save_restore {
                     .ref_time
                     .saturating_sub(reference_time);
                 let time = jiff::Timestamp::from_millisecond(time)
-                    .and_then(|time| {
-                        time.checked_add(std::time::Duration::from_nanos_u128(
-                            u128::from(elapsed_100ns) * 100,
-                        ))
-                    })
                     .map_err(|err| RestoreError::InvalidSavedState(err.into()))?;
-                self.host_time.restore(time);
+                let time = host_time::advance(
+                    &time.to_zoned(jiff::tz::TimeZone::UTC),
+                    std::time::Duration::from_nanos_u128(u128::from(elapsed_100ns) * 100),
+                );
+                self.host_time.restore(time.timestamp());
             }
             if let Some(latest) = latest_host_time_millis {
                 self.host_time.hold(
@@ -623,6 +647,9 @@ mod tests {
     use super::fetch_skew_from_store;
     use super::host_time::CachedHostTime;
     use super::host_time::HostSystemTimeAccess;
+    use super::host_time::advance;
+    use super::host_time::rewind;
+    use guest_emulation_transport::api::Time;
     use guest_emulation_device::test_utilities::Event;
     use guest_emulation_device::test_utilities::TestGetResponses;
     use guest_emulation_transport::test_utilities::TestGet;
@@ -1108,9 +1135,64 @@ mod tests {
             "{error:?}"
         );
 
-        // A change that takes the time out of range fails the restore.
+        // A change that takes the time out of range stops it at the latest
+        // time that can be represented.
         let state = clock.save().unwrap();
-        assert!(restore(state, 1 << 63).await.is_err());
+        let restored = restore(state, 1 << 63).await.unwrap();
+        assert_eq!(restored.host_time.sample(), Some(jiff::Timestamp::MAX));
+    }
+
+    /// Return a host time reply for `time`.
+    fn host_time_at(time: jiff::Timestamp) -> Time {
+        let since_windows_epoch = jiff::civil::date(1601, 1, 1)
+            .at(0, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .unwrap()
+            .timestamp()
+            .duration_until(time);
+        Time {
+            utc: (since_windows_epoch.as_nanos() / 100) as i64,
+            time_zone: 0,
+        }
+    }
+
+    #[test]
+    fn time_stops_at_the_limits() {
+        let max = jiff::Timestamp::MAX.to_zoned(jiff::tz::TimeZone::UTC);
+        let min = jiff::Timestamp::MIN.to_zoned(jiff::tz::TimeZone::UTC);
+        assert_eq!(advance(&max, Duration::from_secs(1)), max);
+        assert_eq!(rewind(&min, Duration::from_secs(1)), min);
+    }
+
+    #[async_test]
+    async fn host_time_at_the_limit_does_not_panic(driver: DefaultDriver) {
+        let get = new_get(&driver).await;
+        let host_time = new_host_time(&driver, &get).await;
+        let limit = jiff::Timestamp::MAX;
+
+        // The host time was the latest time that can be represented a second
+        // ago, so advancing it stops there.
+        {
+            let mut cached_host_time = cached(&host_time);
+            cached_host_time.time = limit.to_zoned(jiff::tz::TimeZone::UTC);
+            cached_host_time.anchor -= Duration::from_secs(1);
+        }
+        assert_eq!(host_time.sample(), Some(limit));
+        assert_eq!(host_time.now().timestamp(), limit);
+        assert_eq!(host_time.query().timestamp(), limit);
+
+        // So does a reply with that time.
+        {
+            let mut cached_host_time = cached(&host_time);
+            cached_host_time.last_query -= Duration::from_secs(1);
+            cached_host_time.refresh = Some((
+                Instant::now(),
+                Default::default(),
+                Box::pin(std::future::ready(host_time_at(limit))),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        assert_eq!(host_time.now().timestamp(), limit);
     }
 
     #[async_test]
