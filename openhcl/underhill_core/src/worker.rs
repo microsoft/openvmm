@@ -8,14 +8,19 @@ cfg_select! {
         use chipset_device_resources::BSP_LINT_LINE_SET;
         use chipset_resources::pm::DEFAULT_ACPI_IRQ;
         use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
+        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
+        use virt::X86Partition;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
     }
     guest_arch = "aarch64" => {
+        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
         use virt::Aarch64Partition;
     }
-    _ => {}
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
 }
 
 use crate::ControlRequest;
@@ -147,8 +152,6 @@ use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::vfio::VfioDmaClients;
 use virt::Partition;
 use virt::VpIndex;
-#[cfg(guest_arch = "x86_64")]
-use virt::X86Partition;
 use virt::state::HvRegisterState;
 use virt_mshv_vtl::UhPartition;
 use virt_mshv_vtl::UhPartitionNewParams;
@@ -1817,46 +1820,46 @@ async fn new_underhill_vm(
         complete_memory_layout,
     } = build_vtl0_memory_layout(vtl0_memory_map, &chipset_mmio, shared_pool_size)?;
 
-    // Determine if x2apic is supported so that the topology matches
-    // reality.
-    //
-    // We don't know if x2apic is forced on, but currently it doesn't really
-    // matter because the topology's initial x2apic state is not currently
-    // used in Underhill.
-    //
-    // FUTURE: consider having Underhill decide whether x2apic is enabled at
-    // boot rather than allowing the host to make that decision. This would
-    // just require Underhill setting the apicbase register on the VPs
-    // before start.
-    //
-    // TODO: centralize cpuid querying logic.
-    #[cfg(guest_arch = "x86_64")]
-    let x2apic = if isolation.is_hardware_isolated() && !hide_isolation {
-        // For hardware CVMs, always enable x2apic support at boot.
-        vm_topology::processor::x86::X2ApicState::Enabled
-    } else {
-        let features = x86defs::cpuid::VersionAndFeaturesEcx::from(
-            safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx,
-        );
-        if features.x2_apic() {
-            vm_topology::processor::x86::X2ApicState::Supported
-        } else {
-            vm_topology::processor::x86::X2ApicState::Unsupported
-        }
-    };
-
-    #[cfg(guest_arch = "x86_64")]
-    let processor_topology = new_x86_topology(&boot_info.cpus, x2apic)
-        .context("failed to construct the processor topology")?;
-
-    #[cfg(guest_arch = "aarch64")]
-    let processor_topology = {
-        let platform = boot_info
-            .gic
-            .context("did not get gic state from bootloader")?;
-        new_aarch64_topology(platform, &boot_info.cpus)
-            .context("failed to construct the processor topology")?
-    };
+    let processor_topology = cfg_select! {
+        guest_arch = "x86_64" => {{
+            // Determine if x2apic is supported so that the topology matches
+            // reality.
+            //
+            // We don't know if x2apic is forced on, but currently it doesn't really
+            // matter because the topology's initial x2apic state is not currently
+            // used in Underhill.
+            //
+            // FUTURE: consider having Underhill decide whether x2apic is enabled at
+            // boot rather than allowing the host to make that decision. This would
+            // just require Underhill setting the apicbase register on the VPs
+            // before start.
+            //
+            // TODO: centralize cpuid querying logic.
+            let x2apic = if isolation.is_hardware_isolated() && !hide_isolation {
+                // For hardware CVMs, always enable x2apic support at boot.
+                vm_topology::processor::x86::X2ApicState::Enabled
+            } else {
+                let features = x86defs::cpuid::VersionAndFeaturesEcx::from(
+                    safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0)
+                        .ecx,
+                );
+                if features.x2_apic() {
+                    vm_topology::processor::x86::X2ApicState::Supported
+                } else {
+                    vm_topology::processor::x86::X2ApicState::Unsupported
+                }
+            };
+            new_x86_topology(&boot_info.cpus, x2apic)
+        }}
+        guest_arch = "aarch64" => {{
+            let platform = boot_info
+                .gic
+                .context("did not get gic state from bootloader")?;
+            new_aarch64_topology(platform, &boot_info.cpus)
+        }}
+        _ => compile_error!("unsupported guest architecture"),
+    }
+    .context("failed to construct the processor topology")?;
 
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
@@ -2621,12 +2624,10 @@ async fn new_underhill_vm(
             FirmwareType::Uefi => vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
             FirmwareType::None => vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
         },
-        if cfg!(guest_arch = "x86_64") {
-            vm_manifest_builder::MachineArch::X86_64
-        } else if cfg!(guest_arch = "aarch64") {
-            vm_manifest_builder::MachineArch::Aarch64
-        } else {
-            anyhow::bail!("unsupported guest architecture")
+        cfg_select! {
+            guest_arch = "x86_64" => vm_manifest_builder::MachineArch::X86_64,
+            guest_arch = "aarch64" => vm_manifest_builder::MachineArch::Aarch64,
+            _ => compile_error!("unsupported guest architecture"),
         },
     );
 
@@ -2674,10 +2675,6 @@ async fn new_underhill_vm(
         use crate::emuplat::uefi::*;
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
-        #[cfg(guest_arch = "aarch64")]
-        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
-        #[cfg(guest_arch = "x86_64")]
-        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
         let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
             SecureBootTemplateType::MicrosoftWindows => {
@@ -2701,17 +2698,18 @@ async fn new_underhill_vm(
         }
         .map(Into::into);
 
+        let (use_mmio, command_set) = cfg_select! {
+            guest_arch = "x86_64" => (false, UefiCommandSet::X64),
+            guest_arch = "aarch64" => (true, UefiCommandSet::Aarch64),
+            _ => compile_error!("unsupported guest architecture"),
+        };
         let config = firmware_uefi_resources::UefiConfig {
             base_template,
             custom_uefi_json,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,
-            use_mmio: cfg!(not(guest_arch = "x86_64")),
-            command_set: if cfg!(guest_arch = "x86_64") {
-                UefiCommandSet::X64
-            } else {
-                UefiCommandSet::Aarch64
-            },
+            use_mmio,
+            command_set,
             diagnostics_log_level: {
                 use get_protocol::dps_json::EfiDiagnosticsLogLevelType as LogLevelType;
                 let level = dps.general.efi_diagnostics_log_level.0;
@@ -2769,117 +2767,119 @@ async fn new_underhill_vm(
         .build()
         .context("failed to build chipset configuration")?;
 
-    #[cfg(guest_arch = "x86_64")]
-    let mut deps_hyperv_firmware_pcat = None;
-    #[cfg(not(guest_arch = "x86_64"))]
-    let deps_hyperv_firmware_pcat = None;
-
-    match firmware_type {
-        #[cfg(not(guest_arch = "x86_64"))]
+    let deps_hyperv_firmware_pcat = match firmware_type {
         FirmwareType::Pcat => {
-            panic!("Not supported");
-        }
-        #[cfg(guest_arch = "x86_64")]
-        FirmwareType::Pcat => {
-            let acpi_builder = AcpiTablesBuilder {
-                processor_topology: &processor_topology,
-                mem_layout: &mem_layout,
-                cache_topology: None,
-                pcie_host_bridges: &vec![],
-                slit_info: None,
-                generic_initiators: &[],
-                arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                    with_ioapic: capabilities.with_ioapic,
-                    with_pic: capabilities.with_pic,
-                    with_pit: capabilities.with_pit,
-                    with_psp: dps.general.psp_enabled,
-                    pm_base: DEFAULT_PM_PIO_BASE,
-                    acpi_irq: DEFAULT_ACPI_IRQ,
-                    iommu: None,
-                },
-            };
-
-            let config = firmware_pcat::config::PcatBiosConfig {
-                processor_topology: processor_topology.clone(),
-                mem_layout: mem_layout.clone(),
-                chipset_low_mmio: chipset_mmio.low,
-                chipset_high_mmio: chipset_mmio.high,
-                srat: acpi_builder.build_srat(),
-                hibernation_enabled: dps.general.hibernation_enabled,
-                initial_generation_id,
-                boot_order: dps.general.pcat_boot_device_order.map(|e| {
-                    use firmware_pcat::config::BootDevice;
-                    use firmware_pcat::config::BootDeviceStatus;
-                    use guest_emulation_transport::api::platform_settings::PcatBootDevice;
-
-                    let kind = match e {
-                        PcatBootDevice::Floppy => BootDevice::Floppy,
-                        PcatBootDevice::Optical => BootDevice::Optical,
-                        PcatBootDevice::HardDrive => BootDevice::HardDrive,
-                        PcatBootDevice::Network => BootDevice::Network,
+            cfg_select! {
+                guest_arch = "x86_64" => {{
+                    let acpi_builder = AcpiTablesBuilder {
+                        processor_topology: &processor_topology,
+                        mem_layout: &mem_layout,
+                        cache_topology: None,
+                        pcie_host_bridges: &vec![],
+                        slit_info: None,
+                        generic_initiators: &[],
+                        arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                            with_ioapic: capabilities.with_ioapic,
+                            with_pic: capabilities.with_pic,
+                            with_pit: capabilities.with_pit,
+                            with_psp: dps.general.psp_enabled,
+                            pm_base: DEFAULT_PM_PIO_BASE,
+                            acpi_irq: DEFAULT_ACPI_IRQ,
+                            iommu: None,
+                        },
                     };
 
-                    // TODO: Correctly mark if devices are attached or not.
-                    BootDeviceStatus {
-                        kind,
-                        attached: true,
-                    }
-                }),
-                num_lock_enabled: dps.general.num_lock_enabled,
-                smbios: firmware_pcat::config::SmbiosConstants {
-                    bios_guid: dps.general.bios_guid,
-                    // Truncate rather than fail: the serial comes from the host
-                    // via DPS, and the PCAT config port caps each string at a
-                    // fixed length regardless.
-                    system_serial_number: {
-                        let mut serial = dps.smbios.serial_number.clone().into_bytes();
-                        if serial.len() > firmware_pcat::config::SMBIOS_STRING_MAX_LEN {
-                            tracing::warn!(
-                                len = serial.len(),
-                                max = firmware_pcat::config::SMBIOS_STRING_MAX_LEN,
-                                "SMBIOS system serial number too long; truncating for PCAT"
-                            );
-                            serial.truncate(firmware_pcat::config::SMBIOS_STRING_MAX_LEN);
-                        }
-                        serial
-                    },
-                    base_board_serial_number: dps
-                        .smbios
-                        .base_board_serial_number
-                        .clone()
-                        .into_bytes(),
-                    chassis_serial_number: dps.smbios.chassis_serial_number.clone().into_bytes(),
-                    chassis_asset_tag: dps.smbios.chassis_asset_tag.clone().into_bytes(),
-                    bios_lock_string: dps.smbios.bios_lock_string.clone().into_bytes(),
-                    processor_manufacturer: dps.smbios.processor_manufacturer.clone(),
-                    processor_version: dps.smbios.processor_version.clone(),
-                    cpu_info_bundle: Some(firmware_pcat::config::SmbiosProcessorInfoBundle {
-                        processor_family: dps.smbios.processor_family2 as u8,
-                        voltage: dps.smbios.voltage,
-                        external_clock: dps.smbios.external_clock,
-                        max_speed: dps.smbios.max_speed,
-                        current_speed: dps.smbios.current_speed,
-                    }),
-                },
-            };
+                    let config = firmware_pcat::config::PcatBiosConfig {
+                        processor_topology: processor_topology.clone(),
+                        mem_layout: mem_layout.clone(),
+                        chipset_low_mmio: chipset_mmio.low,
+                        chipset_high_mmio: chipset_mmio.high,
+                        srat: acpi_builder.build_srat(),
+                        hibernation_enabled: dps.general.hibernation_enabled,
+                        initial_generation_id,
+                        boot_order: dps.general.pcat_boot_device_order.map(|e| {
+                            use firmware_pcat::config::BootDevice;
+                            use firmware_pcat::config::BootDeviceStatus;
+                            use guest_emulation_transport::api::platform_settings::PcatBootDevice;
 
-            let halt_vps = halt_vps.clone();
+                            let kind = match e {
+                                PcatBootDevice::Floppy => BootDevice::Floppy,
+                                PcatBootDevice::Optical => BootDevice::Optical,
+                                PcatBootDevice::HardDrive => BootDevice::HardDrive,
+                                PcatBootDevice::Network => BootDevice::Network,
+                            };
 
-            deps_hyperv_firmware_pcat = Some(dev::HyperVFirmwarePcat {
-                config,
-                logger: Box::new(crate::emuplat::firmware::UnderhillLogger {
-                    get: get_client.clone(),
-                }),
-                generation_id_recv: get_client
-                    .take_generation_id_recv()
-                    .await
-                    .context("failed to get generation ID channel")?,
-                rom: None,
-                replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
-            })
+                            // TODO: Correctly mark if devices are attached or not.
+                            BootDeviceStatus {
+                                kind,
+                                attached: true,
+                            }
+                        }),
+                        num_lock_enabled: dps.general.num_lock_enabled,
+                        smbios: firmware_pcat::config::SmbiosConstants {
+                            bios_guid: dps.general.bios_guid,
+                            // Truncate rather than fail: the serial comes from the host
+                            // via DPS, and the PCAT config port caps each string at a
+                            // fixed length regardless.
+                            system_serial_number: {
+                                let mut serial = dps.smbios.serial_number.clone().into_bytes();
+                                if serial.len() > firmware_pcat::config::SMBIOS_STRING_MAX_LEN {
+                                    tracing::warn!(
+                                        len = serial.len(),
+                                        max = firmware_pcat::config::SMBIOS_STRING_MAX_LEN,
+                                        "SMBIOS system serial number too long; truncating for PCAT"
+                                    );
+                                    serial.truncate(firmware_pcat::config::SMBIOS_STRING_MAX_LEN);
+                                }
+                                serial
+                            },
+                            base_board_serial_number: dps
+                                .smbios
+                                .base_board_serial_number
+                                .clone()
+                                .into_bytes(),
+                            chassis_serial_number: dps
+                                .smbios
+                                .chassis_serial_number
+                                .clone()
+                                .into_bytes(),
+                            chassis_asset_tag: dps.smbios.chassis_asset_tag.clone().into_bytes(),
+                            bios_lock_string: dps.smbios.bios_lock_string.clone().into_bytes(),
+                            processor_manufacturer: dps.smbios.processor_manufacturer.clone(),
+                            processor_version: dps.smbios.processor_version.clone(),
+                            cpu_info_bundle: Some(
+                                firmware_pcat::config::SmbiosProcessorInfoBundle {
+                                    processor_family: dps.smbios.processor_family2 as u8,
+                                    voltage: dps.smbios.voltage,
+                                    external_clock: dps.smbios.external_clock,
+                                    max_speed: dps.smbios.max_speed,
+                                    current_speed: dps.smbios.current_speed,
+                                },
+                            ),
+                        },
+                    };
+
+                    let halt_vps = halt_vps.clone();
+
+                    Some(dev::HyperVFirmwarePcat {
+                        config,
+                        logger: Box::new(crate::emuplat::firmware::UnderhillLogger {
+                            get: get_client.clone(),
+                        }),
+                        generation_id_recv: get_client
+                            .take_generation_id_recv()
+                            .await
+                            .context("failed to get generation ID channel")?,
+                        rom: None,
+                        replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
+                    })
+                }}
+                _ => panic!("Not supported"),
+            }
         }
         FirmwareType::Uefi | FirmwareType::None => {
             // UEFI is configured via `chipset.with_uefi(...)` above
+            None
         }
     };
 
@@ -3071,15 +3071,14 @@ async fn new_underhill_vm(
         .with_winbond_super_io_and_floppy_stub
         .then_some(dev::WinbondSuperIoAndFloppyStubDeps);
 
-    #[cfg(not(guest_arch = "x86_64"))]
-    let deps_piix4_cmos_rtc = None;
-
-    #[cfg(guest_arch = "x86_64")]
-    let deps_piix4_cmos_rtc = chipset.with_piix4_cmos_rtc.then(|| dev::Piix4CmosRtcDeps {
-        time_source: PlatformResource.into_resource(),
-        initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
-        enlightened_interrupts: true, // As advertised by the PCAT BIOS.
-    });
+    let deps_piix4_cmos_rtc = cfg_select! {
+        guest_arch = "x86_64" => chipset.with_piix4_cmos_rtc.then(|| dev::Piix4CmosRtcDeps {
+            time_source: PlatformResource.into_resource(),
+            initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
+            enlightened_interrupts: true, // As advertised by the PCAT BIOS.
+        }),
+        _ => None,
+    };
 
     let deps_hyperv_ide = if chipset.with_hyperv_ide {
         let [primary_channel_drives, secondary_channel_drives] = ide_drives;
@@ -3221,10 +3220,10 @@ async fn new_underhill_vm(
             }
         };
 
-        let register_layout = if cfg!(guest_arch = "x86_64") {
-            TpmRegisterLayout::IoPort
-        } else {
-            TpmRegisterLayout::Mmio
+        let register_layout = cfg_select! {
+            guest_arch = "x86_64" => TpmRegisterLayout::IoPort,
+            guest_arch = "aarch64" => TpmRegisterLayout::Mmio,
+            _ => compile_error!("unsupported guest architecture"),
         };
 
         chipset_devices.push(ChipsetDeviceHandle {
@@ -3401,19 +3400,21 @@ async fn new_underhill_vm(
         tracing::info!(CVM_ALLOWED, enable_mnf, "Underhill MNF enabled?");
 
         // Enable the GPA pinning feature only if the hypercalls are available.
-        #[cfg(not(guest_arch = "x86_64"))]
-        let support_gpa_pinning = false;
-        #[cfg(guest_arch = "x86_64")]
-        let support_gpa_pinning = {
-            let result =
-                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
-            hvdef::HvEnlightenmentInformation::from(
-                result.eax as u128
-                    | (result.ebx as u128) << 32
-                    | (result.ecx as u128) << 64
-                    | (result.edx as u128) << 96,
-            )
-            .use_gpa_pinning_hypercall()
+        let support_gpa_pinning = cfg_select! {
+            guest_arch = "x86_64" => {{
+                let result = safe_intrinsics::cpuid(
+                    hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                    0,
+                );
+                hvdef::HvEnlightenmentInformation::from(
+                    result.eax as u128
+                        | (result.ebx as u128) << 32
+                        | (result.ecx as u128) << 64
+                        | (result.edx as u128) << 96,
+                )
+                .use_gpa_pinning_hypercall()
+            }}
+            _ => false,
         };
 
         let max_version = env_cfg
@@ -4489,9 +4490,10 @@ async fn load_firmware(
     )
     .context("failed to load firmware")?;
 
+    let crate::loader::VpContext::Vbs(registers) = vtl0_vp_context;
     #[cfg(guest_arch = "x86_64")]
     let registers = {
-        let crate::loader::VpContext::Vbs(mut registers) = vtl0_vp_context;
+        let mut registers = registers;
         registers.extend(loader::common::compute_variable_mtrrs(
             mem_layout,
             partition.caps().physical_address_width,
@@ -4500,9 +4502,6 @@ async fn load_firmware(
         ));
         registers
     };
-    #[cfg(guest_arch = "aarch64")]
-    let crate::loader::VpContext::Vbs(registers) = vtl0_vp_context;
-
     let registers = initial_regs(&registers, caps, &processor_topology.vp_arch(VpIndex::BSP));
     partition_unit
         .set_initial_regs(Vtl::Vtl0, registers)
