@@ -42,6 +42,14 @@ const TWALK: u8 = 110;
 const RWALK: u8 = 111;
 const TGETATTR: u8 = 24;
 const RGETATTR: u8 = 25;
+const TLOPEN: u8 = 12;
+const RLOPEN: u8 = 13;
+const TREAD: u8 = 116;
+const RREAD: u8 = 117;
+const TREADDIR: u8 = 40;
+const RREADDIR: u8 = 41;
+const TMKDIR: u8 = 72;
+const RMKDIR: u8 = 73;
 
 const PROTOCOL_VERSION: &[u8] = b"9P2000.L";
 
@@ -432,6 +440,98 @@ async fn getattr_root(driver: DefaultDriver) {
     // mode is at offset 8 + 13 = 21
     let mode = read_resp_u32(&resp, 21);
     assert_eq!(mode & 0o170000, 0o040000, "mode should indicate directory");
+}
+
+#[async_test]
+async fn declared_request_size_is_enforced(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+    harness.version(0).await;
+    harness.attach(2, 1).await;
+
+    let tag = harness.next_tag();
+    let mut msg = P9MessageBuilder::new(TMKDIR, tag)
+        .u32(1)
+        .string("boundary")
+        .u32(0o755)
+        .u32(0)
+        .build();
+    let size = msg.len();
+    for declared_size in (0..HEADER_SIZE as u32).chain([size as u32 + 1, u32::MAX]) {
+        msg[..4].copy_from_slice(&declared_size.to_le_bytes());
+        assert!(harness.transact(4, &msg, 128).await.is_empty());
+        assert!(!harness.tmpdir_path().join("boundary").exists());
+    }
+
+    for declared_size in HEADER_SIZE..size {
+        msg[..4].copy_from_slice(&(declared_size as u32).to_le_bytes());
+        let resp = harness.transact(4, &msg, 128).await;
+        assert_eq!(parse_response_header(&resp), (RLERROR, tag));
+        assert_eq!(read_resp_u32(&resp, 0), plan9::Error::EINVAL.value() as u32);
+        assert!(!harness.tmpdir_path().join("boundary").exists());
+    }
+
+    msg[..4].copy_from_slice(&(size as u32).to_le_bytes());
+    msg.extend_from_slice(b"trailing descriptor bytes");
+    let resp = harness.transact(4, &msg, 128).await;
+    assert_eq!(parse_response_header(&resp), (RMKDIR, tag));
+    assert!(harness.tmpdir_path().join("boundary").is_dir());
+}
+
+#[async_test]
+async fn short_read_responses_complete(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    std::fs::write(harness.tmpdir_path().join("hello.txt"), b"data").unwrap();
+    harness.enable().await;
+    harness.version(0).await;
+    harness.attach(2, 1).await;
+
+    let tag = harness.next_tag();
+    let msg = P9MessageBuilder::new(TWALK, tag)
+        .u32(1)
+        .u32(2)
+        .name_seq(&["hello.txt"])
+        .build();
+    let resp = harness.transact(4, &msg, 128).await;
+    assert_eq!(parse_response_header(&resp), (RWALK, tag));
+
+    for fid in [1, 2] {
+        let tag = harness.next_tag();
+        let msg = P9MessageBuilder::new(TLOPEN, tag).u32(fid).u32(0).build();
+        let resp = harness.transact(4, &msg, 128).await;
+        assert_eq!(parse_response_header(&resp), (RLOPEN, tag));
+    }
+
+    for (message_type, fid, count) in [(TREAD, 2, 4), (TREADDIR, 1, 256)] {
+        let tag = harness.next_tag();
+        let msg = P9MessageBuilder::new(message_type, tag)
+            .u32(fid)
+            .u64(0)
+            .u32(count)
+            .build();
+        for capacity in 0..11 {
+            assert!(harness.transact(4, &msg, capacity).await.is_empty());
+        }
+
+        let resp = harness.transact(4, &msg, 11 + count).await;
+        assert_eq!(
+            parse_response_header(&resp),
+            (
+                if message_type == TREAD {
+                    RREAD
+                } else {
+                    RREADDIR
+                },
+                tag
+            )
+        );
+        let bytes = read_resp_u32(&resp, 0) as usize;
+        assert_eq!(resp.len(), 11 + bytes);
+        assert!(bytes > 0);
+        if message_type == TREAD {
+            assert_eq!(&resp[11..], b"data");
+        }
+    }
 }
 
 /// A malformed message (too short to parse) should still complete the

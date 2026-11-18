@@ -230,6 +230,10 @@ impl SimpleScsiDisk {
         sector_count: u64,
     ) -> Result<usize, ScsiError> {
         let (buffer, mut unmap_info) = self.process_unmap_request(external_data, request)?;
+        if self.disk.is_read_only() {
+            return Err(ScsiError::WriteProtected);
+        }
+
         if unmap_info.total_descriptors == 0 {
             return Ok(0);
         }
