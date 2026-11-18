@@ -129,12 +129,19 @@ impl Node {
                     return Ok(());
                 }
 
-                download_all_reqs(rt, &remaining_download_reqs, &persistent_dir, gh_cli)?;
+                let args = DownloadGhReleaseArgs {
+                    download_reqs: remaining_download_reqs,
+                    cache_dir: persistent_dir,
+                    gh_cli,
+                };
 
-                for ((repo_owner, repo_name, tag), files) in remaining_download_reqs {
+                crate::_util::retry(rt, download_all_reqs, &args, crate::_util::GH_RETRIES)?;
+
+                for ((repo_owner, repo_name, tag), files) in args.download_reqs {
                     for (file, vars) in files {
-                        let file =
-                            persistent_dir.join(format!("{repo_owner}/{repo_name}/{tag}/{file}"));
+                        let file = args
+                            .cache_dir
+                            .join(format!("{repo_owner}/{repo_name}/{tag}/{file}"));
                         assert!(file.exists());
                         for var in vars {
                             rt.write(var, &file)
@@ -204,13 +211,21 @@ impl Node {
                 let cache_dir = rt.read(cache_dir);
                 let hitvar = rt.read(hitvar);
 
+                let args = DownloadGhReleaseArgs {
+                    download_reqs,
+                    cache_dir,
+                    gh_cli,
+                };
+
                 if !matches!(hitvar, crate::cache::CacheHit::Hit) {
-                    download_all_reqs(rt, &download_reqs, &cache_dir, gh_cli)?;
+                    download_all_reqs(rt, &args)?;
                 }
 
-                for ((repo_owner, repo_name, tag), files) in download_reqs {
+                for ((repo_owner, repo_name, tag), files) in args.download_reqs {
                     for (file, vars) in files {
-                        let file = cache_dir.join(format!("{repo_owner}/{repo_name}/{tag}/{file}"));
+                        let file = args
+                            .cache_dir
+                            .join(format!("{repo_owner}/{repo_name}/{tag}/{file}"));
                         assert!(file.exists());
                         for var in vars {
                             rt.write(var, &file)
@@ -224,16 +239,24 @@ impl Node {
     }
 }
 
+struct DownloadGhReleaseArgs {
+    download_reqs:
+        BTreeMap<(String, String, String), BTreeMap<String, Vec<WriteVar<PathBuf, VarClaimed>>>>,
+    cache_dir: PathBuf,
+    gh_cli: Option<ReadVar<PathBuf, VarClaimed>>,
+}
+
 fn download_all_reqs(
     rt: &mut RustRuntimeServices<'_>,
-    download_reqs: &BTreeMap<
-        (String, String, String),
-        BTreeMap<String, Vec<WriteVar<PathBuf, VarClaimed>>>,
-    >,
-    cache_dir: &Path,
-    gh_cli: Option<ReadVar<PathBuf, VarClaimed>>,
+    args: &DownloadGhReleaseArgs,
 ) -> anyhow::Result<()> {
-    let gh_cli = rt.read(gh_cli);
+    let DownloadGhReleaseArgs {
+        download_reqs,
+        cache_dir,
+        gh_cli,
+    } = args;
+
+    let gh_cli = rt.read(gh_cli.clone());
 
     for ((repo_owner, repo_name, tag), files) in download_reqs {
         let repo = format!("{repo_owner}/{repo_name}");

@@ -5,6 +5,7 @@ pub use flowey::util::copy_dir_all;
 
 use flowey::node::prelude::FlowPlatformKind;
 use flowey::node::prelude::RustRuntimeServices;
+use flowey::node::prelude::anyhow;
 use std::collections::BTreeMap;
 
 pub mod cargo_install;
@@ -42,4 +43,26 @@ pub fn bsdtar_name(rt: &mut RustRuntimeServices<'_>) -> &'static str {
         FlowPlatformKind::Windows => "tar.exe",
         FlowPlatformKind::Unix => "bsdtar",
     }
+}
+
+/// number of times to retry github operations
+pub const GH_RETRIES: usize = 5;
+
+/// Helper for retrying operations
+pub fn retry<T>(
+    rt: &mut RustRuntimeServices<'_>,
+    f: fn(&mut RustRuntimeServices<'_>, &T) -> anyhow::Result<()>,
+    args: &T,
+    attempts: usize,
+) -> anyhow::Result<()> {
+    let mut i = 0;
+    while let Err(e) = f(rt, args) {
+        i += 1;
+        if i == attempts {
+            return Err(e.into());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    Ok(())
 }
