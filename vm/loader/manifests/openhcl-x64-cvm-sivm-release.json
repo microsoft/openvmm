@@ -22,6 +22,7 @@
                     },
                     "device_policy": "policies/sivm.toml",
                     "command_line": "",
+                    "static_command_line": true,
                     "memory_page_count": 16384,
                     "memory_page_base": 32768,
                     "uefi": true

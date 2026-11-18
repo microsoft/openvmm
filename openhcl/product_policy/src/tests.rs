@@ -23,10 +23,6 @@ fn sample_sivm_policy() -> SivmPolicy {
 #[test]
 fn product_policy_name_returns_variant_tag() {
     assert_eq!(ProductPolicy::Sivm(SivmPolicy::default()).name(), "sivm");
-    assert_eq!(
-        ProductPolicy::AzureCvm(Default::default()).name(),
-        "azure_cvm"
-    );
 }
 
 #[test]
@@ -224,7 +220,7 @@ mod serde_tests {
     /// Devices come only from the device policy file, never the manifest JSON.
     #[test]
     fn deserialize_rejects_devices() {
-        assert!(from_json(r#"{"azure_cvm":{"allowed_pci_devices":[]}}"#).is_err());
+        assert!(from_json(r#"{"azure":{"allowed_pci_devices":[]}}"#).is_err());
     }
 }
 

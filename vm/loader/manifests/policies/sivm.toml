@@ -1,9 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# PCI devices that OpenHCL exposes to SIVM guests: NVMe controllers and the GPU.
+# Device policy for SIVMs: OpenHCL may relay NVMe controllers and the GPU.
 devices = "devices.toml"
 allowed_pci_devices = ["nvme", "nvidia-gpu"]
-max_vpci_devices = 64
 # The GPU is the reason for a SIVM, so fail at boot if the relay can't run.
-require_vpci_relay = true
+vpci_relay = "must_be_on"

@@ -22,6 +22,7 @@
                     },
                     "device_policy": "policies/sivm.toml",
                     "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
+                    "static_command_line": true,
                     "memory_page_count": 163840,
                     "memory_page_base": 32768,
                     "uefi": true

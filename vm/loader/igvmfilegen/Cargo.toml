@@ -43,7 +43,6 @@ zerocopy.workspace = true
 [dev-dependencies]
 crypto = { workspace = true, features = ["test_helpers"] }
 flate2.workspace = true
-tempfile.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

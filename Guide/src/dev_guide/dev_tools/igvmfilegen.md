@@ -74,57 +74,13 @@ Only files corresponding to platforms present in the manifest are emitted.
 The `.idblock` file is the SNP signing payload used by the production signing
 mode described below.
 
-### PCI device policy
+### Product and device policies
 
-OpenHCL's VPCI relay offers an isolated guest only the PCI devices that the
-image allows; non-isolated guests aren't filtered. An `openhcl` image names a
-device policy file with `device_policy`, relative to the manifest.
-`igvmfilegen` stores the device policy in the image's measured product policy,
-so the image must also name one. The `azure_cvm` product policy holds nothing
-else:
-
-```json
-"openhcl": {
-    "product_policy": { "azure_cvm": {} },
-    "device_policy": "policies/azure-cvm.toml",
-    ...
-}
-```
-
-Without a device policy, the relay allows an isolated guest no devices.
-
-A device policy names a device catalog, relative to the policy file, and the
-devices it allows. `"*"` allows every device.
-
-```toml
-devices = "devices.toml"
-allowed_pci_devices = ["nvme", "mana"]
-max_vpci_devices = 64
-```
-
-A policy that allows devices must set `max_vpci_devices`, the most devices the
-relay makes room for. OpenHCL reserves high VTL0 MMIO space and VMBus ring
-memory for each one.
-
-If the relay can't run, for example on a VBS host without MMIO hypercalls,
-OpenHCL starts without the allowed devices and logs a warning. A policy that
-sets `require_vpci_relay = true` makes it fail to boot instead.
-
-The catalog defines each device once, with any of `vendor_id`, `device_id`,
-`revision_id`, `base_class`, `sub_class`, and `prog_if`. A field that is left
-out matches any value, but an allowed device must set at least one:
-
-```toml
-[nvme]
-base_class = 0x01
-sub_class  = 0x08
-prog_if    = 0x02
-```
-
-Unknown device names or fields fail the build. The in-tree CVM manifests use
-`policies/azure-cvm.toml`, which allows NVMe, MANA, and the Azure Integrated
-HSM. The SIVM manifests use `policies/sivm.toml`, which allows NVMe and a GPU
-and requires the relay.
+An `openhcl` image can name a measured product policy with `product_policy`,
+and a PCI device policy file with `device_policy`, relative to the manifest.
+`igvmfilegen` appends them to the OpenHCL initrd. See
+[Measured Product Policy](../../reference/architecture/openhcl/product_policy.md)
+for the formats and what OpenHCL enforces.
 
 ## Inspect an IGVM
 

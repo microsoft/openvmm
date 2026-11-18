@@ -53,19 +53,12 @@ pub struct CwcowPolicy {
     #[cfg_attr(feature = "inspect", inspect(skip))]
     pub allowed_pci_devices: Vec<crate::AllowedPciDevice>,
 
-    /// From the device policy file: fail the boot when the VPCI relay can't
-    /// run, instead of starting without the allowed devices.
+    /// From the device policy file: when OpenHCL runs the VPCI relay. Unset
+    /// means [`crate::VpciRelayMode::DefaultOff`].
     #[mesh(8)]
     #[cfg_attr(feature = "manifest", serde(skip))]
     #[cfg_attr(feature = "inspect", inspect(skip))]
-    pub require_vpci_relay: bool,
-
-    /// From the device policy file: the most VPCI devices the relay makes
-    /// room for.
-    #[mesh(9)]
-    #[cfg_attr(feature = "manifest", serde(skip))]
-    #[cfg_attr(feature = "inspect", inspect(skip))]
-    pub max_vpci_devices: Option<u16>,
+    pub vpci_relay: Option<crate::VpciRelayMode>,
 }
 
 impl crate::uefi_security_policy::UefiSecurityPolicyParams for CwcowPolicy {

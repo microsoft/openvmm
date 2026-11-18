@@ -38,7 +38,7 @@ pub fn append(
             p.require_bcd_integrity,
             &p.custom_uefi_json,
         ),
-        ProductPolicy::AzureCvm(_) => (false, false, false, &Vec::new()),
+        ProductPolicy::Azure(_) => (false, false, false, &Vec::new()),
     };
     anyhow::ensure!(
         !(require_secure_boot && (require_vars || require_bcd) && custom_uefi_json.is_empty()),
@@ -63,20 +63,10 @@ fn load_device_policy(path: &std::path::Path, policy: &mut ProductPolicy) -> any
     struct DevicePolicy {
         devices: std::path::PathBuf,
         allowed_pci_devices: Vec<String>,
-        #[serde(default)]
-        require_vpci_relay: bool,
-        max_vpci_devices: Option<u16>,
+        vpci_relay: Option<product_policy::VpciRelayMode>,
     }
     let device_policy: DevicePolicy = toml_edit::de::from_str(&fs_err::read_to_string(path)?)
         .with_context(|| format!("parsing {}", path.display()))?;
-    // OpenHCL sizes the relay's MMIO window and ring memory from this count.
-    anyhow::ensure!(
-        device_policy.max_vpci_devices != Some(0)
-            && (device_policy.allowed_pci_devices.is_empty()
-                || device_policy.max_vpci_devices.is_some()),
-        "{}: a policy that allows devices must set a nonzero max_vpci_devices",
-        path.display()
-    );
     let devices_path = path.with_file_name(&device_policy.devices);
     let devices: std::collections::BTreeMap<String, product_policy::AllowedPciDevice> =
         toml_edit::de::from_str(&fs_err::read_to_string(&devices_path)?)
@@ -94,8 +84,7 @@ fn load_device_policy(path: &std::path::Path, policy: &mut ProductPolicy) -> any
             .iter()
             .map(device)
             .collect::<anyhow::Result<_>>()?,
-        device_policy.require_vpci_relay,
-        device_policy.max_vpci_devices,
+        device_policy.vpci_relay,
     );
     Ok(())
 }
@@ -103,6 +92,7 @@ fn load_device_policy(path: &std::path::Path, policy: &mut ProductPolicy) -> any
 #[cfg(test)]
 mod tests {
     use super::*;
+    use product_policy::VpciRelayMode;
     use product_policy::cwcow::CwcowPolicy;
     use product_policy::sivm::SivmPolicy;
     use std::collections::BTreeMap;
@@ -183,9 +173,9 @@ mod tests {
         );
     }
 
-    /// The Azure CVM device policy must allow exactly the devices that OpenHCL
+    /// The Azure device policies must allow exactly the devices that OpenHCL
     /// used to allow unconditionally, and the SIVM policy only NVMe and the
-    /// GPU. Only the SIVM policy requires the VPCI relay.
+    /// GPU. Only CVMs run the VPCI relay by default, and only SIVMs require it.
     #[test]
     fn device_policy_round_trips_through_initrd() {
         let policies =
@@ -198,11 +188,7 @@ mod tests {
             let decoded = product_policy::decode_product_policy(bytes).unwrap();
             assert_eq!(decoded.name(), policy.name());
             let decoded = product_policy::MeasuredProductPolicy::new(Some(decoded));
-            (
-                decoded.allowed_pci_devices().to_vec(),
-                decoded.require_vpci_relay(),
-                decoded.max_vpci_devices(),
-            )
+            (decoded.allowed_pci_devices().to_vec(), decoded.vpci_relay())
         };
         let class = |base_class, sub_class, prog_if| product_policy::AllowedPciDevice {
             base_class: Some(base_class),
@@ -223,19 +209,18 @@ mod tests {
         };
         assert_eq!(
             append_devices(ProductPolicy::Sivm(Default::default()), "sivm.toml"),
-            (vec![class(1, 8, 2), gpu], true, Some(64))
+            (vec![class(1, 8, 2), gpu], VpciRelayMode::MustBeOn)
         );
-        assert_eq!(
-            append_devices(
-                ProductPolicy::AzureCvm(Default::default()),
-                "azure-cvm.toml"
-            ),
-            (
-                vec![class(1, 8, 2), microsoft(0xba, 2), microsoft(0xc003, 0x10)],
-                false,
-                Some(64)
-            )
-        );
+        let azure = vec![class(1, 8, 2), microsoft(0xba, 2), microsoft(0xc003, 0x10)];
+        for (file, mode) in [
+            ("azure-cvm.toml", VpciRelayMode::DefaultOn),
+            ("azure.toml", VpciRelayMode::DefaultOff),
+        ] {
+            assert_eq!(
+                append_devices(ProductPolicy::Azure(Default::default()), file),
+                (azure.clone(), mode)
+            );
+        }
     }
 
     /// Without a product policy nothing is appended, and a device policy is an
@@ -249,24 +234,6 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests/policies");
         assert!(append(&mut initrd, None, Some(&policies.join("sivm.toml"))).is_err());
         assert!(initrd.is_empty());
-    }
-
-    /// A policy that allows devices must say how many the relay makes room
-    /// for, and that can't be zero.
-    #[test]
-    fn device_policy_needs_a_device_count() {
-        let dir = tempfile::tempdir().unwrap();
-        fs_err::write(dir.path().join("devices.toml"), "[nvme]\nbase_class = 1\n").unwrap();
-        let path = dir.path().join("policy.toml");
-        let append_with = |count: &str| {
-            let policy = "devices = \"devices.toml\"\nallowed_pci_devices = [\"nvme\"]\n";
-            fs_err::write(&path, format!("{policy}{count}")).unwrap();
-            let product = ProductPolicy::AzureCvm(Default::default());
-            append(&mut Vec::new(), Some(&product), Some(&path))
-        };
-        assert!(append_with("max_vpci_devices = 1\n").is_ok());
-        assert!(append_with("").is_err());
-        assert!(append_with("max_vpci_devices = 0\n").is_err());
     }
 
     #[test]

@@ -16,7 +16,7 @@
             "image": {
                 "openhcl": {
                     "product_policy": {
-                        "azure_cvm": {}
+                        "azure": {}
                     },
                     "device_policy": "policies/azure-cvm.toml",
                     "command_line": "",
@@ -38,7 +38,7 @@
             "image": {
                 "openhcl": {
                     "product_policy": {
-                        "azure_cvm": {}
+                        "azure": {}
                     },
                     "device_policy": "policies/azure-cvm.toml",
                     "command_line": "",
@@ -59,7 +59,7 @@
             "image": {
                 "openhcl": {
                     "product_policy": {
-                        "azure_cvm": {}
+                        "azure": {}
                     },
                     "device_policy": "policies/azure-cvm.toml",
                     "command_line": "",

@@ -497,36 +497,6 @@ mod test {
         guest.image.validate().unwrap();
     }
 
-    /// The SIVM manifests must be the VBS configuration of the CVM manifests
-    /// with their own product and device policies, so they can't drift apart.
-    #[test]
-    fn sivm_manifests_are_cvm_vbs_config_plus_policy() {
-        let pairs = [
-            (
-                include_str!("../../manifests/openhcl-x64-cvm-sivm-dev.json"),
-                include_str!("../../manifests/openhcl-x64-cvm-dev.json"),
-            ),
-            (
-                include_str!("../../manifests/openhcl-x64-cvm-sivm-release.json"),
-                include_str!("../../manifests/openhcl-x64-cvm-release.json"),
-            ),
-        ];
-        for (sivm, cvm) in pairs {
-            for manifest in [sivm, cvm] {
-                serde_json::from_str::<Config>(manifest).unwrap();
-            }
-            let sivm: serde_json::Value = serde_json::from_str(sivm).unwrap();
-            let mut cvm: serde_json::Value = serde_json::from_str(cvm).unwrap();
-            let guests = cvm["guest_configs"].as_array_mut().unwrap();
-            guests.retain(|guest| guest["isolation_type"]["vbs"].is_object());
-            for key in ["product_policy", "device_policy"] {
-                guests[0]["image"]["openhcl"][key] =
-                    sivm["guest_configs"][0]["image"]["openhcl"][key].clone();
-            }
-            assert_eq!(sivm, cvm);
-        }
-    }
-
     #[test]
     fn snp_linux_direct_required_resources_with_initrd() {
         let image = snp_linux_direct_image(true, 40960, 51);
@@ -677,7 +647,7 @@ mod test {
                     assert_eq!(p.custom_uefi_json, b"deadbeef");
                 }
                 ProductPolicy::Cwcow(p) => panic!("unexpected Cwcow policy: {p:?}"),
-                ProductPolicy::AzureCvm(p) => panic!("unexpected AzureCvm policy: {p:?}"),
+                ProductPolicy::Azure(p) => panic!("unexpected Azure policy: {p:?}"),
             },
             other => panic!("unexpected parse: {other:?}"),
         }

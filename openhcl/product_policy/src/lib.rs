@@ -4,17 +4,17 @@
 //! Measured product policy: enum, per-VM value, codec.
 //!
 //! To add a product: define its body in a sibling module, with the
-//! `allowed_pci_devices`, `require_vpci_relay`, and `max_vpci_devices` fields
-//! that the device policy sets, then add one `N => Variant(body::Body),` line
-//! to `define_product_policy!` below. `N` is a mesh wire tag and must never be
+//! `allowed_pci_devices` and `vpci_relay` fields that the device policy
+//! sets, then add one `N => Variant(body::Body),` line to
+//! `define_product_policy!` below. `N` is a mesh wire tag and must never be
 //! reused.
 
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
-/// Azure CVM policy body.
-pub mod azure_cvm;
+/// Azure policy body.
+pub mod azure;
 /// Cwcow policy body and validation methods.
 pub mod cwcow;
 /// Shared helpers for product policy validation and serialization.
@@ -67,8 +67,7 @@ impl ProductPolicyInternal {
 }
 
 /// A PCI device that OpenHCL's VPCI relay may expose to VTL0: one with every
-/// ID that is set. Mesh tags are part of the wire format and must never be
-/// reused.
+/// ID that is set.
 #[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq, Default)]
 #[cfg_attr(
     feature = "manifest",
@@ -95,6 +94,28 @@ pub struct AllowedPciDevice {
     /// Programming interface.
     #[mesh(6)]
     pub prog_if: Option<u8>,
+}
+
+/// When OpenHCL runs the VPCI relay. `OPENHCL_ENABLE_VPCI_RELAY` can override
+/// the defaults, but not [`Self::MustBeOn`].
+#[derive(mesh_protobuf::Protobuf, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(
+    feature = "manifest",
+    derive(serde::Deserialize),
+    serde(rename_all = "snake_case")
+)]
+#[mesh(package = "openhcl.product_policy")]
+pub enum VpciRelayMode {
+    /// Off unless `OPENHCL_ENABLE_VPCI_RELAY=1`.
+    #[default]
+    #[mesh(1)]
+    DefaultOff,
+    /// On unless `OPENHCL_ENABLE_VPCI_RELAY=0`.
+    #[mesh(2)]
+    DefaultOn,
+    /// Always on. OpenHCL fails to boot if it can't run the relay.
+    #[mesh(3)]
+    MustBeOn,
 }
 
 /// Defines the `ProductPolicy` enum and, for each variant `Foo(Body)`,
@@ -129,11 +150,11 @@ macro_rules! define_product_policy {
         }
 
         impl ProductPolicy {
-            /// Variant name in snake case, as in manifests.
+            /// Lowercased variant name.
             pub fn name(&self) -> &'static str {
                 $crate::__paste! {
                     match self {
-                        $( Self::$variant(_) => stringify!([<$variant:snake>]), )+
+                        $( Self::$variant(_) => stringify!([<$variant:lower>]), )+
                     }
                 }
             }
@@ -142,15 +163,13 @@ macro_rules! define_product_policy {
             pub fn set_device_policy(
                 &mut self,
                 allowed_pci_devices: Vec<$crate::AllowedPciDevice>,
-                require_vpci_relay: bool,
-                max_vpci_devices: Option<u16>,
+                vpci_relay: Option<$crate::VpciRelayMode>,
             ) {
                 match self {
                     $(
                         Self::$variant(p) => {
                             p.allowed_pci_devices = allowed_pci_devices;
-                            p.require_vpci_relay = require_vpci_relay;
-                            p.max_vpci_devices = max_vpci_devices;
+                            p.vpci_relay = vpci_relay;
                         }
                     )+
                 }
@@ -166,21 +185,11 @@ macro_rules! define_product_policy {
                 }
             }
 
-            /// Whether OpenHCL must fail to boot when it can't run the VPCI
-            /// relay, instead of starting without the allowed devices.
-            pub fn require_vpci_relay(&self) -> bool {
+            /// When OpenHCL runs the VPCI relay.
+            pub fn vpci_relay(&self) -> $crate::VpciRelayMode {
                 match self.raw() {
-                    $( Some(ProductPolicy::$variant(p)) => p.require_vpci_relay, )+
-                    None => false,
-                }
-            }
-
-            /// The most VPCI devices the relay makes room for, if the device
-            /// policy sets it.
-            pub fn max_vpci_devices(&self) -> Option<u16> {
-                match self.raw() {
-                    $( Some(ProductPolicy::$variant(p)) => p.max_vpci_devices, )+
-                    None => None,
+                    $( Some(ProductPolicy::$variant(p)) => p.vpci_relay.unwrap_or_default(), )+
+                    None => $crate::VpciRelayMode::DefaultOff,
                 }
             }
         }
@@ -193,7 +202,7 @@ macro_rules! define_product_policy {
                         stringify!($variant),
                         "` body if installed. Closure errors propagate via the outer `Result`; the inner `Option` signals whether the closure ran."
                     )]
-                    pub fn [<$variant:snake>]<T>(
+                    pub fn [<$variant:lower>]<T>(
                         &self,
                         f: impl ::core::ops::FnOnce(&$body) -> ::anyhow::Result<T>,
                     ) -> ::anyhow::Result<::core::option::Option<T>> {
@@ -219,8 +228,8 @@ define_product_policy! {
     /// Cwcow.
     2 => Cwcow(cwcow::CwcowPolicy);
 
-    /// Azure CVM.
-    3 => AzureCvm(azure_cvm::AzureCvmPolicy);
+    /// Azure.
+    3 => Azure(azure::AzurePolicy);
 }
 
 // --- Codec ---
