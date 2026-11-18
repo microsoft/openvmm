@@ -253,7 +253,11 @@ impl SimpleScsiDvd {
             // two can disagree after a restore.
             Media::Unloaded => Err(ScsiDvdError::SenseNotReady(
                 AdditionalSenseCode::NO_MEDIA_IN_DEVICE,
-                scsi::MEDIUM_NOT_PRESENT_TRAY_OPEN,
+                if self.media_state.lock().drive_state.tray_open() {
+                    scsi::MEDIUM_NOT_PRESENT_TRAY_OPEN
+                } else {
+                    scsi::MEDIUM_NOT_PRESENT_TRAY_CLOSED
+                },
             )),
         }
     }
@@ -3021,29 +3025,42 @@ mod tests {
 
         let external_data = OwnedRequestBuffers::linear(0, ISO_SECTOR_SIZE as usize, true);
         let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
-        for request in [
-            make_cdb16_request(ScsiOp::READ16, 0, 1),
-            make_request(&[ScsiOp::READ_CAPACITY.0]),
-            make_request(&[ScsiOp::READ_TOC.0, 0, 0, 0, 0, 0, 0, 0, 12]),
+        for (drive_state, qualifier) in [
+            (
+                DriveState::MediumPresentTrayClosed,
+                scsi::MEDIUM_NOT_PRESENT_TRAY_CLOSED,
+            ),
+            (
+                DriveState::MediumPresentTrayOpen,
+                scsi::MEDIUM_NOT_PRESENT_TRAY_OPEN,
+            ),
         ] {
-            let result = scsi_dvd
-                .execute_scsi(&external_data.buffer(&guest_mem), &request)
-                .await;
-            let sense = result.sense_data.expect("no sense data");
-            assert_eq!(
-                (
-                    result.scsi_status,
-                    sense.header.sense_key,
-                    sense.additional_sense_code
-                ),
-                (
-                    scsi::ScsiStatus::CHECK_CONDITION,
-                    SenseKey::NOT_READY,
-                    AdditionalSenseCode::NO_MEDIA_IN_DEVICE
-                ),
-                "{:?}",
-                request
-            );
+            scsi_dvd.media_state.lock().drive_state = drive_state;
+            for request in [
+                make_cdb16_request(ScsiOp::READ16, 0, 1),
+                make_request(&[ScsiOp::READ_CAPACITY.0]),
+                make_request(&[ScsiOp::READ_TOC.0, 0, 0, 0, 0, 0, 0, 0, 12]),
+            ] {
+                let result = scsi_dvd
+                    .execute_scsi(&external_data.buffer(&guest_mem), &request)
+                    .await;
+                let sense = result.sense_data.expect("no sense data");
+                assert_eq!(
+                    (
+                        result.scsi_status,
+                        sense.header.sense_key,
+                        sense.additional_sense_code,
+                        sense.additional_sense_code_qualifier
+                    ),
+                    (
+                        scsi::ScsiStatus::CHECK_CONDITION,
+                        SenseKey::NOT_READY,
+                        AdditionalSenseCode::NO_MEDIA_IN_DEVICE,
+                        qualifier
+                    ),
+                    "{drive_state:?} {request:?}"
+                );
+            }
         }
     }
 }
