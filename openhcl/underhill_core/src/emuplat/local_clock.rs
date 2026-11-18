@@ -165,7 +165,9 @@ impl LocalClock for UnderhillLocalClock {
     }
 
     fn set_time(&mut self, new_time: LocalClockTime) {
-        let new_skew = new_time - LocalClockTime::from(self.host_time.query());
+        let host_time = self.host_time.query();
+        self.host_time.release(&host_time);
+        let new_skew = new_time - LocalClockTime::from(host_time);
         self.offset_from_host_time = new_skew;
         self.default_skew = false;
 
@@ -432,8 +434,7 @@ mod host_time {
         /// advanced time falls behind if the host paused the VM, which would
         /// put the pause into the skew. The reply to a query sent within the
         /// last second is used, so a pause within a second of that query is
-        /// still missed. Times returned before aren't held, since the time is
-        /// being set.
+        /// still missed.
         pub fn query(&self) -> Zoned {
             let now = Instant::now();
             let mut cached_host_time = self.cached_host_time.lock();
@@ -455,12 +456,19 @@ mod host_time {
 
             // The time is set as of when the guest wrote it, not when the
             // reply came in.
-            cached_host_time.latest = if now >= cached_host_time.anchor {
+            if now >= cached_host_time.anchor {
                 &cached_host_time.time + now.duration_since(cached_host_time.anchor)
             } else {
                 &cached_host_time.time - cached_host_time.anchor.duration_since(now)
-            };
-            cached_host_time.latest.clone()
+            }
+        }
+
+        /// Stop holding the times returned before, as the time is being set
+        /// from `time`.
+        pub fn release(&self, time: &Zoned) {
+            if let Some(cached_host_time) = &mut *self.cached_host_time.lock() {
+                cached_host_time.latest = time.clone();
+            }
         }
 
         /// Return the latest time returned, if any.
@@ -826,6 +834,26 @@ mod tests {
             .unwrap();
         }
         assert!(clock.get_time() >= ahead);
+    }
+
+    #[async_test]
+    async fn read_for_update_keeps_the_time_held(_driver: DefaultDriver) {
+        let (mut clock, _get, _) = new_clock().await;
+
+        // Pretend the local clock ran 800ms ahead of the host, and a reply has
+        // corrected it since.
+        cached(&clock.host_time).anchor -= Duration::from_millis(800);
+        let ahead = clock.get_time();
+        cached(&clock.host_time).anchor += Duration::from_millis(800);
+
+        // Reading the time to set an alarm doesn't change the time, so times
+        // returned before are still held, until the time is set.
+        assert!(clock.get_time_for_update() >= ahead);
+        assert!(clock.get_time() >= ahead);
+        let time = LocalClockTime::from(SystemTime::now());
+        clock.set_time(time);
+        let error = clock.get_time() - time;
+        assert!(error.as_millis().abs() < 100, "{error:?}");
     }
 
     #[async_test]
