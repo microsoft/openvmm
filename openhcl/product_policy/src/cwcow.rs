@@ -45,6 +45,27 @@ pub struct CwcowPolicy {
     /// Reserved: require Secure AVIC. Not enforced at runtime yet.
     #[mesh(6)]
     pub require_secure_avic: bool,
+
+    /// From the device policy file: the PCI devices that the VPCI relay may
+    /// expose to VTL0.
+    #[mesh(7)]
+    #[cfg_attr(feature = "manifest", serde(skip))]
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    pub allowed_pci_devices: Vec<crate::AllowedPciDevice>,
+
+    /// From the device policy file: fail the boot when the VPCI relay can't
+    /// run, instead of starting without the allowed devices.
+    #[mesh(8)]
+    #[cfg_attr(feature = "manifest", serde(skip))]
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    pub require_vpci_relay: bool,
+
+    /// From the device policy file: the most VPCI devices the relay makes
+    /// room for.
+    #[mesh(9)]
+    #[cfg_attr(feature = "manifest", serde(skip))]
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    pub max_vpci_devices: Option<u16>,
 }
 
 impl crate::uefi_security_policy::UefiSecurityPolicyParams for CwcowPolicy {

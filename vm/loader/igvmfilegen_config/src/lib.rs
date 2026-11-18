@@ -115,13 +115,15 @@ pub enum Image {
         linux: Option<LinuxImage>,
         /// Optional measured product policy. When `Some`, the IGVM
         /// build appends the policy as a file in the measured OpenHCL initrd.
-        /// The manifest schema is the wire schema; see
+        /// The manifest schema is the wire schema, except for the PCI devices,
+        /// which come from `device_policy`; see
         /// [`product_policy`]. We don't gate this property behind a feature
         /// to avoid having multiple igvmfilegen tools with and without the feature.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         product_policy: Option<ProductPolicy>,
         /// Optional device policy file, relative to the manifest: the PCI devices
-        /// that the VPCI relay may expose to VTL0. Without one, it exposes none.
+        /// that the VPCI relay may expose to VTL0, stored in `product_policy`,
+        /// which it requires. Without one, it exposes none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device_policy: Option<PathBuf>,
     },
@@ -496,7 +498,7 @@ mod test {
     }
 
     /// The SIVM manifests must be the VBS configuration of the CVM manifests
-    /// with the SIVM device policy, so they can't drift apart.
+    /// with their own product and device policies, so they can't drift apart.
     #[test]
     fn sivm_manifests_are_cvm_vbs_config_plus_policy() {
         let pairs = [
@@ -510,11 +512,17 @@ mod test {
             ),
         ];
         for (sivm, cvm) in pairs {
+            for manifest in [sivm, cvm] {
+                serde_json::from_str::<Config>(manifest).unwrap();
+            }
             let sivm: serde_json::Value = serde_json::from_str(sivm).unwrap();
             let mut cvm: serde_json::Value = serde_json::from_str(cvm).unwrap();
             let guests = cvm["guest_configs"].as_array_mut().unwrap();
             guests.retain(|guest| guest["isolation_type"]["vbs"].is_object());
-            guests[0]["image"]["openhcl"]["device_policy"] = "policies/sivm.toml".into();
+            for key in ["product_policy", "device_policy"] {
+                guests[0]["image"]["openhcl"][key] =
+                    sivm["guest_configs"][0]["image"]["openhcl"][key].clone();
+            }
             assert_eq!(sivm, cvm);
         }
     }
@@ -669,6 +677,7 @@ mod test {
                     assert_eq!(p.custom_uefi_json, b"deadbeef");
                 }
                 ProductPolicy::Cwcow(p) => panic!("unexpected Cwcow policy: {p:?}"),
+                ProductPolicy::AzureCvm(p) => panic!("unexpected AzureCvm policy: {p:?}"),
             },
             other => panic!("unexpected parse: {other:?}"),
         }

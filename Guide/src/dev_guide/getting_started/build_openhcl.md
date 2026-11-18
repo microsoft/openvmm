@@ -142,7 +142,13 @@ Some examples of potentially useful customization include:
 
 - `--override-manifest`: Override the recipe's `igvmfilegen` manifest file
     via, in order to tweak different kernel command line options, different VTL0
-    boot configuration, or different VTL2 memory sizes.
+    boot configuration, or different VTL2 memory sizes. For example, the SIVM
+    manifests have no recipe of their own, so build a SIVM image from the
+    `x64-cvm` recipe:
+
+    ```bash
+    cargo xflowey build-igvm x64-cvm --override-manifest vm/loader/manifests/openhcl-x64-cvm-sivm-dev.json
+    ```
 
 - `--custom-openvmm-hcl`: Specify a pre-built `openvmm_hcl` binary. This is
     useful in case you have already built it with some custom settings, e.g.:

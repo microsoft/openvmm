@@ -77,20 +77,21 @@ mode described below.
 ### PCI device policy
 
 OpenHCL's VPCI relay offers an isolated guest only the PCI devices that the
-image allows; non-isolated guests aren't filtered. An `openhcl` image in the
-manifest names a device policy file with `device_policy`, relative to the
-manifest:
+image allows; non-isolated guests aren't filtered. An `openhcl` image names a
+device policy file with `device_policy`, relative to the manifest.
+`igvmfilegen` stores the device policy in the image's measured product policy,
+so the image must also name one. The `azure_cvm` product policy holds nothing
+else:
 
 ```json
 "openhcl": {
+    "product_policy": { "azure_cvm": {} },
     "device_policy": "policies/azure-cvm.toml",
     ...
 }
 ```
 
-`igvmfilegen` stores the allowed devices in the measured product policy file
-in the OpenHCL initrd, so the launch measurement covers them. Without a device
-policy, the relay allows an isolated guest no devices.
+Without a device policy, the relay allows an isolated guest no devices.
 
 A device policy names a device catalog, relative to the policy file, and the
 devices it allows. `"*"` allows every device.
@@ -107,12 +108,11 @@ memory for each one.
 
 If the relay can't run, for example on a VBS host without MMIO hypercalls,
 OpenHCL starts without the allowed devices and logs a warning. A policy that
-sets `require_vpci_relay = true` makes it fail to boot with the reason instead.
+sets `require_vpci_relay = true` makes it fail to boot instead.
 
-The catalog defines each device once. A field that is left out matches any
-value, but a device that a policy allows must set at least one of
-`vendor_id`, `device_id`, `revision_id`, `base_class`, `sub_class`, and
-`prog_if`:
+The catalog defines each device once, with any of `vendor_id`, `device_id`,
+`revision_id`, `base_class`, `sub_class`, and `prog_if`. A field that is left
+out matches any value, but an allowed device must set at least one:
 
 ```toml
 [nvme]
@@ -122,9 +122,9 @@ prog_if    = 0x02
 ```
 
 Unknown device names or fields fail the build. The in-tree CVM manifests use
-`vm/loader/manifests/policies/azure-cvm.toml`, which allows NVMe, MANA, and the
-Azure Integrated HSM. The SIVM manifests use `sivm.toml`, which allows NVMe and
-a GPU and requires the relay. The non-isolated manifests name no device policy.
+`policies/azure-cvm.toml`, which allows NVMe, MANA, and the Azure Integrated
+HSM. The SIVM manifests use `policies/sivm.toml`, which allows NVMe and a GPU
+and requires the relay.
 
 ## Inspect an IGVM
 

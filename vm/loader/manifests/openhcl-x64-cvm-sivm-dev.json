@@ -11,6 +11,15 @@
             },
             "image": {
                 "openhcl": {
+                    "product_policy": {
+                        "sivm": {
+                            "require_ephemeral_vmgs": false,
+                            "require_secure_boot": false,
+                            "require_secure_boot_vars": false,
+                            "require_bcd_integrity": false,
+                            "custom_uefi_json": ""
+                        }
+                    },
                     "device_policy": "policies/sivm.toml",
                     "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
                     "memory_page_count": 163840,

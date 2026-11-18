@@ -3,14 +3,18 @@
 
 //! Measured product policy: enum, per-VM value, codec.
 //!
-//! To add a product: define its body in a sibling module, then add
-//! one `N => Variant(body::Body),` line to `define_product_policy!`
-//! below. `N` is a mesh wire tag and must never be reused.
+//! To add a product: define its body in a sibling module, with the
+//! `allowed_pci_devices`, `require_vpci_relay`, and `max_vpci_devices` fields
+//! that the device policy sets, then add one `N => Variant(body::Body),` line
+//! to `define_product_policy!` below. `N` is a mesh wire tag and must never be
+//! reused.
 
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
+/// Azure CVM policy body.
+pub mod azure_cvm;
 /// Cwcow policy body and validation methods.
 pub mod cwcow;
 /// Shared helpers for product policy validation and serialization.
@@ -28,54 +32,24 @@ pub use paste::paste as __paste;
 /// Absolute path of the measured product policy file in the OpenHCL initrd.
 pub const PRODUCT_POLICY_PATH: &str = "/openhcl-product-policy";
 
-/// Per-VM measured product policy and allowed PCI devices.
+/// Per-VM measured product policy.
 ///
-/// A `None` policy means no policy was installed; any `Some(_)` carries the
+/// `None` means no policy was installed; any `Some(_)` carries the
 /// decoded variant body.
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 #[cfg_attr(feature = "inspect", inspect(transparent))]
-pub struct MeasuredProductPolicy {
-    policy: Option<ProductPolicy>,
-    #[cfg_attr(feature = "inspect", inspect(skip))]
-    allowed_pci_devices: Vec<AllowedPciDevice>,
-    #[cfg_attr(feature = "inspect", inspect(skip))]
-    require_vpci_relay: bool,
-    #[cfg_attr(feature = "inspect", inspect(skip))]
-    max_vpci_devices: Option<u16>,
-}
+pub struct MeasuredProductPolicy(Option<ProductPolicy>);
 
 impl MeasuredProductPolicy {
     /// Wrap the decoded policy (or its absence).
     pub fn new(policy: Option<ProductPolicy>) -> Self {
-        Self {
-            policy,
-            allowed_pci_devices: Vec::new(),
-            require_vpci_relay: false,
-            max_vpci_devices: None,
-        }
+        Self(policy)
     }
 
     /// The decoded policy, if any.
     pub fn raw(&self) -> Option<&ProductPolicy> {
-        self.policy.as_ref()
-    }
-
-    /// The PCI devices that OpenHCL's VPCI relay may expose to VTL0.
-    pub fn allowed_pci_devices(&self) -> &[AllowedPciDevice] {
-        &self.allowed_pci_devices
-    }
-
-    /// Whether OpenHCL must fail to boot when it can't run the VPCI relay,
-    /// instead of starting without the allowed devices.
-    pub fn require_vpci_relay(&self) -> bool {
-        self.require_vpci_relay
-    }
-
-    /// The most VPCI devices the relay makes room for, if the device policy
-    /// sets it.
-    pub fn max_vpci_devices(&self) -> Option<u16> {
-        self.max_vpci_devices
+        self.0.as_ref()
     }
 }
 
@@ -84,13 +58,7 @@ struct ProductPolicyInternal {
     #[mesh(1)]
     magic: u64,
     #[mesh(2)]
-    policy: Option<ProductPolicy>,
-    #[mesh(3)]
-    allowed_pci_devices: Vec<AllowedPciDevice>,
-    #[mesh(4)]
-    require_vpci_relay: bool,
-    #[mesh(5)]
-    max_vpci_devices: Option<u16>,
+    policy: ProductPolicy,
 }
 
 impl ProductPolicyInternal {
@@ -161,12 +129,58 @@ macro_rules! define_product_policy {
         }
 
         impl ProductPolicy {
-            /// Lowercased variant name.
+            /// Variant name in snake case, as in manifests.
             pub fn name(&self) -> &'static str {
                 $crate::__paste! {
                     match self {
-                        $( Self::$variant(_) => stringify!([<$variant:lower>]), )+
+                        $( Self::$variant(_) => stringify!([<$variant:snake>]), )+
                     }
+                }
+            }
+
+            /// Sets what the manifest's device policy file allows.
+            pub fn set_device_policy(
+                &mut self,
+                allowed_pci_devices: Vec<$crate::AllowedPciDevice>,
+                require_vpci_relay: bool,
+                max_vpci_devices: Option<u16>,
+            ) {
+                match self {
+                    $(
+                        Self::$variant(p) => {
+                            p.allowed_pci_devices = allowed_pci_devices;
+                            p.require_vpci_relay = require_vpci_relay;
+                            p.max_vpci_devices = max_vpci_devices;
+                        }
+                    )+
+                }
+            }
+        }
+
+        impl $crate::MeasuredProductPolicy {
+            /// The PCI devices that OpenHCL's VPCI relay may expose to VTL0.
+            pub fn allowed_pci_devices(&self) -> &[$crate::AllowedPciDevice] {
+                match self.raw() {
+                    $( Some(ProductPolicy::$variant(p)) => &p.allowed_pci_devices, )+
+                    None => &[],
+                }
+            }
+
+            /// Whether OpenHCL must fail to boot when it can't run the VPCI
+            /// relay, instead of starting without the allowed devices.
+            pub fn require_vpci_relay(&self) -> bool {
+                match self.raw() {
+                    $( Some(ProductPolicy::$variant(p)) => p.require_vpci_relay, )+
+                    None => false,
+                }
+            }
+
+            /// The most VPCI devices the relay makes room for, if the device
+            /// policy sets it.
+            pub fn max_vpci_devices(&self) -> Option<u16> {
+                match self.raw() {
+                    $( Some(ProductPolicy::$variant(p)) => p.max_vpci_devices, )+
+                    None => None,
                 }
             }
         }
@@ -179,7 +193,7 @@ macro_rules! define_product_policy {
                         stringify!($variant),
                         "` body if installed. Closure errors propagate via the outer `Result`; the inner `Option` signals whether the closure ran."
                     )]
-                    pub fn [<$variant:lower>]<T>(
+                    pub fn [<$variant:snake>]<T>(
                         &self,
                         f: impl ::core::ops::FnOnce(&$body) -> ::anyhow::Result<T>,
                     ) -> ::anyhow::Result<::core::option::Option<T>> {
@@ -204,6 +218,9 @@ define_product_policy! {
 
     /// Cwcow.
     2 => Cwcow(cwcow::CwcowPolicy);
+
+    /// Azure CVM.
+    3 => AzureCvm(azure_cvm::AzureCvmPolicy);
 }
 
 // --- Codec ---
@@ -235,28 +252,18 @@ impl core::error::Error for ProductPolicyDecodeError {
     }
 }
 
-/// Encode a policy and device policy as `mesh_protobuf` bytes for the initrd
-/// policy file.
-pub fn encode_product_policy(
-    policy: Option<&ProductPolicy>,
-    allowed_pci_devices: &[AllowedPciDevice],
-    require_vpci_relay: bool,
-    max_vpci_devices: Option<u16>,
-) -> Vec<u8> {
+/// Encode a policy as `mesh_protobuf` bytes for the IGVM payload.
+pub fn encode_product_policy(policy: &ProductPolicy) -> Vec<u8> {
     let policy = ProductPolicyInternal {
         magic: ProductPolicyInternal::MAGIC,
-        policy: policy.cloned(),
-        allowed_pci_devices: allowed_pci_devices.to_vec(),
-        require_vpci_relay,
-        max_vpci_devices,
+        policy: policy.clone(),
     };
     mesh_protobuf::encode(policy)
 }
 
-/// Decode `mesh_protobuf` bytes.
-pub fn decode_product_policy(
-    bytes: &[u8],
-) -> Result<MeasuredProductPolicy, ProductPolicyDecodeError> {
+/// Decode `mesh_protobuf` bytes. Caller must skip empty payloads
+/// (which signal "no policy installed") before calling.
+pub fn decode_product_policy(bytes: &[u8]) -> Result<ProductPolicy, ProductPolicyDecodeError> {
     let data: ProductPolicyInternal =
         mesh_protobuf::decode(bytes).map_err(ProductPolicyDecodeError::Mesh)?;
 
@@ -264,12 +271,7 @@ pub fn decode_product_policy(
         return Err(ProductPolicyDecodeError::BadMagic);
     }
 
-    Ok(MeasuredProductPolicy {
-        policy: data.policy,
-        allowed_pci_devices: data.allowed_pci_devices,
-        require_vpci_relay: data.require_vpci_relay,
-        max_vpci_devices: data.max_vpci_devices,
-    })
+    Ok(data.policy)
 }
 
 pub use uefi_security_policy::UefiSecurityPolicy;

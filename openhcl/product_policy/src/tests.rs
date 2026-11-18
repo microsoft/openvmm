@@ -16,18 +16,23 @@ fn sample_sivm_policy() -> SivmPolicy {
         require_secure_boot_vars: true,
         require_bcd_integrity: true,
         custom_uefi_json: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        ..Default::default()
     }
 }
 
 #[test]
 fn product_policy_name_returns_variant_tag() {
     assert_eq!(ProductPolicy::Sivm(SivmPolicy::default()).name(), "sivm");
+    assert_eq!(
+        ProductPolicy::AzureCvm(Default::default()).name(),
+        "azure_cvm"
+    );
 }
 
 #[test]
 fn encode_decode_round_trip_nontrivial_sivm() {
     let policy = ProductPolicy::Sivm(sample_sivm_policy());
-    let bytes = encode_product_policy(Some(&policy), &[], false, None);
+    let bytes = encode_product_policy(&policy);
     // The encoding is measured, so it must stay the same without devices.
     assert_eq!(
         bytes,
@@ -38,31 +43,7 @@ fn encode_decode_round_trip_nontrivial_sivm() {
         ]
     );
     let decoded = decode_product_policy(&bytes).unwrap();
-    assert_eq!(decoded, MeasuredProductPolicy::new(Some(policy)));
-}
-
-#[test]
-fn encode_decode_round_trip_devices() {
-    let devices = vec![AllowedPciDevice {
-        vendor_id: Some(0x10de),
-        prog_if: Some(0),
-        ..Default::default()
-    }];
-    for policy in [None, Some(ProductPolicy::Sivm(sample_sivm_policy()))] {
-        for (require, max) in [(false, None), (true, Some(8))] {
-            let bytes = encode_product_policy(policy.as_ref(), &devices, require, max);
-            let decoded = decode_product_policy(&bytes).unwrap();
-            assert_eq!(
-                (
-                    decoded.raw(),
-                    decoded.allowed_pci_devices(),
-                    decoded.require_vpci_relay(),
-                    decoded.max_vpci_devices()
-                ),
-                (policy.as_ref(), &devices[..], require, max)
-            );
-        }
-    }
+    assert_eq!(decoded, policy);
 }
 
 #[test]
@@ -77,7 +58,7 @@ fn decode_rejects_garbage() {
 #[test]
 fn decode_rejects_truncated() {
     let policy = ProductPolicy::Sivm(sample_sivm_policy());
-    let mut bytes = encode_product_policy(Some(&policy), &[], false, None);
+    let mut bytes = encode_product_policy(&policy);
     bytes.pop();
     assert!(matches!(
         decode_product_policy(&bytes),
@@ -90,10 +71,7 @@ fn decode_rejects_bad_magic() {
     // A well-formed wrapper whose magic header does not match.
     let internal = ProductPolicyInternal {
         magic: 0,
-        policy: Some(ProductPolicy::Sivm(sample_sivm_policy())),
-        allowed_pci_devices: vec![],
-        require_vpci_relay: false,
-        max_vpci_devices: None,
+        policy: ProductPolicy::Sivm(sample_sivm_policy()),
     };
     let bytes = mesh_protobuf::encode(internal);
     assert!(matches!(
@@ -197,6 +175,7 @@ mod serde_tests {
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
             custom_uefi_json: alloc::vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x00, 0xFF],
+            ..Default::default()
         });
         let json = serde_json::to_string(&original).unwrap();
         let restored: ProductPolicy = from_json(&json).unwrap();
@@ -240,6 +219,12 @@ mod serde_tests {
     fn deserialize_rejects_pascal_case_variant() {
         let err = from_json(r#"{"Sivm":{}}"#);
         assert!(err.is_err(), "expected error, got: {err:?}");
+    }
+
+    /// Devices come only from the device policy file, never the manifest JSON.
+    #[test]
+    fn deserialize_rejects_devices() {
+        assert!(from_json(r#"{"azure_cvm":{"allowed_pci_devices":[]}}"#).is_err());
     }
 }
 

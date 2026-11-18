@@ -32,21 +32,14 @@ fn decode(buf: &[u8]) -> anyhow::Result<MeasuredProductPolicy> {
         .context("product policy decode failed")?;
 
     // Integrity check to ensure we are enforcing the complete policy
-    let devices = policy.allowed_pci_devices();
-    let encoded_len = product_policy::encode_product_policy(
-        policy.raw(),
-        devices,
-        policy.require_vpci_relay(),
-        policy.max_vpci_devices(),
-    )
-    .len();
+    let encoded_len = product_policy::encode_product_policy(&policy).len();
     if encoded_len != buf.len() {
         anyhow::bail!(
             "product policy size mismatch: file has {} bytes, re-encoded {encoded_len} bytes",
             buf.len(),
         );
     }
-    Ok(policy)
+    Ok(MeasuredProductPolicy::new(Some(policy)))
 }
 
 fn validate_uefi_security_policy(
@@ -96,8 +89,7 @@ mod tests {
         });
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("policy");
-        let bytes = product_policy::encode_product_policy(Some(&policy), &[], false, None);
-        fs_err::write(&path, bytes).unwrap();
+        fs_err::write(&path, product_policy::encode_product_policy(&policy)).unwrap();
         assert_eq!(load_from_path(&path).unwrap().raw(), Some(&policy));
     }
 
@@ -107,9 +99,9 @@ mod tests {
             custom_uefi_json: vec![1, 2, 3],
             ..Default::default()
         });
-        let encoded = product_policy::encode_product_policy(Some(&policy), &[], false, None);
+        let encoded = product_policy::encode_product_policy(&policy);
         let mut unknown_field = encoded.clone();
-        unknown_field.extend_from_slice(&[0x30, 1]);
+        unknown_field.extend_from_slice(&[0x18, 1]);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("policy");
         for bytes in [
