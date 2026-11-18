@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 tmk_protocol.workspace = true
 
-aarch64defs.workspace = true
 hvdef.workspace = true
 loader.workspace = true
 guestmem.workspace = true

@@ -8921,7 +8921,6 @@ dependencies = [
 name = "tmk_vmm"
 version = "0.0.0"
 dependencies = [
- "aarch64defs",
  "anyhow",
  "build_rs_guest_arch",
  "clap",
