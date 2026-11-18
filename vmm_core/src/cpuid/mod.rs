@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(
             result,
             [
-                u32::MAX & !HYPERV_HARDWARE_FEATURES_IOMMU_IN_USE_MASK,
+                !HYPERV_HARDWARE_FEATURES_IOMMU_IN_USE_MASK,
                 u32::MAX,
                 u32::MAX,
                 u32::MAX,
