@@ -69,7 +69,8 @@ pub struct DoorbellPage {
 }
 
 impl DoorbellPage {
-    pub(crate) fn null() -> Self {
+    /// Returns a null doorbell page that silently discards all writes.
+    pub fn null() -> Self {
         Self {
             doorbell: Arc::new(NullDoorbell),
             doorbell_id: 0,
@@ -409,7 +410,9 @@ impl Wq {
         (offset as usize * WQE_ALIGNMENT) & self.mask as usize
     }
 
-    /// Reads from the offset, the first `n` bytes.
+    /// Reads from the `offset`, the first `n` bytes.
+    /// The starting `offset` is masked to the ring size. However,
+    /// callers must ensure the read does not extend the end of the ring.
     pub fn read(&mut self, offset: u32, n: usize) -> Vec<u8> {
         let mut buf = vec![0; n];
         let offset_in_buffer = self.get_offset_in_buffer_in_bytes(offset);
