@@ -66,8 +66,7 @@ pub enum ShutdownResult {
     Ok,
     /// The IC is not ready to send shutdown requests.
     NotReady,
-    /// An earlier shutdown request remains in progress, even if its caller
-    /// stopped waiting for the result.
+    /// A shutdown is already in progress.
     AlreadyInProgress,
     /// The shutdown failed with the given error code.
     Failed(u32),
