@@ -219,7 +219,12 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         // pattern.
         let reg_index = iss.srt();
         if iss.ar() {
-            self.inner.cpu.memory_barrier(Ordering::SeqCst);
+            // AR cannot distinguish RCsc from RCpc loads.
+            self.inner.cpu.memory_barrier(if iss.wnr() {
+                Ordering::Release
+            } else {
+                Ordering::SeqCst
+            });
         }
         if iss.wnr() {
             let data = match reg_index {
@@ -253,7 +258,11 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             }
         }
         if iss.ar() {
-            self.inner.cpu.memory_barrier(Ordering::SeqCst);
+            self.inner.cpu.memory_barrier(if iss.wnr() {
+                Ordering::SeqCst
+            } else {
+                Ordering::Acquire
+            });
         }
         Ok(true)
     }

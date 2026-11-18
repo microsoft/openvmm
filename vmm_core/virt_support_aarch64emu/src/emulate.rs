@@ -1351,7 +1351,7 @@ mod tests {
                         assert_eq!(
                             support.barriers,
                             if ordered {
-                                vec![Ordering::SeqCst, Ordering::SeqCst]
+                                vec![Ordering::Release, Ordering::SeqCst]
                             } else {
                                 vec![]
                             }

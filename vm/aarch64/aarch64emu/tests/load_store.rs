@@ -1202,6 +1202,61 @@ async fn atomics_use_operand_width_and_ldapr_is_read_only() {
 }
 
 #[async_test]
+async fn atomic_barriers_follow_effective_acquire_release() {
+    for (acquire, release, rt, barriers) in [
+        (false, false, 2, &[][..]),
+        (
+            true,
+            false,
+            2,
+            &[(0, Ordering::SeqCst), (1, Ordering::Acquire)][..],
+        ),
+        (
+            false,
+            true,
+            2,
+            &[(0, Ordering::Release), (1, Ordering::SeqCst)][..],
+        ),
+        (
+            true,
+            true,
+            2,
+            &[(0, Ordering::SeqCst), (1, Ordering::SeqCst)][..],
+        ),
+        (true, false, 31, &[][..]),
+        (
+            true,
+            true,
+            31,
+            &[(0, Ordering::Release), (1, Ordering::SeqCst)][..],
+        ),
+    ] {
+        let mut cpu = SingleCellCpu {
+            valid_gva: 0x100,
+            ..Default::default()
+        };
+        cpu.update_x(0, 3);
+        cpu.update_x(1, 0x100);
+        *cpu.mem_val.lock().await = 41;
+        let intercept = InterceptState {
+            instruction_bytes: ldadd(3, acquire, release, 0, 1, rt).to_le_bytes(),
+            instruction_byte_count: 4,
+            ..Default::default()
+        };
+        Emulator::new(&mut cpu, &intercept).run().await.unwrap();
+        assert_eq!(
+            cpu.barriers, barriers,
+            "acquire={acquire}, release={release}, rt={rt}"
+        );
+        assert_eq!(*cpu.mem_val.lock().await, 44);
+        if rt != 31 {
+            assert_eq!(cpu.x(rt), 41);
+        }
+        assert_eq!(cpu.pc(), 4);
+    }
+}
+
+#[async_test]
 async fn atomic_alignment_and_retry_leave_registers_untouched() {
     let mut cpu = SingleCellCpu {
         valid_gva: 0x101,
@@ -1263,7 +1318,7 @@ async fn syndrome_zero_register_still_reads_and_errors_do_not_retry() {
             if fail {
                 vec![(0, Ordering::SeqCst)]
             } else {
-                vec![(0, Ordering::SeqCst), (1, Ordering::SeqCst)]
+                vec![(0, Ordering::SeqCst), (1, Ordering::Acquire)]
             }
         );
         assert_eq!(cpu.pc(), if fail { 0 } else { 4 });
@@ -1389,7 +1444,14 @@ async fn ordered_register_encodings_transfer_values_and_store_widths() {
                         )]
                     );
                     assert!(cpu.comparisons.is_empty());
-                    assert_eq!(cpu.barriers, [(0, Ordering::SeqCst), (1, Ordering::SeqCst)]);
+                    assert_eq!(
+                        cpu.barriers,
+                        if load {
+                            [(0, Ordering::SeqCst), (1, Ordering::Acquire)]
+                        } else {
+                            [(0, Ordering::Release), (1, Ordering::SeqCst)]
+                        }
+                    );
                     assert_eq!(cpu.sp(), 0x100);
                     assert_eq!(cpu.pc(), 4);
                 }
@@ -1470,6 +1532,7 @@ async fn ordered_unscaled_encodings_transfer_signed_values_and_store_widths() {
         Emulator::new(&mut cpu, &intercept).run().await.unwrap();
         assert_eq!(cpu.x(0), expected, "{opcode:x}");
         assert_eq!(cpu.accesses, [(0x100, size, AccessKind::Read)]);
+        assert_eq!(cpu.barriers, [(1, Ordering::Acquire)]);
         assert!(cpu.comparisons.is_empty());
         assert_eq!(cpu.pc(), 4);
     }
@@ -1487,6 +1550,10 @@ async fn ordered_unscaled_encodings_transfer_signed_values_and_store_widths() {
     Emulator::new(&mut cpu, &intercept).run().await.unwrap();
     assert_eq!(*cpu.mem_val.lock().await, 0x1234_5678);
     assert_eq!(cpu.accesses, [(0x100, 4, AccessKind::Write)]);
+    assert_eq!(
+        cpu.barriers,
+        [(0, Ordering::Release), (1, Ordering::SeqCst)]
+    );
     assert_eq!(cpu.pc(), 4);
 }
 

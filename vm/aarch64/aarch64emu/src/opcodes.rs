@@ -404,21 +404,26 @@ impl LoadStoreRegister {
             op_group,
             Aarch64DecodeLoadStoreGroup::Ordered | Aarch64DecodeLoadStoreGroup::UnscaledImmediate
         );
+        let is_store = self.opc() == 0;
         // Relaxing this requires the guest's LSE2 capability and effective
         // memory attributes, which the backend does not currently expose.
         if ordered && !address.is_multiple_of(1 << self.size()) {
             return Err(Box::new(Error::InstructionException(
                 aarch64defs::IssDataAbort::new()
                     .with_dfsc(aarch64defs::FaultStatusCode::ALIGNMENT_FAULT)
-                    .with_wnr(self.opc() == 0)
+                    .with_wnr(is_store)
                     .into(),
                 address,
             )));
         }
-        // Full barriers preserve Store-Release -> Load-Acquire ordering even
-        // when an adjacent access executes natively.
+        // Full barriers before RCsc loads and after release stores preserve
+        // ordering with native accesses. RCpc loads need no leading barrier.
         if ordered {
-            emulate.cpu.memory_barrier(Ordering::SeqCst);
+            if is_store {
+                emulate.cpu.memory_barrier(Ordering::Release);
+            } else if matches!(op_group, Aarch64DecodeLoadStoreGroup::Ordered) {
+                emulate.cpu.memory_barrier(Ordering::SeqCst);
+            }
         }
         tracing::trace!(
             ?op_group,
@@ -536,7 +541,11 @@ impl LoadStoreRegister {
             _ => return Err(Box::new(Error::UnsupportedInstruction(self.0))),
         }
         if ordered {
-            emulate.cpu.memory_barrier(Ordering::SeqCst);
+            emulate.cpu.memory_barrier(if is_store {
+                Ordering::SeqCst
+            } else {
+                Ordering::Acquire
+            });
         }
         if matches!(
             op_group,
@@ -766,15 +775,19 @@ impl LoadStoreAtomic {
         };
         let rt = self.rt();
         let rs = self.rs();
-        let ordered =
-            !load_only && (self.0 & (1 << 22) != 0 || self.0 & (1 << 23) != 0 && rt != 31);
+        let acquire = !load_only && self.0 & (1 << 23) != 0 && rt != 31;
+        let release = !load_only && self.0 & (1 << 22) != 0;
         let update_val = if rs != 31 {
             emulate.cpu.x(rs) & size_mask
         } else {
             0
         };
-        if ordered {
+        // MMIO and monitor backends need not execute an ordered compare-exchange.
+        // Preserve release -> acquire ordering with adjacent native accesses.
+        if acquire {
             emulate.cpu.memory_barrier(Ordering::SeqCst);
+        } else if release {
+            emulate.cpu.memory_barrier(Ordering::Release);
         }
         // Retry with fresh data on contention, but give control back after a
         // bounded number of attempts without advancing PC or updating Rt.
@@ -836,8 +849,10 @@ impl LoadStoreAtomic {
                     Error::MemoryAccess(address, crate::emulator::OperationKind::Write, e)
                 })?;
             if success {
-                if ordered {
+                if release {
                     emulate.cpu.memory_barrier(Ordering::SeqCst);
+                } else if acquire {
+                    emulate.cpu.memory_barrier(Ordering::Acquire);
                 }
                 if rt != 31 {
                     emulate.cpu.update_x(rt, sized_value);
