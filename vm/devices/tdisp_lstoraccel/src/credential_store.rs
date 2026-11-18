@@ -80,7 +80,10 @@ mod persisted {
         /// Format version. Only version 1 is currently supported.
         #[mesh(1)]
         pub(super) version: u32,
-        /// Required count; detects truncation before or between complete records.
+        /// Expected number of records. Protobuf can decode a truncated blob
+        /// ending between complete records, so the vector's length alone cannot
+        /// detect missing records. The count must be present, including zero
+        /// for an empty collection.
         #[mesh(2)]
         pub(super) record_count: Option<u32>,
         /// Namespace credentials, limited by [`super::MAX_CREDENTIALS`].
@@ -173,14 +176,18 @@ fn deserialize_credential_store(
     if bytes.len() > MAX_STORE_SIZE {
         return Err(Error::InvalidData("credential store exceeds maximum size"));
     }
+
     let collection: CredentialCollection = mesh_protobuf::decode(bytes)
         .map_err(|_| Error::InvalidData("malformed credential store"))?;
+
     if collection.version != STORE_VERSION {
         return Err(Error::UnsupportedVersion(collection.version));
     }
+
     if collection.records.len() > MAX_CREDENTIALS {
         return Err(Error::InvalidData("too many credential records"));
     }
+
     let record_count = collection
         .record_count
         .ok_or(Error::InvalidData("missing credential record count"))?;
@@ -212,6 +219,11 @@ fn deserialize_credential_store(
 fn serialize_credential_store(
     state: &BTreeMap<NamespaceCredentialKey, [u8; CREDENTIAL_LEN]>,
 ) -> Vec<u8> {
+    assert!(
+        state.len() <= MAX_CREDENTIALS,
+        "credential count exceeds maximum"
+    );
+
     let records: Vec<_> = state
         .iter()
         .map(|(key, credential)| CredentialRecord {
@@ -354,14 +366,6 @@ mod tests {
             store.put(&new_key, &new_credential).await,
             Err(CredentialStoreError::OutOfSpace)
         ));
-        // Bypass put's record-count limit to exercise the encoded-size guard.
-        let oversized_state = (1..=(MAX_STORE_SIZE / CREDENTIAL_LEN + 1) as u32)
-            .map(|index| (key(index), [0; CREDENTIAL_LEN]))
-            .collect();
-        assert!(matches!(
-            store.flush(oversized_state).await,
-            Err(CredentialStoreError::OutOfSpace)
-        ));
         assert_eq!(store.store.restore().await.unwrap(), before);
         assert!(store.get(&new_key).is_none());
         for index in 1..=MAX_CREDENTIALS as u32 {
@@ -375,6 +379,20 @@ mod tests {
         for index in 2..=MAX_CREDENTIALS as u32 {
             assert_eq!(store.get(&key(index)), Some(&[index as u8; CREDENTIAL_LEN]));
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "credential count exceeds maximum")]
+    fn serializing_too_many_credentials_panics() {
+        let state = (1..=MAX_CREDENTIALS as u32 + 1)
+            .map(|nsid| {
+                (
+                    NamespaceCredentialKey { vsn: [1; 20], nsid },
+                    [0; CREDENTIAL_LEN],
+                )
+            })
+            .collect();
+        serialize_credential_store(&state);
     }
 
     #[test]
