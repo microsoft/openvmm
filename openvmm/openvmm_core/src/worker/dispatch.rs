@@ -1518,6 +1518,14 @@ impl InitializedVm {
                 extended_ioapic_rte,
                 confidential_vmbus,
             ));
+            #[cfg(guest_arch = "x86_64")]
+            if cfg
+                .pcie_root_complexes
+                .iter()
+                .any(|rc| matches!(rc.iommu, Some(PcieIommuConfig::IntelVtd)))
+            {
+                cpuid.push(vmm_core::cpuid::hyperv_guest_managed_iommu_leaf());
+            }
         }
 
         let (partition, vps) = proto

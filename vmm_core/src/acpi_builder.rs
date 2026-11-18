@@ -1012,7 +1012,10 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         (f)(&acpi::builder::Table::new_dyn(
             dmar::DMAR_REVISION,
             None,
-            &dmar::Dmar::new(haw, dmar::DMAR_FLAGS_INTR_REMAP),
+            &dmar::Dmar::new(
+                haw,
+                dmar::DMAR_FLAGS_INTR_REMAP | dmar::DMAR_FLAGS_DMA_CTRL_PLATFORM_OPT_IN,
+            ),
             &[dmar_extra.as_slice()],
         ))
     }
@@ -2782,8 +2785,8 @@ mod test {
         let body_offset = 36;
         // HAW = 47 (48-1)
         assert_eq!(dmar[body_offset], 47);
-        // Flags: INTR_REMAP = 0x01
-        assert_eq!(dmar[body_offset + 1], 0x01);
+        // Flags: INTR_REMAP | DMA_CTRL_PLATFORM_OPT_IN = 0x05
+        assert_eq!(dmar[body_offset + 1], 0x05);
 
         // DRHD structure starts at offset 48 (36 header + 12 body)
         let drhd_offset = 48;
