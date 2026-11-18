@@ -64,7 +64,6 @@ pub mod fs {
         HostFs {
             root_path: String,
             mount_options: String,
-            #[mesh(4)]
             windows_options: Option<VirtioFsWindowsOptions>,
         },
         SectionFs {

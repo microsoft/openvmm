@@ -1152,7 +1152,7 @@ message VirtioFs {
     string root_path = 2;
     bool read_only = 3;
     // Host-specific virtio-fs options. Omit on non-Windows hosts.
-    WindowsOptions windows_options = 5;
+    WindowsOptions windows_options = 4;
 
     message WindowsOptions {
         // Name of an access token registered with the resource-passing
