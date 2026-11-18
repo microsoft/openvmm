@@ -232,7 +232,7 @@ impl ChangeDeviceState for Rtc {
     async fn reset(&mut self) {
         self.state = RtcState::new(self.initial_cmos);
 
-        self.update_timers();
+        self.update_timers(false);
         self.sync_interrupt_line_level();
     }
 }
@@ -418,8 +418,11 @@ impl Rtc {
         alarm_duration
     }
 
-    fn set_alarm_timer(&mut self, now: VmTime) {
-        self.sync_clock_to_cmos();
+    /// Arm the alarm timer from the current time. `update` is set when the
+    /// guest sets the alarm, to read the time with `get_time_for_update`, so
+    /// that the alarm isn't scheduled from a time that is behind.
+    fn set_alarm_timer(&mut self, now: VmTime, update: bool) {
+        self.sync_clock_to_cmos_inner(update);
         let alarm_duration = self.calculate_alarm_duration();
 
         self.vmtime_alarm
@@ -433,7 +436,7 @@ impl Rtc {
         self.signal_interrupt();
 
         // re-arm the alarm timer
-        self.set_alarm_timer(now)
+        self.set_alarm_timer(now, false)
     }
 
     fn set_periodic_timer(&mut self) {
@@ -503,13 +506,13 @@ impl Rtc {
     }
 
     /// Synchronize vmtime-backed timers with current timer / alarm register
-    /// configuration.
-    fn update_timers(&mut self) {
+    /// configuration. `update` is set on a guest write.
+    fn update_timers(&mut self, update: bool) {
         let status_b = StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]);
 
         if status_b.irq_enable_alarm() {
             if self.vmtime_alarm.get_timeout().is_none() {
-                self.set_alarm_timer(self.vmtime_alarm.now())
+                self.set_alarm_timer(self.vmtime_alarm.now(), update)
             }
         } else {
             self.vmtime_alarm.cancel_timeout();
@@ -562,7 +565,7 @@ impl Rtc {
 
                 if addr.depends_on_alarm() || addr.depends_on_rtc(self.century_reg) {
                     if self.vmtime_alarm.get_timeout().is_some() {
-                        self.set_alarm_timer(self.vmtime_alarm.now());
+                        self.set_alarm_timer(self.vmtime_alarm.now(), true);
                     }
                 }
             }
@@ -612,7 +615,7 @@ impl Rtc {
                 // update bit is read-only
                 self.state.cmos[CmosReg::STATUS_A] = data & 0x7F;
 
-                self.update_timers();
+                self.update_timers(true);
             }
             CmosReg::STATUS_B => {
                 let mut new_reg = StatusRegB::from(data);
@@ -625,7 +628,7 @@ impl Rtc {
 
                 self.state.cmos[CmosReg::STATUS_B] = new_reg.into();
 
-                self.update_timers();
+                self.update_timers(true);
                 self.sync_interrupt_line_level();
             }
             // The AMI BIOS, in all its great wisdom, writes to these read-only registers.
@@ -942,7 +945,7 @@ mod save_restore {
                 cmos: CmosData(cmos),
             };
 
-            self.update_timers();
+            self.update_timers(false);
             self.sync_interrupt_line_level();
 
             Ok(())
@@ -1174,8 +1177,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn partial_write_uses_time_read_for_update() {
+    fn new_stale_rtc() -> (
+        pal_async::DefaultPool,
+        vmcore::vmtime::VmTimeKeeper,
+        Arc<Mutex<Option<LocalClockTime>>>,
+        Rtc,
+    ) {
         let mut pool = pal_async::DefaultPool::new();
         let driver = pool.driver();
         let vm_time_keeper = vmcore::vmtime::VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
@@ -1183,7 +1190,7 @@ mod tests {
             .run_until(vm_time_keeper.builder().build(&driver))
             .unwrap();
         let set = Arc::new(Mutex::new(None));
-        let mut rtc = Rtc::new(
+        let rtc = Rtc::new(
             Box::new(StaleClock { set: set.clone() }),
             LineInterrupt::detached(),
             &vm_time_source,
@@ -1191,6 +1198,12 @@ mod tests {
             None,
             false,
         );
+        (pool, vm_time_keeper, set, rtc)
+    }
+
+    #[test]
+    fn partial_write_uses_time_read_for_update() {
+        let (_pool, _vm_time_keeper, set, mut rtc) = new_stale_rtc();
 
         // Write the seconds only: the other fields come from the time read for
         // the update.
@@ -1202,6 +1215,41 @@ mod tests {
             (change.as_millis() - 3_600_000).abs() < 60_000,
             "{change:?}"
         );
+    }
+
+    #[test]
+    fn alarm_uses_time_read_for_update() {
+        use vmcore::save_restore::SaveRestore;
+
+        let (mut pool, _vm_time_keeper, _, mut rtc) = new_stale_rtc();
+        let alarm_in = |rtc: &Rtc| {
+            rtc.vmtime_alarm
+                .get_timeout()
+                .unwrap()
+                .checked_sub(rtc.vmtime_alarm.now())
+                .unwrap()
+        };
+
+        // The time read for an update is 23:13:20. Setting an alarm a minute
+        // later schedules it from that time, not from the hour before, and so
+        // does changing it.
+        set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06);
+        set_cmos_data(&mut rtc, CmosReg::HOUR_ALARM, 23);
+        set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, 14);
+        set_cmos_data(&mut rtc, CmosReg::SECOND_ALARM, 20);
+        set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x26);
+        assert_eq!(alarm_in(&rtc), Duration::from_secs(60));
+        set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, 15);
+        assert_eq!(alarm_in(&rtc), Duration::from_secs(120));
+
+        // Restoring and re-arming after the alarm fires read the time as
+        // usual.
+        let state = SaveRestore::save(&mut rtc).unwrap();
+        pool.run_until(rtc.reset());
+        SaveRestore::restore(&mut rtc, state).unwrap();
+        assert_eq!(alarm_in(&rtc), Duration::from_secs(3720));
+        rtc.on_alarm_timer(rtc.vmtime_alarm.now());
+        assert_eq!(alarm_in(&rtc), Duration::from_secs(3720));
     }
 
     fn set_cmos_data(rtc: &mut Rtc, addr: CmosReg, data: u8) {

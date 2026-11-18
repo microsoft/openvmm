@@ -84,10 +84,10 @@ pub trait LocalClock: Send {
     fn get_time(&mut self) -> LocalClockTime;
 
     /// Return the current clock time, to set the time from it with some
-    /// fields changed.
+    /// fields changed, or to schedule an alarm from it.
     ///
     /// Unlike `get_time`, this may wait for an up-to-date time, since the
-    /// fields that aren't changed are set too.
+    /// fields that aren't changed are set too, and the alarm would be late.
     fn get_time_for_update(&mut self) -> LocalClockTime {
         self.get_time()
     }
