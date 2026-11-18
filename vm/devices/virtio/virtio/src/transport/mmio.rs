@@ -221,7 +221,9 @@ impl VirtioMmioDevice {
                 .queues
                 .get(queue_select)
                 .map_or(0, |qd| (qd.params.used_addr >> 32) as u32),
-            VirtioMmioRegister::CONFIG_GENERATION => self.core.config_generation as u32,
+            VirtioMmioRegister::CONFIG_GENERATION => {
+                self.core.config_generation.generation() as u32
+            }
             _ => 0xffffffff,
         }
     }
