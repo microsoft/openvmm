@@ -19,10 +19,12 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
 use pal_async::wait::PolledWait;
+use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
 use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use task_control::AsyncRun;
@@ -30,6 +32,7 @@ use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
 use unicycle::FuturesUnordered;
+use virtio::ConfigGeneration;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
 use virtio::QueueResources;
@@ -62,7 +65,8 @@ pub struct VirtioBlkDevice {
     workers: Vec<QueueWorker>,
     read_only: bool,
     supports_discard: bool,
-    config: VirtioBlkConfig,
+    config: Arc<Mutex<VirtioBlkConfig>>,
+    config_generation: ConfigGeneration,
 }
 
 impl InspectMut for VirtioBlkDevice {
@@ -93,6 +97,9 @@ struct QueueWorker {
 #[derive(InspectMut)]
 struct BlkWorker {
     disk: Disk,
+    #[inspect(skip)]
+    config: Arc<Mutex<VirtioBlkConfig>>,
+    config_generation: ConfigGeneration,
     read_only: bool,
     io_depth: u16,
     serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
@@ -185,6 +192,11 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
     ) -> Result<(), task_control::Cancelled> {
         let check = stop.check_handle()?;
         stop.until_stopped(async {
+            let disk = self.disk.clone();
+            let mut sector_count = disk.sector_count();
+            self.publish_capacity();
+            let mut resize = std::pin::pin!(disk.wait_resize(sector_count));
+
             // Set once the queue can no longer produce work, because the guest
             // violated the queue protocol. Fetching stops, but in-flight IOs
             // keep draining so their descriptors are still completed; the
@@ -194,11 +206,15 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
             while !(queue_done && self.ios.is_empty()) {
                 check.check()?;
                 enum Event {
+                    Resize(u64),
                     NewWork(Result<VirtioQueueCallbackWork, std::io::Error>),
                     Completed(IoCompletion),
                 }
 
                 let event = poll_fn(|cx| {
+                    if let Poll::Ready(sector_count) = resize.as_mut().poll(cx) {
+                        return Poll::Ready(Event::Resize(sector_count));
+                    }
                     // Poll for completed IOs first to free up slots.
                     if let Poll::Ready(Some(completion)) = self.ios.poll_next_unpin(cx) {
                         return Poll::Ready(Event::Completed(completion));
@@ -215,6 +231,11 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                 .await;
 
                 match event {
+                    Event::Resize(new_count) => {
+                        sector_count = new_count;
+                        self.publish_capacity();
+                        resize.set(disk.wait_resize(sector_count));
+                    }
                     Event::NewWork(Ok(work)) => {
                         let disk = self.disk.clone();
                         let mem = state.memory.clone();
@@ -241,6 +262,16 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
             Ok(())
         })
         .await?
+    }
+}
+
+impl BlkWorker {
+    fn publish_capacity(&self) {
+        self.config_generation.update(|| {
+            let mut config = self.config.lock();
+            let capacity = self.disk.sector_count() * (u64::from(self.disk.sector_size()) / 512);
+            std::mem::replace(&mut config.capacity, capacity) != capacity
+        });
     }
 }
 
@@ -340,12 +371,16 @@ impl VirtioBlkDevice {
             _padding: [0; 4],
         };
 
+        let config = Arc::new(Mutex::new(config));
+        let config_generation = ConfigGeneration::default();
         let supports_discard = disk.unmap_behavior() != disk_backend::UnmapBehavior::Ignored;
 
         let workers = (0..options.queue_count)
             .map(|_| QueueWorker {
                 worker: TaskControl::new(BlkWorker {
                     disk: disk.clone(),
+                    config: config.clone(),
+                    config_generation: config_generation.clone(),
                     read_only,
                     io_depth: options.io_depth,
                     serial,
@@ -361,6 +396,7 @@ impl VirtioBlkDevice {
             read_only,
             supports_discard,
             config,
+            config_generation,
         })
     }
 }
@@ -390,7 +426,8 @@ impl VirtioDevice for VirtioBlkDevice {
         if self.read_only {
             features |= VIRTIO_BLK_F_RO;
         }
-        if self.config.num_queues > 1 {
+        let num_queues = self.config.lock().num_queues;
+        if num_queues > 1 {
             features |= VIRTIO_BLK_F_MQ;
         }
         if self.supports_discard {
@@ -407,18 +444,23 @@ impl VirtioDevice for VirtioBlkDevice {
                 .with_ring_event_idx(true)
                 .with_ring_indirect_desc(true)
                 .with_ring_packed(true),
-            max_queues: self.config.num_queues,
+            max_queues: num_queues,
             // Config space is 60 bytes (size_of minus 4 bytes of struct padding).
             device_register_length: (size_of::<VirtioBlkConfig>() - 4) as u32,
             shared_memory: DeviceTraitsSharedMemory::default(),
         }
     }
 
+    fn config_generation_handle(&self) -> Option<ConfigGeneration> {
+        Some(self.config_generation.clone())
+    }
+
     async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         // The transport reads the device config space as a sequence of u32s.
         // We serialize VirtioBlkConfig to bytes and return the requested
         // 4-byte window. Three cases:
-        let config_bytes = self.config.as_bytes();
+        let config = self.config.lock();
+        let config_bytes = config.as_bytes();
         let offset = offset as usize;
         if offset + 4 <= config_bytes.len() {
             // Normal case: full u32 within bounds.
