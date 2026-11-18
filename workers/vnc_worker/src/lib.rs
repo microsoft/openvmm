@@ -124,6 +124,8 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                 max_clients: self.max_clients,
                 evict_oldest: self.evict_oldest,
                 tile_size: self.tile_size,
+                #[cfg(test)]
+                dirty_batch_send: None,
             };
 
             let rpc = loop {
@@ -241,6 +243,8 @@ struct MultiClientServer<T: Listener> {
     /// Dirty-tracking tile size, resolved to pixels for each client's
     /// `UpdateState`.
     tile_size: VncTileSize,
+    #[cfg(test)]
+    dirty_batch_send: Option<std::sync::mpsc::Sender<tests::DirtyBatchEvent>>,
 }
 
 impl<T: Listener> MultiClientServer<T> {
@@ -443,6 +447,18 @@ impl<T: Listener> MultiClientServer<T> {
                         for s in &mut self.dirty_senders {
                             s.missed_dirty.store(true, Ordering::Relaxed);
                         }
+                    }
+                    #[cfg(test)]
+                    if let Some(send) = &self.dirty_batch_send {
+                        let _ = send.send(tests::DirtyBatchEvent {
+                            messages: batch.messages,
+                            overflowed_clients: self
+                                .dirty_senders
+                                .iter()
+                                .filter(|s| s.missed_dirty.load(Ordering::Relaxed))
+                                .map(|s| s.id)
+                                .collect(),
+                        });
                     }
                 }
             }
@@ -844,7 +860,14 @@ mod tests {
         /// device (with_dirty=false), so `updates_needed_recv` stays open.
         _updates_needed_send: Option<mesh::Sender<bool>>,
         stop_send: Option<mesh::OneshotSender<()>>,
+        dirty_batch_recv: Option<std::sync::mpsc::Receiver<DirtyBatchEvent>>,
+        done_recv: std::sync::mpsc::Receiver<()>,
         join: Option<JoinHandle<anyhow::Result<()>>>,
+    }
+
+    pub(super) struct DirtyBatchEvent {
+        pub(super) messages: usize,
+        pub(super) overflowed_clients: Vec<u64>,
     }
 
     impl WorkerServer {
@@ -853,6 +876,9 @@ mod tests {
                 stop.send(());
             }
             if let Some(join) = self.join.take() {
+                self.done_recv
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("VNC worker did not stop");
                 let result = join.join().unwrap();
                 assert!(result.is_ok(), "{result:?}");
             }
@@ -884,6 +910,9 @@ mod tests {
         evict_oldest: bool,
     ) -> WorkerServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        socket2::SockRef::from(&listener)
+            .set_send_buffer_size(64 * 1024)
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         let vram = alloc_shared_memory(FRAMEBUFFER_SIZE, "vnc-worker-test").unwrap();
@@ -919,9 +948,11 @@ mod tests {
             (None, None, Some(updates_needed_send))
         };
         let (stop_send, stop_recv) = mesh::oneshot();
+        let (dirty_batch_send, dirty_batch_recv) = std::sync::mpsc::channel();
+        let (done_send, done_recv) = std::sync::mpsc::channel();
 
         let join = thread::spawn(move || {
-            block_with_io(async |driver| -> anyhow::Result<()> {
+            let result = block_with_io(async |driver| -> anyhow::Result<()> {
                 let mut server = MultiClientServer {
                     listener: PolledSocket::new(&driver, listener)?,
                     view: Arc::new(Mutex::new(ViewWrapper(access.view().unwrap()))),
@@ -934,13 +965,16 @@ mod tests {
                     max_clients,
                     evict_oldest,
                     tile_size: VncTileSize::Tile16,
+                    dirty_batch_send: Some(dirty_batch_send),
                 };
 
                 futures::select! {
                     result = server.process(&driver).fuse() => result,
                     _ = stop_recv.fuse() => Ok(()),
                 }
-            })
+            });
+            let _ = done_send.send(());
+            result
         });
 
         WorkerServer {
@@ -952,6 +986,8 @@ mod tests {
             updates_needed_recv,
             _updates_needed_send: updates_needed_keepalive,
             stop_send: Some(stop_send),
+            dirty_batch_recv: Some(dirty_batch_recv),
+            done_recv,
             join: Some(join),
         }
     }
@@ -1057,6 +1093,139 @@ mod tests {
 
         drop(client1);
         drop(client2);
+        server.stop();
+    }
+
+    #[test]
+    fn e2e_stalled_client_does_not_block_updates_and_recovers_after_overflow() {
+        const WIDTH: usize = 1024;
+        const HEIGHT: usize = 1024;
+        let mut server = start_server(WIDTH as u16, HEIGHT as u16, true);
+        let mut slow = Client::connect(server.addr);
+        socket2::SockRef::from(&slow.stream)
+            .set_recv_buffer_size(64 * 1024)
+            .unwrap();
+        let mut healthy = Client::connect(server.addr);
+        healthy.send_update_request(false);
+        let initial = healthy.read_update();
+        assert_eq!(initial.len(), 1);
+        let mut healthy_pixels = initial[0].payload.clone();
+        let mut expected = vec![0; WIDTH * HEIGHT * 4];
+        assert_eq!(healthy_pixels, expected);
+
+        slow.send_update_request(false);
+        // Consume only the headers. The 4 MiB raw payload cannot fit in the
+        // bounded socket buffers while this client stops reading.
+        let mut header = [0; 16];
+        slow.stream.read_exact(&mut header).unwrap();
+        assert_eq!(&header[..4], &[0, 0, 0, 1]);
+        assert_eq!(&header[12..], &[0; 4]);
+
+        let producer_stop = Arc::new(AtomicBool::new(false));
+        let current_round = Arc::new(std::sync::atomic::AtomicU16::new(0));
+        let producer = {
+            let stop = producer_stop.clone();
+            let current_round = current_round.clone();
+            let send = server.dirty_send.as_ref().unwrap().clone();
+            let recv = server.dirty_batch_recv.take().unwrap();
+            thread::spawn(move || {
+                let mut saw_slow_overflow = false;
+                while !stop.load(Ordering::Relaxed) {
+                    let coordinate = 20 + i32::from(current_round.load(Ordering::Relaxed)) * 16;
+                    let messages = MAX_DIRTY_MESSAGES_PER_BATCH * 2 + 1;
+                    for _ in 0..messages {
+                        send.send(vec![DirtyRect {
+                            left: coordinate,
+                            top: coordinate,
+                            right: coordinate + 1,
+                            bottom: coordinate + 1,
+                        }]);
+                    }
+                    // Bound the producer backlog, but keep producing while the
+                    // healthy client receives frames and sends input.
+                    let mut consumed = 0;
+                    while consumed < messages {
+                        let event = recv
+                            .recv_timeout(Duration::from_secs(10))
+                            .expect("VNC worker stopped draining dirty messages");
+                        assert!(event.messages <= MAX_DIRTY_MESSAGES_PER_BATCH);
+                        consumed += event.messages;
+                        saw_slow_overflow |= event.overflowed_clients.contains(&0);
+                    }
+                    assert_eq!(consumed, messages);
+                }
+                saw_slow_overflow
+            })
+        };
+        for round in 0..8u16 {
+            let x = 20 + round * 16;
+            let y = 20 + round * 16;
+            let color = pixel(round as u8 + 1, 0x34, 0x56);
+            let offset = (y as usize * WIDTH + x as usize) * 4;
+            server.vram.write_at(offset, &color).unwrap();
+            expected[offset..offset + 4].copy_from_slice(&color);
+            current_round.store(round, Ordering::Relaxed);
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                healthy.send_update_request(true);
+                for rect in healthy.read_update() {
+                    assert_eq!(rect.encoding, EncodingType::RAW);
+                    for row in 0..rect.height as usize {
+                        let start = ((rect.y as usize + row) * WIDTH + rect.x as usize) * 4;
+                        let len = rect.width as usize * 4;
+                        let src = row * len;
+                        healthy_pixels[start..start + len]
+                            .copy_from_slice(&rect.payload[src..src + len]);
+                    }
+                }
+                if healthy_pixels == expected {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "healthy client did not receive current pixels"
+                );
+            }
+
+            healthy.send_pointer_event(1, WIDTH as u16 - 1, HEIGHT as u16 - 1);
+            let event = block_with_io(async |driver| {
+                let mut timer = PolledTimer::new(&driver);
+                futures::select! {
+                    event = server.input_recv.recv().fuse() => event.unwrap(),
+                    _ = timer.sleep(Duration::from_secs(10)).fuse() => {
+                        panic!("healthy client input was blocked");
+                    }
+                }
+            });
+            assert!(matches!(
+                event,
+                InputData::Mouse(MouseData {
+                    button_mask: 1,
+                    x: 0x7fff,
+                    y: 0x7fff,
+                })
+            ));
+        }
+        producer_stop.store(true, Ordering::Relaxed);
+        assert!(
+            producer.join().unwrap(),
+            "slow client never exercised overflow"
+        );
+
+        let mut old_pixels = vec![0; WIDTH * HEIGHT * 4];
+        slow.stream.read_exact(&mut old_pixels).unwrap();
+        assert!(old_pixels.iter().all(|&b| b == 0));
+        slow.send_update_request(true);
+        let recovered = slow.read_update();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].encoding, EncodingType::RAW);
+        assert_eq!((recovered[0].x, recovered[0].y), (0, 0));
+        assert_eq!(recovered[0].width as usize, WIDTH);
+        assert_eq!(recovered[0].height as usize, HEIGHT);
+        assert_eq!(recovered[0].payload, expected);
+
+        // Shutdown must not require either connected client to disconnect.
         server.stop();
     }
 
