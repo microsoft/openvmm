@@ -14,6 +14,7 @@ use crate::opcodes::LoadStoreRegisterPair;
 use crate::opcodes::decode_group;
 use aarch64defs::EsrEl2;
 use inspect::Inspect;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -218,7 +219,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         // pattern.
         let reg_index = iss.srt();
         if iss.ar() {
-            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            self.inner.cpu.memory_barrier(Ordering::SeqCst);
         }
         if iss.wnr() {
             let data = match reg_index {
@@ -252,7 +253,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             }
         }
         if iss.ar() {
-            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            self.inner.cpu.memory_barrier(Ordering::SeqCst);
         }
         Ok(true)
     }

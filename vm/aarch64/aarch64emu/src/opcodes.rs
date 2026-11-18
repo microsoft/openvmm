@@ -6,6 +6,7 @@
 use crate::Cpu;
 use crate::emulator::EmulatorOperations;
 use crate::emulator::Error;
+use std::sync::atomic::Ordering;
 
 #[derive(Debug, PartialEq)]
 pub enum Aarch64DecodeGroup {
@@ -417,7 +418,7 @@ impl LoadStoreRegister {
         // Full barriers preserve Store-Release -> Load-Acquire ordering even
         // when an adjacent access executes natively.
         if ordered {
-            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            emulate.cpu.memory_barrier(Ordering::SeqCst);
         }
         tracing::trace!(
             ?op_group,
@@ -535,7 +536,7 @@ impl LoadStoreRegister {
             _ => return Err(Box::new(Error::UnsupportedInstruction(self.0))),
         }
         if ordered {
-            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            emulate.cpu.memory_barrier(Ordering::SeqCst);
         }
         if matches!(
             op_group,
@@ -773,7 +774,7 @@ impl LoadStoreAtomic {
             0
         };
         if ordered {
-            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            emulate.cpu.memory_barrier(Ordering::SeqCst);
         }
         // Retry with fresh data on contention, but give control back after a
         // bounded number of attempts without advancing PC or updating Rt.
@@ -785,7 +786,7 @@ impl LoadStoreAtomic {
             let value = u64::from_le_bytes(value_buf);
             let sized_value = value & size_mask;
             if load_only {
-                std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+                emulate.cpu.memory_barrier(Ordering::Acquire);
                 if rt != 31 {
                     emulate.cpu.update_x(rt, sized_value);
                 }
@@ -836,7 +837,7 @@ impl LoadStoreAtomic {
                 })?;
             if success {
                 if ordered {
-                    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+                    emulate.cpu.memory_barrier(Ordering::SeqCst);
                 }
                 if rt != 31 {
                     emulate.cpu.update_x(rt, sized_value);

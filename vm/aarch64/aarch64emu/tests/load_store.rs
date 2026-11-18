@@ -84,6 +84,7 @@ pub struct SingleCellCpu {
     cpu_state: CpuState,
     accesses: Vec<(u64, usize, AccessKind)>,
     comparisons: Vec<usize>,
+    barriers: Vec<(usize, Ordering)>,
     fail_reads: bool,
     fail_writes: bool,
     reject_comparisons: bool,
@@ -105,6 +106,11 @@ impl Cpu for SingleCellCpu {
 
     fn sctlr(&mut self) -> aarch64defs::SctlrEl1 {
         self.cpu_state.sctlr.load(Ordering::Relaxed).into()
+    }
+
+    fn memory_barrier(&mut self, ordering: Ordering) {
+        self.barriers.push((self.accesses.len(), ordering));
+        std::sync::atomic::fence(ordering);
     }
 
     async fn read_memory(
@@ -1173,6 +1179,14 @@ async fn atomics_use_operand_width_and_ldapr_is_read_only() {
                 )]
             );
             assert_eq!(cpu.comparisons, if load_only { vec![] } else { vec![len] });
+            assert_eq!(
+                cpu.barriers,
+                if load_only {
+                    vec![(1, Ordering::Acquire)]
+                } else {
+                    vec![(0, Ordering::SeqCst), (1, Ordering::SeqCst)]
+                }
+            );
             let mask = u64::MAX >> (64 - len * 8);
             assert_eq!(cpu.x(2), mask);
             assert_eq!(
@@ -1244,6 +1258,14 @@ async fn syndrome_zero_register_still_reads_and_errors_do_not_retry() {
         assert_eq!(result.is_err(), fail);
         assert_eq!(cpu.physical_reads, 1);
         assert_eq!(cpu.instruction_reads, 0);
+        assert_eq!(
+            cpu.barriers,
+            if fail {
+                vec![(0, Ordering::SeqCst)]
+            } else {
+                vec![(0, Ordering::SeqCst), (1, Ordering::SeqCst)]
+            }
+        );
         assert_eq!(cpu.pc(), if fail { 0 } else { 4 });
     }
 }
@@ -1367,6 +1389,7 @@ async fn ordered_register_encodings_transfer_values_and_store_widths() {
                         )]
                     );
                     assert!(cpu.comparisons.is_empty());
+                    assert_eq!(cpu.barriers, [(0, Ordering::SeqCst), (1, Ordering::SeqCst)]);
                     assert_eq!(cpu.sp(), 0x100);
                     assert_eq!(cpu.pc(), 4);
                 }

@@ -20,6 +20,7 @@ use hvdef::HvAarch64PendingEvent;
 use hvdef::HvAarch64PendingEventType;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
 use virt::EmulatorMonitorSupport;
 use virt::VpHaltReason;
@@ -32,6 +33,10 @@ use zerocopy::IntoBytes;
 pub trait EmulatorSupport: AccessCpuState {
     /// System control for data alignment, stack alignment, and endianness.
     fn sctlr(&mut self) -> aarch64defs::SctlrEl1;
+
+    /// Orders guest memory accesses according to `ordering`, including accesses
+    /// that execute natively outside the emulator.
+    fn memory_barrier(&mut self, ordering: Ordering);
 
     /// The current VP index.
     fn vp_index(&self) -> VpIndex;
@@ -621,6 +626,10 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
         self.cached_translation.is_some()
     }
 
+    fn memory_barrier(&mut self, ordering: Ordering) {
+        self.support.memory_barrier(ordering);
+    }
+
     async fn read_memory(
         &mut self,
         gva: u64,
@@ -1083,6 +1092,7 @@ mod tests {
         monitor: Option<Monitor>,
         events: Vec<HvAarch64PendingEvent>,
         translations: Vec<(u64, TranslateMode)>,
+        barriers: Vec<Ordering>,
     }
 
     impl Default for Support {
@@ -1101,6 +1111,7 @@ mod tests {
                 monitor: None,
                 events: Vec::new(),
                 translations: Vec::new(),
+                barriers: Vec::new(),
             }
         }
     }
@@ -1175,6 +1186,10 @@ mod tests {
     impl EmulatorSupport for Support {
         fn sctlr(&mut self) -> aarch64defs::SctlrEl1 {
             self.sctlr
+        }
+        fn memory_barrier(&mut self, ordering: Ordering) {
+            self.barriers.push(ordering);
+            std::sync::atomic::fence(ordering);
         }
         fn vp_index(&self) -> VpIndex {
             VpIndex::BSP
@@ -1333,6 +1348,14 @@ mod tests {
                         assert_eq!(support.x[0], 0xfeed_face_1234_5678);
                         assert_eq!(support.pc, 4);
                         assert!(support.events.is_empty());
+                        assert_eq!(
+                            support.barriers,
+                            if ordered {
+                                vec![Ordering::SeqCst, Ordering::SeqCst]
+                            } else {
+                                vec![]
+                            }
+                        );
                         assert_eq!(
                             support.translations,
                             if syndrome_decode {

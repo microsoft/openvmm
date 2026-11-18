@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use std::future::Future;
+use std::sync::atomic::Ordering;
 
 /// The permission and instruction-fetch semantics of a memory read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,10 @@ pub trait Cpu: AccessCpuState {
     fn supports_syndrome_decode(&self) -> bool {
         true
     }
+
+    /// Orders guest memory accesses according to `ordering`, including accesses
+    /// that execute natively outside the emulator.
+    fn memory_barrier(&mut self, ordering: Ordering);
 
     /// Performs a memory read, validating the requested permissions for the
     /// entire range before accessing memory. The core checks alignment.
@@ -88,6 +93,10 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
 
     fn supports_syndrome_decode(&self) -> bool {
         (**self).supports_syndrome_decode()
+    }
+
+    fn memory_barrier(&mut self, ordering: Ordering) {
+        (*self).memory_barrier(ordering)
     }
 
     fn read_memory(

@@ -44,6 +44,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
+use std::sync::atomic::Ordering;
 use virt::EmulatorMonitorSupport;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -614,6 +615,10 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
                 .as_u64()
                 .into()
         })
+    }
+
+    fn memory_barrier(&mut self, ordering: Ordering) {
+        std::sync::atomic::fence(ordering);
     }
 
     fn vp_index(&self) -> VpIndex {
