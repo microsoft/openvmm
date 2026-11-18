@@ -120,7 +120,7 @@ impl GicV3Model {
         self.distributor.read(address, data)
     }
 
-    /// Writes a GIC MMIO register, notifying target VP indices for software-pended SPIs.
+    /// Writes a GIC MMIO register, notifying target VPs when SPI requests may become deliverable.
     pub fn write(&self, address: u64, data: &[u8], wake: impl FnMut(usize)) -> bool {
         self.distributor.write(address, data, wake)
     }
@@ -702,6 +702,43 @@ mod gicd {
                 .collect()
         }
 
+        /// Collects targets for enabled, inactive SPI requests in the given mask.
+        /// Callers hold the state lock and must release it before notifying VPs.
+        fn collect_pending_spi_targets(
+            &self,
+            state: &DistributorState,
+            word: usize,
+            mask: u32,
+            targets: &mut Vec<usize>,
+        ) {
+            let group = enabled_group_mask(
+                state.group_status[word],
+                state.enable_grp0,
+                state.enable_grp1,
+            );
+            let pending = state.pending[word] | state.lr_pending_latch[word];
+            let mut candidates = (pending | state.asserted[word])
+                & state.enable[word]
+                & !state.active[word]
+                & group
+                & mask;
+            while candidates != 0 {
+                let bit = candidates.trailing_zeros();
+                candidates &= candidates - 1;
+                let intid = word as u32 * 32 + bit;
+                if intid > self.max_spi_intid
+                    || (pending & (1 << bit) == 0 && Self::edge_triggered(state, intid))
+                {
+                    continue;
+                }
+                targets.extend(
+                    self.target_vps_for_spi(state, intid)
+                        .into_iter()
+                        .map(|vp| vp.index() as usize),
+                );
+            }
+        }
+
         fn spi_targets_vp(&self, state: &DistributorState, intid: u32, vp: VpIndex) -> bool {
             let Some(gicr) = self.gicr.get(vp.index() as usize) else {
                 return false;
@@ -918,29 +955,55 @@ mod gicd {
 
         fn write32(&self, address: GicdRegister, value: u32, mut wake: impl FnMut(usize)) -> bool {
             assert!(address.0 & 3 == 0);
+            let mut targets = Vec::new();
             match address {
                 GicdRegister::CTLR => {
                     let ctlr = GicdCtlr::from(value);
                     let mut state = self.state.lock();
-                    let state = &mut *state;
+                    let enable_group0 = ctlr.enable_grp0() && !state.enable_grp0;
+                    let enable_group1 = ctlr.enable_grp1_non_secure() && !state.enable_grp1;
                     state.enable_grp0 = ctlr.enable_grp0();
                     state.enable_grp1 = ctlr.enable_grp1_non_secure();
+                    if enable_group0 || enable_group1 {
+                        for word in 1..state.pending.len() {
+                            let mask = enabled_group_mask(
+                                state.group_status[word],
+                                enable_group0,
+                                enable_group1,
+                            );
+                            self.collect_pending_spi_targets(&state, word, mask, &mut targets);
+                        }
+                    }
                 }
                 r if GicdRegister::IGROUPR.contains(&r.0) => {
                     let n = (r.0 & 0x7f) / 4;
                     if n != 0 {
-                        if let Some(group_status) =
-                            self.state.lock().group_status.get_mut(n as usize)
-                        {
+                        let mut state = self.state.lock();
+                        if let Some(group_status) = state.group_status.get_mut(n as usize) {
+                            let changed = *group_status ^ value;
                             *group_status = value;
+                            self.collect_pending_spi_targets(
+                                &state,
+                                n as usize,
+                                changed,
+                                &mut targets,
+                            );
                         }
                     }
                 }
                 r if GicdRegister::ISENABLER.contains(&r.0) => {
                     let n = (r.0 & 0x7f) / 4;
                     if n != 0 {
-                        if let Some(enable) = self.state.lock().enable.get_mut(n as usize) {
+                        let mut state = self.state.lock();
+                        if let Some(enable) = state.enable.get_mut(n as usize) {
+                            let newly_enabled = value & !*enable;
                             *enable |= value;
+                            self.collect_pending_spi_targets(
+                                &state,
+                                n as usize,
+                                newly_enabled,
+                                &mut targets,
+                            );
                         }
                     }
                 }
@@ -955,7 +1018,6 @@ mod gicd {
                 r if GicdRegister::ISPENDR.contains(&r.0) => {
                     let n = (r.0 & 0x7f) / 4;
                     if n != 0 {
-                        let mut targets = Vec::new();
                         {
                             let mut state = self.state.lock();
                             if let Some(pending) = state.pending.get_mut(n as usize) {
@@ -975,13 +1037,6 @@ mod gicd {
                                     }
                                 }
                             }
-                        }
-                        // Notify after releasing the state lock so a target VP
-                        // can immediately recheck its pending interrupts.
-                        targets.sort_unstable();
-                        targets.dedup();
-                        for index in targets {
-                            wake(index);
                         }
                     }
                 }
@@ -1041,6 +1096,13 @@ mod gicd {
                     // DS is fixed to one, so the group modifier registers are RES0.
                 }
                 _ => return false,
+            }
+            // Notify after releasing the state lock so a target VP can
+            // immediately recheck its pending interrupts.
+            targets.sort_unstable();
+            targets.dedup();
+            for index in targets {
+                wake(index);
             }
             true
         }
@@ -1146,18 +1208,34 @@ mod gicd {
             Some(v)
         }
 
-        fn write64(&self, address: GicdRegister, value: u64) -> bool {
+        fn write64(&self, address: GicdRegister, value: u64, mut wake: impl FnMut(usize)) -> bool {
             assert!(address.0 & 7 == 0);
+            let mut targets = Vec::new();
             match address {
                 r if GicdRegister::IROUTER.contains(&r.0) => {
                     let n = (r.0 & 0x1fff) / 8;
                     if n >= 32 {
-                        if let Some(route) = self.state.lock().route.get_mut(n as usize) {
+                        let mut state = self.state.lock();
+                        if let Some(route) = state.route.get_mut(n as usize) {
+                            let changed = *route != value;
                             *route = value;
+                            if changed {
+                                self.collect_pending_spi_targets(
+                                    &state,
+                                    n as usize / 32,
+                                    1 << (n & 31),
+                                    &mut targets,
+                                );
+                            }
                         }
                     }
                 }
                 _ => return false,
+            }
+            // A single SPI has unique targets. As with write32, notify only
+            // after releasing the distributor state lock.
+            for index in targets {
+                wake(index);
             }
             true
         }
@@ -1270,7 +1348,7 @@ mod gicd {
             let handled = match data.len() {
                 1 => self.write8(address, u8::from_ne_bytes(data.try_into().unwrap())),
                 4 => self.write32(address, u32::from_ne_bytes(data.try_into().unwrap()), wake),
-                8 => self.write64(address, u64::from_ne_bytes(data.try_into().unwrap())),
+                8 => self.write64(address, u64::from_ne_bytes(data.try_into().unwrap()), wake),
                 _ => false,
             };
             if !handled {
@@ -1479,6 +1557,19 @@ mod gicd {
             }
         }
 
+        fn write_gicd_collect_wakes(
+            distributor: &Distributor,
+            register: GicdRegister,
+            data: &[u8],
+        ) -> Vec<usize> {
+            let mut wakes = Vec::new();
+            assert!(distributor.write(u64::from(register.0), data, |index| {
+                assert!(distributor.state.try_lock().is_some());
+                wakes.push(index);
+            }));
+            wakes
+        }
+
         #[test]
         fn distributor_ack_skips_active_and_empty_bits() {
             let mut distributor = empty_test_distributor();
@@ -1521,7 +1612,7 @@ mod gicd {
             set_group_enables(&distributor, false, true);
             assert!(distributor.write32(group_register, mask, |_| {}));
             assert!(distributor.write32(enable_register, mask, |_| {}));
-            assert!(distributor.write64(route_register, 1));
+            assert!(distributor.write64(route_register, 1, |_| {}));
 
             assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp1]);
             assert!(!distributor.irq_pending(&gicr0, true));
@@ -1566,6 +1657,7 @@ mod gicd {
                     assert!(distributor.write64(
                         GicdRegister(GicdRegister::IROUTER0.0 + (intid * 8) as u16),
                         route,
+                        |_| {},
                     ));
                 }
                 assert!(!distributor.irq_pending(&gicr0, true));
@@ -1600,6 +1692,122 @@ mod gicd {
                 }
                 assert!(!distributor.irq_pending(&gicr0, true));
                 assert!(!distributor.irq_pending(&gicr1, true));
+            }
+        }
+
+        #[test]
+        fn spi_configuration_route_and_enable_wake_existing_requests() {
+            let group = GicdRegister(GicdRegister::IGROUPR0.0 + 4);
+            let enable = GicdRegister(GicdRegister::ISENABLER0.0 + 4);
+            let mask: u32 = 0b11;
+            for software_pending in [false, true] {
+                for enable_first in [false, true] {
+                    for (route, expected_wakes) in [(1u64, vec![1]), (1 << 31, vec![0, 1])] {
+                        let mut distributor = empty_test_distributor();
+                        let gicr0 = distributor.add_redistributor(0, false);
+                        let gicr1 = distributor.add_redistributor(1, true);
+                        set_group_enables(&distributor, false, true);
+                        assert!(distributor.write32(group, mask, |_| {}));
+                        if enable_first {
+                            assert!(distributor.write32(enable, mask, |_| {}));
+                        }
+
+                        for intid in [TEST_SPI, TEST_SPI + 1] {
+                            if software_pending {
+                                set_software_pending_spi(&distributor, intid, true);
+                            } else {
+                                assert_eq!(distributor.set_spi_irq(intid, true), [VpIndex::new(0)]);
+                            }
+                            let register =
+                                GicdRegister(GicdRegister::IROUTER0.0 + (intid * 8) as u16);
+                            let wakes = write_gicd_collect_wakes(
+                                &distributor,
+                                register,
+                                &route.to_ne_bytes(),
+                            );
+                            if enable_first {
+                                assert_eq!(wakes, expected_wakes);
+                            } else {
+                                // Routing a disabled request cannot make it deliverable.
+                                assert!(wakes.is_empty());
+                            }
+                        }
+
+                        let wakes =
+                            write_gicd_collect_wakes(&distributor, enable, &mask.to_ne_bytes());
+                        if enable_first {
+                            assert!(wakes.is_empty());
+                        } else {
+                            // Two SPIs targeting the same VP notify it only once.
+                            assert_eq!(wakes, expected_wakes);
+                        }
+                        assert_eq!(
+                            distributor.irq_pending(&gicr0, true),
+                            route & (1 << 31) != 0
+                        );
+                        assert!(distributor.irq_pending(&gicr1, true));
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn spi_configuration_group_changes_wake_existing_requests() {
+            let group = GicdRegister(GicdRegister::IGROUPR0.0 + 4);
+            let enable = GicdRegister(GicdRegister::ISENABLER0.0 + 4);
+            let mask: u32 = 0b11;
+            for software_pending in [false, true] {
+                for group1 in [false, true] {
+                    for register in [GicdRegister::CTLR, group] {
+                        let mut distributor = empty_test_distributor();
+                        let gicr0 = distributor.add_redistributor(0, false);
+                        let gicr1 = distributor.add_redistributor(1, true);
+                        let changing_group = register == group;
+                        if changing_group {
+                            set_group_enables(&distributor, !group1, group1);
+                        }
+                        let initial_group1 = if changing_group { !group1 } else { group1 };
+                        assert!(distributor.write32(
+                            group,
+                            if initial_group1 { mask } else { 0 },
+                            |_| {},
+                        ));
+                        assert!(distributor.write32(enable, mask, |_| {}));
+                        for intid in [TEST_SPI, TEST_SPI + 1] {
+                            let route = GicdRegister(GicdRegister::IROUTER0.0 + (intid * 8) as u16);
+                            assert!(
+                                write_gicd_collect_wakes(&distributor, route, &1u64.to_ne_bytes())
+                                    .is_empty()
+                            );
+                            if software_pending {
+                                set_software_pending_spi(&distributor, intid, true);
+                            } else {
+                                distributor.set_spi_irq(intid, true);
+                            }
+                        }
+                        assert!(!distributor.irq_pending(&gicr1, group1));
+                        assert!(!distributor.irq_pending(&gicr1, !group1));
+
+                        let value = if changing_group {
+                            if group1 { mask } else { 0 }
+                        } else {
+                            GicdCtlr::new()
+                                .with_enable_grp0(!group1)
+                                .with_enable_grp1_non_secure(group1)
+                                .into()
+                        };
+                        assert_eq!(
+                            write_gicd_collect_wakes(&distributor, register, &value.to_ne_bytes()),
+                            [1]
+                        );
+                        assert!(!distributor.irq_pending(&gicr0, group1));
+                        assert!(distributor.irq_pending(&gicr1, group1));
+                        assert!(
+                            write_gicd_collect_wakes(&distributor, register, &value.to_ne_bytes())
+                                .is_empty()
+                        );
+                    }
+                }
             }
         }
 
