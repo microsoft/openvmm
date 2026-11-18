@@ -301,11 +301,18 @@ impl ProcessConfig {
         }
     }
 
-    /// Returns a new sandboxed process configuration using the current process
-    /// as the process name.
+    /// Returns a process configuration with sandbox launch preparation, using
+    /// the current process as the process name.
     ///
-    /// The child must call [`sandbox::apply`] with the same profile before
-    /// initializing.
+    /// Mesh uses the profile to prepare PAL's launch restrictions. It does not
+    /// send the profile to the child, call [`sandbox::apply`] in the child, or
+    /// verify that the child applies the same profile.
+    ///
+    /// The consumer must arrange for the child to call [`sandbox::apply`] with
+    /// the same profile before starting worker threads, joining Mesh, or
+    /// processing untrusted input, and terminate if application fails. Without
+    /// that call, only launch-time restrictions are established; worker-side
+    /// confinement is not applied.
     pub fn new_with_sandbox(name: impl Into<String>, sandbox_profile: sandbox::Profile) -> Self {
         Self {
             name: name.into(),
