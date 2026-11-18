@@ -70,6 +70,34 @@ There are three API stages and a small pre-exec step in the process builder:
    additional restrictions. Linux currently supports additional seccomp
    denials synchronized across all threads; path revocation is unsupported.
 
+The Linux launch flow below shows the intended consumer integration.
+Mesh prepares the launch but does not invoke `apply` in the child; existing
+workers do not yet wire up that step.
+
+```mermaid
+flowchart TD
+    subgraph Control ["Control process"]
+        Select["Select worker profile"] --> Prepare["sandbox::prepare"]
+        Prepare --> Launch["PAL: create child in requested namespaces"]
+    end
+    subgraph PreExec ["PAL pre-exec child"]
+        Maps["Map UID/GID"] --> Handles["Filter inherited descriptors"]
+    end
+    subgraph Worker ["Worker image"]
+        Boot["Trusted loader and runtime startup"]
+        Apply["Consumer entry point: sandbox::apply<br/>Filesystem, capabilities, selected syscall policy"]
+        Init["Start Mesh and worker initialization"]
+        Stop["Terminate worker"]
+        Tighten["Optional sandbox::tighten"]
+        Boot --> Apply
+        Apply -->|Success| Init
+        Apply -->|Failure| Stop
+        Init --> Tighten
+    end
+    Launch --> Maps
+    Handles -->|Execute worker image| Boot
+```
+
 PAL's pre-exec setup is limited to the launch configuration prepared by the
 control process. Policy construction and rich sandbox setup belong after
 execution of the worker image, while the worker is still single-threaded.
