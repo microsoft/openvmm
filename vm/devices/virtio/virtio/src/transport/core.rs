@@ -89,7 +89,7 @@ pub(crate) struct VirtioTransportCore {
     pub device_status: VirtioDeviceStatus,
     #[inspect(skip)]
     pub poll_waker: Option<std::task::Waker>,
-    pub config_generation: u32,
+    pub config_generation: u8,
     #[inspect(skip)]
     pub doorbells: VirtioDoorbells,
     pub supports_save_restore: bool,
