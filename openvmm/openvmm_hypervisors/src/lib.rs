@@ -80,6 +80,28 @@ pub fn mshv_partition_scrub_available() -> bool {
     }
 }
 
+/// Returns whether WHP supports nested partition reset on this machine.
+pub fn whp_nested_reset_available() -> bool {
+    #[cfg(all(
+        target_os = "windows",
+        feature = "virt_whp",
+        guest_is_native,
+        guest_arch = "x86_64"
+    ))]
+    {
+        virt_whp::is_nested_reset_available()
+    }
+    #[cfg(not(all(
+        target_os = "windows",
+        feature = "virt_whp",
+        guest_is_native,
+        guest_arch = "x86_64"
+    )))]
+    {
+        false
+    }
+}
+
 #[expect(clippy::allow_attributes, reason = "lots of conditions")]
 #[allow(dead_code)]
 pub(crate) fn parse_bool_param(key: &str, val: &str) -> anyhow::Result<bool> {

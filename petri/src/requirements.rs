@@ -158,6 +158,7 @@ impl HostContext {
         let nested_reset_supported = match openvmm_hypervisor {
             Some(OpenVmmHypervisor::Kvm) => openvmm_hypervisors::kvm_nested_state_available(),
             Some(OpenVmmHypervisor::Mshv) => openvmm_hypervisors::mshv_partition_scrub_available(),
+            Some(OpenVmmHypervisor::Whp) => openvmm_hypervisors::whp_nested_reset_available(),
             _ => false,
         };
 

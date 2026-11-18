@@ -3,13 +3,11 @@
 
 //! Nested vm host definitions
 
-#[cfg(target_os = "linux")]
 use anyhow::Context as _;
 use petri::PetriVmBuilder;
 #[cfg(target_os = "linux")]
 use petri::PetriVmmBackend;
 use petri::openvmm::OpenVmmPetriBackend;
-#[cfg(target_os = "linux")]
 use petri_artifacts_vmm_test::artifacts::host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL;
 
 pub(crate) async fn vm_host(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
@@ -151,7 +149,6 @@ async fn reboot_nested_virt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
 
 /// Reboot a Linux L2 three times. The `reboot_l1` variant reruns this after
 /// rebooting L1, proving L2 can launch after previously used nested state resets.
-#[cfg(target_os = "linux")]
 #[vmm_test_macros::vmm_test(
     nested(
         (vm_host, openvmm_linux_direct_x64),
