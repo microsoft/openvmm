@@ -304,14 +304,49 @@ mod host_time {
             .unwrap_or_else(|_| Timestamp::MIN.to_zoned(time.time_zone().clone()))
     }
 
-    /// Records when a query was last woken, which is when its reply came in.
+    /// Records when a query was last woken, which is when its reply came in,
+    /// and passes the wakeup on to a thread waiting for the reply.
     #[derive(Default)]
-    pub(super) struct WokenAt(Mutex<Option<Instant>>);
+    pub(super) struct WokenAt(Mutex<(Option<Instant>, Option<Waker>)>);
 
     impl Wake for WokenAt {
         fn wake(self: Arc<Self>) {
-            *self.0.lock() = Some(Instant::now());
+            let waiting = {
+                let mut woken = self.0.lock();
+                woken.0 = Some(Instant::now());
+                woken.1.take()
+            };
+            if let Some(waker) = waiting {
+                waker.wake();
+            }
         }
+    }
+
+    impl WokenAt {
+        fn replied(&self) -> Option<Instant> {
+            self.0.lock().0
+        }
+    }
+
+    /// Wait for the reply to a query, and return it and when it came in. The
+    /// reply is polled with `woken_at`, so that it is timed when it comes in
+    /// rather than when this thread runs again.
+    fn wait(
+        woken_at: &Arc<WokenAt>,
+        reply: &mut Pin<Box<dyn Future<Output = Time> + Send>>,
+    ) -> (Time, Instant) {
+        // TODO: this block_on really ain't great, but since we're not
+        // hammering the GET on _each_ access, it's okay for now...
+        let reply = pal_async::local::block_with_io(async |_| {
+            std::future::poll_fn(|cx| {
+                woken_at.0.lock().1 = Some(cx.waker().clone());
+                reply
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&Waker::from(woken_at.clone())))
+            })
+            .await
+        });
+        (reply, woken_at.replied().unwrap_or_else(Instant::now))
     }
 
     impl HostSystemTimeAccess {
@@ -329,14 +364,16 @@ mod host_time {
         /// next access.
         pub fn restore(&mut self, time: Timestamp) {
             let now = Instant::now();
-            let mut cached_host_time = self.first(now, time.to_zoned(TimeZone::UTC));
+            let mut cached_host_time = self.first(now, time.to_zoned(TimeZone::UTC), now);
             cached_host_time.last_query = now
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or(cached_host_time.last_query);
             *self.cached_host_time.get_mut() = Some(cached_host_time);
         }
 
-        fn first(&self, sent: Instant, time: Zoned) -> CachedHostTime {
+        /// Take the first host time, from a query sent at `sent`, as of
+        /// `anchor`.
+        fn first(&self, sent: Instant, time: Zoned, anchor: Instant) -> CachedHostTime {
             let held = self
                 .held
                 .map(|held| held.to_zoned(time.time_zone().clone()));
@@ -344,7 +381,7 @@ mod host_time {
                 last_query: sent,
                 latest: held.map_or_else(|| time.clone(), |held| held.max(time.clone())),
                 time,
-                anchor: Instant::now(),
+                anchor,
                 refresh: None,
             }
         }
@@ -357,9 +394,9 @@ mod host_time {
         ) -> &'a mut CachedHostTime {
             cached_host_time.get_or_insert_with(|| {
                 // There is nothing to advance yet, so wait for the host.
-                let sent = Instant::now();
-                let time = pal_async::local::block_with_io(|_| self.get.host_time()).to_jiff();
-                self.first(sent, time)
+                let (sent, woken_at, mut reply) = self.send(Instant::now());
+                let (time, replied) = wait(&woken_at, &mut reply);
+                self.first(sent, time.to_jiff(), replied)
             })
         }
 
@@ -434,7 +471,7 @@ mod host_time {
                     .poll(&mut Context::from_waker(&Waker::from(woken_at.clone())))
             {
                 let sent = *sent;
-                let replied = woken_at.0.lock().unwrap_or(now);
+                let replied = woken_at.replied().unwrap_or(now);
                 cached_host_time.update(sent, replied, reply, now);
             }
         }
@@ -461,16 +498,13 @@ mod host_time {
             self.refresh(cached_host_time, now);
 
             if now.duration_since(cached_host_time.last_query) >= Duration::from_secs(1) {
-                let (sent, _, reply) = cached_host_time
+                let (sent, woken_at, mut reply) = cached_host_time
                     .refresh
                     .take()
                     .filter(|(sent, _, _)| now.duration_since(*sent) < Duration::from_secs(1))
                     .unwrap_or_else(|| self.send(now));
-                // TODO: this block_on really ain't great, but since we're
-                // not hammering the GET on _each_ access, it's okay for now...
-                let reply = pal_async::local::block_with_io(|_| reply);
-                let replied = Instant::now();
-                cached_host_time.update(sent, replied, reply, replied);
+                let (reply, replied) = wait(&woken_at, &mut reply);
+                cached_host_time.update(sent, replied, reply, Instant::now());
             }
 
             // The time is set as of when the guest wrote it, not when the
@@ -649,9 +683,9 @@ mod tests {
     use super::host_time::HostSystemTimeAccess;
     use super::host_time::advance;
     use super::host_time::rewind;
-    use guest_emulation_transport::api::Time;
     use guest_emulation_device::test_utilities::Event;
     use guest_emulation_device::test_utilities::TestGetResponses;
+    use guest_emulation_transport::api::Time;
     use guest_emulation_transport::test_utilities::TestGet;
     use jiff::Zoned;
     use local_clock::LocalClock;
@@ -912,6 +946,55 @@ mod tests {
         .unwrap();
         let error = clock.get_time() - LocalClockTime::from(SystemTime::now());
         assert!(error.as_millis().abs() < 100);
+    }
+
+    #[async_test]
+    async fn waiting_reply_is_timed_when_it_comes_in(_driver: DefaultDriver) {
+        let (mut clock, _get, _) = new_clock().await;
+
+        // Pretend the host paused the VM for an hour, a second after the last
+        // query, and the reply to the next one comes in 100ms after it is
+        // first polled but is only taken 200ms after that.
+        let reply = Arc::new(parking_lot::Mutex::new((None, None::<std::task::Waker>)));
+        let late_reply = std::future::poll_fn({
+            let reply = reply.clone();
+            let mut started = false;
+            move |cx| {
+                if let Some(time) = reply.lock().0 {
+                    std::thread::sleep(Duration::from_millis(200));
+                    return std::task::Poll::Ready(time);
+                }
+                reply.lock().1 = Some(cx.waker().clone());
+                if !std::mem::replace(&mut started, true) {
+                    let reply = reply.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(100));
+                        let waker = {
+                            let mut reply = reply.lock();
+                            reply.0 = Some(host_time_at(jiff::Timestamp::now()));
+                            reply.1.take()
+                        };
+                        waker.unwrap().wake();
+                    });
+                }
+                std::task::Poll::Pending
+            }
+        });
+        {
+            let mut cached_host_time = cached(&clock.host_time);
+            cached_host_time.last_query -= Duration::from_secs(1);
+            cached_host_time.time = &cached_host_time.time - Duration::from_secs(3601);
+            cached_host_time.refresh =
+                Some((Instant::now(), Default::default(), Box::pin(late_reply)));
+        }
+
+        // The time is set from the host time as of the write.
+        clock.set_time(SystemTime::now().into());
+        let skew = fetch_skew_from_store(&mut *clock.store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(skew.as_millis().abs() < 100, "{skew:?}");
     }
 
     #[async_test]
