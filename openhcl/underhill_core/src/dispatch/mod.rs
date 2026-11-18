@@ -9,6 +9,7 @@ pub mod vtl2_settings_worker;
 use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
+use crate::emuplat::local_clock::UnderhillLocalClock;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::nvme_manager::manager::NvmeManager;
 use crate::options::KeepAliveConfig;
@@ -725,6 +726,14 @@ impl LoadedVm {
 
         // Do everything before the log flush under a span.
         let r = async {
+            // Set the RTC skew if it is still to default to the host's time
+            // zone, as older versions restoring the state won't. This waits
+            // for the host, so do it before stopping the VM.
+            UnderhillLocalClock::set_default_skew_before_save(
+                &self.emuplat_servicing.rtc_local_clock,
+            )
+            .await;
+
             if !self.stop().await {
                 // This should only occur if you tried to initiate a
                 // servicing operation after manually pausing underhill

@@ -116,6 +116,22 @@ impl UnderhillLocalClock {
             self.offset_from_host_time = skew;
         }
     }
+
+    /// Set the skew to the host's time zone offset now if that is still to be
+    /// done on the first access, so that versions that don't know about
+    /// `default_skew` restore it. This waits for the host, so servicing calls
+    /// it before stopping the VM.
+    pub async fn set_default_skew_before_save(this: &parking_lot::Mutex<Self>) {
+        let get = {
+            let this = this.lock();
+            if !this.default_skew {
+                return;
+            }
+            this.host_time.get.clone()
+        };
+        let host_time = get.host_time().await.to_jiff();
+        this.lock().set_default_skew(&host_time);
+    }
 }
 
 async fn fetch_skew_from_store(
@@ -191,7 +207,7 @@ mod host_time {
     #[derive(Debug, Inspect)]
     pub struct HostSystemTimeAccess {
         #[inspect(skip)]
-        get: guest_emulation_transport::GuestEmulationTransportClient,
+        pub(super) get: guest_emulation_transport::GuestEmulationTransportClient,
         #[inspect(flatten)]
         pub(super) cached_host_time: Mutex<Option<CachedHostTime>>,
         /// The latest time returned before servicing, to hold once the host
@@ -531,9 +547,8 @@ mod save_restore {
             #[mesh(4)]
             pub reference_time: Option<u64>,
             /// Whether the skew is still to be set to the host's time zone
-            /// offset. Older versions don't know this, so servicing back to
-            /// one before the RTC has been accessed since a cold boot leaves
-            /// the RTC at UTC rather than the host's local time.
+            /// offset. Older versions don't know this, so servicing sets the
+            /// skew before saving.
             #[mesh(5)]
             pub default_skew: bool,
         }
@@ -950,39 +965,51 @@ mod tests {
         let (_, get_driver) = DefaultPool::spawn_on_thread("get");
         let get = guest_emulation_transport::test_utilities::new_transport_pair(
             get_driver,
-            Some(vec![TestGetResponses::new(Event::Response(
-                time.as_bytes().to_vec(),
-            ))]),
+            Some(vec![
+                TestGetResponses::new(Event::Response(
+                    time.as_bytes().to_vec()
+                ));
+                2
+            ]),
             get_protocol::ProtocolVersion::NICKEL_REV2,
             None,
             None,
         )
         .await;
+        let new_clock = async |state| {
+            UnderhillLocalClock::new(
+                get.client.clone(),
+                reference_time(&Default::default()),
+                EphemeralNonVolatileStore::new_boxed(),
+                state,
+            )
+            .await
+            .unwrap()
+        };
+        let skew = LocalClockDelta::from_millis(8 * 60 * 60 * 1000);
 
         // With no skew stored, the skew is set from the first host time, even
-        // when servicing comes before it.
-        let mut clock = UnderhillLocalClock::new(
-            get.client.clone(),
-            reference_time(&Default::default()),
-            EphemeralNonVolatileStore::new_boxed(),
-            None,
-        )
-        .await
-        .unwrap();
+        // when the clock is saved and restored before it.
+        let mut clock = new_clock(None).await;
         let state = clock.save().unwrap();
-        let mut clock = UnderhillLocalClock::new(
-            get.client.clone(),
-            reference_time(&Default::default()),
-            EphemeralNonVolatileStore::new_boxed(),
-            Some(state),
-        )
-        .await
-        .unwrap();
+        let mut clock = new_clock(Some(state)).await;
         clock.get_time();
-        assert_eq!(
-            clock.offset_from_host_time,
-            LocalClockDelta::from_millis(8 * 60 * 60 * 1000)
-        );
+        assert_eq!(clock.offset_from_host_time, skew);
+
+        // Servicing sets it before saving, so that versions that restore only
+        // the skew get it too.
+        let clock = parking_lot::Mutex::new(new_clock(None).await);
+        UnderhillLocalClock::set_default_skew_before_save(&clock).await;
+        let state = mesh::payload::encode(clock.into_inner().save().unwrap());
+        let old_state: OldSavedState = mesh::payload::decode(&state).unwrap();
+        assert_eq!(old_state.offset_from_host_time_millis, skew.as_millis());
+    }
+
+    /// The saved state as versions before `default_skew` read it.
+    #[derive(mesh::payload::Protobuf)]
+    struct OldSavedState {
+        #[mesh(1)]
+        offset_from_host_time_millis: i64,
     }
 
     #[async_test]
