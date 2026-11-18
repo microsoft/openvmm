@@ -880,8 +880,8 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-vmm-perf-runner"));
             let snp_igvm_artifact = matches!(arch, CommonArch::X86_64)
                 .then(|| pipeline.new_typed_artifact("x64-linux-snp-linux-direct-igvm"));
-            let mshv_host_boot_artifact = matches!(arch, CommonArch::X86_64)
-                .then(|| pipeline.new_typed_artifact("x64-mshv-host-boot"));
+            let (pub_mshv_host_boot, use_mshv_host_boot) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-mshv-host-boot"));
             let mshv_payload_artifact = matches!(arch, CommonArch::X86_64)
                 .then(|| pipeline.new_typed_artifact("x64-mshv-boot-artifacts"));
 
@@ -913,7 +913,6 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_snp_igvm.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_snp_linux_direct_igvm_x64 =
                         Some(use_snp_igvm.clone());
-                    let (_, use_mshv_host_boot) = mshv_host_boot_artifact.as_ref().unwrap();
                     vmm_tests_artifacts_linux_x86.use_mshv_host_boot_x64 =
                         Some(use_mshv_host_boot.clone());
                     vmm_tests_artifacts_windows_x86.use_mshv_host_boot_x64 =
@@ -1129,17 +1128,13 @@ impl IntoPipeline for CheckinGatesCli {
             } else {
                 job
             };
-            let job = if let Some((pub_host_boot, _)) = mshv_host_boot_artifact {
-                job.publish(pub_host_boot, |host_boot| {
-                    flowey_lib_hvlite::build_mshv_host_boot::Request {
-                        arch: CommonArch::X86_64,
-                        profile: CommonProfile::from_release(release),
-                        host_boot,
-                    }
-                })
-            } else {
-                job
-            };
+            let job = job.publish(pub_mshv_host_boot, |host_boot| {
+                flowey_lib_hvlite::build_mshv_host_boot::Request {
+                    arch,
+                    profile: CommonProfile::from_release(release),
+                    host_boot,
+                }
+            });
             let job = if let Some((publish, _)) = mshv_payload_artifact {
                 job.publish(publish, |artifacts| {
                     flowey_lib_hvlite::resolve_mshv_boot_artifacts::Request {
