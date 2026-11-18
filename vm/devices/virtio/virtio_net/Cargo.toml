@@ -24,6 +24,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
 open_enum.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
@@ -33,7 +34,6 @@ zerocopy.workspace = true
 futures.workspace = true
 mesh.workspace = true
 pal_event.workspace = true
-parking_lot.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

@@ -38,6 +38,7 @@ use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::wait::PolledWait;
+use parking_lot::Mutex;
 use std::future::pending;
 use std::mem::offset_of;
 use std::sync::Arc;
@@ -47,6 +48,7 @@ use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
+use virtio::ConfigGeneration;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
 use virtio::QueueResources;
@@ -231,7 +233,8 @@ struct Adapter {
 }
 
 pub struct Device {
-    registers: NetConfig,
+    registers: Arc<Mutex<NetConfig>>,
+    config_generation: ConfigGeneration,
     coordinator: TaskControl<CoordinatorState, Coordinator>,
     adapter: Arc<Adapter>,
     driver_source: VmTaskDriverSource,
@@ -298,27 +301,32 @@ impl VirtioDevice for Device {
                 // don't yet take advantage of the ability to do batched
                 // completions, but we may in the future.
                 .with_in_order(true),
-            max_queues: 2 * self.registers.max_virtqueue_pairs,
+            max_queues: 2 * self.registers.lock().max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
         }
     }
 
+    fn config_generation_handle(&self) -> Option<ConfigGeneration> {
+        Some(self.config_generation.clone())
+    }
+
     async fn read_registers_u32(&mut self, offset: u16) -> u32 {
+        let registers = self.registers.lock();
         match offset {
-            0 => u32::from_le_bytes(self.registers.mac[..4].try_into().unwrap()),
+            0 => u32::from_le_bytes(registers.mac[..4].try_into().unwrap()),
             4 => {
-                (u16::from_le_bytes(self.registers.mac[4..].try_into().unwrap()) as u32)
-                    | ((self.registers.status as u32) << 16)
+                (u16::from_le_bytes(registers.mac[4..].try_into().unwrap()) as u32)
+                    | ((registers.status as u32) << 16)
             }
-            8 => (self.registers.max_virtqueue_pairs as u32) | ((self.registers.mtu as u32) << 16),
-            12 => self.registers.speed,
+            8 => (registers.max_virtqueue_pairs as u32) | ((registers.mtu as u32) << 16),
+            12 => registers.speed,
             16 => {
-                (self.registers.duplex as u32)
-                    | ((self.registers.rss_max_key_size as u32) << 8)
-                    | ((self.registers.rss_max_indirection_table_length as u32) << 16)
+                (registers.duplex as u32)
+                    | ((registers.rss_max_key_size as u32) << 8)
+                    | ((registers.rss_max_indirection_table_length as u32) << 16)
             }
-            20 => self.registers.supported_hash_types,
+            20 => registers.supported_hash_types,
             _ => 0,
         }
     }
@@ -629,11 +637,6 @@ impl NicBuilder {
             enable_rx_gso: self.enable_rx_gso,
         });
 
-        let coordinator = TaskControl::new(CoordinatorState {
-            endpoint,
-            adapter: adapter.clone(),
-        });
-
         let registers = NetConfig {
             mac: mac_address.to_bytes(),
             status: NetStatus::new().with_link_up(true).into(),
@@ -645,9 +648,18 @@ impl NicBuilder {
             rss_max_indirection_table_length: 0,
             supported_hash_types: 0,
         };
+        let registers = Arc::new(Mutex::new(registers));
+        let config_generation = ConfigGeneration::default();
+        let coordinator = TaskControl::new(CoordinatorState {
+            endpoint,
+            adapter: adapter.clone(),
+            registers: registers.clone(),
+            config_generation: config_generation.clone(),
+        });
 
         Ok(Device {
             registers,
+            config_generation,
             coordinator,
             adapter,
             driver_source: driver_source.clone(),
@@ -739,6 +751,19 @@ struct Coordinator {
 struct CoordinatorState {
     endpoint: Box<dyn Endpoint>,
     adapter: Arc<Adapter>,
+    registers: Arc<Mutex<NetConfig>>,
+    config_generation: ConfigGeneration,
+}
+
+impl CoordinatorState {
+    fn set_link_up(&self, link_up: bool) {
+        self.config_generation.update(|| {
+            let mut registers = self.registers.lock();
+            let status = NetStatus::from(registers.status);
+            registers.status = status.with_link_up(link_up).into();
+            status.link_up() != link_up
+        });
+    }
 }
 
 impl InspectTaskMut<Coordinator> for CoordinatorState {
@@ -802,9 +827,7 @@ impl Coordinator {
                 .await?
             {
                 EndpointAction::RestartRequired => self.restart = true,
-                EndpointAction::LinkStatusNotify(_) => {
-                    tracing::error!("unexpected link status notification")
-                }
+                EndpointAction::LinkStatusNotify(link_up) => state.set_link_up(link_up),
             }
         }
     }
