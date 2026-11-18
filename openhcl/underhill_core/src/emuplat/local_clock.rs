@@ -164,10 +164,6 @@ impl LocalClock for UnderhillLocalClock {
         self.get_time()
     }
 
-    fn is_refreshing(&mut self) -> bool {
-        self.host_time.is_refreshing()
-    }
-
     fn set_time(&mut self, new_time: LocalClockTime) {
         let new_skew = new_time - LocalClockTime::from(self.host_time.query());
         self.offset_from_host_time = new_skew;
@@ -467,14 +463,6 @@ mod host_time {
             cached_host_time.latest.clone()
         }
 
-        /// Whether a query has been sent and its reply not taken yet.
-        pub fn is_refreshing(&self) -> bool {
-            self.cached_host_time
-                .lock()
-                .as_ref()
-                .is_some_and(|cached_host_time| cached_host_time.refresh.is_some())
-        }
-
         /// Return the latest time returned, if any.
         pub fn latest(&self) -> Option<Timestamp> {
             match &*self.cached_host_time.lock() {
@@ -524,10 +512,6 @@ impl LocalClock for ArcMutexUnderhillLocalClock {
 
     fn get_time_for_update(&mut self) -> LocalClockTime {
         self.0.lock().get_time_for_update()
-    }
-
-    fn is_refreshing(&mut self) -> bool {
-        self.0.lock().is_refreshing()
     }
 
     fn set_time(&mut self, new_time: LocalClockTime) {
@@ -1125,12 +1109,10 @@ mod tests {
         let clock = ArcMutexUnderhillLocalClock(Arc::new(parking_lot::Mutex::new(clock)));
         let mut rtc_clock = clock.new_linked_clock();
         rtc_clock.get_time();
-        assert!(rtc_clock.is_refreshing());
 
         // The guest writes the seconds register only: the RTC writes back the
         // other fields with it, as read for the update.
         let time = rtc_clock.get_time_for_update() + LocalClockDelta::from_millis(10_000);
-        assert!(!rtc_clock.is_refreshing());
         rtc_clock.set_time(time);
         let change = clock.0.lock().offset_from_host_time - skew;
         assert!((change.as_millis() - 10_000).abs() < 100, "{change:?}");

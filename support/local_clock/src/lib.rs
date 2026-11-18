@@ -92,13 +92,6 @@ pub trait LocalClock: Send {
         self.get_time()
     }
 
-    /// Whether the clock is waiting for an up-to-date time that `get_time`
-    /// hasn't returned yet, so that a time it returned may be behind. Callers
-    /// that schedule something from the time can read it again later.
-    fn is_refreshing(&mut self) -> bool {
-        false
-    }
-
     /// Set the current clock time.
     fn set_time(&mut self, new_time: LocalClockTime);
 }

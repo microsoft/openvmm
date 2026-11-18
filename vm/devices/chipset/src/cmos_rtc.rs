@@ -179,7 +179,6 @@ pub struct Rtc {
     real_time_source: Box<dyn InspectableLocalClock>,
     interrupt: LineInterrupt,
     vmtime_alarm: VmTimeAccess,
-    vmtime_alarm_recheck: VmTimeAccess,
     vmtimer_periodic: VmTimerPeriodic,
     vmtimer_update: VmTimerPeriodic,
 
@@ -321,7 +320,6 @@ impl Rtc {
             real_time_source,
             interrupt,
             vmtime_alarm: vmtime_source.access("rtc-alarm"),
-            vmtime_alarm_recheck: vmtime_source.access("rtc-alarm-recheck"),
             vmtimer_periodic: VmTimerPeriodic::new(vmtime_source.access("rtc-periodic")),
             vmtimer_update: VmTimerPeriodic::new(vmtime_source.access("rtc-update")),
 
@@ -420,16 +418,16 @@ impl Rtc {
         alarm_duration
     }
 
-    /// Arm the alarm timer from the current time. `update` is set when the
-    /// guest sets the alarm, to read the time with `get_time_for_update`, so
-    /// that the alarm isn't scheduled from a time that is behind.
+    /// Arm the alarm timer from the current time. `update` reads the time
+    /// with `get_time_for_update`, so that the alarm isn't scheduled from a
+    /// time that is behind, as after a host pause. It is set except on restore
+    /// and reset, which don't wait for an up-to-date time.
     fn set_alarm_timer(&mut self, now: VmTime, update: bool) {
         self.sync_clock_to_cmos_inner(update);
         let alarm_duration = self.calculate_alarm_duration();
 
         self.vmtime_alarm
             .set_timeout(now.wrapping_add(alarm_duration));
-        self.vmtime_alarm_recheck.cancel_timeout();
     }
 
     fn on_alarm_timer(&mut self, now: VmTime) {
@@ -439,33 +437,7 @@ impl Rtc {
         self.signal_interrupt();
 
         // re-arm the alarm timer
-        self.set_alarm_timer(now, false);
-        self.recheck_alarm_later(now);
-    }
-
-    /// The time read to re-arm the alarm when it fires isn't waited for, so
-    /// it may be behind, as after a host pause that hasn't been caught up
-    /// with yet. While the clock is refreshing, re-arm the alarm from the time
-    /// a second later, unless it is due by then.
-    fn recheck_alarm_later(&mut self, now: VmTime) {
-        let recheck = now.wrapping_add(Duration::from_secs(1));
-        if StatusRegA::from(self.state.cmos[CmosReg::STATUS_A]).oscillator_control()
-            == ENABLE_OSCILLATOR_CONTROL
-            && self.real_time_source.is_refreshing()
-            && self
-                .vmtime_alarm
-                .get_timeout()
-                .is_some_and(|alarm| alarm.is_after(recheck.wrapping_add(Duration::from_secs(1))))
-        {
-            self.vmtime_alarm_recheck.set_timeout(recheck);
-        }
-    }
-
-    fn on_alarm_recheck(&mut self, now: VmTime) {
-        if self.vmtime_alarm.get_timeout().is_some() {
-            self.set_alarm_timer(now, false);
-            self.recheck_alarm_later(now);
-        }
+        self.set_alarm_timer(now, true)
     }
 
     fn set_periodic_timer(&mut self) {
@@ -535,7 +507,7 @@ impl Rtc {
     }
 
     /// Synchronize vmtime-backed timers with current timer / alarm register
-    /// configuration. `update` is set on a guest write.
+    /// configuration. `update` is passed to `set_alarm_timer`.
     fn update_timers(&mut self, update: bool) {
         let status_b = StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]);
 
@@ -545,7 +517,6 @@ impl Rtc {
             }
         } else {
             self.vmtime_alarm.cancel_timeout();
-            self.vmtime_alarm_recheck.cancel_timeout();
         }
 
         if status_b.irq_enable_periodic() {
@@ -921,10 +892,6 @@ impl PortIoIntercept for Rtc {
 
 impl PollDevice for Rtc {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
-        if let Poll::Ready(now) = self.vmtime_alarm_recheck.poll_timeout(cx) {
-            self.on_alarm_recheck(now)
-        }
-
         while let Poll::Ready(now) = self.vmtime_alarm.poll_timeout(cx) {
             self.on_alarm_timer(now)
         }
@@ -979,7 +946,6 @@ mod save_restore {
                 cmos: CmosData(cmos),
             };
 
-            self.vmtime_alarm_recheck.cancel_timeout();
             self.update_timers(false);
             self.sync_interrupt_line_level();
 
@@ -996,8 +962,6 @@ mod tests {
     use local_clock::MockLocalClockAccessor;
     use parking_lot::Mutex;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
     use test_with_tracing::test;
     use vmcore::line_interrupt::LineSetTarget;
 
@@ -1191,38 +1155,22 @@ mod tests {
     }
 
     /// A clock whose time read for an update is an hour after the one read
-    /// otherwise, as when a host pause hasn't been caught up with yet, for
-    /// the given number of reads. It is refreshing after a stale read.
+    /// otherwise, as when a host pause hasn't been caught up with yet.
     #[derive(Inspect)]
     struct StaleClock {
         #[inspect(skip)]
         set: Arc<Mutex<Option<LocalClockTime>>>,
-        #[inspect(skip)]
-        stale_reads: Arc<AtomicUsize>,
-        refreshing: bool,
     }
 
     const STALE_MILLIS: i64 = 1_700_000_000_000;
 
     impl LocalClock for StaleClock {
         fn get_time(&mut self) -> LocalClockTime {
-            let stale_reads = self.stale_reads.load(Ordering::Relaxed);
-            if stale_reads > 0 {
-                self.stale_reads.store(stale_reads - 1, Ordering::Relaxed);
-                self.refreshing = true;
-                LocalClockTime::from_millis_since_unix_epoch(STALE_MILLIS)
-            } else {
-                self.get_time_for_update()
-            }
+            LocalClockTime::from_millis_since_unix_epoch(STALE_MILLIS)
         }
 
         fn get_time_for_update(&mut self) -> LocalClockTime {
-            self.refreshing = false;
             LocalClockTime::from_millis_since_unix_epoch(STALE_MILLIS + 3_600_000)
-        }
-
-        fn is_refreshing(&mut self) -> bool {
-            self.refreshing
         }
 
         fn set_time(&mut self, new_time: LocalClockTime) {
@@ -1230,15 +1178,10 @@ mod tests {
         }
     }
 
-    /// Create an RTC with a [`StaleClock`] that is behind for `stale_reads`
-    /// reads, returning what was last set and the stale reads left.
-    fn new_stale_rtc(
-        stale_reads: usize,
-    ) -> (
+    fn new_stale_rtc() -> (
         pal_async::DefaultPool,
         vmcore::vmtime::VmTimeKeeper,
         Arc<Mutex<Option<LocalClockTime>>>,
-        Arc<AtomicUsize>,
         Rtc,
     ) {
         let mut pool = pal_async::DefaultPool::new();
@@ -1248,25 +1191,20 @@ mod tests {
             .run_until(vm_time_keeper.builder().build(&driver))
             .unwrap();
         let set = Arc::new(Mutex::new(None));
-        let stale_reads = Arc::new(AtomicUsize::new(stale_reads));
         let rtc = Rtc::new(
-            Box::new(StaleClock {
-                set: set.clone(),
-                stale_reads: stale_reads.clone(),
-                refreshing: false,
-            }),
+            Box::new(StaleClock { set: set.clone() }),
             LineInterrupt::detached(),
             &vm_time_source,
             0x32,
             None,
             false,
         );
-        (pool, vm_time_keeper, set, stale_reads, rtc)
+        (pool, vm_time_keeper, set, rtc)
     }
 
     #[test]
     fn partial_write_uses_time_read_for_update() {
-        let (_pool, _vm_time_keeper, set, _, mut rtc) = new_stale_rtc(usize::MAX);
+        let (_pool, _vm_time_keeper, set, mut rtc) = new_stale_rtc();
 
         // Write the seconds only: the other fields come from the time read for
         // the update.
@@ -1284,7 +1222,7 @@ mod tests {
     fn alarm_uses_time_read_for_update() {
         use vmcore::save_restore::SaveRestore;
 
-        let (mut pool, _vm_time_keeper, _, _, mut rtc) = new_stale_rtc(usize::MAX);
+        let (mut pool, _vm_time_keeper, _, mut rtc) = new_stale_rtc();
         let alarm_in = |rtc: &Rtc| {
             rtc.vmtime_alarm
                 .get_timeout()
@@ -1305,93 +1243,69 @@ mod tests {
         set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, 15);
         assert_eq!(alarm_in(&rtc), Duration::from_secs(120));
 
-        // Restoring and re-arming after the alarm fires read the time as
-        // usual.
+        // Restoring reads the time as usual.
         let state = SaveRestore::save(&mut rtc).unwrap();
         pool.run_until(rtc.reset());
         SaveRestore::restore(&mut rtc, state).unwrap();
         assert_eq!(alarm_in(&rtc), Duration::from_secs(3720));
-        rtc.on_alarm_timer(rtc.vmtime_alarm.now());
-        assert_eq!(alarm_in(&rtc), Duration::from_secs(3720));
     }
 
-    /// Create an RTC with a daily alarm at 23:13:20, the time read for an
-    /// update, returning the stale reads left.
-    fn new_rtc_with_daily_alarm() -> (
-        pal_async::DefaultPool,
-        vmcore::vmtime::VmTimeKeeper,
-        Arc<AtomicUsize>,
-        Rtc,
-    ) {
-        let (pool, vm_time_keeper, _, stale_reads, mut rtc) = new_stale_rtc(0);
+    #[test]
+    fn fired_alarm_uses_time_read_for_update() {
+        let (mut pool, mut vm_time_keeper, _, mut rtc) = new_stale_rtc();
+
+        // An alarm every minute of hour 23 at 21 seconds, a second after the
+        // time read for an update, 23:13:20.
         set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06);
         set_cmos_data(&mut rtc, CmosReg::HOUR_ALARM, 23);
-        set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, 13);
-        set_cmos_data(&mut rtc, CmosReg::SECOND_ALARM, 20);
+        set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, 0xC0);
+        set_cmos_data(&mut rtc, CmosReg::SECOND_ALARM, 21);
         set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x26);
-        (pool, vm_time_keeper, stale_reads, rtc)
-    }
+        pool.run_until(vm_time_keeper.start());
 
-    #[test]
-    fn alarm_is_rescheduled_once_the_clock_catches_up() {
-        // The alarm fires as the host pauses the VM, and the clock catches up
-        // with the pause after up to three reads.
-        for stale_reads in 0..=3 {
-            let (_pool, _vm_time_keeper, stale, mut rtc) = new_rtc_with_daily_alarm();
-            stale.store(stale_reads, Ordering::Relaxed);
-            let mut now = rtc.vmtime_alarm.now();
-            rtc.on_alarm_timer(now);
-
-            // Until then, the alarm is re-armed from the time before the pause
-            // every second, and then from the time, a day later.
-            for read in 1..=stale_reads + 1 {
-                let alarm = rtc.vmtime_alarm.get_timeout().unwrap();
-                let recheck = rtc.vmtime_alarm_recheck.get_timeout();
-                if read <= stale_reads {
-                    assert_eq!(alarm.checked_sub(now), Some(Duration::from_secs(3600)));
-                    let recheck = recheck.unwrap();
-                    assert_eq!(recheck.checked_sub(now), Some(Duration::from_secs(1)));
-                    rtc.on_alarm_recheck(recheck);
-                    now = recheck;
+        // Each time it fires, it is re-armed from the time read for an update,
+        // which is still 23:13:20, rather than from the hour before, and fires
+        // again.
+        for _ in 0..2 {
+            let fired = pool.run_until(std::future::poll_fn(|cx| {
+                rtc.poll_device(cx);
+                if StatusRegC::from(rtc.state.cmos[CmosReg::STATUS_C]).irq_alarm() {
+                    Poll::Ready(rtc.vmtime_alarm.now())
                 } else {
-                    assert_eq!(alarm.checked_sub(now), Some(Duration::from_secs(86400)));
-                    assert!(recheck.is_none(), "{stale_reads}");
+                    Poll::Pending
                 }
-            }
+            }));
+            let alarm = rtc.vmtime_alarm.get_timeout().unwrap();
+            assert!(alarm.checked_sub(fired).unwrap() <= Duration::from_secs(1));
+            get_cmos_data(&mut rtc, CmosReg::STATUS_C);
         }
     }
 
     #[test]
-    fn alarm_recheck_is_dropped_when_the_alarm_is_replaced() {
-        use vmcore::save_restore::SaveRestore;
+    fn overdue_alarm_fires_when_polled() {
+        let (mut pool, mut vm_time_keeper, _, mut rtc) = new_stale_rtc();
+        let alarm_fired = |rtc: &mut Rtc| {
+            rtc.poll_device(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+            StatusRegC::from(get_cmos_data(rtc, CmosReg::STATUS_C)).irq_alarm()
+        };
 
-        let cases: [(&str, fn(&mut pal_async::DefaultPool, &mut Rtc)); 4] = [
-            ("set", |_, rtc| {
-                set_cmos_data(rtc, CmosReg::MINUTE_ALARM, 14);
-            }),
-            ("disable", |_, rtc| {
-                set_cmos_data(rtc, CmosReg::STATUS_B, 0x06);
-            }),
-            ("reset", |pool, rtc| {
-                pool.run_until(rtc.reset());
-            }),
-            ("restore", |_, rtc| {
-                let state = SaveRestore::save(rtc).unwrap();
-                SaveRestore::restore(rtc, state).unwrap();
-            }),
-        ];
-        for (name, replace) in cases {
-            // The alarm fires as the host pauses the VM, and the clock doesn't
-            // catch up.
-            let (mut pool, _vm_time_keeper, stale_reads, mut rtc) = new_rtc_with_daily_alarm();
-            stale_reads.store(usize::MAX, Ordering::Relaxed);
-            rtc.on_alarm_timer(rtc.vmtime_alarm.now());
-            assert!(rtc.vmtime_alarm_recheck.get_timeout().is_some(), "{name}");
+        // An alarm every minute at 23 seconds, three seconds after both times
+        // the clock returns, so that it would be re-armed after firing from a
+        // time that hasn't caught up with a host pause too.
+        set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x06);
+        set_cmos_data(&mut rtc, CmosReg::HOUR_ALARM, 0xC0);
+        set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, 0xC0);
+        set_cmos_data(&mut rtc, CmosReg::SECOND_ALARM, 23);
+        set_cmos_data(&mut rtc, CmosReg::STATUS_B, 0x26);
+        pool.run_until(vm_time_keeper.start());
 
-            // Re-arming it later would undo the change.
-            replace(&mut pool, &mut rtc);
-            assert!(rtc.vmtime_alarm_recheck.get_timeout().is_none(), "{name}");
-        }
+        // Let it fire and be re-armed, and then poll the device only after
+        // the next alarm, and anything else scheduled since, is due. The alarm
+        // still fires.
+        std::thread::sleep(Duration::from_millis(3100));
+        assert!(alarm_fired(&mut rtc));
+        std::thread::sleep(Duration::from_millis(3100));
+        assert!(alarm_fired(&mut rtc));
     }
 
     fn set_cmos_data(rtc: &mut Rtc, addr: CmosReg, data: u8) {
