@@ -3,6 +3,7 @@
 
 use crate::Error;
 use crate::ErrorInner;
+use crate::KernelError;
 use crate::MshvProcessor;
 use crate::VcpuFdExt;
 use hvdef::HvX64RegisterName;
@@ -20,24 +21,47 @@ use virt::x86::vp::AccessVpState;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+pub(super) fn set_register_state<T, const N: usize>(
+    vcpufd: &impl VcpuFdExt,
+    regs: &T,
+) -> Result<(), KernelError>
+where
+    T: HvRegisterState<HvX64RegisterName, N>,
+{
+    let mut assoc = regs.names().map(|name| HvRegisterAssoc {
+        name: name.into(),
+        pad: [0; 3],
+        value: FromZeros::new_zeroed(),
+    });
+
+    regs.get_values(assoc.iter_mut().map(|assoc| &mut assoc.value));
+    vcpufd.set_hvdef_regs(&assoc)
+}
+
+pub(super) fn get_register_state<T, const N: usize>(
+    vcpufd: &impl VcpuFdExt,
+) -> Result<T, KernelError>
+where
+    T: HvRegisterState<HvX64RegisterName, N>,
+{
+    let mut regs = T::default();
+    let mut assoc = regs.names().map(|name| HvRegisterAssoc {
+        name: name.into(),
+        pad: [0; 3],
+        value: FromZeros::new_zeroed(),
+    });
+
+    vcpufd.get_hvdef_regs(&mut assoc)?;
+    regs.set_values(assoc.iter().map(|assoc| assoc.value));
+    Ok(regs)
+}
+
 impl MshvProcessor<'_> {
     pub(crate) fn set_register_state<T, const N: usize>(&self, regs: &T) -> Result<(), Error>
     where
         T: HvRegisterState<HvX64RegisterName, N>,
     {
-        let mut assoc = regs.names().map(|name| HvRegisterAssoc {
-            name: name.into(),
-            pad: [0; 3],
-            value: FromZeros::new_zeroed(),
-        });
-
-        regs.get_values(assoc.iter_mut().map(|assoc| &mut assoc.value));
-
-        self.runner
-            .vcpufd
-            .set_hvdef_regs(&assoc[..])
-            .map_err(ErrorInner::Register)?;
-
+        set_register_state(self.runner.vcpufd, regs).map_err(ErrorInner::Register)?;
         Ok(())
     }
 
@@ -45,20 +69,7 @@ impl MshvProcessor<'_> {
     where
         T: HvRegisterState<HvX64RegisterName, N>,
     {
-        let mut regs = T::default();
-        let mut assoc = regs.names().map(|name| HvRegisterAssoc {
-            name: name.into(),
-            pad: [0; 3],
-            value: FromZeros::new_zeroed(),
-        });
-
-        self.runner
-            .vcpufd
-            .get_hvdef_regs(&mut assoc[..])
-            .map_err(ErrorInner::Register)?;
-
-        regs.set_values(assoc.iter().map(|assoc| assoc.value));
-        Ok(regs)
+        Ok(get_register_state(self.runner.vcpufd).map_err(ErrorInner::Register)?)
     }
 
     fn set_state(&self, ty: u32, data: &[u8]) -> Result<(), Error> {
