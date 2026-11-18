@@ -1386,3 +1386,105 @@ async fn test_io_completion_fault_matches_inline_completed_command(driver: Defau
     gm.read_at(DATA_BASE, &mut data).unwrap();
     assert_eq!(data, payload);
 }
+
+/// Submits a READ to `nsid` whose completion a `Delay` fault holds back, adds
+/// a namespace while the delay runs (which stops and restarts every I/O
+/// worker), and checks that the READ still completes.
+async fn delayed_io_completion_survives_worker_stop(driver: DefaultDriver, nsid: u32) {
+    const IO_CQ_BASE: u64 = 0x4000;
+    const IO_SQ_BASE: u64 = 0x5000;
+    const DATA_BASE: u64 = 0x6000;
+    const DELAY: Duration = Duration::from_secs(2);
+
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
+        .with_io_queue_fault(
+            IoQueueFaultConfig::new(CellUpdater::new(true).cell()).with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvm::NvmOpcode::READ.0)
+                    .build(),
+                IoQueueFaultBehavior::Delay(DELAY),
+            ),
+        );
+
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let io_cq = PrpRange::new(vec![IO_CQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let io_sq = PrpRange::new(vec![IO_SQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        fault_configuration,
+    )
+    .await;
+    if nsid == 1 {
+        let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+        nvmec.client().add_namespace(1, disk).await.unwrap();
+    }
+    create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &acq,
+        &asq,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        IO_CQ_BASE,
+        IO_SQ_BASE,
+        /* qsize_z = */ 15,
+        /* cq_iv = */ 0,
+    )
+    .await;
+
+    let mut read = Command::new_zeroed();
+    read.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+    read.cdw0.set_cid(3);
+    read.nsid = nsid;
+    read.dptr[0] = DATA_BASE;
+    write_command_to_queue(&gm, &io_sq, 0, &read);
+    nvmec.write_bar0(sq_db(1), 1u32.as_bytes()).unwrap();
+
+    // The worker takes the entry within milliseconds, so a quarter of the
+    // delay later it is inside the delay, with the completion not yet written.
+    let mut timer = PolledTimer::new(&driver);
+    timer.sleep(DELAY / 4).await;
+    assert!(
+        !read_completion_from_queue(&gm, &io_cq, 0).status.phase(),
+        "the completion was not delayed"
+    );
+    let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+    nvmec.client().add_namespace(2, disk).await.unwrap();
+
+    let mut cqe = read_completion_from_queue(&gm, &io_cq, 0);
+    for _ in 0..50 {
+        if cqe.status.phase() {
+            break;
+        }
+        timer.sleep(Duration::from_millis(100)).await;
+        cqe = read_completion_from_queue(&gm, &io_cq, 0);
+    }
+    assert!(cqe.status.phase(), "the delayed READ was never completed");
+    assert_eq!(cqe.cid, 3);
+}
+
+/// A delayed completion of a READ completed inline (no namespace behind the
+/// NSID) survives an I/O worker stop during the delay.
+#[async_test]
+async fn test_delayed_inline_io_completion_survives_worker_stop(driver: DefaultDriver) {
+    delayed_io_completion_survives_worker_stop(driver, 0).await;
+}
+
+/// A delayed completion of a READ that reached a namespace survives an I/O
+/// worker stop during the delay.
+#[async_test]
+async fn test_delayed_namespace_io_completion_survives_worker_stop(driver: DefaultDriver) {
+    delayed_io_completion_survives_worker_stop(driver, 1).await;
+}
