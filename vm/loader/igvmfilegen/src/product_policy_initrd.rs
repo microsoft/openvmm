@@ -11,7 +11,8 @@ pub fn append(
     policy: Option<&ProductPolicy>,
     device_policy: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let devices = device_policy.map_or(Ok(Vec::new()), load_devices)?;
+    let (devices, require_vpci_relay, max_vpci_devices) =
+        device_policy.map_or(Ok((Vec::new(), false, None)), load_device_policy)?;
     let (require_secure_boot, require_vars, require_bcd, custom_uefi_json) = match policy {
         Some(ProductPolicy::Sivm(p)) => (
             p.require_secure_boot,
@@ -33,7 +34,12 @@ pub fn append(
         "product policy requires non-empty custom_uefi_json"
     );
 
-    let bytes = product_policy::encode_product_policy(policy, &devices);
+    let bytes = product_policy::encode_product_policy(
+        policy,
+        &devices,
+        require_vpci_relay,
+        max_vpci_devices,
+    );
     initrd_cpio::append_to_initrd(
         initrd,
         product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/'),
@@ -44,16 +50,29 @@ pub fn append(
 }
 
 /// Loads the devices that a device policy (see `vm/loader/manifests/policies`)
-/// allows; `"*"` allows every device.
-fn load_devices(path: &std::path::Path) -> anyhow::Result<Vec<product_policy::AllowedPciDevice>> {
+/// allows, where `"*"` allows every device, whether it requires the VPCI
+/// relay, and how many devices the relay makes room for.
+fn load_device_policy(
+    path: &std::path::Path,
+) -> anyhow::Result<(Vec<product_policy::AllowedPciDevice>, bool, Option<u16>)> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Policy {
         devices: std::path::PathBuf,
         allowed_pci_devices: Vec<String>,
+        #[serde(default)]
+        require_vpci_relay: bool,
+        max_vpci_devices: Option<u16>,
     }
     let policy: Policy = toml_edit::de::from_str(&fs_err::read_to_string(path)?)
         .with_context(|| format!("parsing {}", path.display()))?;
+    // OpenHCL sizes the relay's MMIO window and ring memory from this count.
+    anyhow::ensure!(
+        policy.max_vpci_devices != Some(0)
+            && (policy.allowed_pci_devices.is_empty() || policy.max_vpci_devices.is_some()),
+        "{}: a policy that allows devices must set a nonzero max_vpci_devices",
+        path.display()
+    );
     let devices_path = path.with_file_name(&policy.devices);
     let devices: std::collections::BTreeMap<String, product_policy::AllowedPciDevice> =
         toml_edit::de::from_str(&fs_err::read_to_string(&devices_path)?)
@@ -65,7 +84,12 @@ fn load_devices(path: &std::path::Path) -> anyhow::Result<Vec<product_policy::Al
         Some(device) if *device != any => Ok(device.clone()),
         _ => anyhow::bail!("{name:?} isn't defined or sets no IDs in {devices_path:?}"),
     };
-    policy.allowed_pci_devices.iter().map(device).collect()
+    let devices = policy
+        .allowed_pci_devices
+        .iter()
+        .map(device)
+        .collect::<anyhow::Result<_>>()?;
+    Ok((devices, policy.require_vpci_relay, policy.max_vpci_devices))
 }
 
 #[cfg(test)]
@@ -151,20 +175,18 @@ mod tests {
         );
     }
 
-    /// The Azure device policy must allow exactly the devices that OpenHCL used
-    /// to allow unconditionally.
+    /// The Azure CVM device policy must allow exactly the devices that OpenHCL
+    /// used to allow unconditionally, and the SIVM policy only NVMe and the
+    /// GPU. Only the SIVM policy requires the VPCI relay.
     #[test]
     fn device_policy_round_trips_through_initrd() {
         let policies =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests/policies");
-        let mut initrd = Vec::new();
-        append(&mut initrd, None, None).unwrap();
-        assert!(initrd.is_empty());
-        append(&mut Vec::new(), None, Some(&policies.join("sivm.toml"))).unwrap();
-        append(&mut initrd, None, Some(&policies.join("azure.toml"))).unwrap();
-        let files = extract_files(&initrd);
-        let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
-        let policy = product_policy::decode_product_policy(bytes).unwrap();
+        let decode = |initrd: &[u8]| {
+            let files = extract_files(initrd);
+            let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
+            product_policy::decode_product_policy(bytes).unwrap()
+        };
         let class = |base_class, sub_class, prog_if| product_policy::AllowedPciDevice {
             base_class: Some(base_class),
             sub_class: Some(sub_class),
@@ -176,11 +198,55 @@ mod tests {
             device_id: Some(device_id),
             ..class(base_class, 0, 0)
         };
+        let gpu = product_policy::AllowedPciDevice {
+            vendor_id: Some(0x10de),
+            device_id: Some(0x2704),
+            revision_id: Some(0xa1),
+            ..Default::default()
+        };
+        let mut initrd = Vec::new();
+        append(&mut initrd, None, None).unwrap();
+        assert!(initrd.is_empty());
+        let mut sivm = Vec::new();
+        append(&mut sivm, None, Some(&policies.join("sivm.toml"))).unwrap();
+        let sivm = decode(&sivm);
+        assert_eq!(
+            (
+                sivm.allowed_pci_devices(),
+                sivm.require_vpci_relay(),
+                sivm.max_vpci_devices()
+            ),
+            (&[class(1, 8, 2), gpu][..], true, Some(64))
+        );
+        append(&mut initrd, None, Some(&policies.join("azure-cvm.toml"))).unwrap();
+        let policy = decode(&initrd);
         let azure = [class(1, 8, 2), microsoft(0xba, 2), microsoft(0xc003, 0x10)];
         assert_eq!(
-            (policy.raw(), policy.allowed_pci_devices()),
-            (None, &azure[..])
+            (
+                policy.raw(),
+                policy.allowed_pci_devices(),
+                policy.require_vpci_relay(),
+                policy.max_vpci_devices()
+            ),
+            (None, &azure[..], false, Some(64))
         );
+    }
+
+    /// A policy that allows devices must say how many the relay makes room
+    /// for, and that can't be zero.
+    #[test]
+    fn device_policy_needs_a_device_count() {
+        let dir = tempfile::tempdir().unwrap();
+        fs_err::write(dir.path().join("devices.toml"), "[nvme]\nbase_class = 1\n").unwrap();
+        let path = dir.path().join("policy.toml");
+        let append_with = |count: &str| {
+            let policy = "devices = \"devices.toml\"\nallowed_pci_devices = [\"nvme\"]\n";
+            fs_err::write(&path, format!("{policy}{count}")).unwrap();
+            append(&mut Vec::new(), None, Some(&path))
+        };
+        assert!(append_with("max_vpci_devices = 1\n").is_ok());
+        assert!(append_with("").is_err());
+        assert!(append_with("max_vpci_devices = 0\n").is_err());
     }
 
     /// An empty device policy still writes the policy file, so it replaces an
@@ -198,7 +264,7 @@ mod tests {
         )
         .unwrap();
         let mut initrd = Vec::new();
-        append(&mut initrd, None, Some(&policies.join("azure.toml"))).unwrap();
+        append(&mut initrd, None, Some(&policies.join("azure-cvm.toml"))).unwrap();
         append(&mut initrd, None, Some(&empty)).unwrap();
         let files = extract_files(&initrd);
         let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];

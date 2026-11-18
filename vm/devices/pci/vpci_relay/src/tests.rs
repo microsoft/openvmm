@@ -8,6 +8,7 @@
 
 #![cfg(test)]
 
+use super::AllowedDevice;
 use super::RelayedVpciDevice;
 use super::TdispOperationCount;
 use chipset_device::ChipsetDevice;
@@ -30,6 +31,10 @@ use pal_async::task::Spawn;
 use parking_lot::Mutex;
 use pci_core::spec::cfg_space::Command;
 use pci_core::spec::cfg_space::HeaderType00;
+use pci_core::spec::hwid::ClassCode;
+use pci_core::spec::hwid::HardwareIds;
+use pci_core::spec::hwid::ProgrammingInterface;
+use pci_core::spec::hwid::Subclass;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -336,6 +341,52 @@ impl TestRelay {
 /// the low word of the status/command DWORD.
 fn command(mmio_enabled: bool) -> u32 {
     Command::new().with_mmio_enabled(mmio_enabled).into_bits() as u32
+}
+
+/// An allowlist entry allows a device only if every field it sets matches; a
+/// field that is `None` matches any value.
+#[test]
+fn allowed_device_matches_only_the_fields_it_sets() {
+    let gpu = HardwareIds {
+        vendor_id: 0x10de,
+        device_id: 0x2704,
+        revision_id: 0xa1,
+        prog_if: ProgrammingInterface::NONE,
+        sub_class: Subclass::NONE,
+        base_class: ClassCode::DISPLAY_CONTROLLER,
+        type0_sub_vendor_id: 0x10de,
+        type0_sub_system_id: 0x167a,
+    };
+    let any = AllowedDevice {
+        vendor_id: None,
+        device_id: None,
+        revision_id: None,
+        prog_if: None,
+        sub_class: None,
+        base_class: None,
+        sub_vendor_id: None,
+        sub_system_id: None,
+    };
+    let nvidia_gpu = AllowedDevice {
+        vendor_id: Some(0x10de),
+        device_id: Some(0x2704),
+        revision_id: Some(0xa1),
+        ..any
+    };
+    assert!(any.allows(&gpu));
+    assert!(nvidia_gpu.allows(&gpu));
+    for other in [
+        AllowedDevice {
+            revision_id: Some(0xa2),
+            ..nvidia_gpu
+        },
+        AllowedDevice {
+            base_class: Some(ClassCode::MASS_STORAGE_CONTROLLER),
+            ..any
+        },
+    ] {
+        assert!(!other.allows(&gpu), "{other:?}");
+    }
 }
 
 /// Enabling MMIO starts an attestation that takes several round trips, so a

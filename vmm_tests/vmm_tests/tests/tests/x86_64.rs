@@ -245,8 +245,8 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
     let nvme_guid = guid::guid!("78fc4861-29bf-408d-88b7-24199de560d1");
     let virtio_guid = guid::guid!("382a9da7-a7d8-44a5-9644-be3785bceda6");
 
-    // Add an NVMe controller and a Virtio network controller. Only the NVMe
-    // controller should be allowed by OpenHCL.
+    // Add an NVMe controller and a Virtio network controller. OpenHCL doesn't
+    // filter VPCI devices for non-isolated guests, so both should be relayed.
     let (vm, agent) = config
         .with_openhcl_command_line("OPENHCL_ENABLE_VPCI_RELAY=1")
         .with_vmbus_redirect(true)
@@ -289,14 +289,20 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
 
     let sh = agent.unix_shell();
     let lspci_output = cmd!(sh, "lspci").read().await?;
-    let devices = lspci_output
+    let mut devices = lspci_output
         .lines()
         .map(|line| line.trim().split_once(' ').ok_or_else(|| line.trim()))
         .collect::<Vec<_>>();
+    devices.sort();
 
-    // The virtio device should not have made it through, but the NVMe
-    // controller should be there.
-    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:c03e"))]);
+    // Both controllers should be there, each on its own VPCI bus (PCI domain).
+    assert_eq!(
+        devices,
+        vec![
+            Ok(("00:00.0", "Class 0108: 1414:c03e")),
+            Ok(("00:00.0", "Class 0200: 1af4:1041")),
+        ]
+    );
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

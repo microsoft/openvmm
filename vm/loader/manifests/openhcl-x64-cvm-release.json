@@ -15,7 +15,7 @@
             },
             "image": {
                 "openhcl": {
-                    "device_policy": "policies/azure.toml",
+                    "device_policy": "policies/azure-cvm.toml",
                     "command_line": "",
                     "memory_page_count": 16384,
                     "memory_page_base": 32768,
@@ -34,7 +34,7 @@
             },
             "image": {
                 "openhcl": {
-                    "device_policy": "policies/azure.toml",
+                    "device_policy": "policies/azure-cvm.toml",
                     "command_line": "",
                     "memory_page_count": 16384,
                     "memory_page_base": 32768,
@@ -52,7 +52,7 @@
             },
             "image": {
                 "openhcl": {
-                    "device_policy": "policies/azure.toml",
+                    "device_policy": "policies/azure-cvm.toml",
                     "command_line": "",
                     "memory_page_count": 16384,
                     "memory_page_base": 32768,

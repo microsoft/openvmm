@@ -82,6 +82,10 @@ pub const VPCI_RELAY_MMIO_PER_DEVICE: u64 = vpci_client::MMIO_SIZE;
 /// The number of pages in the VMBus ring the relay allocates for each device.
 pub const VPCI_RELAY_RING_PAGES: u16 = 20;
 
+/// The most VPCI devices the relay makes room for when no device policy sets
+/// the count.
+pub const VPCI_RELAY_DEFAULT_MAX_DEVICES: u16 = 64;
+
 /// Size and alignment of the window the mocked TDISP flow programs into a
 /// device BAR so that it can reach the device's registers. Only reserved when
 /// that flow is enabled, and large enough for the BARs the emulated test
@@ -319,10 +323,9 @@ impl VpciRelay {
         Some((MemoryRange::new(mmio_range.start()..base), base))
     }
 
-    /// Adds an allowed device to the list. A field that is `None` matches any
-    /// value.
-    ///
-    /// Note that if no devices are on the list, then no devices are allowed.
+    /// Adds an allowed device to the list. Within a device entry, a field set
+    /// to `None` imposes no matching constraint. An empty allowlist permits no
+    /// devices.
     pub fn add_allowed_device(&mut self, dev: AllowedDevice) {
         self.allowed_devices.push(dev);
     }

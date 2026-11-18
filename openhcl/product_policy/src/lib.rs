@@ -39,6 +39,10 @@ pub struct MeasuredProductPolicy {
     policy: Option<ProductPolicy>,
     #[cfg_attr(feature = "inspect", inspect(skip))]
     allowed_pci_devices: Vec<AllowedPciDevice>,
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    require_vpci_relay: bool,
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    max_vpci_devices: Option<u16>,
 }
 
 impl MeasuredProductPolicy {
@@ -47,6 +51,8 @@ impl MeasuredProductPolicy {
         Self {
             policy,
             allowed_pci_devices: Vec::new(),
+            require_vpci_relay: false,
+            max_vpci_devices: None,
         }
     }
 
@@ -59,6 +65,18 @@ impl MeasuredProductPolicy {
     pub fn allowed_pci_devices(&self) -> &[AllowedPciDevice] {
         &self.allowed_pci_devices
     }
+
+    /// Whether OpenHCL must fail to boot when it can't run the VPCI relay,
+    /// instead of starting without the allowed devices.
+    pub fn require_vpci_relay(&self) -> bool {
+        self.require_vpci_relay
+    }
+
+    /// The most VPCI devices the relay makes room for, if the device policy
+    /// sets it.
+    pub fn max_vpci_devices(&self) -> Option<u16> {
+        self.max_vpci_devices
+    }
 }
 
 #[derive(mesh_protobuf::Protobuf)]
@@ -69,6 +87,10 @@ struct ProductPolicyInternal {
     policy: Option<ProductPolicy>,
     #[mesh(3)]
     allowed_pci_devices: Vec<AllowedPciDevice>,
+    #[mesh(4)]
+    require_vpci_relay: bool,
+    #[mesh(5)]
+    max_vpci_devices: Option<u16>,
 }
 
 impl ProductPolicyInternal {
@@ -105,12 +127,6 @@ pub struct AllowedPciDevice {
     /// Programming interface.
     #[mesh(6)]
     pub prog_if: Option<u8>,
-    /// Subsystem vendor ID.
-    #[mesh(7)]
-    pub sub_vendor_id: Option<u16>,
-    /// Subsystem ID.
-    #[mesh(8)]
-    pub sub_system_id: Option<u16>,
 }
 
 /// Defines the `ProductPolicy` enum and, for each variant `Foo(Body)`,
@@ -219,16 +235,20 @@ impl core::error::Error for ProductPolicyDecodeError {
     }
 }
 
-/// Encode a policy and device list as `mesh_protobuf` bytes for the initrd
+/// Encode a policy and device policy as `mesh_protobuf` bytes for the initrd
 /// policy file.
 pub fn encode_product_policy(
     policy: Option<&ProductPolicy>,
     allowed_pci_devices: &[AllowedPciDevice],
+    require_vpci_relay: bool,
+    max_vpci_devices: Option<u16>,
 ) -> Vec<u8> {
     let policy = ProductPolicyInternal {
         magic: ProductPolicyInternal::MAGIC,
         policy: policy.cloned(),
         allowed_pci_devices: allowed_pci_devices.to_vec(),
+        require_vpci_relay,
+        max_vpci_devices,
     };
     mesh_protobuf::encode(policy)
 }
@@ -247,6 +267,8 @@ pub fn decode_product_policy(
     Ok(MeasuredProductPolicy {
         policy: data.policy,
         allowed_pci_devices: data.allowed_pci_devices,
+        require_vpci_relay: data.require_vpci_relay,
+        max_vpci_devices: data.max_vpci_devices,
     })
 }
 

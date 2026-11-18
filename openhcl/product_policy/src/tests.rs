@@ -27,7 +27,7 @@ fn product_policy_name_returns_variant_tag() {
 #[test]
 fn encode_decode_round_trip_nontrivial_sivm() {
     let policy = ProductPolicy::Sivm(sample_sivm_policy());
-    let bytes = encode_product_policy(Some(&policy), &[]);
+    let bytes = encode_product_policy(Some(&policy), &[], false, None);
     // The encoding is measured, so it must stay the same without devices.
     assert_eq!(
         bytes,
@@ -49,12 +49,19 @@ fn encode_decode_round_trip_devices() {
         ..Default::default()
     }];
     for policy in [None, Some(ProductPolicy::Sivm(sample_sivm_policy()))] {
-        let bytes = encode_product_policy(policy.as_ref(), &devices);
-        let decoded = decode_product_policy(&bytes).unwrap();
-        assert_eq!(
-            (decoded.raw(), decoded.allowed_pci_devices()),
-            (policy.as_ref(), &devices[..])
-        );
+        for (require, max) in [(false, None), (true, Some(8))] {
+            let bytes = encode_product_policy(policy.as_ref(), &devices, require, max);
+            let decoded = decode_product_policy(&bytes).unwrap();
+            assert_eq!(
+                (
+                    decoded.raw(),
+                    decoded.allowed_pci_devices(),
+                    decoded.require_vpci_relay(),
+                    decoded.max_vpci_devices()
+                ),
+                (policy.as_ref(), &devices[..], require, max)
+            );
+        }
     }
 }
 
@@ -70,7 +77,7 @@ fn decode_rejects_garbage() {
 #[test]
 fn decode_rejects_truncated() {
     let policy = ProductPolicy::Sivm(sample_sivm_policy());
-    let mut bytes = encode_product_policy(Some(&policy), &[]);
+    let mut bytes = encode_product_policy(Some(&policy), &[], false, None);
     bytes.pop();
     assert!(matches!(
         decode_product_policy(&bytes),
@@ -85,6 +92,8 @@ fn decode_rejects_bad_magic() {
         magic: 0,
         policy: Some(ProductPolicy::Sivm(sample_sivm_policy())),
         allowed_pci_devices: vec![],
+        require_vpci_relay: false,
+        max_vpci_devices: None,
     };
     let bytes = mesh_protobuf::encode(internal);
     assert!(matches!(

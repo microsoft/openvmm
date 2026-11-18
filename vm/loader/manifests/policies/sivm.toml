@@ -1,6 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# PCI devices that OpenHCL exposes to SIVM guests: the Azure ones plus the GPU.
+# PCI devices that OpenHCL exposes to SIVM guests: NVMe controllers and the GPU.
 devices = "devices.toml"
-allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm", "nvidia-gpu"]
+allowed_pci_devices = ["nvme", "nvidia-gpu"]
+max_vpci_devices = 64
+# The GPU is the reason for a SIVM, so fail at boot if the relay can't run.
+require_vpci_relay = true

@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# PCI devices that OpenHCL exposes to Azure guests.
+# PCI devices that OpenHCL exposes to Azure CVM guests.
 devices = "devices.toml"
 allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm"]
+max_vpci_devices = 64
