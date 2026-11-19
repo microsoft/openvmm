@@ -17,7 +17,6 @@ use crate::queue::SubmissionQueue;
 use crate::spec;
 use crate::spec::nvm;
 use crate::workers::MAX_DATA_TRANSFER_SIZE;
-use crate::workers::refuse_fused;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -264,12 +263,7 @@ impl IoHandler {
                     if let Some(ns) = state.namespaces.get(&command.nsid) {
                         let ns = ns.clone();
                         let io = Box::pin(async move {
-                            // After the NSID check and before the namespace,
-                            // so a fused command does no I/O.
-                            let result = match refuse_fused(&command) {
-                                Ok(()) => ns.nvm_command(MAX_DATA_TRANSFER_SIZE, &command).await,
-                                Err(err) => Err(err),
-                            };
+                            let result = ns.nvm_command(MAX_DATA_TRANSFER_SIZE, &command).await;
                             (
                                 IoResult {
                                     nsid: command.nsid,
