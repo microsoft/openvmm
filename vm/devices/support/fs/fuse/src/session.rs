@@ -348,7 +348,7 @@ impl Session {
                         in_iovs: 0,
                         out_iovs: 0,
                     },
-                    data,
+                    &out.1,
                 )?;
             }
             FuseOperation::Poll { arg: _ } => {
@@ -653,6 +653,8 @@ enum OperationError {
 
 #[cfg(test)]
 mod tests {
+    mod harness;
+    mod ioctl;
     mod saved_state;
 
     use super::*;
