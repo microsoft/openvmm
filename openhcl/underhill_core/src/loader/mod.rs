@@ -138,61 +138,62 @@ pub fn load(
             )?;
             uefi_info.vp_context.clone()
         }
-        LoadKind::Linux => {
-            tracing::info!(CVM_ALLOWED, "loading Linux into VTL0");
+        LoadKind::Linux => cfg_select! {
+            guest_arch = "x86_64" => {{
+                tracing::info!(CVM_ALLOWED, "loading Linux into VTL0");
 
-            let LinuxInfo {
-                kernel_range,
-                kernel_entrypoint,
-                initrd,
-                command_line,
-            } = vtl0_info
-                .supports_linux
-                .as_ref()
-                .ok_or(Error::LinuxSupport)?;
+                let LinuxInfo {
+                    kernel_range,
+                    kernel_entrypoint,
+                    initrd,
+                    command_line,
+                } = vtl0_info
+                    .supports_linux
+                    .as_ref()
+                    .ok_or(Error::LinuxSupport)?;
 
-            cfg_select! {
-                guest_arch = "x86_64" => {{
-                    // Convert the read cstring to a vec to allow appending.
-                    let mut command_line = command_line.clone().unwrap_or_default().into_bytes();
+                // Convert the read cstring to a vec to allow appending.
+                let mut command_line = command_line.clone().unwrap_or_default().into_bytes();
 
-                    // Add a trailing space to the base string so that the appended
-                    // string won't corrupt the last argument.
-                    if !command_line.is_empty() && command_line.last() != Some(&b' ') {
-                        command_line.push(b' ');
-                    }
+                // Add a trailing space to the base string so that the appended
+                // string won't corrupt the last argument.
+                if !command_line.is_empty() && command_line.last() != Some(&b' ') {
+                    command_line.push(b' ');
+                }
 
-                    // Copy from the append string.
-                    command_line.extend_from_slice(config.cmdline_append.to_bytes());
+                // Copy from the append string.
+                command_line.extend_from_slice(config.cmdline_append.to_bytes());
 
-                    let command_line =
-                        CString::new(command_line).expect("constructed from valid CStrings");
+                let command_line =
+                    CString::new(command_line).expect("constructed from valid CStrings");
 
-                    load_linux(LoadLinuxParams {
-                        gm,
-                        mem_layout,
-                        processor_topology,
-                        platform_config,
-                        chipset_capabilities,
-                        chipset_mmio,
-                        kernel_range: *kernel_range,
-                        kernel_entrypoint: *kernel_entrypoint,
-                        initrd: *initrd,
-                        command_line,
-                    })?
-                }}
-                _ => {{
-                    let _ = (
-                        kernel_range,
-                        kernel_entrypoint,
-                        initrd,
-                        command_line,
-                        &config.cmdline_append,
-                    );
-                    todo!()
-                }}
-            }
-        }
+                load_linux(LoadLinuxParams {
+                    gm,
+                    mem_layout,
+                    processor_topology,
+                    platform_config,
+                    chipset_capabilities,
+                    chipset_mmio,
+                    kernel_range: *kernel_range,
+                    kernel_entrypoint: *kernel_entrypoint,
+                    initrd: *initrd,
+                    command_line,
+                })?
+            }}
+            _ => {{
+                let _ = config.cmdline_append;
+                let LinuxInfo {
+                    kernel_range: _kernel_range,
+                    kernel_entrypoint: _kernel_entrypoint,
+                    initrd: _initrd,
+                    command_line: _command_line,
+                } = vtl0_info
+                    .supports_linux
+                    .as_ref()
+                    .ok_or(Error::LinuxSupport)?;
+                todo!();
+            }}
+        },
         LoadKind::Pcat => {
             tracing::info!(CVM_ALLOWED, "loading pcat into VTL0");
 
