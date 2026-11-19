@@ -303,6 +303,94 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
     Ok(())
 }
 
+/// Removing the first relay device must leave the second device usable.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn vpci_relay_hot_remove(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    let (mut vm, agent) = config
+        .with_openhcl_command_line("OPENHCL_ENABLE_VPCI_RELAY=1")
+        .with_vmbus_redirect(true)
+        .run()
+        .await?;
+    let sh = agent.unix_shell();
+    let mut timer = pal_async::timer::PolledTimer::new(&driver);
+    let instance_ids = [
+        guid::guid!("78fc4861-29bf-408d-88b7-24199de560d1"),
+        guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3"),
+    ];
+    let mut first_device = String::new();
+    let mut second_device = String::new();
+
+    // Wait after each add so the first device gets the lower relay slab key.
+    for (index, instance_id) in instance_ids.into_iter().enumerate() {
+        vm.backend()
+            .add_vpci_device(
+                instance_id,
+                NvmeControllerHandle {
+                    subsystem_id: instance_id,
+                    msix_count: 1,
+                    max_io_queues: 1,
+                    namespaces: Vec::new(),
+                    requests: None,
+                }
+                .into_resource(),
+            )
+            .await?;
+
+        let mut found = false;
+        for _ in 0..60 {
+            let output = cmd!(sh, "ls /sys/bus/pci/devices").read().await?;
+            let devices: Vec<_> = output.lines().collect();
+            if devices.len() == index + 1 {
+                if index == 0 {
+                    first_device = devices[0].to_owned();
+                } else {
+                    second_device = devices
+                        .into_iter()
+                        .find(|device| *device != first_device)
+                        .context("second NVMe device has no distinct PCI address")?
+                        .to_owned();
+                }
+                found = true;
+                break;
+            }
+            timer.sleep(std::time::Duration::from_millis(500)).await;
+        }
+        anyhow::ensure!(found, "NVMe device {index} did not appear after hot-add");
+    }
+
+    mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(30))
+        .until_cancelled(vm.backend().remove_vpci_device(instance_ids[0]))
+        .await
+        .context("timed out hot-removing the first NVMe device")??;
+
+    let mut removed = false;
+    for _ in 0..60 {
+        let output = cmd!(sh, "ls /sys/bus/pci/devices").read().await?;
+        if output.lines().collect::<Vec<_>>() == vec![second_device.as_str()] {
+            removed = true;
+            break;
+        }
+        timer.sleep(std::time::Duration::from_millis(500)).await;
+    }
+    anyhow::ensure!(
+        removed,
+        "first NVMe device did not disappear with the second device still present"
+    );
+    let vendor = cmd!(sh, "cat /sys/bus/pci/devices/{second_device}/vendor")
+        .read()
+        .await?;
+    assert_eq!(vendor.trim(), "0x1414");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn vpci_relay_tdisp_device(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
