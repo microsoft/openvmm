@@ -207,13 +207,7 @@ impl Session {
             }
             FuseOperation::Write { arg, data } => {
                 let out = self.fs.write(&request, arg, data)?;
-                sender.send_arg(
-                    request.unique(),
-                    fuse_write_out {
-                        size: out.try_into().unwrap(),
-                        padding: 0,
-                    },
-                )?;
+                sender.send_arg(request.unique(), Self::write_out(&request, out)?)?;
             }
             FuseOperation::StatFs {} => {
                 let out = self.fs.statfs(&request)?;
@@ -390,13 +384,7 @@ impl Session {
             }
             FuseOperation::CopyFileRange { arg } => {
                 let out = self.fs.copy_file_range(&request, arg)?;
-                sender.send_arg(
-                    request.unique(),
-                    fuse_write_out {
-                        size: out.try_into().unwrap(),
-                        padding: 0,
-                    },
-                )?;
+                sender.send_arg(request.unique(), Self::write_out(&request, out)?)?;
             }
             FuseOperation::SetupMapping { arg } => {
                 if let Some(mapper) = mapper {
@@ -587,6 +575,24 @@ impl Session {
         Ok(())
     }
 
+    /// Builds the reply to `FUSE_WRITE` or `FUSE_COPY_FILE_RANGE`, whose `fuse_write_out`
+    /// carries the file system's byte count, `count`, as a `u32`.
+    ///
+    /// A larger count, which the reply cannot hold, is a bug in the file system, and fails the
+    /// request with `EIO`.
+    fn write_out(request: &Request, count: usize) -> lx::Result<fuse_write_out> {
+        let Ok(size) = count.try_into() else {
+            tracelimit::error_ratelimited!(
+                unique = request.unique(),
+                opcode = request.opcode(),
+                count,
+                "File system byte count does not fit the reply",
+            );
+            return Err(lx::Error::EIO);
+        };
+        Ok(fuse_write_out { size, padding: 0 })
+    }
+
     /// Process `FUSE_BATCH_FORGET` by repeatedly calling `forget`.
     fn batch_forget(&self, count: u32, mut nodes: &[u8]) {
         for _ in 0..count {
@@ -668,6 +674,7 @@ mod tests {
     mod max_size;
     mod reply_len;
     mod saved_state;
+    mod write_out;
 
     use super::*;
     use crate::request::tests::*;
