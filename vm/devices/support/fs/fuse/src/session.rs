@@ -566,14 +566,23 @@ impl Session {
 
     /// Send a reply, validating it doesn't exceed the requested size.
     ///
-    /// If it exceeds the maximum size, this causes a panic because that's a bug in the file system.
+    /// A longer reply is a bug in the file system, and fails the request with `EIO`, as the Linux
+    /// FUSE driver fails a reply that is longer than the request allows.
     fn send_max_size(
         sender: &mut impl ReplySender,
         unique: u64,
         data: &[u8],
         max_size: u32,
     ) -> Result<(), OperationError> {
-        assert!(data.len() <= max_size as usize);
+        if data.len() > max_size as usize {
+            tracelimit::error_ratelimited!(
+                unique,
+                len = data.len(),
+                max_size,
+                "File system reply exceeds the requested size",
+            );
+            return Err(lx::Error::EIO.into());
+        }
         sender.send_data(unique, data)?;
         Ok(())
     }
@@ -656,6 +665,7 @@ mod tests {
     mod error_reply;
     mod harness;
     mod ioctl;
+    mod max_size;
     mod reply_len;
     mod saved_state;
 
