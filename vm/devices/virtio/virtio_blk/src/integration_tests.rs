@@ -130,9 +130,13 @@ impl TestHarness {
 
     /// Enable the device with one queue.
     async fn enable(&mut self) {
+        self.enable_with_features(VirtioDeviceFeatures::new()).await;
+    }
+
+    async fn enable_with_features(&mut self, features: VirtioDeviceFeatures) {
         let resources = self.resources();
         self.device
-            .start_queue(0, resources, &VirtioDeviceFeatures::new(), None)
+            .start_queue(0, resources, &features, None)
             .await
             .unwrap();
     }
@@ -468,7 +472,7 @@ impl TestHarness {
         status_gpa
     }
 
-    /// Build a request with an arbitrary type code (for testing unsupported types).
+    /// Build a request with an arbitrary type code and no data descriptors.
     fn post_raw_request(&mut self, head_desc: u16, request_type: u32, sector: u64) -> u64 {
         let header_gpa = self.alloc_data(REQ_HEADER_SIZE);
         let status_gpa = self.alloc_data(1);
@@ -1052,6 +1056,60 @@ async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
 
     let status = harness.read_status(status_gpa);
     assert_eq!(status, VIRTIO_BLK_S_IOERR);
+}
+
+#[async_test]
+async fn write_cache_policy_matches_flush_negotiation(driver: DefaultDriver) {
+    for flush_negotiated in [false, true] {
+        for fua_respected in [false, true] {
+            let (operations, recorded_operations) = std::sync::mpsc::channel();
+            let disk = HookDisk::new(64 * 1024, 512)
+                .with_fua_respected(fua_respected)
+                .with_sync_hook(move |operation| {
+                    operations.send(operation).unwrap();
+                    Ok(())
+                })
+                .into_disk();
+            let mut harness = TestHarness::new(&driver, disk, false);
+            harness
+                .enable_with_features(VirtioDeviceFeatures::new().with_device_specific_low(
+                    if flush_negotiated {
+                        VIRTIO_BLK_F_FLUSH
+                    } else {
+                        0
+                    },
+                ))
+                .await;
+
+            let status_gpa = harness.post_write_request(0, 7, &[0xa5; 512]);
+            assert_eq!(harness.wait_for_used().await, (0, 1));
+            assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
+
+            let mut expected = vec![DiskOperation::Write {
+                sector: 7,
+                len: 512,
+                fua: !flush_negotiated && fua_respected,
+            }];
+            if !flush_negotiated && !fua_respected {
+                expected.push(DiskOperation::SyncCache);
+            }
+            assert_eq!(
+                recorded_operations.try_iter().collect::<Vec<_>>(),
+                expected,
+                "flush_negotiated={flush_negotiated}, fua_respected={fua_respected}"
+            );
+
+            if flush_negotiated {
+                let status_gpa = harness.post_raw_request(3, VIRTIO_BLK_T_FLUSH, 0);
+                assert_eq!(harness.wait_for_used().await, (3, 1));
+                assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
+                assert_eq!(
+                    recorded_operations.try_iter().collect::<Vec<_>>(),
+                    [DiskOperation::SyncCache]
+                );
+            }
+        }
+    }
 }
 
 /// Flush command should succeed.
