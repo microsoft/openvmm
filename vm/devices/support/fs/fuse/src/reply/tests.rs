@@ -88,3 +88,90 @@ fn error_reply_replaces_any_other_code_with_eio() {
         assert_eq!(error_reply(error), -lx::EIO, "error {error}");
     }
 }
+
+/// The length of the longest reply, header included: the most that the `u32`
+/// `len` of its header can describe.
+const MAX_REPLY_LEN: usize = u32::MAX as usize;
+
+/// The length of the longest payload that can follow a reply's header.
+const MAX_PAYLOAD_LEN: usize = MAX_REPLY_LEN - size_of::<fuse_out_header>();
+
+/// A `ReplySender` that keeps the header and the length of the last reply
+/// that it sent, without copying the reply.
+#[derive(Default)]
+struct LengthSender {
+    sent: Option<(fuse_out_header, usize)>,
+}
+
+impl ReplySender for LengthSender {
+    fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+        let (header, _) = fuse_out_header::read_from_prefix(&bufs[0]).unwrap();
+        self.sent = Some((header, bufs.iter().map(|buf| buf.len()).sum()));
+        Ok(())
+    }
+}
+
+/// Sends a reply with `send`, and returns the `len` of its header, after
+/// checking that it is the length of the reply, or the kind of the error with
+/// which `send` failed, after checking that it sent nothing.
+fn reply_len(send: impl FnOnce(&mut LengthSender) -> io::Result<()>) -> Result<u32, io::ErrorKind> {
+    let mut sender = LengthSender::default();
+    match send(&mut sender) {
+        Ok(()) => {
+            let (header, len) = sender.sent.expect("a reply is sent");
+            assert_eq!(
+                header.len as usize, len,
+                "the reply's len is not its length"
+            );
+            assert_eq!((header.error, header.unique), (0, 7));
+            Ok(header.len)
+        }
+        Err(err) => {
+            assert!(sender.sent.is_none(), "{err}, but a reply is sent");
+            Err(err.kind())
+        }
+    }
+}
+
+/// The `len` of a reply's header counts the whole reply, header included, and
+/// is a `u32`. The longest reply that it can describe is sent with that
+/// length, while a longer one fails with `InvalidInput` before anything is
+/// sent, since its `len` would be wrong. A reply of an argument and data
+/// counts both, and a string reply counts the NUL that ends the string. (The
+/// payloads are zeroed lazily and never read.)
+#[test]
+fn reply_longer_than_its_header_can_describe_is_refused() {
+    let too_long = Err(io::ErrorKind::InvalidInput);
+    let data = vec![0u8; MAX_PAYLOAD_LEN + 1];
+    assert_eq!(reply_len(|s| s.send_data(7, &data[1..])), Ok(u32::MAX));
+    assert_eq!(reply_len(|s| s.send_data(7, &data)), too_long);
+
+    let arg = || fuse_ioctl_out {
+        result: 42,
+        flags: 0,
+        in_iovs: 0,
+        out_iovs: 0,
+    };
+    let arg_len = size_of::<fuse_ioctl_out>();
+    assert_eq!(
+        reply_len(|s| s.send_arg_data(7, arg(), &data[arg_len + 1..])),
+        Ok(u32::MAX)
+    );
+    assert_eq!(
+        reply_len(|s| s.send_arg_data(7, arg(), &data[arg_len..])),
+        too_long
+    );
+    // Free the data before the strings, so that the test holds one payload at
+    // a time.
+    drop(data);
+
+    let string = |len| lx::LxString::from_vec(vec![0u8; len]);
+    assert_eq!(
+        reply_len(|s| s.send_string(7, string(MAX_PAYLOAD_LEN - 1))),
+        Ok(u32::MAX)
+    );
+    assert_eq!(
+        reply_len(|s| s.send_string(7, string(MAX_PAYLOAD_LEN))),
+        too_long
+    );
+}
