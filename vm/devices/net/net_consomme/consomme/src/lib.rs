@@ -261,7 +261,7 @@ impl ConsommeParams {
             client_ip_ipv6: None,
             client_ip_ipv6_routable: None,
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
-            udp_timeout: Duration::from_mins(5),
+            udp_timeout: Duration::MAX, // TODO: Prevent KDNET from timing out when idle.
             // Defaults to 2*MSL per RFC 9293 for the `TimeWait` case.
             tcp_close_timeout: Duration::from_mins(1),
             skip_ipv6_checks: false,
