@@ -257,6 +257,12 @@ pub trait Fuse {
     }
 
     /// Negotiate file system parameters with the client.
+    ///
+    /// `info.want` must hold only flags that the client offers in `info.capable()`, and
+    /// `info.want2` only extended flags that it offers in `info.capable2()`, unless `info.want`
+    /// drops `FUSE_INIT_EXT`, which discards `info.want2`. Otherwise, the session fails
+    /// `FUSE_INIT` with `EIO` and stays uninitialized. The session keeps the client's version and
+    /// capabilities, even if `init` replaces `info`.
     fn init(&self, _info: &mut SessionInfo) {}
 
     /// Opens a directory.
