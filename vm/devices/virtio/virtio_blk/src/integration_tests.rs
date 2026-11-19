@@ -11,6 +11,7 @@ use crate::VirtioBlkDevice;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_backend::UnmapBehavior;
 use disk_hook::Disk;
+use disk_hook::DiskError;
 use disk_hook::DiskOperation;
 use disk_hook::HookDisk;
 use futures::future::Either;
@@ -1109,6 +1110,89 @@ async fn write_cache_policy_matches_flush_negotiation(driver: DefaultDriver) {
                 );
             }
         }
+    }
+}
+
+#[async_test]
+async fn write_without_flush_waits_for_sync_cache(driver: DefaultDriver) {
+    for fail_flush in [false, true] {
+        let (write_started, write_started_recv) = async_channel::bounded(1);
+        let (release_write, release_write_recv) = async_channel::bounded(1);
+        let (sync_started, sync_started_recv) = async_channel::bounded(1);
+        let (release_sync, release_sync_recv) = async_channel::bounded(1);
+        let disk = HookDisk::new(64 * 1024, 512)
+            .with_fua_respected(false)
+            .with_async_hook(move |operation| {
+                let write_started = write_started.clone();
+                let release_write = release_write_recv.clone();
+                let sync_started = sync_started.clone();
+                let release_sync = release_sync_recv.clone();
+                async move {
+                    match operation {
+                        DiskOperation::Write { fua: false, .. } => {
+                            write_started.send(()).await.unwrap();
+                            release_write.recv().await.unwrap();
+                            Ok(())
+                        }
+                        DiskOperation::SyncCache => {
+                            sync_started.send(()).await.unwrap();
+                            release_sync.recv().await.unwrap()
+                        }
+                        _ => Ok(()),
+                    }
+                }
+            })
+            .into_disk();
+        let mut harness = TestHarness::new(&driver, disk, false);
+        harness.enable().await;
+        let status_gpa = harness.post_write_request(0, 0, &[0xa5; 512]);
+        harness.mem.write_at(status_gpa, &[0xff]).unwrap();
+
+        match select(
+            pin!(write_started_recv.recv()),
+            pin!(harness.wait_for_used()),
+        )
+        .await
+        {
+            Either::Left((started, _)) => started.unwrap(),
+            Either::Right(_) => panic!("request completed before its backend write"),
+        }
+        assert_eq!(
+            sync_started_recv.try_recv(),
+            Err(async_channel::TryRecvError::Empty),
+            "cache flush started while the backend write was pending"
+        );
+        release_write.send(()).await.unwrap();
+
+        match select(
+            pin!(sync_started_recv.recv()),
+            pin!(harness.wait_for_used()),
+        )
+        .await
+        {
+            Either::Left((started, _)) => started.unwrap(),
+            Either::Right(_) => panic!("write completed before its cache flush"),
+        }
+        assert_eq!(read_used_idx(&harness.mem, USED_ADDR), 0);
+        assert_eq!(harness.read_status(status_gpa), 0xff);
+
+        release_sync
+            .send(if fail_flush {
+                Err(DiskError::Io(std::io::Error::other("cache flush failed")))
+            } else {
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(harness.wait_for_used().await, (0, 1));
+        assert_eq!(
+            harness.read_status(status_gpa),
+            if fail_flush {
+                VIRTIO_BLK_S_IOERR
+            } else {
+                VIRTIO_BLK_S_OK
+            }
+        );
     }
 }
 
