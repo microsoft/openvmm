@@ -11,6 +11,20 @@
 //!
 //! If this ends up not being true, then this layer should probably be removed.
 
+cfg_select! {
+    guest_arch = "x86_64" => {
+        use virt::X86Partition as ArchPartition;
+        use virt::irqcon::MsiRequest;
+        use vmcore::line_interrupt::LineSetTarget;
+    }
+    guest_arch = "aarch64" => {
+        use virt::Aarch64Partition as ArchPartition;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
+
 use anyhow::Context as _;
 use async_trait::async_trait;
 use guestmem::DoorbellRegistration;
@@ -20,8 +34,6 @@ use inspect::InspectMut;
 use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::sync::Arc;
-#[cfg(guest_arch = "aarch64")]
-use virt::Aarch64Partition as ArchPartition;
 use virt::InitialPageImport;
 use virt::Partition;
 use virt::PartitionAccessState;
@@ -31,17 +43,11 @@ use virt::PartitionMemoryMapper;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
-#[cfg(guest_arch = "x86_64")]
-use virt::X86Partition as ArchPartition;
 use virt::io::CpuIo;
-#[cfg(guest_arch = "x86_64")]
-use virt::irqcon::MsiRequest;
 use virt::vm::AccessVmState;
 use virt::vm::VmSavedState;
 use virt::vp::AccessVpState;
 use virt::vp::VpSavedState;
-#[cfg(guest_arch = "x86_64")]
-use vmcore::line_interrupt::LineSetTarget;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -182,18 +188,19 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
         Ok(())
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn guest_os_id(&self) -> u64 {
-        self.access_state(Vtl::Vtl0)
-            .hypercall()
-            .map_or(0, |msrs| msrs.guest_os_id)
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    fn guest_os_id(&self) -> u64 {
-        // TODO: implement guest OS ID for aarch64 once there is
-        // an equivalent to HV_X64_MSR_GUEST_OS_ID.
-        0
+        cfg_select! {
+            guest_arch = "x86_64" => self
+                .access_state(Vtl::Vtl0)
+                .hypercall()
+                .map_or(0, |msrs| msrs.guest_os_id),
+            guest_arch = "aarch64" => {
+                // TODO: implement guest OS ID for aarch64 once there is
+                // an equivalent to HV_X64_MSR_GUEST_OS_ID.
+                0
+            }
+            _ => compile_error!("unsupported guest architecture"),
+        }
     }
 }
 
