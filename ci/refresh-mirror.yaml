@@ -1,12 +1,12 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# On backport, update the trigger branch and its downstream submodule target.
+# Test-only: allow this branch to request a main-to-main refresh.
 trigger:
   batch: true
   branches:
     include:
-    - main
+    - copilot/test-mirror-refresh
 pr: none
 
 variables:
@@ -17,15 +17,15 @@ pool:
 
 jobs:
 - job: QueueMirror
-  condition: and(succeeded(), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI'), eq(variables['Build.Repository.Name'], 'microsoft/openvmm'))
+  condition: and(succeeded(), in(variables['Build.Reason'], 'Manual', 'IndividualCI', 'BatchedCI'), eq(variables['Build.Repository.Name'], 'microsoft/openvmm'), eq(variables['Build.SourceBranch'], 'refs/heads/copilot/test-mirror-refresh'))
   steps:
   - checkout: none
   - pwsh: |
       $ErrorActionPreference = 'Stop'
-      if ($env:BUILD_SOURCEBRANCH -cnotmatch '^refs/heads/(.+)$') {
+      if ($env:BUILD_SOURCEBRANCH -cne 'refs/heads/copilot/test-mirror-refresh') {
           throw "Unexpected source ref: $env:BUILD_SOURCEBRANCH"
       }
-      $branch = $Matches[1]
+      $branch = 'main'
       $body = @{
           templateParameters = @{
               branchToMirror = $branch
