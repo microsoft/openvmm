@@ -14,9 +14,7 @@
 //! This is deliberately a *side* helper whose methods borrow a
 //! [`VirtioQueue`], rather than being baked into the queue itself. Devices that
 //! do not need in-order completion (virtio-blk, virtio-vsock, ...) never
-//! instantiate it and pay nothing — the queue's hot path is untouched. It
-//! mirrors QEMU's
-//! `virtqueue_ordered_fill`/`virtqueue_ordered_flush` (`used_elems`): consumed
+//! instantiate it and pay nothing — the queue's hot path is untouched. Consumed
 //! descriptors are recorded in consumption order, completions fill their slot
 //! (possibly out of order), and only the contiguous filled prefix is published
 //! to the used ring, in order.
