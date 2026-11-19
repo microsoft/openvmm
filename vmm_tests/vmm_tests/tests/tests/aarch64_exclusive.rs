@@ -3,6 +3,7 @@
 
 //! Integration tests for aarch64 guests.
 
+use crate::utils::open_vfio_cdev;
 use anyhow::Context;
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
@@ -433,31 +434,6 @@ async fn boot_no_vmbus_pcie_smmu_accel(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
-}
-
-/// Open the VFIO cdev for an assigned device given its PCI BDF.
-///
-/// Returns the opened character device file. The device must already be bound
-/// to `vfio-pci` (the emulator does this before running the test).
-fn open_vfio_cdev(vfio_bdf: &str) -> anyhow::Result<std::fs::File> {
-    let sysfs_path = std::path::Path::new("/sys/bus/pci/devices").join(vfio_bdf);
-    let vfio_dev_dir = sysfs_path.join("vfio-dev");
-    let cdev_name = std::fs::read_dir(&vfio_dev_dir)
-        .with_context(|| {
-            format!(
-                "failed to read {}: is {} bound to vfio-pci?",
-                vfio_dev_dir.display(),
-                vfio_bdf
-            )
-        })?
-        .next()
-        .context("no vfio-dev entry found")?
-        .context("failed to read vfio-dev entry")?;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(std::path::Path::new("/dev/vfio/devices").join(cdev_name.file_name()))
-        .context("failed to open VFIO cdev")
 }
 
 /// Look up the PCI BDF of an emulator-provisioned VFIO device by its profile

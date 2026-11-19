@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! QEMU backend for Petri. Currently only supports Aarch64 CPU emulation on
-//! Linux x64 hosts, but could be modified to support more qemu-system-arch
+//! QEMU backend for Petri. Currently supports x86_64 and Aarch64 CPU emulation
+//! on Linux x64 hosts, but could be modified to support more qemu-system-arch
 //! configurations in the future.
 
 pub mod devices;
@@ -65,6 +65,7 @@ pub struct QemuPetriConfig {
     devices: Vec<DeviceConfig>,
     machine: Option<String>,
     cpu: Option<String>,
+    iommu: Option<String>,
     smp: Option<String>,
     memory: Option<String>,
     command_line: String,
@@ -232,6 +233,12 @@ impl PetriVmmBackend for QemuPetriBackend {
 }
 
 impl QemuPetriConfig {
+    /// Add an IOMMU device with the specified QEMU device properties.
+    pub fn with_iommu(mut self, iommu: Option<String>) -> Self {
+        self.iommu = iommu;
+        self
+    }
+
     /// Override the emulated machine, CPU, topology, and kernel command line.
     pub fn with_platform(
         mut self,
@@ -507,13 +514,13 @@ pub fn build_qemu_command(
         devices,
         machine,
         cpu,
+        iommu,
         smp,
         memory,
         command_line,
     } = qemu_config;
 
     // make sure we aren't silently ignoring any configurations
-    assert!(matches!(arch, MachineArch::Aarch64));
     assert!(matches!(
         host_log_levels,
         None | Some(crate::OpenvmmLogConfig::TestDefault)
@@ -535,12 +542,16 @@ pub fn build_qemu_command(
 
     let mut cmd = Command::new(binary);
 
-    cmd.arg("-machine").arg(
-        machine
-            .as_deref()
-            .unwrap_or("virt,virtualization=on,iommu=smmuv3,gic-version=3"),
-    );
+    cmd.arg("-accel").arg("tcg");
+    cmd.arg("-machine")
+        .arg(machine.as_deref().unwrap_or(match arch {
+            MachineArch::Aarch64 => "virt,virtualization=on,iommu=smmuv3,gic-version=3",
+            MachineArch::X86_64 => "q35",
+        }));
     cmd.arg("-cpu").arg(cpu.as_deref().unwrap_or("max"));
+    if let Some(iommu) = iommu {
+        cmd.arg("-device").arg(iommu);
+    }
     // TODO: more complex memory topologies
     cmd.arg("-m").arg(
         memory

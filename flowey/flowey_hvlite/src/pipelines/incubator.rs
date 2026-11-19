@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Local standalone mshv provisioning, independent of VMM test discovery.
+//! Local standalone Incubator provisioning, independent of VMM test discovery.
 
 use anyhow::Context as _;
 use flowey::node::prelude::ReadVar;
@@ -12,17 +12,21 @@ use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct IncubatorCli {
-    /// Source Incubator profile (currently x64 OpenVMM with mshv boot only).
+    /// Source Incubator profile (QEMU TCG/Linux direct or x64 OpenVMM/mshv).
     #[arg(long)]
     profile: PathBuf,
 
-    /// Override the pinned mshv root bzImage, not the child VM's kernel.
+    /// Override the outer kernel (x64 bzImage or aarch64 Image), not the child kernel.
     #[arg(long)]
     kernel: Option<PathBuf>,
 
-    /// Override the pinned shared x64 test initrd.
+    /// Override the outer test initrd.
     #[arg(long)]
     initrd: Option<PathBuf>,
+
+    /// Override the QEMU executable selected by a qemu-tcg profile.
+    #[arg(long)]
+    qemu_binary: Option<PathBuf>,
 
     /// Override the pinned x64 MSVM.fd firmware.
     #[arg(long)]
@@ -77,7 +81,7 @@ impl IntoPipeline for IncubatorCli {
             matches!(backend_hint, PipelineBackendHint::Local)
                 && matches!(FlowPlatform::host(backend_hint), FlowPlatform::Linux(_))
                 && matches!(FlowArch::host(backend_hint), FlowArch::X86_64),
-            "incubator provisioning currently requires a local x64 Linux host with KVM"
+            "incubator provisioning currently requires a local x64 Linux host (mshv additionally requires KVM)"
         );
         let kernel = self.kernel.as_deref().map(existing_file).transpose()?;
         let initrd = self.initrd.as_deref().map(existing_file).transpose()?;
@@ -108,7 +112,7 @@ impl IntoPipeline for IncubatorCli {
             .new_job(
                 FlowPlatform::host(backend_hint),
                 FlowArch::host(backend_hint),
-                "provision and run standalone mshv Incubator",
+                "provision and run standalone Incubator",
             )
             .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
             .dep_on(
@@ -136,6 +140,7 @@ impl IntoPipeline for IncubatorCli {
                     working_dir,
                     kernel,
                     initrd,
+                    qemu_binary: self.qemu_binary,
                     firmware,
                     boot_artifacts,
                     share,

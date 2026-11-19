@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Prepare a standalone mshv Incubator using reusable build/acquisition nodes.
+//! Prepare a standalone Incubator using reusable build/acquisition nodes.
 
 use crate::common::CommonArch;
 use crate::common::CommonProfile;
@@ -16,6 +16,7 @@ flowey_request! {
         pub working_dir: PathBuf,
         pub kernel: Option<PathBuf>,
         pub initrd: Option<PathBuf>,
+        pub qemu_binary: Option<PathBuf>,
         pub firmware: Option<PathBuf>,
         pub boot_artifacts: Option<PathBuf>,
         pub share: PathBuf,
@@ -45,12 +46,17 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+        let config = parse_source_profile(&request.source_profile)?;
+        if config["incubator"]["type"].as_str() == Some("qemu-tcg") {
+            return provision_qemu(request, config, ctx);
+        }
         let Params {
             profile,
             source_profile,
             working_dir,
             kernel,
             initrd,
+            qemu_binary,
             firmware,
             boot_artifacts,
             share,
@@ -61,6 +67,10 @@ impl SimpleFlowNode for Node {
             incubator_args,
             done,
         } = request;
+        anyhow::ensure!(
+            qemu_binary.is_none(),
+            "--qemu-binary requires a qemu-tcg profile"
+        );
         ctx.config(crate::resolve_mshv_boot_artifacts::Config {
             local_path: boot_artifacts.map(|path| ConfigVar(ReadVar::from_static(path))),
         });
@@ -213,14 +223,219 @@ impl SimpleFlowNode for Node {
 pub fn parse_source_profile(contents: &str) -> anyhow::Result<toml_edit::DocumentMut> {
     let config: toml_edit::DocumentMut = contents.parse()?;
     let incubator = config.get("incubator").context("missing [incubator]")?;
-    let boot = config.get("boot").context("missing [boot]")?;
+    let boot = match config.get("boot") {
+        None => "linux-direct",
+        Some(boot) => boot
+            .get("type")
+            .and_then(|v| v.as_str())
+            .context("missing boot.type")?,
+    };
+    let launcher = incubator.get("type").and_then(|v| v.as_str());
+    let arch = incubator.get("arch").and_then(|v| v.as_str());
     anyhow::ensure!(
-        incubator.get("type").and_then(|v| v.as_str()) == Some("openvmm")
-            && incubator.get("arch").and_then(|v| v.as_str()) == Some("x86-64")
-            && boot.get("type").and_then(|v| v.as_str()) == Some("mshv"),
-        "Incubator provisioning currently supports only type=openvmm, arch=x86-64, boot.type=mshv profiles"
+        (launcher == Some("openvmm") && arch == Some("x86-64") && boot == "mshv")
+            || (launcher == Some("qemu-tcg")
+                && matches!(arch, Some("x86-64" | "aarch64"))
+                && boot == "linux-direct"),
+        "Incubator provisioning supports qemu-tcg/linux-direct (x86-64 or aarch64) and openvmm/mshv (x86-64) profiles"
     );
     Ok(config)
+}
+
+fn provision_qemu(
+    request: Params,
+    mut config: toml_edit::DocumentMut,
+    ctx: &mut NodeCtx<'_>,
+) -> anyhow::Result<()> {
+    let Params {
+        profile,
+        working_dir,
+        kernel,
+        initrd,
+        qemu_binary,
+        firmware,
+        boot_artifacts,
+        share,
+        dir,
+        kernel_cmdline,
+        hypervisor_cmdline,
+        prepare_only,
+        incubator_args,
+        done,
+        source_profile: _,
+    } = request;
+    anyhow::ensure!(
+        firmware.is_none() && boot_artifacts.is_none() && hypervisor_cmdline.is_none(),
+        "--firmware, --boot-artifacts and --hypervisor-cmdline require an mshv profile"
+    );
+    let arch = match config["incubator"]["arch"].as_str() {
+        Some("x86-64") => CommonArch::X86_64,
+        Some("aarch64") => CommonArch::Aarch64,
+        _ => anyhow::bail!("unsupported QEMU guest architecture"),
+    };
+    let target = match arch {
+        CommonArch::X86_64 => CommonTriple::X86_64_LINUX_MUSL,
+        CommonArch::Aarch64 => CommonTriple::AARCH64_LINUX_MUSL,
+    };
+    let binary = match qemu_binary {
+        Some(path) => path_str(&path)?.to_owned(),
+        None => config["incubator"]["binary"]
+            .as_str()
+            .context("missing incubator.binary")?
+            .to_owned(),
+    };
+    config["incubator"]["binary"] = toml_edit::value(&binary);
+    if let Some(cmdline) = kernel_cmdline {
+        config["incubator"]["cmdline"] = toml_edit::value(cmdline);
+    }
+
+    let openvmm = ctx.reqv(|openvmm| crate::build_openvmm::Request {
+        params: crate::build_openvmm::OpenvmmBuildParams {
+            target: target.clone(),
+            profile,
+            features: Default::default(),
+        },
+        openvmm,
+    });
+    let incubator = ctx.reqv(|incubator| crate::build_incubator::Request {
+        target: CommonTriple::X86_64_LINUX_GNU,
+        profile: if profile.to_release() {
+            crate::run_cargo_build::BuildProfile::Release
+        } else {
+            crate::run_cargo_build::BuildProfile::Light
+        },
+        incubator,
+    });
+    let pipette = ctx.reqv(|pipette| crate::build_pipette::Request {
+        target,
+        profile,
+        pipette,
+    });
+    use crate::resolve_openvmm_test_linux_kernel::{
+        CCA_LINUX_TEST_KERNEL_VERSION, DEFAULT_LINUX_TEST_KERNEL_VERSION, OpenvmmTestKernelFile,
+    };
+    let kernel = kernel.map(ReadVar::from_static).unwrap_or_else(|| {
+        let (file, version) = match arch {
+            CommonArch::X86_64 => (
+                OpenvmmTestKernelFile::BzImage,
+                DEFAULT_LINUX_TEST_KERNEL_VERSION,
+            ),
+            CommonArch::Aarch64 => (OpenvmmTestKernelFile::Kernel, CCA_LINUX_TEST_KERNEL_VERSION),
+        };
+        ctx.reqv(|v| crate::resolve_openvmm_test_linux_kernel::Request::Get(file, arch, version, v))
+    });
+    let child_kernel = ctx.reqv(|v| {
+        crate::resolve_openvmm_test_linux_kernel::Request::Get(
+            OpenvmmTestKernelFile::Kernel,
+            arch,
+            DEFAULT_LINUX_TEST_KERNEL_VERSION,
+            v,
+        )
+    });
+    let child_initrd = ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
+    let initrd = initrd
+        .map(ReadVar::from_static)
+        .unwrap_or_else(|| child_initrd.clone());
+
+    ctx.emit_rust_step("prepare QEMU Incubator profile and command", |ctx| {
+        let openvmm = openvmm.claim(ctx);
+        let incubator = incubator.claim(ctx);
+        let pipette = pipette.claim(ctx);
+        let kernel = kernel.claim(ctx);
+        let initrd = initrd.claim(ctx);
+        let child_kernel = child_kernel.claim(ctx);
+        let child_initrd = child_initrd.claim(ctx);
+        done.claim(ctx);
+        move |rt| {
+            rt.sh.change_dir(&working_dir);
+            let version = flowey::shell_cmd!(rt, "{binary} --version")
+                .read()
+                .with_context(|| {
+                    format!(
+                        "checking QEMU executable {binary:?}; install QEMU or use --qemu-binary"
+                    )
+                })?;
+            log::info!("{version}");
+            let runner = rt.read(incubator).bin;
+            let crate::build_openvmm::OpenvmmOutput::LinuxBin { bin: openvmm, .. } =
+                rt.read(openvmm)
+            else {
+                unreachable!()
+            };
+            let crate::build_pipette::PipetteOutput::LinuxBin { bin: pipette, .. } =
+                rt.read(pipette)
+            else {
+                unreachable!()
+            };
+            let kernel = rt.read(kernel);
+            let initrd = rt.read(initrd);
+            let child_kernel = rt.read(child_kernel);
+            let child_initrd = rt.read(child_initrd);
+            fs_err::create_dir_all(&dir)?;
+            let runtime = stage_runtime(
+                &dir.join("runtime"),
+                &[
+                    ("openvmm", &openvmm),
+                    ("incubator", &runner),
+                    ("pipette", &pipette),
+                    ("guest-kernel", &child_kernel),
+                    ("guest-initrd", &child_initrd),
+                ],
+            )?;
+            let guest_path = |name| -> anyhow::Result<String> {
+                Ok(format!(
+                    "/share/{}/{}",
+                    path_str(runtime.strip_prefix(&share)?)?,
+                    name
+                ))
+            };
+            let guest_pipette = guest_path("pipette")?;
+            let profile_path = dir.join("profile.toml");
+            let profile_file = tempfile::NamedTempFile::new_in(&dir)?;
+            fs_err::write(profile_file.path(), config.to_string())?;
+            profile_file.persist(&profile_path)?;
+            let mut args = vec![
+                "--profile".into(),
+                path_str(&profile_path)?.into(),
+                "--kernel".into(),
+                path_str(&kernel)?.into(),
+                "--initrd".into(),
+                path_str(&initrd)?.into(),
+                "--share".into(),
+                path_str(&share)?.into(),
+                "--guest-pipette".into(),
+                guest_pipette,
+                "--output-dir".into(),
+                path_str(&dir.join("results"))?.into(),
+            ];
+            for (env, name) in [
+                ("INCUBATOR_OPENVMM", "openvmm"),
+                ("INCUBATOR_GUEST_KERNEL", "guest-kernel"),
+                ("INCUBATOR_GUEST_INITRD", "guest-initrd"),
+            ] {
+                args.extend(["--guest-env".into(), format!("{env}={}", guest_path(name)?)]);
+            }
+            log::info!("Prepared profile: {}", profile_path.display());
+            log::info!("Guest OpenVMM: {}", guest_path("openvmm")?);
+            let runner = runtime.join("incubator");
+            if prepare_only {
+                let command = std::iter::once(path_str(&runner)?)
+                    .chain(args.iter().map(String::as_str))
+                    .chain(["--", "/bin/sh"])
+                    .map(shell_word)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                log::info!("Run directly: {command}");
+            } else {
+                flowey::shell_cmd!(rt, "{runner}")
+                    .args(args)
+                    .args(incubator_args)
+                    .run_interactive()?;
+            }
+            Ok(())
+        }
+    });
+    Ok(())
 }
 
 fn resolve_profile(
@@ -324,6 +539,29 @@ mod tests {
         ] {
             assert!(parse_source_profile(&source).is_err());
         }
+    }
+
+    #[test]
+    fn qemu_profiles_support_both_architectures_and_default_boot() -> anyhow::Result<()> {
+        for source in [
+            include_str!("../../../../petri/incubator/profiles/x86_64-tcg-svm-pcie.toml"),
+            include_str!("../../../../petri/incubator/profiles/aarch64-tcg-pcie.toml"),
+        ] {
+            parse_source_profile(source)?;
+            parse_source_profile(&format!("{source}\n[boot]\ntype = 'linux-direct'\n"))?;
+            for boot in ["type = 'mshv'", "type = 'unknown'", ""] {
+                assert!(parse_source_profile(&format!("{source}\n[boot]\n{boot}\n")).is_err());
+            }
+            assert!(
+                parse_source_profile(
+                    &source
+                        .replace("arch = \"x86-64\"", "arch = \"unknown\"")
+                        .replace("arch = \"aarch64\"", "arch = \"unknown\"")
+                )
+                .is_err()
+            );
+        }
+        Ok(())
     }
 
     #[test]

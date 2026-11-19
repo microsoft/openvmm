@@ -11,7 +11,7 @@ hosts; OpenVMM requires KVM.
 
 | Launcher | Boot environment | Current support |
 |----------|------------------|-----------------|
-| `qemu-tcg` | `linux-direct` | AArch64 guest on x64 Linux |
+| `qemu-tcg` | `linux-direct` | AArch64 or x64 guest on x64 Linux |
 | `openvmm` | `linux-direct` | x64 Linux guest on x64 Linux |
 | `openvmm` | `mshv` | x64 mshv root partition on x64 Linux |
 | `qemu-tcg` | `mshv` | Not implemented |
@@ -20,6 +20,76 @@ Registered VMM tests use [Petri nested tests](vmm.md#nested-tests), not an
 Incubator Flowey target runner. Each Incubator invocation cold-boots a VM.
 
 ## QEMU commands
+
+On an x64 Linux host, Flowey builds the native Incubator launcher and static
+guest OpenVMM/Pipette binaries, acquires matching kernels and initrds, and
+opens a shell:
+
+```bash
+cargo xflowey incubator \
+  --profile petri/incubator/profiles/x86_64-tcg-svm-pcie.toml \
+  --dir target/incubator-x64 -- -- /bin/sh
+
+cargo xflowey incubator \
+  --profile petri/incubator/profiles/aarch64-tcg-pcie.toml \
+  --dir target/incubator-aarch64 -- -- /bin/sh
+```
+
+Install the profile's QEMU executable on the host first; TCG does not require
+host KVM. Use `--qemu-binary path/to/qemu-system-x86_64` (or the AArch64
+equivalent) before the first `--` to override it. The AArch64 outer kernel
+includes the SMMU/iommufd and P2P DMA support needed by that profile.
+
+The checkout is mounted at `/share`. Inside the shell, `INCUBATOR_OPENVMM`
+points to the guest OpenVMM built from your code; `INCUBATOR_GUEST_KERNEL`
+and `INCUBATOR_GUEST_INITRD` point to matching Linux-direct child boot files.
+For example, assign the profile's disk to a nested x64 guest:
+
+```bash
+"$INCUBATOR_OPENVMM" \
+  --kernel "$INCUBATOR_GUEST_KERNEL" \
+  --initrd "$INCUBATOR_GUEST_INITRD" \
+  --cmdline 'console=ttyS0' \
+  --memory 1G --no-vmbus --com1 console \
+  --pcie-root-complex rc0 --pcie-root-port rc0:rp0 \
+  --iommu id=iommu0 \
+  --vfio "host=$INCUBATOR_VFIO_BDF_TEST_DISK,port=rp0,iommu=iommu0"
+```
+
+Rerun the Flowey command after editing code to incrementally rebuild and
+stage the new guest OpenVMM. An existing shell retains its previous runtime
+snapshot; it does not automatically switch to a new build.
+
+`--prepare-only` prepares artifacts and prints a direct shell command without
+booting. `--share` defaults to the checkout; `--dir` defaults to
+`target/incubator` beneath the share. Use separate directories for different
+profiles and do not prepare the same directory concurrently. Logs are retained
+in `<DIR>/results/incubator-*`. `--kernel` and `--initrd` override only the
+outer boot files, not the staged child files. `--kernel-cmdline` replaces the
+profile's outer kernel options, so retain any required IOMMU workarounds.
+Firmware, boot-artifact, and hypervisor-command-line overrides are mshv-only.
+
+To build the code, launch QEMU, and launch OpenVMM within the Incubator with
+an assigned device, all in one-shot, run something like this:
+
+```bash
+cargo xflowey incubator \
+  --profile petri/incubator/profiles/x86_64-tcg-svm-pcie.toml \
+  -- -- /bin/sh -c 'exec "$INCUBATOR_OPENVMM" \
+    --kernel "$INCUBATOR_GUEST_KERNEL" \
+    --initrd "$INCUBATOR_GUEST_INITRD" \
+    --cmdline "console=ttyS0" \
+    --memory 1G \
+    --no-vmbus \
+    --com1 console \
+    --guest-shutdown-action exit \
+    --pcie-root-complex rc0 \
+    --pcie-root-port rc0:rp0 \
+    --iommu id=iommu0 \
+    --vfio "host=$INCUBATOR_VFIO_BDF_TEST_DISK,port=rp0,iommu=iommu0"'
+  ```
+
+### Launch with manually supplied artifacts
 
 ```bash
 cargo run -p incubator -- \
@@ -46,9 +116,9 @@ cargo xflowey incubator \
   --timeout 600 --no-pty -- /bin/sh -c 'test -c /dev/mshv && uname -a'
 ```
 
-`--profile` is required. Provisioning currently supports only x64 OpenVMM
-profiles with `mshv` boot; other launcher, architecture, or boot combinations
-are rejected. Flowey leaves the source file untouched and prepares a copy,
+`--profile` is required. This recipe supports x64 OpenVMM profiles with `mshv`
+boot; QEMU/Linux-direct provisioning is described above.
+Flowey leaves the source file untouched and prepares a copy,
 preserving its VM settings and boot options while replacing `binary`,
 `host-boot`, `firmware`, and `boot-artifacts` with resolved paths. These source
 paths may be placeholders; use CLI artifact overrides to supply local inputs.
