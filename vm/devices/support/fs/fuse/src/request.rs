@@ -217,7 +217,14 @@ pub trait RequestReader: io::Read {
     fn remaining_len(&self) -> usize;
 
     /// Consume the next `count` bytes.
+    ///
+    /// Fails with `EINVAL`, as a short read does, when fewer than `count`
+    /// bytes remain, which it checks before allocating: `count` often comes
+    /// from the request itself, which can declare any size.
     fn read_count(&mut self, count: usize) -> lx::Result<Box<[u8]>> {
+        if count > self.remaining_len() {
+            return Err(lx::Error::EINVAL);
+        }
         let mut buffer = vec![0u8; count];
         self.read_exact(&mut buffer)?;
         Ok(buffer.into_boxed_slice())
@@ -269,6 +276,7 @@ impl RequestReader for &[u8] {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn parse_init() {
@@ -606,5 +614,118 @@ pub(crate) mod tests {
         let data = b"valid_file.txt\0";
         let mut reader: &[u8] = &data[..];
         assert!(reader.name().is_ok());
+    }
+
+    #[test]
+    fn read_count_past_remaining_data_is_einval() {
+        let data = [0xAB; 5];
+
+        // A count past the remaining data fails as the short read would,
+        // even one that no allocation could hold.
+        for count in [data.len() + 1, u32::MAX as usize, usize::MAX] {
+            let mut reader: &[u8] = &data;
+            assert_eq!(
+                reader.read_count(count),
+                Err(lx::Error::EINVAL),
+                "count {count}"
+            );
+        }
+
+        let mut reader: &[u8] = &data;
+        assert_eq!(*reader.read_count(data.len()).unwrap(), data);
+        assert_eq!(reader.remaining_len(), 0);
+    }
+
+    /// Builds a request of `opcode` from the parts of its body, with the
+    /// header's `len` the length of the whole message.
+    fn request_bytes(opcode: u32, body: &[&[u8]]) -> Vec<u8> {
+        let len = size_of::<fuse_in_header>() + body.iter().map(|part| part.len()).sum::<usize>();
+        let header = fuse_in_header {
+            len: len.try_into().unwrap(),
+            opcode,
+            unique: 1,
+            nodeid: 1,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+        let mut message = header.as_bytes().to_vec();
+        for part in body {
+            message.extend_from_slice(part);
+        }
+        message
+    }
+
+    fn write_request(size: u32, data: &[u8]) -> Vec<u8> {
+        let arg = fuse_write_in {
+            fh: 1,
+            offset: 0,
+            size,
+            write_flags: 0,
+            lock_owner: 0,
+            flags: 0,
+            padding: 0,
+        };
+        request_bytes(FUSE_WRITE, &[arg.as_bytes(), data])
+    }
+
+    fn setxattr_request(size: u32, value: &[u8]) -> Vec<u8> {
+        let arg = fuse_setxattr_in { size, flags: 0 };
+        request_bytes(FUSE_SETXATTR, &[arg.as_bytes(), b"user.test\0", value])
+    }
+
+    fn ioctl_request(in_size: u32, data: &[u8]) -> Vec<u8> {
+        let arg = fuse_ioctl_in {
+            fh: 1,
+            flags: 0,
+            cmd: 0,
+            arg: 0,
+            in_size,
+            out_size: 0,
+        };
+        request_bytes(FUSE_IOCTL, &[arg.as_bytes(), data])
+    }
+
+    /// The data that an operation sized by its argument carries.
+    fn sized_data(operation: &FuseOperation) -> Option<&[u8]> {
+        match operation {
+            FuseOperation::Write { data, .. } | FuseOperation::Ioctl { data, .. } => Some(data),
+            FuseOperation::SetXAttr { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn parse_data_size_past_payload_is_einval() {
+        let data = [0xAB; 5];
+        let builders: [(&str, fn(u32, &[u8]) -> Vec<u8>); 3] = [
+            ("FUSE_WRITE", write_request),
+            ("FUSE_SETXATTR", setxattr_request),
+            ("FUSE_IOCTL", ioctl_request),
+        ];
+        for (name, build) in builders {
+            // A size that the message carries decodes to its data.
+            let message = build(data.len() as u32, &data);
+            let request = Request::new(message.as_slice()).unwrap();
+            assert_eq!(
+                sized_data(&request.operation),
+                Some(&data[..]),
+                "{name}: {:?}",
+                request.operation
+            );
+
+            // A size past it decodes to the short read's error, even the
+            // largest, whose data the decoder must not allocate first.
+            for size in [data.len() as u32 + 1, u32::MAX] {
+                let message = build(size, &data);
+                let request = Request::new(message.as_slice()).unwrap();
+                assert!(
+                    matches!(request.operation, FuseOperation::Error(e) if e == lx::Error::EINVAL),
+                    "{name} size {size}: {:?}",
+                    request.operation
+                );
+            }
+        }
     }
 }
