@@ -115,7 +115,8 @@ impl InOrderCompletion {
         if self.in_flight[idx as usize] {
             drop(work);
             self.blocked_at_used = Some(queue.queue_state().used_index);
-            tracelimit::warn_ratelimited!(
+            tracelimit::event_ratelimited_static!(
+                level: DEBUG,
                 descriptor_index = idx,
                 "guest reused an outstanding descriptor, deferring it"
             );
