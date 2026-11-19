@@ -51,6 +51,8 @@ struct TfpRecord {
     /// Space ownership to restore on abort. `None` for an in-place
     /// PartiallyPresent → FullyPresent promotion.
     allocation: Option<BlockAllocation>,
+    /// Whether initialization must be flushed before publishing the BAT.
+    needs_flush_before_log: bool,
 }
 
 /// Resolved range from a read operation.
@@ -424,6 +426,7 @@ impl<F: AsyncFile> VhdxFile<F> {
                         block_number: span.block_number,
                         original_mapping: original,
                         allocation: None,
+                        needs_flush_before_log: false,
                     });
 
                     ranges.push(WriteRange::Data {
@@ -536,6 +539,7 @@ impl<F: AsyncFile> VhdxFile<F> {
             block_number: span.block_number,
             original_mapping,
             allocation: Some(allocation),
+            needs_flush_before_log: !allocation.state.is_safe(),
         });
 
         ranges.push(WriteRange::Data {
@@ -561,6 +565,8 @@ impl<F: AsyncFile> VhdxFile<F> {
     /// caller zero-fills reused space lets another writer store data that
     /// those zero ranges then erase, and lets a reader observe the stale
     /// payload. Abort restores the allocation's original ownership.
+    /// Same-block reuse must also flush padding before publication when the
+    /// original mapping defines zeros, rather than permitting old contents.
     async fn allocate_partial_block(
         &self,
         span: &BlockSpan,
@@ -579,6 +585,13 @@ impl<F: AsyncFile> VhdxFile<F> {
             block_number: span.block_number,
             original_mapping: mapping,
             allocation: Some(allocation),
+            needs_flush_before_log: !space_state.is_safe()
+                || (space_state == SpaceState::OwnStale
+                    && !is_partial_present
+                    && matches!(
+                        mapping.bat_state(),
+                        BatEntryState::Zero | BatEntryState::NotPresent
+                    )),
         });
 
         let pre_log_fsn = if is_partial_present && !space_state.is_safe() {
@@ -733,14 +746,14 @@ impl<F: AsyncFile> VhdxFile<F> {
     ) -> Result<(), VhdxIoError> {
         let had_tfp = !tfp_records.is_empty();
 
-        // Capture FSN after the caller's data writes.
+        // Capture FSN after the caller's data and padding writes: a flush
+        // may have run while initialization was still outstanding.
         // Passed into write_block_mapping so it's stamped on the
         // cache page atomically with the dirty-mark.
-        let pre_log_fsn = if tfp_records.iter().any(|record| {
-            record
-                .allocation
-                .is_some_and(|allocation| !allocation.state.is_safe())
-        }) {
+        let pre_log_fsn = if tfp_records
+            .iter()
+            .any(|record| record.needs_flush_before_log)
+        {
             self.log_state
                 .as_ref()
                 .map(|state| state.flush_sequencer.current_fsn())

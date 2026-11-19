@@ -261,9 +261,9 @@ pub(crate) enum SpaceState {
     /// Fresh space from file extension — zeroed on disk. Safe to commit
     /// BAT before flushing the data write (no data leak possible).
     Zero,
-    /// Recycled space containing the same block's own old data. Safe to
-    /// commit BAT before flushing (a power failure only exposes the
-    /// block's own stale data, not another block's). NOT zero.
+    /// Recycled space containing the same block's own old data, not another
+    /// block's. Padding still needs a flush before BAT publication if the
+    /// original mapping defines zeros rather than permitting old data. NOT zero.
     OwnStale,
     /// Recycled space that may contain another block's data. Must flush
     /// data writes before committing BAT to prevent cross-block data
@@ -272,7 +272,7 @@ pub(crate) enum SpaceState {
 }
 
 impl SpaceState {
-    /// Safe to commit BAT entry before data flush completes?
+    /// Safe from cross-block data exposure if BAT is committed before data flush?
     pub fn is_safe(self) -> bool {
         matches!(self, Self::Zero | Self::OwnStale)
     }

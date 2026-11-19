@@ -314,6 +314,138 @@ fn flush_count(file: &YieldingCrashFile) -> usize {
 }
 
 #[async_test]
+async fn zero_padding_survives_metadata_only_persistence(driver: DefaultDriver) {
+    for sector_size in [512, 4096] {
+        for (has_parent, trim_mode) in [
+            (false, TrimMode::Zero),
+            (true, TrimMode::Zero),
+            (false, TrimMode::MakeTransparent),
+        ] {
+            let disk = disk(&driver, has_parent, sector_size).await;
+            write(&disk, 0, disk.block_size(), 0xE7).await;
+            disk.flush().await.unwrap();
+            let payload_offset = disk.bat.get_block_mapping(0).file_offset();
+            disk.trim(TrimRequest::new(trim_mode, 0, MB1))
+                .await
+                .unwrap();
+
+            let mut ranges = Vec::new();
+            let guard = disk
+                .resolve_write(sector_size as u64, sector_size, &mut ranges)
+                .await
+                .unwrap();
+            assert_eq!(disk.bat.get_block_mapping(0).file_offset(), payload_offset);
+            assert!(
+                disk.bat
+                    .get_block_mapping(0)
+                    .transitioning_to_fully_present()
+            );
+            assert_eq!(
+                ranges
+                    .iter()
+                    .filter(|range| matches!(range, WriteRange::Zero { .. }))
+                    .count(),
+                2,
+                "the partial write must initialize both sides of the payload"
+            );
+
+            // Make the logical zeros durable while the physical payload is
+            // still stale. Only a barrier after initialization can protect it.
+            disk.flush().await.unwrap();
+            disk.file
+                .persist_except(payload_offset..payload_offset + MB1);
+            write_ranges(&disk, &ranges, 0x61).await;
+            guard.complete().await.unwrap();
+
+            let lsn = disk.cache.commit().unwrap();
+            disk.log_state
+                .as_ref()
+                .unwrap()
+                .logged_lsn
+                .wait_for(lsn)
+                .await
+                .unwrap();
+            let snapshot = disk.file.durable_snapshot();
+            disk.abort().await;
+            let recovered = VhdxFile::open(InMemoryFile::from_snapshot(snapshot))
+                .allow_replay(true)
+                .read_only()
+                .await
+                .unwrap();
+            assert_eq!(
+                recovered.bat.get_block_mapping(0).bat_state(),
+                BatEntryState::FullyPresent,
+                "the allocation metadata must survive the simulated crash"
+            );
+            let actual = read(&recovered, 0, recovered.block_size()).await;
+            let sector_size = sector_size as usize;
+            assert!(
+                actual[..sector_size].iter().all(|&b| b == 0),
+                "leading zeros were lost: parent={has_parent}, trim={trim_mode:?}"
+            );
+            assert!(
+                actual[2 * sector_size..].iter().all(|&b| b == 0),
+                "trailing zeros were lost: parent={has_parent}, trim={trim_mode:?}"
+            );
+            assert!(
+                actual[sector_size..2 * sector_size]
+                    .iter()
+                    .all(|&b| b == 0x61)
+            );
+        }
+    }
+}
+
+#[async_test]
+async fn soft_anchor_padding_does_not_add_a_data_flush(driver: DefaultDriver) {
+    for sector_size in [512, 4096] {
+        for trim_mode in [TrimMode::FileSpace, TrimMode::FreeSpace] {
+            for flush_trim in [false, true] {
+                let disk = disk(&driver, false, sector_size).await;
+                write(&disk, 0, disk.block_size(), 0xE7).await;
+                disk.flush().await.unwrap();
+                let payload_offset = disk.bat.get_block_mapping(0).file_offset();
+                disk.trim(TrimRequest::new(TrimMode::FileSpace, 0, MB1))
+                    .await
+                    .unwrap();
+                if trim_mode == TrimMode::FreeSpace {
+                    disk.trim(TrimRequest::new(trim_mode, 0, MB1))
+                        .await
+                        .unwrap();
+                }
+                assert!(disk.bat.get_block_mapping(0).is_soft_anchored());
+                if flush_trim {
+                    disk.flush().await.unwrap();
+                }
+                disk.file.schedule(1, false);
+                let before = flush_count(&disk.file);
+                let mut ranges = Vec::new();
+                let guard = disk
+                    .resolve_write(sector_size as u64, sector_size, &mut ranges)
+                    .await
+                    .unwrap();
+                assert_eq!(disk.bat.get_block_mapping(0).file_offset(), payload_offset);
+                assert!(
+                    ranges
+                        .iter()
+                        .any(|range| matches!(range, WriteRange::Zero { .. }))
+                );
+                write_ranges(&disk, &ranges, 0x61).await;
+                guard.complete().await.unwrap();
+                disk.flush().await.unwrap();
+                assert_eq!(
+                    flush_count(&disk.file) - before,
+                    1,
+                    "soft-anchor reuse needs only the final durability flush: \
+                     trim={trim_mode:?}, flushed={flush_trim}"
+                );
+                disk.close().await.unwrap();
+            }
+        }
+    }
+}
+
+#[async_test]
 async fn safe_partial_payloads_do_not_require_recurring_data_flushes(driver: DefaultDriver) {
     for sector_size in [512, 4096] {
         let disk = disk(&driver, true, sector_size).await;
