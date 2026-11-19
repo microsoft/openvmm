@@ -5628,6 +5628,7 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
         // behind it, until its earlier use is published.
         let state = queue.queue_state();
         assert!(in_order.try_next(&mut queue).unwrap().is_none());
+        assert!(in_order.try_next(&mut queue).unwrap().is_none());
         assert!(queue.poll_kick(&mut cx).is_ready());
         assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
         assert_eq!(
@@ -5677,6 +5678,49 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
         assert_eq!(in_order.outstanding(), 0);
         assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
     }
+}
+
+#[async_test]
+async fn in_order_rechecks_deferred_descriptor(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+    let mut avail = 0;
+    for _ in 0..2 {
+        make_available(
+            &mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            0,
+            &mut avail,
+        );
+    }
+    let _work = in_order.try_next(&mut queue).unwrap().unwrap();
+    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    let state = queue.queue_state();
+
+    // A blocked retry must still validate descriptor metadata.
+    write_descriptor(
+        &mem,
+        BOUND_TEST_DESC_ADDR,
+        0,
+        BOUND_TEST_DATA_ADDR,
+        0x100,
+        DescriptorFlags::new().with_next(true),
+        0,
+    );
+    let error = in_order
+        .try_next(&mut queue)
+        .err()
+        .expect("a deferred head must not hide a malformed chain");
+    assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
+    assert_eq!(queue.queue_state(), state);
+    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
 }
 
 /// With every head outstanding, a reused head would oversubscribe the ring.

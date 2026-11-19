@@ -33,6 +33,7 @@ use std::collections::VecDeque;
 use std::io::Error;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 
 /// Enforces in-order used-ring publication for a single [`VirtioQueue`].
 ///
@@ -94,9 +95,6 @@ impl InOrderCompletion {
         &mut self,
         queue: &mut VirtioQueue,
     ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        if self.blocked_on.is_some() {
-            return Ok(None);
-        }
         let Some(work) = queue.try_peek_with_backpressure()? else {
             return Ok(None);
         };
@@ -111,12 +109,14 @@ impl InOrderCompletion {
             self.completed.len()
         );
         if self.in_flight[idx as usize] {
-            self.blocked_on = Some(idx);
-            self.deferred_reuses += 1;
-            tracelimit::warn_ratelimited!(
-                descriptor_index = idx,
-                "guest reused an outstanding descriptor, deferring it"
-            );
+            if self.blocked_on != Some(idx) {
+                self.blocked_on = Some(idx);
+                self.deferred_reuses += 1;
+                tracelimit::warn_ratelimited!(
+                    descriptor_index = idx,
+                    "guest reused an outstanding descriptor, deferring it"
+                );
+            }
             return Ok(None);
         }
         self.in_flight[idx as usize] = true;
@@ -131,12 +131,13 @@ impl InOrderCompletion {
     /// published.
     /// Callers must also poll their completion source with the same waker and
     /// retry fetching after processing completions: this method does not
-    /// register a waker while blocked on publication.
+    /// register a waker for publication.
     pub fn poll_kick(&self, queue: &mut VirtioQueue, cx: &mut Context<'_>) -> Poll<()> {
+        ready!(queue.poll_kick_with_backpressure(cx));
         if self.blocked_on.is_some() {
             Poll::Pending
         } else {
-            queue.poll_kick_with_backpressure(cx)
+            Poll::Ready(())
         }
     }
 

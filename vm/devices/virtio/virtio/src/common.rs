@@ -342,12 +342,13 @@ impl VirtioQueue {
     ///
     /// Pair with [`Self::try_peek_with_backpressure`]. The caller must also poll
     /// its completion source with the same waker and retry after completions:
-    /// this method does not register a waker while waiting for capacity.
+    /// this method does not register a waker for capacity release.
     pub(crate) fn poll_kick_with_backpressure(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        ready!(self.poll_kick(cx));
         if self.core.capacity_blocked() {
             Poll::Pending
         } else {
-            self.poll_kick(cx)
+            Poll::Ready(())
         }
     }
 
