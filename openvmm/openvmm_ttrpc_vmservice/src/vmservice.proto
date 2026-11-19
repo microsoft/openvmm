@@ -41,7 +41,7 @@ service VM {
     // so a snapshot can be restored only once.
     rpc RestoreVM(RestoreVMRequest) returns (RestoreVMResponse);
 
-    // ShutdownVM requests a cooperative guest power-off.
+    // ShutdownVM requests a cooperative guest power-state change.
     // Success does not mean the guest has halted. Use WaitVM to observe a halt
     // and TeardownVM to release resources.
     rpc ShutdownVM(ShutdownVMRequest) returns (google.protobuf.Empty);
@@ -83,11 +83,11 @@ service VM {
 
 // Note: VTL assignment is not modeled yet; all devices are assumed to be VTL0.
 
-// Request cooperative guest power-off in a running VM through the selected
+// Request a cooperative guest power-state change in a running VM through the selected
 // mechanism. No fallback to another mechanism or hard power-off is performed.
 //
 // Success means IC acknowledgement or ACPI event injection, not halt.
-// With the default shutdown HALT
+// For power-off with the default shutdown HALT
 // policy, use WaitVM to await halt, PropertiesVM to check for PowerOff, then
 // TeardownVM to release resources. TeardownVM and Quit do not request shutdown.
 message ShutdownVMRequest {
@@ -109,6 +109,17 @@ message ShutdownVMRequest {
     // Set the Hyper-V IC force bit. Interpretation is guest-specific.
     // This is not a host-side hard power-off. Omitted means false.
     bool force = 2;
+
+    enum Operation {
+        // Preserve the legacy power-off behavior when omitted.
+        OPERATION_UNSPECIFIED = 0;
+        OPERATION_POWER_OFF = 1;
+        OPERATION_REBOOT = 2;
+        OPERATION_HIBERNATE = 3;
+    }
+    // ACPI supports only power-off. Reboot and hibernate require Hyper-V IC
+    // protocol versions 3.1 and 3.2 respectively. Unknown values are invalid.
+    Operation operation = 3;
 }
 
 message DirectBoot {
