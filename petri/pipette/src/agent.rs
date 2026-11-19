@@ -52,7 +52,8 @@ impl Agent {
                     .await;
                 let local_vsock_cid = cfg_select! {
                     target_os = "linux" => Some(
-                        vmsocket::local_vsock_cid().context("failed to query local AF_VSOCK CID")?,
+                        vmsocket::local_vsock_cid()
+                            .context("failed to query local AF_VSOCK CID")?,
                     ),
                     windows => None,
                 };

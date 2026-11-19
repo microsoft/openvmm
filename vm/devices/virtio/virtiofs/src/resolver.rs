@@ -161,8 +161,8 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
 
 cfg_select! {
     windows => {
-        use pal::windows::security::duplicate_impersonation_token;
         use pal::windows::security::RevertToSelfGuard;
+        use pal::windows::security::duplicate_impersonation_token;
         use pal_async::DefaultPool;
         use std::os::windows::io::AsHandle;
         use std::os::windows::io::OwnedHandle;

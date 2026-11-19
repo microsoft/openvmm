@@ -2539,9 +2539,11 @@ fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
         IsolationType::Tdx => cfg_select! {
             guest_arch = "x86_64" => {{
                 // TDX provides the TSC frequency via cpuid.
-                let max_function =
-                    safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0)
-                        .eax;
+                let max_function = safe_intrinsics::cpuid(
+                    x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0,
+                    0,
+                )
+                .eax;
 
                 if max_function < x86defs::cpuid::CpuidFunction::CoreCrystalClockInformation.0 {
                     return Err(Error::BadCpuidTsc);
