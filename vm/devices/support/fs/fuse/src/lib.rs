@@ -324,6 +324,10 @@ pub trait Fuse {
 
     /// Submit an ioctl.
     ///
+    /// `data` holds the `arg.in_size` bytes of the ioctl's input. Returns the ioctl's result and
+    /// its output, which the reply carries and which must not exceed `arg.out_size` bytes;
+    /// larger output fails the request with `EINVAL`.
+    ///
     /// # Note
     ///
     /// This is a somewhat limited subset of the ioctl functionality of libfuse; the additional
