@@ -22,25 +22,34 @@ jobs:
   condition: and(succeeded(), in(variables['Build.Reason'], 'Manual', 'IndividualCI', 'BatchedCI'), eq(variables['Build.Repository.Name'], 'microsoft/openvmm'), eq(variables['Build.SourceBranch'], 'refs/heads/copilot/test-mirror-refresh'))
   steps:
   - checkout: none
-  - pwsh: |
-      $ErrorActionPreference = 'Stop'
-      if ($env:BUILD_SOURCEBRANCH -cne 'refs/heads/copilot/test-mirror-refresh') {
-          throw "Unexpected source ref: $env:BUILD_SOURCEBRANCH"
-      }
-      $branch = 'main'
-      $body = @{
-          templateParameters = @{
-              branchToMirror = $branch
-              branchToUpdateSubmodule = $env:SUBMODULE_TARGET
-              updateSubmodule = $true
-          }
-      } | ConvertTo-Json
+  - bash: |
+      set -euo pipefail
+      python3 - <<'PY'
+      import json
+      import os
+      import urllib.request
 
-      $run = Invoke-RestMethod -Method Post `
-          -Uri 'https://dev.azure.com/microsoft/HyperVCloud/_apis/pipelines/149443/runs?api-version=7.1' `
-          -Headers @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" } `
-          -MaximumRedirection 0 -ContentType 'application/json' -Body $body
-      Write-Host "Queued mirror refresh $($run.id) for $branch"
+      if os.environ["BUILD_SOURCEBRANCH"] != "refs/heads/copilot/test-mirror-refresh":
+          raise ValueError("Unexpected source ref")
+      branch = "main"
+      body = json.dumps({"templateParameters": {
+          "branchToMirror": branch,
+          "branchToUpdateSubmodule": os.environ["SUBMODULE_TARGET"],
+          "updateSubmodule": True,
+      }}).encode()
+      request = urllib.request.Request(
+          "https://dev.azure.com/microsoft/HyperVCloud/_apis/pipelines/149443/runs?api-version=7.1",
+          data=body,
+          headers={
+              "Authorization": "Bearer " + os.environ["SYSTEM_ACCESSTOKEN"],
+              "Content-Type": "application/json",
+          },
+          method="POST",
+      )
+      with urllib.request.urlopen(request, timeout=60) as response:
+          run = json.load(response)
+      print(f"Queued mirror refresh {run['id']} for {branch}")
+      PY
     displayName: Queue downstream mirror pipeline
     env:
       SUBMODULE_TARGET: ${{ variables.submoduleTarget }}
