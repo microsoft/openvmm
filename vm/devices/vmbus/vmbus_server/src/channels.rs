@@ -2256,6 +2256,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return;
         }
 
+        // Early failures must use the requested target before modify_connection updates the port.
+        let response_target = MessageTarget::Custom(ConnectionTarget {
+            vp: request.target_message_vp,
+            sint: request.target_sint,
+        });
+
         if request.target_sint != VMBUS_SINT {
             tracelimit::warn_ratelimited!(
                 target_vtl = request.target_vtl,
@@ -2265,13 +2271,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             );
 
             // Send an unsupported response to the requested SINT.
-            self.send_version_response_with_target(
-                None,
-                MessageTarget::Custom(ConnectionTarget {
-                    vp: request.target_message_vp,
-                    sint: request.target_sint,
-                }),
-            );
+            self.send_version_response_with_target(None, response_target);
 
             return;
         }
@@ -2291,7 +2291,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             );
 
             // Do not notify the relay in this case.
-            self.send_version_response(None);
+            self.send_version_response_with_target(None, response_target);
             return;
         };
 
@@ -2314,10 +2314,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             MonitorPageRequest::None => None,
             MonitorPageRequest::Invalid => {
                 // Do not notify the relay in this case.
-                self.send_version_response(Some(VersionResponseData::new(
-                    version,
-                    protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-                )));
+                self.send_version_response_with_target(
+                    Some(VersionResponseData::new(
+                        version,
+                        protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+                    )),
+                    response_target,
+                );
 
                 return;
             }
@@ -2349,10 +2352,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }) {
             tracelimit::error_ratelimited!(?err, "server failed to change state");
             self.inner.state = ConnectionState::Disconnected;
-            self.send_version_response(Some(VersionResponseData::new(
-                version,
-                protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-            )));
+            self.send_version_response_with_target(
+                Some(VersionResponseData::new(
+                    version,
+                    protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+                )),
+                response_target,
+            );
         }
     }
 

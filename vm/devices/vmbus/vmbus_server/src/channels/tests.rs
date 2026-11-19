@@ -46,6 +46,48 @@ fn test_version_negotiation_not_supported() {
 }
 
 #[test]
+fn test_version_negotiation_failure_target_vp() {
+    for fail_modify_connection in [false, true] {
+        let mut env = TestEnv::new();
+        env.notifier.target_message_vp = Some(2);
+        env.notifier.fail_modify_connection = fail_modify_connection;
+
+        env.c()
+            .handle_synic_message(in_msg(
+                protocol::MessageType::INITIATE_CONTACT,
+                protocol::InitiateContact {
+                    version_requested: Version::Win10 as u32,
+                    target_message_vp: 3,
+                    interrupt_page_or_target_info: 0,
+                    parent_to_child_monitor_page_gpa: 0,
+                    child_to_parent_monitor_page_gpa: if fail_modify_connection {
+                        0
+                    } else {
+                        0x1000
+                    },
+                },
+            ))
+            .unwrap();
+
+        env.notifier.check_message_with_target(
+            OutgoingMessage::new(&protocol::VersionResponse {
+                version_supported: 1,
+                connection_state: protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+                padding: 0,
+                selected_version_or_connection_id: Version::Win10 as u32,
+            }),
+            MessageTarget::Custom(ConnectionTarget {
+                vp: 3,
+                sint: VMBUS_SINT,
+            }),
+        );
+        assert!(matches!(env.server.state, ConnectionState::Disconnected));
+        assert!(env.notifier.modify_requests.is_empty());
+        assert_eq!(env.notifier.target_message_vp, Some(2));
+    }
+}
+
+#[test]
 fn test_version_negotiation_success() {
     let mut env = TestEnv::new();
 
@@ -379,8 +421,20 @@ fn test_initiate_contact(env: &mut TestEnv, version: TestVersion, target_info: u
                 supported_features: expected_features,
             }));
     } else {
+        let target = if expect_supported {
+            MessageTarget::Default
+        } else {
+            MessageTarget::Custom(ConnectionTarget {
+                vp: if raw_version < Version::Win8_1 as u32 {
+                    0
+                } else {
+                    1
+                },
+                sint: VMBUS_SINT,
+            })
+        };
         env.notifier
-            .check_message(OutgoingMessage::new(&version_response));
+            .check_message_with_target(OutgoingMessage::new(&version_response), target);
         assert_eq!(expected_features, 0);
     }
 
@@ -2749,6 +2803,7 @@ struct TestNotifier {
     monitor_page: Option<MonitorPageGpas>,
     target_message_vp: Option<u32>,
     pend_messages: bool,
+    fail_modify_connection: bool,
 }
 
 impl TestNotifier {
@@ -2766,6 +2821,7 @@ impl TestNotifier {
                 monitor_page: None,
                 target_message_vp: None,
                 pend_messages: false,
+                fail_modify_connection: false,
             },
             recv,
         )
@@ -2824,6 +2880,11 @@ impl Notifier for TestNotifier {
     }
 
     fn modify_connection(&mut self, request: ModifyConnectionRequest) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.fail_modify_connection,
+            "connection modification failed"
+        );
+
         match request.monitor_page {
             Update::Unchanged => (),
             Update::Reset => self.monitor_page = None,
