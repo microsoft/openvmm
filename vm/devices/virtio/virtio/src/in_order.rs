@@ -86,8 +86,8 @@ impl InOrderCompletion {
     ///
     /// If the next available descriptor head is still outstanding, it is left
     /// unconsumed and `Ok(None)` is returned until the earlier use is
-    /// published. A full ring is likewise deferred until publication frees
-    /// capacity.
+    /// published. A chain exceeding the remaining ring capacity is likewise
+    /// deferred until publication frees capacity.
     ///
     /// Use this in place of [`VirtioQueue::try_next`].
     pub fn try_next(
@@ -127,7 +127,8 @@ impl InOrderCompletion {
     /// Waits for guest work that can be consumed by [`try_next`](Self::try_next).
     ///
     /// Unlike [`VirtioQueue::poll_kick`], this returns `Pending` while a reused
-    /// head or a full ring requires an earlier completion to be published.
+    /// head or insufficient ring capacity requires an earlier completion to be
+    /// published.
     /// Callers must also poll their completion source with the same waker and
     /// retry fetching after processing completions: this method does not
     /// register a waker while blocked on publication.

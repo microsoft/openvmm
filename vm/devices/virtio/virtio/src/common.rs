@@ -337,13 +337,14 @@ impl VirtioQueue {
         Poll::Ready(())
     }
 
-    /// Like [`Self::poll_kick`], but waits while all ring capacity is outstanding.
+    /// Like [`Self::poll_kick`], but waits if the last backpressure-aware peek
+    /// found insufficient ring capacity, until a completion releases capacity.
     ///
     /// Pair with [`Self::try_peek_with_backpressure`]. The caller must also poll
     /// its completion source with the same waker and retry after completions:
     /// this method does not register a waker while waiting for capacity.
     pub(crate) fn poll_kick_with_backpressure(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        if self.core.is_full() {
+        if self.core.capacity_blocked() {
             Poll::Pending
         } else {
             self.poll_kick(cx)
@@ -381,17 +382,18 @@ impl VirtioQueue {
         Ok(work.map(|w| PeekedWork::new(self, w)))
     }
 
-    /// Like [`Self::try_peek`], but returns `Ok(None)` while all ring capacity is
-    /// outstanding (heads for split queues, descriptor slots for packed queues).
-    /// Other queue errors retain their normal failure behavior.
+    /// Like [`Self::try_peek`], but returns `Ok(None)` if the next chain exceeds
+    /// the remaining ring capacity (heads for split queues, descriptor slots for
+    /// packed queues). Other queue errors retain their normal failure behavior.
     ///
     /// Wait with [`Self::poll_kick_with_backpressure`] and retry after completions
     /// release capacity.
     pub(crate) fn try_peek_with_backpressure(&mut self) -> Result<Option<PeekedWork<'_>>, Error> {
-        if self.core.is_full() {
-            return Ok(None);
-        }
-        self.try_peek()
+        let work = self
+            .core
+            .try_peek_work_with_backpressure()
+            .map_err(Error::other)?;
+        Ok(work.map(|w| PeekedWork::new(self, w)))
     }
 
     /// Waits until a descriptor is available for peeking, without advancing

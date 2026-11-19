@@ -5704,6 +5704,8 @@ async fn in_order_defers_reuse_on_full_ring(driver: DefaultDriver) {
         .map(|_| Some(in_order.try_next(&mut queue).unwrap().unwrap()))
         .collect();
 
+    // Capacity alone does not block waiting: first try the available work.
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
     let state = queue.queue_state();
     assert!(in_order.try_next(&mut queue).unwrap().is_none());
     assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
@@ -6180,6 +6182,47 @@ async fn peek_with_backpressure_preserves_queue_errors(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn peek_with_backpressure_checks_full_ring_descriptors(driver: DefaultDriver) {
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, 0);
+    let mut work: Vec<_> = (0..BOUND_TEST_QUEUE_SIZE)
+        .map(|_| queue.try_next().unwrap().unwrap())
+        .collect();
+    write_descriptor(
+        &mem,
+        BOUND_TEST_DESC_ADDR,
+        0,
+        BOUND_TEST_DATA_ADDR,
+        0x100,
+        DescriptorFlags::new().with_next(true),
+        0,
+    );
+    let mut avail = BOUND_TEST_QUEUE_SIZE;
+    make_available(
+        &mem,
+        BOUND_TEST_AVAIL_ADDR,
+        BOUND_TEST_QUEUE_SIZE,
+        0,
+        &mut avail,
+    );
+
+    let state = queue.queue_state();
+    let error = queue
+        .try_peek_with_backpressure()
+        .err()
+        .expect("a full ring must not hide a malformed chain");
+    assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
+    assert_eq!(queue.queue_state(), state);
+    queue.complete(work.remove(0), 0);
+    assert!(queue.try_peek_with_backpressure().unwrap().is_none());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(queue.poll_kick_with_backpressure(&mut cx).is_pending());
+}
+
+#[async_test]
 async fn split_queue_rejects_out_of_range_descriptor_head(driver: DefaultDriver) {
     use crate::test_helpers::make_available;
 
@@ -6272,25 +6315,47 @@ async fn packed_queue_rejects_restamped_slots(driver: DefaultDriver) {
 
 #[async_test]
 async fn packed_queue_rejects_chain_exceeding_free_space(driver: DefaultDriver) {
-    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
-    let available = DescriptorFlags::new().with_write(true).with_available(true);
-    let write = |index, flags| {
-        write_packed_descriptor(
-            &mem,
-            index,
-            BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
-            index,
-            flags,
-        );
-    };
-    write(0, available.with_next(true));
-    write(1, available);
-    let _ = queue.try_next().unwrap().unwrap();
+    for backpressure in [false, true] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+        let available = DescriptorFlags::new().with_write(true).with_available(true);
+        let write = |index, flags| {
+            write_packed_descriptor(
+                &mem,
+                index,
+                BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                index,
+                flags,
+            );
+        };
+        write(0, available.with_next(true));
+        write(1, available);
+        let first = queue.try_next().unwrap().unwrap();
 
-    write(2, available.with_next(true));
-    write(3, available.with_next(true));
-    write(0, available);
-    assert_in_flight_error(next_error(&mut queue), 2, 3);
+        write(2, available.with_next(true));
+        write(3, available.with_next(true));
+        write(0, available);
+        if !backpressure {
+            assert_in_flight_error(next_error(&mut queue), 2, 3);
+            continue;
+        }
+
+        let state = queue.queue_state();
+        assert!(queue.try_peek_with_backpressure().unwrap().is_none());
+        assert_eq!(queue.queue_state(), state);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(queue.poll_kick_with_backpressure(&mut cx).is_pending());
+        queue.complete(first, 0);
+        assert!(queue.poll_kick_with_backpressure(&mut cx).is_ready());
+        let work = queue
+            .try_peek_with_backpressure()
+            .unwrap()
+            .unwrap()
+            .consume();
+        assert_eq!(work.descriptor_index(), 2);
+        assert_eq!(work.payload.len(), 3);
+        queue.complete(work, 0);
+        assert!(queue.try_peek_with_backpressure().unwrap().is_none());
+    }
 }
 
 /// Oversubscribing the ring retires the queue like any other protocol

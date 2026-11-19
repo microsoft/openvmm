@@ -224,6 +224,9 @@ pub(crate) struct QueueCoreGetWork {
     /// [`try_peek_work`](Self::try_peek_work) rejects work that would push this
     /// past the queue size, so it stays in `0..=queue_size`.
     in_flight: u16,
+    /// A backpressure-aware peek found a chain that cannot fit until some
+    /// outstanding work completes.
+    capacity_blocked: bool,
 }
 
 impl QueueCoreGetWork {
@@ -294,6 +297,7 @@ impl QueueCoreGetWork {
             armed: false,
             failed: false,
             in_flight,
+            capacity_blocked: false,
         })
     }
 
@@ -303,8 +307,8 @@ impl QueueCoreGetWork {
         self.failed
     }
 
-    pub fn is_full(&self) -> bool {
-        self.in_flight == self.queue_size
+    pub fn capacity_blocked(&self) -> bool {
+        self.capacity_blocked
     }
 
     pub fn try_next_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
@@ -326,14 +330,35 @@ impl QueueCoreGetWork {
     /// Returns `Ok(None)` forever once the queue has failed, so that the error
     /// is reported exactly once.
     pub fn try_peek_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
+        self.try_peek_work_with_policy(false)
+    }
+
+    /// Like [`Self::try_peek_work`], but defers a chain that exceeds the remaining
+    /// ring capacity instead of retiring the queue.
+    pub fn try_peek_work_with_backpressure(
+        &mut self,
+    ) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
+        self.try_peek_work_with_policy(true)
+    }
+
+    fn try_peek_work_with_policy(
+        &mut self,
+        defer_capacity: bool,
+    ) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
         if self.failed {
             return Ok(None);
         }
-        let r = self.try_peek_work_inner();
-        if r.is_err() {
-            self.failed = true;
+        match self.try_peek_work_inner() {
+            Err(QueueError::TooManyInFlightDescriptors { .. }) if defer_capacity => {
+                self.capacity_blocked = true;
+                Ok(None)
+            }
+            Err(err) => {
+                self.failed = true;
+                Err(err)
+            }
+            r => r,
         }
-        r
     }
 
     fn try_peek_work_inner(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
@@ -442,6 +467,7 @@ impl QueueCoreGetWork {
             .in_flight
             .checked_sub(completion.in_flight_cost())
             .expect("completed more than was consumed");
+        self.capacity_blocked = false;
     }
 
     fn work_from_index(&mut self, index: u16) -> Result<VirtioQueueCallbackWork, QueueError> {
