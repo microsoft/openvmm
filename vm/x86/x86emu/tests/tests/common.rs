@@ -12,6 +12,7 @@ use x86defs::cpuid::Vendor;
 use x86emu::Cpu;
 use x86emu::Emulator;
 use x86emu::Error;
+use x86emu::ReadKind;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
 
@@ -28,6 +29,8 @@ pub struct CpuState {
     pub rflags: RFlags,
     /// CR0. Immutable.
     pub cr0: u64,
+    /// CR4. Immutable.
+    pub cr4: u64,
     /// EFER. Immutable.
     pub efer: u64,
 }
@@ -265,6 +268,7 @@ fn run_one_test<T: TestCpu>(
 pub enum TestCpuError {
     BadAddress,
     BadLength,
+    WriteFault,
 }
 
 #[derive(Debug)]
@@ -275,6 +279,8 @@ pub struct SingleCellCpu<T: TestRegister> {
     pub io_val: u32,
     pub xmm: [u128; 16],
     pub invert_after_read: bool,
+    pub memory_reads: Vec<(u64, usize, ReadKind)>,
+    pub fail_writes: bool,
     pub state: CpuState,
 }
 
@@ -296,7 +302,9 @@ impl<T: TestRegister> Cpu for SingleCellCpu<T> {
         gva: u64,
         bytes: &mut [u8],
         _is_user_mode: bool,
+        kind: ReadKind,
     ) -> Result<(), Self::Error> {
+        self.memory_reads.push((gva, bytes.len(), kind));
         if gva == self.valid_gva {
             bytes.copy_from_slice(&self.mem_val.to_le_bytes().as_ref()[..bytes.len()]);
             if self.invert_after_read {
@@ -314,6 +322,9 @@ impl<T: TestRegister> Cpu for SingleCellCpu<T> {
         bytes: &[u8],
         _is_user_mode: bool,
     ) -> Result<(), Self::Error> {
+        if self.fail_writes {
+            return Err(TestCpuError::WriteFault);
+        }
         if gva == self.valid_gva {
             let mut val = self.mem_val.to_le_bytes();
             val.as_mut()[..bytes.len()].copy_from_slice(bytes);
@@ -398,6 +409,10 @@ impl<T: TestRegister> Cpu for SingleCellCpu<T> {
         self.state.cr0
     }
 
+    fn cr4(&mut self) -> u64 {
+        self.state.cr4
+    }
+
     fn rflags(&mut self) -> RFlags {
         self.state.rflags
     }
@@ -435,6 +450,7 @@ impl Cpu for MultipleCellCpu {
         gva: u64,
         bytes: &mut [u8],
         _is_user_mode: bool,
+        _kind: ReadKind,
     ) -> Result<(), Self::Error> {
         if gva == self.valid_gva + self.read_mem_offset as u64 {
             if self.mem_val.len() >= bytes.len() {
@@ -531,6 +547,10 @@ impl Cpu for MultipleCellCpu {
         self.state.cr0
     }
 
+    fn cr4(&mut self) -> u64 {
+        self.state.cr4
+    }
+
     fn rflags(&mut self) -> RFlags {
         self.state.rflags
     }
@@ -611,6 +631,7 @@ impl<T: TestRegister> TestCpu for SingleCellCpu<T> {
             rip: 0,
             rflags,
             cr0: x86defs::X64_CR0_PE,
+            cr4: 0,
             efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME,
         };
         SingleCellCpu {
@@ -620,6 +641,8 @@ impl<T: TestRegister> TestCpu for SingleCellCpu<T> {
             io_val: 0,
             xmm: [0; 16],
             invert_after_read: false,
+            memory_reads: Vec::new(),
+            fail_writes: false,
             state,
         }
     }
@@ -662,6 +685,7 @@ impl TestCpu for MultipleCellCpu {
             rip: 0,
             rflags,
             cr0: x86defs::X64_CR0_PE,
+            cr4: 0,
             efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME,
         };
         MultipleCellCpu {
