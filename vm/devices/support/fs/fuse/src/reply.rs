@@ -61,7 +61,7 @@ pub trait ReplySender {
     ) -> io::Result<()> {
         tracing::trace!(unique, ?arg, len = data.len(), "reply");
 
-        let header = make_header(unique, size_of_val(&arg), 0);
+        let header = make_header(unique, size_of_val(&arg) + data.len(), 0);
         let header = header.as_bytes();
         let arg = arg.as_bytes();
         self.send(&[
@@ -202,3 +202,6 @@ fn write_padding(writer: &mut impl Write, count: usize) {
     const PADDING: [u8; 8] = [0; 8];
     writer.write_all(&PADDING[..count]).unwrap();
 }
+
+#[cfg(test)]
+mod tests;
