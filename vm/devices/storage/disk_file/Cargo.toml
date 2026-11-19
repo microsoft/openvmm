@@ -18,6 +18,7 @@ blocking.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+pal.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
 
 [dev-dependencies]

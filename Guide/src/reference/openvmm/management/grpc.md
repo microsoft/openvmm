@@ -112,9 +112,9 @@ or reopen the file.
 
 Some API fields reference OS handles by name. For example,
 `VirtioFs.WindowsOptions.user_token_name` names an access token that virtio-fs
-impersonates for host file access. `HandleDisk.handle_name` names a host block
-device handle, such as a physical disk, opened for synchronous (non-overlapped)
-I/O.
+impersonates for host file access. `HandleDisk.handle_name` names a host
+physical disk handle, such as `\\.\PhysicalDriveN`, opened for synchronous
+(non-overlapped) I/O.
 
 Clients register these handles over the same socket using the
 [resource-passing protocol]. Because Windows Unix sockets cannot carry handles,

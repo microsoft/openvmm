@@ -16,6 +16,8 @@ use disk_backend::DiskIo;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::FileDiskHandle;
+#[cfg(windows)]
+use disk_backend_resources::PhysicalDiskHandle;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
@@ -29,6 +31,30 @@ use vm_resource::kind::DiskHandleKind;
 
 pub struct FileDiskResolver;
 declare_static_resolver!(FileDiskResolver, (DiskHandleKind, FileDiskHandle));
+
+/// Resolver for Windows physical disks, such as `\\.\PhysicalDriveN`.
+#[cfg(windows)]
+pub struct PhysicalDiskResolver;
+#[cfg(windows)]
+declare_static_resolver!(PhysicalDiskResolver, (DiskHandleKind, PhysicalDiskHandle));
+
+#[cfg(windows)]
+impl ResolveResource<DiskHandleKind, PhysicalDiskHandle> for PhysicalDiskResolver {
+    type Output = ResolvedDisk;
+    type Error = ResolveFileDiskError;
+
+    fn resolve(
+        &self,
+        rsrc: PhysicalDiskHandle,
+        input: ResolveDiskParameters<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        ResolvedDisk::new(
+            FileDisk::open_physical_disk(rsrc.0, input.read_only)
+                .map_err(ResolveFileDiskError::Io)?,
+        )
+        .map_err(ResolveFileDiskError::InvalidDisk)
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ResolveFileDiskError {
@@ -77,30 +103,33 @@ impl std::os::windows::io::AsHandle for FileDisk {
 }
 
 impl FileDisk {
-    /// Opens a disk backed by a regular file or, on Windows, by a block
-    /// device such as `\\.\PhysicalDriveN`.
-    ///
-    /// Block device handles must be opened for synchronous I/O, and may be
-    /// opened with or without `FILE_FLAG_NO_BUFFERING`.
+    /// Opens a disk backed by a regular file.
     pub fn open(file: fs::File, read_only: bool) -> Result<Self, std::io::Error> {
-        let metadata = match file.metadata() {
-            Ok(m) => Metadata {
-                disk_size: m.len(),
-                sector_size: 512,
-                physical_sector_size: 4096,
-                read_only,
-            },
-            #[cfg(windows)]
-            Err(err) if windows::is_device_error(&err) => {
-                let geometry = windows::query_device_geometry(&file)?;
-                Metadata {
-                    disk_size: geometry.disk_size,
-                    sector_size: geometry.sector_size,
-                    physical_sector_size: geometry.physical_sector_size,
-                    read_only,
-                }
-            }
-            Err(err) => return Err(err),
+        let metadata = Metadata {
+            disk_size: file.metadata()?.len(),
+            sector_size: 512,
+            physical_sector_size: 4096,
+            read_only,
+        };
+        Ok(Self::with_metadata(file, metadata))
+    }
+
+    /// Opens a disk backed by a Windows physical disk, such as
+    /// `\\.\PhysicalDriveN`, querying its size and sector sizes from the disk.
+    ///
+    /// The disk must be opened for synchronous I/O, with or without
+    /// `FILE_FLAG_NO_BUFFERING`; overlapped handles are rejected.
+    #[cfg(windows)]
+    pub fn open_physical_disk(file: fs::File, read_only: bool) -> Result<Self, std::io::Error> {
+        // The I/O path issues blocking reads and writes, which cannot complete
+        // on an overlapped handle.
+        pal::windows::fs::ensure_synchronous(&file)?;
+        let geometry = windows::query_disk_geometry(&file)?;
+        let metadata = Metadata {
+            disk_size: geometry.disk_size,
+            sector_size: geometry.sector_size,
+            physical_sector_size: geometry.physical_sector_size,
+            read_only,
         };
         Ok(Self::with_metadata(file, metadata))
     }
@@ -331,6 +360,40 @@ mod tests {
             let region = &buffer[start..start + len];
             assert_eq!(region.as_ptr() as usize % 8192, 0, "len {len}");
         }
+    }
+
+    /// Physical-disk opens query the disk directly, so a regular file is
+    /// rejected rather than treated as a file-backed disk.
+    #[cfg(windows)]
+    #[test]
+    fn physical_disk_open_rejects_regular_file() {
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(DISK_SIZE).unwrap();
+        FileDisk::open_physical_disk(file, false).unwrap_err();
+    }
+
+    /// Physical-disk I/O blocks, so overlapped handles are rejected before any
+    /// device query.
+    #[cfg(windows)]
+    #[test]
+    fn physical_disk_open_rejects_overlapped_handle() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disk.img");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(DISK_SIZE)
+            .unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED)
+            .open(&path)
+            .unwrap();
+        let err = FileDisk::open_physical_disk(file, false).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("synchronous I/O"), "{err}");
     }
 
     /// Unbuffered handles round-trip guest I/O.

@@ -3182,7 +3182,7 @@ async fn build_disk_backend(
             let handle = registry
                 .resolve(&handle_name)
                 .with_context(|| format!("failed to resolve disk handle '{handle_name}'"))?;
-            return Ok(disk_backend_resources::FileDiskHandle(handle.into()).into_resource());
+            return Ok(disk_backend_resources::PhysicalDiskHandle(handle.into()).into_resource());
         }
         #[cfg(not(windows))]
         {
@@ -3857,6 +3857,11 @@ mod tests {
             )
             .await
             .unwrap();
+            // Registered handles are resolved as physical disks, not files.
+            let disk = build_disk_backend(backend(), true, &registry)
+                .await
+                .unwrap();
+            assert_eq!(disk.id(), "physical_disk");
 
             registry.deregister("disk");
             assert!(

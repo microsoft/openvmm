@@ -375,7 +375,7 @@ message DiskBackend {
         MemoryDisk memory = 2;
         // A memory-backed writable overlay over a read-only lower disk.
         MemoryDiffDisk memory_diff = 3;
-        // A host block device opened by the client (Windows only).
+        // A host physical disk opened by the client (Windows only).
         HandleDisk handle = 4;
     }
 }
@@ -390,14 +390,14 @@ message MemoryDiffDisk {
     DiskBackend lower = 1;
 }
 
-// A disk backed by a host block device handle, such as `\\.\PhysicalDriveN`.
+// A disk backed by a host physical disk handle, such as `\\.\PhysicalDriveN`.
 //
-// The client opens the device for synchronous (non-overlapped) I/O and
+// The client opens the disk for synchronous (non-overlapped) I/O and
 // registers its handle using the resource-passing protocol
 // (see resource_passing.md). OpenVMM duplicates the registered handle while
 // processing the request; the name may be deregistered after the RPC succeeds.
 message HandleDisk {
-    // Name of the registered device handle (Windows only).
+    // Name of the registered physical disk handle (Windows only).
     string handle_name = 1;
 }
 

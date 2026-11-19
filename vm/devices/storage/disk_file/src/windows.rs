@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Windows block device (for example `\\.\PhysicalDriveN`) metadata queries.
+//! Windows physical disk (for example `\\.\PhysicalDriveN`) geometry queries.
 
 // UNSAFETY: Calling DeviceIoControl with properly sized input and output buffers.
 #![expect(unsafe_code)]
@@ -10,7 +10,6 @@ use std::fs;
 use std::io;
 use std::mem::size_of;
 use std::os::windows::io::AsRawHandle;
-use windows_sys::Win32::Foundation::ERROR_INVALID_FUNCTION;
 use windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED;
 use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::Ioctl::GET_LENGTH_INFORMATION;
@@ -21,17 +20,11 @@ use windows_sys::Win32::System::Ioctl::STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR;
 use windows_sys::Win32::System::Ioctl::STORAGE_PROPERTY_QUERY;
 use windows_sys::Win32::System::Ioctl::StorageAccessAlignmentProperty;
 
-/// Size and sector geometry of a block device.
-pub(crate) struct DeviceGeometry {
+/// Size and sector geometry of a physical disk.
+pub(crate) struct DiskGeometry {
     pub disk_size: u64,
     pub sector_size: u32,
     pub physical_sector_size: u32,
-}
-
-/// Returns true if `err` indicates that the handle is a device that does not
-/// support file metadata queries.
-pub(crate) fn is_device_error(err: &io::Error) -> bool {
-    err.raw_os_error() == Some(ERROR_INVALID_FUNCTION as i32)
 }
 
 fn ioctl<I, O: Default>(file: &fs::File, code: u32, input: Option<&I>) -> io::Result<O> {
@@ -63,8 +56,8 @@ fn ioctl<I, O: Default>(file: &fs::File, code: u32, input: Option<&I>) -> io::Re
     Ok(output)
 }
 
-/// Queries the size and sector sizes of a block device.
-pub(crate) fn query_device_geometry(file: &fs::File) -> io::Result<DeviceGeometry> {
+/// Queries the size and sector sizes of a physical disk.
+pub(crate) fn query_disk_geometry(file: &fs::File) -> io::Result<DiskGeometry> {
     let length: GET_LENGTH_INFORMATION = ioctl::<(), _>(file, IOCTL_DISK_GET_LENGTH_INFO, None)?;
     let query = STORAGE_PROPERTY_QUERY {
         PropertyId: StorageAccessAlignmentProperty,
@@ -93,7 +86,7 @@ pub(crate) fn query_device_geometry(file: &fs::File) -> io::Result<DeviceGeometr
         } else {
             sector_size
         };
-    Ok(DeviceGeometry {
+    Ok(DiskGeometry {
         disk_size: length.Length as u64,
         sector_size,
         physical_sector_size,
