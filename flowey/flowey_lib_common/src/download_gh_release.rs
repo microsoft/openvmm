@@ -218,7 +218,7 @@ impl Node {
                 };
 
                 if !matches!(hitvar, crate::cache::CacheHit::Hit) {
-                    download_all_reqs(rt, &args)?;
+                    crate::_util::retry(rt, download_all_reqs, &args, crate::_util::GH_RETRIES)?;
                 }
 
                 for ((repo_owner, repo_name, tag), files) in args.download_reqs {
