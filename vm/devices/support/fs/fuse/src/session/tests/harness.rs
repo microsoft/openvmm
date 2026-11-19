@@ -5,7 +5,8 @@
 //!
 //! [`initialized_session`] starts a session of a file system with
 //! `FUSE_INIT`, [`make_request`] encodes a request, and [`dispatch_request`]
-//! sends a request to a session and returns its reply.
+//! sends a request to a session, checks the length of its reply, and returns
+//! the reply.
 
 use super::CapturingSender;
 use crate::Fuse;
@@ -51,10 +52,16 @@ pub(super) fn make_request(
 }
 
 /// Sends `request` to `session`, and returns the header of the reply and the
-/// bytes that follow it.
+/// bytes that follow it. Checks that the header's `len` is the length of the
+/// whole reply, which is how FUSE clients learn the reply's length.
 pub(super) fn dispatch_request(session: &Session, request: &[u8]) -> (fuse_out_header, Vec<u8>) {
     let mut sender = CapturingSender::default();
     session.dispatch(Request::new(request).unwrap(), &mut sender, None);
     let (header, body) = fuse_out_header::read_from_prefix(&sender.data).unwrap();
+    assert_eq!(
+        header.len as usize,
+        sender.data.len(),
+        "the reply's len is not its length"
+    );
     (header, body.to_vec())
 }
