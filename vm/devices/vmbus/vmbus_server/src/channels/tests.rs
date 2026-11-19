@@ -88,6 +88,194 @@ fn test_version_negotiation_failure_target_vp() {
 }
 
 #[test]
+fn test_version_negotiation_failure_retry() {
+    for (version, monitor_page, fail_modify_connection) in [
+        (u32::MAX, 0, false),
+        (Version::Win10 as u32, 0x1000, false),
+        (Version::Win10 as u32, 0, true),
+    ] {
+        let mut env = TestEnv::new();
+        env.notifier.pend_messages = true;
+        env.notifier.fail_modify_connection = fail_modify_connection;
+
+        env.c()
+            .handle_synic_message(in_msg(
+                protocol::MessageType::INITIATE_CONTACT,
+                protocol::InitiateContact {
+                    version_requested: version,
+                    target_message_vp: 3,
+                    interrupt_page_or_target_info: 0,
+                    parent_to_child_monitor_page_gpa: 0,
+                    child_to_parent_monitor_page_gpa: monitor_page,
+                },
+            ))
+            .unwrap();
+
+        assert!(env.notifier.messages.is_empty());
+        assert!(env.server.has_pending_messages());
+
+        assert!(
+            env.server
+                .poll_flush_pending_messages(|_, target| {
+                    assert_eq!(
+                        target,
+                        Some(ConnectionTarget {
+                            vp: 3,
+                            sint: VMBUS_SINT
+                        })
+                    );
+                    Poll::Pending
+                })
+                .is_pending()
+        );
+
+        let state = mesh::payload::encode(env.server.save());
+        let state = mesh::payload::decode(&state).unwrap();
+        let mut env = TestEnv::new();
+        env.c().restore(state).unwrap();
+        assert!(env.server.has_pending_messages());
+        let mut messages = Vec::new();
+        assert!(
+            env.server
+                .poll_flush_pending_messages(|msg, target| {
+                    messages.push((msg.clone(), target));
+                    Poll::Ready(())
+                })
+                .is_ready()
+        );
+        assert!(!env.server.has_pending_messages());
+
+        assert_eq!(
+            messages,
+            [(
+                OutgoingMessage::new(&protocol::VersionResponse {
+                    version_supported: u8::from(version != u32::MAX),
+                    connection_state: if version == u32::MAX {
+                        protocol::ConnectionState::SUCCESSFUL
+                    } else {
+                        protocol::ConnectionState::FAILED_UNKNOWN_FAILURE
+                    },
+                    padding: 0,
+                    selected_version_or_connection_id: if version == u32::MAX {
+                        0
+                    } else {
+                        version
+                    },
+                }),
+                Some(ConnectionTarget {
+                    vp: 3,
+                    sint: VMBUS_SINT
+                }),
+            )]
+        );
+    }
+}
+
+#[derive(mesh::payload::Protobuf)]
+struct LegacyOutgoingMessage(Vec<u8>);
+
+#[derive(mesh::payload::Protobuf)]
+struct LegacySavedMessages {
+    #[mesh(3)]
+    pending_messages: Vec<LegacyOutgoingMessage>,
+}
+
+#[test]
+fn test_pending_message_legacy_saved_state() {
+    let message = OutgoingMessage::new(&protocol::UnloadComplete {});
+    let data = mesh::payload::encode(LegacySavedMessages {
+        pending_messages: vec![LegacyOutgoingMessage(message.data().to_vec())],
+    });
+    let saved: SavedState = mesh::payload::decode(&data).unwrap();
+    let mut env = TestEnv::new();
+    env.c().restore(saved).unwrap();
+    let mut messages = Vec::new();
+    assert!(
+        env.server
+            .poll_flush_pending_messages(|message, target| {
+                messages.push((message.clone(), target));
+                Poll::Ready(())
+            })
+            .is_ready()
+    );
+    assert_eq!(messages, [(message, None)]);
+}
+
+#[test]
+fn test_pending_messages_save_downgrade() {
+    let mut env = TestEnv::new();
+    env.notifier.pend_messages = true;
+    let unload = protocol::UnloadComplete {};
+    let response = protocol::VersionResponse::new_zeroed();
+    env.c().sender().send_message(&unload);
+    env.c().sender().send_message_with_target(
+        &response,
+        MessageTarget::Custom(ConnectionTarget {
+            vp: 3,
+            sint: VMBUS_SINT,
+        }),
+    );
+
+    let data = mesh::payload::encode(env.server.save());
+    let legacy: LegacySavedMessages = mesh::payload::decode(&data).unwrap();
+    let expected = [
+        OutgoingMessage::new(&unload),
+        OutgoingMessage::new(&response),
+    ];
+    assert_eq!(
+        legacy
+            .pending_messages
+            .iter()
+            .map(|message| message.0.as_slice())
+            .collect::<Vec<_>>(),
+        expected
+            .iter()
+            .map(OutgoingMessage::data)
+            .collect::<Vec<_>>()
+    );
+
+    // An older version drops the new fields when saving again.
+    let data = mesh::payload::encode(legacy);
+    let saved: SavedState = mesh::payload::decode(&data).unwrap();
+    let mut env = TestEnv::new();
+    env.c().restore(saved).unwrap();
+    let mut messages = Vec::new();
+    assert!(
+        env.server
+            .poll_flush_pending_messages(|message, target| {
+                messages.push((message.clone(), target));
+                Poll::Ready(())
+            })
+            .is_ready()
+    );
+    assert_eq!(messages, expected.map(|message| (message, None)));
+}
+
+#[test]
+fn test_empty_targeted_messages_override_legacy_saved_state() {
+    #[derive(mesh::payload::Protobuf)]
+    struct EmptyTargetedMessages {}
+
+    #[derive(mesh::payload::Protobuf)]
+    struct NewSavedState {
+        #[mesh(3)]
+        pending_messages: Vec<LegacyOutgoingMessage>,
+        #[mesh(4)]
+        targeted_messages: Option<EmptyTargetedMessages>,
+    }
+
+    let message = OutgoingMessage::new(&protocol::UnloadComplete {});
+    let data = mesh::payload::encode(NewSavedState {
+        pending_messages: vec![LegacyOutgoingMessage(message.data().to_vec())],
+        targeted_messages: Some(EmptyTargetedMessages {}),
+    });
+    let saved: SavedState = mesh::payload::decode(&data).unwrap();
+    let mut env = TestEnv::new();
+    env.c().restore(saved).unwrap();
+    assert!(!env.server.has_pending_messages());
+}
+
+#[test]
 fn test_version_negotiation_success() {
     let mut env = TestEnv::new();
 
@@ -1571,7 +1759,8 @@ fn test_pending_messages() {
     // The messages should be pending again.
     assert!(env.server.has_pending_messages());
     let mut pending_messages = Vec::new();
-    let r = env.server.poll_flush_pending_messages(|msg| {
+    let r = env.server.poll_flush_pending_messages(|msg, target| {
+        assert_eq!(target, None);
         pending_messages.push(msg.clone());
         Poll::Ready(())
     });

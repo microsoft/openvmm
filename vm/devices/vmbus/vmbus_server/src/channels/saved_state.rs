@@ -161,11 +161,11 @@ impl super::Server {
         }
     }
 
-    fn save_pending_messages(&self) -> Vec<OutgoingMessage> {
+    fn save_pending_messages(&self) -> Vec<TargetedMessage> {
         self.pending_messages
             .0
             .iter()
-            .map(OutgoingMessage::save)
+            .map(TargetedMessage::save)
             .collect()
     }
 }
@@ -338,6 +338,17 @@ mod inner {
         disconnected_state: Option<DisconnectedState>,
         #[mesh(3)]
         pending_messages: Vec<OutgoingMessage>,
+        // Keep the legacy list for older readers. Presence of this wrapper makes the newer
+        // list authoritative, even when it is empty.
+        #[mesh(4)]
+        targeted_messages: Option<TargetedMessages>,
+    }
+
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "vmbus.server.channels")]
+    struct TargetedMessages {
+        #[mesh(1)]
+        messages: Vec<TargetedMessage>,
     }
 
     impl From<SavedStateData> for SavedState {
@@ -350,7 +361,14 @@ mod inner {
             Self {
                 state,
                 disconnected_state,
-                pending_messages: value.pending_messages,
+                pending_messages: value
+                    .pending_messages
+                    .iter()
+                    .map(|message| OutgoingMessage(message.data.clone()))
+                    .collect(),
+                targeted_messages: Some(TargetedMessages {
+                    messages: value.pending_messages,
+                }),
             }
         }
     }
@@ -365,7 +383,17 @@ mod inner {
                     // we use an empty value which has no channels or gpadls.
                     SavedConnectionState::Disconnected(value.disconnected_state.unwrap_or_default())
                 },
-                pending_messages: value.pending_messages,
+                pending_messages: match value.targeted_messages {
+                    Some(targeted) => targeted.messages,
+                    None => value
+                        .pending_messages
+                        .into_iter()
+                        .map(|message| TargetedMessage {
+                            data: message.0,
+                            target: None,
+                        })
+                        .collect(),
+                },
             }
         }
     }
@@ -383,7 +411,7 @@ pub enum SavedConnectionState {
 #[derive(Debug, Clone)]
 pub struct SavedStateData {
     pub state: SavedConnectionState,
-    pub pending_messages: Vec<OutgoingMessage>,
+    pub pending_messages: Vec<TargetedMessage>,
 }
 
 impl SavedStateData {
@@ -1297,13 +1325,43 @@ pub enum GpadlState {
 #[mesh(package = "vmbus.server.channels")]
 pub struct OutgoingMessage(pub Vec<u8>);
 
-impl OutgoingMessage {
-    fn save(value: &vmbus_core::OutgoingMessage) -> Self {
-        Self(value.data().to_vec())
+#[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
+#[mesh(package = "vmbus.server.channels")]
+pub struct TargetedMessage {
+    #[mesh(1)]
+    pub data: Vec<u8>,
+    #[mesh(2)]
+    pub target: Option<MessageTarget>,
+}
+
+#[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
+#[mesh(package = "vmbus.server.channels")]
+pub struct MessageTarget {
+    #[mesh(1)]
+    pub vp: u32,
+    #[mesh(2)]
+    pub sint: u8,
+}
+
+impl TargetedMessage {
+    fn save(value: &super::PendingMessage) -> Self {
+        Self {
+            data: value.message.data().to_vec(),
+            target: value.target.map(|target| MessageTarget {
+                vp: target.vp,
+                sint: target.sint,
+            }),
+        }
     }
 
-    fn restore(self) -> Result<vmbus_core::OutgoingMessage, RestoreError> {
-        vmbus_core::OutgoingMessage::from_message(&self.0)
-            .map_err(|_| RestoreError::MessageTooLarge)
+    fn restore(self) -> Result<super::PendingMessage, RestoreError> {
+        Ok(super::PendingMessage {
+            message: vmbus_core::OutgoingMessage::from_message(&self.data)
+                .map_err(|_| RestoreError::MessageTooLarge)?,
+            target: self.target.map(|target| super::ConnectionTarget {
+                vp: target.vp,
+                sint: target.sint,
+            }),
+        })
     }
 }
