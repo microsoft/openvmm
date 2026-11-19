@@ -17,8 +17,6 @@ cfg_select! {
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        use hv1_emulator::synic::ProcessorSynic;
-        use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
         use virt::vp::AccessVpState;
         use virt::vp::MpState;
@@ -29,10 +27,8 @@ cfg_select! {
     }
     guest_arch = "aarch64" => {
         pub mod cca;
-        use hv1_emulator::synic::ProcessorSynic;
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
-        use hvdef::HvRegisterCrInterceptControl;
         use virt_support_aarch64emu::translate::TranslationRegisters;
     }
     _ => {
@@ -52,11 +48,13 @@ use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::HvError;
 use hvdef::HvMessage;
+use hvdef::HvRegisterCrInterceptControl;
 use hvdef::HvSynicSint;
 use hvdef::NUM_SINTS;
 use hvdef::Vtl;
@@ -948,12 +946,10 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         let sint_msr = if let Some(hv) = self.backing.hv(vtl).as_ref() {
                             hv.synic.sint(sint)
                         } else {
-                            #[cfg(guest_arch = "x86_64")]
-                            let sint_reg =
-                                HvX64RegisterName(HvX64RegisterName::Sint0.0 + sint as u32);
-                            #[cfg(guest_arch = "aarch64")]
-                            let sint_reg =
-                                HvArm64RegisterName(HvArm64RegisterName::Sint0.0 + sint as u32);
+                            let sint_reg = hvdef::HvAllArchRegisterName(
+                                hvdef::HvAllArchRegisterName::Sint0.0 + sint as u32,
+                            )
+                            .into();
                             self.runner.get_vp_register(vtl, sint_reg).unwrap().as_u64()
                         };
                         masked_sints |= (HvSynicSint::from(sint_msr).masked() as u16) << sint;
@@ -1267,29 +1263,30 @@ impl<B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'_, 
 
         let _target_vtl = self.target_vtl_no_higher(target_vtl).map_err(|e| (e, 0))?;
 
-        #[cfg(guest_arch = "aarch64")]
-        if true {
-            let _ = apic_ids;
-            let _ = vp_indices;
-            todo!("AARCH64_TODO");
-        }
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                for (i, (&apic_id, vp_index)) in apic_ids.iter().zip(vp_indices).enumerate() {
+                    *vp_index = self
+                        .vp
+                        .partition
+                        .vps
+                        .iter()
+                        .find(|vp| vp.vp_info.apic_id == apic_id)
+                        .ok_or((HvError::InvalidParameter, i))?
+                        .vp_info
+                        .base
+                        .vp_index
+                        .index()
+                }
 
-        #[cfg(guest_arch = "x86_64")]
-        for (i, (&apic_id, vp_index)) in apic_ids.iter().zip(vp_indices).enumerate() {
-            *vp_index = self
-                .vp
-                .partition
-                .vps
-                .iter()
-                .find(|vp| vp.vp_info.apic_id == apic_id)
-                .ok_or((HvError::InvalidParameter, i))?
-                .vp_info
-                .base
-                .vp_index
-                .index()
+                Ok(())
+            }}
+            guest_arch = "aarch64" => {{
+                let _ = (apic_ids, vp_indices);
+                todo!("AARCH64_TODO");
+            }}
+            _ => compile_error!("unsupported guest architecture"),
         }
-
-        Ok(())
     }
 }
 

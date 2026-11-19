@@ -161,6 +161,7 @@ enum PcatGuest {
 }
 
 enum UefiGuest {
+    Mshv,
     Vhd(ImageInfo),
     GuestTestUefi(MachineArch),
     None,
@@ -281,6 +282,7 @@ impl UefiGuest {
             UefiGuest::Vhd(known_vhd) => Some(known_vhd.name_prefix.clone()),
             UefiGuest::GuestTestUefi(arch) => Some(format!("guest_test_{}", arch_to_str(*arch))),
             UefiGuest::None => None,
+            UefiGuest::Mshv => Some("mshv".into()),
         }
     }
 }
@@ -297,6 +299,7 @@ impl ToTokens for UefiGuest {
                 quote!(::petri::UefiGuest::guest_test_uefi(resolver, #arch_tokens))
             }
             UefiGuest::None => quote!(::petri::UefiGuest::None),
+            UefiGuest::Mshv => quote!(::petri::UefiGuest::Mshv(::petri::mshv_boot::MshvBoot::resolve(resolver))),
         });
     }
 }
@@ -574,6 +577,10 @@ impl Config {
                 "`unstable(on = ...)` requires OpenVMM configurations",
             ));
         }
+        if matches!(&config.firmware, Firmware::Uefi(UefiGuest::Mshv)) && config.vmm != Vmm::OpenVmm
+        {
+            return Err(Error::new(self.span, "mshv requires the OpenVMM backend"));
+        }
         Ok(config)
     }
 }
@@ -656,8 +663,17 @@ impl Parse for Args {
 }
 
 fn validate_firmware(config: &Config) -> syn::Result<()> {
-    #[expect(clippy::single_match)] // more patterns coming later
     match config.firmware {
+        Firmware::Uefi(UefiGuest::Mshv) => {
+            if config.arch != MachineArch::X86_64
+                || config.vmm.is_some_and(|vmm| vmm != Vmm::OpenVmm)
+            {
+                return Err(Error::new(config.span, "mshv requires x86-64 OpenVMM UEFI"));
+            }
+        }
+        Firmware::OpenhclUefi(_, UefiGuest::Mshv) => {
+            return Err(Error::new(config.span, "mshv does not support OpenHCL"));
+        }
         Firmware::Uefi(UefiGuest::Vhd(ImageInfo { arch, .. })) => {
             if config.arch != arch {
                 return Err(Error::new(
@@ -853,6 +869,7 @@ impl Parse for UefiGuest {
             "guest_test_uefi_x64" => Ok(UefiGuest::GuestTestUefi(MachineArch::X86_64)),
             "guest_test_uefi_aarch64" => Ok(UefiGuest::GuestTestUefi(MachineArch::Aarch64)),
             "none" => Ok(UefiGuest::None),
+            "mshv" => Ok(UefiGuest::Mshv),
             "vhd" => {
                 let parens;
                 syn::parenthesized!(parens in input);
@@ -1205,6 +1222,7 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
 /// Valid UEFI guest options are:
 /// - `vhd(<VHD>)`: One of our supported VHDs
 /// - `guest_test_uefi_{arch}`: Our UEFI test application
+/// - `mshv`: An x86-64 mshv root on OpenVMM with shared test provisioning.
 /// - `none`: No guest
 ///
 /// Valid x64 VHD options are:
@@ -1727,6 +1745,38 @@ mod tests {
             },
         ] {
             assert!(expand(attr).is_err());
+        }
+    }
+
+    #[test]
+    fn mshv_is_a_first_class_uefi_guest() -> syn::Result<()> {
+        let args =
+            syn::parse_str::<ArgsWithOverrides>("openvmm, configs(uefi_x64(mshv))")?.resolve()?;
+        assert_eq!(
+            args.configs[0].l1_config.name_prefix(),
+            "openvmm_uefi_x64_mshv"
+        );
+        assert!(matches!(
+            args.configs[0].l1_config.firmware,
+            Firmware::Uefi(UefiGuest::Mshv)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mshv_rejects_unsupported_architecture_backend_and_openhcl() {
+        for input in [
+            "openvmm, configs(uefi_aarch64(mshv))",
+            "hyperv, configs(uefi_x64(mshv))",
+            "qemu, configs(uefi_x64(mshv))",
+            "openvmm, configs(openhcl_uefi_x64(mshv))",
+        ] {
+            assert!(
+                syn::parse_str::<ArgsWithOverrides>(input)
+                    .and_then(|args| args.resolve())
+                    .is_err(),
+                "{input}"
+            );
         }
     }
 }

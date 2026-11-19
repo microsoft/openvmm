@@ -941,3 +941,155 @@ async fn test_get_smart_log_page_nsid(driver: DefaultDriver) {
         }
     }
 }
+
+/// An admin command that asks for SGLs (PSDT not 00b) fails with Invalid
+/// Field in Command and does not run.
+#[async_test]
+async fn test_admin_command_with_psdt_set_is_refused(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        FaultConfiguration::new(CellUpdater::new(false).cell()),
+    )
+    .await;
+
+    let data_gpa = 0x10000;
+    // PSDT 00b runs last on the same queue, so the refusals cannot pass by
+    // refusing every Identify.
+    for (slot, psdt) in [0b01u8, 0b10, 0b11, 0b00].into_iter().enumerate() {
+        gm.fill_at(data_gpa, 0xa5, PAGE_SIZE64 as usize).unwrap();
+        let mut command = Command::new_zeroed();
+        command.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
+        command.cdw0.set_cid(0x600 + slot as u16);
+        command.cdw0.set_psdt(psdt);
+        command.cdw10 = spec::Cdw10Identify::new()
+            .with_cns(spec::Cns::CONTROLLER.0)
+            .into();
+        command.dptr[0] = data_gpa;
+        let cqe = submit_admin_command(
+            &mut nvmec,
+            &gm,
+            &asq,
+            &acq,
+            &int_controller,
+            driver.clone(),
+            slot as u32,
+            &command,
+        )
+        .await;
+        assert_eq!(cqe.cid, command.cdw0.cid(), "PSDT {psdt:02b}: wrong cid");
+        let identify = gm.read_plain::<spec::IdentifyController>(data_gpa).unwrap();
+        if psdt == 0 {
+            assert_eq!(
+                (cqe.status.status(), cqe.status.dnr()),
+                (spec::Status::SUCCESS.0, false),
+                "PSDT 00b: Identify failed"
+            );
+            assert_eq!(identify.sgls, 0, "Identify reports SGL support");
+        } else {
+            assert_eq!(
+                (cqe.status.status(), cqe.status.dnr()),
+                (spec::Status::INVALID_FIELD_IN_COMMAND.0, true),
+                "PSDT {psdt:02b}: expected Invalid Field in Command with DNR"
+            );
+            assert!(
+                identify.as_bytes().iter().all(|&b| b == 0xa5),
+                "PSDT {psdt:02b}: Identify wrote its buffer"
+            );
+        }
+    }
+}
+
+/// An I/O command that asks for SGLs (PSDT not 00b) fails with Invalid Field
+/// in Command and never reaches the disk.
+#[async_test]
+async fn test_io_command_with_psdt_set_is_refused(driver: DefaultDriver) {
+    let admin_cq_buf = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let admin_sq_buf = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &admin_cq_buf,
+        64,
+        &admin_sq_buf,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        FaultConfiguration::new(CellUpdater::new(false).cell()),
+    )
+    .await;
+    let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+    nvmec.client().add_namespace(1, disk).await.unwrap();
+    write_msix_table_entry(&mut nvmec, 1, 0xfeed0000, 0x2222, false);
+
+    let io_cq_gpa: u64 = 0x4000;
+    let io_sq_gpa: u64 = 0x5000;
+    let read_buf_gpa: u64 = 0x8000;
+    create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &admin_cq_buf,
+        &admin_sq_buf,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        io_cq_gpa,
+        io_sq_gpa,
+        /* qsize_z = */ 16,
+        /* cq_iv = */ 1,
+    )
+    .await;
+    let io_sq_buf = PrpRange::new(vec![io_sq_gpa], 0, PAGE_SIZE64).unwrap();
+    let io_cq_buf = PrpRange::new(vec![io_cq_gpa], 0, PAGE_SIZE64).unwrap();
+
+    // PSDT 00b runs last on the same queue, so the refusals cannot pass by
+    // refusing every read.
+    for (slot, psdt) in [0b01u8, 0b10, 0b11, 0b00].into_iter().enumerate() {
+        gm.fill_at(read_buf_gpa, 0xa5, 512).unwrap();
+        let cid = 0x780 + slot as u16;
+        let mut command = Command::new_zeroed();
+        command.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+        command.cdw0.set_cid(cid);
+        command.cdw0.set_psdt(psdt);
+        command.nsid = 1;
+        // One block from LBA 0 (NLB is zero-based).
+        command.dptr[0] = read_buf_gpa;
+        write_command_to_queue(&gm, &io_sq_buf, slot, &command);
+        nvmec
+            .write_bar0(sq_db(1), (slot as u32 + 1).as_bytes())
+            .unwrap();
+        wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x2222).await;
+
+        let cqe = read_completion_from_queue(&gm, &io_cq_buf, slot);
+        assert_eq!(cqe.cid, cid, "PSDT {psdt:02b}: wrong cid");
+        let buf = gm.read_plain::<[u8; 512]>(read_buf_gpa).unwrap();
+        if psdt == 0 {
+            assert_eq!(
+                (cqe.status.status(), cqe.status.dnr()),
+                (spec::Status::SUCCESS.0, false),
+                "PSDT 00b: read failed"
+            );
+            assert_eq!(buf, [0; 512], "PSDT 00b: read did not return the disk data");
+        } else {
+            assert_eq!(
+                (cqe.status.status(), cqe.status.dnr()),
+                (spec::Status::INVALID_FIELD_IN_COMMAND.0, true),
+                "PSDT {psdt:02b}: expected Invalid Field in Command with DNR"
+            );
+            assert_eq!(buf, [0xa5; 512], "PSDT {psdt:02b}: read wrote its buffer");
+        }
+    }
+}

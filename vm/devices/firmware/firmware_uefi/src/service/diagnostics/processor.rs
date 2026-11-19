@@ -160,7 +160,13 @@ impl LogProcessor {
             };
 
             processor.bytes_read += bytes_consumed;
-            processor.accumulator.feed(log)?;
+            if let Err(error) = processor.accumulator.feed(log) {
+                tracelimit::warn_ratelimited!(
+                    error = ?error,
+                    "Dropping oversized EFI diagnostics message"
+                );
+                continue;
+            }
 
             if let Some(complete_log) = processor.accumulator.take() {
                 processor.entries_processed += 1;

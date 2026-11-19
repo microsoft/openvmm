@@ -65,6 +65,7 @@ vm_manifest_builder.workspace = true
 vm_resource.workspace = true
 vtl2_settings_proto.workspace = true
 pcie_remote_resources.workspace = true
+usb_config_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
@@ -118,6 +119,7 @@ win_etw_tracing.workspace = true
 workspace = true
 features = [
   "Win32_Foundation",
+  "Win32_Security",
   "Win32_Storage_FileSystem",
 ]
 

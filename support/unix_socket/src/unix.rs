@@ -240,12 +240,16 @@ impl ScmReceiver {
 
             // If ancillary data was truncated the kernel discarded the
             // descriptors that did not fit; the ones we did get are useless
-            // without the full set, so close them and fail.
+            // without the full set, so close them and fail. Besides a control
+            // buffer too small for the sender's descriptors, this happens when
+            // installing them would exceed this process's RLIMIT_NOFILE
+            // (unix(7)).
             if hdr.msg_flags & libc::MSG_CTRUNC != 0 {
                 self.clear();
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "control message truncated: sender sent too many file descriptors",
+                    "control message truncated: sender sent too many file descriptors, \
+                     or receiving them would exceed the open file limit (RLIMIT_NOFILE)",
                 ));
             }
         }

@@ -1923,29 +1923,27 @@ impl Hcl {
 
         let vtl_fd = mshv_fd.create_vtl()?;
 
-        #[cfg(guest_arch = "aarch64")]
-        {
-            let supported_isolation = match isolation {
-                IsolationType::Cca => {
-                    // Realm-visible ID registers can be sanitized, so use the
-                    // HCL/RMM path to validate that CCA is actually available.
-                    if vtl_fd.get_realm_config().is_ok() {
-                        IsolationType::Cca
-                    } else {
-                        IsolationType::None
+        cfg_select! {
+            guest_arch = "x86_64" => {}
+            guest_arch = "aarch64" => {
+                let supported_isolation = match isolation {
+                    IsolationType::Cca => {
+                        // Realm-visible ID registers can be sanitized, so use the
+                        // HCL/RMM path to validate that CCA is actually available.
+                        if vtl_fd.get_realm_config().is_ok() {
+                            IsolationType::Cca
+                        } else {
+                            IsolationType::None
+                        }
                     }
-                }
-                _ => IsolationType::None,
-            };
+                    _ => IsolationType::None,
+                };
 
-            validate_isolation(supported_isolation)?;
-        }
-
-        #[cfg(not(any(guest_arch = "x86_64", guest_arch = "aarch64")))]
-        {
-            let supported_isolation = IsolationType::None;
-
-            validate_isolation(supported_isolation)?;
+                validate_isolation(supported_isolation)?;
+            }
+            _ => {
+                validate_isolation(IsolationType::None)?;
+            }
         }
 
         // Open the hypercall pseudo-device

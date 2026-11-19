@@ -7,15 +7,19 @@
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
-#[cfg(guest_arch = "aarch64")]
-mod aarch64;
-#[cfg(guest_arch = "x86_64")]
-mod x86_64;
-
-#[cfg(guest_arch = "aarch64")]
-use aarch64 as arch;
-#[cfg(guest_arch = "x86_64")]
-use x86_64 as arch;
+cfg_select! {
+    guest_arch = "aarch64" => {
+        mod aarch64;
+        use aarch64 as arch;
+    }
+    guest_arch = "x86_64" => {
+        mod x86_64;
+        use x86_64 as arch;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 
 // irqfd is arch-independent (MSI routing + MSHV_IRQFD), wired up on both
 // x86_64 and aarch64.
@@ -634,8 +638,10 @@ impl MshvVpRunner<'_> {
             unsafe { std::mem::transmute::<mshv_bindings::hv_message, HvMessage>(msg) }
         })
     }
+}
 
-    #[cfg(guest_arch = "x86_64")]
+#[cfg(guest_arch = "x86_64")]
+impl MshvVpRunner<'_> {
     fn reg_page(&mut self) -> &mut hvdef::HvX64RegisterPage {
         let page = self
             .reg_page
@@ -646,7 +652,6 @@ impl MshvVpRunner<'_> {
         unsafe { &mut *page }
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn ghcb_page(&mut self) -> Option<&mut x86defs::snp::GhcbPage> {
         // SAFETY: The mapped page is owned by the mutably borrowed processor
         // binder and remains valid for this processor borrow.
@@ -742,6 +747,29 @@ impl MshvProcessor<'_> {
         inner.reset();
         *deliverability_notifications = HvDeliverabilityNotificationsRegister::new();
     }
+}
+
+#[track_caller]
+fn handle_invalid_vp_register_exit(
+    vp_index: VpIndex,
+    exit: &HvMessage,
+    dev: &impl CpuIo,
+) -> VpHaltReason {
+    let error: Error =
+        if usize::from(exit.header.len) != size_of::<hvdef::HvInvalidVpRegisterMessage>() {
+            ErrorInner::InvalidVpRegisterMessage {
+                vp_index: vp_index.index(),
+                payload_len: exit.header.len,
+            }
+            .into()
+        } else {
+            let message = exit.as_message::<hvdef::HvInvalidVpRegisterMessage>();
+            ErrorInner::InvalidVpRegisterValue {
+                vp_index: message.vp_index,
+            }
+            .into()
+        };
+    dev.fatal_error(error.into())
 }
 
 impl virt::Processor for MshvProcessor<'_> {
@@ -880,6 +908,10 @@ impl<T: Into<ErrorInner>> From<T> for Error {
 enum ErrorInner {
     #[error("operation not supported")]
     NotSupported,
+    #[error("VP {vp_index} reported an invalid register value")]
+    InvalidVpRegisterValue { vp_index: u32 },
+    #[error("invalid VP register message payload length {payload_len} for VP {vp_index}")]
+    InvalidVpRegisterMessage { vp_index: u32, payload_len: u8 },
     #[error("create_vm failed")]
     CreateVMFailed(#[source] KernelError),
     #[error("failed to initialize VM")]
@@ -1426,5 +1458,131 @@ impl GuestEventPort for MshvGuestEventPort {
     fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
         self.params.lock().vp = VpIndex::new(vp);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::cell::RefCell;
+    use test_with_tracing::test;
+    use zerocopy::IntoBytes;
+
+    struct TestCpuIo {
+        error: RefCell<Option<Box<dyn std::error::Error + Send + Sync>>>,
+        halt: Cell<Option<VpHaltReason>>,
+    }
+
+    impl TestCpuIo {
+        fn new(halt: Option<VpHaltReason>) -> Self {
+            Self {
+                error: RefCell::new(None),
+                halt: Cell::new(halt),
+            }
+        }
+    }
+
+    impl CpuIo for TestCpuIo {
+        fn is_mmio(&self, _address: u64) -> bool {
+            unreachable!()
+        }
+
+        fn acknowledge_pic_interrupt(&self) -> Option<u8> {
+            unreachable!()
+        }
+
+        fn handle_eoi(&self, _irq: u32) {
+            unreachable!()
+        }
+
+        async fn read_mmio(&self, _vp: VpIndex, _address: u64, _data: &mut [u8]) {
+            unreachable!()
+        }
+
+        async fn write_mmio(&self, _vp: VpIndex, _address: u64, _data: &[u8]) {
+            unreachable!()
+        }
+
+        async fn read_io(&self, _vp: VpIndex, _port: u16, _data: &mut [u8]) {
+            unreachable!()
+        }
+
+        async fn write_io(&self, _vp: VpIndex, _port: u16, _data: &[u8]) {
+            unreachable!()
+        }
+
+        fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> VpHaltReason {
+            assert!(self.error.replace(Some(error)).is_none());
+            self.halt.take().expect("test fatal policy panic")
+        }
+    }
+
+    fn invalid_vp_register_exit(vp_index: u32) -> HvMessage {
+        let payload = hvdef::HvInvalidVpRegisterMessage {
+            vp_index,
+            reserved: 0,
+        };
+        HvMessage::new(
+            HvMessageType::HvMessageTypeInvalidVpRegisterValue,
+            0,
+            payload.as_bytes(),
+        )
+    }
+
+    #[test]
+    fn invalid_vp_register_exit_reports_vp_and_preserves_policy() {
+        for halt in [VpHaltReason::SingleStep, VpHaltReason::Reset] {
+            let expected = std::mem::discriminant(&halt);
+            let dev = TestCpuIo::new(Some(halt));
+            let exit = invalid_vp_register_exit(7);
+
+            let halt = handle_invalid_vp_register_exit(VpIndex::new(3), &exit, &dev);
+            assert_eq!(std::mem::discriminant(&halt), expected);
+            let error = dev.error.into_inner().unwrap().downcast::<Error>().unwrap();
+            assert!(matches!(
+                &error.0,
+                ErrorInner::InvalidVpRegisterValue { vp_index: 7 }
+            ));
+            assert_eq!(error.to_string(), "VP 7 reported an invalid register value");
+        }
+    }
+
+    #[test]
+    fn invalid_vp_register_exit_validates_payload_lengths() {
+        let expected_len = size_of::<hvdef::HvInvalidVpRegisterMessage>();
+        for payload_len in 0..=u8::MAX {
+            let dev = TestCpuIo::new(Some(VpHaltReason::SingleStep));
+            let mut exit = invalid_vp_register_exit(7);
+            exit.header.len = payload_len;
+
+            assert!(matches!(
+                handle_invalid_vp_register_exit(VpIndex::new(3), &exit, &dev),
+                VpHaltReason::SingleStep
+            ));
+            let error = dev.error.into_inner().unwrap().downcast::<Error>().unwrap();
+            if usize::from(payload_len) == expected_len {
+                assert!(matches!(
+                    &error.0,
+                    ErrorInner::InvalidVpRegisterValue { vp_index: 7 }
+                ));
+            } else {
+                assert!(matches!(
+                    &error.0,
+                    ErrorInner::InvalidVpRegisterMessage {
+                        vp_index: 3,
+                        payload_len: actual,
+                    } if *actual == payload_len
+                ));
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "test fatal policy panic")]
+    fn invalid_vp_register_exit_preserves_panicking_policy() {
+        let dev = TestCpuIo::new(None);
+        let _ =
+            handle_invalid_vp_register_exit(VpIndex::new(7), &invalid_vp_register_exit(7), &dev);
     }
 }
