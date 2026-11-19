@@ -36,3 +36,7 @@ cmd = ["ci", "checkin-gates", "--config=patina-nightly"]
 [[pipeline.flowey_hvlite.ado]]
 file = "ci-flowey/openvmm-pr.yaml"
 cmd = ["ci", "checkin-gates", "--config=pr"]
+
+[[pipeline.flowey_hvlite.ado]]
+file = "ci-flowey/refresh-mirror.yaml"
+cmd = ["ci", "refresh-mirror"]

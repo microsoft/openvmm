@@ -1,0 +1,38 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+trigger:
+  batch: true
+  branches:
+    include: [] # Populated from the mirror routes by Flowey.
+pr: none
+pool:
+  vmImage: ubuntu-latest
+jobs:
+- job: QueueMirror
+  condition: and(in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI'), eq(variables['Build.Repository.Name'], 'microsoft/openvmm'))
+  steps:
+  - checkout: none
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $routes = ConvertFrom-Json -AsHashtable $env:MIRROR_ROUTES
+      if ($env:BUILD_SOURCEBRANCH -cnotmatch '^refs/heads/(.+)$' -or !$routes.ContainsKey($Matches[1])) {
+          throw "No mirror route for $env:BUILD_SOURCEBRANCH"
+      }
+      $branch = $Matches[1]
+      $body = @{
+          templateParameters = @{
+              branchToMirror = $branch
+              branchToUpdateSubmodule = $routes[$branch]
+              updateSubmodule = $true
+          }
+      } | ConvertTo-Json
+
+      $run = Invoke-RestMethod -Method Post `
+          -Uri 'https://dev.azure.com/microsoft/HyperVCloud/_apis/pipelines/149443/runs?api-version=7.1' `
+          -Headers @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" } `
+          -MaximumRedirection 0 -ContentType 'application/json' -Body $body
+      Write-Host "Queued mirror refresh $($run.id) for $branch"
+    displayName: Queue mirror refresh
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
