@@ -4,6 +4,7 @@
 * @microsoft/openvmm-reviewers
 
 # Any CI changes require special approval
+/.azure-pipelines/ @microsoft/openvmm-ci-reviewers
 /ci/ @microsoft/openvmm-ci-reviewers
 /.github/CODEOWNERS @microsoft/openvmm-maintain
 /.github/labeler.yml @microsoft/openvmm-ci-reviewers

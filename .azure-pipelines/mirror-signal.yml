@@ -1,0 +1,18 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - main
+pr: none
+
+# Downstream mirrors subscribe to completion; no checkout or agent is needed.
+jobs:
+- job: Signal
+  pool: server
+  steps:
+  - task: Delay@1
+    inputs:
+      delayForMinutes: '0'
