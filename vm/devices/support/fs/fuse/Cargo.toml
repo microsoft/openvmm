@@ -25,6 +25,7 @@ libc.workspace = true
 [target.'cfg(unix)'.dev-dependencies]
 tempfile.workspace = true
 
+[dev-dependencies]
 test_with_tracing.workspace = true
 
 [lints]
