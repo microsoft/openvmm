@@ -68,7 +68,7 @@ impl<T: PagedMemory> RingMem for SlowRingMem<T> {
 
     fn control(&self) -> &[AtomicU32; CONTROL_WORD_COUNT] {
         self.0.control().as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
-            .try_into()
+            .as_array()
             .unwrap()
     }
 }
@@ -77,7 +77,7 @@ fn paged_ring_mem(c: &mut Criterion) {
     let mut pages = vec![[0u8; PAGE_SIZE]; 12];
     let pages: Vec<_> = pages
         .iter_mut()
-        .map(|p| <&[AtomicU8; PAGE_SIZE]>::try_from(p.as_atomic_bytes()).unwrap())
+        .map(|p| p.as_atomic_bytes().as_array().unwrap())
         .collect();
     let pages: Vec<_> = pages.iter().chain(pages.iter().skip(1)).copied().collect();
     let mem = PagedRingMem::new(PageRefs(pages.as_ref()));

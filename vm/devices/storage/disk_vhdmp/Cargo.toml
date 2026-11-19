@@ -10,6 +10,7 @@ rust-version.workspace = true
 disk_backend.workspace = true
 disk_file.workspace = true
 scsi_buffers.workspace = true
+scsi_defs.workspace = true
 vm_resource.workspace = true
 
 guid = { workspace = true, features = ["getrandom", "inspect"] }
@@ -17,8 +18,10 @@ inspect.workspace = true
 mesh.workspace = true
 
 futures.workspace = true
+blocking.workspace = true
 thiserror.workspace = true
-windows-sys = { workspace = true, features = ["Win32_System_IO"] }
+windows-sys = { workspace = true, features = ["Win32_Storage_Vhd", "Win32_System_IO"] }
+zerocopy.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 disk_vhd1.workspace = true

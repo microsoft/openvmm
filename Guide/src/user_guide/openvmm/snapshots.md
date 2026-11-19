@@ -30,7 +30,8 @@ file on disk rather than held in anonymous memory.
 The memory backing file and the snapshot directory must be on the **same
 filesystem**. OpenVMM creates a hard link from the backing file to
 `memory.bin` inside the snapshot directory, which does not work across
-filesystem boundaries.
+filesystem boundaries. Keep the backing file outside the snapshot directory:
+the snapshot directory must not exist before the save.
 ```
 
 ## Saving a snapshot
@@ -40,9 +41,11 @@ Start a VM with file-backed memory:
 ```bash
 cargo run -- \
   --uefi \
+  --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
-  --memory size=4096M,file=path/to/memory.bin
+  --memory size=4096M,file=path/to/memory.bin \
+  --processors 4
 ```
 
 Once the VM is running, open the interactive console and issue a save command,
@@ -52,8 +55,10 @@ specifying the output directory:
 save-snapshot path/to/snapshot-dir
 ```
 
-OpenVMM writes `manifest.bin`, `state.bin`, and a hard link to `memory.bin`
-into the specified directory.
+OpenVMM writes `state.bin`, a hard link to `memory.bin`, and finally
+`manifest.bin` into the specified directory. The directory must not already
+exist, so existing data is never overwritten. If the save fails, the files it
+created are removed.
 
 ```admonish warning
 After saving, the VM remains **paused** and resume is blocked. Resuming
@@ -68,6 +73,7 @@ To restore, pass the snapshot directory with `--restore-snapshot`:
 ```bash
 cargo run -- \
   --uefi \
+  --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M \
@@ -78,6 +84,18 @@ cargo run -- \
 `--restore-snapshot` automatically opens `memory.bin` from the snapshot
 directory, so `file=...` should not be specified in `--memory` (the two
 options are mutually exclusive).
+
+Pass the same boot flags and files that were used at save time (for example
+`--uefi` and `--uefi-firmware`, or `--kernel` and `--initrd`). Restore does
+not run the firmware or kernel loader, but they are used if the restored VM is
+later reset.
+
+```admonish warning
+`memory.bin` is used in place as the restored VM's memory, so running the
+restored VM modifies the snapshot. A snapshot can be restored only once;
+restoring it again would combine modified memory with the original device
+state.
+```
 
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
@@ -156,6 +174,7 @@ OpenVMM snapshots:
 | virtio-net | Virtio (PCI/MMIO) | Yes |
 | virtio-pmem | Virtio (PCI/MMIO) | Yes |
 | virtio-rng | Virtio (PCI/MMIO) | Yes |
+| virtio-rtc | Virtio (PCI/MMIO) | Yes |
 | NVMe | PCI | **No** |
 | VGA | PCI | **No** (`todo!()`) |
 | GDMA (MANA network) | PCI | **No** (`todo!()`) |

@@ -162,7 +162,10 @@ fn test_legacy_queue_uses_only_16_bytes() {
 fn test_raw_mmio_dw_is_bit_11_and_supported_in_both_modes() {
     for mode in [0, 1] {
         let (mut dev, gm, msi) = make_queue(false, 0);
+        put(&gm, 0, wait(0, SW), false);
+        run_queue(&mut dev, 16);
         write32(&mut dev, 0x018, 0);
+        assert!(!GstsReg::from(read32(&mut dev, 0x01c)).qies());
         write64(&mut dev, 0x020, mode << 10);
         write32(&mut dev, 0x018, 1 << 30);
         write64(&mut dev, 0x090, BASE | (1 << 11));
@@ -415,7 +418,10 @@ fn test_empty_disabled_enable_and_disable_queue() {
     // An empty queue does not fetch its invalid (zero) first entry.
     write64(&mut dev, 0x088, 0);
     assert_queue(&mut dev, 0, false);
+    put(&gm, 0, wait(0, SW), false);
+    run_queue(&mut dev, 16);
     write32(&mut dev, 0x018, 0);
+    assert!(!GstsReg::from(read32(&mut dev, 0x01c)).qies());
     put(&gm, 0, wait(1, SW), false);
     write64(&mut dev, 0x088, 16);
     assert_queue(&mut dev, 0, false);
@@ -540,7 +546,8 @@ fn test_fault_acknowledgement_preserves_only_undelivered_interrupts() {
             write32(&mut dev, 0x040, 0xfee01000);
             write64(&mut dev, 0x088, 16);
             assert_queue(&mut dev, 0, true);
-            write32(&mut dev, 0x018, 0); // Isolate acknowledgement from queue retry.
+            // Isolate acknowledgement from retry; an errored queue cannot disable via GCMD.
+            dev.shared.state.write().gsts.set_qies(false);
             let fault = VtdFault::RootNotPresent {
                 source_id: 0x0100,
                 iova: 0x1000,

@@ -4,15 +4,14 @@
 use super::*;
 use crate::VmgsClientError;
 use crate::spawn_vmgs_broker;
-use disk_backend::Disk;
-use disk_backend::DiskError;
-use disk_backend::DiskIo;
-use disk_backend::UnmapBehavior;
+use disk_hook::Disk;
+use disk_hook::DiskError;
+use disk_hook::DiskOperation;
+use disk_hook::HookDisk;
 use mesh::rpc::RpcSend;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
-use scsi_buffers::RequestBuffers;
 use std::sync::Arc;
 use test_with_tracing::test;
 use vmgs_format::EncryptionAlgorithm;
@@ -30,97 +29,30 @@ struct IoState {
     fail_flush_at: Option<usize>,
 }
 
-/// A RAM disk decorator that records ordering without recording data or keys.
-#[derive(inspect::Inspect)]
-struct TestDisk {
-    disk: Disk,
-    #[inspect(skip)]
-    io: Arc<Mutex<IoState>>,
-}
-
-impl DiskIo for TestDisk {
-    fn disk_type(&self) -> &str {
-        "vmgs-broker-test"
-    }
-
-    fn sector_count(&self) -> u64 {
-        self.disk.sector_count()
-    }
-
-    fn sector_size(&self) -> u32 {
-        self.disk.sector_size()
-    }
-
-    fn disk_id(&self) -> Option<[u8; 16]> {
-        self.disk.disk_id()
-    }
-
-    fn physical_sector_size(&self) -> u32 {
-        self.disk.physical_sector_size()
-    }
-
-    fn is_fua_respected(&self) -> bool {
-        self.disk.is_fua_respected()
-    }
-
-    fn is_read_only(&self) -> bool {
-        self.disk.is_read_only()
-    }
-
-    async fn unmap(
-        &self,
-        sector: u64,
-        count: u64,
-        block_level_only: bool,
-    ) -> Result<(), DiskError> {
-        self.disk.unmap(sector, count, block_level_only).await
-    }
-
-    fn unmap_behavior(&self) -> UnmapBehavior {
-        self.disk.unmap_behavior()
-    }
-
-    async fn read_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-    ) -> Result<(), DiskError> {
-        self.disk.read_vectored(buffers, sector).await
-    }
-
-    async fn write_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-        fua: bool,
-    ) -> Result<(), DiskError> {
-        self.io.lock().operations.push(Operation::Write(sector));
-        self.disk.write_vectored(buffers, sector, fua).await
-    }
-
-    async fn sync_cache(&self) -> Result<(), DiskError> {
-        {
-            let mut io = self.io.lock();
-            io.operations.push(Operation::Flush);
-            io.flush_count += 1;
-            if io.fail_flush_at == Some(io.flush_count) {
-                return Err(DiskError::Io(std::io::Error::other(
-                    "injected flush failure",
-                )));
-            }
-        }
-        self.disk.sync_cache().await
-    }
-}
-
 fn new_test_disk() -> (Disk, Arc<Mutex<IoState>>) {
     let io = Arc::new(Mutex::new(IoState::default()));
-    let disk = Disk::new(TestDisk {
-        disk: disklayer_ram::ram_disk(4 * 1024 * 1024, false).unwrap(),
-        io: io.clone(),
-    })
-    .unwrap();
-    (disk, io)
+    let hook_io = io.clone();
+    let disk =
+        HookDisk::new(4 * 1024 * 1024, 512).with_sync_hook(move |operation| match operation {
+            DiskOperation::Write { sector, .. } => {
+                hook_io.lock().operations.push(Operation::Write(sector));
+                Ok(())
+            }
+            DiskOperation::SyncCache => record_flush(&mut hook_io.lock()),
+            _ => Ok(()),
+        });
+    (disk.into_disk(), io)
+}
+
+fn record_flush(io: &mut IoState) -> Result<(), DiskError> {
+    io.operations.push(Operation::Flush);
+    io.flush_count += 1;
+    if io.fail_flush_at == Some(io.flush_count) {
+        return Err(DiskError::Io(std::io::Error::other(
+            "injected flush failure",
+        )));
+    }
+    Ok(())
 }
 
 async fn encrypted_vmgs(disk: Disk, key: &[u8; 32]) -> Vmgs {

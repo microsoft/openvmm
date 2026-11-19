@@ -38,6 +38,21 @@ cargo build -p tpm_guest_tests \
 The binary must still be copied into a guest with the corresponding
 architecture and OS before it is useful.
 
+## Capturing AK certificate contents
+
+Use `ak_cert --output-file <PATH>` to save the complete NV contents, including
+zero padding. No file is written by default. When combined with an expected-data
+comparison, the file is written only after that comparison succeeds.
+
+```bash
+tpm_guest_tests ak_cert --output-file ak-cert.bin
+```
+
+Test certificates can use different keys in each host process. Cross-process
+tests should validate the received certificate's identity and capture its bytes,
+then compare those captured bytes across reboots rather than generating a
+separate expected certificate.
+
 ## Exit status and diagnostics
 
 Successful commands exit with status zero. CLI errors, TPM transport failures,

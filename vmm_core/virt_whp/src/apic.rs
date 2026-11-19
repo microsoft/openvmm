@@ -6,8 +6,6 @@
 //! This module supports both the APIC running inside the hypervisor, and the
 //! APIC running in the VMM.
 
-#![cfg(guest_arch = "x86_64")]
-
 use crate::Error;
 use crate::LocalApicKind;
 use crate::WhpPartitionInner;

@@ -7,15 +7,19 @@
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
-#[cfg(guest_arch = "aarch64")]
-mod aarch64;
-#[cfg(guest_arch = "x86_64")]
-mod x86_64;
-
-#[cfg(guest_arch = "aarch64")]
-use aarch64 as arch;
-#[cfg(guest_arch = "x86_64")]
-use x86_64 as arch;
+cfg_select! {
+    guest_arch = "aarch64" => {
+        mod aarch64;
+        use aarch64 as arch;
+    }
+    guest_arch = "x86_64" => {
+        mod x86_64;
+        use x86_64 as arch;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 
 // irqfd is arch-independent (MSI routing + MSHV_IRQFD), wired up on both
 // x86_64 and aarch64.
@@ -165,29 +169,47 @@ impl<'a> MshvProtoPartition<'a> {
             .create_vcpu(0)
             .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
 
-        // Install intercepts required by both architectures.
-        vmfd.install_intercept(mshv_install_intercept {
-            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-            intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeHypercall.0,
-            intercept_parameter: Default::default(),
-        })
-        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
+        // Nested partitions leave HV#1 handling to L0. OpenVMM's intercepts
+        // service its VMBus server, which is unavailable in this mode.
+        if !config.nested_virt {
+            vmfd.install_intercept(mshv_install_intercept {
+                access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeHypercall.0,
+                intercept_parameter: Default::default(),
+            })
+            .map_err(|e| {
+                ErrorInner::InstallIntercept(
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeHypercall,
+                    e.into(),
+                )
+            })?;
 
-        vmfd.install_intercept(mshv_install_intercept {
-            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-            intercept_type:
-                hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection.0,
-            intercept_parameter: Default::default(),
-        })
-        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
+            vmfd.install_intercept(mshv_install_intercept {
+                access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                intercept_type:
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection.0,
+                intercept_parameter: Default::default(),
+            })
+            .map_err(|e| {
+                ErrorInner::InstallIntercept(
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection,
+                    e.into(),
+                )
+            })?;
 
-        vmfd.install_intercept(mshv_install_intercept {
-            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-            intercept_type:
-                hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId.0,
-            intercept_parameter: Default::default(),
-        })
-        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
+            vmfd.install_intercept(mshv_install_intercept {
+                access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                intercept_type:
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId.0,
+                intercept_parameter: Default::default(),
+            })
+            .map_err(|e| {
+                ErrorInner::InstallIntercept(
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId,
+                    e.into(),
+                )
+            })?;
+        }
 
         // Set up a signal for forcing vcpufd.run() to exit with EINTR.
         static SIGNAL_HANDLER_INIT: Once = Once::new();
@@ -225,6 +247,35 @@ pub fn is_available() -> Result<bool, Error> {
         Ok(_) => Ok(true),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(ErrorInner::AvailableCheck(err).into()),
+    }
+}
+
+/// Returns whether MSHV can create SEV-SNP partitions on this machine.
+/// This function currently probes SNP availability by attempting to create
+/// a temporary SNP partition.
+///
+/// The probe does not initialize the partition. The mshv_root driver cannot
+/// tear down an initialized SNP partition that never imported its memory, so
+/// that partition would permanently use one of the host's SNP partition slots.
+///
+/// TODO: Replace this probe with a proper usermode query once the MSHV
+/// driver exposes SNP status.
+#[cfg(guest_arch = "x86_64")]
+pub fn is_snp_available() -> bool {
+    let probe = || -> Result<(), MshvError> {
+        let mshv = Mshv::new()?;
+        mshv.create_vm_with_type(mshv_ioctls::VmType::Snp)?;
+        Ok(())
+    };
+    match probe() {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::debug!(
+                error = &err as &dyn std::error::Error,
+                "SNP partition probe failed"
+            );
+            false
+        }
     }
 }
 
@@ -442,6 +493,11 @@ impl virt::ResetPartition for MshvPartition {
         let scrubbed = scrub_partition(vmfd).map_err(ErrorInner::ScrubPartition)?;
 
         #[cfg(guest_arch = "x86_64")]
+        if inner.caps.nested_virt && !scrubbed {
+            return Err(ErrorInner::NestedResetRequiresScrub.into());
+        }
+
+        #[cfg(guest_arch = "x86_64")]
         for irq in 0..virt::irqcon::IRQ_LINES as u8 {
             irq_routes.set_irq_route(irq, None);
         }
@@ -582,8 +638,10 @@ impl MshvVpRunner<'_> {
             unsafe { std::mem::transmute::<mshv_bindings::hv_message, HvMessage>(msg) }
         })
     }
+}
 
-    #[cfg(guest_arch = "x86_64")]
+#[cfg(guest_arch = "x86_64")]
+impl MshvVpRunner<'_> {
     fn reg_page(&mut self) -> &mut hvdef::HvX64RegisterPage {
         let page = self
             .reg_page
@@ -594,7 +652,6 @@ impl MshvVpRunner<'_> {
         unsafe { &mut *page }
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn ghcb_page(&mut self) -> Option<&mut x86defs::snp::GhcbPage> {
         // SAFETY: The mapped page is owned by the mutably borrowed processor
         // binder and remains valid for this processor borrow.
@@ -690,6 +747,29 @@ impl MshvProcessor<'_> {
         inner.reset();
         *deliverability_notifications = HvDeliverabilityNotificationsRegister::new();
     }
+}
+
+#[track_caller]
+fn handle_invalid_vp_register_exit(
+    vp_index: VpIndex,
+    exit: &HvMessage,
+    dev: &impl CpuIo,
+) -> VpHaltReason {
+    let error: Error =
+        if usize::from(exit.header.len) != size_of::<hvdef::HvInvalidVpRegisterMessage>() {
+            ErrorInner::InvalidVpRegisterMessage {
+                vp_index: vp_index.index(),
+                payload_len: exit.header.len,
+            }
+            .into()
+        } else {
+            let message = exit.as_message::<hvdef::HvInvalidVpRegisterMessage>();
+            ErrorInner::InvalidVpRegisterValue {
+                vp_index: message.vp_index,
+            }
+            .into()
+        };
+    dev.fatal_error(error.into())
 }
 
 impl virt::Processor for MshvProcessor<'_> {
@@ -828,6 +908,10 @@ impl<T: Into<ErrorInner>> From<T> for Error {
 enum ErrorInner {
     #[error("operation not supported")]
     NotSupported,
+    #[error("VP {vp_index} reported an invalid register value")]
+    InvalidVpRegisterValue { vp_index: u32 },
+    #[error("invalid VP register message payload length {payload_len} for VP {vp_index}")]
+    InvalidVpRegisterMessage { vp_index: u32, payload_len: u8 },
     #[error("create_vm failed")]
     CreateVMFailed(#[source] KernelError),
     #[error("failed to initialize VM")]
@@ -881,7 +965,6 @@ enum ErrorInner {
     InvalidSnpVmsaImport,
     #[error("failed to stat /dev/mshv")]
     AvailableCheck(#[source] io::Error),
-    #[cfg(guest_arch = "x86_64")]
     #[error("failed to get partition property")]
     GetPartitionProperty(#[source] KernelError),
     #[error("failed to set partition property")]
@@ -906,8 +989,17 @@ enum ErrorInner {
     ResetState(#[source] Box<virt::state::StateError<Error>>),
     #[error("failed to scrub partition")]
     ScrubPartition(#[source] io::Error),
-    #[error("install intercept failed")]
-    InstallIntercept(#[source] KernelError),
+    #[error("failed to install {0:?} intercept")]
+    InstallIntercept(hvdef::hypercall::HvInterceptType, #[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("nested virtualization reset requires partition scrub support")]
+    NestedResetRequiresScrub,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("saving nested virtualization state is not supported by MSHV")]
+    NestedStateSaveUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("restoring nested virtualization state is not supported by MSHV")]
+    NestedStateRestoreUnsupported,
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to register cpuid override")]
     RegisterCpuid(#[source] KernelError),
@@ -986,6 +1078,13 @@ fn common_synthetic_features() -> hvdef::HvPartitionSyntheticProcessorFeatures {
         .with_access_intr_ctrl_regs(true)
         .with_access_hypercall_regs(true)
         .with_access_vp_index(true)
+        // access_vp_regs enables HvCallGetVpRegisters / HvCallSetVpRegisters
+        // for the guest. cloud-hypervisor sets this unconditionally in
+        // `make_default_synthetic_features_mask`, and it is required for
+        // nested-virt L1 guests to be recognized as parent partitions by
+        // the mshv Linux driver (which gates /dev/mshv on the
+        // create_partitions privilege that L0 mshv derives from this bit).
+        .with_access_vp_regs(true)
         .with_fast_hypercall_output(true)
         .with_direct_synthetic_timers(true)
         .with_extended_processor_masks(true)
@@ -1359,5 +1458,131 @@ impl GuestEventPort for MshvGuestEventPort {
     fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
         self.params.lock().vp = VpIndex::new(vp);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::cell::RefCell;
+    use test_with_tracing::test;
+    use zerocopy::IntoBytes;
+
+    struct TestCpuIo {
+        error: RefCell<Option<Box<dyn std::error::Error + Send + Sync>>>,
+        halt: Cell<Option<VpHaltReason>>,
+    }
+
+    impl TestCpuIo {
+        fn new(halt: Option<VpHaltReason>) -> Self {
+            Self {
+                error: RefCell::new(None),
+                halt: Cell::new(halt),
+            }
+        }
+    }
+
+    impl CpuIo for TestCpuIo {
+        fn is_mmio(&self, _address: u64) -> bool {
+            unreachable!()
+        }
+
+        fn acknowledge_pic_interrupt(&self) -> Option<u8> {
+            unreachable!()
+        }
+
+        fn handle_eoi(&self, _irq: u32) {
+            unreachable!()
+        }
+
+        async fn read_mmio(&self, _vp: VpIndex, _address: u64, _data: &mut [u8]) {
+            unreachable!()
+        }
+
+        async fn write_mmio(&self, _vp: VpIndex, _address: u64, _data: &[u8]) {
+            unreachable!()
+        }
+
+        async fn read_io(&self, _vp: VpIndex, _port: u16, _data: &mut [u8]) {
+            unreachable!()
+        }
+
+        async fn write_io(&self, _vp: VpIndex, _port: u16, _data: &[u8]) {
+            unreachable!()
+        }
+
+        fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> VpHaltReason {
+            assert!(self.error.replace(Some(error)).is_none());
+            self.halt.take().expect("test fatal policy panic")
+        }
+    }
+
+    fn invalid_vp_register_exit(vp_index: u32) -> HvMessage {
+        let payload = hvdef::HvInvalidVpRegisterMessage {
+            vp_index,
+            reserved: 0,
+        };
+        HvMessage::new(
+            HvMessageType::HvMessageTypeInvalidVpRegisterValue,
+            0,
+            payload.as_bytes(),
+        )
+    }
+
+    #[test]
+    fn invalid_vp_register_exit_reports_vp_and_preserves_policy() {
+        for halt in [VpHaltReason::SingleStep, VpHaltReason::Reset] {
+            let expected = std::mem::discriminant(&halt);
+            let dev = TestCpuIo::new(Some(halt));
+            let exit = invalid_vp_register_exit(7);
+
+            let halt = handle_invalid_vp_register_exit(VpIndex::new(3), &exit, &dev);
+            assert_eq!(std::mem::discriminant(&halt), expected);
+            let error = dev.error.into_inner().unwrap().downcast::<Error>().unwrap();
+            assert!(matches!(
+                &error.0,
+                ErrorInner::InvalidVpRegisterValue { vp_index: 7 }
+            ));
+            assert_eq!(error.to_string(), "VP 7 reported an invalid register value");
+        }
+    }
+
+    #[test]
+    fn invalid_vp_register_exit_validates_payload_lengths() {
+        let expected_len = size_of::<hvdef::HvInvalidVpRegisterMessage>();
+        for payload_len in 0..=u8::MAX {
+            let dev = TestCpuIo::new(Some(VpHaltReason::SingleStep));
+            let mut exit = invalid_vp_register_exit(7);
+            exit.header.len = payload_len;
+
+            assert!(matches!(
+                handle_invalid_vp_register_exit(VpIndex::new(3), &exit, &dev),
+                VpHaltReason::SingleStep
+            ));
+            let error = dev.error.into_inner().unwrap().downcast::<Error>().unwrap();
+            if usize::from(payload_len) == expected_len {
+                assert!(matches!(
+                    &error.0,
+                    ErrorInner::InvalidVpRegisterValue { vp_index: 7 }
+                ));
+            } else {
+                assert!(matches!(
+                    &error.0,
+                    ErrorInner::InvalidVpRegisterMessage {
+                        vp_index: 3,
+                        payload_len: actual,
+                    } if *actual == payload_len
+                ));
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "test fatal policy panic")]
+    fn invalid_vp_register_exit_preserves_panicking_policy() {
+        let dev = TestCpuIo::new(None);
+        let _ =
+            handle_invalid_vp_register_exit(VpIndex::new(7), &invalid_vp_register_exit(7), &dev);
     }
 }

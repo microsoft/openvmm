@@ -109,6 +109,8 @@ pub enum QueueError {
     TooLong,
     #[error("Invalid queue size {0}. Must be a power of 2.")]
     InvalidQueueSize(u16),
+    #[error("descriptor index {0} is out of range")]
+    InvalidDescriptorIndex(u16),
     #[error(
         "guest oversubscribed queue size {queue_size}: {in_flight} already in flight, \
          {requested} more requested"

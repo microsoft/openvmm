@@ -151,7 +151,12 @@ impl TeeCallGetDerivedKey for MutableTee {
         context.push(u8::from(policy.mix_measurement));
         // Deliberately permit old SVNs: the floor, not this mock's key service,
         // must prevent rollback and reject stale candidate headers.
-        Ok(crypto::hmac_sha_256::hmac_sha_256(&state.secret, &context).unwrap())
+        Ok(
+            crypto::hmac::hmac(&state.secret, &context, crypto::HashAlgorithm::Sha256)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        )
     }
 }
 

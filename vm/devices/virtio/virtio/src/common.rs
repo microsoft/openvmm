@@ -237,6 +237,11 @@ impl<'a> PeekedWork<'a> {
         Self { queue, work }
     }
 
+    /// Returns the descriptor index without consuming the work.
+    pub fn descriptor_index(&self) -> u16 {
+        self.work.descriptor_index()
+    }
+
     /// Returns the payload descriptors.
     pub fn payload(&self) -> &[VirtioQueuePayload] {
         &self.work.payload

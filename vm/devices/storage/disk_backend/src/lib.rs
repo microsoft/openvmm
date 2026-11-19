@@ -445,7 +445,9 @@ impl Disk {
     /// If the disk reports [`UnmapBehavior::Ignored`], the request is not
     /// passed to the backing object at all, since by definition it would do
     /// nothing. The range is still validated first — a no-op is still not a
-    /// legal response to a request naming sectors the disk does not have.
+    /// legal response to a request naming sectors the disk does not have — and
+    /// a read-only disk then fails with [`DiskError::ReadOnly`], as its backend
+    /// would.
     pub async fn unmap(
         &self,
         sector: u64,
@@ -464,6 +466,9 @@ impl Disk {
             // The addition cannot overflow because of `check_representable`.
             if sector + count > self.sector_count() {
                 return Err(DiskError::IllegalBlock);
+            }
+            if self.is_read_only() {
+                return Err(DiskError::ReadOnly);
             }
             return Ok(());
         }
@@ -587,10 +592,7 @@ trait DynDisk: Send + Sync + Inspect {
     fn wait_resize<'a>(
         &'a self,
         sector_count: u64,
-    ) -> Pin<Box<dyn 'a + Send + Future<Output = u64>>> {
-        let _ = sector_count;
-        Box::pin(std::future::pending())
-    }
+    ) -> Pin<Box<dyn 'a + Send + Future<Output = u64>>>;
 }
 
 impl<T: DiskIo> DynDisk for T {
@@ -634,5 +636,12 @@ impl<T: DiskIo> DynDisk for T {
 
     fn sync_cache(&self) -> IoFuture<'_> {
         StackFuture::from_or_box(self.sync_cache())
+    }
+
+    fn wait_resize<'a>(
+        &'a self,
+        sector_count: u64,
+    ) -> Pin<Box<dyn 'a + Send + Future<Output = u64>>> {
+        Box::pin(DiskIo::wait_resize(self, sector_count))
     }
 }

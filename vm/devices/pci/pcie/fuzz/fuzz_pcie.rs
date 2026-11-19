@@ -24,6 +24,7 @@ use pcie::root::GenericPcieRootComplex;
 use pcie::switch::GenericPcieSwitch;
 use pcie::switch::GenericPcieSwitchDefinition;
 use pcie::test_helpers::TestPcieMmioRegistration;
+use pcie::test_helpers::TestPciePioRegistration;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -128,6 +129,7 @@ impl FuzzRootComplex {
         let hotplug = matches!(topology, Topology::Hotplug { .. });
 
         let mut register_mmio = TestPcieMmioRegistration {};
+        let mut register_pio = TestPciePioRegistration;
         let port_defs: Vec<GenericPciePortDefinition> = (0..NUM_PORTS)
             .map(|i| GenericPciePortDefinition {
                 name: format!("rp{}", i).into(),
@@ -137,11 +139,15 @@ impl FuzzRootComplex {
             })
             .collect();
         let msi_conn = pci_core::msi::MsiConnection::new();
-        let rc =
-            GenericPcieRootComplex::builder(&mut register_mmio, START_BUS..=END_BUS, ecam_range)
-                .root_ports(port_defs, &msi_conn.target())
-                .build()
-                .unwrap();
+        let rc = GenericPcieRootComplex::builder(
+            &mut register_mmio,
+            &mut register_pio,
+            START_BUS..=END_BUS,
+            ecam_range,
+        )
+        .root_ports(port_defs, &msi_conn.target())
+        .build()
+        .unwrap();
         Self { rc }
     }
 

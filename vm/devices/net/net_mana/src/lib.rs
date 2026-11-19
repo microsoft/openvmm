@@ -1002,6 +1002,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                                 ip_checksum,
                                 l4_checksum,
                                 l4_protocol,
+                                offload: net_backend::RxOffload::default(),
                                 vlan: vlantag,
                             },
                         );

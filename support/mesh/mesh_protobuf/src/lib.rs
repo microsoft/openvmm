@@ -70,7 +70,6 @@ use alloc::boxed::Box;
 use alloc::fmt;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::mem::MaybeUninit;
 use core::num::Wrapping;
 use inplace::InplaceOption;
 use protofile::DescribeMessage;
@@ -596,6 +595,7 @@ mod tests {
     use crate::protobuf::read_varint;
     use alloc::borrow::Cow;
     use alloc::collections::BTreeMap;
+    use alloc::sync::Arc;
     use alloc::vec;
     use core::convert::Infallible;
     use core::error::Error;
@@ -1004,6 +1004,319 @@ mod tests {
                 6: bytes <0a0208400a020841>
                 6: bytes <0a0208420a020843>
                 raw: 0a0501020304051207616263646566671a0208011a0208021a0208031a0208041a020805220361626322036465662a050a030102032a050a0304050632080a0208400a02084132080a0208420a020843"#]),
+        );
+    }
+
+    #[test]
+    fn test_vec_zero_sized_elements() {
+        for len in [0, 1, 5] {
+            let values = vec![(); len];
+            let data = encode((values.clone(),));
+            assert_eq!(decode::<(Vec<()>,)>(&data).unwrap().0, values);
+        }
+    }
+
+    #[test]
+    fn test_mixed_repeated_fields_and_unknown_fields() {
+        #[derive(Protobuf, Debug, PartialEq, Eq)]
+        struct Message {
+            values: Vec<u32>,
+            scalar: u32,
+        }
+
+        let data = [
+            0x10, 5, 0x08, 1, 0x0a, 2, 2, 3, 0x10, 6, 0x08, 4, 0x4d, 0xaa, 0xbb, 0xcc, 0xdd,
+        ];
+        assert_eq!(
+            decode::<Message>(&data).unwrap(),
+            Message {
+                values: vec![1, 2, 3, 4],
+                scalar: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn test_fixed_numeric_encodings_preserve_bits() {
+        #[derive(Protobuf, Clone)]
+        struct Numbers {
+            single: f32,
+            double: f64,
+            singles: Vec<f32>,
+            doubles: Vec<f64>,
+            #[mesh(encoding = "VecField<crate::encoding::Fixed32Field>")]
+            signed32: Vec<i32>,
+            #[mesh(encoding = "VecField<crate::encoding::Fixed64Field>")]
+            signed64: Vec<i64>,
+        }
+
+        let original = Numbers {
+            single: -0.0,
+            double: f64::from_bits(0x7ff8000000001234),
+            singles: vec![
+                0.0,
+                -0.0,
+                f32::INFINITY,
+                f32::from_bits(0x7fc01234),
+                f32::from_bits(1),
+            ],
+            doubles: vec![
+                0.0,
+                -0.0,
+                f64::NEG_INFINITY,
+                f64::from_bits(0x7ff8000000001234),
+                f64::from_bits(1),
+            ],
+            signed32: vec![i32::MIN, -1, 0, i32::MAX],
+            signed64: vec![i64::MIN, -1, 0, i64::MAX],
+        };
+        let decoded = decode::<Numbers>(&encode(original.clone())).unwrap();
+        assert_eq!(decoded.single.to_bits(), original.single.to_bits());
+        assert_eq!(decoded.double.to_bits(), original.double.to_bits());
+        assert_eq!(
+            decoded
+                .singles
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            original
+                .singles
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            decoded
+                .doubles
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            original
+                .doubles
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(decoded.signed32, original.signed32);
+        assert_eq!(decoded.signed64, original.signed64);
+        let empty = decode::<Numbers>(&[]).unwrap();
+        assert_eq!(empty.single.to_bits(), 0);
+        assert_eq!(empty.double.to_bits(), 0);
+        assert!(empty.singles.is_empty());
+        assert!(empty.doubles.is_empty());
+        assert_eq!(
+            encode((1.0f32, 1.0f64)),
+            [0x0d, 0, 0, 0x80, 0x3f, 0x11, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]
+        );
+    }
+
+    #[test]
+    fn test_fixed_size_field_validation() {
+        for values in [vec![1u32], vec![1u32, 2, 3]] {
+            let error = decode::<([u32; 2],)>(&encode((values,))).unwrap_err();
+            assert!(matches!(
+                error.source().unwrap().downcast_ref::<DecodeError>(),
+                Some(DecodeError::BadPackedArrayLength)
+            ));
+        }
+        for values in [
+            vec!["one".to_owned()],
+            vec!["one".to_owned(), "two".to_owned(), "three".to_owned()],
+        ] {
+            let error = decode::<([String; 2],)>(&encode(((values,),))).unwrap_err();
+            assert!(matches!(
+                error.source().unwrap().downcast_ref::<DecodeError>(),
+                Some(DecodeError::BadArrayLength)
+            ));
+        }
+        assert!(matches!(
+            decode::<([u32; 2],)>(&[])
+                .unwrap_err()
+                .source()
+                .unwrap()
+                .downcast_ref::<DecodeError>(),
+            Some(DecodeError::MissingRequiredField)
+        ));
+        for len in [15, 17] {
+            let data = encode((vec![0u8; len],));
+            assert!(matches!(
+                decode::<(u128,)>(&data)
+                    .unwrap_err()
+                    .source()
+                    .unwrap()
+                    .downcast_ref::<DecodeError>(),
+                Some(DecodeError::BadU128)
+            ));
+            assert!(matches!(
+                decode::<(Ipv6Addr,)>(&data)
+                    .unwrap_err()
+                    .source()
+                    .unwrap()
+                    .downcast_ref::<DecodeError>(),
+                Some(DecodeError::BadIpv6)
+            ));
+        }
+    }
+
+    #[test]
+    fn test_character_and_integer_width_boundaries() {
+        let chars = vec!['\0', 'a', '\u{1f600}', char::MAX];
+        assert_eq!(
+            decode::<(Vec<char>,)>(&encode((chars.clone(),))).unwrap().0,
+            chars
+        );
+        for value in [0xd800u64, 0x110000, u64::MAX] {
+            assert!(matches!(
+                decode::<(char,)>(&encode((value,)))
+                    .unwrap_err()
+                    .source()
+                    .unwrap()
+                    .downcast_ref::<DecodeError>(),
+                Some(DecodeError::InvalidUtf32)
+            ));
+        }
+        assert_eq!(
+            decode::<(u16, i16)>(&encode((0x1ffffu64, -32769i64))).unwrap(),
+            (u16::MAX, i16::MAX)
+        );
+    }
+
+    #[test]
+    fn test_custom_encoding_round_trip_and_merge() {
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        struct Domain {
+            revision: u32,
+            label: String,
+        }
+        type Wire = (u32, String);
+        impl From<Domain> for Wire {
+            fn from(value: Domain) -> Self {
+                (value.revision, value.label)
+            }
+        }
+        impl From<Wire> for Domain {
+            fn from((revision, label): Wire) -> Self {
+                Self { revision, label }
+            }
+        }
+
+        let mut value = crate::EncodeAs::<Domain, Wire>::new(Domain {
+            revision: 5,
+            label: "kept".into(),
+        });
+        value.revision = 7;
+        let data = encode(value.clone());
+        assert_eq!(data, encode((7u32, "kept")));
+        assert_eq!(encode(value), data);
+        let decoded = decode::<crate::EncodeAs<Domain, Wire>>(&data).unwrap();
+        let merged = super::merge(decoded, &encode((11u32, ""))).unwrap();
+        assert_eq!(
+            merged.into_inner(),
+            Domain {
+                revision: 11,
+                label: "kept".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_zero_copy_encoding_size_and_alignment() {
+        #[repr(C)]
+        #[derive(
+            Debug,
+            PartialEq,
+            Eq,
+            zerocopy::FromBytes,
+            zerocopy::IntoBytes,
+            zerocopy::Immutable,
+            zerocopy::KnownLayout,
+        )]
+        struct Pair {
+            first: u32,
+            second: u32,
+        }
+        #[derive(Protobuf, Debug, PartialEq, Eq)]
+        struct Message {
+            #[mesh(encoding = "crate::encoding::ZeroCopyEncoding")]
+            pair: Pair,
+        }
+        #[repr(align(4))]
+        struct Aligned([u8; 10]);
+
+        let expected = Message {
+            pair: Pair {
+                first: u32::from_ne_bytes([1, 2, 3, 4]),
+                second: u32::from_ne_bytes([5, 6, 7, 8]),
+            },
+        };
+        let raw = Aligned([0x0a, 8, 1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(raw.0[2..].as_ptr().align_offset(4), 2);
+        assert_eq!(decode::<Message>(&raw.0).unwrap(), expected);
+        assert_eq!(encode(expected), raw.0);
+        assert_eq!(
+            decode::<Message>(&[]).unwrap().pair,
+            Pair {
+                first: 0,
+                second: 0
+            }
+        );
+        for len in [7, 9] {
+            let error = decode::<Message>(&encode((vec![0u8; len],))).unwrap_err();
+            assert_eq!(
+                error.source().unwrap().to_string(),
+                "invalid byte size for type"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shared_message_encoding_and_merge() {
+        #[derive(Protobuf, Clone, Debug, PartialEq, Eq)]
+        struct Message {
+            revision: u32,
+            values: Vec<u32>,
+        }
+        #[derive(Protobuf, Debug, PartialEq, Eq)]
+        struct Envelope {
+            shared: Arc<Message>,
+            boxed: Box<Message>,
+        }
+
+        let original = Arc::new(Message {
+            revision: 1,
+            values: vec![10],
+        });
+        let data = encode(original.clone());
+        assert_eq!(decode::<Arc<Message>>(&data).unwrap(), original);
+        let patch = encode(Message {
+            revision: 2,
+            values: vec![20],
+        });
+        let merged = super::merge(original.clone(), &patch).unwrap();
+        assert_eq!(
+            *original,
+            Message {
+                revision: 1,
+                values: vec![10]
+            }
+        );
+        assert_eq!(
+            *merged,
+            Message {
+                revision: 2,
+                values: vec![10, 20]
+            }
+        );
+        let envelope = Envelope {
+            shared: merged.clone(),
+            boxed: Box::new((*original).clone()),
+        };
+        assert_eq!(
+            decode::<Envelope>(&encode(envelope)).unwrap(),
+            Envelope {
+                shared: merged,
+                boxed: Box::new((*original).clone())
+            }
         );
     }
 

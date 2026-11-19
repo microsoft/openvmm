@@ -11,15 +11,16 @@
 
 #![forbid(unsafe_code)]
 
-cfg_if::cfg_if! {
-    if #[cfg(all(target_arch = "x86_64", test))] {
+cfg_select! {
+    all(target_arch = "x86_64", test) => {
         use loom::sync::Mutex;
         use loom::sync::MutexGuard;
         use loom::sync::atomic::AtomicU64;
         use loom::sync::atomic::AtomicUsize;
         use loom::sync::atomic::Ordering;
         use loom::sync::atomic::fence;
-    } else {
+    }
+    _ => {
         use parking_lot::Mutex;
         use parking_lot::MutexGuard;
         use std::sync::atomic::AtomicU64;

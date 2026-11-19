@@ -150,6 +150,13 @@ flowey_request! {
         /// (e.g: to allow for some ambient packages / dependencies to get
         /// installed).
         pub pre_build_deps: Vec<ReadVar<SideEffect>>,
+        /// Capture non-JSON stdout lines separately from Cargo messages.
+        ///
+        /// When `None`, all stdout must be valid JSON. JSON object lines are
+        /// always validated, even when text capture is enabled.
+        /// Only text emitted by this invocation is captured; Cargo does not
+        /// replay compiler stdout for cached crates.
+        pub non_json_output: Option<WriteVar<Vec<String>>>,
         pub output: WriteVar<CargoBuildOutput>,
     }
 }
@@ -179,6 +186,7 @@ impl FlowNode for Node {
             extra_env,
             config,
             pre_build_deps,
+            non_json_output,
             output,
         } in requests
         {
@@ -195,6 +203,7 @@ impl FlowNode for Node {
                 let in_folder = in_folder.claim(ctx);
                 let output = output.claim(ctx);
                 let extra_env = extra_env.claim(ctx);
+                let non_json_output = non_json_output.claim(ctx);
                 move |rt| {
                     let rust_toolchain = rt.read(rust_toolchain);
                     let flags = rt.read(flags);
@@ -265,17 +274,16 @@ impl FlowNode for Node {
                             .concat()
                     );
                     let json = cmd.read()?;
-                    let messages: Vec<cargo_output::Message> =
-                        serde_json::Deserializer::from_str(&json)
-                            .into_iter()
-                            .collect::<Result<_, _>>()
-                            .context("failed to deserialize cargo output")?;
+                    let (messages, text) = parse_cargo_output(&json, non_json_output.is_some())?;
 
                     drop(_dir);
 
                     let build_output =
                         rename_output(&messages, &crate_name, &out_name, output_kind, &out_dir)?;
 
+                    if let Some(non_json_output) = non_json_output {
+                        rt.write(non_json_output, &text);
+                    }
                     rt.write(output, &build_output);
 
                     Ok(())
@@ -285,6 +293,35 @@ impl FlowNode for Node {
 
         Ok(())
     }
+}
+
+fn parse_cargo_output(
+    output: &str,
+    capture_text: bool,
+) -> anyhow::Result<(Vec<cargo_output::Message>, Vec<String>)> {
+    if !capture_text {
+        let messages = serde_json::Deserializer::from_str(output)
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .context("failed to deserialize cargo output")?;
+        return Ok((messages, Vec::new()));
+    }
+
+    let mut messages = Vec::new();
+    let mut text = Vec::new();
+    for (index, line) in output.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.trim_start().starts_with('{') {
+            messages.push(serde_json::from_str(line).with_context(|| {
+                format!("failed to deserialize cargo output at line {}", index + 1)
+            })?);
+        } else {
+            text.push(line.to_owned());
+        }
+    }
+    Ok((messages, text))
 }
 
 fn rename_output(
@@ -419,4 +456,69 @@ fn rename_output(
     };
 
     Ok(expected_output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn captures_text_interleaved_with_cargo_messages() {
+        let output = concat!(
+            "{\"reason\":\"build-script-executed\"}\r\n",
+            "example::first\r\n",
+            "<example::Type as example::Trait>::method\r\n",
+            "\r\n",
+            "{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"example\",",
+            "\"kind\":[\"lib\"]},\"filenames\":[\"example.rlib\"]}\r\n",
+            "example::last\r\n",
+            "{\"reason\":\"build-finished\",\"success\":true}\r\n",
+        );
+        let (messages, text) = parse_cargo_output(output, true).unwrap();
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(
+            &messages[1],
+            cargo_output::Message::CompilerArtifact { target, filenames }
+                if target.name == "example" && filenames == &[PathBuf::from("example.rlib")]
+        ));
+        assert_eq!(
+            text,
+            [
+                "example::first",
+                "<example::Type as example::Trait>::method",
+                "example::last",
+            ]
+        );
+    }
+
+    #[test]
+    fn text_capture_does_not_hide_malformed_json() {
+        let err = parse_cargo_output("example::first\n{\"reason\":", true).unwrap_err();
+        assert!(err.to_string().contains("at line 2"));
+        assert!(parse_cargo_output("{\"reason\":\"compiler-artifact\"}", true).is_err());
+    }
+
+    #[test]
+    fn text_capture_is_opt_in() {
+        assert!(parse_cargo_output("example::first\n", false).is_err());
+        for capture_text in [false, true] {
+            let (messages, text) = parse_cargo_output(
+                "{\"reason\":\"build-finished\",\"success\":true}\n",
+                capture_text,
+            )
+            .unwrap();
+            assert_eq!(messages.len(), 1);
+            assert!(text.is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_output_has_no_messages_or_text() {
+        for capture_text in [false, true] {
+            let (messages, text) = parse_cargo_output(" \r\n\n", capture_text).unwrap();
+            assert!(messages.is_empty());
+            assert!(text.is_empty());
+        }
+    }
 }

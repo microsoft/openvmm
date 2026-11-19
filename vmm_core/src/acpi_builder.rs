@@ -42,6 +42,8 @@ pub struct AcpiSmmuConfig {
     pub event_gsiv: u32,
     /// GIC SPI INTID for the global error interrupt.
     pub gerr_gsiv: u32,
+    /// Whether the PCI root complex may use ATS through this SMMU.
+    pub ats_supported: bool,
     /// IOVA ranges reserved by the host IOMMU (e.g., MSI windows). When
     /// non-empty, an IORT RMR node (or DT `reserved-memory` entry) is
     /// generated so the guest identity-maps these ranges in its S1 page
@@ -665,8 +667,15 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             .iter()
             .filter(|cfg| !cfg.reserved_iova_ranges.is_empty())
             .count() as u32;
+        let mut segment_bridges: BTreeMap<u16, Vec<&PcieHostBridge>> = BTreeMap::new();
+        for bridge in self.pcie_host_bridges {
+            segment_bridges
+                .entry(bridge.segment)
+                .or_default()
+                .push(bridge);
+        }
         let node_count =
-            its_node_count + smmu_node_count + self.pcie_host_bridges.len() as u32 + rmr_node_count;
+            its_node_count + smmu_node_count + segment_bridges.len() as u32 + rmr_node_count;
 
         let mut iort_extra: Vec<u8> = Vec::new();
 
@@ -679,12 +688,18 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             iort_extra.extend_from_slice(&id.to_ne_bytes());
         }
 
+        struct SmmuNode<'a> {
+            config: &'a AcpiSmmuConfig,
+            offset: u32,
+        }
+
         // SMMUv3 nodes come after ITS Group (if present).
-        // Build a map from RC index → SMMU node offset for RC routing.
-        let mut smmu_rc_offsets: Vec<(u32, u32)> = Vec::new();
+        let mut smmu_nodes = Vec::new();
         for cfg in smmu_configs {
-            let smmu_node_offset = iort::IORT_NODE_OFFSET + iort_extra.len() as u32;
-            smmu_rc_offsets.push((cfg.rc_index, smmu_node_offset));
+            smmu_nodes.push(SmmuNode {
+                config: cfg,
+                offset: iort::IORT_NODE_OFFSET + iort_extra.len() as u32,
+            });
 
             if has_its {
                 // The SMMUv3 node needs two ID mappings when ITS is present:
@@ -746,64 +761,55 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             }
         }
 
-        for bridge in self.pcie_host_bridges {
-            // Determine the target node for this RC's ID mapping:
-            // - If this RC has an SMMU, route to the SMMU node.
-            // - Otherwise, if an ITS is present, route directly to the ITS.
-            // - Otherwise, no mapping (mapping_count = 0).
-            let smmu_offset = smmu_rc_offsets
-                .iter()
-                .find(|(idx, _)| *idx == bridge.index)
-                .map(|(_, off)| *off);
-
-            let (rc_mapping_count, rc_target_offset, rc_has_smmu) = if let Some(off) = smmu_offset {
-                (1, off, true)
-            } else if has_its {
-                (1, its_group_offset, false)
-            } else {
-                (0, 0, false)
-            };
-
-            let rc = iort::IortPciRootComplex::new(bridge.index, bridge.segment, rc_mapping_count);
-            iort_extra.extend_from_slice(rc.as_bytes());
-
-            if rc_mapping_count > 0 {
-                // When the RC has an SMMU, output_base is 0 because stream
-                // IDs are plain BDFs within the per-RC SMMU. The segment
-                // offset is applied in the SMMU→ITS mapping instead.
-                // When the RC goes directly to the ITS, output_base embeds
-                // the segment for globally unique ITS device IDs.
-                let output_base = if rc_has_smmu {
-                    0
+        for (segment, bridges) in segment_bridges {
+            let mut mappings = Vec::new();
+            let mut ats_supported = false;
+            for bridge in &bridges {
+                let smmu = smmu_nodes
+                    .iter()
+                    .find(|node| node.config.rc_index == bridge.index);
+                let input_base = u32::from(bridge.start_bus) << 8;
+                // SMMU stream IDs are BDFs; the SMMU's ITS mapping adds the segment.
+                let (target_offset, output_base) = if let Some(node) = smmu {
+                    // Linux also requires the selected SMMU to advertise ATS.
+                    ats_supported |= node.config.ats_supported;
+                    (node.offset, input_base)
+                } else if has_its {
+                    (its_group_offset, (u32::from(segment) << 16) | input_base)
                 } else {
-                    (bridge.segment as u32) << 16
+                    continue;
                 };
+                let id_count =
+                    ((u32::from(bridge.end_bus) - u32::from(bridge.start_bus) + 1) << 8) - 1;
+                mappings.push(iort::IortIdMapping::new(
+                    input_base,
+                    id_count,
+                    output_base,
+                    target_offset,
+                    0,
+                ));
+            }
 
-                iort_extra.extend_from_slice(
-                    iort::IortIdMapping::new(
-                        0,                // input_base
-                        0xFFFF,           // id_count (full 16-bit BDF range)
-                        output_base,      // output_base
-                        rc_target_offset, // output_reference
-                        0,                // flags
-                    )
-                    .as_bytes(),
-                );
+            let rc = iort::IortPciRootComplex::new(
+                bridges[0].index,
+                segment,
+                mappings.len() as u32,
+                ats_supported,
+            );
+            iort_extra.extend_from_slice(rc.as_bytes());
+            for mapping in mappings {
+                iort_extra.extend_from_slice(mapping.as_bytes());
             }
         }
 
         // RMR (Reserved Memory Range) nodes for SMMUs with reserved IOVA
         // ranges (e.g., MSI windows). Each RMR node tells the guest kernel
         // to identity-map the reserved ranges in S1 page tables.
-        for (cfg_idx, cfg) in smmu_configs.iter().enumerate() {
+        for (cfg_idx, node) in smmu_nodes.iter().enumerate() {
+            let cfg = node.config;
             if cfg.reserved_iova_ranges.is_empty() {
                 continue;
             }
-            let smmu_offset = smmu_rc_offsets
-                .iter()
-                .find(|(idx, _)| *idx == cfg.rc_index)
-                .map(|(_, off)| *off)
-                .expect("RMR config references a valid SMMU");
 
             let rmr_count = cfg.reserved_iova_ranges.len() as u32;
             // One ID mapping pointing to the SMMUv3 node, covering the
@@ -824,7 +830,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                     0,           // input_base
                     0xFFFF,      // id_count (full 16-bit BDF range)
                     0,           // output_base
-                    smmu_offset, // output_reference → SMMUv3 node
+                    node.offset, // output_reference → SMMUv3 node
                     0,           // flags
                 )
                 .as_bytes(),
@@ -1740,8 +1746,7 @@ mod test {
     }
 
     fn contains_signature(data: &[u8], signature: &[u8; 4]) -> bool {
-        data.windows(signature.len())
-            .any(|window| window == signature)
+        data.array_windows::<4>().any(|window| window == signature)
     }
 
     #[test]
@@ -1819,7 +1824,8 @@ mod test {
         assert_eq!(u32_at(&data, rc1 + 4), 7); // identifier
         assert_eq!(u32_at(&data, rc1 + 28), 3); // pci_segment_number
         let mapping1 = rc1 + 36;
-        assert_eq!(u32_at(&data, mapping1 + 8), 3 << 16); // output_base (seg 3 << 16)
+        assert_eq!(u32_at(&data, mapping1), 0x2000);
+        assert_eq!(u32_at(&data, mapping1 + 8), (3 << 16) | 0x2000);
     }
 
     #[test]
@@ -1901,6 +1907,7 @@ mod test {
                     base: smmu_base,
                     event_gsiv: 35,
                     gerr_gsiv: 36,
+                    ats_supported: false,
                     reserved_iova_ranges: Vec::new(),
                 }],
             },
@@ -2012,6 +2019,7 @@ mod test {
         let rc_node = smmu_node + smmu_node_len;
         assert_eq!(data[rc_node], iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX);
         assert_eq!(u32_at(&data, rc_node + 8), 1); // mapping_count
+        assert_eq!(u32_at(&data, rc_node + 24), 0); // ATS unsupported
         // RC → SMMUv3 mapping
         let rc_mapping = rc_node + 36;
         assert_eq!(u32_at(&data, rc_mapping), 0); // input_base
@@ -2089,6 +2097,300 @@ mod test {
     }
 
     #[test]
+    fn test_iort_mixed_ats_root_complexes() {
+        use acpi_spec::iort;
+
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let pcie_host_bridges = vec![
+            PcieHostBridge {
+                index: 9,
+                segment: 2,
+                start_bus: 0,
+                end_bus: 255,
+                ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+                low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+                high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+                cxl: None,
+                vnode: None,
+                preserve_bars: false,
+                preserve_boot_config: false,
+            },
+            PcieHostBridge {
+                index: 4,
+                segment: 7,
+                start_bus: 0,
+                end_bus: 63,
+                ecam_range: MemoryRange::new(5 * GB..5 * GB + 64 * 256 * 4096),
+                low_mmio: MemoryRange::new(0xe0000000..0xe4000000),
+                high_mmio: MemoryRange::new(0x1040000000..0x1080000000),
+                cxl: None,
+                vnode: None,
+                preserve_bars: false,
+                preserve_boot_config: false,
+            },
+            PcieHostBridge {
+                index: 12,
+                segment: 8,
+                start_bus: 0,
+                end_bus: 63,
+                ecam_range: MemoryRange::new(6 * GB..6 * GB + 64 * 256 * 4096),
+                low_mmio: MemoryRange::new(0xe4000000..0xe8000000),
+                high_mmio: MemoryRange::new(0x1080000000..0x10c0000000),
+                cxl: None,
+                vnode: None,
+                preserve_bars: false,
+                preserve_boot_config: false,
+            },
+        ];
+        let mut builder = new_aarch64_builder(&mem, &topology, &pcie_host_bridges);
+        let AcpiArchConfig::Aarch64 { smmu, .. } = &mut builder.arch else {
+            unreachable!()
+        };
+        // Deliberately differ from bridge order and use non-contiguous RC indices.
+        *smmu = vec![
+            AcpiSmmuConfig {
+                rc_index: 4,
+                segment: 7,
+                base: 0xeffa_0000,
+                event_gsiv: 35,
+                gerr_gsiv: 36,
+                ats_supported: false,
+                reserved_iova_ranges: Vec::new(),
+            },
+            AcpiSmmuConfig {
+                rc_index: 9,
+                segment: 2,
+                base: 0xeffc_0000,
+                event_gsiv: 37,
+                gerr_gsiv: 38,
+                ats_supported: true,
+                reserved_iova_ranges: Vec::new(),
+            },
+        ];
+
+        let data = builder.build_iort().unwrap();
+        assert_eq!(checksum(&data), 0);
+        assert_eq!(u32_at(&data, 4) as usize, data.len());
+        assert_eq!(u32_at(&data, 36), 6); // ITS + 2 SMMUs + 3 RCs
+
+        let its_node = iort::IORT_NODE_OFFSET as usize;
+        let smmu4 = its_node + u16_at(&data, its_node + 1) as usize;
+        let smmu9 = smmu4 + u16_at(&data, smmu4 + 1) as usize;
+        let mut rc_node = smmu9 + u16_at(&data, smmu9 + 1) as usize;
+        for (index, segment, ats, target) in
+            [(9, 2, 1, smmu9), (4, 7, 0, smmu4), (12, 8, 0, its_node)]
+        {
+            assert_eq!(data[rc_node], iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX);
+            assert_eq!(u32_at(&data, rc_node + 4), index);
+            assert_eq!(u32_at(&data, rc_node + 24), ats);
+            assert_eq!(u32_at(&data, rc_node + 28), segment);
+            assert_eq!(u32_at(&data, rc_node + 36 + 12), target as u32);
+            rc_node += u16_at(&data, rc_node + 1) as usize;
+        }
+        assert_eq!(rc_node, data.len());
+        assert_eq!(builder.build_iort().unwrap(), data);
+    }
+
+    #[test]
+    fn test_iort_shared_segment_bus_mappings() {
+        use acpi_spec::iort;
+        use vm_topology::processor::aarch64::{
+            Aarch64PlatformConfig, GicItsInfo, GicMsiController, GicV2mInfo, GicVersion,
+        };
+
+        for has_its in [true, false] {
+            let mem = new_mem();
+            let topology = TopologyBuilder::new_aarch64(Aarch64PlatformConfig {
+                gic_distributor_base: 0xffff0000,
+                gic_version: GicVersion::V3 {
+                    redistributors_base: 0xefff0000,
+                },
+                gic_msi: if has_its {
+                    GicMsiController::Its(GicItsInfo {
+                        its_base: 0xeffc0000,
+                    })
+                } else {
+                    GicMsiController::V2m(GicV2mInfo {
+                        frame_base: 0xeffe8000,
+                        spi_base: 32,
+                        spi_count: 512,
+                    })
+                },
+                pmu_gsiv: None,
+                virt_timer_ppi: 20,
+                gic_nr_irqs: 992,
+            })
+            .build(2)
+            .unwrap();
+            let bridges: Vec<_> = [0, 0x40, 0x80]
+                .into_iter()
+                .enumerate()
+                .map(|(index, start_bus)| PcieHostBridge {
+                    index: index as u32,
+                    segment: 3,
+                    start_bus,
+                    end_bus: start_bus + 0x1f,
+                    ecam_range: MemoryRange::new(
+                        index as u64 * GB..index as u64 * GB + 32 * 256 * 4096,
+                    ),
+                    low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+                    high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+                    cxl: None,
+                    vnode: None,
+                    preserve_bars: false,
+                    preserve_boot_config: false,
+                })
+                .collect();
+            let mut builder = new_aarch64_builder(&mem, &topology, &bridges);
+            let AcpiArchConfig::Aarch64 { smmu, .. } = &mut builder.arch else {
+                unreachable!();
+            };
+            *smmu = bridges[1..]
+                .iter()
+                .map(|bridge| AcpiSmmuConfig {
+                    rc_index: bridge.index,
+                    segment: bridge.segment,
+                    base: 0xeffa0000 - u64::from(bridge.index) * 0x20000,
+                    event_gsiv: 35 + bridge.index * 2,
+                    gerr_gsiv: 36 + bridge.index * 2,
+                    ats_supported: true,
+                    reserved_iova_ranges: Vec::new(),
+                })
+                .collect();
+
+            let data = builder.build_iort().unwrap();
+            assert_eq!(checksum(&data), 0);
+            assert_eq!(u32_at(&data, 36), 3 + u32::from(has_its));
+            let mut node_offsets = Vec::new();
+            let mut offset = iort::IORT_NODE_OFFSET as usize;
+            while offset < data.len() {
+                node_offsets.push(offset);
+                offset += usize::from(u16_at(&data, offset + 1));
+            }
+            let roots: Vec<_> = node_offsets
+                .iter()
+                .copied()
+                .filter(|offset| data[*offset] == iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX)
+                .collect();
+            assert_eq!(roots.len(), 1);
+            let root = roots[0];
+            assert_eq!(u32_at(&data, root + 24), 1);
+            assert_eq!(u32_at(&data, root + 28), 3);
+            assert_eq!(u32_at(&data, root + 8), 2 + u32::from(has_its));
+            for (mapping_index, bridge) in bridges[1..].iter().enumerate() {
+                let mapping = root + 36 + (mapping_index + usize::from(has_its)) * 20;
+                let smmu_offset = node_offsets
+                    .iter()
+                    .copied()
+                    .find(|offset| {
+                        data[*offset] == iort::IORT_NODE_TYPE_SMMUV3
+                            && u32_at(&data, *offset + 4) == bridge.index
+                    })
+                    .unwrap();
+                assert_eq!(u32_at(&data, mapping), u32::from(bridge.start_bus) << 8);
+                assert_eq!(u32_at(&data, mapping + 4), 0x1fff);
+                assert_eq!(u32_at(&data, mapping + 8), u32::from(bridge.start_bus) << 8);
+                assert_eq!(u32_at(&data, mapping + 12), smmu_offset as u32);
+            }
+            if has_its {
+                let mapping = root + 36;
+                assert_eq!(u32_at(&data, mapping), 0);
+                assert_eq!(u32_at(&data, mapping + 4), 0x1fff);
+                assert_eq!(u32_at(&data, mapping + 8), 3 << 16);
+                assert_eq!(u32_at(&data, mapping + 12), iort::IORT_NODE_OFFSET);
+            }
+        }
+    }
+
+    #[test]
+    fn test_iort_multiple_shared_segments_mixed_ats() {
+        use acpi_spec::iort;
+
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let bridges: Vec<_> = [(0, 5, 0), (1, 2, 0), (2, 5, 0x20), (3, 2, 0x20)]
+            .into_iter()
+            .map(|(index, segment, start_bus)| PcieHostBridge {
+                index,
+                segment,
+                start_bus,
+                end_bus: start_bus + 0x1f,
+                ecam_range: MemoryRange::new(
+                    u64::from(index) * GB..u64::from(index) * GB + 32 * 256 * 4096,
+                ),
+                low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+                high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+                cxl: None,
+                vnode: None,
+                preserve_bars: false,
+                preserve_boot_config: false,
+            })
+            .collect();
+        let mut builder = new_aarch64_builder(&mem, &topology, &bridges);
+        let AcpiArchConfig::Aarch64 { smmu, .. } = &mut builder.arch else {
+            unreachable!();
+        };
+        *smmu = bridges
+            .iter()
+            .map(|bridge| AcpiSmmuConfig {
+                rc_index: bridge.index,
+                segment: bridge.segment,
+                base: 0xeffa0000 - u64::from(bridge.index) * 0x20000,
+                event_gsiv: 35 + bridge.index * 2,
+                gerr_gsiv: 36 + bridge.index * 2,
+                ats_supported: bridge.index == 2,
+                reserved_iova_ranges: Vec::new(),
+            })
+            .collect();
+
+        let data = builder.build_iort().unwrap();
+        assert_eq!(checksum(&data), 0);
+        assert_eq!(u32_at(&data, 36), 7); // ITS + 4 SMMUs + 2 RCs
+        let mut node_offsets = Vec::new();
+        let mut offset = iort::IORT_NODE_OFFSET as usize;
+        while offset < data.len() {
+            node_offsets.push(offset);
+            offset += usize::from(u16_at(&data, offset + 1));
+        }
+        let smmu_offset = |index| {
+            node_offsets
+                .iter()
+                .copied()
+                .find(|offset| {
+                    data[*offset] == iort::IORT_NODE_TYPE_SMMUV3
+                        && u32_at(&data, *offset + 4) == index
+                })
+                .unwrap() as u32
+        };
+        let roots: Vec<_> = node_offsets
+            .iter()
+            .copied()
+            .filter(|offset| data[*offset] == iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX)
+            .collect();
+        assert_eq!(roots.len(), 2);
+        for (root, identifier, segment, ats, members) in
+            [(roots[0], 1, 2, 0, [1, 3]), (roots[1], 0, 5, 1, [0, 2])]
+        {
+            assert_eq!(u32_at(&data, root + 4), identifier);
+            assert_eq!(u32_at(&data, root + 8), 2);
+            assert_eq!(u32_at(&data, root + 24), ats);
+            assert_eq!(u32_at(&data, root + 28), segment);
+            for (mapping_index, bridge_index) in members.into_iter().enumerate() {
+                let mapping = root + 36 + mapping_index * 20;
+                let input_base = u32::from(bridges[bridge_index].start_bus) << 8;
+                assert_eq!(u32_at(&data, mapping), input_base);
+                assert_eq!(u32_at(&data, mapping + 4), 0x1fff);
+                assert_eq!(u32_at(&data, mapping + 8), input_base);
+                assert_eq!(
+                    u32_at(&data, mapping + 12),
+                    smmu_offset(bridge_index as u32)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_iort_without_smmu_unchanged() {
         // Verify the no-SMMU case still produces RC→ITS directly (regression).
         use acpi_spec::iort;
@@ -2119,6 +2421,7 @@ mod test {
         let its_node = iort::IORT_NODE_OFFSET as usize;
         let rc_node = its_node + 24; // ITS group = 24 bytes
         assert_eq!(data[rc_node], iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX);
+        assert_eq!(u32_at(&data, rc_node + 24), 0); // ATS unsupported
         let rc_mapping = rc_node + 36;
         assert_eq!(u32_at(&data, rc_mapping + 12), iort::IORT_NODE_OFFSET); // → ITS group
     }

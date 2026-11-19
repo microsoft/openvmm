@@ -33,6 +33,7 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 test_with_tracing.workspace = true
+vmbus_channel = { workspace = true, features = ["test_helpers"] }
 
 [lints]
 workspace = true

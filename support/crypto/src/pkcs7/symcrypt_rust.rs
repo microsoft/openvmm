@@ -9,8 +9,8 @@ use cms::cert::CertificateChoices;
 use cms::content_info::ContentInfo;
 use cms::signed_data::SignedData;
 use cms::signed_data::SignerIdentifier;
+use const_oid::db::rfc5911::ID_SIGNED_DATA;
 use der::Decode;
-use der::oid::db::rfc5911::ID_SIGNED_DATA;
 
 #[cfg(rust)]
 fn err(err: der::Error, op: &'static str) -> Pkcs7Error {
@@ -75,11 +75,11 @@ impl Pkcs7SignedDataInner {
         let signature = key_pair.pkcs1_sign(data, crate::HashAlgorithm::Sha256)?;
 
         let digest_alg = AlgorithmIdentifierOwned {
-            oid: der::oid::db::rfc5912::ID_SHA_256,
+            oid: const_oid::db::rfc5912::ID_SHA_256,
             parameters: None,
         };
         let signature_algorithm = AlgorithmIdentifierOwned {
-            oid: der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
+            oid: const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
             parameters: None,
         };
 
@@ -113,7 +113,7 @@ impl Pkcs7SignedDataInner {
             version: cms::content_info::CmsVersion::V1,
             digest_algorithms,
             encap_content_info: cms::signed_data::EncapsulatedContentInfo {
-                econtent_type: der::oid::db::rfc5911::ID_DATA,
+                econtent_type: const_oid::db::rfc5911::ID_DATA,
                 econtent: None,
             },
             certificates: Some(cms::signed_data::CertificateSet(certs)),

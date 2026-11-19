@@ -16,6 +16,7 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod acpi_power_button;
 pub mod battery;
 pub mod cmos_rtc;
 pub mod dma;

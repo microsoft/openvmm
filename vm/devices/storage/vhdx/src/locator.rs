@@ -46,7 +46,7 @@ pub enum VhdxParentError {
     /// The required parent linkage entry is absent.
     #[error("VHDX parent locator has no parent linkage GUID")]
     MissingParentLinkage,
-    /// The deprecated alternative linkage entry is present.
+    /// A nonzero or malformed alternative linkage GUID is present.
     #[error("VHDX parent locator contains unsupported parent_linkage2")]
     AlternativeParentLinkage,
     /// The parent linkage entry is not a GUID.
@@ -158,11 +158,12 @@ impl ParentLocator {
         if self.locator_type != format::PARENT_LOCATOR_VHDX_TYPE_GUID {
             return Err(VhdxParentError::UnsupportedLocatorType(self.locator_type));
         }
-        if self
-            .find(format::PARENT_LOCATOR_KEY_ALT_PARENT_LINKAGE)
-            .is_some()
-        {
-            return Err(VhdxParentError::AlternativeParentLinkage);
+        if let Some(alternative) = self.find(format::PARENT_LOCATOR_KEY_ALT_PARENT_LINKAGE) {
+            // Windows creates this entry with a zero GUID even though
+            // MS-VHDX prohibits emitting it. It does not identify a parent.
+            if alternative.parse::<Guid>().ok() != Some(Guid::ZERO) {
+                return Err(VhdxParentError::AlternativeParentLinkage);
+            }
         }
 
         let linkage = self
@@ -292,7 +293,7 @@ pub(crate) fn build_locator(locator_type: Guid, kvs: &[(&str, &str)]) -> Option<
         size.checked_add(key.len())?.checked_add(value.len())
     })?;
     let total = entries_end.checked_add(strings_size)?;
-    if total > format::MAX_HOSTING_SECTOR_SIZE as usize {
+    if total > format::MAXIMUM_METADATA_ITEM_SIZE as usize {
         return None;
     }
     let mut buf = vec![0u8; total];
@@ -331,6 +332,7 @@ pub(crate) fn build_locator(locator_type: Guid, kvs: &[(&str, &str)]) -> Option<
 #[cfg(test)]
 mod tests {
     use crate::error::OpenErrorInner;
+    use test_with_tracing::test;
 
     use super::*;
 
@@ -459,6 +461,36 @@ mod tests {
         assert_eq!(parent.relative_path(), Some("..\\parent.vhdx"));
         assert_eq!(parent.volume_path(), None);
         assert_eq!(parent.absolute_win32_path(), None);
+    }
+
+    #[test]
+    fn interpret_vhdx_parent_with_empty_alternative_linkage() {
+        let linkage = Guid::new_random();
+        let linkage_string = format!("{{{linkage}}}");
+        for (alternative, accepted) in [
+            ("{00000000-0000-0000-0000-000000000000}", true),
+            ("invalid", false),
+            (linkage_string.as_str(), false),
+        ] {
+            let data = build_locator(
+                format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+                &[
+                    (format::PARENT_LOCATOR_KEY_PARENT_LINKAGE, &linkage_string),
+                    (format::PARENT_LOCATOR_KEY_ALT_PARENT_LINKAGE, alternative),
+                    (format::PARENT_LOCATOR_KEY_RELATIVE_PATH, "parent.vhdx"),
+                ],
+            )
+            .unwrap();
+            let parent = ParentLocator::parse(&data).unwrap().vhdx_parent();
+            if accepted {
+                assert_eq!(parent.unwrap().linkage(), linkage);
+            } else {
+                assert!(matches!(
+                    parent,
+                    Err(VhdxParentError::AlternativeParentLinkage)
+                ));
+            }
+        }
     }
 
     #[test]

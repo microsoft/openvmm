@@ -3,18 +3,18 @@
 
 [package]
 name = "incubator"
+default-run = "incubator"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+petri.workspace = true
+petri_artifacts_common.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 crossterm = { workspace = true, features = ["windows"] }
 fs-err.workspace = true
-futures.workspace = true
 futures-concurrency.workspace = true
-initrd_cpio.workspace = true
-mesh.workspace = true
 pal_async.workspace = true
 pipette_client.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -22,6 +22,12 @@ tempfile.workspace = true
 toml_edit = { workspace = true, features = ["serde"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+signal-hook.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

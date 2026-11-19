@@ -32,6 +32,9 @@ before their implementation is connected end to end.
 * TeardownVM
 * PauseVM
 * ResumeVM
+* SaveVM
+* RestoreVM
+* ShutdownVM
 * WaitVM
 * CapabilitiesVM
 * PropertiesVM
@@ -41,6 +44,28 @@ before their implementation is connected end to end.
 * AddVpciDevice
 * RemoveVpciDevice
 * Quit
+
+## Snapshots (SaveVM and RestoreVM)
+
+`SaveVM` is a compound operation that pauses the VM and writes `manifest.bin`,
+`state.bin`, and `memory.bin` to the requested directory. The VM must use the
+`MemoryConfig.backing_file_path` setting. The currently supported
+implementation hard-links that backing file into the snapshot, so after a
+successful save the VM can't be resumed and should be torn down. Each save
+generates a unique snapshot ID (a GUID string) that is stored in
+`manifest.bin` and returned in `SaveVMResponse.snapshot_id`.
+Cancelling `SaveVM` only stops the caller from waiting; the save may still
+complete.
+
+`RestoreVM` creates a VM from a snapshot directory and a compatible
+`VMConfig`. Device configuration is not stored in the snapshot and must be
+supplied by the caller. `memory.bin` is used directly as mutable guest memory,
+so `MemoryConfig.backing_file_path` must not be set, and a snapshot can be
+restored only once. If `expected_snapshot_id` is provided, the restore fails
+unless it matches the snapshot ID in `manifest.bin`. An empty value is treated
+as not provided, so the ID isn't checked. The restored snapshot's
+ID is returned in `RestoreVMResponse.snapshot_id`. Set `resume` to start the
+restored VM immediately; otherwise it is created paused.
 
 ## Virtio-console file output
 
@@ -83,6 +108,32 @@ If a write fails, OpenVMM logs the error and disconnects the file backend.
 Further console output is discarded; the backend does not automatically retry
 or reopen the file.
 
+## Passing handles on Windows
+
+Some API fields reference OS handles by name. For example,
+`VirtioFs.WindowsOptions.user_token_name` names an access token that virtio-fs
+impersonates for host file access.
+
+Clients register these handles over the same socket using the
+[resource-passing protocol]. Because Windows Unix sockets cannot carry handles,
+the client duplicates each handle into the OpenVMM process with
+`DuplicateHandle`, which requires `PROCESS_DUP_HANDLE` access to it, and sends
+the handle value under a name. OpenVMM makes its own duplicate; the client then
+closes its copy in OpenVMM.
+
+## Graceful guest shutdown
+
+`ShutdownVM` requests a cooperative guest power-off, non-forced by default.
+
+Success means IC acknowledgement or ACPI event injection, not that the guest
+has halted. Neither mechanism falls back to the other or forcibly powers off
+the VM.
+
+See `ShutdownVM` and `ShutdownVMRequest` in [`vmservice.proto`] for prerequisites,
+request fields, shutdown lifecycle.
+
+## VPCI hotplug
+
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
 hypervisor backend must support virtual devices. The caller supplies the
@@ -93,6 +144,67 @@ or previously removed instance ID returns an error.
 Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
 hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe
 hotplug semantics or a non-VPCI host backend is required.
+
+## Hvsocket relay listeners
+
+Use `ModifyResource` with `hvsocket_listener` to relay a host Unix socket to a
+guest hvsocket service on VTL0. VMBus and hvsocket support must be available.
+Specify either a `service_id` GUID or a `vsock_port`; both identify the same
+service when the GUID is the vsock port's hvsocket mapping.
+
+For example, this protobuf text-format `ModifyResourceRequest` adds a listener:
+
+```text
+type: ADD
+hvsocket_listener {
+    path: "path/to/service.sock"
+    vsock_port: 50001
+}
+```
+
+Clients send application data immediately. These listeners do not require a
+hybrid-vsock `CONNECT` request and do not send an `OK` response.
+
+Only one listener per service is supported. `ADD` fails if the path already
+exists, including a stale socket file; it does not replace or remove that path.
+The caller owns socket-file cleanup, including after a failed `ADD` that
+successfully bound the path before failing to register the listener.
+
+To remove a listener, send `REMOVE` with the same service selector; `path` is
+ignored. Removal waits for the listening socket to close, but established relay
+connections remain active. Removing an unknown service returns an error.
+Remove the socket file yourself before reusing its path.
+
+## Consomme NIC modifications
+
+Use `ModifyResource` with `type: UPDATE` and `nic_config.nic_id` to modify
+an existing Consomme NIC. Select `nic_config.consomme` and supply either
+`ports`, `add_dns_record`, or `create_virtual_address`. DNS and virtual-address
+operations cannot be combined with port modifications or used at VM creation.
+They are not supported for other NIC backends.
+
+For example, this protobuf text-format request adds a static DNS A record:
+
+```text
+type: UPDATE
+nic_config {
+    nic_id: "11111111-1111-1111-1111-111111111111"
+    consomme {
+        add_dns_record { name: "host.example" address: "192.0.2.1" }
+    }
+}
+```
+
+To allocate a guest-visible alias for a host IPv4 or IPv6 address, use
+`create_virtual_address { destination: "127.0.0.1" }` instead. The allocated
+address is returned in
+`ModifyResourceResponse.virtual_address.virtual_address`. Repeating the
+operation for the same destination returns the same alias.
+
+DNS and port changes return a `ModifyResourceResponse` without a result.
+Port forwarding retains its existing semantics: `UPDATE` binds the supplied
+ports and `REMOVE` unbinds them. DNS and virtual-address operations only
+support `UPDATE`.
 
 ## VFIO and accelerated SMMU
 
@@ -152,10 +264,23 @@ complex without a guest-visible IOMMU.
 
 `SmmuConfig.oas_bits` selects a fixed output address size in bits. Omit it for
 the CLI's `oas=auto` policy: initially 48 bits, adopting the physical SMMU's
-width when an accelerated device attaches before VM start. VM start freezes the
-advertised width; subsequent hot-add must be compatible with it. A fixed width
-cannot exceed the physical SMMU's width with acceleration. SMMU configuration
-cannot be changed at runtime. See [the CLI reference](cli.md) and [Arm
-SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
+width when an accelerated device is available during VM construction. Later
+device attachments must support the resulting advertised width. A fixed width
+cannot exceed the physical SMMU's width with acceleration.
+
+`SmmuConfig.ssid_bits` selects a fixed SubstreamID width from 0 to 20.
+Explicit zero disables substreams. Omitting the field selects `ssidsize=auto`:
+zero in software mode, or the cold-plug host SMMU's width under acceleration.
+Later device attachments must support the resulting advertised width. A fixed
+width must not exceed the host's width under acceleration.
+
+SMMU configuration cannot be changed at runtime. See [the CLI reference](cli.md)
+and [Arm SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
+
+## Extending the API
+
+When editing `vmservice.proto`, follow the
+[Protocol Buffers enum conventions](../../../dev_guide/contrib/code.md#protocol-buffers-enums).
 
 [`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto
+[resource-passing protocol]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/resource_passing.md

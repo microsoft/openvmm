@@ -41,6 +41,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use tests::boot_time::BootProfile;
 use tests::disk_io::DiskBackend;
+use tests::disk_io::DiskWorkload;
 use tests::network::NetBackend;
 use tests::network::NicBackend;
 
@@ -116,6 +117,10 @@ struct RunArgs {
     #[arg(long, default_value = "2048")]
     mem_mb: u64,
 
+    /// Virtual processors per guest for the boot-time benchmark.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    boot_vps: u32,
+
     /// Print guest dmesg and /proc/uptime after the first boot for
     /// diagnostics. Does not affect measurements.
     #[arg(long)]
@@ -157,6 +162,43 @@ struct RunArgs {
     /// Data disk size in GiB for the disk_io test.
     #[arg(long, default_value = "4")]
     data_disk_size_gib: u64,
+
+    /// fio queue depth for the disk_io test.
+    #[arg(long, default_value_t = 32, value_parser = clap::value_parser!(u32).range(1..))]
+    disk_io_depth: u32,
+
+    /// fio block size in KiB for the disk_io test.
+    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u32).range(1..))]
+    disk_block_size_kib: u32,
+
+    /// Bypass the host page cache for file-backed disk_io tests (Linux only).
+    #[arg(long, requires = "data_disk")]
+    disk_direct: bool,
+
+    /// Measurement duration per fio job, in seconds.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+    disk_runtime_secs: u32,
+
+    /// Unmeasured ramp duration per fio job, in seconds.
+    #[arg(long, default_value_t = 5)]
+    disk_ramp_secs: u32,
+
+    /// fio workloads to run, in order.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "read,write,randread,randwrite"
+    )]
+    disk_workloads: Vec<DiskWorkload>,
+
+    /// Reuse an existing, initialized data file without truncation or initialization.
+    /// Selected write workloads still overwrite its contents.
+    #[arg(long, requires = "data_disk")]
+    disk_reuse: bool,
+
+    /// Pin guest fio to this vCPU (the disk benchmark has two vCPUs).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(..2))]
+    disk_cpu: Option<u32>,
 
     /// Test file size in MiB for the virtio_fs test.
     #[arg(long, default_value = "512")]
@@ -284,6 +326,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                     args.profile,
                     args.diag,
                     args.mem_mb,
+                    args.boot_vps,
                     &resolver,
                 )
                 .context("boot_time prep")?;
@@ -350,6 +393,15 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                     data_disk: args.data_disk.clone(),
                     data_disk_size_gib: args.data_disk_size_gib,
                     perf_dir: args.perf_dir.clone(),
+                    io_depth: args.disk_io_depth,
+                    block_size_kib: args.disk_block_size_kib,
+                    direct: args.disk_direct,
+                    runtime_secs: args.disk_runtime_secs,
+                    ramp_secs: args.disk_ramp_secs,
+                    fio_output_dir: args.log_dir.join("fio"),
+                    workloads: args.disk_workloads.clone(),
+                    reuse: args.disk_reuse,
+                    cpu: args.disk_cpu,
                 };
 
                 let artifacts = resolve_artifacts(tests::disk_io::register_artifacts)?;

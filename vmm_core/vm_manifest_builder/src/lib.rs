@@ -18,6 +18,8 @@
 #![forbid(unsafe_code)]
 
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+use chipset_resources::acpi_power_button::AcpiPowerButtonDeviceHandle;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
@@ -83,11 +85,13 @@ pub struct VmManifestBuilder {
     proxy_vga: bool,
     stub_floppy: bool,
     battery_status_recv: Option<mesh::Receiver<HostBatteryUpdate>>,
+    acpi_power_button: Option<(u32, mesh::Receiver<PowerButtonRpc>)>,
     framebuffer: bool,
     guest_watchdog: bool,
     ipmi_kcs: bool,
     psp: bool,
     platform_pm_timer_assist: bool,
+    legacy_pci_config_io_for_pcie: bool,
     uefi: Option<UefiManifest>,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
     vmbus: bool,
@@ -291,11 +295,13 @@ impl VmManifestBuilder {
             proxy_vga: false,
             stub_floppy: false,
             battery_status_recv: None,
+            acpi_power_button: None,
             framebuffer: false,
             guest_watchdog: false,
             ipmi_kcs: false,
             psp: false,
             platform_pm_timer_assist: false,
+            legacy_pci_config_io_for_pcie: false,
             uefi: None,
             debugcon: None,
             vmbus,
@@ -392,6 +398,23 @@ impl VmManifestBuilder {
         self
     }
 
+    /// Expose an ACPI power button for direct ACPI, UEFI, or PCAT boot.
+    ///
+    /// PCAT uses the firmware's fixed PM1 power-button event. For other boot
+    /// modes, the caller must include the button's AML in the guest's ACPI
+    /// tables using the returned chipset capabilities.
+    ///
+    /// `irq` is an IOAPIC interrupt on x86_64 or a GIC SPI index on AArch64,
+    /// and is ignored for PCAT.
+    pub fn with_acpi_power_button(
+        mut self,
+        irq: u32,
+        recv: mesh::Receiver<PowerButtonRpc>,
+    ) -> Self {
+        self.acpi_power_button = Some((irq, recv));
+        self
+    }
+
     /// Enable the architecture-specific IPMI KCS virtual BMC.
     ///
     /// This is supported only for UEFI-booted guests.
@@ -415,6 +438,12 @@ impl VmManifestBuilder {
     /// platform-specific resolver registered with the resource resolver.
     pub fn with_platform_pm_timer_assist(mut self) -> Self {
         self.platform_pm_timer_assist = true;
+        self
+    }
+
+    /// Mark legacy PCI configuration I/O as provided by a PCIe root complex.
+    pub fn with_legacy_pci_config_io_for_pcie(mut self) -> Self {
+        self.legacy_pci_config_io_for_pcie = true;
         self
     }
 
@@ -457,12 +486,14 @@ impl VmManifestBuilder {
                 with_generic_isa_dma: false,
                 with_psp: false,
                 with_guest_watchdog: false,
+                acpi_power_button_gsi: None,
                 with_i440bx_host_pci_bridge: false,
                 dt_com_ports: [false; 4],
                 dt_pl011_uarts: false,
             },
         };
         let is_x86 = matches!(self.arch, MachineArch::X86_64);
+        let mut acpi_power_button = self.acpi_power_button;
 
         if let Some((backend, port)) = self.debugcon {
             if is_x86 {
@@ -506,7 +537,10 @@ impl VmManifestBuilder {
                 result.attach_generic_ioapic();
                 result.attach_pic();
                 result.attach_pit();
-                result.attach_piix4_power_management(self.platform_pm_timer_assist);
+                result.attach_piix4_power_management(
+                    self.platform_pm_timer_assist,
+                    acpi_power_button.take().map(|(_, recv)| recv),
+                );
                 result.attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
@@ -546,6 +580,9 @@ impl VmManifestBuilder {
                         self.serial,
                     )?
                     .attach_missing_arch_ports(self.arch, false);
+                if !self.legacy_pci_config_io_for_pcie {
+                    result.attach_missing_pci_config_ports(self.arch);
+                }
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
@@ -590,11 +627,13 @@ impl VmManifestBuilder {
                         false,
                         self.serial,
                     )?
-                    .attach_missing_arch_ports(self.arch, false)
+                    .attach_missing_arch_ports(self.arch, false);
+                if !self.legacy_pci_config_io_for_pcie {
                     // Linux probes legacy PCI configuration ports even when
                     // PCIe ECAM is available. Absorb those probes as missing
                     // devices instead of tracing them as unknown PIO.
-                    .attach_missing_pci_config_ports(self.arch);
+                    result.attach_missing_pci_config_ports(self.arch);
+                }
                 if self.guest_watchdog {
                     result.attach_guest_watchdog();
                 }
@@ -630,6 +669,9 @@ impl VmManifestBuilder {
                         self.serial,
                     )?
                     .attach_missing_arch_ports(self.arch, true);
+                if !self.legacy_pci_config_io_for_pcie {
+                    result.attach_missing_pci_config_ports(self.arch);
+                }
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
@@ -662,6 +704,10 @@ impl VmManifestBuilder {
                     result.attach_battery(self.arch, recv);
                 }
             }
+        }
+
+        if let Some((irq, recv)) = acpi_power_button {
+            result.attach_acpi_power_button(self.arch, irq, recv);
         }
 
         Ok(result)
@@ -793,6 +839,24 @@ impl VmChipsetResult {
         self
     }
 
+    fn attach_acpi_power_button(
+        &mut self,
+        arch: MachineArch,
+        irq: u32,
+        recv: mesh::Receiver<PowerButtonRpc>,
+    ) -> &mut Self {
+        let gsi = match arch {
+            MachineArch::X86_64 => irq,
+            MachineArch::Aarch64 => 32 + irq,
+        };
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "acpi-power-button".to_owned(),
+            resource: AcpiPowerButtonDeviceHandle { irq, recv }.into_resource(),
+        });
+        self.capabilities.acpi_power_button_gsi = Some(gsi);
+        self
+    }
+
     fn attach_guest_watchdog(&mut self) -> &mut Self {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: "guest-watchdog".to_owned(),
@@ -839,11 +903,19 @@ impl VmChipsetResult {
         self
     }
 
-    fn attach_piix4_power_management(&mut self, platform_pm_timer_assist: bool) -> &mut Self {
+    fn attach_piix4_power_management(
+        &mut self,
+        platform_pm_timer_assist: bool,
+        power_button_recv: Option<mesh::Receiver<PowerButtonRpc>>,
+    ) -> &mut Self {
         let pm_timer_assist = platform_pm_timer_assist.then(|| PlatformResource.into_resource());
         self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
             name: "piix4-pm".to_string(),
-            resource: Piix4PowerManagementDeviceHandle { pm_timer_assist }.into_resource(),
+            resource: Piix4PowerManagementDeviceHandle {
+                pm_timer_assist,
+                power_button_recv,
+            }
+            .into_resource(),
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PM_BDF,
         });
@@ -1039,13 +1111,6 @@ impl VmChipsetResult {
                         .claim_pio("port61", 0x61..=0x61)
                         .into_resource(),
                 },
-                ChipsetDeviceHandle {
-                    name: "missing-pci".to_owned(),
-                    resource: MissingDevHandle::new()
-                        .claim_pio("address", 0xcf8..=0xcfb)
-                        .claim_pio("data", 0xcfc..=0xcff)
-                        .into_resource(),
-                },
                 // Linux will probe 0x87 during boot to determine if there the DMA
                 // device is present
                 ChipsetDeviceHandle {
@@ -1077,6 +1142,73 @@ impl VmChipsetResult {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn pcat_power_button_uses_the_existing_pm_device() {
+        let (_, recv) = mesh::channel();
+        let manifest = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
+            .with_acpi_power_button(10, recv)
+            .build()
+            .unwrap();
+        assert_eq!(manifest.capabilities.acpi_power_button_gsi, None);
+        assert!(
+            manifest
+                .chipset_devices
+                .iter()
+                .all(|d| d.resource.id() != "acpi_power_button")
+        );
+        assert_eq!(
+            manifest
+                .pci_chipset_devices
+                .iter()
+                .filter(|d| d.resource.id() == "piix4_power_management")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn acpi_power_button_is_opt_in_and_uses_the_supplied_interrupt() {
+        for (arch, irq, gsi) in [
+            (MachineArch::X86_64, 10, 10),
+            (MachineArch::X86_64, 12, 12),
+            (MachineArch::Aarch64, 7, 39),
+            (MachineArch::Aarch64, 15, 47),
+        ] {
+            for uefi in [false, true] {
+                let builder = || {
+                    if uefi {
+                        uefi_builder(arch)
+                    } else {
+                        VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, arch)
+                    }
+                };
+                let manifest = builder().build().unwrap();
+                assert_eq!(manifest.capabilities.acpi_power_button_gsi, None);
+                assert!(
+                    manifest
+                        .chipset_devices
+                        .iter()
+                        .all(|d| d.name != "acpi-power-button")
+                );
+
+                let (_, recv) = mesh::channel();
+                let manifest = builder()
+                    .without_vmbus()
+                    .with_acpi_power_button(irq, recv)
+                    .build()
+                    .unwrap();
+                assert_eq!(manifest.capabilities.acpi_power_button_gsi, Some(gsi));
+                let buttons: Vec<_> = manifest
+                    .chipset_devices
+                    .iter()
+                    .filter(|d| d.name == "acpi-power-button")
+                    .collect();
+                assert_eq!(buttons.len(), 1);
+                assert_eq!(buttons[0].resource.id(), "acpi_power_button");
+            }
+        }
+    }
 
     fn no_serial_backends() -> [Option<Resource<SerialBackendHandle>>; 4] {
         [(); 4].map(|_| None)
@@ -1316,6 +1448,46 @@ mod tests {
                 .chipset_devices
                 .iter()
                 .any(|device| device.name == "serial-com1")
+        );
+    }
+
+    #[test]
+    fn legacy_pci_config_io_for_pcie_omits_missing_pci_ports() {
+        let manifest =
+            VmManifestBuilder::new(BaseChipsetType::EnlightenedLinuxDirect, MachineArch::X86_64)
+                .build()
+                .unwrap();
+        assert!(
+            manifest
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "missing-pci")
+        );
+
+        let manifest =
+            VmManifestBuilder::new(BaseChipsetType::EnlightenedLinuxDirect, MachineArch::X86_64)
+                .with_legacy_pci_config_io_for_pcie()
+                .build()
+                .unwrap();
+        assert!(
+            !manifest
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "missing-pci")
+        );
+    }
+
+    #[test]
+    fn missing_pci_ports_are_kept_without_root_complex_owner() {
+        let manifest =
+            VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, MachineArch::X86_64)
+                .build()
+                .unwrap();
+        assert!(
+            manifest
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "missing-pci")
         );
     }
 }

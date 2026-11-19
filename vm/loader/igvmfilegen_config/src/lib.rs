@@ -114,7 +114,7 @@ pub enum Image {
         #[serde(skip_serializing_if = "Option::is_none")]
         linux: Option<LinuxImage>,
         /// Optional measured product policy. When `Some`, the IGVM
-        /// build emits the policy into the measured VTL2 config region.
+        /// build appends the policy as a file in the measured OpenHCL initrd.
         /// The manifest schema is the wire schema; see
         /// [`product_policy`]. We don't gate this property behind a feature
         /// to avoid having multiple igvmfilegen tools with and without the feature.

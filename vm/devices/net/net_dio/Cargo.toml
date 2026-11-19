@@ -22,5 +22,8 @@ async-trait.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

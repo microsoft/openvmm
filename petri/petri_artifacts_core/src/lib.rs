@@ -161,6 +161,15 @@ impl<A: ArtifactId + std::fmt::Debug> std::fmt::Debug for ArtifactHandle<A> {
 /// A resolved artifact path for artifact `A`.
 pub struct ResolvedArtifact<A = ()>(Option<PathBuf>, PhantomData<A>);
 
+impl ResolvedArtifact {
+    /// Use an explicit local path outside the test artifact resolver.
+    ///
+    /// This does not assign a typed artifact identity or check compatibility.
+    pub fn from_local_path(path: PathBuf) -> Self {
+        Self(Some(path), PhantomData)
+    }
+}
+
 impl<A> Clone for ResolvedArtifact<A> {
     fn clone(&self) -> Self {
         Self(self.0.clone(), self.1)

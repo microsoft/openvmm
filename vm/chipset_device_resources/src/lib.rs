@@ -14,7 +14,7 @@ use vm_resource::CanResolveTo;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
-use vmcore::save_restore::ProtobufSaveRestore;
+use vmcore::save_restore::AsyncProtobufSaveRestore;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vmtime::VmTimeSource;
 
@@ -90,14 +90,15 @@ pub trait ConfigureChipsetDevice: Send {
 }
 
 #[async_trait]
-trait DynChipsetDevice: ChipsetDevice + ProtobufSaveRestore + InspectMut {
+trait DynChipsetDevice: ChipsetDevice + AsyncProtobufSaveRestore + InspectMut {
     fn start(&mut self);
     async fn stop(&mut self);
     async fn reset(&mut self);
+    async fn teardown(self: Box<Self>);
 }
 
 #[async_trait]
-impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> DynChipsetDevice
+impl<T: ChangeDeviceState + ChipsetDevice + AsyncProtobufSaveRestore + InspectMut> DynChipsetDevice
     for T
 {
     fn start(&mut self) {
@@ -109,6 +110,9 @@ impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> Dy
     async fn reset(&mut self) {
         self.reset().await
     }
+    async fn teardown(self: Box<Self>) {
+        (*self).teardown().await
+    }
 }
 
 /// A resolved chipset device resource.
@@ -119,7 +123,7 @@ pub struct ResolvedChipsetDevice(pub ErasedChipsetDevice);
 #[inspect(transparent(mut))]
 pub struct ErasedChipsetDevice(Box<dyn DynChipsetDevice>);
 
-impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> From<T>
+impl<T: ChangeDeviceState + ChipsetDevice + AsyncProtobufSaveRestore + InspectMut> From<T>
     for ResolvedChipsetDevice
 {
     fn from(value: T) -> Self {
@@ -138,6 +142,10 @@ impl ChangeDeviceState for ErasedChipsetDevice {
 
     async fn reset(&mut self) {
         self.0.reset().await
+    }
+
+    async fn teardown(self) {
+        self.0.teardown().await
     }
 }
 
@@ -183,17 +191,18 @@ impl ChipsetDevice for ErasedChipsetDevice {
     }
 }
 
-impl ProtobufSaveRestore for ErasedChipsetDevice {
-    fn save(
+#[async_trait]
+impl AsyncProtobufSaveRestore for ErasedChipsetDevice {
+    async fn save(
         &mut self,
     ) -> Result<vmcore::save_restore::SavedStateBlob, vmcore::save_restore::SaveError> {
-        self.0.save()
+        self.0.save().await
     }
 
-    fn restore(
+    async fn restore(
         &mut self,
         state: vmcore::save_restore::SavedStateBlob,
     ) -> Result<(), vmcore::save_restore::RestoreError> {
-        self.0.restore(state)
+        self.0.restore(state).await
     }
 }

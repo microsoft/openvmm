@@ -219,13 +219,13 @@ have different stop/start anchors.
 | Snapshot restore | Restores stopped software time and the state supported by each backend/device. A time-state setter must not implicitly thaw a supporting backend. |
 | VTL scrub | May reset and freeze a backing VTL clock. The partition unit thaws it before restarting VPs; this is not a freeze of every VTL. |
 
-The x86 `virt` saved-state model treats reference time, reference-page
-configuration, TSC, and APIC state as separate elements. Reference time
-is included only when Hyper-V enlightenments are enabled; lifecycle
-freezing cannot therefore be hidden in its setter. The
-`can_freeze_time` capability also governs whether advancing TSC/APIC
-and reference-time state can be compared during state validation. A
-reference-clock-only implementation is not sufficient to claim that
+The x86 `virt` model separates reference time/page, TSC, APIC, and TSC deadline.
+Deadline state requires guest/backend support and restores after APIC/TSC:
+zero disarms; absent state is not restored. Native MSHV/WHP and KVM support
+it, unlike software APICs. Reference time is included only when Hyper-V
+enlightenments are enabled; lifecycle freezing cannot be hidden in its setter.
+Lifecycle freeze is separate; `can_freeze_time` gates exact state comparison.
+A reference-clock-only implementation is not sufficient to claim that
 capability.
 
 Arm state coverage differs: the generic `virt` partition-state schema is

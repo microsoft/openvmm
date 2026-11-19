@@ -151,7 +151,7 @@ impl Tap {
         Ok(Self { tap })
     }
 
-    /// Sets TX offload flags via `TUNSETOFFLOAD`.
+    /// Sets RX offload flags via `TUNSETOFFLOAD`.
     ///
     /// `flags` is a bitmask of `TUN_F_*` constants (e.g., `TUN_F_CSUM | TUN_F_TSO4`).
     pub fn set_offloads(&self, flags: u32) -> Result<(), Error> {

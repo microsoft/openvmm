@@ -52,7 +52,6 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-const CRASHDMP_VDEV_MAX_TX_BYTES: usize = 4096 * 4; // 16 KB
 const KMSG_NOTE_BYTES: usize = 1024 * 256; // 256 KB
 
 struct OsVersionInfo {
@@ -179,7 +178,7 @@ async fn send_dump(
     // function will error out.
 
     let write_task = pin!(async move {
-        let mut buf = [0u8; CRASHDMP_VDEV_MAX_TX_BYTES];
+        let mut buf = [0u8; crash::MAX_DUMP_PAYLOAD_SIZE];
         let now = std::time::Instant::now();
 
         let mut streamer = DumpStreamer::new(
@@ -389,12 +388,12 @@ impl<'a> DumpStreamer<'a> {
             let mut data_next = Some(&data[..can_write_bytes]);
 
             while let Some(data) = data_next {
-                let data = if data.len() <= CRASHDMP_VDEV_MAX_TX_BYTES {
+                let data = if data.len() <= crash::MAX_DUMP_PAYLOAD_SIZE {
                     data_next = None;
                     data
                 } else {
-                    data_next = Some(&data[CRASHDMP_VDEV_MAX_TX_BYTES..]);
-                    &data[..CRASHDMP_VDEV_MAX_TX_BYTES]
+                    data_next = Some(&data[crash::MAX_DUMP_PAYLOAD_SIZE..]);
+                    &data[..crash::MAX_DUMP_PAYLOAD_SIZE]
                 };
 
                 // Send the write request to announce the data packet

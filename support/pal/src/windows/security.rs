@@ -11,6 +11,7 @@ use std::ops::Deref;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr::NonNull;
+use std::ptr::null;
 use std::ptr::null_mut;
 use std::str::FromStr;
 use widestring::U16CStr;
@@ -26,15 +27,27 @@ use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptor
 use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
+use windows_sys::Win32::Security::DuplicateTokenEx;
 use windows_sys::Win32::Security::GROUP_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::GetLengthSid;
+use windows_sys::Win32::Security::GetTokenInformation;
+use windows_sys::Win32::Security::ImpersonateSelf;
 use windows_sys::Win32::Security::LABEL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
 use windows_sys::Win32::Security::PSID;
+use windows_sys::Win32::Security::RevertToSelf;
 use windows_sys::Win32::Security::SACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
+use windows_sys::Win32::Security::SecurityImpersonation;
+use windows_sys::Win32::Security::TOKEN_DUPLICATE;
+use windows_sys::Win32::Security::TOKEN_IMPERSONATE;
+use windows_sys::Win32::Security::TOKEN_QUERY;
+use windows_sys::Win32::Security::TOKEN_USER;
+use windows_sys::Win32::Security::TokenImpersonation;
+use windows_sys::Win32::Security::TokenUser;
 use windows_sys::Win32::Storage::FileSystem::CREATE_NEW;
 use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
 use windows_sys::Win32::Storage::FileSystem::CreateFileW;
@@ -43,8 +56,68 @@ use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
 use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+use windows_sys::Win32::System::Threading::OpenProcess;
+use windows_sys::Win32::System::Threading::OpenProcessToken;
+use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+use windows_sys::Win32::System::Threading::SetThreadToken;
 
 const MAX_SUBAUTHORITY_COUNT: usize = 15;
+
+/// Reverts the current thread to its process security context when dropped.
+///
+/// The guard is thread-bound and must remain within a synchronous scope. It
+/// does not restore a previous impersonation token, so impersonation scopes
+/// must not be nested.
+///
+/// # Panics
+///
+/// Panics if reverting impersonation fails, since continuing under the wrong
+/// security context is unsafe.
+#[must_use = "dropping the guard immediately reverts impersonation"]
+pub struct RevertToSelfGuard {
+    _not_send: PhantomData<*const ()>,
+}
+
+impl RevertToSelfGuard {
+    /// Impersonates `token` on the current thread until the guard is dropped.
+    pub fn impersonate(token: impl AsHandle) -> std::io::Result<Self> {
+        // SAFETY: A null thread selects the current thread, and the borrowed
+        // token handle remains valid for the duration of the call.
+        if unsafe { SetThreadToken(null_mut(), token.as_handle().as_raw_handle()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Impersonates a private copy of the process token on the current thread.
+    ///
+    /// This allows adjusting thread-local privileges without changing the
+    /// process token.
+    pub fn impersonate_self() -> std::io::Result<Self> {
+        // SAFETY: Calling Win32 API as documented.
+        if unsafe { ImpersonateSelf(SecurityImpersonation) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            _not_send: PhantomData,
+        })
+    }
+}
+
+impl Drop for RevertToSelfGuard {
+    fn drop(&mut self) {
+        // SAFETY: Calling Win32 API as documented.
+        if unsafe { RevertToSelf() } == 0 {
+            panic!(
+                "failed to revert thread impersonation: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
 
 /// A Windows SID.
 #[derive(Clone, Copy)]
@@ -354,6 +427,44 @@ impl<'a> SidAndAttributes<'a> {
     }
 }
 
+/// Opens the current process's primary token with `access` (a combination of
+/// `TOKEN_*` access rights).
+pub fn open_process_token(access: u32) -> std::io::Result<OwnedHandle> {
+    let mut token = null_mut();
+    // SAFETY: The output pointer is valid, and a successful call returns a new
+    // handle owned by this process.
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), access, &mut token) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(OwnedHandle::from_raw_handle(token))
+    }
+}
+
+/// Creates an impersonation token, owned by this process, from `token`, with
+/// `TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE` access.
+///
+/// Fails if `token` is not an access token or lacks `TOKEN_DUPLICATE` access.
+pub fn duplicate_impersonation_token(token: BorrowedHandle<'_>) -> std::io::Result<OwnedHandle> {
+    let mut duplicate = null_mut();
+    // SAFETY: DuplicateTokenEx does not take ownership of `token`. On success,
+    // `duplicate` is a new handle owned by this process.
+    unsafe {
+        if DuplicateTokenEx(
+            token.as_raw_handle(),
+            TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE,
+            null(),
+            SecurityImpersonation,
+            TokenImpersonation,
+            &mut duplicate,
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(OwnedHandle::from_raw_handle(duplicate))
+    }
+}
+
 /// Creates an app container token for `sid` with `capabilities`.
 pub fn create_app_container_token<'a, I, T>(
     sid: &Sid,
@@ -439,6 +550,99 @@ pub fn create_file_with_security(
     Ok(unsafe { std::fs::File::from_raw_handle(handle) })
 }
 
+impl MaximumSid {
+    /// Returns the binary SID length encoded by this value.
+    pub fn byte_len(&self) -> usize {
+        8 + usize::from(self.sub_authority_count) * size_of::<u32>()
+    }
+
+    /// Returns a zero-padded fixed representation and its meaningful length.
+    pub fn to_fixed_bytes(self) -> ([u8; 68], u8) {
+        let length = self.byte_len();
+        assert!(length <= 68);
+        let mut bytes = [0; 68];
+        // SAFETY: `MaximumSid` is a 68-byte repr(C) value and `length` was
+        // derived from its validated subauthority count.
+        unsafe {
+            bytes[..length].copy_from_slice(std::slice::from_raw_parts(
+                std::ptr::from_ref(&self).cast::<u8>(),
+                length,
+            ));
+        }
+        (bytes, length as u8)
+    }
+}
+
+fn process_user_sid_from_handle(process: HANDLE) -> std::io::Result<MaximumSid> {
+    // SAFETY: the process handle is valid for TOKEN_QUERY and all output
+    // buffers remain live for the documented calls.
+    unsafe {
+        let mut token = null_mut();
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let token = OwnedHandle::from_raw_handle(token);
+
+        let mut required = 0;
+        let _ = GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            null_mut(),
+            0,
+            &mut required,
+        );
+        if required < size_of::<TOKEN_USER>() as u32 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // TOKEN_USER contains a pointer, so its backing storage must have
+        // pointer alignment before it is dereferenced below.
+        let mut buffer = vec![0usize; (required as usize).div_ceil(size_of::<usize>())];
+        if GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let token_user = &*buffer.as_ptr().cast::<TOKEN_USER>();
+        let length = GetLengthSid(token_user.User.Sid) as usize;
+        if !(8..=size_of::<MaximumSid>()).contains(&length) {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "process token contains an invalid user SID",
+            ));
+        }
+        let mut sid = MaximumSid::new([0; 6], [0; MAX_SUBAUTHORITY_COUNT]);
+        std::ptr::copy_nonoverlapping(
+            token_user.User.Sid.cast::<u8>(),
+            std::ptr::from_mut(&mut sid).cast::<u8>(),
+            length,
+        );
+        Ok(sid)
+    }
+}
+
+/// Returns the current process user SID.
+pub fn current_process_user_sid() -> std::io::Result<MaximumSid> {
+    process_user_sid_from_handle(unsafe { GetCurrentProcess() })
+}
+
+/// Returns the user SID for a local process.
+pub fn process_user_sid(process_id: u32) -> std::io::Result<MaximumSid> {
+    // SAFETY: OpenProcess is called with a query-only access mask and a
+    // concrete process identifier supplied by the named-pipe subsystem.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if process.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the successful OpenProcess result is uniquely owned here.
+    let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    process_user_sid_from_handle(process.as_raw_handle())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,11 +657,54 @@ mod tests {
     use std::path::PathBuf;
     use test_with_tracing::test;
     use widestring::U16CStr;
+    use windows_sys::Win32::Foundation::ERROR_NO_TOKEN;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
     use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
     use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
     use windows_sys::Win32::Security::GetFileSecurityW;
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::System::Threading::GetCurrentThread;
+    use windows_sys::Win32::System::Threading::OpenThreadToken;
+
+    fn thread_token() -> io::Result<OwnedHandle> {
+        let mut token = null_mut();
+        // SAFETY: The output pointer is valid, and a successful call returns a
+        // new handle owned by this process.
+        unsafe {
+            if OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(OwnedHandle::from_raw_handle(token))
+        }
+    }
+
+    #[test]
+    fn impersonate_self_reverts_on_success_and_error() {
+        for fail in [false, true] {
+            assert_eq!(
+                thread_token().unwrap_err().raw_os_error(),
+                Some(ERROR_NO_TOKEN as i32)
+            );
+            let result = (|| -> io::Result<()> {
+                let _guard = RevertToSelfGuard::impersonate_self().unwrap();
+                thread_token().unwrap();
+                if fail {
+                    return Err(io::Error::from(ErrorKind::PermissionDenied));
+                }
+                Ok(())
+            })();
+            if fail {
+                assert_eq!(result.unwrap_err().kind(), ErrorKind::PermissionDenied);
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(
+                thread_token().unwrap_err().raw_os_error(),
+                Some(ERROR_NO_TOKEN as i32)
+            );
+        }
+    }
 
     struct TestDirectory(PathBuf);
 
@@ -632,5 +879,14 @@ mod tests {
                 .kind(),
             ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn current_process_sid_has_a_bounded_binary_identity() {
+        let sid = current_process_user_sid().unwrap();
+        let (bytes, length) = sid.to_fixed_bytes();
+        assert!((8..=68).contains(&length));
+        assert_eq!(bytes[0], 1);
+        assert!(sid.to_string_sid().starts_with("S-1-"));
     }
 }

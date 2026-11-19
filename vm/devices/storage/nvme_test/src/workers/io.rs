@@ -3,6 +3,8 @@
 
 //! I/O queue handler.
 
+use crate::BROADCAST_NSID;
+use crate::MAX_NSID;
 use crate::command_match::match_command_pattern;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
@@ -130,12 +132,16 @@ struct IoResult {
 
 impl AsyncRun<IoState> for IoHandler {
     async fn run(&mut self, stop: &mut StopTask<'_>, state: &mut IoState) -> Result<(), Cancelled> {
-        stop.until_stopped(async {
-            if let Err(err) = self.process(state).await {
-                tracing::error!(error = &err as &dyn std::error::Error, "io handler failed");
+        let check = stop.check_handle()?;
+        match stop.until_stopped(self.process(state, &check)).await? {
+            Err(HandlerError::Cancelled(cancelled)) => Err(cancelled),
+            result => {
+                if let Err(err) = result {
+                    tracing::error!(error = &err as &dyn std::error::Error, "io handler failed");
+                }
+                Ok(())
             }
-        })
-        .await
+        }
     }
 }
 
@@ -149,8 +155,16 @@ const MAX_IO_QUEUE_DEPTH: usize = 8;
 
 #[derive(Debug, Error)]
 enum HandlerError {
+    #[error("cancelled")]
+    Cancelled(Cancelled),
     #[error("nvme queue error")]
     Queue(#[from] QueueError),
+}
+
+impl From<Cancelled> for HandlerError {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 impl IoHandler {
@@ -175,8 +189,13 @@ impl IoHandler {
         }
     }
 
-    async fn process(&mut self, state: &mut IoState) -> Result<(), HandlerError> {
+    async fn process(
+        &mut self,
+        state: &mut IoState,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), HandlerError> {
         loop {
+            check.check()?;
             let deleting = match state.queue_state {
                 IoQueueState::Active => {
                     // Wait for a completion to be ready. This will be necessary either
@@ -260,9 +279,38 @@ impl IoHandler {
                         continue;
                     }
 
+                    // No namespace behind the NSID: answer inline.
+                    //
+                    // NVMe Base 2.1 section 3.2.1.5: an invalid NSID (0h or
+                    // above NN) fails with Invalid Namespace or Format, an
+                    // inactive one (valid, nothing attached) with Invalid
+                    // Field in Command. FFFFFFFFh is neither (3.2.1.2): only
+                    // Flush and Cancel may support it (NVM Command Set 1.1
+                    // Figure 21, notes 2 and 4), and this device has no
+                    // Cancel, so Figure 92 fails it with Invalid Field in
+                    // Command. Flush is the exception: Identify reports Flush
+                    // Behavior 10b (Figure 312, VWC), which fails it with
+                    // Invalid Namespace or Format (section 7.2). This runs
+                    // before opcode dispatch, so an unsupported opcode also
+                    // gets its NSID's answer (section 4.2.3 lets the
+                    // controller choose when several apply). Each answer
+                    // sets Do Not Retry: the same command sent again names
+                    // the same NSID and fails the same way.
+                    let status = match command.nsid {
+                        BROADCAST_NSID
+                            if nvm::NvmOpcode(command.cdw0.opcode()) == nvm::NvmOpcode::FLUSH =>
+                        {
+                            spec::Status::INVALID_NAMESPACE_OR_FORMAT
+                        }
+                        BROADCAST_NSID => spec::Status::INVALID_FIELD_IN_COMMAND,
+                        nsid if nsid == 0 || nsid > MAX_NSID => {
+                            spec::Status::INVALID_NAMESPACE_OR_FORMAT
+                        }
+                        _ => spec::Status::INVALID_FIELD_IN_COMMAND,
+                    };
                     (
                         cid,
-                        spec::Status::INVALID_NAMESPACE_OR_FORMAT.into(),
+                        NvmeError::do_not_retry(status).into(),
                         Command::new_zeroed(),
                     )
                 }
@@ -274,7 +322,7 @@ impl IoHandler {
                 sqhd: state.sq.sqhd(),
                 sqid: self.sqid,
                 cid,
-                status: spec::CompletionStatus::new().with_status(result.status.0),
+                status: result.completion_status(),
             };
 
             // Apply a completion queue fault only to synchronously processed IO commands

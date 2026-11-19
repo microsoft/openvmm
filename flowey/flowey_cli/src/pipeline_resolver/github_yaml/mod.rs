@@ -218,8 +218,11 @@ pub fn github_yaml(
                             FlowPlatform::Linux(FlowPlatformLinuxDistro::Fedora) => {
                                 "sudo dnf install -y gcc"
                             }
+                            FlowPlatform::Linux(FlowPlatformLinuxDistro::OpenSuse) => {
+                                "sudo zypper --non-interactive install --no-recommends gcc glibc-devel"
+                            }
                             _ => {
-                                "i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let \"i=i+1\"; sleep 1; done;\n    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y"
+                                "i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let \"i=i+1\"; sleep 1; done;\n    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends"
                             }
                         },
                     );

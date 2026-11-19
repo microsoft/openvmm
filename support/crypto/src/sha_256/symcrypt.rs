@@ -3,6 +3,7 @@
 
 //! SHA-256 implementation using SymCrypt.
 
+use super::SHA_256_OUTPUT_SIZE_BYTES;
 use symcrypt::hash::HashState;
 
 pub struct Sha256(symcrypt::hash::Sha256State);
@@ -16,7 +17,7 @@ impl Sha256 {
         self.0.append(data);
     }
 
-    pub fn finish(mut self) -> [u8; 32] {
+    pub fn finish(mut self) -> [u8; SHA_256_OUTPUT_SIZE_BYTES] {
         self.0.result()
     }
 }

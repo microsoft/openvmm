@@ -13,7 +13,6 @@ use tpm_protocol::TPM_NV_INDEX_AIK_CERT;
 use tpm_protocol::TPM_NV_INDEX_ATTESTATION_REPORT;
 use tpm_protocol::TPM_NV_INDEX_MITIGATED;
 use tpm_protocol::TPM_RSA_SRK_HANDLE;
-use tpm_protocol::tpm20proto::AlgId;
 use tpm_protocol::tpm20proto::AlgIdEnum;
 use tpm_protocol::tpm20proto::CommandCodeEnum;
 use tpm_protocol::tpm20proto::ReservedHandle;
@@ -30,9 +29,12 @@ use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
 use tpm_protocol::tpm20proto::protocol::TpmsRsaParams;
 use tpm_protocol::tpm20proto::protocol::TpmtPublic;
 use tpm_protocol::tpm20proto::protocol::TpmtRsaScheme;
+use tpm_protocol::tpm20proto::protocol::TpmtSensitive;
 use tpm_protocol::tpm20proto::protocol::TpmtSymDefObject;
 use zerocopy::FromZeros;
-use zerocopy::IntoBytes;
+
+mod hash_sequences;
+mod mixed_operations;
 
 impl TpmEngine for TestTpmPlatform {
     fn execute_command(
@@ -1623,31 +1625,7 @@ fn test_clear() {
         panic!()
     }
 }
-struct TpmtSensitive {
-    /// TPMI_ALG_PUBLIC
-    sensitive_type: AlgId,
-    /// `TPM2B_AUTH`
-    auth_value: Tpm2bBuffer,
-    /// `TPM2B_DIGEST`
-    seed_value: Tpm2bBuffer,
-    /// `TPM2B_PRIVATE_KEY_RSA`
-    sensitive: Tpm2bBuffer,
-}
-
-impl TpmtSensitive {
-    fn serialize(&self) -> Vec<u8> {
-        let mut buffer = Vec::new();
-
-        buffer.extend_from_slice(self.sensitive_type.as_bytes());
-        buffer.extend_from_slice(&self.auth_value.serialize());
-        buffer.extend_from_slice(&self.seed_value.serialize());
-        buffer.extend_from_slice(&self.sensitive.serialize());
-
-        buffer
-    }
-}
-
-fn generate_rsa() -> (TpmtPublic, Tpm2bBuffer) {
+pub(super) fn generate_rsa() -> (TpmtPublic, Tpm2bBuffer) {
     // Using hard-coded value to avoid OpenSSL dependency
     // RSA-2k public modulus
     const N: [u8; 256] = [
@@ -1728,7 +1706,7 @@ fn generate_rsa() -> (TpmtPublic, Tpm2bBuffer) {
     (rsa_public, rsa_private)
 }
 
-fn rsa_srk_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
+pub(super) fn rsa_srk_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     let symmetric = TpmtSymDefObject::new(
         AlgIdEnum::AES.into(),
         Some(128),
@@ -1942,4 +1920,58 @@ fn test_oversized_platform_ak_cert_index() {
         &mut attestation_report_output,
     );
     assert!(matches!(result.unwrap(), NvIndexState::Uninitialized));
+}
+
+#[test]
+fn test_hash_sequence_start_sha1_multiple_objects() {
+    use tpm_protocol::tpm20proto::SessionTagEnum;
+    use tpm_protocol::tpm20proto::protocol::common::CmdHeader;
+    use tpm_protocol::tpm20proto::protocol::common::ReplyHeader;
+    use zerocopy::FromBytes;
+    use zerocopy::IntoBytes;
+
+    let mut tpm = create_tpm_engine_helper();
+    tpm.initialize_tpm_engine().unwrap();
+
+    let header = CmdHeader::new::<[u8; 14]>(
+        SessionTagEnum::NoSessions.into(),
+        CommandCodeEnum::HashSequenceStart.into(),
+    );
+    let mut command = [
+        header.as_bytes(),
+        &0u16.to_be_bytes(), // Empty sequence authorization.
+        &(AlgIdEnum::SHA as u16).to_be_bytes(),
+    ]
+    .concat();
+    let mut response = [0u8; 4096];
+    let mut handles = Vec::new();
+
+    // Keep the sequences live: flushing each immediately would only exercise
+    // the first object's hash-state alignment.
+    for slot in 0..3 {
+        let response_size = tpm
+            .tpm_engine
+            .execute_command(&mut command, &mut response)
+            .unwrap();
+        let (header, payload) = ReplyHeader::read_from_prefix(&response[..response_size]).unwrap();
+        assert!(
+            header
+                .base_validation(SessionTagEnum::NoSessions.into(), 14)
+                .unwrap(),
+            "SHA-1 HashSequenceStart failed for slot {slot}: {header:?}"
+        );
+        assert_eq!(
+            response_size, 14,
+            "unexpected response size for slot {slot}"
+        );
+        assert_eq!(header.size.get(), 14);
+
+        let handle = ReservedHandle::read_from_bytes(payload).unwrap();
+        assert_eq!(handle, ReservedHandle::new(0x80, slot));
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        tpm.flush_context(handle).unwrap();
+    }
 }

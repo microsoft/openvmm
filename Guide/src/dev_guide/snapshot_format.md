@@ -36,16 +36,11 @@ default values, forward/backward compatibility) apply.
 ```admonish note
 The hard-link approach means the memory backing file and snapshot directory
 must reside on the same filesystem. If they are on different filesystems,
-`write_snapshot` returns an error with a suggestion to place the backing
-file inside the snapshot directory.
+`write_snapshot` returns an error.
 ```
 
-### Same-file detection
-
-If the user passes `--memory file=<snapshot_dir>/memory.bin`, the source and
-target of the hard link are the same file. The code detects this by
-canonicalizing both paths and comparing them. When they match, the hard-link
-step is skipped.
+The snapshot directory must not exist before the save, so the memory backing
+file can't be placed inside it.
 
 ## Code references
 
@@ -111,7 +106,8 @@ Key unsupported categories:
 - **VGA / GDMA** — marked `todo!()` (will panic on save).
 - **Virtio devices** — the `VirtioDevice` trait defaults
   `supports_save_restore()` to `false`. Only `virtio-blk`,
-  `virtio-net`, `virtio-pmem`, and `virtio-rng` override it to `true`.
+  `virtio-net`, `virtio-pmem`, `virtio-rng`, and `virtio-rtc` override it to
+  `true`.
   Devices with host-side session state (`virtio-9p`, `virtiofs`,
   `virtio-console`) intentionally leave it `false`.
 - **Some VMBus devices** — `GuestCrashDevice`, `GuestEmulationDevice`,

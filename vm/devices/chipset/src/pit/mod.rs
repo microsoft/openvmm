@@ -35,6 +35,14 @@ struct ControlWord {
     #[bits(2)] select: u8,
 }
 
+impl PartialEq for ControlWord {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for ControlWord {}
+
 #[rustfmt::skip]
 #[bitfield(u8)]
 struct StatusWord {
@@ -75,7 +83,7 @@ struct Timer {
     state: TimerState,
 }
 
-#[derive(Copy, Clone, Debug, Inspect)]
+#[derive(Copy, Clone, Debug, Inspect, PartialEq, Eq)]
 struct TimerState {
     ce: u16,         // "counting element", i.e. the counter
     cr: u16,         // count register, the new value
@@ -226,6 +234,41 @@ impl Timer {
                 CountState::Active => {
                     if !self.state.gate && mode.gate_stops_count() {
                         break;
+                    }
+                    if self.state.ce == self.state.cr
+                        && !self.state.null
+                        && matches!(mode, Mode::RateGenerator | Mode::SquareWave)
+                    {
+                        let reload = if bcd {
+                            u64::from(from_bcd(self.state.cr))
+                        } else {
+                            u64::from(self.state.cr)
+                        };
+                        if reload == 1 && mode == Mode::RateGenerator {
+                            // A count-one rate generator reloads every tick without
+                            // lowering OUT.
+                            break;
+                        }
+                        let period = if reload == 0 {
+                            if bcd { 10_000 } else { 0x1_0000 }
+                        } else if reload == 1 {
+                            // Mode 3 strips the odd bit before wrapping through the
+                            // counter range, taking one extra tick to return here.
+                            if bcd { 10_001 } else { 0x1_0001 }
+                        } else {
+                            reload
+                        };
+                        if ticks >= period {
+                            // Skip whole cycles, preserving phase and emitting one
+                            // representative pulse instead of replaying every transition.
+                            let out = self.state.out;
+                            self.set_out(!out);
+                            self.set_out(out);
+                            ticks %= period;
+                            if ticks == 0 {
+                                break;
+                            }
+                        }
                     }
                     // Counts per tick.
                     let per = match mode {
@@ -870,6 +913,20 @@ mod tests {
     use super::Timer;
     use super::to_bcd;
     use crate::pit::from_bcd;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use test_with_tracing::test;
+    use vmcore::line_interrupt::LineInterrupt;
+    use vmcore::line_interrupt::LineSetTarget;
+
+    #[derive(Default)]
+    struct RecordingTarget(Mutex<Vec<bool>>);
+
+    impl LineSetTarget for RecordingTarget {
+        fn set_irq(&self, _vector: u32, high: bool) {
+            self.0.lock().push(high);
+        }
+    }
 
     #[test]
     fn test_bcd_comp() {
@@ -890,6 +947,15 @@ mod tests {
         }
         timer.write(cr as u8);
         timer.write((cr >> 8) as u8);
+    }
+
+    fn set_low_byte_timer(timer: &mut Timer, mode: Mode, cr: u8) {
+        timer.set_control(
+            ControlWord::new()
+                .with_mode(mode as u8)
+                .with_rw(RwMode::LOW.0),
+        );
+        timer.write(cr);
     }
 
     fn check_invert(timer: &mut Timer, initial_out: bool, expected_next: u64) {
@@ -971,5 +1037,230 @@ mod tests {
     #[test]
     fn test_bcd() {
         test_output(true);
+    }
+
+    #[test]
+    fn elapsed_interval_matches_incremental_pit_evaluation() {
+        for mode in [
+            Mode::TerminalCount,
+            Mode::RateGenerator,
+            Mode::SquareWave,
+            Mode::SoftwareStrobe,
+        ] {
+            let mut elapsed = Timer::new(true, None);
+            let mut incremental = Timer::new(true, None);
+            set_timer(&mut elapsed, mode, 100, false);
+            set_timer(&mut incremental, mode, 100, false);
+
+            elapsed.evaluate(350);
+            for _ in 0..350 {
+                incremental.evaluate(1);
+            }
+
+            assert_eq!(elapsed.state, incremental.state, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn elapsed_interval_preserves_periodic_phase() {
+        let mut timer = Timer::new(true, None);
+        set_timer(&mut timer, Mode::RateGenerator, 100, false);
+
+        timer.evaluate(350);
+
+        assert_eq!(timer.state.ce, 51);
+        assert!(timer.state.out);
+        assert_eq!(timer.state.next_wakeup(), Some(50));
+    }
+
+    #[test]
+    fn long_elapsed_interval_fast_forwards_periodic_pit() {
+        for mode in [Mode::RateGenerator, Mode::SquareWave] {
+            for (count, bcd) in [
+                (100, false),
+                (1234, true),
+                (3, false),
+                (3, true),
+                (1001, false),
+                (1001, true),
+                (0, false),
+                (0, true),
+                (1, false),
+                (1, true),
+            ] {
+                let counter_range = if bcd { 10_000 } else { 0x1_0000 };
+                let period = if count == 0 {
+                    counter_range
+                } else if count == 1 && mode == Mode::SquareWave {
+                    counter_range + 1
+                } else {
+                    u64::from(count)
+                };
+
+                let mut elapsed = Timer::new(true, None);
+                let mut incremental = Timer::new(true, None);
+                set_timer(&mut elapsed, mode, count, bcd);
+                set_timer(&mut incremental, mode, count, bcd);
+                elapsed.evaluate(1);
+                incremental.evaluate(1);
+
+                let phased_ticks = period * 2 + period / 3;
+                elapsed.evaluate(phased_ticks);
+                for _ in 0..phased_ticks {
+                    incremental.evaluate(1);
+                }
+                assert_eq!(
+                    elapsed.state, incremental.state,
+                    "{mode:?}, count={count}, bcd={bcd}"
+                );
+
+                let mut elapsed = Timer::new(true, None);
+                let mut remainder = Timer::new(true, None);
+                set_timer(&mut elapsed, mode, count, bcd);
+                set_timer(&mut remainder, mode, count, bcd);
+                elapsed.evaluate(1);
+                remainder.evaluate(1);
+
+                elapsed.evaluate(u64::MAX);
+                remainder.evaluate(u64::MAX % period);
+                assert_eq!(
+                    elapsed.state, remainder.state,
+                    "{mode:?}, count={count}, bcd={bcd}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn periodic_fast_forward_matches_incremental_from_each_phase() {
+        for mode in [Mode::RateGenerator, Mode::SquareWave] {
+            for bcd in [false, true] {
+                for count in [2, 3, 100, 1001] {
+                    let period = u64::from(count);
+                    for phase in [0, 1, period / 2, period / 2 + 1, period - 1] {
+                        let mut initial = Timer::new(true, None);
+                        set_timer(&mut initial, mode, count, bcd);
+                        initial.evaluate(1);
+                        for _ in 0..phase {
+                            initial.evaluate(1);
+                        }
+
+                        for ticks in [
+                            period - 1,
+                            period,
+                            period + 1,
+                            period * 3 - 1,
+                            period * 3,
+                            period * 3 + 1,
+                        ] {
+                            let mut elapsed = Timer::new(true, None);
+                            let mut incremental = Timer::new(true, None);
+                            elapsed.state = initial.state;
+                            incremental.state = initial.state;
+
+                            elapsed.evaluate(ticks);
+                            for _ in 0..ticks {
+                                incremental.evaluate(1);
+                            }
+
+                            assert_eq!(
+                                elapsed.state, incremental.state,
+                                "{mode:?}, count={count}, bcd={bcd}, phase={phase}, ticks={ticks}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn count_one_rate_generator_does_not_emit_irq0_edges() {
+        for bcd in [false, true] {
+            let target = Arc::new(RecordingTarget::default());
+            let interrupt = LineInterrupt::new_with_target("pit", target.clone(), 0);
+            let mut timer = Timer::new(true, Some(interrupt));
+            set_timer(&mut timer, Mode::RateGenerator, 1, bcd);
+            timer.evaluate(1);
+            target.0.lock().clear();
+            let active_state = timer.state;
+
+            timer.evaluate(u64::MAX);
+
+            assert_eq!(timer.state, active_state, "bcd={bcd}");
+            assert!(target.0.lock().is_empty(), "bcd={bcd}");
+        }
+    }
+
+    #[test]
+    fn reprogrammed_periodic_count_loads_before_fast_forward() {
+        for mode in [Mode::RateGenerator, Mode::SquareWave] {
+            let mut elapsed = Timer::new(true, None);
+            let mut incremental = Timer::new(true, None);
+            set_low_byte_timer(&mut elapsed, mode, 100);
+            set_low_byte_timer(&mut incremental, mode, 100);
+            elapsed.evaluate(1);
+            incremental.evaluate(1);
+            elapsed.write(100);
+            incremental.write(100);
+
+            elapsed.evaluate(100);
+            for _ in 0..100 {
+                incremental.evaluate(1);
+            }
+
+            assert_eq!(elapsed.state, incremental.state, "{mode:?}");
+            assert!(!elapsed.state.null, "{mode:?}");
+        }
+
+        let target = Arc::new(RecordingTarget::default());
+        let interrupt = LineInterrupt::new_with_target("pit", target.clone(), 0);
+        let mut timer = Timer::new(true, Some(interrupt));
+        set_low_byte_timer(&mut timer, Mode::RateGenerator, 4);
+        timer.evaluate(4);
+        timer.write(1);
+        target.0.lock().clear();
+        assert!(timer.state.null);
+        assert!(!timer.state.out);
+
+        timer.evaluate(u64::MAX);
+
+        assert!(!timer.state.null);
+        assert!(timer.state.out);
+        assert_eq!(*target.0.lock(), [true]);
+    }
+
+    #[test]
+    fn low_gate_pauses_periodic_fast_forward() {
+        for mode in [Mode::RateGenerator, Mode::SquareWave] {
+            let target = Arc::new(RecordingTarget::default());
+            let interrupt = LineInterrupt::new_with_target("pit", target.clone(), 0);
+            let mut timer = Timer::new(true, Some(interrupt));
+            set_timer(&mut timer, mode, 100, false);
+            timer.evaluate(1);
+            timer.set_gate(false);
+            target.0.lock().clear();
+            let paused_state = timer.state;
+
+            timer.evaluate(u64::MAX);
+
+            assert_eq!(timer.state, paused_state, "{mode:?}");
+            assert!(target.0.lock().is_empty(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn long_elapsed_interval_coalesces_periodic_irq0_edges() {
+        let target = Arc::new(RecordingTarget::default());
+        let interrupt = LineInterrupt::new_with_target("pit", target.clone(), 0);
+        let mut timer = Timer::new(true, Some(interrupt));
+        set_timer(&mut timer, Mode::RateGenerator, 2, false);
+        timer.evaluate(1);
+        target.0.lock().clear();
+
+        timer.evaluate(u64::MAX - 1);
+
+        assert_eq!(*target.0.lock(), [false, true]);
+        assert!(timer.state.out);
     }
 }

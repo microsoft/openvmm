@@ -169,6 +169,15 @@ impl SimpleFlowNode for Node {
                     );
                 }
 
+                // vtpm_util unconditionally enables the TPM's OpenSSL backend.
+                if matches!(
+                    target.operating_system,
+                    target_lexicon::OperatingSystem::Windows
+                        | target_lexicon::OperatingSystem::Darwin(_)
+                ) {
+                    exclude.push("vtpm_util".into());
+                }
+
                 Ok(Some(exclude))
             }
         });

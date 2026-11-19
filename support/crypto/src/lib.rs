@@ -66,7 +66,7 @@ pub mod aes_256_cbc;
 pub mod aes_256_gcm;
 pub mod aes_kwp;
 pub mod ecdsa;
-pub mod hmac_sha_256;
+pub mod hmac;
 pub mod kbkdf;
 pub mod pkcs7;
 pub mod rsa;

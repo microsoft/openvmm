@@ -221,11 +221,9 @@ impl ScmReceiver {
                     // header (plus any alignment padding before the data). The
                     // kernel always reports a `cmsg_len` at least as large as
                     // that offset, so this subtraction never underflows; use
-                    // `checked_sub` to fail loudly rather than silently if that
+                    // `strict_sub` to fail loudly rather than silently if that
                     // assumption is ever violated.
-                    let data_len = (c.cmsg_len as usize)
-                        .checked_sub(data as usize - cmsg as usize)
-                        .unwrap();
+                    let data_len = (c.cmsg_len as usize).strict_sub(data as usize - cmsg as usize);
                     self.fd_offset = data as usize - self.control.as_ptr() as usize;
                     self.fd_count = data_len / size_of::<RawFd>();
                     break;
@@ -242,12 +240,16 @@ impl ScmReceiver {
 
             // If ancillary data was truncated the kernel discarded the
             // descriptors that did not fit; the ones we did get are useless
-            // without the full set, so close them and fail.
+            // without the full set, so close them and fail. Besides a control
+            // buffer too small for the sender's descriptors, this happens when
+            // installing them would exceed this process's RLIMIT_NOFILE
+            // (unix(7)).
             if hdr.msg_flags & libc::MSG_CTRUNC != 0 {
                 self.clear();
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "control message truncated: sender sent too many file descriptors",
+                    "control message truncated: sender sent too many file descriptors, \
+                     or receiving them would exceed the open file limit (RLIMIT_NOFILE)",
                 ));
             }
         }

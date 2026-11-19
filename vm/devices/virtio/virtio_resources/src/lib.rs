@@ -51,11 +51,20 @@ pub mod fs {
         pub fs: VirtioFsBackend,
     }
 
+    #[derive(MeshPayload, Default)]
+    pub struct VirtioFsWindowsOptions {
+        /// Access token to impersonate for host file system access. `None`
+        /// uses the VMM process token.
+        #[cfg(windows)]
+        pub user_token: Option<std::os::windows::io::OwnedHandle>,
+    }
+
     #[derive(MeshPayload)]
     pub enum VirtioFsBackend {
         HostFs {
             root_path: String,
             mount_options: String,
+            windows_options: Option<VirtioFsWindowsOptions>,
         },
         SectionFs {
             root_path: String,
@@ -92,6 +101,7 @@ pub mod pmem {
     #[derive(MeshPayload)]
     pub struct VirtioPmemHandle {
         pub path: String,
+        pub read_only: bool,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioPmemHandle {
@@ -109,6 +119,19 @@ pub mod rng {
 
     impl ResourceId<VirtioDeviceHandle> for VirtioRngHandle {
         const ID: &'static str = "virtio-rng";
+    }
+}
+
+pub mod rtc {
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioRtcHandle;
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioRtcHandle {
+        const ID: &'static str = "virtio-rtc";
     }
 }
 
@@ -142,6 +165,8 @@ pub mod net {
     #[derive(MeshPayload)]
     pub struct VirtioNetHandle {
         pub max_queues: Option<u16>,
+        /// Advertise guest TCP segmentation offload when the backend supports it.
+        pub enable_rx_gso: bool,
         pub mac_address: MacAddress,
         pub endpoint: Resource<NetEndpointHandleKind>,
     }

@@ -694,7 +694,7 @@ impl<
         }
 
         // Validate memory entries do not overlap.
-        for (prev, next) in storage.memory.iter().zip(storage.memory.iter().skip(1)) {
+        for [prev, next] in storage.memory.array_windows() {
             if prev.range.overlaps(&next.range) {
                 return Err(ErrorKind::MemoryRegOverlap {
                     lower: *prev,

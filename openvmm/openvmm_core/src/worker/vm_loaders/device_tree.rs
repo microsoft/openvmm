@@ -534,11 +534,11 @@ fn partition_memory(
         }
     }
     if ram
-        .windows(2)
-        .any(|pair| pair[0].range.end() > pair[1].range.start())
+        .array_windows()
+        .any(|[left, right]| left.range.end() > right.range.start())
         || protectable
-            .windows(2)
-            .any(|pair| pair[0].start() > pair[1].start())
+            .array_windows()
+            .any(|[left, right]| left.start() > right.start())
     {
         return Err(DeviceTreeError::Memory);
     }
@@ -1078,6 +1078,7 @@ mod tests {
             base: 0x7000_0000,
             event_gsiv: 35,
             gerr_gsiv: 36,
+            ats_supported: false,
             reserved_iova_ranges: vec![],
         }
     }

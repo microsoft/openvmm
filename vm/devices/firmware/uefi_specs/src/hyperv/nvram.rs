@@ -140,6 +140,7 @@ pub struct NvramSignalRuntimeCommand {
     pub flags: SignalRuntimeCommandFlags,
 }
 
+#[cfg(feature = "std")]
 pub mod vars {
     use guid::Guid;
 

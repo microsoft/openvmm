@@ -907,7 +907,7 @@ impl<B: AsRef<[u8]> + Send + Sync + 'static> std::ops::Deref for ReadPageGuard<B
             .expect("page data missing")
             .as_ref()
             .as_ref()
-            .try_into()
+            .as_array()
             .expect("buffer is not PAGE_SIZE")
     }
 }
@@ -968,7 +968,7 @@ impl<F: AsyncFile> std::ops::Deref for WritePageGuard<'_, F> {
             .expect("page data missing")
             .as_ref()
             .as_ref()
-            .try_into()
+            .as_array()
             .expect("buffer is not PAGE_SIZE")
     }
 }
@@ -978,7 +978,9 @@ impl<F: AsyncFile> std::ops::DerefMut for WritePageGuard<'_, F> {
         let guard = self.guard.as_mut().expect("guard consumed");
         guard.state = PageState::Dirty;
         let buf = Arc::make_mut(guard.data.as_mut().expect("page data missing"));
-        buf.as_mut().try_into().expect("buffer is not PAGE_SIZE")
+        buf.as_mut()
+            .as_mut_array()
+            .expect("buffer is not PAGE_SIZE")
     }
 }
 

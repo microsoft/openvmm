@@ -5,8 +5,17 @@ use crate::Hv1State;
 use crate::WhpProcessor;
 use crate::memory::VtlAccess;
 use crate::vtl2;
-#[cfg(guest_arch = "aarch64")]
-use aarch64 as arch;
+cfg_select! {
+    guest_arch = "aarch64" => {
+        use aarch64 as arch;
+    }
+    guest_arch = "x86_64" => {
+        use x86 as arch;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 use hv1_hypercall::HvRepResult;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PARTITION_ID_SELF;
@@ -22,8 +31,6 @@ use std::iter::zip;
 use std::ops::RangeInclusive;
 use virt::PageVisibility;
 use virt::VpIndex;
-#[cfg(guest_arch = "x86_64")]
-use x86 as arch;
 
 pub(crate) struct WhpHypercallExit<'a, 'b> {
     vp: &'a mut WhpProcessor<'b>,
@@ -1616,10 +1623,7 @@ mod x86 {
                             return Err(HvError::InvalidParameter);
                         }
 
-                        // SAFETY: HvRegisterValue and WHV_REGISTER_VALUE are the same.
-                        unsafe {
-                            std::mem::transmute::<WHV_REGISTER_VALUE, HvRegisterValue>(whp_value[0])
-                        }
+                        HvRegisterValue::from(u128::from(whp_value[0].0))
                     } else {
                         tracing::error!(name = ?reg, "unknown register name for get_vp_registers");
                         return Err(HvError::InvalidParameter);
@@ -1736,10 +1740,7 @@ mod x86 {
                             return Err(HvError::AccessDenied);
                         }
 
-                        // SAFETY: HvRegisterValue and WHV_REGISTER_VALUE are the same.
-                        let whp_value = unsafe {
-                            std::mem::transmute::<HvRegisterValue, WHV_REGISTER_VALUE>(*value)
-                        };
+                        let whp_value = WHV_REGISTER_VALUE(value.as_u128().into());
                         if let Err(err) =
                             self.vp.whp(Vtl::Vtl0).set_registers(&[name], &[whp_value])
                         {
@@ -1931,11 +1932,7 @@ mod aarch64 {
                                 err.hv_result()
                                     .map_or(HvError::InvalidParameter, HvError::from)
                             })?;
-                        unsafe {
-                            std::mem::transmute::<whp::abi::WHV_REGISTER_VALUE, HvRegisterValue>(
-                                value[0],
-                            )
-                        }
+                        HvRegisterValue::from(u128::from(value[0].0))
                     } else {
                         tracelimit::warn_ratelimited!(name = ?reg, "unknown register name for get_vp_registers");
                         return Err(HvError::InvalidParameter);
@@ -1952,9 +1949,7 @@ mod aarch64 {
             value: &HvRegisterValue,
         ) -> HvResult<()> {
             if let Some(reg) = Self::hypervisor_owned_reg(name.into()) {
-                let value = unsafe {
-                    std::mem::transmute::<HvRegisterValue, whp::abi::WHV_REGISTER_VALUE>(*value)
-                };
+                let value = whp::abi::WHV_REGISTER_VALUE(value.as_u128().into());
                 self.current_whp()
                     .set_registers(&[reg], &[value])
                     .map_err(|err| {

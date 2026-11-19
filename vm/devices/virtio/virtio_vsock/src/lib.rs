@@ -478,8 +478,10 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
         stop: &mut StopTask<'_>,
         state: &mut VsockWorkerState,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
             loop {
+                check.check()?;
                 let peeked = match state.rx_queue.try_peek() {
                     Ok(p) => p,
                     Err(err) => {
@@ -487,7 +489,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             error = &err as &dyn std::error::Error,
                             "error peeking virtio rx queue"
                         );
-                        return;
+                        return Ok(());
                     }
                 };
 
@@ -518,7 +520,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                                     error = &err as &dyn std::error::Error,
                                     "error reading from virtio tx queue, stopping worker"
                                 );
-                                return;
+                                return Ok(());
                             }
                         }
                     }
@@ -555,7 +557,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                 };
             }
         })
-        .await
+        .await?
     }
 }
 
@@ -613,7 +615,7 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
     writable: bool,
     locked_range: T,
 ) -> anyhow::Result<Option<LockedRangeImpl<'a, T>>> {
-    if !mem.supports_locking() {
+    if !mem.supports_kernel_lock() {
         // Memory behind an emulated IOMMU has no stable host mapping to lock,
         // so fall back to a bounce buffer via read_at/write_at.
         return Ok(None);

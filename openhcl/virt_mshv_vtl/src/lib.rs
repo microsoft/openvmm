@@ -9,17 +9,17 @@
 
 mod devmsr;
 
-cfg_if::cfg_if!(
-    if #[cfg(guest_arch = "x86_64")] {
+cfg_select! {
+    guest_arch = "x86_64" => {
         mod cvm_cpuid;
 
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
 
+        use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use devmsr::MsrDevice;
         use processor::LapicState;
         use processor::snp::SnpBackedShared;
@@ -34,16 +34,20 @@ cfg_if::cfg_if!(
         /// Bitarray type for representing IRR bits in a x86-64 APIC
         /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
-    } else if #[cfg(guest_arch = "aarch64")] {
+    }
+    guest_arch = "aarch64" => {
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
         pub use processor::cca::CcaBacked;
 
-        use aarch64defs::Vendor;
         use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
+        use aarch64defs::Vendor;
         use processor::cca::CcaBackedShared;
         use safe_intrinsics::read_cntfrq_el0;
     }
-);
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 
 mod processor;
 use hv1_emulator::hv::ProcessorVtlHv;
@@ -312,13 +316,9 @@ impl BackingShared {
 
     fn untrusted_synic(&self) -> Option<&GlobalSynic> {
         match self {
-            BackingShared::Hypervisor(_) => None,
-            #[cfg(guest_arch = "x86_64")]
-            BackingShared::Snp(_) => None,
             #[cfg(guest_arch = "x86_64")]
             BackingShared::Tdx(s) => s.untrusted_synic.as_ref(),
-            #[cfg(guest_arch = "aarch64")]
-            BackingShared::Cca(_) => None,
+            _ => None,
         }
     }
 }
@@ -656,7 +656,7 @@ impl GetReferenceTime for TscReferenceTimeSource {
         #[cfg(guest_arch = "x86_64")]
         {
             let tsc = safe_intrinsics::rdtsc();
-            let ref_time = ((self.tsc_scale as u128 * tsc as u128) >> 64) as u64;
+            let ref_time = self.tsc_scale.carrying_mul(tsc, 0).1;
             ReferenceTimeResult {
                 ref_time,
                 system_time: None,
@@ -1483,7 +1483,8 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
         .with_enable_vtl_protection(!hardware_isolated)
         .with_zero_memory_on_reset(!hardware_isolated)
         .with_intercept_cpuid_unimplemented(!hardware_isolated)
-        .with_intercept_page(caps.intercept_page_available())
+        // Hardware-isolated VMs do not register a VP assist page for intercept delivery.
+        .with_intercept_page(caps.intercept_page_available() && !hardware_isolated)
         .with_intercept_unrecoverable_exception(true)
         .with_intercept_not_present(caps.intercept_not_present_available() && !isolated)
         .with_intercept_acceptance(isolated)
@@ -1910,8 +1911,8 @@ impl<'a> UhProtoPartition<'a> {
                 return Err(Error::InvalidDebugConfiguration);
             }
 
-            cfg_if::cfg_if! {
-                if #[cfg(guest_arch = "x86_64")] {
+            cfg_select! {
+                guest_arch = "x86_64" => {
                     if isolation != IsolationType::Tdx {
                         let debug_exception_vector = 0x1;
                         hcl.register_intercept(
@@ -1919,9 +1920,12 @@ impl<'a> UhProtoPartition<'a> {
                             HV_INTERCEPT_ACCESS_MASK_EXECUTE,
                             HvInterceptParameters::new_exception(debug_exception_vector),
                         )
-                        .map_err(|err| Error::InstallIntercept(HvInterceptType::HvInterceptTypeException, err))?;
+                        .map_err(|err| {
+                            Error::InstallIntercept(HvInterceptType::HvInterceptTypeException, err)
+                        })?;
                     }
-                } else {
+                }
+                _ => {
                     return Err(Error::InvalidDebugConfiguration);
                 }
             }
@@ -1999,59 +2003,64 @@ impl<'a> UhProtoPartition<'a> {
             .collect();
 
         // Enable support for VPCI devices if the hypervisor supports it.
-        #[cfg(guest_arch = "x86_64")]
-        let software_devices = {
-            let res = if !is_hardware_isolated {
-                hcl.register_intercept(
-                    HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId,
-                    HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                    HvInterceptParameters::new_zeroed(),
-                )
-            } else {
-                Ok(())
-            };
-            match res {
-                Ok(()) => Some(ApicSoftwareDevices::new(
-                    params.topology.vps_arch().map(|vp| vp.apic_id).collect(),
-                )),
-                Err(HvError::InvalidParameter | HvError::AccessDenied) => None,
-                Err(err) => {
-                    return Err(Error::InstallIntercept(
+        let software_devices = cfg_select! {
+            guest_arch = "x86_64" => {{
+                let res = if !is_hardware_isolated {
+                    hcl.register_intercept(
                         HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId,
-                        err,
-                    ));
+                        HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                        HvInterceptParameters::new_zeroed(),
+                    )
+                } else {
+                    Ok(())
+                };
+                match res {
+                    Ok(()) => Some(ApicSoftwareDevices::new(
+                        params.topology.vps_arch().map(|vp| vp.apic_id).collect(),
+                    )),
+                    Err(HvError::InvalidParameter | HvError::AccessDenied) => None,
+                    Err(err) => {
+                        return Err(Error::InstallIntercept(
+                            HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId,
+                            err,
+                        ));
+                    }
                 }
+            }}
+            // TODO: CCA: will probably need to add some support here like above
+            guest_arch = "aarch64" => None,
+            _ => compile_error!("unsupported guest architecture"),
+        };
+
+        cfg_select! {
+            guest_arch = "x86_64" => {
+                let cpuid = UhPartition::construct_cpuid_results(
+                    cpuid,
+                    &late_params.cpuid,
+                    params.topology,
+                    isolation,
+                    params.hide_isolation,
+                );
+
+                let caps = UhPartition::construct_capabilities(
+                    params.topology,
+                    &cpuid,
+                    isolation,
+                    params.hide_isolation,
+                )
+                .map_err(Error::Capabilities)?;
             }
-        };
-
-        // TODO: CCA: will probably need to add some support here like above
-        #[cfg(guest_arch = "aarch64")]
-        let software_devices = None;
-
-        #[cfg(guest_arch = "aarch64")]
-        let caps = virt::aarch64::Aarch64PartitionCapabilities {
-            isolation: params.isolation,
-            vendor: Vendor::ARM,
-            supports_aarch32_el0: false,
-        };
-
-        #[cfg(guest_arch = "x86_64")]
-        let cpuid = UhPartition::construct_cpuid_results(
-            cpuid,
-            &late_params.cpuid,
-            params.topology,
-            isolation,
-            params.hide_isolation,
-        );
-
-        #[cfg(guest_arch = "x86_64")]
-        let caps = UhPartition::construct_capabilities(
-            params.topology,
-            &cpuid,
-            isolation,
-            params.hide_isolation,
-        )
-        .map_err(Error::Capabilities)?;
+            guest_arch = "aarch64" => {
+                let caps = virt::aarch64::Aarch64PartitionCapabilities {
+                    isolation: params.isolation,
+                    vendor: Vendor::ARM,
+                    supports_aarch32_el0: false,
+                };
+            }
+            _ => {
+                compile_error!("unsupported guest architecture");
+            }
+        }
 
         if params.handle_synic && !matches!(isolation, IsolationType::Tdx) {
             // The hypervisor will manage the untrusted SINTs (or the whole
@@ -2422,8 +2431,8 @@ impl UhProtoPartition<'_> {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 impl UhPartition {
-    #[cfg(guest_arch = "x86_64")]
     /// Constructs the set of cpuid results to show to the guest
     fn construct_cpuid_results(
         cpuid: virt::CpuidLeafSet,
@@ -2471,7 +2480,6 @@ impl UhPartition {
         virt::CpuidLeafSet::new(cpuid)
     }
 
-    #[cfg(guest_arch = "x86_64")]
     /// Computes the partition capabilities
     fn construct_capabilities(
         topology: &ProcessorTopology,
@@ -2499,6 +2507,9 @@ impl UhPartition {
 
         // Compute and validate capabilities.
         let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn)?;
+        // Hardware-isolated guests use our software APIC, which does not
+        // implement the architectural TSC-deadline MSR.
+        caps.tsc_deadline &= !isolation.is_hardware_isolated();
         match isolation {
             IsolationType::Tdx => {
                 assert_eq!(caps.vtom.is_some(), !hide_isolation);
@@ -2521,14 +2532,15 @@ impl UhPartition {
 fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
     // Always get the frequency from the hypervisor. It's believed that, as long
     // as the hypervisor is behaving, it will provide the most precise and accurate frequency.
-    #[cfg(guest_arch = "x86_64")]
-    let hv_frequency = {
-        let msr = MsrDevice::new(0).map_err(Error::OpenMsr)?;
-        msr.read_msr(hvdef::HV_X64_MSR_TSC_FREQUENCY)
-            .map_err(Error::ReadTscFrequency)?
+    let hv_frequency = cfg_select! {
+        guest_arch = "x86_64" => {{
+            let msr = MsrDevice::new(0).map_err(Error::OpenMsr)?;
+            msr.read_msr(hvdef::HV_X64_MSR_TSC_FREQUENCY)
+                .map_err(Error::ReadTscFrequency)?
+        }}
+        guest_arch = "aarch64" => read_cntfrq_el0(),
+        _ => compile_error!("unsupported guest architecture"),
     };
-    #[cfg(guest_arch = "aarch64")]
-    let hv_frequency = read_cntfrq_el0();
 
     // Get the hardware-advertised frequency and validate that the
     // hypervisor frequency is not too far off.

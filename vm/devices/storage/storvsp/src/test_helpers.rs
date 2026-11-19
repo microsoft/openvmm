@@ -89,7 +89,11 @@ impl TestWorker {
                 None,
             )
             .unwrap();
-            worker.process_primary().await
+            task_control::StopTask::run_unstoppable(async |stop| {
+                let check = stop.check_handle().unwrap();
+                worker.process_primary(&check).await
+            })
+            .await
         });
 
         Self { task }

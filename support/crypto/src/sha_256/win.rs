@@ -3,6 +3,7 @@
 
 //! SHA-256 implementation using the Windows BCrypt API.
 
+use super::SHA_256_OUTPUT_SIZE_BYTES;
 use windows::Win32::Security::Cryptography::BCRYPT_HASH_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_SHA256_ALG_HANDLE;
 use windows::Win32::Security::Cryptography::BCryptCreateHash;
@@ -32,8 +33,8 @@ impl Sha256 {
         }
     }
 
-    pub fn finish(self) -> [u8; 32] {
-        let mut out = [0u8; 32];
+    pub fn finish(self) -> [u8; SHA_256_OUTPUT_SIZE_BYTES] {
+        let mut out = [0u8; SHA_256_OUTPUT_SIZE_BYTES];
         // SAFETY: handle is valid and owned; output buffer matches the SHA-256
         // digest size. The call cannot fail for valid inputs.
         unsafe {

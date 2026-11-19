@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 chipset_device.workspace = true
+cvm_tracing.workspace = true
 hvdef.workspace = true
 memory_range.workspace = true
 pci_core.workspace = true
@@ -16,6 +17,7 @@ tdisp.workspace = true
 openhcl_tdisp.workspace = true
 user_driver.workspace = true
 vpci_client.workspace = true
+vpci_protocol.workspace = true
 vpci.workspace = true
 virt.workspace = true
 vmbus_client.workspace = true

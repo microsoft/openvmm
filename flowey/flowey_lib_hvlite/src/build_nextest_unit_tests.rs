@@ -47,6 +47,12 @@ pub enum BuildNextestUnitTestMode {
     /// Build and archive the tests into nextest archive files, which can then
     /// be run via [`crate::test_nextest_unit_tests_archive`].
     Archive(WriteVar<Vec<NextestUnitTestArchive>>),
+    /// Collect attributed coverage from selected local unit tests.
+    Coverage {
+        packages: Vec<String>,
+        options: crate::collect_unit_test_coverage::Options,
+        done: WriteVar<SideEffect>,
+    },
 }
 
 flowey_request! {
@@ -72,6 +78,7 @@ impl FlowNode for Node {
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
         ctx.import::<crate::run_cargo_nextest_run::Node>();
         ctx.import::<crate::init_cross_build::Node>();
+        ctx.import::<crate::collect_unit_test_coverage::Node>();
         ctx.import::<flowey_lib_common::run_cargo_nextest_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -92,64 +99,95 @@ impl FlowNode for Node {
         // additional deps
         let ambient_deps = vec![ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
 
-        let test_packages = ctx.emit_rust_stepv("determine unit test exclusions", |ctx| {
-            let xtask = xtask.claim(ctx);
-            let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
-            move |rt| {
-                let xtask = rt.read(xtask);
-                let openvmm_repo_path = rt.read(openvmm_repo_path);
-
-                let mut exclude = [
-                    // Skip VMM tests, they get run in a different step.
-                    "vmm_tests",
-                    // Skip CCA tests, they aren't setup to run in CI yet
-                    "cca_tests",
-                    // Skip guest_test_uefi, as it's a no_std UEFI crate
-                    "guest_test_uefi",
-                    // Exclude various proc_macro crates, since they don't compile successfully
-                    // under --test with panic=abort targets.
-                    // https://github.com/rust-lang/cargo/issues/4336 is tracking this.
-                    //
-                    // In any case though, it's not like these crates should have unit tests
-                    // anyway.
-                    "inspect_derive",
-                    "mesh_derive",
-                    "save_restore_derive",
-                    "test_with_tracing_macro",
-                    "pal_async_test",
-                    "vmm_test_macros",
-                ]
-                .map(|x| x.to_string())
-                .to_vec();
-
-                // Exclude fuzz crates, since there libfuzzer-sys doesn't play
-                // nice with unit tests
-                {
-                    let xtask_bin = match xtask {
-                        crate::build_xtask::XtaskOutput::LinuxBin { bin, dbg: _ } => bin,
-                        crate::build_xtask::XtaskOutput::WindowsBin { exe, pdb: _ } => exe,
-                    };
-
-                    rt.sh.change_dir(openvmm_repo_path);
-                    let output =
-                        flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates").output()?;
-                    let output = String::from_utf8(output.stdout)?;
-
-                    let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());
-                    exclude.extend(fuzz_crates);
-                }
-
-                Ok(TestPackages::Workspace { exclude })
-            }
-        });
-
         for Request {
             target,
             profile,
             build_mode,
         } in requests
         {
+            let test_packages = ctx.emit_rust_stepv("determine unit test exclusions", |ctx| {
+                let xtask = xtask.clone().claim(ctx);
+                let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
+                move |rt| {
+                    let xtask = rt.read(xtask);
+                    let openvmm_repo_path = rt.read(openvmm_repo_path);
+
+                    let mut exclude = [
+                        // Skip VMM tests, they get run in a different step.
+                        "vmm_tests",
+                        // Skip CCA tests, they aren't setup to run in CI yet
+                        "cca_tests",
+                        // Skip guest_test_uefi, as it's a no_std UEFI crate
+                        "guest_test_uefi",
+                        // Exclude various proc_macro crates, since they don't compile successfully
+                        // under --test with panic=abort targets.
+                        // https://github.com/rust-lang/cargo/issues/4336 is tracking this.
+                        //
+                        // In any case though, it's not like these crates should have unit tests
+                        // anyway.
+                        "inspect_derive",
+                        "mesh_derive",
+                        "save_restore_derive",
+                        "test_with_tracing_macro",
+                        "pal_async_test",
+                        "vmm_test_macros",
+                    ]
+                    .map(|x| x.to_string())
+                    .to_vec();
+
+                    // Exclude fuzz crates, since there libfuzzer-sys doesn't play
+                    // nice with unit tests
+                    {
+                        let xtask_bin = match xtask {
+                            crate::build_xtask::XtaskOutput::LinuxBin { bin, dbg: _ } => bin,
+                            crate::build_xtask::XtaskOutput::WindowsBin { exe, pdb: _ } => exe,
+                        };
+
+                        rt.sh.change_dir(openvmm_repo_path);
+                        let output =
+                            flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates").output()?;
+                        let output = String::from_utf8(output.stdout)?;
+
+                        let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());
+                        exclude.extend(fuzz_crates);
+                    }
+
+                    // vtpm_util unconditionally enables the TPM's OpenSSL backend.
+                    if matches!(
+                        target.operating_system,
+                        target_lexicon::OperatingSystem::Windows
+                            | target_lexicon::OperatingSystem::Darwin(_)
+                    ) {
+                        exclude.push("vtpm_util".into());
+                    }
+
+                    Ok(TestPackages::Workspace { exclude })
+                }
+            });
+
             let mut pre_run_deps = ambient_deps.clone();
+
+            let packages = if let BuildNextestUnitTestMode::Coverage { packages, .. } = &build_mode
+            {
+                let packages = packages.clone();
+                ctx.emit_rust_stepv("select unit test coverage packages", |ctx| {
+                    let test_packages = test_packages.clone().claim(ctx);
+                    move |rt| {
+                        let TestPackages::Workspace { exclude } = rt.read(test_packages) else {
+                            unreachable!()
+                        };
+                        for package in &packages {
+                            anyhow::ensure!(
+                                !exclude.contains(package),
+                                "{package} is excluded from the unit test suite"
+                            );
+                        }
+                        Ok(TestPackages::Crates { crates: packages })
+                    }
+                })
+            } else {
+                test_packages.clone()
+            };
 
             let sysroot_arch = CommonArch::from_architecture(target.architecture)?;
 
@@ -186,7 +224,7 @@ impl FlowNode for Node {
             });
 
             let base_build_params = NextestBuildParams {
-                packages: test_packages.clone(),
+                packages,
                 features,
                 no_default_features: false,
                 target: target.clone(),
@@ -226,6 +264,13 @@ impl FlowNode for Node {
                 crypto_feature_sets.push(("all", CargoFeatureSet::All));
             }
             for (name, features) in crypto_feature_sets {
+                if matches!(
+                    &build_mode,
+                    BuildNextestUnitTestMode::Coverage { packages, .. }
+                        if !packages.iter().any(|p| p == "crypto")
+                ) {
+                    continue;
+                }
                 runs.push((
                     format!("crypto-{}", name),
                     NextestBuildParams {
@@ -239,6 +284,16 @@ impl FlowNode for Node {
             }
 
             match build_mode {
+                BuildNextestUnitTestMode::Coverage { options, done, .. } => {
+                    ctx.req(crate::collect_unit_test_coverage::Request::Collect {
+                        xtask: xtask.clone(),
+                        runs,
+                        options,
+                        working_dir: openvmm_repo_path.clone(),
+                        pre_run_deps,
+                        done,
+                    });
+                }
                 BuildNextestUnitTestMode::ImmediatelyRun {
                     nextest_profile,
                     junit_test_label,

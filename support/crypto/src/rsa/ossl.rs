@@ -142,6 +142,22 @@ impl RsaKeyPairInner {
 pub struct RsaPublicKeyInner(pub(crate) openssl::pkey::PKey<openssl::pkey::Public>);
 
 impl RsaPublicKeyInner {
+    pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, RsaError> {
+        let rsa = openssl::rsa::Rsa::public_key_from_der_pkcs1(der)
+            .map_err(|e| err(e, "parsing the PKCS#1 DER public key"))?;
+        let pkey = openssl::pkey::PKey::from_rsa(rsa)
+            .map_err(|e| err(e, "wrapping the RSA key in a PKey"))?;
+        Ok(Self(pkey))
+    }
+
+    pub fn to_pkcs1_der(&self) -> Result<Vec<u8>, RsaError> {
+        self.0
+            .rsa()
+            .map_err(|e| err(e, "accessing the RSA public key"))?
+            .public_key_to_der_pkcs1()
+            .map_err(|e| err(e, "encoding the public key as PKCS#1 DER"))
+    }
+
     pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
         let n = openssl::bn::BigNum::from_slice(n).map_err(|e| err(e, "parsing the modulus"))?;
         let e = openssl::bn::BigNum::from_slice(e)

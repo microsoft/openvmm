@@ -9,6 +9,7 @@
 
 use crate::VirtioFs;
 use crate::virtio::VirtioFsDevice;
+use crate::virtio::VirtioFsDeviceOptions;
 use fuse::protocol::*;
 use guestmem::GuestMemory;
 use pal_async::DefaultDriver;
@@ -29,6 +30,7 @@ use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 // --- Constants ---
@@ -64,14 +66,25 @@ struct TestHarness {
 impl TestHarness {
     fn new(driver: &DefaultDriver) -> Self {
         let tmpdir = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let device = VirtioFsDevice::new(
+            &driver_source,
+            "testfs",
+            fs,
+            VirtioFsDeviceOptions::default(),
+        );
+        Self::with_device(driver, device, tmpdir)
+    }
 
+    fn with_device(
+        driver: &DefaultDriver,
+        device: VirtioFsDevice,
+        tmpdir: tempfile::TempDir,
+    ) -> Self {
         let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
         init_avail_ring(&mem, AVAIL_ADDR);
         init_used_ring(&mem, USED_ADDR);
-
-        let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
-        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None);
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();
@@ -532,4 +545,628 @@ async fn init_negotiates_direct_io_allow_mmap(driver: DefaultDriver) {
         0,
         "VirtioFs should request FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 when kernel advertises it"
     );
+}
+
+#[test]
+fn child_operations_require_directory_parents() {
+    for aggregate in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file"), b"data").unwrap();
+        let (fs, root_id) = if aggregate {
+            let fs = VirtioFs::new_aggregate();
+            fs.add_child("share", tmp.path(), None).unwrap();
+            let root = fs.lookup_synthetic_root("share".as_ref()).unwrap();
+            (fs, root.nodeid)
+        } else {
+            (VirtioFs::new(tmp.path(), None).unwrap(), FUSE_ROOT_ID)
+        };
+        let root = fs.get_inode(root_id).unwrap();
+        let (file, _) = root.lookup_child("file".as_ref()).unwrap();
+        let (symlink, _) = root
+            .symlink("link".as_ref(), "file".as_ref(), 0, 0)
+            .unwrap();
+        for parent in [&file, &symlink] {
+            let name = "child".as_ref();
+            assert_eq!(parent.lookup_child(name).err().unwrap(), lx::Error::ENOTDIR);
+            assert_eq!(
+                parent
+                    .create(name, lx::O_WRONLY, 0o666, 0, 0)
+                    .err()
+                    .unwrap(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                parent.mkdir(name, 0o777, 0, 0).err().unwrap(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                parent
+                    .mknod(name, lx::S_IFREG | 0o666, 0, 0, 0)
+                    .err()
+                    .unwrap(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                parent.symlink(name, "file".as_ref(), 0, 0).err().unwrap(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(parent.link(name, &file).unwrap_err(), lx::Error::ENOTDIR);
+            assert_eq!(parent.unlink(name, 0).unwrap_err(), lx::Error::ENOTDIR);
+            assert_eq!(
+                parent.rename(name, &root, name, 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                root.rename("file".as_ref(), parent, name, 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+        }
+        assert_eq!(std::fs::read(tmp.path().join("file")).unwrap(), b"data");
+        assert!(!tmp.path().join("child").exists());
+    }
+}
+
+#[async_test]
+async fn fuse_create_rejects_symlink_parent(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+    harness.fuse_init(0).await;
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_SYMLINK,
+        FUSE_ROOT_ID,
+        b"link\0missing\0",
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let entry: fuse_entry_out = harness.read_response(response);
+    let mut create = fuse_create_in::new_zeroed();
+    create.flags = (lx::O_WRONLY | lx::O_TRUNC) as u32;
+    create.mode = 0o666;
+    let mut args = create.as_bytes().to_vec();
+    args.extend_from_slice(b"child\0");
+    let (unique, response) = harness.post_fuse_request(
+        4,
+        FUSE_CREATE,
+        entry.nodeid,
+        &args,
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32 + size_of::<fuse_open_out>() as u32,
+    );
+    let (_, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_len, OUT_HEADER_SIZE);
+    let header = harness.read_out_header(response);
+    assert_eq!(header.unique, unique);
+    assert_eq!(header.error, -lx::ENOTDIR);
+    assert!(!harness.tmpdir_path().join("child").exists());
+}
+
+#[test]
+fn final_symlinks_are_not_opened_or_created() {
+    for aggregate in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("target"), b"unchanged").unwrap();
+        std::fs::write(tmp.path().join("stale"), b"original").unwrap();
+        let (fs, root_id) = if aggregate {
+            let fs = VirtioFs::new_aggregate();
+            fs.add_child("share", tmp.path(), None).unwrap();
+            let root = fs.lookup_synthetic_root("share".as_ref()).unwrap();
+            (fs, root.nodeid)
+        } else {
+            (VirtioFs::new(tmp.path(), None).unwrap(), FUSE_ROOT_ID)
+        };
+        let root = fs.get_inode(root_id).unwrap();
+        let (stale, _) = root.lookup_child("stale".as_ref()).unwrap();
+        std::fs::rename(tmp.path().join("stale"), tmp.path().join("original")).unwrap();
+        root.symlink("stale".as_ref(), "target".as_ref(), 0, 0)
+            .unwrap();
+        let (link, _) = root
+            .symlink("link".as_ref(), "target".as_ref(), 0, 0)
+            .unwrap();
+        for inode in [std::sync::Arc::new(link), std::sync::Arc::new(stale)] {
+            for flags in [
+                lx::O_RDONLY,
+                lx::O_WRONLY,
+                lx::O_RDWR,
+                lx::O_WRONLY | lx::O_TRUNC,
+            ] {
+                assert_eq!(inode.clone().open(flags).err().unwrap(), lx::Error::ELOOP);
+            }
+        }
+        for name in ["link", "stale"] {
+            for flags in [
+                lx::O_RDONLY,
+                lx::O_WRONLY,
+                lx::O_RDWR,
+                lx::O_WRONLY | lx::O_TRUNC,
+            ] {
+                assert_eq!(
+                    root.create(name.as_ref(), flags, 0o666, 0, 0)
+                        .err()
+                        .unwrap(),
+                    lx::Error::ELOOP
+                );
+            }
+            let (link, _) = root.lookup_child(name.as_ref()).unwrap();
+            assert_eq!(link.read_link().unwrap(), "target");
+        }
+        let (file, _) = root.lookup_child("target".as_ref()).unwrap();
+        let file = std::sync::Arc::new(file);
+        file.open(lx::O_RDONLY).unwrap();
+        root.create("new".as_ref(), lx::O_WRONLY, 0o666, 0, 0)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(tmp.path().join("target")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(
+            std::fs::read(tmp.path().join("original")).unwrap(),
+            b"original"
+        );
+        assert!(tmp.path().join("new").is_file());
+    }
+}
+
+#[async_test]
+async fn fuse_open_and_create_reject_final_symlink(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    std::fs::write(harness.tmpdir_path().join("target"), b"unchanged").unwrap();
+    harness.enable().await;
+    harness.fuse_init(0).await;
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_SYMLINK,
+        FUSE_ROOT_ID,
+        b"link\0target\0",
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let entry: fuse_entry_out = harness.read_response(response);
+
+    let open = fuse_open_in::new_zeroed();
+    let mut create = fuse_create_in::new_zeroed();
+    create.mode = 0o666;
+    let mut create_args = create.as_bytes().to_vec();
+    create_args.extend_from_slice(b"link\0");
+    for (opcode, nodeid, args) in [
+        (FUSE_OPEN, entry.nodeid, open.as_bytes()),
+        (FUSE_CREATE, FUSE_ROOT_ID, create_args.as_slice()),
+    ] {
+        let (unique, response) = harness.post_fuse_request(4, opcode, nodeid, args, 256);
+        let (_, used_len) = harness.wait_for_used().await;
+        assert_eq!(used_len, OUT_HEADER_SIZE);
+        let header = harness.read_out_header(response);
+        assert_eq!(header.unique, unique);
+        assert_eq!(header.error, -lx::ELOOP);
+    }
+    assert_eq!(
+        std::fs::read(harness.tmpdir_path().join("target")).unwrap(),
+        b"unchanged"
+    );
+}
+
+#[async_test]
+async fn execute_intent_open_reads_file(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let contents = b"executable";
+    std::fs::write(harness.tmpdir_path().join("file"), contents).unwrap();
+    harness.enable().await;
+    harness.fuse_init(0).await;
+
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_LOOKUP,
+        FUSE_ROOT_ID,
+        b"file\0",
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let entry: fuse_entry_out = harness.read_response(response);
+
+    let mut open = fuse_open_in::new_zeroed();
+    open.flags = (lx::O_RDONLY | lx::O_LARGEFILE) as u32 | 0x20;
+    let (unique, response) = harness.post_fuse_request(
+        4,
+        FUSE_OPEN,
+        entry.nodeid,
+        open.as_bytes(),
+        OUT_HEADER_SIZE + size_of::<fuse_open_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    let header = harness.read_out_header(response);
+    assert_eq!(header.unique, unique);
+    assert_eq!(header.error, 0);
+    let opened: fuse_open_out = harness.read_response(response);
+
+    let mut read = fuse_read_in::new_zeroed();
+    read.fh = opened.fh;
+    read.size = contents.len() as u32;
+    let (unique, response) = harness.post_fuse_request(
+        6,
+        FUSE_READ,
+        entry.nodeid,
+        read.as_bytes(),
+        OUT_HEADER_SIZE + read.size,
+    );
+    let (_, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_len, OUT_HEADER_SIZE + read.size);
+    let header = harness.read_out_header(response);
+    assert_eq!(header.unique, unique);
+    assert_eq!(header.error, 0);
+    let mut actual = vec![0; contents.len()];
+    harness
+        .mem
+        .read_at(response + OUT_HEADER_SIZE as u64, &mut actual)
+        .unwrap();
+    assert_eq!(actual, contents);
+}
+
+#[async_test]
+async fn unsupported_open_flags_do_not_change_files(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    std::fs::write(harness.tmpdir_path().join("file"), b"unchanged").unwrap();
+    harness.enable().await;
+    harness.fuse_init(0).await;
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_LOOKUP,
+        FUSE_ROOT_ID,
+        b"file\0",
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let entry: fuse_entry_out = harness.read_response(response);
+
+    for unsupported in [
+        lx::O_NOCTTY as u32,
+        lx::O_CLOEXEC as u32,
+        lx::O_PATH as u32,
+        0x2000,
+        0x400000,
+        1 << 31,
+    ] {
+        let flags = unsupported | (lx::O_WRONLY | lx::O_TRUNC) as u32;
+        let mut open = fuse_open_in::new_zeroed();
+        open.flags = flags;
+        let mut create = fuse_create_in::new_zeroed();
+        create.flags = flags;
+        create.mode = 0o666;
+        let mut existing = create.as_bytes().to_vec();
+        existing.extend_from_slice(b"file\0");
+        let mut new = create.as_bytes().to_vec();
+        new.extend_from_slice(b"new\0");
+        for (opcode, nodeid, args) in [
+            (FUSE_OPEN, entry.nodeid, open.as_bytes()),
+            (FUSE_CREATE, FUSE_ROOT_ID, existing.as_slice()),
+            (FUSE_CREATE, FUSE_ROOT_ID, new.as_slice()),
+            (FUSE_OPEN, u64::MAX, open.as_bytes()),
+            (FUSE_OPENDIR, u64::MAX, open.as_bytes()),
+            (FUSE_CREATE, u64::MAX, new.as_slice()),
+        ] {
+            let (unique, response) = harness.post_fuse_request(4, opcode, nodeid, args, 256);
+            let (_, used_len) = harness.wait_for_used().await;
+            assert_eq!(used_len, OUT_HEADER_SIZE);
+            let header = harness.read_out_header(response);
+            assert_eq!(header.unique, unique);
+            assert_eq!(header.error, -lx::EINVAL);
+        }
+    }
+    assert_eq!(
+        std::fs::read(harness.tmpdir_path().join("file")).unwrap(),
+        b"unchanged"
+    );
+    assert!(!harness.tmpdir_path().join("new").exists());
+}
+
+#[test]
+fn synthetic_root_open_dir_rejects_unsupported_flags() {
+    let fs = VirtioFs::new_aggregate();
+    let mut header = fuse_in_header::new_zeroed();
+    header.len = (size_of::<fuse_in_header>() + size_of::<fuse_open_in>()) as u32;
+    header.opcode = FUSE_OPENDIR;
+    header.nodeid = FUSE_ROOT_ID;
+    for flags in [
+        lx::O_CREAT,
+        lx::O_EXCL,
+        lx::O_NOCTTY,
+        lx::O_CLOEXEC,
+        lx::O_PATH,
+    ] {
+        let mut open = fuse_open_in::new_zeroed();
+        open.flags = flags as u32;
+        let mut data = header.as_bytes().to_vec();
+        data.extend_from_slice(open.as_bytes());
+        let request = fuse::Request::new(data.as_slice()).unwrap();
+
+        assert_eq!(
+            fuse::Fuse::open_dir(&fs, &request, open.flags).unwrap_err(),
+            lx::Error::EINVAL
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn replaced_regular_file_does_not_wait_for_fifo_peer() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("file"), b"original").unwrap();
+    let fs = VirtioFs::new(tmp.path(), None).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let (inode, _) = root.lookup_child("file".as_ref()).unwrap();
+    let inode = std::sync::Arc::new(inode);
+
+    std::fs::remove_file(tmp.path().join("file")).unwrap();
+    root.volume
+        .mknod(
+            "file",
+            lxutil::LxCreateOptions::new(lx::S_IFIFO | 0o600, 0, 0),
+            0,
+        )
+        .unwrap();
+
+    drop(inode.clone().open(lx::O_RDONLY).unwrap());
+    assert_eq!(inode.open(lx::O_WRONLY).err().unwrap(), lx::Error::ENXIO);
+    assert_eq!(
+        root.create("file".as_ref(), lx::O_WRONLY, 0o600, 0, 0)
+            .err()
+            .unwrap(),
+        lx::Error::ENXIO
+    );
+}
+
+#[test]
+#[cfg_attr(
+    windows,
+    ignore = "requires permission to create native Windows symlinks"
+)]
+fn stale_directory_paths_do_not_follow_native_links() {
+    for aggregate in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("parent")).unwrap();
+        std::fs::write(tmp.path().join("parent").join("file"), b"inside").unwrap();
+        std::fs::write(outside.path().join("file"), b"outside").unwrap();
+        let (fs, root_id) = if aggregate {
+            let fs = VirtioFs::new_aggregate();
+            fs.add_child("share", tmp.path(), None).unwrap();
+            let root = fs.lookup_synthetic_root("share".as_ref()).unwrap();
+            (fs, root.nodeid)
+        } else {
+            (VirtioFs::new(tmp.path(), None).unwrap(), FUSE_ROOT_ID)
+        };
+        let root = fs.get_inode(root_id).unwrap();
+        let (parent, _) = root.lookup_child("parent".as_ref()).unwrap();
+        let (file, _) = parent.lookup_child("file".as_ref()).unwrap();
+        std::fs::rename(tmp.path().join("parent"), tmp.path().join("old")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(outside.path(), tmp.path().join("parent")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("parent")).unwrap();
+        assert_eq!(
+            parent
+                .create("file".as_ref(), lx::O_WRONLY | lx::O_TRUNC, 0o666, 0, 0)
+                .err()
+                .unwrap(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(
+            std::sync::Arc::new(file).open(lx::O_WRONLY).err().unwrap(),
+            lx::Error::ELOOP
+        );
+        let error = root
+            .rename("old".as_ref(), &parent, "renamed".as_ref(), 0)
+            .unwrap_err();
+        assert!(matches!(error, lx::Error::ENOTDIR | lx::Error::ELOOP));
+        assert_eq!(
+            std::fs::read(outside.path().join("file")).unwrap(),
+            b"outside"
+        );
+        assert!(!outside.path().join("renamed").exists());
+    }
+}
+
+/// Tests for serving a file system under a user token on Windows.
+#[cfg(windows)]
+pub(crate) mod user_token {
+    // UNSAFETY: Calling Win32 APIs and constructing owned handles from their
+    // outputs.
+    #![expect(unsafe_code)]
+
+    use super::OUT_HEADER_SIZE;
+    use super::TestHarness;
+    use crate::resolver::impersonating_driver_source;
+    use crate::virtio::VirtioFsDevice;
+    use fuse::Fuse;
+    use fuse::Request;
+    use fuse::SessionInfo;
+    use fuse::protocol::*;
+    use pal::windows::security::RevertToSelfGuard;
+    use pal::windows::security::duplicate_impersonation_token;
+    use pal::windows::security::open_process_token;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::io;
+    use std::os::windows::io::AsHandle;
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::OwnedHandle;
+    use std::ptr;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+    use windows_sys::Win32::Foundation::ERROR_NO_TOKEN;
+    use windows_sys::Win32::Security;
+    use windows_sys::Win32::System::Threading::GetCurrentThread;
+    use windows_sys::Win32::System::Threading::OpenThreadToken;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
+
+    fn process_token() -> OwnedHandle {
+        let token = open_process_token(Security::TOKEN_DUPLICATE).unwrap();
+        duplicate_impersonation_token(token.as_handle()).unwrap()
+    }
+
+    pub(crate) fn thread_token() -> io::Result<OwnedHandle> {
+        let mut token = ptr::null_mut();
+        // SAFETY: Calling Win32 API as documented.
+        unsafe {
+            if OpenThreadToken(GetCurrentThread(), Security::TOKEN_QUERY, 1, &mut token) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(OwnedHandle::from_raw_handle(token))
+        }
+    }
+
+    #[test]
+    fn rejects_non_token_handle() {
+        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        duplicate_impersonation_token(file.as_handle()).unwrap_err();
+    }
+
+    #[test]
+    fn impersonates_until_dropped() {
+        let process_token = process_token();
+        let token = duplicate_impersonation_token(process_token.as_handle()).unwrap();
+        {
+            let _guard = RevertToSelfGuard::impersonate(&token).unwrap();
+            thread_token().unwrap();
+        }
+
+        let err = thread_token().unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(ERROR_NO_TOKEN as i32));
+    }
+
+    /// Returns an impersonation token for this process restricted to the
+    /// Everyone SID.
+    pub(crate) fn restricted_token() -> OwnedHandle {
+        let token = process_token();
+        let mut world_sid = [0u32; Security::SECURITY_MAX_SID_SIZE as usize / size_of::<u32>()];
+        let mut sid_size = size_of_val(&world_sid) as u32;
+        let mut restricted = ptr::null_mut();
+        // SAFETY: The SID buffer is aligned and large enough for a well-known
+        // SID. All inputs remain valid until the new token handle is returned.
+        unsafe {
+            assert_ne!(
+                Security::CreateWellKnownSid(
+                    Security::WinWorldSid,
+                    ptr::null_mut(),
+                    world_sid.as_mut_ptr().cast(),
+                    &mut sid_size,
+                ),
+                0
+            );
+            let sid = Security::SID_AND_ATTRIBUTES {
+                Sid: world_sid.as_mut_ptr().cast(),
+                Attributes: 0,
+            };
+            assert_ne!(
+                Security::CreateRestrictedToken(
+                    token.as_raw_handle(),
+                    Security::DISABLE_MAX_PRIVILEGE,
+                    0,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    1,
+                    &sid,
+                    &mut restricted,
+                ),
+                0
+            );
+            OwnedHandle::from_raw_handle(restricted)
+        }
+    }
+
+    fn token_id(token: &OwnedHandle) -> (u32, i32) {
+        let mut stats = Security::TOKEN_STATISTICS::default();
+        let mut size = 0;
+        // SAFETY: The token is valid and the output buffer matches the queried
+        // information class.
+        unsafe {
+            assert_ne!(
+                Security::GetTokenInformation(
+                    token.as_raw_handle(),
+                    Security::TokenStatistics,
+                    ptr::from_mut(&mut stats).cast(),
+                    size_of_val(&stats) as u32,
+                    &mut size,
+                ),
+                0
+            );
+        }
+        (stats.TokenId.LowPart, stats.TokenId.HighPart)
+    }
+
+    struct TokenCheckingFs {
+        token_id: (u32, i32),
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl TokenCheckingFs {
+        /// Counts the call only if it runs under the expected restricted
+        /// token. This does not panic, since it runs on the device thread.
+        fn check_identity(&self) {
+            let Ok(token) = thread_token() else {
+                return;
+            };
+            // SAFETY: The handle refers to a valid token.
+            let restricted = unsafe { Security::IsTokenRestricted(token.as_raw_handle()) } != 0;
+            if restricted && token_id(&token) == self.token_id {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    impl Fuse for TokenCheckingFs {
+        fn init(&self, _info: &mut SessionInfo) {
+            self.check_identity();
+        }
+
+        fn get_attr(&self, _request: &Request, _flags: u32, _fh: u64) -> lx::Result<fuse_attr_out> {
+            self.check_identity();
+            Err(lx::Error::EACCES)
+        }
+    }
+
+    #[async_test]
+    async fn device_requests_run_under_user_token(driver: DefaultDriver) {
+        let token = restricted_token();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let fs = TokenCheckingFs {
+            token_id: token_id(&token),
+            calls: calls.clone(),
+        };
+        let driver_source = impersonating_driver_source("virtiofs-test".into(), token).unwrap();
+        let device = VirtioFsDevice::new(&driver_source, "testfs", fs, Default::default());
+        let mut harness = TestHarness::with_device(&driver, device, tempfile::tempdir().unwrap());
+        harness.enable().await;
+        harness.fuse_init(0).await;
+
+        let getattr = fuse_getattr_in::new_zeroed();
+        let resp_size = OUT_HEADER_SIZE + size_of::<fuse_attr_out>() as u32;
+        let (unique, resp_gpa) =
+            harness.post_fuse_request(2, FUSE_GETATTR, FUSE_ROOT_ID, getattr.as_bytes(), resp_size);
+        harness.wait_for_used().await;
+        let reply = harness.read_out_header(resp_gpa);
+        assert_eq!(reply.unique, unique);
+        assert_eq!(reply.error, -lx::Error::EACCES.value());
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        // Impersonation is confined to the device thread.
+        assert_eq!(
+            thread_token().unwrap_err().raw_os_error(),
+            Some(ERROR_NO_TOKEN as i32)
+        );
+    }
+
+    #[test]
+    fn impersonating_driver_source_fails_closed() {
+        // A non-token handle makes impersonation fail.
+        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        assert!(impersonating_driver_source("virtiofs-test".into(), file.into()).is_err());
+    }
 }

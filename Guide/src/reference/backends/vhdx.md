@@ -101,6 +101,8 @@ particular strategy.
 - For differencing disks, the `vhdx` crate parses parent locator
   metadata, while `disklayer_vhdx::chain::open_vhdx_chain` walks and
   opens parent chains automatically.
+- On Windows, OpenVMM uses VHDMP for `.vhdx` files. The native backend
+  supports guest trim/unmap when the driver advertises SCSI UNMAP support.
 
 ## Parent lookup
 

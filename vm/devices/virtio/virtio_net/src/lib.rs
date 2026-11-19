@@ -17,7 +17,6 @@ pub mod resolver;
 #[cfg(test)]
 mod tests;
 
-use crate::buffers::RxQueueError;
 use crate::buffers::VirtioWorkPool;
 use anyhow::Context as _;
 use bitfield_struct::bitfield;
@@ -30,6 +29,7 @@ use net_backend::Endpoint;
 use net_backend::EndpointAction;
 use net_backend::QueueConfig;
 use net_backend::RxId;
+use net_backend::RxOffloadSupport;
 use net_backend::TxFlags;
 use net_backend::TxId;
 use net_backend::TxMetadata;
@@ -227,6 +227,7 @@ struct Adapter {
     tx_fast_completions: bool,
     mac_address: MacAddress,
     tx_offload_support: TxOffloadSupport,
+    enable_rx_gso: bool,
 }
 
 pub struct Device {
@@ -245,6 +246,7 @@ enum QueuePairState {
     Empty,
     /// One queue started, waiting for its partner.
     HalfOpen {
+        driver: VmTaskDriver,
         queue: VirtioQueue,
         queue_size: u16,
         /// true if this is the RX queue (even index), false if TX (odd).
@@ -274,6 +276,8 @@ impl VirtioDevice for Device {
             .with_mtu(true)
             .with_csum(csum)
             .with_guest_csum(true)
+            .with_guest_tso4(self.adapter.enable_rx_gso)
+            .with_guest_tso6(self.adapter.enable_rx_gso)
             .with_host_tso4(host_tso)
             .with_host_tso6(host_tso);
 
@@ -328,35 +332,46 @@ impl VirtioDevice for Device {
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
-        let guest_memory = resources.guest_memory.clone();
-        let queue_size = resources.params.size;
-        let queue_event = PolledWait::new(&self.adapter.driver, resources.event)
-            .context("failed creating queue event")?;
-        let queue = VirtioQueue::new(
-            *features,
-            resources.params,
-            resources.guest_memory,
-            resources.notify,
-            queue_event,
-            initial_state,
-        )
-        .context("failed creating virtio net queue")?;
-
-        let negotiated_features = NetworkFeaturesBank0::from(features.bank(0));
-        let negotiated_features_bank1 = NetworkFeaturesBank1::from(features.bank(1));
         let pair_idx = (idx / 2) as usize;
         let is_rx = idx.is_multiple_of(2);
 
         match &self.pairs[pair_idx] {
             QueuePairState::Empty => {
                 // First queue of the pair — buffer it.
+
+                // Build the driver for this queue pair
+                let mut builder = self.driver_source.builder();
+                // TODO: set this correctly
+                builder.target_vp(0);
+                // If tx completions arrive quickly, then just do tx processing
+                // on whatever processor the guest happens to signal from.
+                // Subsequent transmits will be pulled from the completion
+                // processor.
+                builder.run_on_target(!self.adapter.tx_fast_completions);
+                let driver = builder.build("virtio-net");
+
+                let queue_size = resources.params.size;
+                let queue_event = PolledWait::new(&driver, resources.event)
+                    .context("failed creating queue event")?;
+                let queue = VirtioQueue::new(
+                    *features,
+                    resources.params,
+                    resources.guest_memory,
+                    resources.notify,
+                    queue_event,
+                    initial_state,
+                )
+                .context("failed creating virtio net queue")?;
+
                 self.pairs[pair_idx] = QueuePairState::HalfOpen {
+                    driver,
                     queue,
                     queue_size,
                     is_rx,
                 };
             }
             QueuePairState::HalfOpen {
+                driver,
                 is_rx: pending_is_rx,
                 ..
             } => {
@@ -367,7 +382,21 @@ impl VirtioDevice for Device {
                     );
                 }
 
-                // Second queue — extract the first, form the pair.
+                let guest_memory = resources.guest_memory.clone();
+                let queue_size = resources.params.size;
+                let queue_event = PolledWait::new(driver, resources.event)
+                    .context("failed creating queue event")?;
+                let queue = VirtioQueue::new(
+                    *features,
+                    resources.params,
+                    resources.guest_memory,
+                    resources.notify,
+                    queue_event,
+                    initial_state,
+                )
+                .context("failed creating virtio net queue")?;
+
+                // Both queues are successfully constructed; extract the first and form the pair.
                 let first_pair = !self
                     .pairs
                     .iter()
@@ -375,6 +404,7 @@ impl VirtioDevice for Device {
 
                 let prev = std::mem::replace(&mut self.pairs[pair_idx], QueuePairState::Active);
                 let QueuePairState::HalfOpen {
+                    driver,
                     queue: pending_queue,
                     queue_size: pending_queue_size,
                     is_rx: pending_is_rx,
@@ -383,6 +413,9 @@ impl VirtioDevice for Device {
                     unreachable!()
                 };
 
+                let negotiated_features = NetworkFeaturesBank0::from(features.bank(0));
+                let negotiated_features_bank1 = NetworkFeaturesBank1::from(features.bank(1));
+
                 let (rx_queue, rx_queue_size, tx_queue, tx_queue_size) = if pending_is_rx {
                     (pending_queue, pending_queue_size, queue, queue_size)
                 } else {
@@ -390,7 +423,7 @@ impl VirtioDevice for Device {
                 };
 
                 if first_pair {
-                    self.insert_coordinator(self.pairs.len() as u16);
+                    self.insert_coordinator(self.pairs.len() as u16, negotiated_features);
                 }
 
                 let virtio_state = VirtioState {
@@ -407,6 +440,7 @@ impl VirtioDevice for Device {
                     &guest_memory,
                     negotiated_features,
                     negotiated_features_bank1,
+                    driver,
                 );
 
                 if first_pair {
@@ -537,11 +571,18 @@ struct PendingTxPacket {
 
 pub struct NicBuilder {
     max_queue_pairs: u16,
+    enable_rx_gso: bool,
 }
 
 impl NicBuilder {
     pub fn max_queues(mut self, max_queue_pairs: u16) -> Self {
         self.max_queue_pairs = max_queue_pairs;
+        self
+    }
+
+    /// Enables advertising guest TCP segmentation offload.
+    pub fn enable_rx_gso(mut self, enable: bool) -> Self {
+        self.enable_rx_gso = enable;
         self
     }
 
@@ -585,6 +626,7 @@ impl NicBuilder {
             tx_fast_completions: endpoint.tx_fast_completions(),
             mac_address,
             tx_offload_support,
+            enable_rx_gso: self.enable_rx_gso,
         });
 
         let coordinator = TaskControl::new(CoordinatorState {
@@ -616,10 +658,20 @@ impl NicBuilder {
     }
 }
 
+fn negotiated_rx_offload_support(features: NetworkFeaturesBank0) -> RxOffloadSupport {
+    let checksum = features.guest_csum();
+    RxOffloadSupport {
+        checksum,
+        tcpv4_gso: checksum && features.guest_tso4(),
+        tcpv6_gso: checksum && features.guest_tso6(),
+    }
+}
+
 impl Device {
     pub fn builder() -> NicBuilder {
         NicBuilder {
             max_queue_pairs: !0,
+            enable_rx_gso: false,
         }
     }
 }
@@ -631,7 +683,7 @@ impl InspectMut for Device {
 }
 
 impl Device {
-    fn insert_coordinator(&mut self, num_queues: u16) {
+    fn insert_coordinator(&mut self, num_queues: u16, negotiated_features: NetworkFeaturesBank0) {
         self.coordinator.insert(
             &self.adapter.driver,
             "virtio-net-coordinator".to_string(),
@@ -640,6 +692,7 @@ impl Device {
                     .map(|_| TaskControl::new(NetQueue { state: None }))
                     .collect(),
                 num_queues,
+                enabled_rx_offloads: negotiated_rx_offload_support(negotiated_features),
                 restart: true,
             },
         );
@@ -655,23 +708,15 @@ impl Device {
         guest_memory: &GuestMemory,
         negotiated_features: NetworkFeaturesBank0,
         negotiated_features_bank1: NetworkFeaturesBank1,
+        driver: VmTaskDriver,
     ) {
-        let mut builder = self.driver_source.builder();
-        // TODO: set this correctly
-        builder.target_vp(0);
-        // If tx completions arrive quickly, then just do tx processing
-        // on whatever processor the guest happens to signal from.
-        // Subsequent transmits will be pulled from the completion
-        // processor.
-        builder.run_on_target(!self.adapter.tx_fast_completions);
-        let driver = builder.build("virtio-net");
-
         let active_state = ActiveState::new(
             guest_memory.clone(),
             virtio_state.rx_queue_size,
             virtio_state.tx_queue_size,
         );
         let worker = Worker {
+            driver: driver.clone(),
             virtio_state,
             active_state,
             negotiated_features,
@@ -687,6 +732,7 @@ impl Device {
 struct Coordinator {
     workers: Vec<TaskControl<NetQueue, Worker>>,
     num_queues: u16,
+    enabled_rx_offloads: RxOffloadSupport,
     restart: bool,
 }
 
@@ -775,9 +821,12 @@ impl Coordinator {
             worker.task_mut().state = None;
         }
 
-        let queue_config = (0..self.workers.len())
-            .map(|_| QueueConfig {
-                driver: Box::new(c_state.adapter.driver.clone()),
+        let queue_config = self
+            .workers
+            .iter()
+            .map(|worker| QueueConfig {
+                driver: Box::new(worker.state().unwrap().driver.clone()),
+                enabled_rx_offloads: self.enabled_rx_offloads,
             })
             .collect::<Vec<_>>();
 
@@ -846,8 +895,6 @@ enum WorkerError {
     VirtioQueue(#[source] std::io::Error),
     #[error("endpoint")]
     Endpoint(#[source] anyhow::Error),
-    #[error("guest submitted duplicate descriptor index {0}")]
-    DuplicateDescriptor(u16),
     #[error("cancelled")]
     Cancelled(task_control::Cancelled),
 }
@@ -860,8 +907,6 @@ enum TxPacketError {
     Empty,
     #[error("too many segments")]
     TooManySegments,
-    #[error("descriptor index {0} already in use")]
-    DuplicateIndex(u16),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -872,6 +917,8 @@ impl From<task_control::Cancelled> for WorkerError {
 
 #[derive(InspectMut)]
 struct Worker {
+    #[inspect(skip)]
+    driver: VmTaskDriver,
     virtio_state: VirtioState,
     active_state: ActiveState,
     #[inspect(skip)]
@@ -903,12 +950,13 @@ impl Worker {
         stop: &mut StopTask<'_>,
         queue: &mut NetQueue,
     ) -> Result<(), WorkerError> {
+        let check = stop.check_handle()?;
         let epqueue_state = queue.state.as_mut().unwrap();
 
         loop {
             let did_some_work = self.process_endpoint_rx(epqueue_state.queue.as_mut())?
-                | self.process_virtio_rx(epqueue_state.queue.as_mut())?
-                | self.process_virtio_tx(epqueue_state)?
+                | self.process_virtio_rx(epqueue_state.queue.as_mut(), &check)?
+                | self.process_virtio_tx(epqueue_state, &check)?
                 | self.process_endpoint_tx(epqueue_state.queue.as_mut())?;
 
             if !did_some_work {
@@ -946,9 +994,11 @@ impl Worker {
     fn process_virtio_tx(
         &mut self,
         queue_state: &mut EndpointQueueState,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<bool, WorkerError> {
         let mut did_work = false;
         loop {
+            check.check()?;
             did_work |= self.transmit_pending_segments(queue_state)?;
             if !self.active_state.data.tx_segments.is_empty() {
                 break;
@@ -963,7 +1013,7 @@ impl Worker {
                 else {
                     break;
                 };
-                self.queue_tx_packet(work)?;
+                self.queue_tx_packet(work);
                 did_work = true;
             }
             if self.active_state.data.tx_segments.is_empty() {
@@ -973,7 +1023,7 @@ impl Worker {
         Ok(did_work)
     }
 
-    fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) -> Result<(), WorkerError> {
+    fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) {
         let seg_start = self.active_state.data.tx_segments.len();
         match self.try_queue_tx_packet(&work) {
             Ok(idx) => {
@@ -984,12 +1034,6 @@ impl Worker {
             Err(err) => {
                 self.active_state.stats.tx_dropped.increment();
                 self.active_state.data.tx_segments.truncate(seg_start);
-                if let TxPacketError::DuplicateIndex(idx) = err {
-                    // A duplicate descriptor index cannot be tracked (the pending
-                    // slot is already taken), so treat it as a fatal queue protocol
-                    // violation rather than an out-of-order drop.
-                    return Err(WorkerError::DuplicateDescriptor(idx));
-                }
                 tracelimit::warn_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     "dropping TX packet"
@@ -1003,7 +1047,6 @@ impl Worker {
                 );
             }
         }
-        Ok(())
     }
 
     /// Build TX segments and offload metadata for a packet.
@@ -1017,9 +1060,10 @@ impl Worker {
         work: &VirtioQueueCallbackWork,
     ) -> Result<u16, TxPacketError> {
         let idx = work.descriptor_index();
-        if self.active_state.pending_tx_packets[idx as usize].is_some() {
-            return Err(TxPacketError::DuplicateIndex(idx));
-        }
+        assert!(
+            self.active_state.pending_tx_packets[idx as usize].is_none(),
+            "TX descriptor {idx} is already tracked"
+        );
 
         let total_readable = work.get_payload_length(false) as usize;
         let packet_len: u32 = total_readable
@@ -1292,19 +1336,28 @@ impl Worker {
     fn process_virtio_rx(
         &mut self,
         epqueue: &mut dyn net_backend::Queue,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<bool, WorkerError> {
         // Fill the receive queue with any available buffers.
         let mut rx_ids = Vec::new();
-        while let Some(work) = self
-            .virtio_state
-            .rx_in_order
-            .try_next(&mut self.virtio_state.rx_queue)
-            .map_err(WorkerError::VirtioQueue)?
-        {
+        let cancelled = loop {
+            // Rejected buffers complete inline and can be reposted, so queue
+            // capacity does not bound this loop.
+            if let Err(cancelled) = check.check() {
+                break Some(cancelled);
+            }
+            let Some(work) = self
+                .virtio_state
+                .rx_in_order
+                .try_next(&mut self.virtio_state.rx_queue)
+                .map_err(WorkerError::VirtioQueue)?
+            else {
+                break None;
+            };
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {
                 Ok(rx_id) => rx_ids.push(rx_id),
-                Err(RxQueueError::TooSmall(work)) => {
+                Err(work) => {
                     // Complete (drop) the buffer in avail order via the in-order
                     // completion discipline. Reason traced by callee.
                     self.active_state.stats.rx_dropped.increment();
@@ -1314,22 +1367,16 @@ impl Worker {
                         0,
                     );
                 }
-                Err(RxQueueError::DuplicateIndex(work)) => {
-                    // A duplicate descriptor index cannot be tracked (the pool
-                    // slot is already taken), so treat it as a fatal queue
-                    // protocol violation rather than an out-of-order drop.
-                    let idx = work.descriptor_index();
-                    self.active_state.stats.rx_dropped.increment();
-                    return Err(WorkerError::DuplicateDescriptor(idx));
-                }
             }
-        }
-        if !rx_ids.is_empty() {
+        };
+        let did_work = !rx_ids.is_empty();
+        if did_work {
             epqueue.rx_avail(&mut self.active_state.pending_rx_packets, rx_ids.as_slice());
-            Ok(true)
-        } else {
-            Ok(false)
         }
+        if let Some(cancelled) = cancelled {
+            return Err(cancelled.into());
+        }
+        Ok(did_work)
     }
 
     fn process_endpoint_rx(
@@ -1345,8 +1392,12 @@ impl Worker {
         }
 
         for ready_id in state.data.rx_ready[..n].iter() {
-            state.stats.rx_packets.increment();
-            let (work, bytes) = state.pending_rx_packets.take_rx_work(*ready_id);
+            let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(*ready_id);
+            if dropped {
+                state.stats.rx_dropped.increment();
+            } else {
+                state.stats.rx_packets.increment();
+            }
             self.virtio_state.rx_in_order.complete(
                 &mut self.virtio_state.rx_queue,
                 work.into_completion(),

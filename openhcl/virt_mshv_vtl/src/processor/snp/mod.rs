@@ -1674,6 +1674,9 @@ impl UhProcessor<'_, SnpBacked> {
             .run()
             .map_err(|e| dev.fatal_error(SnpRunVpError::RunVpError(e).into()))?;
 
+        // A successful run can return VMSA state without a SynIC message.
+        has_intercept &= self.runner.exit_message().header.typ != HvMessageType::HvMessageTypeNone;
+
         let entered_from_vtl = next_vtl;
 
         self.shared
@@ -2261,7 +2264,8 @@ impl UhProcessor<'_, SnpBacked> {
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
                     self.handle_synic_deliverable_exit();
                 }
-                HvMessageType::HvMessageTypeX64Halt
+                HvMessageType::HvMessageTypeNone
+                | HvMessageType::HvMessageTypeX64Halt
                 | HvMessageType::HvMessageTypeExceptionIntercept => {
                     // Ignore. Note: it is possible to get the ExceptionIntercept
                     // message for reflect #VC.
@@ -2925,6 +2929,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
 
     fn set_tsc(&mut self, _value: &vp::Tsc) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("tsc"))
+    }
+
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
+    }
+
+    fn set_tsc_deadline(&mut self, _value: &vp::TscDeadline) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
     }
 
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {

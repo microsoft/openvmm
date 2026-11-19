@@ -15,7 +15,10 @@ export const columnWidthMap = {
 };
 
 // Define columns for the test results table
-export const createColumns = (runId: string): ColumnDef<TestResult>[] => [
+export const createColumns = (
+  runId: string,
+  warmLog: (test: TestResult) => void,
+): ColumnDef<TestResult>[] => [
   {
     accessorKey: "status",
     header: "Status",
@@ -41,7 +44,9 @@ export const createColumns = (runId: string): ColumnDef<TestResult>[] => [
       return parts.length > 1 ? parts[0] : "Other";
     },
     cell: (info) => (
-      <div className="common-architecture-name">{info.getValue() as string}</div>
+      <div className="common-architecture-name">
+        {info.getValue() as string}
+      </div>
     ),
     enableSorting: true,
   },
@@ -65,6 +70,8 @@ export const createColumns = (runId: string): ColumnDef<TestResult>[] => [
             state={{ testResult: info.row.original }}
             className="common-table-link run-details-testname-link"
             title={fullTestName}
+            onMouseEnter={() => warmLog(info.row.original)}
+            onFocus={() => warmLog(info.row.original)}
           >
             {testName}
           </Link>

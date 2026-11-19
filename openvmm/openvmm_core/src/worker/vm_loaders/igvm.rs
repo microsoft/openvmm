@@ -242,8 +242,10 @@ pub fn snp_isolation_config(igvm_file: &IgvmFile) -> Result<virt::SnpConfig, Err
                 vmsa,
                 ..
             } => {
-                let page = <&[u8; 4096]>::try_from(vmsa.as_bytes())
-                    .map_err(|_| Error::InvalidSnpVmsaSize)?;
+                let page = vmsa
+                    .as_bytes()
+                    .as_array()
+                    .ok_or(Error::InvalidSnpVmsaSize)?;
                 vp_contexts.push(virt::SnpVpContext {
                     gpa: *gpa,
                     vp_index: virt::VpIndex::new(u32::from(*vp_index)),
@@ -467,13 +469,10 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
 pub fn load_igvm(
     params: LoadIgvmParams<'_, vm_topology::processor::TargetTopology>,
 ) -> Result<InitialLoad<loader::importer::Register>, Error> {
-    #[cfg(guest_arch = "x86_64")]
-    {
-        load_igvm_x86(params)
-    }
-    #[cfg(guest_arch = "aarch64")]
-    {
-        load_igvm_aarch64(params)
+    cfg_select! {
+        guest_arch = "x86_64" => load_igvm_x86(params),
+        guest_arch = "aarch64" => load_igvm_aarch64(params),
+        _ => compile_error!("unsupported guest architecture"),
     }
 }
 

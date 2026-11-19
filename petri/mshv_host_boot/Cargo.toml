@@ -1,0 +1,13 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "mshv_host_boot"
+edition.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { workspace = true, features = ["alloc", "global_allocator"] }
+
+[lints]
+workspace = true

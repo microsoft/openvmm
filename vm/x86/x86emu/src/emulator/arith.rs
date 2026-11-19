@@ -242,7 +242,7 @@ pub(super) struct AdcOp;
 impl ArithOp for AdcOp {
     const UPDATES_RESULT: bool = true;
     fn op(left: u64, right: u64, flags: RFlags) -> u64 {
-        left.wrapping_add(right).wrapping_add(flags.carry() as u64)
+        left.carrying_add(right, flags.carry()).0
     }
     fn update_flags(flags: &mut RFlags, operand_size: usize, result: u64, left: u64, right: u64) {
         update_flags_arith(flags, true, true, operand_size, result, left, right)
@@ -264,7 +264,7 @@ pub(super) struct SbbOp;
 impl ArithOp for SbbOp {
     const UPDATES_RESULT: bool = true;
     fn op(left: u64, right: u64, flags: RFlags) -> u64 {
-        left.wrapping_sub(right.wrapping_add(flags.carry() as u64))
+        left.borrowing_sub(right, flags.carry()).0
     }
     fn update_flags(flags: &mut RFlags, operand_size: usize, result: u64, left: u64, right: u64) {
         update_flags_arith(flags, false, true, operand_size, result, left, right)

@@ -3,6 +3,8 @@
 
 //! SHA-384 implementation using OpenSSL.
 
+use super::SHA_384_OUTPUT_SIZE_BYTES;
+
 pub struct Sha384(openssl::sha::Sha384);
 
 impl Sha384 {
@@ -14,7 +16,7 @@ impl Sha384 {
         self.0.update(data);
     }
 
-    pub fn finish(self) -> [u8; 48] {
+    pub fn finish(self) -> [u8; SHA_384_OUTPUT_SIZE_BYTES] {
         self.0.finish()
     }
 }
