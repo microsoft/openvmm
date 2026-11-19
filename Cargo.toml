@@ -186,6 +186,7 @@ powershell_builder = { path = "support/powershell_builder" }
 resource_dll_parser = { path = "support/resource_dll_parser" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
 safeatomic = { path = "support/safeatomic" }
+sandbox = { path = "support/sandbox" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
 sev_guest_device_tio = { path = "support/sev_guest_device/sev_guest_device_tio" }

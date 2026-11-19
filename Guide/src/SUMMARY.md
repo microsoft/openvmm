@@ -153,6 +153,7 @@
     - [Consomme](./reference/backends/consomme.md)
 - [Architecture](./reference/architecture.md)
   - [Timekeeping](./reference/architecture/timekeeping.md)
+  - [Worker Sandboxing](./reference/architecture/sandbox.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
     - [Memory Layout](./reference/architecture/openvmm/memory-layout.md)
     - [Memory Backing](./reference/architecture/openvmm/memory-backing.md)
