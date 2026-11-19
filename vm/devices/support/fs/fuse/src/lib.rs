@@ -173,6 +173,8 @@ pub trait Fuse {
     }
 
     /// Reads data from an open file.
+    ///
+    /// Returns at most `arg.size` bytes; more data fails the request with `EIO`.
     fn read(&self, _request: &Request, _arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
         Err(lx::Error::ENOSYS)
     }
@@ -212,6 +214,9 @@ pub trait Fuse {
     }
 
     /// Retrieve an extended attribute on an inode.
+    ///
+    /// Returns a value of at most `size` bytes, or `ERANGE` if the value is longer; more data
+    /// fails the request with `EIO`.
     fn get_xattr(&self, _request: &Request, _name: &LxStr, _size: u32) -> lx::Result<Vec<u8>> {
         Err(lx::Error::ENOSYS)
     }
@@ -222,6 +227,9 @@ pub trait Fuse {
     }
 
     /// List all extended attributes on an inode.
+    ///
+    /// Returns a list of at most `size` bytes, or `ERANGE` if the list is longer; more data fails
+    /// the request with `EIO`.
     fn list_xattr(&self, _request: &Request, _size: u32) -> lx::Result<Vec<u8>> {
         Err(lx::Error::ENOSYS)
     }
@@ -259,7 +267,8 @@ pub trait Fuse {
 
     /// Reads the contents of a directory.
     ///
-    /// Use `DirEntryWriter` to create a buffer containing directory entries.
+    /// Use `DirEntryWriter` to create a buffer containing directory entries. Returns at most
+    /// `arg.size` bytes; more data fails the request with `EIO`.
     fn read_dir(&self, _request: &Request, _arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
         Err(lx::Error::ENOSYS)
     }
@@ -351,7 +360,8 @@ pub trait Fuse {
 
     /// Reads the contents of a directory, and performs a lookup on each entry.
     ///
-    /// This function increases the lookup count of each entry in the directory by one.
+    /// This function increases the lookup count of each entry in the directory by one. Returns at
+    /// most `arg.size` bytes; more data fails the request with `EIO`.
     ///
     /// If you implement this, you must set `FUSE_DO_READDIRPLUS` in `init`. If you implement both
     /// read_dir_plus and read_dir, also set `FUSE_READDIRPLUS_AUTO`.
