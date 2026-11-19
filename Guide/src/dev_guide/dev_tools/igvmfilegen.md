@@ -76,8 +76,9 @@ mode described below.
 
 ### Product and device policies
 
-An `openhcl` image can name a measured product policy with `product_policy`,
-and a PCI device policy file with `device_policy`, relative to the manifest.
+An `openhcl` image can name a measured product policy in
+`product_policy.policy`, and a PCI device policy file in
+`product_policy.device_policy`, relative to the manifest.
 `igvmfilegen` appends them to the OpenHCL initrd. See
 [Measured Product Policy](../../reference/architecture/openhcl/product_policy.md)
 for the formats and what OpenHCL enforces.

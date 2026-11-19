@@ -6,15 +6,16 @@ covers it.
 
 Three parts of the build and boot share this contract:
 
-1. The `openhcl` image in the IGVM manifest names a product policy with
-   `product_policy` and, optionally, a PCI device policy file with
-   `device_policy`, relative to the manifest. A device policy needs a product
-   policy to carry it:
+1. The `openhcl` image in the IGVM manifest names a product policy in
+   `product_policy.policy` and, optionally, a PCI device policy file in
+   `product_policy.device_policy`, relative to the manifest:
 
    ```json
    "openhcl": {
-       "product_policy": { "azure": {} },
-       "device_policy": "policies/azure-cvm.toml",
+       "product_policy": {
+           "policy": { "azure": {} },
+           "device_policy": "policies/azure-cvm.toml"
+       },
        ...
    }
    ```
@@ -67,12 +68,16 @@ allowed_pci_devices = ["nvme", "mana"]
 vpci_relay = "default_on"
 ```
 
-`vpci_relay` sets when the relay runs:
+`vpci_relay` sets whether the relay runs by default, and whether the
+`OPENHCL_ENABLE_VPCI_RELAY` environment variable can change that:
 
-- `"default_off"`, the default: only if `OPENHCL_ENABLE_VPCI_RELAY=1`.
-- `"default_on"`: unless `OPENHCL_ENABLE_VPCI_RELAY=0`.
-- `"must_be_on"`: always. The environment variable can't turn it off, and
-  OpenHCL fails to boot if the relay can't run.
+| `vpci_relay` | Relay by default | `OPENHCL_ENABLE_VPCI_RELAY` |
+|---|---|---|
+| `"default_off"`, used if the file doesn't set `vpci_relay` | Off | `1` turns it on |
+| `"default_on"` | On | `0` turns it off |
+| `"must_be_on"` | On | Ignored |
+
+The relay is required when the policy is `"must_be_on"` or the variable is `1`.
 
 The environment variable comes from the kernel command line. The host can add to
 it only if the manifest sets `static_command_line` to false and OpenHCL trusts
@@ -96,14 +101,15 @@ prog_if    = 0x02
 
 When the relay runs, it offers the guest only the allowed devices:
 
-- OpenHCL reserves high VTL0 MMIO space and VMBus ring memory for 64 devices,
-  and rejects devices beyond that. Without enough high VTL0 MMIO space,
-  OpenHCL fails to boot.
+- OpenHCL reserves high VTL0 MMIO space and VMBus ring memory for 64 devices.
+  Without enough high VTL0 MMIO space, OpenHCL fails to boot. More than 64
+  devices at boot also make it fail to boot; a device offered later beyond
+  the 64 isn't relayed, and OpenHCL logs an error.
 - The relay needs a device policy that allows at least one device.
-- If the relay can't run, OpenHCL starts without the allowed devices and logs
-  a warning that names the missing requirement. Isolated guests then reject
-  VPCI offers. If the relay was required, OpenHCL fails to boot with that
-  reason instead.
+- If the relay can't run, OpenHCL logs a warning that names the missing
+  requirement, and VPCI devices reach the guest through the VMBus relay
+  without filtering, as when the relay is off. If the relay was required,
+  OpenHCL fails to boot with that reason instead.
 
 ## In-tree images
 

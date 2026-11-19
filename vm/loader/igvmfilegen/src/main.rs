@@ -355,8 +355,13 @@ fn main() -> anyhow::Result<()> {
 
             // Device policy paths are relative to the manifest file.
             for guest_config in &mut config.guest_configs {
-                if let Image::Openhcl { device_policy, .. } = &mut guest_config.image {
-                    *device_policy = device_policy.as_ref().map(|p| manifest.with_file_name(p));
+                if let Image::Openhcl {
+                    product_policy: Some(p),
+                    ..
+                } = &mut guest_config.image
+                    && let Some(path) = &mut p.device_policy
+                {
+                    *path = manifest.with_file_name(&path);
                 }
             }
 
@@ -1458,7 +1463,6 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
             uefi,
             ref linux,
             ref product_policy,
-            ref device_policy,
         } => {
             if uefi && linux.is_some() {
                 anyhow::bail!("cannot include both UEFI and Linux images in OpenHCL image");
@@ -1480,11 +1484,13 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                     "reading underhill initrd at {}",
                     initrd_path.display()
                 ))?;
-                product_policy_initrd::append(
-                    &mut initrd,
-                    product_policy.as_ref(),
-                    device_policy.as_deref(),
-                )?;
+                if let Some(config) = product_policy {
+                    product_policy_initrd::append(
+                        &mut initrd,
+                        &config.policy,
+                        config.device_policy.as_deref(),
+                    )?;
+                }
                 std::io::Cursor::new(initrd)
             };
 

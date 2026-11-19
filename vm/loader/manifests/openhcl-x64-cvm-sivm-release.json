@@ -12,15 +12,17 @@
             "image": {
                 "openhcl": {
                     "product_policy": {
-                        "sivm": {
-                            "require_ephemeral_vmgs": false,
-                            "require_secure_boot": false,
-                            "require_secure_boot_vars": false,
-                            "require_bcd_integrity": false,
-                            "custom_uefi_json": ""
-                        }
+                        "policy": {
+                            "sivm": {
+                                "require_ephemeral_vmgs": false,
+                                "require_secure_boot": false,
+                                "require_secure_boot_vars": false,
+                                "require_bcd_integrity": false,
+                                "custom_uefi_json": ""
+                            }
+                        },
+                        "device_policy": "policies/sivm.toml"
                     },
-                    "device_policy": "policies/sivm.toml",
                     "command_line": "",
                     "static_command_line": true,
                     "memory_page_count": 16384,

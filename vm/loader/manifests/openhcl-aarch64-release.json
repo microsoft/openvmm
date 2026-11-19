@@ -8,9 +8,11 @@
             "image": {
                 "openhcl": {
                     "product_policy": {
-                        "azure": {}
+                        "policy": {
+                            "azure": {}
+                        },
+                        "device_policy": "policies/azure.toml"
                     },
-                    "device_policy": "policies/azure.toml",
                     "memory_page_count": 12288,
                     "command_line": "console=null OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=release",
                     "uefi": true

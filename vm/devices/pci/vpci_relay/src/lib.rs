@@ -374,12 +374,12 @@ impl VpciRelay {
         state_units: &mut StateUnits,
         offer_info: vmbus_client::OfferInfo,
     ) -> anyhow::Result<()> {
-        let instance_id = offer_info.offer.instance_id;
         let entry = self.devices.vacant_entry();
         if (entry.key() as u64 + 1) * vpci_client::MMIO_SIZE > self.mmio_range.len() {
-            tracelimit::warn_ratelimited!(%instance_id, "too many VPCI devices, rejecting offer");
-            return Ok(());
+            anyhow::bail!("not enough MMIO space left");
         }
+
+        let instance_id = offer_info.offer.instance_id;
 
         let mmio = self.mmio_access.create_memory_access(
             self.mmio_range.start() + (entry.key() as u64) * vpci_client::MMIO_SIZE,

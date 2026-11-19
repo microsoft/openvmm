@@ -115,17 +115,11 @@ pub enum Image {
         linux: Option<LinuxImage>,
         /// Optional measured product policy. When `Some`, the IGVM
         /// build appends the policy as a file in the measured OpenHCL initrd.
-        /// The manifest schema is the wire schema, except for the PCI devices,
-        /// which come from `device_policy`; see
+        /// The manifest schema is the wire schema; see
         /// [`product_policy`]. We don't gate this property behind a feature
         /// to avoid having multiple igvmfilegen tools with and without the feature.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        product_policy: Option<ProductPolicy>,
-        /// Optional device policy file, relative to the manifest: the PCI devices
-        /// that the VPCI relay may expose to VTL0, stored in `product_policy`,
-        /// which it requires. Without one, it exposes none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        device_policy: Option<PathBuf>,
+        product_policy: Option<ProductPolicyConfig>,
     },
     /// Load the Linux kernel.
     /// TODO: Currently, this only works with underhill.
@@ -150,6 +144,20 @@ pub struct LinuxImage {
     pub use_initrd: bool,
     /// The command line to boot the kernel with.
     pub command_line: CString,
+}
+
+/// An OpenHCL image's product policy, and the device policy file that sets
+/// its PCI devices.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ProductPolicyConfig {
+    /// The measured product policy.
+    pub policy: ProductPolicy,
+    /// Optional device policy file, relative to the manifest: the PCI devices
+    /// that the VPCI relay may expose to VTL0, and when the relay runs.
+    /// Without one, the relay exposes no devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_policy: Option<PathBuf>,
 }
 
 impl Image {
@@ -623,12 +631,14 @@ mod test {
                 "memory_page_count": 10,
                 "uefi": true,
                 "product_policy": {
-                    "sivm": {
-                        "require_ephemeral_vmgs": true,
-                        "require_secure_boot": true,
-                        "require_secure_boot_vars": true,
-                        "require_bcd_integrity": true,
-                        "custom_uefi_json": "ZGVhZGJlZWY="
+                    "policy": {
+                        "sivm": {
+                            "require_ephemeral_vmgs": true,
+                            "require_secure_boot": true,
+                            "require_secure_boot_vars": true,
+                            "require_bcd_integrity": true,
+                            "custom_uefi_json": "ZGVhZGJlZWY="
+                        }
                     }
                 }
             }
@@ -636,9 +646,9 @@ mod test {
         let parsed: Image = serde_json::from_str(json).unwrap();
         match parsed {
             Image::Openhcl {
-                product_policy: Some(policy),
+                product_policy: Some(config),
                 ..
-            } => match policy {
+            } => match config.policy {
                 ProductPolicy::Sivm(p) => {
                     assert!(p.require_ephemeral_vmgs);
                     assert!(p.require_secure_boot);

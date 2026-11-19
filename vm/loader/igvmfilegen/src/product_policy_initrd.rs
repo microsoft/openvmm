@@ -7,20 +7,12 @@ use anyhow::Context as _;
 use product_policy::ProductPolicy;
 
 /// Appends `policy` to the OpenHCL initrd, with the devices from
-/// `device_policy`. Without a product policy there is nothing to append, and a
-/// device policy has nowhere to go.
+/// `device_policy`.
 pub fn append(
     initrd: &mut Vec<u8>,
-    policy: Option<&ProductPolicy>,
+    policy: &ProductPolicy,
     device_policy: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let Some(policy) = policy else {
-        anyhow::ensure!(
-            device_policy.is_none(),
-            "a device policy needs a product policy to carry it"
-        );
-        return Ok(());
-    };
     let mut policy = policy.clone();
     if let Some(path) = device_policy {
         load_device_policy(path, &mut policy)?;
@@ -136,7 +128,7 @@ mod tests {
         initrd_cpio::append_to_initrd(&mut initrd, "init", b"existing init", 0o100400).unwrap();
         initrd_cpio::append_to_initrd(&mut initrd, "extra-layer", b"extra data", 0o100400).unwrap();
         let old_policy = ProductPolicy::Sivm(SivmPolicy::default());
-        append(&mut initrd, Some(&old_policy), None).unwrap();
+        append(&mut initrd, &old_policy, None).unwrap();
         let original = initrd.clone();
 
         let policy = ProductPolicy::Sivm(SivmPolicy {
@@ -145,7 +137,7 @@ mod tests {
             custom_uefi_json: vec![0xA5; 8192],
             ..Default::default()
         });
-        append(&mut initrd, Some(&policy), None).unwrap();
+        append(&mut initrd, &policy, None).unwrap();
         assert_eq!(&initrd[..original.len()], &original);
         let files = extract_files(&initrd);
         assert_eq!(files["init"], b"existing init");
@@ -164,7 +156,7 @@ mod tests {
             ..Default::default()
         });
         let mut initrd = Vec::new();
-        append(&mut initrd, Some(&policy), None).unwrap();
+        append(&mut initrd, &policy, None).unwrap();
         let files = extract_files(&initrd);
         let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
         assert_eq!(
@@ -182,7 +174,7 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests/policies");
         let append_devices = |policy: ProductPolicy, file: &str| {
             let mut initrd = Vec::new();
-            append(&mut initrd, Some(&policy), Some(&policies.join(file))).unwrap();
+            append(&mut initrd, &policy, Some(&policies.join(file))).unwrap();
             let files = extract_files(&initrd);
             let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
             let decoded = product_policy::decode_product_policy(bytes).unwrap();
@@ -223,19 +215,6 @@ mod tests {
         }
     }
 
-    /// Without a product policy nothing is appended, and a device policy is an
-    /// error because there's nothing to carry its devices.
-    #[test]
-    fn device_policy_needs_a_product_policy() {
-        let mut initrd = Vec::new();
-        append(&mut initrd, None, None).unwrap();
-        assert!(initrd.is_empty());
-        let policies =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests/policies");
-        assert!(append(&mut initrd, None, Some(&policies.join("sivm.toml"))).is_err());
-        assert!(initrd.is_empty());
-    }
-
     #[test]
     fn invalid_policy_does_not_modify_initrd() {
         for policy in [
@@ -251,7 +230,7 @@ mod tests {
             }),
         ] {
             let mut initrd = vec![1, 2, 3];
-            let error = append(&mut initrd, Some(&policy), None).unwrap_err();
+            let error = append(&mut initrd, &policy, None).unwrap_err();
             assert!(error.to_string().contains("non-empty custom_uefi_json"));
             assert_eq!(initrd, [1, 2, 3]);
         }

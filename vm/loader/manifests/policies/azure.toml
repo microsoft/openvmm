@@ -5,3 +5,4 @@
 # CVMs, but the relay only runs if OPENHCL_ENABLE_VPCI_RELAY=1.
 devices = "devices.toml"
 allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm"]
+vpci_relay = "default_off"
