@@ -485,15 +485,38 @@ impl Session {
         }
         info.time_gran = 1;
         info.max_write = DEFAULT_MAX_PAGES * PAGE_SIZE;
+        let SessionInfo {
+            major,
+            minor,
+            capable,
+            capable2,
+            ..
+        } = *info;
         self.fs.init(&mut info);
+        // The version and the client's capabilities belong to the session:
+        // keep them, even if `init` replaced the whole `info`.
+        info.major = major;
+        info.minor = minor;
+        info.capable = capable;
+        info.capable2 = capable2;
 
-        assert!(info.want & !info.capable == 0);
         // If the filesystem cleared FUSE_INIT_EXT from want, force want2 to
         // zero so we never reply with flags2 the kernel won't expect.
         if info.want & FUSE_INIT_EXT == 0 {
             info.want2 = 0;
         }
-        assert!(info.want2 & !info.capable2 == 0);
+        let unoffered = info.want & !info.capable;
+        let unoffered2 = info.want2 & !info.capable2;
+        if unoffered != 0 || unoffered2 != 0 {
+            tracelimit::error_ratelimited!(
+                unoffered = format_args!("{unoffered:#x}"),
+                unoffered2 = format_args!("{unoffered2:#x}"),
+                "File system wants FUSE flags that the client did not offer",
+            );
+            // Leave the session uninitialized, without a negotiation.
+            *info = SessionInfo::default();
+            return Err(lx::Error::EIO.into());
+        }
 
         // Report the negotiated values back to the client.
         // TODO: Set map_alignment for DAX.
@@ -670,6 +693,7 @@ enum OperationError {
 mod tests {
     mod error_reply;
     mod harness;
+    mod init;
     mod ioctl;
     mod max_size;
     mod reply_len;
