@@ -14,6 +14,10 @@ use zerocopy::KnownLayout;
 const MAX_ERROR: i32 = 511;
 
 /// Trait used by objects that send FUSE replies to the kernel.
+///
+/// The `len` of a reply's header is a `u32` that counts the whole reply, header included, so the
+/// provided methods fail with [`io::ErrorKind::InvalidInput`], without sending anything, for a
+/// reply longer than `u32::MAX` bytes.
 pub trait ReplySender {
     /// Send the specified buffers to the kernel.
     fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()>;
@@ -31,7 +35,7 @@ pub trait ReplySender {
         arg: T,
     ) -> io::Result<()> {
         tracing::trace!(unique, ?arg, "reply");
-        let header = make_header(unique, size_of_val(&arg), 0);
+        let header = make_header(unique, size_of_val(&arg), 0)?;
         let header = header.as_bytes();
         let arg = arg.as_bytes();
         self.send(&[io::IoSlice::new(header), io::IoSlice::new(arg)])
@@ -54,7 +58,7 @@ pub trait ReplySender {
             tracing::debug!(unique, error, "reply");
         }
 
-        let header = make_header(unique, 0, -error);
+        let header = make_header(unique, 0, -error)?;
         let header = header.as_bytes();
         self.send(&[io::IoSlice::new(header)])
     }
@@ -62,7 +66,7 @@ pub trait ReplySender {
     /// Send a reply with arbitrary data.
     fn send_data(&mut self, unique: u64, data: &[u8]) -> io::Result<()> {
         tracing::trace!(unique, len = data.len(), "reply");
-        let header = make_header(unique, data.len(), 0);
+        let header = make_header(unique, data.len(), 0)?;
         let header = header.as_bytes();
         self.send(&[io::IoSlice::new(header), io::IoSlice::new(data)])
     }
@@ -76,7 +80,7 @@ pub trait ReplySender {
     ) -> io::Result<()> {
         tracing::trace!(unique, ?arg, len = data.len(), "reply");
 
-        let header = make_header(unique, size_of_val(&arg) + data.len(), 0);
+        let header = make_header(unique, size_of_val(&arg) + data.len(), 0)?;
         let header = header.as_bytes();
         let arg = arg.as_bytes();
         self.send(&[
@@ -89,7 +93,7 @@ pub trait ReplySender {
     /// Send a string reply.
     fn send_string(&mut self, unique: u64, value: lx::LxString) -> io::Result<()> {
         tracing::trace!(unique, len = value.len(), "reply");
-        let header = make_header(unique, value.len() + 1, 0);
+        let header = make_header(unique, value.len() + 1, 0)?;
         let header = header.as_bytes();
         self.send(&[
             io::IoSlice::new(header),
@@ -99,14 +103,21 @@ pub trait ReplySender {
     }
 }
 
-fn make_header(unique: u64, extra_len: usize, error: i32) -> fuse_out_header {
-    fuse_out_header {
-        len: (size_of::<fuse_out_header>() + extra_len)
-            .try_into()
-            .unwrap(),
-        error,
-        unique,
-    }
+/// Builds the header of a reply that has `extra_len` bytes after its header.
+///
+/// Fails with `InvalidInput` when the reply, header included, is longer than the `u32` `len` of
+/// the header can describe.
+fn make_header(unique: u64, extra_len: usize, error: i32) -> io::Result<fuse_out_header> {
+    let len = size_of::<fuse_out_header>()
+        .checked_add(extra_len)
+        .and_then(|len| u32::try_from(len).ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "reply too long for a FUSE header",
+            )
+        })?;
+    Ok(fuse_out_header { len, error, unique })
 }
 
 /// Helpers for writing a reply for `read_dir` or `read_dir_plus`.
