@@ -14,7 +14,8 @@
 //!   virtiofs crate's tests.
 //! * A host physical disk, confirming that `HandleDisk.handle_name` backs
 //!   virtio-blk and NVMe devices whose data the guest and host both observe.
-//!   Exposing a physical disk requires an elevated (administrator) process.
+//!   Exposing a physical disk requires an elevated process, so this test is
+//!   skipped on non-elevated hosts.
 
 use anyhow::Context;
 use futures::AsyncWriteExt as _;
@@ -27,6 +28,8 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use petri::ResolvedArtifact;
 use petri::pipette::cmd;
+use petri::requirements::TestCaseRequirements;
+use petri::requirements::TestRequirement;
 use petri_artifacts_vmm_test::artifacts;
 use std::io::Write as _;
 use std::os::windows::fs::FileExt as _;
@@ -67,20 +70,37 @@ petri::test!(handle_passing_virtiofs_user_token, |resolver| {
     Some([openvmm.erase(), kernel.erase(), initrd.erase()])
 });
 
-petri::test!(handle_passing_physical_disk, |resolver| {
-    let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
-    let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
-    let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
-    let pipette = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL)
-            .erase(),
-        petri_artifacts_common::tags::MachineArch::Aarch64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64_MUSL)
-            .erase(),
-    };
-    Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
-});
+petri::multitest!(vec![
+    petri::SimpleTest::new_async(
+        "handle_passing_physical_disk",
+        |resolver| {
+            let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
+            let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
+            let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
+            let pipette = match petri_artifacts_common::tags::MachineArch::host() {
+                petri_artifacts_common::tags::MachineArch::X86_64 => resolver
+                    .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL)
+                    .erase(),
+                petri_artifacts_common::tags::MachineArch::Aarch64 => resolver
+                    .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64_MUSL)
+                    .erase(),
+            };
+            Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
+        },
+        handle_passing_physical_disk,
+    )
+    // Exposing a disk image as a host physical disk requires elevation.
+    .requirements(TestCaseRequirements::new(TestRequirement::HostCapability(
+        host_is_elevated
+    )))
+    .into()
+]);
+
+/// Returns whether the test process is elevated. Probe failures report as
+/// elevated so that the test body surfaces the error rather than skipping.
+fn host_is_elevated() -> bool {
+    pal::windows::security::is_process_elevated().unwrap_or(true)
+}
 
 async fn handle_passing_virtiofs_user_token(
     params: petri::PetriTestParams<'_>,
@@ -166,6 +186,11 @@ async fn handle_passing_physical_disk(
     driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        pal::windows::security::is_process_elevated()
+            .context("failed to query process elevation")?,
+        "physical disk test requires an elevated process"
+    );
     let tempdir = tempfile::tempdir()?;
     let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
