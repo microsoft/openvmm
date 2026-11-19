@@ -13,7 +13,9 @@ variables:
   submoduleTarget: main
 
 pool:
-  vmImage: ubuntu-latest
+  name: openvmm-ado-amd-westus2-v6
+  demands:
+  - ImageOverride -equals ubuntu2404-amd64-prepped
 
 jobs:
 - job: QueueMirror
