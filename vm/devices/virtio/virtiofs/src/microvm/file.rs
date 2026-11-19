@@ -191,18 +191,24 @@ impl VirtioFsFile {
         entry: &SavedDirectoryEntry,
     ) -> lx::Result<bool> {
         let name = lx::LxStr::from_bytes(&entry.name);
-        // This check must happen before lookup_helper, because a
+        // This check must happen before insert_lookup, because a
         // readdirplus lookup creates a guest lookup reference.
         if !buffer.check_dir_entry_plus(name) {
             return Ok(false);
         }
-        let fuse_entry = fs.lookup_helper(&self.inode, name)?;
+        let (child, attr) = self.inode.lookup_child(name)?;
+        // The snapshot numbers each entry as an object of this directory's
+        // host device. The host lists a mount point or a btrfs subvolume,
+        // whose lookup reaches another device, by the number of another
+        // object, so only an entry on this directory's device shows whether
+        // the name still reaches the listed object.
+        if child.device_nr() == self.inode.device_nr() && attr.ino != entry.guest_inode_id {
+            return Err(lx::Error::EIO);
+        }
+        let fuse_entry = fs.insert_lookup(child, attr)?;
         let node_id = fuse_entry.nodeid;
-        // The guest never receives an entry that fails, so release its
-        // reference.
-        if fuse_entry.attr.ino != entry.guest_inode_id
-            || !buffer.dir_entry_plus(name, entry.next_cookie, fuse_entry)
-        {
+        if !buffer.dir_entry_plus(name, entry.next_cookie, fuse_entry) {
+            // The guest never receives the entry, so release its reference.
             fs.forget(node_id, 1);
             return Err(lx::Error::EIO);
         }

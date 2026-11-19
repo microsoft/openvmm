@@ -87,8 +87,9 @@ to a read-only child through any path. A rename between two children fails
 with `EXDEV`, as one across mounts does. A hard link between two children
 fails with `EROFS` when its destination is read-only, as Linux reports a
 read-only destination first, and with `EXDEV` otherwise. Inode numbers are
-namespaced per child, which makes a collision between children unlikely but
-not impossible.
+namespaced per child, as they are per host device (see
+[Inode numbers](#inode-numbers)), which makes a collision between children
+unlikely but not impossible.
 
 OpenVMM rejects host paths that equal, contain, or are contained in one
 another (compared after canonicalization and by root object identity),
@@ -306,6 +307,23 @@ identity.
 
 `SectionFs`, alternate tags, PCI transport, DAX, and extra queues are not part
 of the microVM profile.
+
+## Inode numbers
+
+The guest sees a share, or an aggregate, as one filesystem with one device
+number, even when the host directory spans several host filesystems, such as
+a nested mount or btrfs subvolumes, whose inode numbers repeat each other's.
+HostFs therefore mixes a key of each host device other than the share's own
+into the inode numbers of that device's objects, so that objects of different
+devices share an inode number in the guest only by a rare coincidence. The
+objects of a share's own device keep their host inode numbers, which an
+aggregate namespaces per child. On a Windows host, HostFs does not tell host
+volumes apart.
+
+A microVM snapshot from a release that did not mix host devices into inode
+numbers restores with the inode numbers that it recorded. When the guest held
+an object of another host device than the share's own, which shows that
+numbering, the restored share keeps numbering all of its objects that way.
 
 ## Snapshot attachments
 
