@@ -180,6 +180,9 @@ pub trait Fuse {
     }
 
     /// Writes data to an open file.
+    ///
+    /// Returns the number of bytes written, which the reply carries as a `u32`; a larger count
+    /// fails the request with `EIO`.
     fn write(&self, _request: &Request, _arg: &fuse_write_in, _data: &[u8]) -> lx::Result<usize> {
         Err(lx::Error::ENOSYS)
     }
@@ -376,6 +379,10 @@ pub trait Fuse {
 
     /// Copy data from one file to another without needing to send data through the FUSE kernel
     /// module.
+    ///
+    /// Returns the number of bytes copied, which the reply carries as a `u32`; a larger count
+    /// fails the request with `EIO`, so copy at most `u32::MAX` bytes even when `arg.len` is
+    /// larger.
     fn copy_file_range(
         &self,
         _request: &Request,
