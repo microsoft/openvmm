@@ -20,6 +20,14 @@
 //! descriptors are recorded in consumption order, completions fill their slot
 //! (possibly out of order), and only the contiguous filled prefix is published
 //! to the used ring, in order.
+//!
+//! A driver that makes a descriptor head available again before its previous
+//! use has been published violates the virtio spec. The reused head is not
+//! rejected: it is left in the available ring until the earlier use is
+//! published and then processed normally (QEMU's virtio-net transmit path
+//! similarly processes it once the earlier packet completes). While deferred,
+//! [`InOrderCompletion::is_blocked`] reports true so callers stop waiting for
+//! kicks.
 
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
@@ -27,7 +35,6 @@ use crate::queue::QueueCompletion;
 use inspect::Inspect;
 use std::collections::VecDeque;
 use std::io::Error;
-use std::io::ErrorKind;
 
 /// Enforces in-order used-ring publication for a single [`VirtioQueue`].
 ///
@@ -48,9 +55,14 @@ pub struct InOrderCompletion {
     /// Completed-but-not-yet-published work, indexed by descriptor index.
     /// Bounded by the queue size, so a descriptor index (always
     /// `< queue_size`) is a unique key for the outstanding set: a repeated
-    /// index while still outstanding is rejected by `try_next`.
+    /// index while still outstanding is deferred by `try_next`.
     #[inspect(skip)]
     completed: Vec<Option<Completed>>,
+    /// The reused descriptor index at the head of the available ring, which is
+    /// deferred until its earlier use is published.
+    blocked_on: Option<u16>,
+    /// Number of times the guest reused a still-outstanding descriptor.
+    deferred_reuses: u64,
 }
 
 struct Completed {
@@ -65,12 +77,17 @@ impl InOrderCompletion {
             order: VecDeque::with_capacity(queue_size as usize),
             in_flight: vec![false; queue_size as usize],
             completed: (0..queue_size).map(|_| None).collect(),
+            blocked_on: None,
+            deferred_reuses: 0,
         }
     }
 
     /// Consumes the next available descriptor from `queue`, recording it for
     /// in-order completion. Returns `Ok(None)` if no work is available.
-    /// Reusing an outstanding descriptor returns `InvalidData` without consuming it.
+    ///
+    /// If the next available descriptor head is still outstanding, it is left
+    /// unconsumed and `Ok(None)` is returned until the earlier use is
+    /// published; [`is_blocked`](Self::is_blocked) reports this state.
     ///
     /// Use this in place of [`VirtioQueue::try_next`].
     pub fn try_next(
@@ -80,25 +97,41 @@ impl InOrderCompletion {
         let Some(work) = queue.try_peek()? else {
             return Ok(None);
         };
-        let idx = work.descriptor_index() as usize;
+        let idx = work.descriptor_index();
         // The queue validates the descriptor index against the ring size
         // when it reads the descriptor, so an out-of-range index fails
         // above rather than reaching here. Assert the invariant so a
         // violation fails fast at entry instead of corrupting later state.
         assert!(
-            idx < self.completed.len(),
+            (idx as usize) < self.completed.len(),
             "descriptor index {idx} exceeds queue size {}",
             self.completed.len()
         );
-        if self.in_flight[idx] {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("descriptor {idx} is already outstanding"),
-            ));
+        if self.in_flight[idx as usize] {
+            if self.blocked_on != Some(idx) {
+                self.blocked_on = Some(idx);
+                self.deferred_reuses += 1;
+                tracelimit::warn_ratelimited!(
+                    descriptor_index = idx,
+                    "guest reused an outstanding descriptor, deferring it"
+                );
+            }
+            return Ok(None);
         }
-        self.in_flight[idx] = true;
-        self.order.push_back(work.descriptor_index());
+        self.blocked_on = None;
+        self.in_flight[idx as usize] = true;
+        self.order.push_back(idx);
         Ok(Some(work.consume()))
+    }
+
+    /// Returns true if the next available descriptor reuses a head that is
+    /// still outstanding. No further work can be consumed until that earlier
+    /// use is published, so callers should wait for completions rather than
+    /// guest kicks: the deferred descriptor keeps the queue non-empty, so
+    /// [`VirtioQueue::poll_kick`] would return immediately.
+    pub fn is_blocked(&self) -> bool {
+        self.blocked_on
+            .is_some_and(|idx| self.in_flight[idx as usize])
     }
 
     /// Records a completion for the descriptor identified by `completion` and
