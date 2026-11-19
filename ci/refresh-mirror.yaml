@@ -14,6 +14,7 @@ variables:
 
 pool:
   name: openvmm-ado-amd-westus2-v6
+  # Select a Linux image with Bash and Python 3.
   demands:
   - ImageOverride -equals ubuntu2404-amd64-prepped
 
