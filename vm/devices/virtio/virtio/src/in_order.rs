@@ -113,14 +113,12 @@ impl InOrderCompletion {
             self.completed.len()
         );
         if self.in_flight[idx as usize] {
-            if self.blocked_on != Some(idx) {
-                self.blocked_on = Some(idx);
-                self.deferred_reuses += 1;
-                tracelimit::warn_ratelimited!(
-                    descriptor_index = idx,
-                    "guest reused an outstanding descriptor, deferring it"
-                );
-            }
+            self.blocked_on = Some(idx);
+            self.deferred_reuses += 1;
+            tracelimit::warn_ratelimited!(
+                descriptor_index = idx,
+                "guest reused an outstanding descriptor, deferring it"
+            );
             return Ok(None);
         }
         self.blocked_on = None;
