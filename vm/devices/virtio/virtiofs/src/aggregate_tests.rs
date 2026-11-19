@@ -153,7 +153,10 @@ fn aggregate_children_namespace_inodes() {
         let children = fs.inner.aggregate().unwrap().registry.read();
         Arc::clone(&children.entries[0].volume)
     };
-    assert_ne!(volume.map_inode(u64::MAX), u64::MAX);
+    assert_ne!(
+        volume.map_inode(volume.root_device_nr(), u64::MAX),
+        u64::MAX
+    );
 }
 
 #[test]

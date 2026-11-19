@@ -160,10 +160,12 @@ impl VirtioFs {
         }
 
         let volume_id = registry.next_volume_id;
-        registry.next_volume_id = volume_id.checked_add(1).ok_or(lx::Error::ENOSPC)?;
+        let next_volume_id = volume_id.checked_add(1).ok_or(lx::Error::ENOSPC)?;
+        let volume = VirtioFsVolume::new(volume, volume_id, readonly)?;
+        registry.next_volume_id = next_volume_id;
         registry.entries.push(ChildEntry {
             name: name.to_string(),
-            volume: Arc::new(VirtioFsVolume::new(volume, volume_id, readonly)),
+            volume: Arc::new(volume),
         });
         tracing::info!(
             name,
@@ -408,11 +410,11 @@ impl VirtioFs {
             // inode number, as a directory, or as the regular file that a
             // microVM child may expose. If the root cannot be queried, use
             // the volume id as a stable surrogate.
-            let raw = volume
+            let (device_nr, raw) = volume
                 .lstat(volume.root_entry())
-                .map(|s| s.inode_nr)
-                .unwrap_or(volume.id() as lx::ino_t);
-            let ino = volume.map_inode(raw);
+                .map(|s| (s.device_nr, s.inode_nr))
+                .unwrap_or((volume.root_device_nr(), volume.id() as lx::ino_t));
+            let ino = volume.map_inode(device_nr, raw);
             let file_type = if volume.exposed_file().is_some() {
                 lx::DT_REG
             } else {

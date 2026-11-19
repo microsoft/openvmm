@@ -28,13 +28,12 @@ impl VirtioFsVolume {
         policy: SubtreePolicy,
         pinned_identities: HashMap<(u64, u64), Option<PathBuf>>,
         exposed_file: Option<PathBuf>,
-    ) -> Self {
-        let mut volume = Self::new(volume, id, readonly);
+    ) -> lx::Result<Self> {
+        let mut volume = Self::with_exposed_file(volume, id, readonly, exposed_file)?;
         volume.strict_paths = strict_paths;
         volume.policy = policy;
         volume.pinned_identities = pinned_identities;
-        volume.exposed_file = exposed_file;
-        volume
+        Ok(volume)
     }
 
     pub(crate) fn strict_paths(&self) -> bool {
