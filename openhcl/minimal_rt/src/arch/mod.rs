@@ -17,9 +17,6 @@ cfg_select! {
         use aarch64 as arch;
         pub use aarch64::serial::Serial;
     }
-    _ => {
-        compile_error!("target_arch is not supported");
-    }
 }
 
 pub(crate) use arch::enlightened_panic::write_crash_reg;
