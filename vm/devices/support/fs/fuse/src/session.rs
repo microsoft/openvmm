@@ -656,6 +656,7 @@ mod tests {
     mod error_reply;
     mod harness;
     mod ioctl;
+    mod reply_len;
     mod saved_state;
 
     use super::*;
