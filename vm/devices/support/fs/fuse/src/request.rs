@@ -131,7 +131,11 @@ impl Request {
     }
 
     fn read_operation(header: &fuse_in_header, mut reader: impl RequestReader) -> FuseOperation {
-        if header.len as usize > reader.remaining_len() + size_of_val(header) {
+        // The length counts the whole message, header included, so it can be
+        // neither smaller than the header nor larger than the data received.
+        if (header.len as usize) < size_of_val(header)
+            || header.len as usize > reader.remaining_len() + size_of_val(header)
+        {
             tracelimit::error_ratelimited!(
                 opcode = header.opcode,
                 unique = header.unique,
@@ -312,6 +316,74 @@ pub(crate) mod tests {
         data.extend_from_slice(&[7, 0, 0, 0, 27, 0, 0, 0]); // only major + minor
         let request = Request::new(data.as_slice()).unwrap();
         assert!(matches!(request.operation, FuseOperation::Invalid));
+    }
+
+    /// Returns a message of `opcode` whose header declares a length of `len`,
+    /// followed by `payload`.
+    fn message_with_len(opcode: u32, len: u32, payload: &[u8]) -> Vec<u8> {
+        let header = fuse_in_header {
+            len,
+            opcode,
+            unique: 1,
+            nodeid: 1,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+        let mut data = header.as_bytes().to_vec();
+        data.extend_from_slice(payload);
+        data
+    }
+
+    #[test]
+    fn parse_init_len_smaller_than_header_is_invalid() {
+        // The length counts the whole message, header included, so a
+        // FUSE_INIT whose length cannot hold its header is invalid, even when
+        // a whole extended payload follows the header.
+        let init_in = fuse_init_in {
+            major: 7,
+            minor: 39,
+            max_readahead: 131072,
+            flags: FUSE_INIT_EXT,
+            flags2: 0,
+            unused: [0; 11],
+        };
+        for len in [0, 8, size_of::<fuse_in_header>() as u32 - 1] {
+            let data = message_with_len(FUSE_INIT, len, init_in.as_bytes());
+            let request = Request::new(data.as_slice()).unwrap();
+            assert!(
+                matches!(request.operation, FuseOperation::Invalid),
+                "len {len}: {:?}",
+                request.operation
+            );
+        }
+    }
+
+    #[test]
+    fn parse_len_smaller_than_header_is_invalid() {
+        // Any other operation whose length cannot hold its header is invalid
+        // too, rather than parsed from the bytes that follow the header.
+        let getattr_in = fuse_getattr_in::new_zeroed();
+        for len in [0, 8, size_of::<fuse_in_header>() as u32 - 1] {
+            let data = message_with_len(FUSE_GETATTR, len, getattr_in.as_bytes());
+            let request = Request::new(data.as_slice()).unwrap();
+            assert!(
+                matches!(request.operation, FuseOperation::Invalid),
+                "len {len}: {:?}",
+                request.operation
+            );
+        }
+
+        // A length of exactly the header's size is the whole message of an
+        // operation without arguments.
+        let data = message_with_len(FUSE_STATFS, size_of::<fuse_in_header>() as u32, &[]);
+        let request = Request::new(data.as_slice()).unwrap();
+        assert!(
+            matches!(request.operation, FuseOperation::StatFs {}),
+            "{:?}",
+            request.operation
+        );
     }
 
     #[test]
