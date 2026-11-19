@@ -37,18 +37,23 @@ impl<'payload, 'mem> VirtioPayloadReader<'payload, 'mem> {
         reader
     }
 
-    /// Skip ahead to the next readable payload.
+    /// Skip ahead to the next readable payload buffer that holds data.
+    ///
+    /// A descriptor chain may hold empty buffers anywhere, since a device must not assume any
+    /// arrangement of descriptors, so they are skipped rather than taken for the end of the
+    /// payload.
     fn next_payload(&mut self) {
         // It would be nice to use filter instead when assigning to self.payload in the ctor, but
         // I can't figure out how to store the result of that (the type it returns is generic over
         // the callback type, and I don't want to use Box<dyn Iterator> if I can avoid it).
-        self.current = self.payload.find(|p| !p.writeable);
+        self.current = self.payload.find(|p| !p.writeable && p.length > 0);
     }
 
     /// Gets the current payload, or None if the end was reached.
     ///
     /// This function takes care of moving to the next payload buffer if the current offset matches
-    /// the end.
+    /// the end. Since `next_payload` skips empty buffers, the payload that it returns always has
+    /// data left to read.
     fn get_payload(&mut self) -> Option<&'payload VirtioQueuePayload> {
         let payload = self.current?;
         if self.offset == payload.length as usize {
@@ -167,15 +172,18 @@ impl<'payload, 'mem> VirtioPayloadWriter<'payload, 'mem> {
         writer
     }
 
-    /// Skip ahead to the next writable payload buffer.
+    /// Skip ahead to the next writable payload buffer that has room.
+    ///
+    /// Empty buffers are skipped, as the reader skips them.
     fn next_payload(&mut self) {
-        self.current = self.payload.find(|p| p.writeable);
+        self.current = self.payload.find(|p| p.writeable && p.length > 0);
     }
 
     /// Gets the current payload, or None if the end was reached.
     ///
     /// This function takes care of moving to the next payload buffer if the current offset matches
-    /// the end.
+    /// the end. Since `next_payload` skips empty buffers, the payload that it returns always has
+    /// room left to write.
     fn get_payload(&mut self) -> Option<&'payload VirtioQueuePayload> {
         let payload = self.current?;
         if self.offset == payload.length as usize {

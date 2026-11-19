@@ -300,6 +300,94 @@ impl TestHarness {
         self.queue_event.signal();
     }
 
+    /// Post a FUSE request as a descriptor chain at `head_desc` whose
+    /// device-readable buffers, which hold the request in order, have the
+    /// lengths `readable`, and whose device-writable buffers have the lengths
+    /// `writable`. Any buffer may be empty. Returns the request's unique ID and
+    /// the writable buffers as `(gpa, len)`.
+    fn post_fuse_request_chain(
+        &mut self,
+        head_desc: u16,
+        opcode: u32,
+        nodeid: u64,
+        args: &[u8],
+        readable: &[u32],
+        writable: &[u32],
+    ) -> (u64, Vec<(u64, u32)>) {
+        let unique = self.next_unique();
+        let header = fuse_in_header {
+            len: IN_HEADER_SIZE + args.len() as u32,
+            opcode,
+            unique,
+            nodeid,
+            uid: 0,
+            gid: 0,
+            pid: 1,
+            padding: 0,
+        };
+        assert_eq!(
+            readable.iter().sum::<u32>(),
+            header.len,
+            "the readable buffers must hold exactly the request"
+        );
+        let request = [header.as_bytes(), args].concat();
+        let mut request = request.as_slice();
+        let mut reply_buffers = Vec::new();
+        let buffers = readable
+            .iter()
+            .map(|&len| (len, false))
+            .chain(writable.iter().map(|&len| (len, true)));
+        let last = readable.len() + writable.len() - 1;
+        for (i, (len, write)) in buffers.enumerate() {
+            let gpa = self.alloc_data(len);
+            if write {
+                self.mem.write_at(gpa, &vec![0; len as usize]).unwrap();
+                reply_buffers.push((gpa, len));
+            } else {
+                let (data, rest) = request.split_at(len as usize);
+                self.mem.write_at(gpa, data).unwrap();
+                request = rest;
+            }
+            let index = head_desc + i as u16;
+            write_descriptor(
+                &self.mem,
+                DESC_ADDR,
+                index,
+                gpa,
+                len,
+                DescriptorFlags::new().with_next(i < last).with_write(write),
+                if i < last { index + 1 } else { 0 },
+            );
+        }
+
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
+        self.queue_event.signal();
+        (unique, reply_buffers)
+    }
+
+    /// Read the first `len` bytes of the reply that the device wrote across
+    /// the writable buffers `buffers`, in order, as the guest gathers it.
+    fn read_reply_chain(&self, buffers: &[(u64, u32)], len: u32) -> Vec<u8> {
+        let mut reply = Vec::new();
+        for &(gpa, buffer_len) in buffers {
+            let start = reply.len();
+            reply.resize(start + buffer_len as usize, 0);
+            self.mem.read_at(gpa, &mut reply[start..]).unwrap();
+        }
+        assert!(
+            reply.len() >= len as usize,
+            "the reply overflows its buffers"
+        );
+        reply.truncate(len as usize);
+        reply
+    }
+
     async fn wait_for_used(&mut self) -> (u16, u32) {
         wait_for_used(
             &self.driver,
@@ -574,6 +662,119 @@ async fn malformed_request_completes_descriptor(driver: DefaultDriver) {
     // The device should complete the descriptor (possibly with 0 bytes)
     // rather than hanging.
     let _ = used_len; // Any completion is acceptable.
+}
+
+/// Sends FUSE_INIT to a new device in a descriptor chain whose device-readable
+/// and device-writable buffers have the lengths `readable` and `writable`, and
+/// checks that the device reads the whole request and writes the whole reply
+/// across the buffers in order.
+async fn check_fuse_init_chain(driver: &DefaultDriver, readable: &[u32], writable: &[u32]) {
+    let mut harness = TestHarness::new(driver);
+    harness.enable().await;
+    let init_args = fuse_init_in {
+        major: FUSE_KERNEL_VERSION,
+        minor: FUSE_KERNEL_MINOR_VERSION,
+        max_readahead: 0,
+        flags: 0,
+        flags2: 0,
+        unused: [0; 11],
+    };
+    let (unique, buffers) =
+        harness.post_fuse_request_chain(0, FUSE_INIT, 0, init_args.as_bytes(), readable, writable);
+
+    let (_used_id, used_len) = harness.wait_for_used().await;
+    let reply_len = OUT_HEADER_SIZE + size_of::<fuse_init_out>() as u32;
+    assert_eq!(
+        used_len, reply_len,
+        "readable {readable:?}, writable {writable:?}"
+    );
+    let reply = harness.read_reply_chain(&buffers, used_len);
+    let (out_header, init_out) = reply.split_at(OUT_HEADER_SIZE as usize);
+    let out_header = fuse_out_header::read_from_bytes(out_header).unwrap();
+    assert_eq!(out_header.len, reply_len);
+    assert_eq!(out_header.unique, unique);
+    assert_eq!(out_header.error, 0, "FUSE_INIT failed");
+    let init_out = fuse_init_out::read_from_bytes(init_out).unwrap();
+    assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
+}
+
+/// The device reads a request across its device-readable buffers in order and
+/// skips the empty ones, wherever they are: the virtio specification's message
+/// framing forbids a device to assume any arrangement of descriptors.
+#[async_test]
+async fn request_skips_empty_readable_buffers(driver: DefaultDriver) {
+    let len = IN_HEADER_SIZE + size_of::<fuse_init_in>() as u32;
+    let reply_len = OUT_HEADER_SIZE + size_of::<fuse_init_out>() as u32;
+    for readable in [
+        // An empty buffer splits the header.
+        &[30, 0, len - 30][..],
+        // Two empty buffers precede the request.
+        &[0, 0, len],
+        // Empty buffers surround the header and the arguments.
+        &[0, IN_HEADER_SIZE, 0, 0, len - IN_HEADER_SIZE, 0],
+    ] {
+        check_fuse_init_chain(&driver, readable, &[reply_len]).await;
+    }
+}
+
+/// The device writes a reply across its device-writable buffers in order and
+/// skips the empty ones, wherever they are.
+#[async_test]
+async fn reply_skips_empty_writable_buffers(driver: DefaultDriver) {
+    let request_len = IN_HEADER_SIZE + size_of::<fuse_init_in>() as u32;
+    let len = OUT_HEADER_SIZE + size_of::<fuse_init_out>() as u32;
+    for writable in [
+        // An empty buffer splits the header.
+        &[8, 0, len - 8][..],
+        // An empty buffer separates the header from the body.
+        &[OUT_HEADER_SIZE, 0, len - OUT_HEADER_SIZE],
+        // Two empty buffers precede the reply.
+        &[0, 0, len],
+        // Empty buffers surround the header and the body.
+        &[0, OUT_HEADER_SIZE, 0, 0, len - OUT_HEADER_SIZE, 0],
+    ] {
+        check_fuse_init_chain(&driver, &[request_len], writable).await;
+    }
+}
+
+/// The device reads a name across its device-readable buffers in order and
+/// skips the empty ones, including one that splits the name.
+#[async_test]
+async fn name_skips_empty_readable_buffers(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    std::fs::write(harness.tmpdir_path().join("hello.txt"), "test data").unwrap();
+    harness.enable().await;
+    harness.fuse_init(0).await;
+
+    let name = b"hello.txt\0";
+    let name_len = name.len() as u32;
+    let reply_len = OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32;
+    for readable in [
+        // An empty buffer separates the header from the name.
+        &[IN_HEADER_SIZE, 0, name_len][..],
+        // An empty buffer splits the name.
+        &[IN_HEADER_SIZE, 4, 0, name_len - 4],
+    ] {
+        let (unique, buffers) = harness.post_fuse_request_chain(
+            2,
+            FUSE_LOOKUP,
+            FUSE_ROOT_ID,
+            name,
+            readable,
+            &[reply_len],
+        );
+
+        let (_used_id, used_len) = harness.wait_for_used().await;
+        assert_eq!(used_len, reply_len, "readable {readable:?}");
+        let reply = harness.read_reply_chain(&buffers, used_len);
+        let (out_header, entry_out) = reply.split_at(OUT_HEADER_SIZE as usize);
+        let out_header = fuse_out_header::read_from_bytes(out_header).unwrap();
+        assert_eq!(out_header.unique, unique);
+        assert_eq!(out_header.error, 0, "LOOKUP failed");
+        let entry_out = fuse_entry_out::read_from_bytes(entry_out).unwrap();
+        // S_IFREG = 0o100000
+        assert_eq!(entry_out.attr.mode & 0o170000, 0o100000);
+    }
 }
 
 /// LOOKUP on a file that exists in the temp directory succeeds.
