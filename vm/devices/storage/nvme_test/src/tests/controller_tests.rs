@@ -1395,16 +1395,24 @@ async fn test_io_completion_fault_matches_inline_completed_command(driver: Defau
 }
 
 /// Waits until an I/O worker holds a completion back under a `Delay` fault.
+/// The whole wait, inspections included, runs under the same 10 s timeout as
+/// the other waits, so a worker that stops answering fails the test.
 async fn wait_for_delayed_io_completion(nvmec: &mut NvmeFaultController, timer: &mut PolledTimer) {
-    for _ in 0..100 {
-        let mut inspection = inspect::inspect("", &mut *nvmec);
-        inspection.resolve().await;
-        if format!("{:#}", inspection.results()).contains("delayed_completion: true") {
-            return;
+    let entered = async {
+        loop {
+            let mut inspection = inspect::inspect("", &mut *nvmec);
+            inspection.resolve().await;
+            if format!("{:#}", inspection.results()).contains("delayed_completion: true") {
+                return;
+            }
+            timer.sleep(Duration::from_millis(10)).await;
         }
-        timer.sleep(Duration::from_millis(10)).await;
-    }
-    panic!("the I/O worker never entered the completion delay");
+    };
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(entered)
+        .await
+        .expect("the I/O worker never entered the completion delay");
 }
 
 /// Submits a READ to `nsid` whose completion a `Delay` fault holds back, adds
