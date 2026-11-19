@@ -315,18 +315,30 @@ impl<M: RingMem + Unpin> ShutdownGuestChannel<M> {
         } else {
             ShutdownType::PowerOff
         };
-        let params = ShutdownParams {
-            shutdown_type,
-            force: message.flags.force(),
-        };
-
-        // Notify the internal listener and wait for a response.
-        let status = match ic.send_shutdown_notification.call(|x| x, params).await {
-            Ok(ShutdownResult::Ok) => Status::SUCCESS,
-            Ok(ShutdownResult::Failed(x)) => Status(x),
-            Ok(ShutdownResult::NotReady) | Ok(ShutdownResult::AlreadyInProgress) | Err(_) => {
-                Status::FAIL
+        let units: Vec<u16> = message
+            .message
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect();
+        let text = units
+            .iter()
+            .position(|unit| *unit == 0)
+            .and_then(|end| String::from_utf16(&units[..end]).ok());
+        let status = if let Some(message_text) = text {
+            let params = ShutdownParams {
+                shutdown_type,
+                force: message.flags.force(),
+                message: message_text,
+            };
+            match ic.send_shutdown_notification.call(|rpc| rpc, params).await {
+                Ok(ShutdownResult::Ok) => Status::SUCCESS,
+                Ok(ShutdownResult::Failed(status)) => Status(status),
+                Ok(ShutdownResult::NotReady) | Ok(ShutdownResult::AlreadyInProgress) | Err(_) => {
+                    Status::FAIL
+                }
             }
+        } else {
+            Status::INVALID_ARGUMENT
         };
 
         // Respond to the request.

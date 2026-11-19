@@ -503,6 +503,7 @@ impl PetriVmInner {
                         }
                     },
                     force: false,
+                    message: String::new(),
                 },
             )
             .await?;

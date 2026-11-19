@@ -3,6 +3,7 @@
 
 use super::*;
 use futures::FutureExt;
+use futures::StreamExt;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use task_control::AsyncRun;
@@ -16,6 +17,77 @@ use vmbus_channel::test_helpers::with_timeout;
 struct Worker {
     ic: ShutdownGuestIc,
     channel: ShutdownGuestChannel<GatedRingMem>,
+}
+
+#[async_test]
+async fn shutdown_text_is_preserved_or_rejected(driver: DefaultDriver) {
+    let (guest, host) = vmbus_channel::connected_async_channels(16384);
+    let mut host = MessagePipe::new(host).unwrap();
+    let mut ic = ShutdownGuestIc::new();
+    let mut notifications = ic.get_shutdown_notifier();
+    let mut channel = ShutdownGuestChannel::new(MessagePipe::new(guest).unwrap());
+    channel.state = ShutdownGuestChannelState::Running {
+        framework_version: FRAMEWORK_VERSION_3,
+        message_version: SHUTDOWN_VERSION_3_2,
+    };
+    let text = "\u{1f680}".repeat(511) + "a";
+    for (units, expected) in [
+        (vec![0], Some(String::new())),
+        (text.encode_utf16().chain([0]).collect(), Some(text.clone())),
+        (vec![b'a' as u16; 1024], None),
+        (vec![0xd800, 0], None),
+    ] {
+        let header = hyperv_ic_protocol::Header {
+            message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
+            message_size: size_of::<hyperv_ic_protocol::shutdown::ShutdownMessage>() as u16,
+            transaction_id: 17,
+            flags: hyperv_ic_protocol::HeaderFlags::new()
+                .with_request(true)
+                .with_transaction(true),
+            ..FromZeros::new_zeroed()
+        };
+        let mut message = hyperv_ic_protocol::shutdown::ShutdownMessage {
+            reason_code: 0,
+            timeout_secs: 0,
+            flags: hyperv_ic_protocol::shutdown::ShutdownFlags::new()
+                .with_force(true)
+                .with_restart(true),
+            message: [0; 2048],
+        };
+        for (bytes, unit) in message.message.chunks_exact_mut(2).zip(units) {
+            bytes.copy_from_slice(&unit.to_le_bytes());
+        }
+        let valid = expected.is_some();
+        let (result, ()) = with_timeout(&driver, async {
+            futures::join!(
+                channel.handle_shutdown_notification(&header, message.as_bytes(), &ic),
+                async {
+                    if let Some(expected) = expected {
+                        let (params, completion) = notifications.next().await.unwrap().split();
+                        assert_eq!(params.message, expected);
+                        assert!(params.force);
+                        assert!(matches!(params.shutdown_type, ShutdownType::Reboot));
+                        completion.complete(ShutdownResult::Ok);
+                    }
+                }
+            )
+        })
+        .await;
+        result.unwrap();
+        let mut buffer = [0; 256];
+        let size = with_timeout(&driver, host.recv(&mut buffer)).await.unwrap();
+        let response = hyperv_ic_protocol::Header::read_from_bytes(&buffer[..size]).unwrap();
+        assert_eq!(response.transaction_id, 17);
+        assert_eq!(
+            response.status,
+            if valid {
+                Status::SUCCESS
+            } else {
+                Status::INVALID_ARGUMENT
+            }
+        );
+        assert!(notifications.next().now_or_never().is_none());
+    }
 }
 
 impl AsyncRun<()> for Worker {

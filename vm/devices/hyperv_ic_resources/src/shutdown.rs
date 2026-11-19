@@ -46,6 +46,15 @@ pub struct ShutdownParams {
     pub shutdown_type: ShutdownType,
     /// Whether to force a shutdown.
     pub force: bool,
+    /// Guest-visible text, limited to 1023 UTF-16 code units without embedded NULs.
+    pub message: String,
+}
+
+impl ShutdownParams {
+    /// Whether the text fits the NUL-terminated shutdown protocol buffer.
+    pub fn has_valid_message(&self) -> bool {
+        !self.message.contains('\0') && self.message.encode_utf16().take(1024).count() <= 1023
+    }
 }
 
 /// The shutdown type.

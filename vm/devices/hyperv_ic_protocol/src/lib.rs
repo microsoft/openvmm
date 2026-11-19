@@ -111,6 +111,8 @@ open_enum! {
         FAIL = 0x80004005,
         /// The operation is not supported.
         NOT_SUPPORTED = 0x80070032,
+        /// A request argument is invalid.
+        INVALID_ARGUMENT = 0x80070057,
         /// Not found.
         NOT_FOUND = 0x80041002,
     }
