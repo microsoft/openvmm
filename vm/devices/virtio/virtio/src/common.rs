@@ -308,6 +308,10 @@ impl VirtioQueue {
         })
     }
 
+    pub(crate) fn is_packed(&self) -> bool {
+        self.core.is_packed()
+    }
+
     /// Returns the current queue progress state.
     pub fn queue_state(&self) -> QueueState {
         QueueState {

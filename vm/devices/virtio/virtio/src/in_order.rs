@@ -28,6 +28,11 @@
 //! similarly processes it once the earlier packet completes). While deferred,
 //! [`InOrderCompletion::is_blocked`] reports true so callers stop waiting for
 //! kicks.
+//!
+//! This applies only to split rings. A packed ring's outstanding descriptors
+//! occupy the ring slots themselves, so a driver can only reuse one by
+//! overwriting it, and publishing the earlier use would clobber the repost.
+//! The queue rejects such a ring overrun as a protocol error.
 
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
@@ -61,6 +66,10 @@ pub struct InOrderCompletion {
     /// The reused descriptor index at the head of the available ring, which is
     /// deferred until its earlier use is published.
     blocked_on: Option<u16>,
+    /// Whether the queue is a split ring, recorded by `try_next`. Only split
+    /// rings defer reuse while every head is outstanding; see the module docs.
+    #[inspect(skip)]
+    split: bool,
     /// Number of times the guest reused a still-outstanding descriptor.
     deferred_reuses: u64,
 }
@@ -78,6 +87,7 @@ impl InOrderCompletion {
             in_flight: vec![false; queue_size as usize],
             completed: (0..queue_size).map(|_| None).collect(),
             blocked_on: None,
+            split: false,
             deferred_reuses: 0,
         }
     }
@@ -94,10 +104,12 @@ impl InOrderCompletion {
         &mut self,
         queue: &mut VirtioQueue,
     ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        // With every head outstanding, any available head is a reuse. Defer it
-        // without peeking: the queue's capacity check would otherwise fail the
-        // queue permanently.
-        if self.is_full() {
+        // With every split-ring head outstanding, any available head is a
+        // reuse. Defer it without peeking: the queue's capacity check would
+        // otherwise fail the queue permanently. A packed repost cannot be
+        // preserved (see the module docs), so let the queue reject it.
+        self.split = !queue.is_packed();
+        if self.is_split_full() {
             return Ok(None);
         }
         let Some(work) = queue.try_peek()? else {
@@ -131,19 +143,20 @@ impl InOrderCompletion {
     }
 
     /// Returns true if no work can be consumed until an earlier use is
-    /// published: either every head is outstanding, or the next available
-    /// descriptor reuses a head that is still outstanding. Callers should wait
-    /// for completions rather than guest kicks: a deferred descriptor keeps the
-    /// queue non-empty, so [`VirtioQueue::poll_kick`] would return immediately.
+    /// published: either every split-ring head is outstanding, or the next
+    /// available descriptor reuses a head that is still outstanding. Callers
+    /// should wait for completions rather than guest kicks: a deferred
+    /// descriptor keeps the queue non-empty, so [`VirtioQueue::poll_kick`]
+    /// would return immediately.
     pub fn is_blocked(&self) -> bool {
-        self.is_full()
+        self.is_split_full()
             || self
                 .blocked_on
                 .is_some_and(|idx| self.in_flight[idx as usize])
     }
 
-    fn is_full(&self) -> bool {
-        self.order.len() == self.in_flight.len()
+    fn is_split_full(&self) -> bool {
+        self.split && self.order.len() == self.in_flight.len()
     }
 
     /// Records a completion for the descriptor identified by `completion` and

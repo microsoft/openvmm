@@ -5725,6 +5725,50 @@ async fn in_order_defers_reuse_on_full_ring(driver: DefaultDriver) {
     assert_eq!(in_order.outstanding(), 3);
 }
 
+/// A packed ring holds its outstanding descriptors in the ring slots, so a
+/// driver reusing one has overwritten it and the repost cannot be preserved.
+/// Whether the ring is full of single descriptors or of fewer chained heads,
+/// the overrun must be rejected rather than deferred, and kicks must not be
+/// suppressed while the ring is full.
+#[async_test]
+async fn in_order_packed_rejects_premature_reuse(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+
+    for chained in [false, true] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+        let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+        let available = DescriptorFlags::new().with_write(true).with_available(true);
+        let mut work = Vec::new();
+        for index in 0..BOUND_TEST_QUEUE_SIZE {
+            let flags = available.with_next(chained && index % 2 == 0);
+            write_packed_descriptor(
+                &mem,
+                index,
+                BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                index,
+                flags,
+            );
+            if !flags.next() {
+                work.push(in_order.try_next(&mut queue).unwrap().unwrap());
+            }
+        }
+        assert!(!in_order.is_blocked());
+
+        write_packed_descriptor(
+            &mem,
+            0,
+            BOUND_TEST_DATA_ADDR,
+            0,
+            DescriptorFlags::new().with_write(true).with_used(true),
+        );
+        let error = in_order
+            .try_next(&mut queue)
+            .err()
+            .expect("packed ring overrun must be rejected");
+        assert_in_flight_error(error, BOUND_TEST_QUEUE_SIZE, 1);
+    }
+}
+
 #[async_test]
 async fn in_order_packed_reuse_after_publication_and_wrap(driver: DefaultDriver) {
     use crate::in_order::InOrderCompletion;

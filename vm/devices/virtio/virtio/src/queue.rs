@@ -303,6 +303,10 @@ impl QueueCoreGetWork {
         self.failed
     }
 
+    pub fn is_packed(&self) -> bool {
+        self.features.ring_packed()
+    }
+
     pub fn try_next_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
         match self.try_peek_work() {
             Ok(Some(work)) => {
