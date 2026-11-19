@@ -318,7 +318,7 @@ impl VirtioFsInode {
     /// Sets the attributes of this inode.
     pub fn set_attr(&self, arg: &fuse_setattr_in, request_uid: lx::uid_t) -> lx::Result<fuse_attr> {
         self.validate_confined_object()?;
-        let attr = util::fuse_set_attr_to_lxutil(arg, request_uid);
+        let attr = util::fuse_set_attr_to_lxutil(arg, request_uid)?;
 
         // Because FUSE_HANDLE_KILLPRIV is set, set-user-ID and set-group-ID must be cleared
         // depending on the attributes being set. Lxutil takes care of that on Windows (and Linux
