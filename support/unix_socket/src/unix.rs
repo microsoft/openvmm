@@ -194,10 +194,10 @@ impl ScmReceiver {
         }
 
         // On Linux, atomically set O_CLOEXEC on incoming descriptors.
-        #[cfg(target_os = "linux")]
-        let flags = libc::MSG_CMSG_CLOEXEC;
-        #[cfg(not(target_os = "linux"))]
-        let flags = 0;
+        let flags = cfg_select! {
+            target_os = "linux" => libc::MSG_CMSG_CLOEXEC,
+            _ => 0,
+        };
 
         // SAFETY: calling `recvmsg` with valid, initialized buffers.
         let n = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut hdr, flags) };

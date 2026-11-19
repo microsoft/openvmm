@@ -24,10 +24,14 @@ pub use sys::new_mappable_from_file;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicU8;
 use thiserror::Error;
-#[cfg(unix)]
-use unix as sys;
-#[cfg(windows)]
-use windows as sys;
+cfg_select! {
+    unix => {
+        use unix as sys;
+    }
+    windows => {
+        use windows as sys;
+    }
+}
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -882,16 +886,13 @@ mod tests {
         let mapping = SparseMapping::new(page_size).unwrap();
 
         // A very large NUMA node number should fail with an error (not panic).
-        #[cfg(unix)]
-        {
-            mapping.alloc(0, page_size).unwrap();
-            let result = mapping.mbind_at(0, page_size, 99999);
-            assert!(result.is_err());
-        }
-        #[cfg(windows)]
-        {
-            let result = mapping.alloc_numa(0, page_size, Some(99999));
-            assert!(result.is_err());
-        }
+        let result = cfg_select! {
+            unix => {{
+                mapping.alloc(0, page_size).unwrap();
+                mapping.mbind_at(0, page_size, 99999)
+            }}
+            windows => mapping.alloc_numa(0, page_size, Some(99999)),
+        };
+        assert!(result.is_err());
     }
 }

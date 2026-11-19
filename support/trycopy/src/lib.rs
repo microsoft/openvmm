@@ -411,16 +411,16 @@ impl MemoryError {
                 failure.address, dest, len
             );
         };
-        #[cfg(windows)]
-        let source = OsAccessError::AccessViolation;
-        #[cfg(unix)]
-        let source = OsAccessError {
-            signal: failure.si_signo,
-            si_code: failure.si_code,
-            #[cfg(target_arch = "x86_64")]
-            exception: failure.trapno,
-            #[cfg(target_arch = "aarch64")]
-            esr: failure.esr,
+        let source = cfg_select! {
+            windows => OsAccessError::AccessViolation,
+            unix => OsAccessError {
+                signal: failure.si_signo,
+                si_code: failure.si_code,
+                #[cfg(target_arch = "x86_64")]
+                exception: failure.trapno,
+                #[cfg(target_arch = "aarch64")]
+                esr: failure.esr,
+            },
         };
         Self {
             offset,
@@ -477,24 +477,28 @@ thread_local! {
     };
 }
 
-#[cfg(target_os = "linux")]
-type Context = libc::mcontext_t;
-#[cfg(target_os = "macos")]
-type Context = libc::__darwin_mcontext64;
-#[cfg(windows)]
-type Context = windows_sys::Win32::System::Diagnostics::Debug::CONTEXT;
+cfg_select! {
+    target_os = "linux" => {
+        type Context = libc::mcontext_t;
+    }
+    target_os = "macos" => {
+        type Context = libc::__darwin_mcontext64;
+    }
+    windows => {
+        type Context = windows_sys::Win32::System::Diagnostics::Debug::CONTEXT;
+    }
+}
 
 /// # Safety
 /// This function installs global signal handlers. It must only be called once.
 #[cfg(unix)]
 unsafe fn install_signal_handlers() {
     fn handle_signal(sig: i32, info: &libc::siginfo_t, ucontext: &mut libc::ucontext_t) {
-        #[cfg(target_os = "linux")]
-        let ctx = &mut ucontext.uc_mcontext;
-
-        #[cfg(target_os = "macos")]
-        // SAFETY: mcontext is always valid.
-        let ctx = unsafe { &mut *ucontext.uc_mcontext };
+        let ctx = cfg_select! {
+            target_os = "linux" => &mut ucontext.uc_mcontext,
+            // SAFETY: mcontext is always valid.
+            target_os = "macos" => unsafe { &mut *ucontext.uc_mcontext },
+        };
 
         let address = if sig == libc::SIGSEGV || sig == libc::SIGBUS {
             // SAFETY: si_addr is always valid to read for SIGSEGV and SIGBUS.
@@ -510,16 +514,12 @@ unsafe fn install_signal_handlers() {
             .then_some(ctx.gregs[libc::REG_ERR as usize] & 2 != 0);
 
         #[cfg(target_arch = "aarch64")]
-        let esr = {
-            #[cfg(target_os = "linux")]
-            {
+        let esr = cfg_select! {
+            target_os = "linux" => {{
                 const ESR_MAGIC: u32 = 0x45535201;
                 aarch64_extended_context::<u64>(ctx, ESR_MAGIC).copied()
-            }
-            #[cfg(target_os = "macos")]
-            {
-                Some(u64::from(ctx.__es.__esr))
-            }
+            }}
+            target_os = "macos" => Some(u64::from(ctx.__es.__esr)),
         };
         #[cfg(target_arch = "aarch64")]
         // WnR is defined for data aborts from a lower or the current EL.

@@ -18,9 +18,6 @@ cfg_select! {
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
         use virt::Aarch64Partition;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 
 use crate::ControlRequest;
@@ -1857,7 +1854,6 @@ async fn new_underhill_vm(
                 .context("did not get gic state from bootloader")?;
             new_aarch64_topology(platform, &boot_info.cpus)
         }}
-        _ => compile_error!("unsupported guest architecture"),
     }
     .context("failed to construct the processor topology")?;
 
@@ -2627,7 +2623,6 @@ async fn new_underhill_vm(
         cfg_select! {
             guest_arch = "x86_64" => vm_manifest_builder::MachineArch::X86_64,
             guest_arch = "aarch64" => vm_manifest_builder::MachineArch::Aarch64,
-            _ => compile_error!("unsupported guest architecture"),
         },
     );
 
@@ -2701,7 +2696,6 @@ async fn new_underhill_vm(
         let (use_mmio, command_set) = cfg_select! {
             guest_arch = "x86_64" => (false, UefiCommandSet::X64),
             guest_arch = "aarch64" => (true, UefiCommandSet::Aarch64),
-            _ => compile_error!("unsupported guest architecture"),
         };
         let config = firmware_uefi_resources::UefiConfig {
             base_template,
@@ -3223,7 +3217,6 @@ async fn new_underhill_vm(
         let register_layout = cfg_select! {
             guest_arch = "x86_64" => TpmRegisterLayout::IoPort,
             guest_arch = "aarch64" => TpmRegisterLayout::Mmio,
-            _ => compile_error!("unsupported guest architecture"),
         };
 
         chipset_devices.push(ChipsetDeviceHandle {
@@ -3337,30 +3330,34 @@ async fn new_underhill_vm(
     .await
     .context("failed to create devices")?;
 
-    // Add the x86 BSP's LINTs for the PIC to use.
-    #[cfg(guest_arch = "x86_64")]
-    chipset_builder.add_external_line_target(
-        BSP_LINT_LINE_SET,
-        0..=1,
-        0,
-        "bsp",
-        Arc::new(vmm_core::emuplat::apic::ApicLintLineTarget::new(
-            partition.clone(),
-            Vtl::Vtl0,
-        )),
-    );
-
-    // Add the GIC.
-    #[cfg(guest_arch = "aarch64")]
-    chipset_builder.add_external_line_target(
-        chipset_device_resources::IRQ_LINE_SET,
-        0..=vmm_core::emuplat::gic::SPI_RANGE.end() - vmm_core::emuplat::gic::SPI_RANGE.start(),
-        *vmm_core::emuplat::gic::SPI_RANGE.start(),
-        "gic",
-        Arc::new(vmm_core::emuplat::gic::GicInterruptTarget::new(
-            partition.clone().control_gic(Vtl::Vtl0),
-        )),
-    );
+    cfg_select! {
+        guest_arch = "x86_64" => {
+            // Add the x86 BSP's LINTs for the PIC to use.
+            chipset_builder.add_external_line_target(
+                BSP_LINT_LINE_SET,
+                0..=1,
+                0,
+                "bsp",
+                Arc::new(vmm_core::emuplat::apic::ApicLintLineTarget::new(
+                    partition.clone(),
+                    Vtl::Vtl0,
+                )),
+            );
+        }
+        guest_arch = "aarch64" => {
+            // Add the GIC.
+            chipset_builder.add_external_line_target(
+                chipset_device_resources::IRQ_LINE_SET,
+                0..=vmm_core::emuplat::gic::SPI_RANGE.end()
+                    - vmm_core::emuplat::gic::SPI_RANGE.start(),
+                *vmm_core::emuplat::gic::SPI_RANGE.start(),
+                "gic",
+                Arc::new(vmm_core::emuplat::gic::GicInterruptTarget::new(
+                    partition.clone().control_gic(Vtl::Vtl0),
+                )),
+            );
+        }
+    }
 
     // TODO: Enable for isolated VMs.
     // Intercept shutdown device from VTL0 when the vmbus relay is active.
@@ -4393,54 +4390,56 @@ async fn overload_vtl0_firmware(
     // The overloaded image's entry point may differ from the cold-boot image's,
     // so point the measured UEFI context's RIP at the host-computed offset;
     // load_firmware later applies it to VTL0.
-    #[cfg(guest_arch = "x86_64")]
-    if let Some(uefi_info) = measured_vtl0_info
-        .as_mut()
-        .and_then(|info| info.supports_uefi.as_mut())
-    {
-        if offset != 0 {
-            let base = uefi_info.firmware_memory.start();
-            let len = uefi_info.firmware_memory.len();
-            // `offset` is host-provided (untrusted): the entry point must land
-            // inside the measured firmware region and must not overflow.
-            let Some(new_rip) = base.checked_add(offset).filter(|_| offset < len) else {
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    offset,
-                    firmware_len = len,
-                    "host returned an out-of-range firmware entry-point offset; \
-                     ignoring overload and resuming with the current firmware"
-                );
-                return false;
-            };
-            let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
-            for reg in registers {
-                if let loader::importer::X86Register::Rip(rip) = reg {
-                    if *rip != new_rip {
-                        tracing::info!(
+    cfg_select! {
+        guest_arch = "x86_64" => {
+            if let Some(uefi_info) = measured_vtl0_info
+                .as_mut()
+                .and_then(|info| info.supports_uefi.as_mut())
+            {
+                if offset != 0 {
+                    let base = uefi_info.firmware_memory.start();
+                    let len = uefi_info.firmware_memory.len();
+                    // `offset` is host-provided (untrusted): the entry point must land
+                    // inside the measured firmware region and must not overflow.
+                    let Some(new_rip) = base.checked_add(offset).filter(|_| offset < len) else {
+                        tracing::warn!(
                             CVM_ALLOWED,
-                            old_rip = *rip,
-                            new_rip,
-                            "rebased VTL0 RIP for overloaded firmware"
+                            offset,
+                            firmware_len = len,
+                            "host returned an out-of-range firmware entry-point offset; \
+                             ignoring overload and resuming with the current firmware"
                         );
-                        *rip = new_rip;
+                        return false;
+                    };
+                    let crate::loader::VpContext::Vbs(registers) = &mut uefi_info.vp_context;
+                    for reg in registers {
+                        if let loader::importer::X86Register::Rip(rip) = reg {
+                            if *rip != new_rip {
+                                tracing::info!(
+                                    CVM_ALLOWED,
+                                    old_rip = *rip,
+                                    new_rip,
+                                    "rebased VTL0 RIP for overloaded firmware"
+                                );
+                                *rip = new_rip;
+                            }
+                        }
                     }
                 }
             }
         }
-    }
-    #[cfg(guest_arch = "aarch64")]
-    {
-        // `measured_vtl0_info` is only read on x86_64, to rebase VTL0's RIP.
-        let _ = measured_vtl0_info;
-        if offset != 0 {
-            // aarch64 has no entry-point offset; a non-zero value is a host
-            // protocol violation. Don't trust it, just surface it and ignore.
-            tracing::warn!(
-                CVM_ALLOWED,
-                offset,
-                "host returned a non-zero firmware entry-point offset on aarch64; ignoring"
-            );
+        guest_arch = "aarch64" => {
+            // `measured_vtl0_info` is only read on x86_64, to rebase VTL0's RIP.
+            let _ = measured_vtl0_info;
+            if offset != 0 {
+                // aarch64 has no entry-point offset; a non-zero value is a host
+                // protocol violation. Don't trust it, just surface it and ignore.
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    offset,
+                    "host returned a non-zero firmware entry-point offset on aarch64; ignoring"
+                );
+            }
         }
     }
 

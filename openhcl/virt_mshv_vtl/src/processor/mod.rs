@@ -18,7 +18,6 @@ cfg_select! {
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
         use hvdef::HvX64RegisterName;
-        use virt::vp::AccessVpState;
         use virt::vp::MpState;
         use virt::x86::MsrError;
         use virt_support_apic::LocalApic;
@@ -30,9 +29,6 @@ cfg_select! {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
         use virt_support_aarch64emu::translate::TranslationRegisters;
-    }
-    _ => {
-        compile_error!("unsupported guest architecture");
     }
 }
 
@@ -79,6 +75,7 @@ use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::io::CpuIo;
+use virt::vp::AccessVpState;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
 
@@ -687,55 +684,53 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     where
         Self: 'a;
 
-    #[cfg(guest_arch = "aarch64")]
-    fn set_debug_state(
-        &mut self,
-        _vtl: Vtl,
-        _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), <T::StateAccess<'p, '_> as virt::vp::AccessVpState>::Error> {
-        unimplemented!()
-    }
-
-    #[cfg(guest_arch = "x86_64")]
     fn set_debug_state(
         &mut self,
         vtl: Vtl,
         state: Option<&virt::x86::DebugState>,
     ) -> Result<(), <T::StateAccess<'p, '_> as AccessVpState>::Error> {
-        // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
-        if vtl == Vtl::Vtl0 {
-            let mut db: [u64; 4] = [0; 4];
-            let mut access_state = self.access_state(vtl);
-            let mut registers = access_state.registers()?;
-            let mut rflags = x86defs::RFlags::from(registers.rflags);
-            let mut dr7: u64 = 0;
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
+                if vtl == Vtl::Vtl0 {
+                    let mut db: [u64; 4] = [0; 4];
+                    let mut access_state = self.access_state(vtl);
+                    let mut registers = access_state.registers()?;
+                    let mut rflags = x86defs::RFlags::from(registers.rflags);
+                    let mut dr7: u64 = 0;
 
-            if let Some(state) = state {
-                rflags.set_trap(state.single_step);
-                for (i, bp) in state.breakpoints.iter().enumerate() {
-                    if let Some(bp) = bp {
-                        db[i] = bp.address;
-                        dr7 |= bp.dr7_bits(i);
+                    if let Some(state) = state {
+                        rflags.set_trap(state.single_step);
+                        for (i, bp) in state.breakpoints.iter().enumerate() {
+                            if let Some(bp) = bp {
+                                db[i] = bp.address;
+                                dr7 |= bp.dr7_bits(i);
+                            }
+                        }
                     }
+
+                    let debug_registers = virt::x86::vp::DebugRegisters {
+                        dr0: db[0],
+                        dr1: db[1],
+                        dr2: db[2],
+                        dr3: db[3],
+                        dr6: 0,
+                        dr7,
+                    };
+                    access_state.set_debug_regs(&debug_registers)?;
+
+                    registers.rflags = rflags.into();
+                    access_state.set_registers(&registers)?;
+                    return Ok(());
                 }
-            }
 
-            let debug_registers = virt::x86::vp::DebugRegisters {
-                dr0: db[0],
-                dr1: db[1],
-                dr2: db[2],
-                dr3: db[3],
-                dr6: 0,
-                dr7,
-            };
-            access_state.set_debug_regs(&debug_registers)?;
-
-            registers.rflags = rflags.into();
-            access_state.set_registers(&registers)?;
-            return Ok(());
+                panic!("unexpected set debug state in VTL {:?}", vtl);
+            }}
+            guest_arch = "aarch64" => {{
+                let _ = (vtl, state);
+                unimplemented!()
+            }}
         }
-
-        panic!("unexpected set debug state in VTL {:?}", vtl);
     }
 
     async fn run_vp(
@@ -1285,7 +1280,6 @@ impl<B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'_, 
                 let _ = (apic_ids, vp_indices);
                 todo!("AARCH64_TODO");
             }}
-            _ => compile_error!("unsupported guest architecture"),
         }
     }
 }

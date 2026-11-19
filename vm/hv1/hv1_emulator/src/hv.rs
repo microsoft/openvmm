@@ -15,9 +15,6 @@ cfg_select! {
     guest_arch = "x86_64" => {
         use x86defs::cpuid::Vendor;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 use hv1_structs::VtlArray;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;

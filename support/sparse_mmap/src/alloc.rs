@@ -7,10 +7,14 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::slice;
 use std::sync::atomic::AtomicU8;
-#[cfg(unix)]
-use unix as sys;
-#[cfg(windows)]
-use windows as sys;
+cfg_select! {
+    unix => {
+        use unix as sys;
+    }
+    windows => {
+        use windows as sys;
+    }
+}
 
 #[derive(Debug)]
 pub struct Allocation {

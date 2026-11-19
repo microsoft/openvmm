@@ -12,9 +12,6 @@ cfg_select! {
     guest_arch = "x86_64" => {
         use x86 as arch;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 use hv1_hypercall::HvRepResult;
 use hvdef::HV_PAGE_SIZE;

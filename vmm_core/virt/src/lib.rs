@@ -34,8 +34,5 @@ mod arch {
             pub use crate::aarch64::vm;
             pub use crate::aarch64::vp;
         }
-        _ => {
-            compile_error!("unsupported guest architecture");
-        }
     }
 }

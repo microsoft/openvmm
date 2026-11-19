@@ -4112,7 +4112,6 @@ fn default_value_from_arch_env(name: &str) -> OsString {
     let prefix = cfg_select! {
         guest_arch = "x86_64" => "X86_64",
         guest_arch = "aarch64" => "AARCH64",
-        _ => compile_error!("unsupported guest architecture"),
     };
     let prefixed = format!("{}_{}", prefix, name);
     std::env::var_os(name)

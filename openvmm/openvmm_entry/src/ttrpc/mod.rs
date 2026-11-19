@@ -1136,7 +1136,6 @@ impl VmService {
         let arch = cfg_select! {
             guest_arch = "x86_64" => vm_manifest_builder::MachineArch::X86_64,
             guest_arch = "aarch64" => vm_manifest_builder::MachineArch::Aarch64,
-            _ => compile_error!("unsupported guest architecture"),
         };
 
         // Build SMBIOS identity for direct Linux or UEFI boot.

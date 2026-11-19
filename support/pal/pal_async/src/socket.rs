@@ -113,10 +113,10 @@ impl<T: AsSockRef> PolledSocket<T> {
     pub fn new(driver: &(impl ?Sized + Driver), socket: T) -> io::Result<Self> {
         let sock_ref = socket.as_sock_ref();
         sock_ref.set_nonblocking(true)?;
-        #[cfg(windows)]
-        let fd = sock_ref.as_raw_socket();
-        #[cfg(unix)]
-        let fd = sock_ref.as_raw_fd();
+        let fd = cfg_select! {
+            windows => sock_ref.as_raw_socket(),
+            unix => sock_ref.as_raw_fd(),
+        };
         Ok(Self {
             poll: driver.new_dyn_socket_ready(fd)?,
             socket,

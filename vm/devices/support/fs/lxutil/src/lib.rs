@@ -21,10 +21,14 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
 
-#[cfg(unix)]
-use unix as sys;
-#[cfg(windows)]
-use windows as sys;
+cfg_select! {
+    unix => {
+        use unix as sys;
+    }
+    windows => {
+        use windows as sys;
+    }
+}
 
 pub use path::PathBufExt;
 pub use path::PathExt;

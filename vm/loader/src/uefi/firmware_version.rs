@@ -15,7 +15,6 @@ const ERASED_BYTE: u8 = 0xff;
 const FIRST_FIRMWARE_VOLUME_OFFSET: usize = cfg_select! {
     guest_arch = "x86_64" => 0,
     guest_arch = "aarch64" => 0x1000,
-    _ => compile_error!("unsupported guest architecture"),
 };
 
 /// A parsed view of an MSVM firmware version record.
@@ -217,7 +216,6 @@ pub fn find_in_firmware_image(image: &[u8]) -> Result<Option<MsvmFirmwareVersion
                 volumes = remaining;
             }
         }}
-        _ => compile_error!("unsupported guest architecture"),
     }
 }
 
@@ -353,7 +351,6 @@ mod tests {
         let layouts = cfg_select! {
             guest_arch = "x86_64" => [(false, 0)],
             guest_arch = "aarch64" => [(false, 0x1000), (true, 0x200000)],
-            _ => compile_error!("unsupported guest architecture"),
         };
         for (split, offset) in layouts {
             let original = image(split, Some((2, 0)));

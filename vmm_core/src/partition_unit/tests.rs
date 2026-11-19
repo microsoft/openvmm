@@ -99,7 +99,6 @@ fn new_runner() -> (PartitionUnitRunner, Arc<Mutex<Clock>>, Arc<Halt>) {
                 gic_nr_irqs: 256,
             })
         }}
-        _ => compile_error!("unsupported guest architecture"),
     }
     .build(1)
     .unwrap();
