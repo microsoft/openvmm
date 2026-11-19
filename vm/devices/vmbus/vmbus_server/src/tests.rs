@@ -35,8 +35,8 @@ struct MockSynicInner {
     monitor_page: Option<MonitorPageGpas>,
     fail_message_port_target: Option<(u32, u8)>,
     pend_message_ports: bool,
-    guest_message_ports: Vec<ConnectionTarget>,
-    posted_message_targets: Vec<ConnectionTarget>,
+    guest_message_ports: Vec<(Vtl, ConnectionTarget)>,
+    posted_message_targets: Vec<(Vtl, ConnectionTarget)>,
 }
 
 struct MockSynic {
@@ -114,6 +114,7 @@ struct MockGuestMessagePort {
     spawner: DefaultDriver,
     timer: Option<(PolledTimer, Instant)>,
     inner: Arc<Mutex<MockSynicInner>>,
+    vtl: Vtl,
     target: ConnectionTarget,
     pend_once: bool,
 }
@@ -151,7 +152,10 @@ impl GuestMessagePort for MockGuestMessagePort {
             }
         }
 
-        self.inner.lock().posted_message_targets.push(self.target);
+        self.inner
+            .lock()
+            .posted_message_targets
+            .push((self.vtl, self.target));
         self.send.send(payload.into());
         Poll::Ready(())
     }
@@ -189,7 +193,7 @@ impl SynicPortAccess for MockSynic {
 
     fn new_guest_message_port(
         &self,
-        _vtl: Vtl,
+        vtl: Vtl,
         vp: u32,
         sint: u8,
     ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::HypervisorError> {
@@ -201,7 +205,7 @@ impl SynicPortAccess for MockSynic {
             )));
         }
         let target = ConnectionTarget { vp, sint };
-        inner.guest_message_ports.push(target);
+        inner.guest_message_ports.push((vtl, target));
         let pend_once = inner.pend_message_ports;
         drop(inner);
 
@@ -210,6 +214,7 @@ impl SynicPortAccess for MockSynic {
             spawner: self.spawner.clone(),
             timer: None,
             inner: self.inner.clone(),
+            vtl,
             target,
             pend_once,
         }))
@@ -313,6 +318,7 @@ impl TestChannel {
 struct TestEnvBuilder {
     spawner: DefaultDriver,
     allow_allocated_monitor_pages: bool,
+    use_message_redirect: bool,
 }
 
 impl TestEnvBuilder {
@@ -320,11 +326,17 @@ impl TestEnvBuilder {
         Self {
             spawner,
             allow_allocated_monitor_pages: false,
+            use_message_redirect: false,
         }
     }
 
     fn allow_allocated_monitor_pages(mut self, allow: bool) -> Self {
         self.allow_allocated_monitor_pages = allow;
+        self
+    }
+
+    fn use_message_redirect(mut self, enable: bool) -> Self {
+        self.use_message_redirect = enable;
         self
     }
 
@@ -338,6 +350,7 @@ impl TestEnvBuilder {
         let gm = GuestMemory::empty();
         let vmbus = VmbusServerBuilder::new(self.spawner, synic.clone(), gm)
             .enable_mnf(true)
+            .use_message_redirect(self.use_message_redirect)
             .build()
             .unwrap();
 
@@ -507,52 +520,70 @@ impl TestEnv {
 
 #[async_test]
 async fn test_version_response_retry_reuses_port(spawner: DefaultDriver) {
-    let mut env = TestEnv::new(spawner.clone());
-    env.synic.inner.lock().pend_message_ports = true;
-    env.vmbus.start();
-    env.synic.send_message(protocol::InitiateContact {
-        version_requested: u32::MAX,
-        target_message_vp: 3,
-        interrupt_page_or_target_info: protocol::TargetInfo::new().with_sint(VMBUS_SINT).into(),
-        parent_to_child_monitor_page_gpa: 0,
-        child_to_parent_monitor_page_gpa: 0,
-    });
+    for redirect in [false, true] {
+        for pend_messages in [false, true] {
+            for requested_sint in [VMBUS_SINT, 3] {
+                let mut env = TestEnvBuilder::new(spawner.clone())
+                    .use_message_redirect(redirect)
+                    .build();
+                env.synic.inner.lock().pend_message_ports = pend_messages;
+                env.vmbus.start();
+                env.synic.send_message(protocol::InitiateContact {
+                    version_requested: u32::MAX,
+                    target_message_vp: 3,
+                    interrupt_page_or_target_info: protocol::TargetInfo::new()
+                        .with_sint(requested_sint)
+                        .into(),
+                    parent_to_child_monitor_page_gpa: 0,
+                    child_to_parent_monitor_page_gpa: 0,
+                });
 
-    {
-        let mut timer = PolledTimer::new(&spawner);
-        let mut response = std::pin::pin!(env.get_response::<protocol::VersionResponse>().fuse());
-        let mut timeout = std::pin::pin!(
-            timer
-                .sleep_until(Instant::now() + Duration::from_secs(5))
-                .fuse()
-        );
-        futures::select! {
-            response = response => assert_eq!(response.version_supported, 0),
-            _ = timeout => panic!("version response was not retried"),
+                {
+                    let mut timer = PolledTimer::new(&spawner);
+                    let mut response =
+                        std::pin::pin!(env.get_response::<protocol::VersionResponse>().fuse());
+                    let mut timeout = std::pin::pin!(
+                        timer
+                            .sleep_until(Instant::now() + Duration::from_secs(5))
+                            .fuse()
+                    );
+                    futures::select! {
+                        response = response => assert_eq!(response.version_supported, 0),
+                        _ = timeout => panic!("version response was not retried"),
+                    }
+                }
+
+                let (vtl, control_sint) = if redirect {
+                    (REDIRECT_VTL, REDIRECT_SINT)
+                } else {
+                    (Vtl::Vtl0, VMBUS_SINT)
+                };
+                let target = ConnectionTarget {
+                    vp: 3,
+                    sint: if requested_sint == VMBUS_SINT {
+                        control_sint
+                    } else {
+                        requested_sint
+                    },
+                };
+                let inner = env.synic.inner.lock();
+                assert_eq!(
+                    inner.guest_message_ports,
+                    [
+                        (
+                            vtl,
+                            ConnectionTarget {
+                                vp: 0,
+                                sint: control_sint
+                            }
+                        ),
+                        (vtl, target),
+                    ]
+                );
+                assert_eq!(inner.posted_message_targets, [(vtl, target)]);
+            }
         }
     }
-
-    let inner = env.synic.inner.lock();
-    assert_eq!(
-        inner.guest_message_ports,
-        [
-            ConnectionTarget {
-                vp: 0,
-                sint: VMBUS_SINT
-            },
-            ConnectionTarget {
-                vp: 3,
-                sint: VMBUS_SINT
-            },
-        ]
-    );
-    assert_eq!(
-        inner.posted_message_targets,
-        [ConnectionTarget {
-            vp: 3,
-            sint: VMBUS_SINT
-        }]
-    );
 }
 
 #[async_test]

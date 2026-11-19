@@ -1276,6 +1276,7 @@ impl ServerTask {
             let custom_message_port = &mut self.inner.custom_message_port;
             let synic = self.inner.synic.as_ref();
             let redirect_vtl = self.inner.redirect_vtl;
+            let redirect_sint = self.inner.redirect_sint;
             let mut flush_pending_messages =
                 OptionFuture::from((running_not_resetting && has_pending_messages).then(|| {
                     poll_fn(|cx| {
@@ -1285,6 +1286,7 @@ impl ServerTask {
                                     custom_message_port,
                                     synic,
                                     redirect_vtl,
+                                    redirect_sint,
                                     target,
                                     cx,
                                     msg,
@@ -1770,6 +1772,7 @@ impl Notifier for ServerTaskInner {
                     &mut self.custom_message_port,
                     self.synic.as_ref(),
                     self.redirect_vtl,
+                    self.redirect_sint,
                     target,
                     &mut std::task::Context::from_waker(std::task::Waker::noop()),
                     message,
@@ -1820,10 +1823,16 @@ impl ServerTaskInner {
         custom_message_port: &mut Option<CustomMessagePort>,
         synic: &dyn SynicPortAccess,
         redirect_vtl: Vtl,
-        target: ConnectionTarget,
+        redirect_sint: u8,
+        mut target: ConnectionTarget,
         cx: &mut std::task::Context<'_>,
         message: &OutgoingMessage,
     ) -> Poll<()> {
+        // Redirect the normal control SINT, but preserve explicit alternate SINTs.
+        if target.sint == VMBUS_SINT {
+            target.sint = redirect_sint;
+        }
+
         if custom_message_port
             .as_ref()
             .is_none_or(|port| port.target != target)
