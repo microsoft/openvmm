@@ -332,8 +332,9 @@ mod tests {
             unreachable!();
         };
         *windows_options = Some(VirtioFsWindowsOptions {
+            #[cfg(windows)]
+            user_token: None,
             shared_mem: true,
-            ..Default::default()
         });
         resource
     }
