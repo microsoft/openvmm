@@ -7,6 +7,7 @@
 #![expect(unsafe_code)]
 #![expect(missing_docs)]
 
+pub mod cached;
 pub mod ranges;
 
 use guestmem_core::ranges::PagedRange;
@@ -92,6 +93,7 @@ impl LinearGuestMemory for sparse_mmap::alloc::SharedMem {}
 /// A page-aligned heap allocation for use with [`GuestMemory`].
 pub struct AlignedHeapMemory {
     pages: Box<[AlignedPage]>,
+    cache_invalidation: Arc<cached::CacheInvalidation>,
 }
 
 impl Debug for AlignedHeapMemory {
@@ -116,6 +118,7 @@ impl AlignedHeapMemory {
         pages.resize_with(size.div_ceil(PAGE_SIZE), || ZERO_PAGE);
         Self {
             pages: pages.into(),
+            cache_invalidation: Arc::new(cached::CacheInvalidation::default()),
         }
     }
 
@@ -184,6 +187,10 @@ unsafe impl GuestMemoryAccess for AlignedHeapMemory {
 
     fn max_address(&self) -> u64 {
         (self.pages.len() * PAGE_SIZE) as u64
+    }
+
+    fn cache_invalidation(&self) -> Option<Arc<cached::CacheInvalidation>> {
+        Some(self.cache_invalidation.clone())
     }
 }
 
@@ -309,6 +316,71 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     /// well as the maximum offset into the VA range described by `mapping`.
     fn max_address(&self) -> u64;
 
+    /// Opts in to direct cached access through [`cached::CachedRange`].
+    ///
+    /// If this returns `Some`, every byte permitted by both [`Self::cached_access`]
+    /// and the access bitmaps must be accessible through `cached_mapping()` without
+    /// fault resolution or page locking. All aliases must share the same
+    /// invalidation object. Before
+    /// changing accessible backing or reducing permissions, close admission
+    /// (for example by clearing bitmap bits), call
+    /// [`cached::CacheInvalidation::invalidate`], and synchronize [`rcu()`]
+    /// before retiring the old mapping. Never wait for that synchronization
+    /// while holding a lock or service needed by memory accessors.
+    ///
+    /// Invalidation must not make an already admitted view fault before its
+    /// RCU scope ends. Unexpected cached-access faults are returned as errors,
+    /// without retrying through ordinary GuestMemory access.
+    ///
+    /// Invalidate again after granting access so caches can refresh denied
+    /// permissions. Returning `None` retains ordinary fallible GuestMemory
+    /// access, even if a mapping or page locking is available.
+    fn cache_invalidation(&self) -> Option<Arc<cached::CacheInvalidation>> {
+        None
+    }
+
+    /// Reports which directions of a range are ready for direct cached access.
+    ///
+    /// Called only under guestmem RCU for a backing that opted in through
+    /// [`Self::cache_invalidation`]. Sparse backings can return no permissions
+    /// until ordinary fault handling establishes a mapping, then invalidate
+    /// caches when the range becomes ready. The default is for fully accessible
+    /// mappings; access bitmaps are checked separately.
+    fn cached_access(&self, address: u64, len: usize) -> cached::CachePermissions {
+        let _ = (address, len);
+        cached::CachePermissions::READ_WRITE
+    }
+
+    /// Returns the current translation of a bounded range, under guestmem RCU.
+    ///
+    /// The pointer may change after invalidation and need not belong to a full
+    /// linear `mapping()`. Permitted bytes must remain accessible until readers
+    /// drain. This must not wait for the caller's grace period. Return `None`
+    /// when a contiguous direct translation is unavailable.
+    fn cached_mapping(&self, address: u64, len: usize) -> Option<NonNull<u8>> {
+        if address.checked_add(len as u64)? > self.max_address() {
+            return None;
+        }
+        // SAFETY: the range is inside the backing's reserved mapping.
+        Some(unsafe { self.mapping()?.add(address as usize) })
+    }
+
+    /// Prepares a range for read/write cached admission, without copying data
+    /// or retaining a page lock. Fully accessible backings need no preparation.
+    ///
+    /// Called under guestmem RCU after admission fails. Like ordinary fault
+    /// resolution, this must not wait for a grace period containing this reader.
+    /// Success does not admit a pointer: readiness, permissions, translations
+    /// and generations are checked again afterwards.
+    fn prepare_cached_access(
+        &self,
+        address: u64,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError> {
+        let _ = (address, len);
+        Ok(())
+    }
+
     /// The bitmaps to check for validity, one bit per page. If a bit is set,
     /// then the page is valid to access via the mapping; if it is clear, then
     /// the page will not be accessed.
@@ -317,9 +389,10 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     /// PAGE_SIZE)` bits long, and they must be valid for atomic read access for
     /// the lifetime of this object from any thread.
     ///
-    /// The bitmaps are only checked if there is a mapping. If the bitmap check
-    /// fails, then the associated `*_fallback` routine is called to handle the
-    /// error.
+    /// The bitmaps are checked for ordinary mapped access and direct cached
+    /// translations, including cached translations without a full linear
+    /// mapping. If a check fails, the associated ordinary `*_fallback` routine
+    /// handles the error.
     ///
     /// Bitmap checks are performed under the [`rcu()`] RCU domain, with relaxed
     /// accesses. After a thread updates the bitmap to be more restrictive, it
@@ -509,6 +582,11 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
 }
 
 trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
+    fn cache_invalidation(&self, gpa: u64) -> Option<Arc<cached::CacheInvalidation>>;
+    fn cached_access(&self, gpa: u64, len: usize) -> cached::CachePermissions;
+    fn cached_mapping(&self, gpa: u64, len: usize) -> Option<NonNull<u8>>;
+    fn prepare_cached_access(&self, gpa: u64, len: usize) -> Result<(), GuestMemoryBackingError>;
+
     fn subrange(
         &self,
         offset: u64,
@@ -563,6 +641,22 @@ trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
 }
 
 impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
+    fn cache_invalidation(&self, _gpa: u64) -> Option<Arc<cached::CacheInvalidation>> {
+        self.cache_invalidation()
+    }
+
+    fn cached_access(&self, gpa: u64, len: usize) -> cached::CachePermissions {
+        self.cached_access(gpa, len)
+    }
+
+    fn cached_mapping(&self, gpa: u64, len: usize) -> Option<NonNull<u8>> {
+        self.cached_mapping(gpa, len)
+    }
+
+    fn prepare_cached_access(&self, gpa: u64, len: usize) -> Result<(), GuestMemoryBackingError> {
+        self.prepare_cached_access(gpa, len)
+    }
+
     fn subrange(
         &self,
         offset: u64,
@@ -669,6 +763,26 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Arc<T> {
 
     fn max_address(&self) -> u64 {
         self.as_ref().max_address()
+    }
+
+    fn cache_invalidation(&self) -> Option<Arc<cached::CacheInvalidation>> {
+        self.as_ref().cache_invalidation()
+    }
+
+    fn cached_access(&self, address: u64, len: usize) -> cached::CachePermissions {
+        self.as_ref().cached_access(address, len)
+    }
+
+    fn cached_mapping(&self, address: u64, len: usize) -> Option<NonNull<u8>> {
+        self.as_ref().cached_mapping(address, len)
+    }
+
+    fn prepare_cached_access(
+        &self,
+        address: u64,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError> {
+        self.as_ref().prepare_cached_access(address, len)
     }
 
     #[cfg(feature = "bitmap")]
@@ -1005,6 +1119,27 @@ impl<T> MultiRegionGuestMemoryAccess<T> {
 
 // SAFETY: `mapping()` is unreachable and panics if called.
 impl<T: GuestMemoryAccess> DynGuestMemoryAccess for MultiRegionGuestMemoryAccess<T> {
+    fn cache_invalidation(&self, gpa: u64) -> Option<Arc<cached::CacheInvalidation>> {
+        self.region(gpa, 0).ok()?.0.cache_invalidation()
+    }
+
+    fn cached_access(&self, gpa: u64, len: usize) -> cached::CachePermissions {
+        match self.region(gpa, len as u64) {
+            Ok((region, offset)) => region.cached_access(offset, len),
+            Err(_) => cached::CachePermissions::NONE,
+        }
+    }
+
+    fn cached_mapping(&self, gpa: u64, len: usize) -> Option<NonNull<u8>> {
+        let (region, offset) = self.region(gpa, len as u64).ok()?;
+        region.cached_mapping(offset, len)
+    }
+
+    fn prepare_cached_access(&self, gpa: u64, len: usize) -> Result<(), GuestMemoryBackingError> {
+        let (region, offset) = self.region(gpa, len as u64)?;
+        region.prepare_cached_access(offset, len)
+    }
+
     fn subrange(
         &self,
         offset: u64,
@@ -1300,14 +1435,13 @@ pub enum MultiRegionError {
     BackingTooLarge { backing_size: u64, region_size: u64 },
 }
 
-/// The RCU domain memory accesses occur under. Updates to any memory access
-/// bitmaps must be synchronized under this domain.
-///
-/// See [`GuestMemoryAccess::access_bitmap`] for more details.
+/// The RCU domain for cached and bitmap-checked memory access.
+/// Backings must synchronize this domain before retiring mappings admitted
+/// through those paths. See [`GuestMemoryAccess`] for the backing contract.
 ///
 /// This is currently the global domain, but this is reexported here to make
 /// calling code clearer.
-#[cfg(feature = "bitmap")]
+#[inline]
 pub fn rcu() -> minircu::RcuDomain {
     // Use the global domain unless we find a reason to do something else.
     minircu::global()

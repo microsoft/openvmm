@@ -10,12 +10,22 @@
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryAccess;
+use guestmem::cached::CacheInvalidation;
+use guestmem::cached::CachedAccess;
+use guestmem::cached::with_access;
 use std::hint::black_box;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::atomic::fence;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 criterion::criterion_main!(benches);
 
-criterion::criterion_group!(benches, bench_access);
+criterion::criterion_group!(benches, bench_access, bench_queues);
 
 struct PerfGuestMemory {
     memory: AlignedHeapMemory,
@@ -41,6 +51,10 @@ unsafe impl GuestMemoryAccess for PerfGuestMemory {
 
     fn max_address(&self) -> u64 {
         self.memory.max_address()
+    }
+
+    fn cache_invalidation(&self) -> Option<Arc<CacheInvalidation>> {
+        self.memory.cache_invalidation()
     }
 
     #[cfg(feature = "bitmap")]
@@ -110,4 +124,196 @@ fn fill_at_n<const N: usize>(b: &mut criterion::Bencher<'_>, mem: &GuestMemory) 
     b.iter(|| {
         mem.fill_at(0, 0u8, N).unwrap();
     })
+}
+
+trait QueueMemory {
+    fn read<T: FromBytes + Immutable + KnownLayout>(&self, offset: u64) -> T;
+    fn write<T: IntoBytes + Immutable + KnownLayout>(&self, offset: u64, value: &T);
+}
+
+impl QueueMemory for GuestMemory {
+    #[inline]
+    fn read<T: FromBytes + Immutable + KnownLayout>(&self, offset: u64) -> T {
+        self.read_plain(offset).unwrap()
+    }
+
+    #[inline]
+    fn write<T: IntoBytes + Immutable + KnownLayout>(&self, offset: u64, value: &T) {
+        self.write_plain(offset, value).unwrap();
+    }
+}
+
+impl QueueMemory for CachedAccess<'_> {
+    #[inline]
+    fn read<T: FromBytes + Immutable + KnownLayout>(&self, offset: u64) -> T {
+        self.read_plain(offset).unwrap()
+    }
+
+    #[inline]
+    fn write<T: IntoBytes + Immutable + KnownLayout>(&self, offset: u64, value: &T) {
+        self.write_plain(offset, value).unwrap();
+    }
+}
+
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct Descriptor {
+    address: u64,
+    len: u32,
+    id: u16,
+    flags: u16,
+}
+
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct UsedElement {
+    id: u32,
+    len: u32,
+}
+
+const QUEUE_SIZE: usize = 256;
+const AVAIL: u64 = 4096;
+const USED: u64 = 8192;
+
+// These exercise the metadata access patterns and ordering of queue fetch plus
+// completion, not a complete virtqueue state machine or payload I/O.
+fn split_batch(
+    desc: &impl QueueMemory,
+    avail: &impl QueueMemory,
+    used: &impl QueueMemory,
+    batch: usize,
+) {
+    let available: u16 = avail.read(2);
+    fence(Ordering::Acquire);
+    for i in 0..batch as u16 {
+        let head: u16 = avail.read(4 + 2 * u64::from(i));
+        let descriptor: Descriptor = desc.read(16 * u64::from(head));
+        black_box(descriptor.address);
+        used.write(
+            4 + 8 * u64::from(i),
+            &UsedElement {
+                id: u32::from(head),
+                len: descriptor.len,
+            },
+        );
+        fence(Ordering::Release);
+        used.write(2, &available.wrapping_add(i + 1));
+        fence(Ordering::SeqCst);
+        black_box(avail.read::<u16>(4 + 2 * QUEUE_SIZE as u64));
+    }
+}
+
+fn packed_batch(desc: &impl QueueMemory, events: &impl QueueMemory, batch: usize) {
+    for i in 0..batch as u64 {
+        let offset = 16 * i;
+        let flags: u16 = desc.read(offset + 14);
+        fence(Ordering::Acquire);
+        let descriptor: Descriptor = desc.read(offset);
+        black_box((descriptor.address, descriptor.id));
+        desc.write(offset + 8, &descriptor.len);
+        fence(Ordering::Release);
+        desc.write(offset + 14, &(flags ^ 0x8000));
+        fence(Ordering::SeqCst);
+        black_box(events.read::<u32>(0));
+    }
+}
+
+fn queue_memory() -> GuestMemory {
+    let memory = GuestMemory::new("queue-bench", PerfGuestMemory::new(4 * 4096));
+    for i in 0..QUEUE_SIZE as u16 {
+        memory
+            .write_plain(
+                16 * u64::from(i),
+                &Descriptor {
+                    address: 0x10000 + 4096 * u64::from(i),
+                    len: 4096,
+                    id: i,
+                    flags: 0x80,
+                },
+            )
+            .unwrap();
+        memory
+            .write_plain(AVAIL + 4 + 2 * u64::from(i), &i)
+            .unwrap();
+    }
+    memory.write_plain(AVAIL + 2, &(QUEUE_SIZE as u16)).unwrap();
+    memory
+}
+
+fn bench_queues(c: &mut criterion::Criterion) {
+    let memory = queue_memory();
+    let desc = memory.subrange(0, 4096, true).unwrap();
+    let avail = memory.subrange(AVAIL, 4096, true).unwrap();
+    let used = memory.subrange(USED, 4096, true).unwrap();
+    let mut desc_cache = memory.cache_range(0, 4096).unwrap();
+    let mut avail_cache = memory.cache_range(AVAIL, 4096).unwrap();
+    let mut used_cache = memory.cache_range(USED, 4096).unwrap();
+
+    let mut group = c.benchmark_group("queue-split");
+    for batch in [1, 8, 32] {
+        group.throughput(criterion::Throughput::Elements(batch as u64));
+        group.bench_with_input(
+            criterion::BenchmarkId::new("guestmem", batch),
+            &batch,
+            |b, &n| {
+                b.iter(|| split_batch(&desc, &avail, &used, black_box(n)));
+            },
+        );
+        group.bench_with_input(
+            criterion::BenchmarkId::new("scoped-guestmem", batch),
+            &batch,
+            |b, &n| {
+                b.iter(|| with_access(|_| split_batch(&desc, &avail, &used, black_box(n))));
+            },
+        );
+        group.bench_with_input(
+            criterion::BenchmarkId::new("cached", batch),
+            &batch,
+            |b, &n| {
+                b.iter(|| {
+                    with_access(|scope| {
+                        let desc = desc_cache.access(scope);
+                        let avail = avail_cache.access(scope);
+                        let used = used_cache.access(scope);
+                        split_batch(&desc, &avail, &used, black_box(n));
+                    })
+                });
+            },
+        );
+    }
+    group.finish();
+
+    let mut event_cache = memory.cache_range(AVAIL, 4).unwrap();
+    let mut group = c.benchmark_group("queue-packed");
+    for batch in [1, 8, 32] {
+        group.throughput(criterion::Throughput::Elements(batch as u64));
+        group.bench_with_input(
+            criterion::BenchmarkId::new("guestmem", batch),
+            &batch,
+            |b, &n| {
+                b.iter(|| packed_batch(&desc, &avail, black_box(n)));
+            },
+        );
+        group.bench_with_input(
+            criterion::BenchmarkId::new("scoped-guestmem", batch),
+            &batch,
+            |b, &n| {
+                b.iter(|| with_access(|_| packed_batch(&desc, &avail, black_box(n))));
+            },
+        );
+        group.bench_with_input(
+            criterion::BenchmarkId::new("cached", batch),
+            &batch,
+            |b, &n| {
+                b.iter(|| {
+                    with_access(|scope| {
+                        let desc = desc_cache.access(scope);
+                        let events = event_cache.access(scope);
+                        packed_batch(&desc, &events, black_box(n));
+                    })
+                });
+            },
+        );
+    }
+    group.finish();
 }

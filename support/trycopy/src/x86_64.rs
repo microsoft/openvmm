@@ -296,6 +296,7 @@ macro_rules! try_read {
     ($vis:vis $func:ident, $ty:ty, $asm:expr) => {
         /// # Safety
         /// `src` must be an address that's reserved.
+        #[inline]
         $vis unsafe fn $func(src: *const $ty) -> Result<$ty, Fault> {
             // SAFETY: caller ensured.
             unsafe {
@@ -332,6 +333,7 @@ macro_rules! try_write {
         /// # Safety
         /// `dest` must be an address that's reserved and can be written to
         /// without violating Rust's aliasing rules.
+        #[inline]
         $vis unsafe fn $func(dest: *mut $ty, val: $ty) -> Result<(), Fault> {
             // SAFETY: caller ensured.
             unsafe {
@@ -355,6 +357,29 @@ try_write!(pub(crate) try_write8, u8, "mov byte ptr [{dest}], {val:l}");
 try_write!(pub(crate) try_write16, u16, "mov word ptr [{dest}], {val:x}");
 try_write!(pub(crate) try_write32, u32, "mov dword ptr [{dest}], {val:e}");
 try_write!(pub(crate) try_write64, u64, "mov qword ptr [{dest}], {val:r}");
+
+/// # Safety
+/// `dest` must be a reserved, naturally aligned address that may be written
+/// without violating Rust's aliasing rules.
+#[inline]
+pub(crate) unsafe fn try_write32_seqcst(dest: *mut u32, value: u32) -> Result<(), Fault> {
+    let result: i32;
+    // SAFETY: the caller supplies the address; xchg provides a full barrier.
+    unsafe {
+        core::arch::asm!(
+            "2:",
+            "xchg dword ptr [{dest}], {value:e}",
+            "xor ecx, ecx",
+            "3:",
+            recovery_descriptor!("2b", "3b", "."),
+            dest = in(reg) dest,
+            value = inout(reg) value => _,
+            lateout("rcx") result,
+            options(nostack),
+        );
+    }
+    if result == 0 { Ok(()) } else { Err(Fault) }
+}
 
 macro_rules! try_cmpxchg {
     ($vis:vis $func:ident, $ty:ty, $ax:tt, $reg_kind:tt, $asm:expr) => {

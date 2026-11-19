@@ -92,6 +92,8 @@ use aarch64::*;
 use x86_64::*;
 
 use std::mem::MaybeUninit;
+use std::sync::atomic::Ordering;
+use std::sync::atomic::compiler_fence;
 use thiserror::Error;
 
 /// Must be called before using [`try_copy`] or other `try_` functions with a
@@ -350,6 +352,81 @@ pub enum MemoryErrorKind {
     AccessViolation,
     /// The platform does not support the atomic destination's alignment.
     UnalignedAtomicAccess,
+}
+
+/// Loads a naturally aligned 32-bit word with fault recovery and atomic ordering.
+///
+/// # Safety
+/// `src` must be a naturally aligned reserved address. It need not be backed.
+/// Call [`initialize_try_copy`] before accessing memory that could fault.
+#[inline]
+pub unsafe fn try_load_u32(src: *const u32, order: Ordering) -> Result<u32, MemoryError> {
+    assert!(matches!(
+        order,
+        Ordering::Relaxed | Ordering::Acquire | Ordering::SeqCst
+    ));
+    compiler_fence(Ordering::SeqCst);
+    // SAFETY: the caller supplies the reserved, aligned word.
+    let result = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // TSO orders loads; the compiler fences keep accesses in place.
+            try_read32(src)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            match order {
+                Ordering::Relaxed => try_read32(src),
+                _ => try_read32_acquire(src),
+            }
+        }
+    };
+    compiler_fence(Ordering::SeqCst);
+    result.map_err(|Fault| {
+        core::hint::cold_path();
+        MemoryError::from_last_failure(Some(src.cast()), std::ptr::null_mut(), 4)
+    })
+}
+
+/// Stores a naturally aligned 32-bit word with fault recovery and atomic ordering.
+///
+/// # Safety
+/// `dest` must be a naturally aligned reserved address that may be written
+/// without violating Rust's aliasing rules. It need not be backed.
+/// Call [`initialize_try_copy`] before accessing memory that could fault.
+#[inline]
+pub unsafe fn try_store_u32(
+    dest: *mut u32,
+    value: u32,
+    order: Ordering,
+) -> Result<(), MemoryError> {
+    assert!(matches!(
+        order,
+        Ordering::Relaxed | Ordering::Release | Ordering::SeqCst
+    ));
+    compiler_fence(Ordering::SeqCst);
+    // SAFETY: the caller supplies the reserved, aligned word.
+    let result = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        {
+            match order {
+                Ordering::SeqCst => try_write32_seqcst(dest, value),
+                _ => try_write32(dest, value),
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            match order {
+                Ordering::Relaxed => try_write32(dest, value),
+                _ => try_write32_release(dest, value),
+            }
+        }
+    };
+    compiler_fence(Ordering::SeqCst);
+    result.map_err(|Fault| {
+        core::hint::cold_path();
+        MemoryError::from_last_failure(None, dest.cast(), 4)
+    })
 }
 
 /// Error returned when a memory access fails.
@@ -927,6 +1004,7 @@ mod tests {
     use crate::try_cmpxchg64;
     use crate::try_compare_exchange;
     use crate::try_copy;
+    use crate::try_load_u32;
     use crate::try_memmove;
     use crate::try_memset;
     use crate::try_read_volatile;
@@ -934,12 +1012,14 @@ mod tests {
     use crate::try_read16;
     use crate::try_read32;
     use crate::try_read64;
+    use crate::try_store_u32;
     use crate::try_write_bytes;
     use crate::try_write_volatile;
     use crate::try_write8;
     use crate::try_write16;
     use crate::try_write32;
     use crate::try_write64;
+    use std::sync::atomic::Ordering;
     use test_with_tracing::test;
 
     struct GuardedMapping {
@@ -1153,7 +1233,100 @@ mod tests {
             let atomic = try_compare_exchange(guard.cast::<u64>(), 0, 1).unwrap_err();
             assert_eq!(atomic.offset(), 0);
             assert!(atomic.is_write);
+            for order in [Ordering::Relaxed, Ordering::Acquire, Ordering::SeqCst] {
+                let error = try_load_u32(guard.cast(), order).unwrap_err();
+                assert_eq!(error.offset(), 0);
+                assert!(!error.is_write);
+            }
+            for order in [Ordering::Relaxed, Ordering::Release, Ordering::SeqCst] {
+                let error = try_store_u32(guard.cast(), 123, order).unwrap_err();
+                assert_eq!(error.offset(), 0);
+                assert!(error.is_write);
+            }
         }
+    }
+
+    #[test]
+    fn test_ordered_words_preserve_neighbors_and_publish_data() {
+        initialize_try_copy();
+        let mut words = [0x11223344u32, 0, 0x55667788];
+        for store in [Ordering::Relaxed, Ordering::Release, Ordering::SeqCst] {
+            for load in [Ordering::Relaxed, Ordering::Acquire, Ordering::SeqCst] {
+                // SAFETY: this is an exclusively owned, naturally aligned word.
+                unsafe {
+                    try_store_u32(&mut words[1], 0xabcdef01, store).unwrap();
+                    assert_eq!(try_load_u32(&words[1], load).unwrap(), 0xabcdef01);
+                }
+                assert_eq!(words, [0x11223344, 0xabcdef01, 0x55667788]);
+            }
+        }
+        let ready = std::sync::atomic::AtomicU32::new(0);
+        let payload = std::sync::atomic::AtomicU32::new(0);
+        std::thread::scope(|threads| {
+            threads.spawn(|| {
+                payload.store(123, Ordering::Relaxed);
+                // SAFETY: ready owns the aligned word through thread join.
+                unsafe { try_store_u32(ready.as_ptr(), 1, Ordering::Release).unwrap() };
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            // SAFETY: ready owns the aligned word through thread join.
+            while unsafe { try_load_u32(ready.as_ptr(), Ordering::Acquire).unwrap() } == 0 {
+                assert!(std::time::Instant::now() < deadline, "publication stalled");
+                std::hint::spin_loop();
+            }
+            assert_eq!(payload.load(Ordering::Relaxed), 123);
+        });
+    }
+
+    #[test]
+    fn test_ordered_words_interoperate_with_seqcst_atomics() {
+        initialize_try_copy();
+        let words = [
+            std::sync::atomic::AtomicU32::new(0),
+            std::sync::atomic::AtomicU32::new(0),
+        ];
+        let results = [
+            std::sync::atomic::AtomicU32::new(0),
+            std::sync::atomic::AtomicU32::new(0),
+        ];
+        let phase = std::sync::Barrier::new(3);
+        let mut forbidden = false;
+        std::thread::scope(|threads| {
+            threads.spawn(|| {
+                for _ in 0..2048 {
+                    phase.wait();
+                    // SAFETY: the atomic allocation stays aligned and live.
+                    let result = unsafe { try_store_u32(words[0].as_ptr(), 1, Ordering::SeqCst) };
+                    results[0].store(
+                        result.map_or(2, |()| words[1].load(Ordering::SeqCst)),
+                        Ordering::Relaxed,
+                    );
+                    phase.wait();
+                }
+            });
+            threads.spawn(|| {
+                for _ in 0..2048 {
+                    phase.wait();
+                    words[1].store(1, Ordering::SeqCst);
+                    // SAFETY: the atomic allocation stays aligned and live.
+                    let result = unsafe { try_load_u32(words[0].as_ptr(), Ordering::SeqCst) };
+                    results[1].store(result.unwrap_or(2), Ordering::Relaxed);
+                    phase.wait();
+                }
+            });
+            for _ in 0..2048 {
+                words[0].store(0, Ordering::Relaxed);
+                words[1].store(0, Ordering::Relaxed);
+                phase.wait();
+                phase.wait();
+                let observed = [
+                    results[0].load(Ordering::Relaxed),
+                    results[1].load(Ordering::Relaxed),
+                ];
+                forbidden |= observed == [0, 0] || observed.contains(&2);
+            }
+        });
+        assert!(!forbidden, "SC store/load ordering or mapped access failed");
     }
 
     #[cfg(target_arch = "x86_64")]
