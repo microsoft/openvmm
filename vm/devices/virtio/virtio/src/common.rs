@@ -316,6 +316,12 @@ impl VirtioQueue {
         }
     }
 
+    /// Whether all ring capacity is outstanding: heads for split queues,
+    /// descriptor slots for packed queues.
+    pub(crate) fn is_full(&self) -> bool {
+        self.core.is_full()
+    }
+
     /// Polls until the queue is kicked by the guest, indicating new work may be
     /// available.
     ///

@@ -303,6 +303,10 @@ impl QueueCoreGetWork {
         self.failed
     }
 
+    pub fn is_full(&self) -> bool {
+        self.in_flight == self.queue_size
+    }
+
     pub fn try_next_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
         match self.try_peek_work() {
             Ok(Some(work)) => {

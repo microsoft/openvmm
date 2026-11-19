@@ -918,6 +918,28 @@ async fn duplicate_tx_descriptor_is_deferred(driver: DefaultDriver) {
     assert_eq!(harness.wait_for_used().await, (desc_index, 0));
 }
 
+#[async_test]
+async fn duplicate_tx_descriptor_in_sync_batch_is_deferred(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    // Prepost all entries so reuse is encountered while forming a batch,
+    // before even a synchronous backend can complete the first packet.
+    for id in [0, 0, 2] {
+        harness.post_tx_and_signal(id, 64);
+    }
+    let handle = harness.enable_and_get_handle().await;
+
+    for id in [0, 0, 2] {
+        assert_eq!(harness.wait_for_used().await, (id, 0));
+    }
+    assert_eq!(harness.try_read_tx_used(), None);
+    let batches: Vec<Vec<_>> = handle
+        .take_tx_avail_log()
+        .iter()
+        .map(|segments| segments.iter().filter_map(|s| s.tx_id).collect())
+        .collect();
+    assert_eq!(batches, [vec![0], vec![0, 2]]);
+}
+
 /// An unordered network backend is rejected at device creation with a clear
 /// error, rather than the device coming up and wedging when the guest activates
 /// it.

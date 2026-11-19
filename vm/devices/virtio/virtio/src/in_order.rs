@@ -14,8 +14,8 @@
 //! This is deliberately a *side* helper whose methods borrow a
 //! [`VirtioQueue`], rather than being baked into the queue itself. Devices that
 //! do not need in-order completion (virtio-blk, virtio-vsock, ...) never
-//! instantiate it and pay nothing — the queue's hot path is untouched. It uses
-//! only the queue's public API, mirroring QEMU's
+//! instantiate it and pay nothing — the queue's hot path is untouched. It
+//! mirrors QEMU's
 //! `virtqueue_ordered_fill`/`virtqueue_ordered_flush` (`used_elems`): consumed
 //! descriptors are recorded in consumption order, completions fill their slot
 //! (possibly out of order), and only the contiguous filled prefix is published
@@ -24,10 +24,8 @@
 //! A driver that makes a descriptor head available again before its previous
 //! use has been published violates the virtio spec. The reused head is not
 //! rejected: it is left in the available ring until the earlier use is
-//! published and then processed normally (QEMU's virtio-net transmit path
-//! similarly processes it once the earlier packet completes). While deferred,
-//! [`InOrderCompletion::is_blocked`] reports true so callers stop waiting for
-//! kicks.
+//! published and then processed normally. Use [`InOrderCompletion::poll_kick`]
+//! to wait for work without spinning on a deferred descriptor.
 
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
@@ -35,13 +33,16 @@ use crate::queue::QueueCompletion;
 use inspect::Inspect;
 use std::collections::VecDeque;
 use std::io::Error;
+use std::task::Context;
+use std::task::Poll;
 
 /// Enforces in-order used-ring publication for a single [`VirtioQueue`].
 ///
 /// Consume descriptors via [`try_next`](Self::try_next) and complete them via
 /// [`complete`](Self::complete) instead of calling the queue's methods
-/// directly. Completions may be issued in any order; the used ring is always
-/// published in consumption (available) order.
+/// directly. Wait for work via [`poll_kick`](Self::poll_kick). Completions may be
+/// issued in any order; the used ring is always published in consumption
+/// (available) order.
 #[derive(Inspect)]
 pub struct InOrderCompletion {
     /// Descriptor indices of outstanding descriptors, in consumption order.
@@ -87,17 +88,15 @@ impl InOrderCompletion {
     ///
     /// If the next available descriptor head is still outstanding, it is left
     /// unconsumed and `Ok(None)` is returned until the earlier use is
-    /// published; [`is_blocked`](Self::is_blocked) reports this state.
+    /// published. A full ring is likewise deferred until publication frees
+    /// capacity.
     ///
     /// Use this in place of [`VirtioQueue::try_next`].
     pub fn try_next(
         &mut self,
         queue: &mut VirtioQueue,
     ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        // With every head outstanding, any available head is a reuse. Defer it
-        // without peeking: the queue's capacity check would otherwise fail the
-        // queue permanently.
-        if self.is_full() {
+        if self.is_blocked(queue) {
             return Ok(None);
         }
         let Some(work) = queue.try_peek()? else {
@@ -130,20 +129,26 @@ impl InOrderCompletion {
         Ok(Some(work.consume()))
     }
 
-    /// Returns true if no work can be consumed until an earlier use is
-    /// published: either every head is outstanding, or the next available
-    /// descriptor reuses a head that is still outstanding. Callers should wait
-    /// for completions rather than guest kicks: a deferred descriptor keeps the
-    /// queue non-empty, so [`VirtioQueue::poll_kick`] would return immediately.
-    pub fn is_blocked(&self) -> bool {
-        self.is_full()
+    /// Waits for guest work that can be consumed by [`try_next`](Self::try_next).
+    ///
+    /// Unlike [`VirtioQueue::poll_kick`], this returns `Pending` while a reused
+    /// head or a full ring requires an earlier completion to be published.
+    /// Callers must also poll their completion source with the same waker and
+    /// retry fetching after processing completions: this method does not
+    /// register a waker while blocked on publication.
+    pub fn poll_kick(&self, queue: &mut VirtioQueue, cx: &mut Context<'_>) -> Poll<()> {
+        if self.is_blocked(queue) {
+            Poll::Pending
+        } else {
+            queue.poll_kick(cx)
+        }
+    }
+
+    fn is_blocked(&self, queue: &VirtioQueue) -> bool {
+        queue.is_full()
             || self
                 .blocked_on
                 .is_some_and(|idx| self.in_flight[idx as usize])
-    }
-
-    fn is_full(&self) -> bool {
-        self.order.len() == self.in_flight.len()
     }
 
     /// Records a completion for the descriptor identified by `completion` and

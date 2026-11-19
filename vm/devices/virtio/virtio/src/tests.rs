@@ -5609,6 +5609,8 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
     for buffered in [false, true] {
         let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
         let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
         let mut avail = 0;
         for id in [3, 0, 0, 2] {
             make_available(
@@ -5629,7 +5631,8 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
         // behind it, until its earlier use is published.
         let state = queue.queue_state();
         assert!(in_order.try_next(&mut queue).unwrap().is_none());
-        assert!(in_order.is_blocked());
+        assert!(queue.poll_kick(&mut cx).is_ready());
+        assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
         assert_eq!(
             queue.queue_state(),
             state,
@@ -5644,7 +5647,7 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
             Some((3, 30))
         );
         if let Some(second) = second {
-            assert!(in_order.is_blocked());
+            assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
             assert!(in_order.try_next(&mut queue).unwrap().is_none());
             in_order.complete(&mut queue, second.into_completion(), 20);
         }
@@ -5652,7 +5655,7 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
             read_used(&mem, BOUND_TEST_USED_ADDR, BOUND_TEST_QUEUE_SIZE, &mut used),
             Some((0, 20))
         );
-        assert!(!in_order.is_blocked());
+        assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
 
         // Once published, the reused head and the work behind it proceed
         // normally.
@@ -5669,6 +5672,7 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
             );
         }
         assert_eq!(in_order.outstanding(), 0);
+        assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
     }
 }
 
@@ -5682,6 +5686,7 @@ async fn in_order_defers_reuse_on_full_ring(driver: DefaultDriver) {
 
     let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
     let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     let mut avail = 0;
     for id in [0, 1, 2, 3, 0] {
         make_available(
@@ -5698,7 +5703,7 @@ async fn in_order_defers_reuse_on_full_ring(driver: DefaultDriver) {
 
     let state = queue.queue_state();
     assert!(in_order.try_next(&mut queue).unwrap().is_none());
-    assert!(in_order.is_blocked());
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
     assert_eq!(
         queue.queue_state(),
         state,
@@ -5708,10 +5713,10 @@ async fn in_order_defers_reuse_on_full_ring(driver: DefaultDriver) {
     // An out-of-order completion frees no head, so the reuse stays deferred.
     in_order.complete(&mut queue, work[1].take().unwrap().into_completion(), 10);
     assert!(in_order.try_next(&mut queue).unwrap().is_none());
-    assert!(in_order.is_blocked());
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
 
     in_order.complete(&mut queue, work[0].take().unwrap().into_completion(), 0);
-    assert!(!in_order.is_blocked());
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
     let mut used = 0;
     for expected in [(0, 0), (1, 10)] {
         assert_eq!(
@@ -5723,6 +5728,53 @@ async fn in_order_defers_reuse_on_full_ring(driver: DefaultDriver) {
     let reused = in_order.try_next(&mut queue).unwrap().unwrap();
     assert_eq!(reused.descriptor_index(), 0);
     assert_eq!(in_order.outstanding(), 3);
+}
+
+#[async_test]
+async fn in_order_defers_when_packed_chain_fills_ring(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+
+    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+    let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let post_chain = |wrap| {
+        for index in 0..BOUND_TEST_QUEUE_SIZE {
+            write_packed_descriptor(
+                &mem,
+                index,
+                BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                index,
+                DescriptorFlags::new()
+                    .with_write(true)
+                    .with_next(index + 1 < BOUND_TEST_QUEUE_SIZE)
+                    .with_available(wrap)
+                    .with_used(!wrap),
+            );
+        }
+    };
+
+    for wrap in [true, false, true] {
+        post_chain(wrap);
+        assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
+        let work = in_order.try_next(&mut queue).unwrap().unwrap();
+        assert_eq!(work.payload.len(), usize::from(BOUND_TEST_QUEUE_SIZE));
+        assert_eq!(in_order.outstanding(), 1);
+        assert!(in_order.try_next(&mut queue).unwrap().is_none());
+        assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+
+        // Premature wrap-flag reuse must not retire the queue, even though
+        // only one head is outstanding.
+        post_chain(!wrap);
+        let state = queue.queue_state();
+        assert!(in_order.try_next(&mut queue).unwrap().is_none());
+        assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+        assert_eq!(queue.queue_state(), state);
+
+        in_order.complete(&mut queue, work.into_completion(), 0);
+        assert_eq!(in_order.outstanding(), 0);
+        assert_eq!(queue.queue_state().used_index, state.avail_index);
+        // The next lap is posted and consumed without signalling a kick.
+    }
 }
 
 #[async_test]
