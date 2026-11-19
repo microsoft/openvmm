@@ -466,8 +466,8 @@ impl MemoryError {
                 exception: failure.trapno,
                 #[cfg(target_arch = "aarch64")]
                 esr: failure.esr,
-            },
-        });
+            }),
+        };
         Self {
             offset,
             is_write,
