@@ -232,6 +232,12 @@ pub struct PeekedWork<'a> {
     work: VirtioQueueCallbackWork,
 }
 
+pub(crate) enum PeekResult<'a> {
+    Empty,
+    Work(PeekedWork<'a>),
+    CapacityBlocked,
+}
+
 impl<'a> PeekedWork<'a> {
     fn new(queue: &'a mut VirtioQueue, work: VirtioQueueCallbackWork) -> Self {
         Self { queue, work }
@@ -337,21 +343,6 @@ impl VirtioQueue {
         Poll::Ready(())
     }
 
-    /// Like [`Self::poll_kick`], but waits if the last backpressure-aware peek
-    /// found insufficient ring capacity, until a completion releases capacity.
-    ///
-    /// Pair with [`Self::try_peek_with_backpressure`]. The caller must also poll
-    /// its completion source with the same waker and retry after completions:
-    /// this method does not register a waker for capacity release.
-    pub(crate) fn poll_kick_with_backpressure(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        ready!(self.poll_kick(cx));
-        if self.core.capacity_blocked() {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
-    }
-
     /// Try to get the next work item from the queue. Returns `Ok(None)` if no
     /// work is currently available, or an error if there was an issue accessing
     /// the queue.
@@ -383,18 +374,16 @@ impl VirtioQueue {
         Ok(work.map(|w| PeekedWork::new(self, w)))
     }
 
-    /// Like [`Self::try_peek`], but returns `Ok(None)` if the next chain exceeds
-    /// the remaining ring capacity (heads for split queues, descriptor slots for
-    /// packed queues). Other queue errors retain their normal failure behavior.
-    ///
-    /// Wait with [`Self::poll_kick_with_backpressure`] and retry after completions
-    /// release capacity.
-    pub(crate) fn try_peek_with_backpressure(&mut self) -> Result<Option<PeekedWork<'_>>, Error> {
-        let work = self
-            .core
-            .try_peek_work_with_backpressure()
-            .map_err(Error::other)?;
-        Ok(work.map(|w| PeekedWork::new(self, w)))
+    /// Like [`Self::try_peek`], but distinguishes an empty queue from a chain
+    /// exceeding the remaining capacity (heads for split, slots for packed).
+    /// Capacity blocking is temporary; other errors still retire the queue.
+    pub(crate) fn try_peek_with_backpressure(&mut self) -> Result<PeekResult<'_>, Error> {
+        match self.core.try_peek_work_with_backpressure() {
+            Ok(Some(work)) => Ok(PeekResult::Work(PeekedWork::new(self, work))),
+            Ok(None) => Ok(PeekResult::Empty),
+            Err(QueueError::TooManyInFlightDescriptors { .. }) => Ok(PeekResult::CapacityBlocked),
+            Err(err) => Err(Error::other(err)),
+        }
     }
 
     /// Waits until a descriptor is available for peeking, without advancing

@@ -224,9 +224,6 @@ pub(crate) struct QueueCoreGetWork {
     /// [`try_peek_work`](Self::try_peek_work) rejects work that would push this
     /// past the queue size, so it stays in `0..=queue_size`.
     in_flight: u16,
-    /// A backpressure-aware peek found a chain that cannot fit until some
-    /// outstanding work completes.
-    capacity_blocked: bool,
 }
 
 impl QueueCoreGetWork {
@@ -297,7 +294,6 @@ impl QueueCoreGetWork {
             armed: false,
             failed: false,
             in_flight,
-            capacity_blocked: false,
         })
     }
 
@@ -305,10 +301,6 @@ impl QueueCoreGetWork {
     /// set, no further work will ever be returned. See [`Self::failed`].
     pub fn failed(&self) -> bool {
         self.failed
-    }
-
-    pub fn capacity_blocked(&self) -> bool {
-        self.capacity_blocked
     }
 
     pub fn try_next_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
@@ -333,8 +325,8 @@ impl QueueCoreGetWork {
         self.try_peek_work_with_policy(false)
     }
 
-    /// Like [`Self::try_peek_work`], but defers a chain that exceeds the remaining
-    /// ring capacity instead of retiring the queue.
+    /// Like [`Self::try_peek_work`], but a capacity error does not retire the
+    /// queue, allowing the caller to retry after outstanding work completes.
     pub fn try_peek_work_with_backpressure(
         &mut self,
     ) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
@@ -348,17 +340,13 @@ impl QueueCoreGetWork {
         if self.failed {
             return Ok(None);
         }
-        match self.try_peek_work_inner() {
-            Err(QueueError::TooManyInFlightDescriptors { .. }) if defer_capacity => {
-                self.capacity_blocked = true;
-                Ok(None)
-            }
-            Err(err) => {
-                self.failed = true;
-                Err(err)
-            }
-            r => r,
+        let result = self.try_peek_work_inner();
+        if let Err(err) = &result
+            && !(defer_capacity && matches!(err, QueueError::TooManyInFlightDescriptors { .. }))
+        {
+            self.failed = true;
         }
+        result
     }
 
     fn try_peek_work_inner(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
@@ -467,7 +455,6 @@ impl QueueCoreGetWork {
             .in_flight
             .checked_sub(completion.in_flight_cost())
             .expect("completed more than was consumed");
-        self.capacity_blocked = false;
     }
 
     fn work_from_index(&mut self, index: u16) -> Result<VirtioQueueCallbackWork, QueueError> {

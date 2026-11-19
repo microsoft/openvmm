@@ -27,6 +27,7 @@
 
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
+use crate::common::PeekResult;
 use crate::queue::QueueCompletion;
 use inspect::Inspect;
 use std::collections::VecDeque;
@@ -58,11 +59,9 @@ pub struct InOrderCompletion {
     /// index while still outstanding is deferred by `try_next`.
     #[inspect(skip)]
     completed: Vec<Option<Completed>>,
-    /// The reused descriptor index at the head of the available ring, which is
-    /// deferred until its earlier use is published.
-    blocked_on: Option<u16>,
-    /// Number of times the guest reused a still-outstanding descriptor.
-    deferred_reuses: u64,
+    /// Used cursor observed when fetching required publication to make progress.
+    /// Cleared by the next fetch, never maintained by completion paths.
+    blocked_at_used: Option<u16>,
 }
 
 struct Completed {
@@ -77,8 +76,7 @@ impl InOrderCompletion {
             order: VecDeque::with_capacity(queue_size as usize),
             in_flight: vec![false; queue_size as usize],
             completed: (0..queue_size).map(|_| None).collect(),
-            blocked_on: None,
-            deferred_reuses: 0,
+            blocked_at_used: None,
         }
     }
 
@@ -95,8 +93,14 @@ impl InOrderCompletion {
         &mut self,
         queue: &mut VirtioQueue,
     ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        let Some(work) = queue.try_peek_with_backpressure()? else {
-            return Ok(None);
+        self.blocked_at_used = None;
+        let work = match queue.try_peek_with_backpressure()? {
+            PeekResult::Empty => return Ok(None),
+            PeekResult::CapacityBlocked => {
+                self.blocked_at_used = Some(queue.queue_state().used_index);
+                return Ok(None);
+            }
+            PeekResult::Work(work) => work,
         };
         let idx = work.descriptor_index();
         // The queue validates the descriptor index against the ring size
@@ -109,14 +113,12 @@ impl InOrderCompletion {
             self.completed.len()
         );
         if self.in_flight[idx as usize] {
-            if self.blocked_on != Some(idx) {
-                self.blocked_on = Some(idx);
-                self.deferred_reuses += 1;
-                tracelimit::warn_ratelimited!(
-                    descriptor_index = idx,
-                    "guest reused an outstanding descriptor, deferring it"
-                );
-            }
+            drop(work);
+            self.blocked_at_used = Some(queue.queue_state().used_index);
+            tracelimit::warn_ratelimited!(
+                descriptor_index = idx,
+                "guest reused an outstanding descriptor, deferring it"
+            );
             return Ok(None);
         }
         self.in_flight[idx as usize] = true;
@@ -126,15 +128,15 @@ impl InOrderCompletion {
 
     /// Waits for guest work that can be consumed by [`try_next`](Self::try_next).
     ///
-    /// Unlike [`VirtioQueue::poll_kick`], this returns `Pending` while a reused
-    /// head or insufficient ring capacity requires an earlier completion to be
-    /// published.
+    /// Unlike [`VirtioQueue::poll_kick`], this returns `Pending` if fetching
+    /// encountered reuse or insufficient capacity and publication has not
+    /// advanced since. Any publication permits a retry, which may defer again.
     /// Callers must also poll their completion source with the same waker and
     /// retry fetching after processing completions: this method does not
     /// register a waker for publication.
     pub fn poll_kick(&self, queue: &mut VirtioQueue, cx: &mut Context<'_>) -> Poll<()> {
-        ready!(queue.poll_kick_with_backpressure(cx));
-        if self.blocked_on.is_some() {
+        ready!(queue.poll_kick(cx));
+        if self.blocked_at_used == Some(queue.queue_state().used_index) {
             Poll::Pending
         } else {
             Poll::Ready(())
@@ -175,9 +177,6 @@ impl InOrderCompletion {
         if self.order.pop_front_if(|front| *front == idx).is_some() {
             queue.complete_prepared(completion, bytes_written);
             self.in_flight[idx as usize] = false;
-            if self.blocked_on == Some(idx) {
-                self.blocked_on = None;
-            }
             if !self.order.is_empty() {
                 self.drain_completed_prefix(queue);
             }
@@ -215,9 +214,6 @@ impl InOrderCompletion {
             self.order.pop_front();
             queue.complete_prepared(completion, bytes_written);
             self.in_flight[front as usize] = false;
-            if self.blocked_on == Some(front) {
-                self.blocked_on = None;
-            }
         }
     }
 

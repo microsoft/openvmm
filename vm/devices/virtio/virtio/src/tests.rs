@@ -13,6 +13,7 @@ use crate::QueueResources;
 use crate::VirtioDevice;
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
+use crate::common::PeekResult;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
@@ -5606,12 +5607,28 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
     use crate::test_helpers::make_available;
     use crate::test_helpers::read_used;
 
-    for buffered in [false, true] {
-        let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    for (buffered, initial_index) in [
+        (false, 0),
+        (true, 0),
+        (false, u16::MAX - 1),
+        (true, u16::MAX - 1),
+    ] {
+        let (mem, mut queue) = new_bound_test_queue(
+            &driver,
+            false,
+            Some(QueueState {
+                avail_index: initial_index,
+                used_index: initial_index,
+            }),
+        );
+        mem.write_plain(BOUND_TEST_AVAIL_ADDR + AVAIL_OFFSET_IDX, &initial_index)
+            .unwrap();
+        mem.write_plain(BOUND_TEST_USED_ADDR + USED_OFFSET_IDX, &initial_index)
+            .unwrap();
         let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
-        let mut avail = 0;
+        let mut avail = initial_index;
         for id in [3, 0, 0, 2] {
             make_available(
                 &mem,
@@ -5645,14 +5662,18 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
         }
 
         in_order.complete(&mut queue, first.into_completion(), 30);
-        let mut used = 0;
+        let mut used = initial_index;
         assert_eq!(
             read_used(&mem, BOUND_TEST_USED_ADDR, BOUND_TEST_QUEUE_SIZE, &mut used),
             Some((3, 30))
         );
         if let Some(second) = second {
-            assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+            // Publication allows a retry even if the reused head is still
+            // outstanding. The retry parks again at the new used cursor.
+            assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
             assert!(in_order.try_next(&mut queue).unwrap().is_none());
+            assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+            assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
             in_order.complete(&mut queue, second.into_completion(), 20);
         }
         assert_eq!(
@@ -5678,6 +5699,48 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
         assert_eq!(in_order.outstanding(), 0);
         assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
     }
+}
+
+#[async_test]
+async fn in_order_successful_fetch_clears_deferral(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::make_available;
+
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+    let mut avail = 0;
+    for id in [0, 0, 2] {
+        make_available(
+            &mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            id,
+            &mut avail,
+        );
+    }
+    let first = in_order.try_next(&mut queue).unwrap().unwrap();
+    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+
+    // The guest replaces the unconsumed entry rather than waiting for its
+    // earlier use. A successful fetch must invalidate the old deferral even
+    // though nothing has been published.
+    mem.write_plain(
+        BOUND_TEST_AVAIL_ADDR + AVAIL_OFFSET_RING + AVAIL_ELEMENT_SIZE,
+        &1u16,
+    )
+    .unwrap();
+    let second = in_order.try_next(&mut queue).unwrap().unwrap();
+    assert_eq!(second.descriptor_index(), 1);
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
+    let third = in_order.try_next(&mut queue).unwrap().unwrap();
+    assert_eq!(third.descriptor_index(), 2);
+    for work in [first, second, third] {
+        in_order.complete(&mut queue, work.into_completion(), 0);
+    }
+    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
 }
 
 #[async_test]
@@ -6220,9 +6283,12 @@ async fn peek_with_backpressure_preserves_queue_errors(driver: DefaultDriver) {
         .err()
         .expect("a malformed chain must still fail the queue");
     assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
-    assert!(queue.try_peek_with_backpressure().unwrap().is_none());
+    assert!(matches!(
+        queue.try_peek_with_backpressure().unwrap(),
+        PeekResult::Empty
+    ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    assert!(queue.poll_kick_with_backpressure(&mut cx).is_pending());
+    assert!(queue.poll_kick(&mut cx).is_pending());
 }
 
 #[async_test]
@@ -6261,9 +6327,12 @@ async fn peek_with_backpressure_checks_full_ring_descriptors(driver: DefaultDriv
     assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
     assert_eq!(queue.queue_state(), state);
     queue.complete(work.remove(0), 0);
-    assert!(queue.try_peek_with_backpressure().unwrap().is_none());
+    assert!(matches!(
+        queue.try_peek_with_backpressure().unwrap(),
+        PeekResult::Empty
+    ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    assert!(queue.poll_kick_with_backpressure(&mut cx).is_pending());
+    assert!(queue.poll_kick(&mut cx).is_pending());
 }
 
 #[async_test]
@@ -6384,22 +6453,78 @@ async fn packed_queue_rejects_chain_exceeding_free_space(driver: DefaultDriver) 
         }
 
         let state = queue.queue_state();
-        assert!(queue.try_peek_with_backpressure().unwrap().is_none());
+        assert!(matches!(
+            queue.try_peek_with_backpressure().unwrap(),
+            PeekResult::CapacityBlocked
+        ));
         assert_eq!(queue.queue_state(), state);
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        assert!(queue.poll_kick_with_backpressure(&mut cx).is_pending());
         queue.complete(first, 0);
-        assert!(queue.poll_kick_with_backpressure(&mut cx).is_ready());
-        let work = queue
-            .try_peek_with_backpressure()
-            .unwrap()
-            .unwrap()
-            .consume();
+        let PeekResult::Work(work) = queue.try_peek_with_backpressure().unwrap() else {
+            panic!("publication must free enough capacity for the chain");
+        };
+        let work = work.consume();
         assert_eq!(work.descriptor_index(), 2);
         assert_eq!(work.payload.len(), 3);
         queue.complete(work, 0);
-        assert!(queue.try_peek_with_backpressure().unwrap().is_none());
+        assert!(matches!(
+            queue.try_peek_with_backpressure().unwrap(),
+            PeekResult::Empty
+        ));
     }
+}
+
+#[async_test]
+async fn in_order_retries_packed_capacity_after_each_publication(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+
+    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+    let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+    let available = DescriptorFlags::new().with_write(true).with_available(true);
+    let write = |index, flags| {
+        write_packed_descriptor(
+            &mem,
+            index,
+            BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+            index,
+            flags,
+        );
+    };
+    let mut work = Vec::new();
+    for index in 0..3 {
+        write(index, available);
+        work.push(in_order.try_next(&mut queue).unwrap().unwrap());
+    }
+    let post_chain = || {
+        write(3, available.with_next(true));
+        write(0, available.with_next(true));
+        write(1, available);
+    };
+    post_chain();
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let state = queue.queue_state();
+    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    assert_eq!(queue.queue_state(), state);
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+
+    in_order.complete(&mut queue, work.remove(0).into_completion(), 0);
+    post_chain();
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
+    // Two free slots still cannot accommodate the three-slot chain.
+    let state = queue.queue_state();
+    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    assert_eq!(queue.queue_state(), state);
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+
+    in_order.complete(&mut queue, work.remove(0).into_completion(), 0);
+    post_chain();
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
+    let chain = in_order.try_next(&mut queue).unwrap().unwrap();
+    assert_eq!(chain.descriptor_index(), 3);
+    assert_eq!(chain.payload.len(), 3);
+    in_order.complete(&mut queue, chain.into_completion(), 0);
+    in_order.complete(&mut queue, work.remove(0).into_completion(), 0);
+    assert_eq!(in_order.outstanding(), 0);
 }
 
 /// Oversubscribing the ring retires the queue like any other protocol
