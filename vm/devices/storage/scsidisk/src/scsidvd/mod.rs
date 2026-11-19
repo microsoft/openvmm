@@ -112,7 +112,13 @@ impl AsyncScsiDisk for SimpleScsiDvd {
             // change while it runs does not affect it. Nothing holds `media`
             // across the disk I/O: a command never waits for another command,
             // and a media change never waits for a command.
-            let media = self.media.read().clone();
+            // The guard is dropped at the end of this block, before the command
+            // runs. (`drop` alone does not end its scope for the `Send` check
+            // on this future.)
+            let media = {
+                let guard = self.media.read();
+                guard.clone()
+            };
             let result = match op {
                 ScsiOp::INQUIRY => self.handle_inquiry_iso(external_data, request),
                 ScsiOp::TEST_UNIT_READY => self.handle_test_unit_ready_iso(),
