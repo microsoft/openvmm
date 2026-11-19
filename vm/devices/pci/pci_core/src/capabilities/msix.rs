@@ -573,7 +573,7 @@ mod save_restore {
                                 address,
                                 data,
                                 control,
-                                ..
+                                is_pending: _,
                             } = vec.state;
 
                             state::SavedMsixMessageTableEntryState {
