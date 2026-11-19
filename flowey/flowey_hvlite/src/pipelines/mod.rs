@@ -18,7 +18,6 @@ pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod incubator;
 pub mod openvmm_source_release;
-mod refresh_mirror;
 pub mod restore_packages;
 pub mod unit_test_coverage;
 pub mod vmm_perf;
@@ -72,8 +71,6 @@ pub enum OpenvmmPipelinesCi {
     BuildDocs(build_docs::BuildDocsCli),
     /// Assemble, validate, and draft an OpenVMM source release.
     OpenvmmSourceRelease(openvmm_source_release::OpenvmmSourceReleaseCli),
-    #[clap(hide = true)]
-    RefreshMirror,
     BurnIn(burn_in::BurnInCli),
 }
 
@@ -104,7 +101,6 @@ impl IntoPipeline for OpenvmmPipelines {
                 OpenvmmPipelinesCi::CheckinGates(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::BuildDocs(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::OpenvmmSourceRelease(cmd) => cmd.into_pipeline(pipeline_hint),
-                OpenvmmPipelinesCi::RefreshMirror => refresh_mirror::pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::BurnIn(cmd) => cmd.into_pipeline(pipeline_hint),
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),

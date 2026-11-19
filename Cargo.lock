@@ -2428,7 +2428,6 @@ dependencies = [
  "petri_artifacts_vmm_test",
  "serde",
  "serde_json",
- "serde_yaml",
  "target-lexicon",
  "test_with_tracing",
 ]
