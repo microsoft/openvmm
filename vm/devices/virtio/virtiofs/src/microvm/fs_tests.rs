@@ -10,13 +10,16 @@ use super::profile::MICROVM_FUSE_MIN_MINOR;
 use super::profile::MicroVmVirtioFsProfile;
 use super::profile::microvm_root_identity;
 use super::saved_state::MAX_ALIASES_PER_INODE;
+use super::saved_state::MAX_INODES;
 use super::saved_state::MAX_PATH_BYTES;
 use super::state::encode_relative_path;
 use super::state::fuse_negotiation_from_session;
 use super::state::reopen_flags;
 use super::state::validate_microvm_state;
 use super::state::validate_relative_path;
+use crate::InodeMap;
 use crate::VirtioFs;
+use crate::inode::VirtioFsInode;
 use fuse::Session;
 use fuse::SessionInfoState;
 use fuse::SessionState;
@@ -188,6 +191,139 @@ fn microvm_alias_limit_is_enforced_before_linking() {
             .unwrap_err(),
         lx::Error::ENOSPC
     );
+}
+
+/// Returns a microVM filesystem of `root_path` whose root holds the regular
+/// file `file`, which the guest has looked up, with the file's inode and node
+/// ID.
+fn microvm_with_a_tracked_file(root_path: &Path) -> (VirtioFs, Arc<VirtioFsInode>, u64) {
+    std::fs::write(root_path.join("file"), b"data").unwrap();
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let (file, _) = root.lookup_child(lx::LxStr::from_bytes(b"file")).unwrap();
+    let (file, node_id) = fs.insert_inode(file).unwrap();
+    (fs, file, node_id)
+}
+
+/// Returns an inode for a directory at `path` with the host inode number of
+/// `file`, as a host reports once it reuses the number of a removed file.
+fn directory_with_the_inode_number_of(file: &VirtioFsInode, path: &str) -> VirtioFsInode {
+    let mut stat = file.volume().lstat(file.clone_path()).unwrap();
+    stat.mode = lx::S_IFDIR | 0o755;
+    let directory = VirtioFsInode::with_attr(file.volume(), PathBuf::from(path), &stat);
+    assert!(directory.dedup_key() == file.dedup_key());
+    directory
+}
+
+/// Tracks regular files under dedup keys of their own, as lookups of other
+/// host files do, until `fs` tracks `MAX_INODES` inodes.
+fn track_inodes_up_to_the_limit(fs: &VirtioFs, file: &VirtioFsInode) {
+    let mut stat = file.volume().lstat(file.clone_path()).unwrap();
+    let mut inodes = fs.inner.inodes.write();
+    let mut inode_nr = u64::MAX;
+    while inodes.inodes_by_node_id.values.len() < MAX_INODES {
+        stat.inode_nr = inode_nr;
+        let filler = VirtioFsInode::with_attr(
+            file.volume(),
+            PathBuf::from(format!("filler-{inode_nr}")),
+            &stat,
+        );
+        if !inodes.inodes_by_key.contains_key(&filler.dedup_key()) {
+            inodes.insert(filler).unwrap();
+        }
+        inode_nr -= 1;
+    }
+}
+
+/// Returns the node ID that `inodes` deduplicates the host object of `inode`
+/// to, if any.
+fn deduplicated_node_id(inodes: &InodeMap, inode: &VirtioFsInode) -> Option<u64> {
+    inodes
+        .inodes_by_key
+        .get(&inode.dedup_key())
+        .map(|&(_, node_id)| node_id)
+}
+
+#[test]
+fn retyped_object_is_refused_at_the_inode_limit() {
+    // A host object of another file type under a tracked inode's dedup key,
+    // such as a directory that reuses the inode number of a removed file,
+    // takes a node of its own (see `InodeMap::dedup_entry`), at the tracked
+    // inode's path or another, so the inode limit applies to it.
+    for path in ["file", "other"] {
+        let temporary_directory = tempdir().unwrap();
+        let (fs, file, node_id) = microvm_with_a_tracked_file(temporary_directory.path());
+        track_inodes_up_to_the_limit(&fs, &file);
+
+        let directory = directory_with_the_inode_number_of(&file, path);
+        assert_eq!(
+            fs.preflight_inode_insert(&directory).unwrap_err(),
+            lx::Error::ENOSPC
+        );
+        assert!(matches!(
+            fs.insert_inode(directory),
+            Err(error) if error == lx::Error::ENOSPC
+        ));
+        let reservation = fs.reserve_inode().unwrap();
+        assert!(matches!(
+            reservation.insert(directory_with_the_inode_number_of(&file, path)),
+            Err(error) if error == lx::Error::ENOSPC
+        ));
+        let inodes = fs.inner.inodes.read();
+        assert_eq!(inodes.inodes_by_node_id.values.len(), MAX_INODES);
+        assert_eq!(deduplicated_node_id(&inodes, &file), Some(node_id));
+    }
+}
+
+#[test]
+fn retyped_object_is_refused_without_a_free_node_id() {
+    // Such an object needs a free node ID too, and its refusal leaves the
+    // tracked inode under its dedup key.
+    for path in ["file", "other"] {
+        let temporary_directory = tempdir().unwrap();
+        let (fs, file, node_id) = microvm_with_a_tracked_file(temporary_directory.path());
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = 0;
+
+        let directory = directory_with_the_inode_number_of(&file, path);
+        assert_eq!(
+            fs.preflight_inode_insert(&directory).unwrap_err(),
+            lx::Error::ENOSPC
+        );
+        assert!(matches!(
+            fs.insert_inode(directory),
+            Err(error) if error == lx::Error::ENOSPC
+        ));
+        assert_eq!(
+            deduplicated_node_id(&fs.inner.inodes.read(), &file),
+            Some(node_id)
+        );
+    }
+}
+
+#[test]
+fn retyped_object_is_not_bound_by_the_alias_limit_of_the_tracked_inode() {
+    // Such an object adds no alias to the tracked inode, so the tracked
+    // inode's full alias set does not refuse it.
+    for path in ["file", "other"] {
+        let temporary_directory = tempdir().unwrap();
+        let (fs, file, node_id) = microvm_with_a_tracked_file(temporary_directory.path());
+        for index in 1..MAX_ALIASES_PER_INODE {
+            file.add_alias(PathBuf::from(format!("alias-{index}")));
+        }
+
+        let directory = directory_with_the_inode_number_of(&file, path);
+        fs.preflight_inode_insert(&directory).unwrap();
+        let (directory, directory_node_id) = fs.insert_inode(directory).unwrap();
+        assert_ne!(directory_node_id, node_id);
+        assert_eq!(directory.aliases(), [PathBuf::from(path)]);
+        assert_eq!(file.aliases().len(), MAX_ALIASES_PER_INODE);
+        let inodes = fs.inner.inodes.read();
+        assert!(Arc::ptr_eq(&inodes.get(node_id).unwrap(), &file));
+        assert_eq!(
+            deduplicated_node_id(&inodes, &file),
+            Some(directory_node_id)
+        );
+    }
 }
 
 #[test]

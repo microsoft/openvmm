@@ -1157,10 +1157,11 @@ impl InodeMap {
 
     /// Returns the dedup entry for `inode`, shared by every insertion path.
     ///
-    /// An existing entry with a different file type is evicted first, so a
-    /// type-replaced host file gets a fresh node id instead of aliasing the
-    /// stale inode. Only `inodes_by_key` is borrowed, so callers can still
-    /// allocate from `inodes_by_node_id` while holding the entry.
+    /// An existing entry that `inode` does not reuse, one with a different
+    /// file type (see [`Self::reuses`]), is evicted first, so a type-replaced
+    /// host file gets a fresh node id instead of aliasing the stale inode.
+    /// Only `inodes_by_key` is borrowed, so callers can still allocate from
+    /// `inodes_by_node_id` while holding the entry.
     fn dedup_entry<'a>(
         inodes_by_key: &'a mut HashMap<DedupKey, (Arc<VirtioFsInode>, u64)>,
         inode: &VirtioFsInode,
@@ -1168,11 +1169,19 @@ impl InodeMap {
         let key = inode.dedup_key();
         if inodes_by_key
             .get(&key)
-            .is_some_and(|(existing, _)| existing.file_type() != inode.file_type())
+            .is_some_and(|(existing, _)| !Self::reuses(existing, inode))
         {
             inodes_by_key.remove(&key);
         }
         inodes_by_key.entry(key)
+    }
+
+    /// Returns whether inserting `inode` reuses `existing`, the inode under
+    /// its dedup key, instead of giving `inode` a node of its own: only an
+    /// object of the same file type does, since one of another type has
+    /// replaced the host object of `existing`.
+    fn reuses(existing: &VirtioFsInode, inode: &VirtioFsInode) -> bool {
+        existing.file_type() == inode.file_type()
     }
 
     /// Remove an inode with the specified FUSE node ID from the map.

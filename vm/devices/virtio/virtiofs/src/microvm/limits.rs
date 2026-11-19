@@ -30,7 +30,11 @@ impl InodeMap {
     pub(crate) fn preflight_microvm_insert(&self, inode: &VirtioFsInode) -> lx::Result<()> {
         let path = inode.clone_path();
         Self::validate_microvm_alias_path(&path)?;
-        if let Some((existing, _)) = self.inodes_by_key.get(&inode.dedup_key()) {
+        // The insert aliases the inode under the dedup key only if it reuses
+        // that inode, and otherwise adds a node (see `Self::dedup_entry`).
+        if let Some((existing, _)) = self.inodes_by_key.get(&inode.dedup_key())
+            && Self::reuses(existing, inode)
+        {
             return self.preflight_microvm_alias_add(existing, &path);
         }
         self.preflight_microvm_new_inode(&path)
