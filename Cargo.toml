@@ -669,8 +669,8 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_xop",
   "no_d3now",
 ] }
-igvm = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2382342eb7097dcd3ec0568de" }
-igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2382342eb7097dcd3ec0568de", default-features = false }
+igvm = { git = "https://github.com/microsoft/igvm", rev = "568e2719972eef0013144eda95564ee60c42ea6e" }
+igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "568e2719972eef0013144eda95564ee60c42ea6e", default-features = false }
 kvm-bindings = "0.14.0"
 mshv-bindings = "0.7.1"
 mshv-ioctls = "0.7.1"

@@ -22,6 +22,7 @@ mod firmware_dll;
 mod identity_mapping;
 mod measurement_diag;
 mod platform_mask;
+mod prepare_endorsement;
 mod product_policy_initrd;
 mod snp_id_block;
 mod snp_linux_direct;
@@ -91,6 +92,8 @@ enum Options {
         /// Dump file path
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
+        #[clap(flatten)]
+        resource: firmware_dll::ResourceSelector,
     },
     /// Dump CoRIM (Concise Reference Integrity Manifest) headers and payloads from an IGVM file.
     ///
@@ -109,6 +112,8 @@ enum Options {
         /// Input IGVM file (or `vmfirmwareigvm` resource DLL) to read CoRIM headers and payloads from.
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
+        #[clap(flatten)]
+        resource: firmware_dll::ResourceSelector,
         /// Filter by CoRIM header type (e.g. document or signature). If not specified,
         /// all supported CoRIM header types in the IGVM file are included.
         #[clap(long, value_enum)]
@@ -160,14 +165,71 @@ enum Options {
         #[clap(long)]
         confidential_debug: bool,
     },
-    /// Add a SEV-SNP ID block to an existing IGVM file.
+    /// Prepare a launch-measurement CoRIM for one platform in an existing IGVM.
+    ///
+    /// SNP derives its SVN from an existing measurement/policy-bound ID block,
+    /// without checking ID authentication. Without an ID block, --guest-svn is
+    /// required. No ID signing input is emitted; ID blocks remain unchanged.
+    PrepareEndorsement {
+        #[clap(short, long)]
+        input: PathBuf,
+        /// New directory for the prepared image, signing inputs, and completion
+        /// manifest. Must not already exist. The parent directory must exist.
+        #[clap(long)]
+        output_dir: PathBuf,
+        #[clap(long, value_enum)]
+        platform: Platform,
+        /// Required for TDX/VBS and SNP without an ID block; otherwise must
+        /// match the existing SNP ID-block SVN.
+        #[clap(long, required_if_eq_any = [("platform", "tdx"), ("platform", "vbs")])]
+        guest_svn: Option<u32>,
+    },
+    /// Verify a finalized CoRIM endorsement against the original image.
+    ///
+    /// Checks the selected CoRIM signature and permits only its document/signature
+    /// additions. ID blocks must be unchanged: use the ID-signed image as the
+    /// original. Does not verify ID authentication. Emits a JSON hash receipt.
+    /// Signer authorization and certificate trust remain pipeline responsibilities.
+    VerifyEndorsement {
+        #[clap(long)]
+        original: PathBuf,
+        #[clap(short, long)]
+        input: PathBuf,
+        #[clap(flatten)]
+        resource: firmware_dll::ResourceSelector,
+        #[clap(long, value_enum)]
+        platform: Platform,
+        /// Required for TDX/VBS and SNP without an ID block; otherwise must
+        /// match the existing SNP ID-block SVN.
+        #[clap(long, required_if_eq_any = [("platform", "tdx"), ("platform", "vbs")])]
+        guest_svn: Option<u32>,
+    },
+    /// Export an existing SNP identity as an ID-block signing payload.
+    ///
+    /// Requires a valid signature or canonical unsigned placeholder, validated
+    /// layout, policy and launch measurement. Does not establish signer trust.
+    /// Sign the payload and use add-snp-id-block --replace-existing before
+    /// preparing the CoRIM endorsement.
+    PrepareSnpIdBlock {
+        #[clap(short, long)]
+        input: PathBuf,
+        /// Output payload file (raw firmware ID-block bytes).
+        #[clap(short, long)]
+        output: PathBuf,
+        /// Also print the decoded signing payload as JSON to stdout.
+        #[clap(long)]
+        dump: bool,
+    },
+    /// Add or explicitly replace a SEV-SNP ID block in an existing IGVM file.
     ///
     /// The IGVM file must contain an SEV-SNP platform header and a matching
     /// `GuestPolicy`. The SNP launch measurement is computed once and embedded
     /// as the ID block's launch digest (`ld`); the ID block is not part of the
     /// measured page set, so the digest stays valid. Its presence signals the
     /// IGVM loader to set `id_block_en` at launch. Adding a second ID block is
-    /// refused.
+    /// refused unless `--replace-existing` is explicitly supplied with the
+    /// out-of-band signing inputs. If an SNP CoRIM is already embedded, its
+    /// endorsed guest SVN must match the ID block's SVN in either mode.
     ///
     /// Two signing modes are supported:
     ///
@@ -200,7 +262,8 @@ enum Options {
         #[clap(long, conflicts_with_all = ["guest_svn", "id_block", "id_signature", "id_public_key"])]
         manifest: Option<PathBuf>,
         /// Out-of-band mode: path to the SNP ID block signing payload
-        /// (`<base>-snp.idblock` emitted by `manifest`). Requires
+        /// (`<base>-snp.idblock` emitted by `manifest`, or the payload
+        /// emitted by `prepare-snp-id-block`). Requires
         /// `--id-signature` and `--id-public-key`.
         #[clap(long, requires_all = ["id_signature", "id_public_key"], conflicts_with_all = ["guest_svn", "manifest"])]
         id_block: Option<PathBuf>,
@@ -212,11 +275,16 @@ enum Options {
         /// SPKI public key, PEM or DER). Requires `--id-block`.
         #[clap(long, requires = "id_block")]
         id_public_key: Option<PathBuf>,
+        /// Replace an existing signed block or canonical unsigned placeholder.
+        /// Preserves identity, policy, and launch digest; requires external
+        /// signing inputs. No temporary-key replacement is allowed.
+        #[clap(long, requires = "id_block", conflicts_with_all = ["guest_svn", "manifest"])]
+        replace_existing: bool,
     },
     /// Patch a CoRIM signature into an existing IGVM file for a given platform.
     ///
-    /// The CoRIM document is generated automatically by `manifest` for every
-    /// measurable platform, so this command only attaches the detached
+    /// The CoRIM document is generated by `manifest` or `prepare-endorsement`,
+    /// so this command only attaches the detached
     /// signature. Provide either a single bundled/signed CoRIM via
     /// `--corim-bundle` (the tool splits it and uses the detached signature;
     /// the IGVM file must already contain a matching CoRIM document) or an
@@ -321,8 +389,11 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match opts {
-        Options::Dump { file_path } => {
-            let image = firmware_dll::read_igvm_image(&file_path)?;
+        Options::Dump {
+            file_path,
+            resource,
+        } => {
+            let image = firmware_dll::read_igvm_image(&file_path, resource)?;
             let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_bytes())
                 .expect("Invalid fixed header")
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
@@ -335,10 +406,11 @@ fn main() -> anyhow::Result<()> {
         }
         Options::DumpCorim {
             file_path,
+            resource,
             header_type,
             platform,
             output,
-        } => dump_corim_headers(&file_path, header_type, platform, output),
+        } => dump_corim_headers(&file_path, resource, header_type, platform, output),
         Options::Manifest {
             manifest,
             resources,
@@ -417,6 +489,7 @@ fn main() -> anyhow::Result<()> {
             id_block,
             id_signature,
             id_public_key,
+            replace_existing,
         } => add_snp_id_block_command(
             input,
             output,
@@ -425,7 +498,28 @@ fn main() -> anyhow::Result<()> {
             id_block,
             id_signature,
             id_public_key,
+            replace_existing,
         ),
+        Options::PrepareEndorsement {
+            input,
+            output_dir,
+            platform,
+            guest_svn,
+        } => prepare_endorsement::run(&input, &output_dir, platform.into(), guest_svn),
+        Options::PrepareSnpIdBlock {
+            input,
+            output,
+            dump,
+        } => snp_id_block::run_prepare(&input, &output, dump),
+        Options::VerifyEndorsement {
+            original,
+            input,
+            resource,
+            platform,
+            guest_svn,
+        } => {
+            prepare_endorsement::run_verify(&original, &input, resource, platform.into(), guest_svn)
+        }
         Options::PatchCorimSignature {
             input,
             output,
@@ -466,12 +560,15 @@ fn sibling_path(
 
 /// Build a `LaunchMeasurement` template for the given platform's
 /// launch measurement at the configured guest SVN.
-fn build_endorsement_corim(meta: &PlatformMeta) -> anyhow::Result<LaunchMeasurement> {
-    let mut le = LaunchMeasurement::for_platform(meta.platform)
-        .context("starting CoRIM launch endorsement")?;
+fn build_endorsement_corim(
+    platform: IgvmPlatformType,
+    svn: u32,
+) -> anyhow::Result<LaunchMeasurement> {
+    let mut le =
+        LaunchMeasurement::for_platform(platform).context("starting CoRIM launch endorsement")?;
     le.set_measurement(MeasurementKind::Launch)
         .context("setting CoRIM launch measurement kind")?;
-    le.endorse(meta.svn as u64)
+    le.endorse(svn as u64)
         .with(MeasurementKind::Launch)
         .context("selecting CoRIM measurement in CES triple")?
         .finish()
@@ -749,7 +846,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
             compatibility_mask,
         );
 
-        let corim = build_endorsement_corim(meta)?;
+        let corim = build_endorsement_corim(meta.platform, meta.svn)?;
         let corim_bytes = serializer
             .add_corim(meta.platform, corim.build())
             .context("adding CoRIM document to IGVM serializer")?
@@ -874,7 +971,12 @@ fn add_snp_id_block_command(
     id_block: Option<PathBuf>,
     id_signature: Option<PathBuf>,
     id_public_key: Option<PathBuf>,
+    replace_existing: bool,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !replace_existing || id_block.is_some(),
+        "--replace-existing requires out-of-band signing inputs"
+    );
     let igvm_data = fs_err::read(&input)
         .with_context(|| format!("reading input IGVM file at {}", input.display()))?;
 
@@ -903,14 +1005,15 @@ fn add_snp_id_block_command(
             id_block = %id_block_path.display(),
             signature = %sig_path.display(),
             public_key = %key_path.display(),
-            "Adding SNP ID block (out-of-band signature)"
+            replace_existing,
+            "Applying SNP ID block (out-of-band signature)"
         );
-        snp_id_block::add_snp_id_block_signed(
-            &igvm_data,
-            &signing_payload,
-            &signature_der,
-            &public_key,
-        )?
+        let apply_signature = if replace_existing {
+            snp_id_block::replace_snp_id_block_signed
+        } else {
+            snp_id_block::add_snp_id_block_signed
+        };
+        apply_signature(&igvm_data, &signing_payload, &signature_der, &public_key)?
     } else {
         // Temporary-key (development/test) mode. Raw `--guest-svn` preserves
         // the original OpenHCL behavior; a manifest selects both fields.
@@ -970,11 +1073,12 @@ fn snp_temporary_signing_metadata_from_config(
 /// Dump CoRIM headers from an IGVM file.
 fn dump_corim_headers(
     file_path: &std::path::Path,
+    resource: firmware_dll::ResourceSelector,
     header_type_filter: Option<CorimHeaderType>,
     platform_filter: Option<Platform>,
     output_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let image = firmware_dll::read_igvm_image(file_path)?;
+    let image = firmware_dll::read_igvm_image(file_path, resource)?;
 
     // Parse the IGVM file using the igvm crate's structured API.
     let igvm_file = IgvmFile::new_from_binary(&image, None).context("parsing IGVM file")?;
@@ -1617,8 +1721,9 @@ fn load_linux<R: IgvmfilegenRegister + GuestArch + 'static>(
 }
 
 #[cfg(test)]
-mod temporary_signing_tests {
+mod signing_tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn linux_direct_manifest_selects_linux_direct_identity() {
@@ -1630,6 +1735,241 @@ mod temporary_signing_tests {
         assert_eq!(identity, snp_id_block::SnpImageIdentity::LINUX_DIRECT);
     }
 
+    #[test]
+    fn manifest_temporary_signing_requires_matching_corim_svn() {
+        let config: Config =
+            serde_json::from_str(include_str!("../../manifests/snp-linux-direct.json")).unwrap();
+        let (svn, _) = snp_temporary_signing_metadata_from_config(&config).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let manifest = root.path().join("config.json");
+        fs_err::write(
+            &manifest,
+            include_str!("../../manifests/snp-linux-direct.json"),
+        )
+        .unwrap();
+        let input = root.path().join("input.igvm");
+        let output = root.path().join("output.igvm");
+        let original = snp_id_block::tests::build_snp_igvm(4);
+        for corim_svn in [svn, svn + 1] {
+            let bytes = snp_id_block::tests::with_snp_corim(&original, corim_svn);
+            fs_err::write(&input, &bytes).unwrap();
+            fs_err::write(&output, b"old output").unwrap();
+            let result = add_snp_id_block_command(
+                input.clone(),
+                output.clone(),
+                None,
+                Some(manifest.clone()),
+                None,
+                None,
+                None,
+                false,
+            );
+            assert_eq!(result.is_ok(), corim_svn == svn);
+            assert_eq!(fs_err::read(&input).unwrap(), bytes);
+            if corim_svn != svn {
+                assert_eq!(fs_err::read(&output).unwrap(), b"old output");
+            }
+        }
+    }
+
+    #[test]
+    fn generic_endorsement_cli_has_no_id_block_flags() {
+        let base = [
+            "igvmfilegen",
+            "prepare-endorsement",
+            "--input",
+            "input.igvm",
+            "--output-dir",
+            "prepared",
+        ];
+        assert!(Options::try_parse_from(base).is_err());
+        let verify = [
+            "igvmfilegen",
+            "verify-endorsement",
+            "--original",
+            "original.igvm",
+            "--input",
+            "final.igvm",
+        ];
+        for args in [base, verify] {
+            for platform in ["snp", "tdx", "vbs"] {
+                let args: Vec<_> = args.into_iter().chain(["--platform", platform]).collect();
+                assert_eq!(Options::try_parse_from(&args).is_ok(), platform == "snp");
+                assert!(
+                    Options::try_parse_from(args.iter().copied().chain(["--guest-svn", "7"]))
+                        .is_ok()
+                );
+                for flags in [
+                    ["--id-block-action", "resign"],
+                    ["--id-block", "payload"],
+                    ["--replace-existing", ""],
+                ] {
+                    assert!(Options::try_parse_from(args.iter().copied().chain(flags)).is_err());
+                }
+            }
+        }
+        assert!(
+            Options::try_parse_from(verify.into_iter().chain([
+                "--platform",
+                "tdx",
+                "--guest-svn",
+                "7",
+                "--resource-id",
+                "1",
+                "--resource-language",
+                "1033",
+            ]))
+            .is_ok()
+        );
+        assert!(
+            Options::try_parse_from([
+                "igvmfilegen",
+                "prepare-snp-id-block",
+                "--input",
+                "image.igvm",
+                "--output",
+                "payload"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Options::try_parse_from([
+                "igvmfilegen",
+                "prepare-snp-id-block",
+                "--input",
+                "image.igvm"
+            ])
+            .is_err()
+        );
+        assert!(
+            Options::try_parse_from(["igvmfilegen", "prepare-snp-id-block", "--output", "payload"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn prepare_snp_id_block_dump_is_opt_in() {
+        let args = [
+            "igvmfilegen",
+            "prepare-snp-id-block",
+            "--input",
+            "image.igvm",
+            "--output",
+            "payload",
+        ];
+        assert!(matches!(
+            Options::try_parse_from(args).unwrap(),
+            Options::PrepareSnpIdBlock { dump: false, .. }
+        ));
+        assert!(matches!(
+            Options::try_parse_from(args.into_iter().chain(["--dump"])).unwrap(),
+            Options::PrepareSnpIdBlock { dump: true, .. }
+        ));
+    }
+
+    #[test]
+    fn replacement_requires_all_external_signing_inputs_and_excludes_temporary_keys() {
+        let base = [
+            "igvmfilegen",
+            "add-snp-id-block",
+            "--input",
+            "input.igvm",
+            "--output",
+            "output.igvm",
+        ];
+        let external = [
+            "--id-block",
+            "input.idblock",
+            "--id-signature",
+            "signature.der",
+            "--id-public-key",
+            "key.pem",
+        ];
+        assert!(Options::try_parse_from(base.into_iter().chain(["--replace-existing"])).is_err());
+        assert!(
+            Options::try_parse_from(base.into_iter().chain([
+                "--replace-existing",
+                "--guest-svn",
+                "1"
+            ]))
+            .is_err()
+        );
+        assert!(
+            Options::try_parse_from(base.into_iter().chain([
+                "--replace-existing",
+                "--id-block",
+                "input.idblock"
+            ]))
+            .is_err()
+        );
+        assert!(
+            Options::try_parse_from(
+                base.into_iter()
+                    .chain(external)
+                    .chain(["--replace-existing"])
+            )
+            .is_ok()
+        );
+        assert!(Options::try_parse_from(base.into_iter().chain(external)).is_ok());
+        for temporary in [["--guest-svn", "1"], ["--manifest", "config.json"]] {
+            assert!(
+                Options::try_parse_from(
+                    base.into_iter()
+                        .chain(external)
+                        .chain(temporary)
+                        .chain(["--replace-existing"])
+                )
+                .is_err()
+            );
+            assert!(Options::try_parse_from(base.into_iter().chain(temporary)).is_ok());
+        }
+    }
+
+    #[test]
+    fn replacement_command_supports_in_place_updates_and_leaves_output_on_error() {
+        let root = tempfile::tempdir().unwrap();
+        let image = root.path().join("image.igvm");
+        let payload = root.path().join("snp.idblock");
+        let signature = root.path().join("signature.der");
+        let key = root.path().join("key.der");
+        let input = snp_id_block::tests::build_existing_snp_igvm(false);
+        let signing_payload = snp_id_block::tests::signing_payload_from_image(&input);
+        let (sig_bytes, key_bytes) = snp_id_block::tests::sign_payload(&signing_payload);
+        fs_err::write(&image, &input).unwrap();
+        fs_err::write(&payload, &signing_payload).unwrap();
+        fs_err::write(&signature, b"invalid signature").unwrap();
+        fs_err::write(&key, &key_bytes).unwrap();
+        let replace = || {
+            add_snp_id_block_command(
+                image.clone(),
+                image.clone(),
+                None,
+                None,
+                Some(payload.clone()),
+                Some(signature.clone()),
+                Some(key.clone()),
+                true,
+            )
+        };
+        assert!(replace().is_err());
+        assert_eq!(fs_err::read(&image).unwrap(), input);
+        fs_err::write(&signature, sig_bytes).unwrap();
+        replace().unwrap();
+        let bytes = fs_err::read(&image).unwrap();
+        assert_ne!(bytes, input);
+        assert_eq!(
+            snp_id_block::tests::signing_payload_from_image(&bytes),
+            signing_payload
+        );
+        let file = IgvmFile::new_from_binary(&bytes, None).unwrap();
+        let mut serializer = IgvmSerializer::new(&file).unwrap();
+        assert_eq!(
+            snp_id_block::existing_id_block(&mut serializer)
+                .unwrap()
+                .state,
+            snp_id_block::IdBlockState::Signed
+        );
+    }
     #[test]
     fn openhcl_manifest_selects_openhcl_identity() {
         let config: Config =
