@@ -96,10 +96,13 @@ pub fn statx_to_fuse_statx(stat: &lx::StatEx) -> fuse_statx {
 }
 
 /// Convert a FUSE setattr message to a lxutil `SetAttributes` struct.
+///
+/// Fails with `EINVAL`, as `utimensat` does, when the message sets a time to a
+/// value whose nanoseconds are a second or more.
 pub fn fuse_set_attr_to_lxutil(
     arg: &fuse_setattr_in,
     thread_uid: lx::uid_t,
-) -> lxutil::SetAttributes {
+) -> lx::Result<lxutil::SetAttributes> {
     let mut attr = lxutil::SetAttributes::default();
     attr.thread_uid = thread_uid;
     if arg.valid & FATTR_MODE != 0 {
@@ -122,7 +125,7 @@ pub fn fuse_set_attr_to_lxutil(
         attr.atime = if arg.valid & FATTR_ATIME_NOW != 0 {
             lxutil::SetTime::Now
         } else {
-            lxutil::SetTime::Set(Duration::new(arg.atime, arg.atimensec))
+            lxutil::SetTime::Set(fuse_time_to_duration(arg.atime, arg.atimensec)?)
         };
     }
 
@@ -130,21 +133,101 @@ pub fn fuse_set_attr_to_lxutil(
         attr.mtime = if arg.valid & FATTR_MTIME_NOW != 0 {
             lxutil::SetTime::Now
         } else {
-            lxutil::SetTime::Set(Duration::new(arg.mtime, arg.mtimensec))
+            lxutil::SetTime::Set(fuse_time_to_duration(arg.mtime, arg.mtimensec)?)
         };
     }
 
     if arg.valid & FATTR_CTIME != 0 {
-        attr.ctime = lxutil::SetTime::Set(Duration::new(arg.ctime, arg.ctimensec));
+        attr.ctime = lxutil::SetTime::Set(fuse_time_to_duration(arg.ctime, arg.ctimensec)?);
     }
 
-    attr
+    Ok(attr)
+}
+
+/// Converts a FUSE time of `seconds` and `nanoseconds` to a `Duration`.
+///
+/// Fails with `EINVAL`, as `utimensat` does, when `nanoseconds` is a second or
+/// more, rather than carrying it into `seconds`, which can overflow.
+fn fuse_time_to_duration(seconds: u64, nanoseconds: u32) -> lx::Result<Duration> {
+    const NANOSECONDS_PER_SECOND: u32 = 1_000_000_000;
+    if nanoseconds >= NANOSECONDS_PER_SECOND {
+        return Err(lx::Error::EINVAL);
+    }
+    Ok(Duration::new(seconds, nanoseconds))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use test_with_tracing::test;
+    use zerocopy::FromZeros;
+
+    /// A `SETATTR` that sets every time that `valid` selects to `seconds` and
+    /// `nanoseconds`.
+    fn set_times(valid: u32, seconds: u64, nanoseconds: u32) -> fuse_setattr_in {
+        fuse_setattr_in {
+            valid,
+            atime: seconds,
+            mtime: seconds,
+            ctime: seconds,
+            atimensec: nanoseconds,
+            mtimensec: nanoseconds,
+            ctimensec: nanoseconds,
+            ..fuse_setattr_in::new_zeroed()
+        }
+    }
+
+    /// The time that `attr` sets for the `FATTR_*` time bit `valid`.
+    fn set_time(attr: &lxutil::SetAttributes, valid: u32) -> lxutil::SetTime {
+        match valid {
+            FATTR_ATIME => attr.atime,
+            FATTR_MTIME => attr.mtime,
+            FATTR_CTIME => attr.ctime,
+            _ => unreachable!("{valid:#x} is not a time"),
+        }
+    }
+
+    /// A time set to a value keeps nanoseconds below one second as they are,
+    /// and fails with `EINVAL` for a second or more, as `utimensat` does,
+    /// rather than carrying them into its seconds, which can overflow.
+    #[test]
+    fn set_attr_times_require_nanoseconds_below_one_second() {
+        for valid in [FATTR_ATIME, FATTR_MTIME, FATTR_CTIME] {
+            for seconds in [0, u64::MAX] {
+                for nanoseconds in [0, 999_999_999] {
+                    let arg = set_times(valid, seconds, nanoseconds);
+                    let attr = fuse_set_attr_to_lxutil(&arg, 0).unwrap();
+                    assert!(
+                        matches!(
+                            set_time(&attr, valid),
+                            lxutil::SetTime::Set(time)
+                                if (time.as_secs(), time.subsec_nanos()) == (seconds, nanoseconds)
+                        ),
+                        "valid {valid:#x}, {seconds} s, {nanoseconds} ns"
+                    );
+                }
+                for nanoseconds in [1_000_000_000, u32::MAX] {
+                    let arg = set_times(valid, seconds, nanoseconds);
+                    assert_eq!(
+                        fuse_set_attr_to_lxutil(&arg, 0).err(),
+                        Some(lx::Error::EINVAL),
+                        "valid {valid:#x}, {seconds} s, {nanoseconds} ns"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Only a time set to a value takes its seconds and nanoseconds: a time set
+    /// to the current time ignores them, as does a time left unchanged.
+    #[test]
+    fn set_attr_ignores_times_not_set_to_a_value() {
+        let valid = FATTR_ATIME | FATTR_ATIME_NOW | FATTR_MTIME | FATTR_MTIME_NOW;
+        let attr = fuse_set_attr_to_lxutil(&set_times(valid, u64::MAX, u32::MAX), 0).unwrap();
+        assert!(matches!(attr.atime, lxutil::SetTime::Now));
+        assert!(matches!(attr.mtime, lxutil::SetTime::Now));
+        assert!(matches!(attr.ctime, lxutil::SetTime::Omit));
+    }
 
     #[test]
     fn fuse_flags_only_consume_guest_flags() {

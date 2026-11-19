@@ -1883,6 +1883,46 @@ mod tests {
         .unwrap();
     }
 
+    /// A guest `SETATTR` that sets a time with nanoseconds of a second or
+    /// more, which would carry its seconds past `u64::MAX`, fails with
+    /// `EINVAL`, as `utimensat` does, on the node and on an open handle, and
+    /// leaves the size that it also sets unchanged.
+    #[test]
+    fn set_attr_rejects_time_nanoseconds_of_a_second_or_more() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let node_id = fs
+            .lookup(&request(FUSE_ROOT_ID), lx::LxStr::from_bytes(b"file"))
+            .unwrap()
+            .nodeid;
+        let request = request(node_id);
+        let fh = fs.open(&request, lx::O_RDWR as u32).unwrap().fh;
+
+        for time in [FATTR_ATIME, FATTR_MTIME, FATTR_CTIME] {
+            for handle in [0, FATTR_FH] {
+                let arg = fuse_setattr_in {
+                    valid: FATTR_SIZE | time | handle,
+                    fh,
+                    atime: u64::MAX,
+                    mtime: u64::MAX,
+                    ctime: u64::MAX,
+                    atimensec: 1_000_000_000,
+                    mtimensec: 1_000_000_000,
+                    ctimensec: 1_000_000_000,
+                    ..fuse_setattr_in::new_zeroed()
+                };
+                assert_eq!(
+                    fs.set_attr(&request, &arg).err(),
+                    Some(lx::Error::EINVAL),
+                    "valid {:#x}",
+                    arg.valid
+                );
+            }
+        }
+        assert_eq!(std::fs::read(root.path().join("file")).unwrap(), b"data");
+    }
+
     #[test]
     fn direct_root_ignores_forget_across_destroy() {
         let root = tempfile::tempdir().unwrap();
