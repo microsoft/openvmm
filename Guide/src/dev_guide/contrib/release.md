@@ -36,6 +36,11 @@ Releases naturally fall into several phases:
 
 ### Release branch process
 
+On the new release branch, update `ci/refresh-mirror.yaml`: set the push
+trigger to the new `release/<RELEASE>` branch and `submoduleTarget` to its
+downstream target. Azure Pipelines reads the YAML from the pushed branch,
+so release pushes trigger mirror refreshes independently of `main`.
+
 We track the state of candidates for a given release by tagging the PRs with the following labels:
 
 * `backport_<RELEASE>`: This PR (to `main`) is a candidate to be included in the release.
