@@ -962,11 +962,15 @@ impl UhProcessor<'_, CcaBacked> {
                 }
             })
             .collect::<Vec<_>>();
-        self.shared
+        let targets = self
+            .shared
             .cvm
             .gic
             .fold_list_registers(self.vp_index(), &returned);
         self.backing.vtls[vtl].gic_lrs_reconciled = true;
+        for target in targets {
+            self.partition.vps[target.index() as usize].wake(vtl, WakeReason::INTCON);
+        }
     }
 
     /// Repacks the reconciled LR cache and its software overflow tail.

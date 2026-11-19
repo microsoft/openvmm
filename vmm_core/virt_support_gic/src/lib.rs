@@ -141,8 +141,11 @@ impl GicV3Model {
     /// List registers are an execution cache. Pending latches raised while a
     /// VP was running are retained, while returned pending and active state is
     /// folded into the model before the registers are repacked.
-    pub fn fold_list_registers(&self, vp: VpIndex, lrs: &[ListRegisterInterrupt]) {
-        self.distributor.fold_list_registers(vp, lrs);
+    ///
+    /// Returns other target VPs to notify after released SPI ownership makes
+    /// requests eligible. All GIC state locks are released before returning.
+    pub fn fold_list_registers(&self, vp: VpIndex, lrs: &[ListRegisterInterrupt]) -> Vec<VpIndex> {
+        self.distributor.fold_list_registers(vp, lrs)
     }
 
     /// Takes MMIO active-state changes as (INTID, active) pairs for this VP's LRs.
@@ -462,16 +465,21 @@ mod gicd {
             changes
         }
 
-        pub fn fold_list_registers(&self, vp: VpIndex, lrs: &[ListRegisterInterrupt]) {
+        pub fn fold_list_registers(
+            &self,
+            vp: VpIndex,
+            lrs: &[ListRegisterInterrupt],
+        ) -> Vec<VpIndex> {
             let returned_by_intid: HashMap<u32, &ListRegisterInterrupt> =
                 lrs.iter().map(|lr| (lr.intid, lr)).collect();
 
             let mut state = self.state.lock();
             let vp_index = vp.index() as usize;
             let Some(owned) = state.in_flight_by_vp.get(vp_index).cloned() else {
-                return;
+                return Vec::new();
             };
 
+            let mut targets = Vec::new();
             for intid in owned {
                 let latch_backed = Self::set_bit(&mut state.lr_pending_latch, intid, false);
                 let returned = returned_by_intid.get(&intid).copied();
@@ -505,6 +513,14 @@ mod gicd {
                 }
                 if !keep {
                     state.in_flight_by_vp[vp_index].retain(|owned_intid| *owned_intid != intid);
+                    // Rerouting an active SPI cannot notify its new target
+                    // until the active LR retires and releases ownership.
+                    self.collect_pending_spi_targets(
+                        &state,
+                        intid as usize / 32,
+                        1 << (intid & 31),
+                        &mut targets,
+                    );
                 }
             }
 
@@ -512,6 +528,13 @@ mod gicd {
             if let Some(gicr) = self.gicr.get(vp_index) {
                 gicr.fold_list_registers(lrs);
             }
+            targets.sort_unstable();
+            targets.dedup();
+            targets
+                .into_iter()
+                .filter(|&index| index != vp_index)
+                .map(|index| VpIndex::new(index as u32))
+                .collect()
         }
 
         pub fn reserve_pending_spi_interrupts(
@@ -1874,6 +1897,148 @@ mod gicd {
                     wakes.push(index);
                 });
                 assert_eq!(wakes, if deliverable { vec![1] } else { vec![] });
+                assert_eq!(
+                    reserve_pending_spi(&distributor, target).is_some(),
+                    deliverable
+                );
+            }
+        }
+
+        #[test]
+        fn retired_active_spis_notify_routed_targets() {
+            for source in ["level", "software", "edge"] {
+                for route in [1u64, 1 << 31] {
+                    let mut distributor = test_distributor();
+                    let owner = VpIndex::new(0);
+                    let target = VpIndex::new(1);
+                    distributor.add_redistributor(1, true);
+                    assert!(distributor.write32(
+                        GicdRegister(GicdRegister::IGROUPR0.0 + 4),
+                        0b11,
+                        |_| {},
+                    ));
+                    assert!(distributor.write32(
+                        GicdRegister(GicdRegister::ISENABLER0.0 + 4),
+                        0b11,
+                        |_| {},
+                    ));
+                    if source == "edge" {
+                        assert!(distributor.write32(
+                            GicdRegister(GicdRegister::ICFGR0.0 + 8),
+                            0b1010,
+                            |_| {},
+                        ));
+                    }
+                    let active_lrs = [TEST_SPI, TEST_SPI + 1].map(|intid| {
+                        if source == "software" {
+                            set_software_pending_spi(&distributor, intid, true);
+                        } else {
+                            distributor.set_spi_irq(intid, true);
+                        }
+                        ListRegisterInterrupt {
+                            intid,
+                            pending: false,
+                            active: true,
+                        }
+                    });
+                    assert_eq!(
+                        distributor
+                            .reserve_pending_spi_interrupts(owner, u8::MAX)
+                            .unwrap()
+                            .len(),
+                        2
+                    );
+                    assert!(
+                        distributor
+                            .fold_list_registers(owner, &active_lrs)
+                            .is_empty()
+                    );
+
+                    // A live level survives acknowledgement; software and edge
+                    // requests need a new pending event while the LR is active.
+                    for lr in &active_lrs {
+                        match source {
+                            "software" => set_software_pending_spi(&distributor, lr.intid, true),
+                            "edge" => {
+                                distributor.set_spi_irq(lr.intid, false);
+                                distributor.set_spi_irq(lr.intid, true);
+                                distributor.set_spi_irq(lr.intid, false);
+                            }
+                            _ => {}
+                        }
+                        let register =
+                            GicdRegister(GicdRegister::IROUTER0.0 + (lr.intid * 8) as u16);
+                        let wakes =
+                            write_gicd_collect_wakes(&distributor, register, &route.to_ne_bytes());
+                        assert_eq!(wakes, if route == 1 { vec![0] } else { vec![] });
+                    }
+
+                    // An early target check and a fold with active LRs cannot
+                    // transfer ownership or notify the new target yet.
+                    assert!(reserve_pending_spi(&distributor, target).is_none());
+                    assert!(
+                        distributor
+                            .fold_list_registers(owner, &active_lrs)
+                            .is_empty()
+                    );
+                    assert!(reserve_pending_spi(&distributor, target).is_none());
+
+                    // Both LRs retire together. Notify VP1 once, after the GIC
+                    // lock is released and both ownership records are cleared.
+                    assert_eq!(distributor.fold_list_registers(owner, &[]), [target]);
+                    let state = distributor.state.try_lock().unwrap();
+                    for lr in &active_lrs {
+                        assert!(state.in_flight[lr.intid as usize].is_none());
+                    }
+                    assert_eq!(state.active[1] & 0b11, 0);
+                    drop(state);
+                    assert!(distributor.fold_list_registers(owner, &[]).is_empty());
+                    assert_eq!(
+                        distributor
+                            .reserve_pending_spi_interrupts(target, u8::MAX)
+                            .unwrap()
+                            .len(),
+                        2
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn retired_active_spi_notification_checks_current_delivery_state() {
+            for (register, value, deliverable) in [
+                (GicdRegister(GicdRegister::ISENABLER0.0 + 4), 1, true),
+                (GicdRegister(GicdRegister::ICENABLER0.0 + 4), 1, false),
+                (GicdRegister::CTLR, 0, false),
+                (GicdRegister(GicdRegister::ICPENDR0.0 + 4), 1, false),
+            ] {
+                let mut distributor = test_distributor();
+                let owner = VpIndex::new(0);
+                let target = VpIndex::new(1);
+                distributor.add_redistributor(1, true);
+                set_software_pending_spi(&distributor, TEST_SPI, true);
+                assert!(reserve_pending_spi(&distributor, owner).is_some());
+                distributor.fold_list_registers(
+                    owner,
+                    &[ListRegisterInterrupt {
+                        intid: TEST_SPI,
+                        pending: false,
+                        active: true,
+                    }],
+                );
+                set_software_pending_spi(&distributor, TEST_SPI, true);
+                let route = GicdRegister(GicdRegister::IROUTER0.0 + (TEST_SPI * 8) as u16);
+                assert_eq!(
+                    write_gicd_collect_wakes(&distributor, route, &1u64.to_ne_bytes()),
+                    [0]
+                );
+
+                // Recheck the request and configuration when the LR retires.
+                assert!(distributor.write32(register, value, |_| {}));
+                assert_eq!(
+                    distributor.fold_list_registers(owner, &[]),
+                    if deliverable { vec![target] } else { vec![] }
+                );
                 assert_eq!(
                     reserve_pending_spi(&distributor, target).is_some(),
                     deliverable
