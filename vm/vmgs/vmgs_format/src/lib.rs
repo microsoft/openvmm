@@ -59,6 +59,7 @@ open_enum! {
         TPM_NVRAM_BACKUP = 17,
         PROVISIONING_MARKER = 18,
         TPM_185_NVRAM = 19,
+        LSTORACCEL_CREDENTIAL_STORE = 20,
 
         EXTENDED_FILE_TABLE = 63,
     }

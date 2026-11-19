@@ -926,6 +926,20 @@ impl HvfProcessor<'_> {
                 // SAFETY: no requirements.
                 unsafe { abi::mach_absolute_time() }.wrapping_sub(offset)
             }
+            // HVF does not virtualize the PMU and the ID register policy hides
+            // it, but the Windows arm64 boot manager reads the cycle counter
+            // anyway and divides by its delta when calibrating. A constant
+            // zero makes it fault with a divide-by-zero `brk #0xf004` before
+            // the kernel is loaded. Report a counter that advances at roughly
+            // 1 GHz, derived from the 24 MHz host timebase.
+            //
+            // TODO: this is a stopgap. Emulate the cycle counter properly:
+            // honor PMCR_EL0.{E,C}, PMCNTENSET_EL0.C and PMCCFILTR_EL0, and
+            // keep per-VP counter state so it survives save/restore.
+            SystemReg::PMCCNTR_EL0 => {
+                // SAFETY: no requirements.
+                unsafe { abi::mach_absolute_time() }.wrapping_mul(42)
+            }
             _ => return Ok(None),
         };
         Ok(Some(value))

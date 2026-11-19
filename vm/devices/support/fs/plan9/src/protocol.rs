@@ -8,7 +8,8 @@ use std::slice;
 mod macros;
 
 pub const PROTOCOL_VERSION: &str = "9P2000.L";
-const HEADER_SIZE: usize = 7;
+pub const HEADER_SIZE: usize = 7;
+pub const MINIMUM_RESPONSE_BUFFER_SIZE: usize = HEADER_SIZE + size_of::<u32>();
 const QID_SIZE: usize = 13;
 
 // These messages use the format:
@@ -120,6 +121,14 @@ pub struct SliceReader<'a> {
 impl<'a> SliceReader<'a> {
     pub fn new(slice: &'a [u8]) -> SliceReader<'a> {
         SliceReader { slice, offset: 0 }
+    }
+
+    pub fn limit(&mut self, size: usize) -> lx::Result<()> {
+        if size < self.offset {
+            return Err(lx::Error::EINVAL);
+        }
+        self.slice = self.slice.get(..size).ok_or(lx::Error::EINVAL)?;
+        Ok(())
     }
 
     pub fn u8(&mut self) -> lx::Result<u8> {
@@ -294,11 +303,15 @@ pub struct SliceWriter<'a> {
 
 impl<'a> SliceWriter<'a> {
     // Creat an instance to write after the header.
-    pub fn new(slice: &'a mut [u8]) -> SliceWriter<'a> {
-        SliceWriter {
+    pub fn new(slice: &'a mut [u8]) -> lx::Result<SliceWriter<'a>> {
+        if slice.len() < MINIMUM_RESPONSE_BUFFER_SIZE {
+            return Err(lx::Error::EINVAL);
+        }
+
+        Ok(SliceWriter {
             slice,
             offset: HEADER_SIZE,
-        }
+        })
     }
 
     // Creat an instance that doesn't skip the header.
@@ -387,8 +400,9 @@ impl<'a> SliceWriter<'a> {
     where
         I: slice::SliceIndex<[u8], Output = [u8]>,
     {
-        self.slice[self.offset..]
-            .get_mut(index)
+        self.slice
+            .get_mut(self.offset..)
+            .and_then(|slice| slice.get_mut(index))
             .ok_or(lx::Error::EINVAL)
     }
 
@@ -415,11 +429,34 @@ impl<'a> SliceWriter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn slice_writer_rejects_short_buffers() {
+        for capacity in 0..MINIMUM_RESPONSE_BUFFER_SIZE {
+            let mut buf = vec![0xcc; capacity];
+            assert!(matches!(SliceWriter::new(&mut buf), Err(lx::Error::EINVAL)));
+            assert_eq!(buf, vec![0xcc; capacity]);
+        }
+    }
+
+    #[test]
+    fn slice_writer_peek_checks_range() {
+        let mut buf = [0; HEADER_SIZE + 4];
+        let mut writer = SliceWriter::new(&mut buf).unwrap();
+        assert_eq!(writer.peek(0..5), Err(lx::Error::EINVAL));
+        writer.peek(0..4).unwrap().copy_from_slice(b"data");
+        assert_eq!(writer.size(), HEADER_SIZE);
+        writer.next(4).unwrap();
+        assert!(writer.peek(..).unwrap().is_empty());
+        assert_eq!(writer.peek(0..1), Err(lx::Error::EINVAL));
+        assert_eq!(&buf[HEADER_SIZE..], b"data");
+    }
 
     #[test]
     fn slice_writer_next_doesnt_advance_on_error() {
         let mut buf = vec![0u8; HEADER_SIZE + 4];
-        let mut w = SliceWriter::new(&mut buf);
+        let mut w = SliceWriter::new(&mut buf).unwrap();
 
         // This succeeds and moves offset to HEADER_SIZE + 2.
         w.next(2).unwrap();

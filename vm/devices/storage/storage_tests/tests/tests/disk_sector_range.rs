@@ -54,6 +54,19 @@ async fn layered_multi_sector_range_conformance() {
     test_disk_sector_range_conformance(&layered_disk(false).await).await;
 }
 
+/// A read-only disk refuses writes and unmaps, but an out-of-range request
+/// must still fail with `IllegalBlock`.
+#[async_test]
+async fn layered_read_only_sector_range_conformance() {
+    let disk = Disk::new(
+        LayeredDisk::new(true, vec![ram_layer_config(false)])
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    test_disk_sector_range_conformance(&disk).await;
+}
+
 /// A read cache is the only configuration that reaches
 /// `LayerIo::write_no_overwrite`.
 #[async_test]

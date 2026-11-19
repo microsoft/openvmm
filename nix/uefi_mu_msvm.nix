@@ -8,13 +8,13 @@ let
          else if system == "aarch64-linux" then "AARCH64-CLANGPDB"
          else "X64-CLANGPDB";
   hash = {
-    "AARCH64-CLANGPDB" = "sha256-dkRfShH2GW3k3tH8CBnYYpIq/Wi5B8cg2yp3F2wLhwM=";
-    "X64-CLANGPDB" = "sha256-Ww1plif/mcGnC91Mk4WkkCYN3fEyYi35ocvxzcWMMoM=";
+    "AARCH64-CLANGPDB" = "sha256-zIdsaLRfkNJZl9Pj4GIjkHfxW3c3F3j+6cjFUlVt3U8=";
+    "X64-CLANGPDB" = "sha256-8H2nN8Lehsbr8DsL6zAGkcxm+ECEwQFKtmgXVtjaXx8=";
   }.${archToolchain};
 
 in stdenv.mkDerivation rec {
   pname = "uefi-mu-msvm-${archToolchain}";
-  version = "26.0.44";
+  version = "26.0.50";
 
   src = fetchzip {
     url =
