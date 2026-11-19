@@ -103,17 +103,14 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
             builder.depends_on(self.builder.vmtime_unit)
         };
 
-        if handle_eoi {
-            if inner.vm_chipset.eoi_handler.is_some() {
-                return Err(FinalizeError::EoiHandlerAlreadySet);
-            }
-            inner.vm_chipset.eoi_handler = Some(device.clone());
+        // Check what can fail first, ending with the spawn of the device's
+        // unit, and only then make the device the chipset's EOI handler, PIC,
+        // and line target, so that a failed add leaves none of them behind.
+        if handle_eoi && inner.vm_chipset.eoi_handler.is_some() {
+            return Err(FinalizeError::EoiHandlerAlreadySet);
         }
-        if acknowledge_pic_interrupt {
-            if inner.vm_chipset.pic.is_some() {
-                return Err(FinalizeError::PicHandlerAlreadySet);
-            }
-            inner.vm_chipset.pic = Some(device.clone());
+        if acknowledge_pic_interrupt && inner.vm_chipset.pic.is_some() {
+            return Err(FinalizeError::PicHandlerAlreadySet);
         }
 
         for id in self.line_set_dependencies {
@@ -126,18 +123,17 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
 
         if !self.line_set_targets.is_empty() {
             let valid_lines = line_target.ok_or(FinalizeError::NoInterruptTarget)?;
-            let device = Arc::new(LineSetTargetDevice::new(device.clone()));
-            for (id, source_range, target_start) in self.line_set_targets {
+            for (id, source_range, target_start) in &self.line_set_targets {
                 assert!(valid_lines.iter().any(|range| {
-                    *range.start() <= target_start
+                    *range.start() <= *target_start
                         && *range.end()
-                            >= target_start + (source_range.end() - source_range.start())
+                            >= *target_start + (source_range.end() - source_range.start())
                 }));
-                let (line_set, handle) =
-                    inner
-                        .line_sets
-                        .line_set(self.builder.driver_source, self.builder.units, id);
-                line_set.add_target(source_range, target_start, dev_name.clone(), device.clone());
+                let (_, handle) = inner.line_sets.line_set(
+                    self.builder.driver_source,
+                    self.builder.units,
+                    id.clone(),
+                );
                 builder = builder.dependency_of(handle);
             }
         }
@@ -148,6 +144,24 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
         let unit = builder
             .spawn(driver.clone(), |recv| device_unit.run(recv))
             .map_err(FinalizeError::NameInUse)?;
+
+        if handle_eoi {
+            inner.vm_chipset.eoi_handler = Some(device.clone());
+        }
+        if acknowledge_pic_interrupt {
+            inner.vm_chipset.pic = Some(device.clone());
+        }
+
+        if !self.line_set_targets.is_empty() {
+            let device = Arc::new(LineSetTargetDevice::new(device.clone()));
+            for (id, source_range, target_start) in self.line_set_targets {
+                let (line_set, _) =
+                    inner
+                        .line_sets
+                        .line_set(self.builder.driver_source, self.builder.units, id);
+                line_set.add_target(source_range, target_start, dev_name.clone(), device.clone());
+            }
+        }
 
         inner
             .arc_mutex_device_units
@@ -493,5 +507,284 @@ mod device_range {
             region.unmap();
             assert_eq!(region.offset_of(base), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FinalizeError;
+    use crate::ChipsetBuilder;
+    use crate::DebugEventHandler;
+    use crate::chipset::backing::arc_mutex::device::AddDeviceError;
+    use chipset_device::ChipsetDevice;
+    use chipset_device::interrupt::AcknowledgePicInterrupt;
+    use chipset_device::interrupt::HandleEoi;
+    use chipset_device::interrupt::LineInterruptTarget;
+    use chipset_device_resources::IRQ_LINE_SET;
+    use inspect::InspectMut;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use parking_lot::Mutex;
+    use state_unit::StateRequest;
+    use state_unit::StateUnits;
+    use state_unit::UnitHandle;
+    use std::ops::RangeInclusive;
+    use std::sync::Arc;
+    use test_with_tracing::test;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::line_interrupt::LineInterrupt;
+    use vmcore::save_restore::NoSavedState;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
+    use vmcore::vmtime::VmTimeSource;
+
+    /// The vector that a [`Recorder`] acknowledges as the PIC.
+    const PIC_VECTOR: u8 = 0x30;
+
+    /// A call that the chipset made to a [`Recorder`].
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        Irq(u32, bool),
+        Eoi(u32),
+        AcknowledgePic,
+    }
+
+    /// A device that records each call that the chipset makes to it: as a
+    /// target of the line sets and, if it is the interrupt controller, as the
+    /// EOI handler and the PIC.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct Recorder {
+        calls: Arc<Mutex<Vec<Call>>>,
+        interrupt_controller: bool,
+    }
+
+    impl ChipsetDevice for Recorder {
+        fn supports_line_interrupt_target(&mut self) -> Option<&mut dyn LineInterruptTarget> {
+            Some(self)
+        }
+
+        fn supports_handle_eoi(&mut self) -> Option<&mut dyn HandleEoi> {
+            if self.interrupt_controller {
+                Some(self)
+            } else {
+                None
+            }
+        }
+
+        fn supports_acknowledge_pic_interrupt(
+            &mut self,
+        ) -> Option<&mut dyn AcknowledgePicInterrupt> {
+            if self.interrupt_controller {
+                Some(self)
+            } else {
+                None
+            }
+        }
+    }
+
+    impl LineInterruptTarget for Recorder {
+        fn set_irq(&mut self, vector: u32, high: bool) {
+            self.calls.lock().push(Call::Irq(vector, high));
+        }
+
+        fn valid_lines(&self) -> &[RangeInclusive<u32>] {
+            &[0..=1]
+        }
+    }
+
+    impl HandleEoi for Recorder {
+        fn handle_eoi(&mut self, vector: u32) {
+            self.calls.lock().push(Call::Eoi(vector));
+        }
+    }
+
+    impl AcknowledgePicInterrupt for Recorder {
+        fn acknowledge_interrupt(&mut self) -> Option<u8> {
+            self.calls.lock().push(Call::AcknowledgePic);
+            Some(PIC_VECTOR)
+        }
+    }
+
+    impl ChangeDeviceState for Recorder {
+        fn start(&mut self) {}
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+    }
+
+    impl SaveRestore for Recorder {
+        type SavedState = NoSavedState;
+
+        fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    struct NoDebugEvents;
+
+    impl DebugEventHandler for NoDebugEvents {
+        fn on_debug_break(&self, _: Option<u32>) {
+            panic!("unexpected debug break");
+        }
+    }
+
+    /// What a chipset builder borrows: a driver source, VM time, and the state
+    /// units, with VM time's.
+    struct Foundation {
+        driver_source: VmTaskDriverSource,
+        units: StateUnits,
+        vmtime: VmTimeSource,
+        vmtime_unit: UnitHandle,
+        _vmtime_keeper: VmTimeKeeper,
+        _vmtime_requests: mesh::Receiver<StateRequest>,
+    }
+
+    impl Foundation {
+        async fn new(driver: &DefaultDriver) -> Self {
+            let units = StateUnits::new();
+            let (send, vmtime_requests) = mesh::channel();
+            let vmtime_unit = units.add("vmtime").build(send).unwrap();
+            let vmtime_keeper = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
+            let vmtime = vmtime_keeper.builder().build(driver).await.unwrap();
+            Self {
+                driver_source: VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+                units,
+                vmtime,
+                vmtime_unit,
+                _vmtime_keeper: vmtime_keeper,
+                _vmtime_requests: vmtime_requests,
+            }
+        }
+
+        fn builder(&self) -> ChipsetBuilder<'_> {
+            ChipsetBuilder::new(
+                &self.driver_source,
+                &self.units,
+                Arc::new(NoDebugEvents),
+                &self.vmtime,
+                &self.vmtime_unit,
+                false,
+                false,
+                None,
+            )
+        }
+
+        /// Gives `name` to another unit, so that a device added under it
+        /// fails as its unit spawns, the last step of its add.
+        fn take_name(&self, name: &str) -> UnitHandle {
+            self.units.add(name).build(mesh::channel().0).unwrap()
+        }
+    }
+
+    /// A new line of the builder's IRQ line set, as a device's `new_line`
+    /// makes one.
+    fn irq_line(builder: &ChipsetBuilder<'_>, vector: u32) -> LineInterrupt {
+        let mut inner = builder.inner.lock();
+        let (line_set, _) =
+            inner
+                .line_sets
+                .line_set(builder.driver_source, builder.units, IRQ_LINE_SET);
+        line_set.new_line(vector, "source").unwrap()
+    }
+
+    /// Whether a device's add failed as its unit spawned, because the unit's
+    /// name was in use.
+    fn is_name_in_use(err: &AddDeviceError) -> bool {
+        use std::error::Error;
+        err.source()
+            .and_then(|kind| kind.source())
+            .and_then(|err| err.downcast_ref::<FinalizeError>())
+            .is_some_and(|err| matches!(err, FinalizeError::NameInUse(_)))
+    }
+
+    /// A device whose add fails as its unit spawns targets none of the line
+    /// sets that it asked to: neither a line that is high as the add fails nor
+    /// one made after it reaches the device, while both reach the device
+    /// added in its place.
+    #[async_test]
+    async fn failed_add_leaves_no_line_target(driver: DefaultDriver) {
+        let foundation = Foundation::new(&driver).await;
+        let builder = foundation.builder();
+        let _taken = foundation.take_name("device");
+        let early = irq_line(&builder, 0);
+        early.set_level(true);
+
+        let failed = Arc::new(Mutex::new(Vec::new()));
+        let Err(err) = builder.arc_mutex_device("device").add(|services| {
+            services.add_line_target(IRQ_LINE_SET, 0..=1, 0);
+            Recorder {
+                calls: failed.clone(),
+                interrupt_controller: false,
+            }
+        }) else {
+            panic!("a device was added under another unit's name");
+        };
+        assert!(is_name_in_use(&err), "{err:?}");
+
+        let added = Arc::new(Mutex::new(Vec::new()));
+        builder
+            .arc_mutex_device("replacement")
+            .add(|services| {
+                services.add_line_target(IRQ_LINE_SET, 0..=1, 0);
+                Recorder {
+                    calls: added.clone(),
+                    interrupt_controller: false,
+                }
+            })
+            .unwrap();
+        let late = irq_line(&builder, 1);
+        early.set_level(false);
+        late.set_level(true);
+
+        assert_eq!(*failed.lock(), []);
+        assert_eq!(
+            *added.lock(),
+            [Call::Irq(0, true), Call::Irq(0, false), Call::Irq(1, true)]
+        );
+    }
+
+    /// A device whose add fails as its unit spawns leaves the chipset's EOI
+    /// handler and PIC to the device added in its place, which receives the
+    /// EOIs and the PIC's acknowledgments.
+    #[async_test]
+    async fn failed_add_leaves_the_interrupt_controller_free(driver: DefaultDriver) {
+        let foundation = Foundation::new(&driver).await;
+        let builder = foundation.builder();
+        let _taken = foundation.take_name("device");
+
+        let failed = Arc::new(Mutex::new(Vec::new()));
+        let Err(err) = builder.arc_mutex_device("device").add(|_| Recorder {
+            calls: failed.clone(),
+            interrupt_controller: true,
+        }) else {
+            panic!("a device was added under another unit's name");
+        };
+        assert!(is_name_in_use(&err), "{err:?}");
+
+        let added = Arc::new(Mutex::new(Vec::new()));
+        builder
+            .arc_mutex_device("replacement")
+            .add(|_| Recorder {
+                calls: added.clone(),
+                interrupt_controller: true,
+            })
+            .unwrap();
+        let (chipset, _devices) = builder.build().unwrap();
+        chipset.handle_eoi(5);
+        assert_eq!(chipset.acknowledge_pic_interrupt(), Some(PIC_VECTOR));
+
+        assert_eq!(*failed.lock(), []);
+        assert_eq!(*added.lock(), [Call::Eoi(5), Call::AcknowledgePic]);
     }
 }
