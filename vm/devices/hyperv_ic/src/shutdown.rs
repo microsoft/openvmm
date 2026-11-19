@@ -685,6 +685,46 @@ mod tests {
                 .unwrap();
             stop_with_timeout(&mut task, &driver).await;
 
+            let (ready_send, mut ready_recv) = mesh::oneshot();
+            let ChannelState::Ready { clients, .. } = &mut task.task_mut().channel.state else {
+                panic!("shutdown channel must remain ready");
+            };
+            clients.push(ready_send);
+            let mut truncated = response();
+            truncated.message_size = 1;
+            let mut non_transaction = response();
+            non_transaction.flags = HeaderFlags::new().with_response(true);
+            let mut non_response = response();
+            non_response.flags = HeaderFlags::new().with_transaction(true);
+            for packet in [
+                &response().as_bytes()[..size_of::<Header>() - 1],
+                truncated.as_bytes(),
+                non_transaction.as_bytes(),
+                non_response.as_bytes(),
+            ] {
+                guest.try_send(packet).unwrap();
+                with_timeout(
+                    &driver,
+                    task.task_mut()
+                        .channel
+                        .process_state_machine(&mut Vec::new()),
+                )
+                .await
+                .unwrap();
+                assert!(task.task().channel.pending_shutdown.is_some());
+                assert!((&mut pending).now_or_never().is_none());
+                assert!((&mut ready_recv).now_or_never().is_none());
+                assert_eq!(task.task().channel.pipe.transaction_id, 0);
+                assert!(matches!(
+                    &task.task().channel.state,
+                    ChannelState::Ready {
+                        state: ReadyState::WaitShutdown,
+                        ..
+                    }
+                ));
+                assert!(guest.recv(&mut buffer).now_or_never().is_none());
+            }
+
             for unrelated_status in [Status::SUCCESS, Status::FAIL] {
                 for mut unrelated in [
                     Header {
@@ -743,6 +783,8 @@ mod tests {
             };
             assert_eq!(with_timeout(&driver, pending).await.unwrap(), expected);
             stop_with_timeout(&mut task, &driver).await;
+            assert!((&mut ready_recv).now_or_never().is_none());
+            assert!(guest.recv(&mut buffer).now_or_never().is_none());
             assert!(task.task().channel.pending_shutdown.is_none());
             assert!(matches!(
                 &task.task().channel.state,
@@ -930,44 +972,49 @@ mod tests {
     }
 
     #[async_test]
-    async fn stop_between_stale_responses_preserves_negotiation(driver: DefaultDriver) {
+    async fn stop_between_rejected_responses_preserves_negotiation(driver: DefaultDriver) {
         let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("ic-negotiate-stop");
-        let (host, guest, gate) = gated_channels(16384);
-        let mut guest = MessagePipe::new(guest).unwrap();
-        guest.try_send(response().as_bytes()).unwrap();
-        guest.try_send(response().as_bytes()).unwrap();
-        let (_send, recv) = mesh::channel();
-        let mut task = TaskControl::new(Worker {
-            ic: ShutdownIc::new(recv),
-            channel: ShutdownChannel::new(host, None).unwrap(),
-        });
-        task.insert(&worker_driver, "shutdown", ());
-        assert!(task.start());
-        gate.stop(&mut task, &driver).await;
-        assert!(matches!(
-            &task.task().channel.state,
-            ChannelState::Negotiate(NegotiateState::WaitVersion)
-        ));
-        let mut buffer = [0; 256];
-        let n = task
-            .task_mut()
-            .channel
-            .pipe
-            .pipe
-            .recv(&mut buffer)
-            .now_or_never()
-            .unwrap()
-            .unwrap();
-        let (header, _) = Header::read_from_prefix(&buffer[..n]).unwrap();
-        assert_eq!(header.message_type, MessageType::SHUTDOWN);
-        let n = with_timeout(&driver, guest.recv(&mut buffer))
-            .await
-            .unwrap();
-        let (header, _) = Header::read_from_prefix(&buffer[..n]).unwrap();
-        assert_eq!(header.message_type, MessageType::VERSION_NEGOTIATION);
-        assert!(task.start());
-        stop_with_timeout(&mut task, &driver).await;
-        assert!(guest.recv(&mut buffer).now_or_never().is_none());
+        for malformed in [false, true] {
+            let (host, guest, gate) = gated_channels(16384);
+            let mut guest = MessagePipe::new(guest).unwrap();
+            let response = response();
+            guest
+                .try_send(if malformed { &[0] } else { response.as_bytes() })
+                .unwrap();
+            guest.try_send(response.as_bytes()).unwrap();
+            let (_send, recv) = mesh::channel();
+            let mut task = TaskControl::new(Worker {
+                ic: ShutdownIc::new(recv),
+                channel: ShutdownChannel::new(host, None).unwrap(),
+            });
+            task.insert(&worker_driver, "shutdown", ());
+            assert!(task.start());
+            gate.stop(&mut task, &driver).await;
+            assert!(matches!(
+                &task.task().channel.state,
+                ChannelState::Negotiate(NegotiateState::WaitVersion)
+            ));
+            let mut buffer = [0; 256];
+            let n = task
+                .task_mut()
+                .channel
+                .pipe
+                .pipe
+                .recv(&mut buffer)
+                .now_or_never()
+                .unwrap()
+                .unwrap();
+            let (header, _) = Header::read_from_prefix(&buffer[..n]).unwrap();
+            assert_eq!(header.message_type, MessageType::SHUTDOWN);
+            let n = with_timeout(&driver, guest.recv(&mut buffer))
+                .await
+                .unwrap();
+            let (header, _) = Header::read_from_prefix(&buffer[..n]).unwrap();
+            assert_eq!(header.message_type, MessageType::VERSION_NEGOTIATION);
+            assert!(task.start());
+            stop_with_timeout(&mut task, &driver).await;
+            assert!(guest.recv(&mut buffer).now_or_never().is_none());
+        }
     }
 
     #[async_test]

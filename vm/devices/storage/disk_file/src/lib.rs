@@ -9,9 +9,6 @@ mod readwriteat;
 #[cfg(windows)]
 mod windows;
 
-#[cfg(windows)]
-pub use windows::duplicate_device_handle;
-
 use self::readwriteat::ReadWriteAt;
 use blocking::unblock;
 use disk_backend::DiskError;

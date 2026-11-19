@@ -393,12 +393,12 @@ message MemoryDiffDisk {
 // A disk backed by a host block device handle, such as `\\.\PhysicalDriveN`.
 //
 // The client opens the device for synchronous (non-overlapped) I/O and
-// duplicates the handle into the OpenVMM process. OpenVMM duplicates the
-// handle again while processing the request, so the client may close its copy
-// once the request completes.
+// registers its handle using the resource-passing protocol
+// (see resource_passing.md). OpenVMM duplicates the registered handle while
+// processing the request; the name may be deregistered after the RPC succeeds.
 message HandleDisk {
-    // Handle value valid in the OpenVMM process.
-    uint64 handle = 1;
+    // Name of the registered device handle (Windows only).
+    string handle_name = 1;
 }
 
 // A disk backed by a host file.
@@ -1081,7 +1081,7 @@ message TapBackend {
         // Open /dev/net/tun by this device name (existing behavior).
         string name = 1;
         // Use the file descriptor registered under this name via the
-        // fd-passing protocol (see fd_passing.md).
+        // resource-passing protocol (see resource_passing.md).
         string fd_name = 2;
     }
 }
@@ -1164,6 +1164,16 @@ message VirtioFs {
     string tag = 1;
     string root_path = 2;
     bool read_only = 3;
+    // Host-specific virtio-fs options. Omit on non-Windows hosts.
+    WindowsOptions windows_options = 4;
+
+    message WindowsOptions {
+        // Name of an access token registered with the resource-passing
+        // protocol (see resource_passing.md). OpenVMM duplicates the token for host
+        // filesystem access. The name may be deregistered after this RPC
+        // succeeds. Empty uses the VM service process token.
+        string user_token_name = 1;
+    }
 }
 
 message VirtioConsoleConfig {

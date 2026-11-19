@@ -536,7 +536,7 @@ fn rejects_incomplete_fallback_read_plan() {
     assert_eq!(request_output, [0xa5; 512]);
 }
 
-/// Checks sector sizes, rejected writes, and successful read-only flush/unmap calls.
+/// Checks sector sizes, rejected writes and unmaps, and a successful read-only flush.
 #[async_test]
 async fn read_only_protocol_behavior() {
     // Open a two-sector disk through the public disk interface.
@@ -567,9 +567,12 @@ async fn read_only_protocol_behavior() {
         .await;
     assert!(matches!(result, Err(DiskError::ReadOnly)));
 
-    // Flush and unmap are accepted as no-ops on this read-only backend.
+    // Flush is accepted as a no-op; unmap is refused like a write.
     disk.sync_cache().await.unwrap();
-    disk.unmap(0, 1, false).await.unwrap();
+    assert!(matches!(
+        disk.unmap(0, 1, false).await,
+        Err(DiskError::ReadOnly)
+    ));
 }
 
 /// Runs the shared disk range checks, including zero-length and out-of-bounds reads.

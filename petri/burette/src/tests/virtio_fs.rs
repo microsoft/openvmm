@@ -183,6 +183,7 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
                                 fs: virtio_resources::fs::VirtioFsBackend::HostFs {
                                     root_path: vfs_root_path,
                                     mount_options: String::new(),
+                                    windows_options: None,
                                 },
                             }
                             .into_resource(),

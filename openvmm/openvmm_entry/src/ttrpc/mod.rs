@@ -5,19 +5,28 @@
 
 #![cfg(any(feature = "ttrpc", feature = "grpc"))]
 
-// The fd-passing protocol relies on `SCM_RIGHTS` and so exists only on unix.
+// Clients pass OS resources to the server by name: file descriptors via the
+// fd-passing protocol on unix (`SCM_RIGHTS`), and handles via the
+// handle-passing protocol on Windows (`DuplicateHandle`). Both are built on the
+// platform-independent core in `resource_passing`; each platform module
+// provides only its `Connection` transport, selected here as
+// `resource_transport`.
 #[cfg(unix)]
 mod fd_passing;
+#[cfg(windows)]
+mod handle_passing;
+mod resource_passing;
 
 #[cfg(unix)]
-use fd_passing::FdRegistry;
+use fd_passing as resource_transport;
+#[cfg(windows)]
+use handle_passing as resource_transport;
 
-/// On non-unix platforms the fd-passing protocol does not exist. The registry
-/// is still threaded through the shared NIC configuration code, so provide an
-/// empty placeholder there; it is never populated or resolved.
-#[cfg(not(unix))]
-#[derive(Clone, Default)]
-struct FdRegistry {}
+/// The registry of OS resources (fds or handles) passed in by clients, keyed by
+/// client-chosen name.
+type ResourceRegistry = resource_passing::Registry<
+    <resource_transport::Connection as resource_passing::Transport>::Resource,
+>;
 
 use crate::cli_args::DiskCliKind;
 use crate::cli_args::GuestPowerAction;
@@ -153,21 +162,20 @@ fn parse_arch_topology_overrides(
     use vmservice::processor_config::ArchConfig as ProtoArchConfig;
 
     match processor_cfg.and_then(|cfg| cfg.arch_config.as_ref()) {
-        #[cfg(not(guest_arch = "x86_64"))]
         Some(ProtoArchConfig::X86(_)) => {
-            bail!("x86 topology overrides not supported on current arch")
+            cfg_select! {
+                guest_arch = "x86_64" => Ok(None), // No overrides on type currently.
+                _ => bail!("x86 topology overrides not supported on current arch"),
+            }
         }
-        #[cfg(guest_arch = "x86_64")]
-        Some(ProtoArchConfig::X86(_x86cfg)) => {
-            Ok(None) // No overrides on type currently.
-        }
-        #[cfg(not(guest_arch = "aarch64"))]
-        Some(ProtoArchConfig::Aarch64(_)) => {
-            bail!("aarch64 topology overrides not supported on current arch")
-        }
-        #[cfg(guest_arch = "aarch64")]
         Some(ProtoArchConfig::Aarch64(aarch64)) => {
-            Ok(Some(parse_aarch64_topology_overrides(aarch64)?))
+            cfg_select! {
+                guest_arch = "aarch64" => Ok(Some(parse_aarch64_topology_overrides(aarch64)?)),
+                _ => {{
+                    let _ = aarch64;
+                    bail!("aarch64 topology overrides not supported on current arch")
+                }},
+            }
         }
         None => Ok(None),
     }
@@ -248,11 +256,12 @@ impl ResolvedTransport {
 ///   so the first byte is `0x00`.
 /// * gRPC uses HTTP/2 cleartext, whose client connection preface begins with
 ///   the ASCII bytes `"PRI "`, so the first byte is `b'P'`.
-/// * The OpenVMM fd-passing protocol (UNIX only) begins with a handshake whose
-///   first byte is `0xFD`, distinct from both of the above.
+/// * The OpenVMM fd-passing (unix) and handle-passing (Windows) protocols begin
+///   with a handshake whose first byte is `0xFD`, distinct from both of the
+///   above.
 mod dispatch {
-    use super::FdRegistry;
     use super::ResolvedTransport;
+    use super::ResourceRegistry;
     use futures::FutureExt;
     use pal_async::driver::Driver;
     use pal_async::socket::AsSockRef;
@@ -271,7 +280,7 @@ mod dispatch {
         listener: UnixListener,
         cancel: mesh::OneshotReceiver<()>,
         transport: ResolvedTransport,
-        registry: FdRegistry,
+        registry: ResourceRegistry,
     ) -> anyhow::Result<()> {
         let mut listener = PolledSocket::new(driver, listener)?;
         let mut tasks = FuturesUnordered::new();
@@ -308,7 +317,7 @@ mod dispatch {
         server: &mesh_rpc::Server,
         mut conn: PolledSocket<UnixStream>,
         transport: ResolvedTransport,
-        registry: &FdRegistry,
+        registry: &ResourceRegistry,
     ) -> anyhow::Result<()> {
         // Wait for the client to send data (returning early if it hangs up
         // first) and classify the protocol from its first byte.
@@ -316,19 +325,18 @@ mod dispatch {
             return Ok(());
         };
 
-        // The fd-passing protocol (UNIX only) is allowed in every transport
-        // mode; it shares the socket with ttrpc/gRPC and is selected by its
-        // distinct magic first byte.
-        #[cfg(not(unix))]
-        let _ = registry;
-
+        // The fd-passing (UNIX) and handle-passing (Windows) protocols are
+        // allowed in every transport mode; they share the socket with
+        // ttrpc/gRPC and are selected by their common magic first byte.
         match first_byte {
             #[cfg(feature = "ttrpc")]
             0x00 if transport.allows_ttrpc() => server.serve_connection(conn).await,
             #[cfg(feature = "grpc")]
             b'P' if transport.allows_grpc() => server.serve_connection_grpc(conn).await,
-            #[cfg(unix)]
-            super::fd_passing::MAGIC_FIRST_BYTE => super::fd_passing::serve(conn, registry).await,
+            super::resource_passing::wire::MAGIC_FIRST_BYTE => {
+                let mut conn = super::resource_transport::Connection::new(conn);
+                super::resource_passing::serve(&mut conn, registry).await
+            }
             byte => {
                 anyhow::bail!("unrecognized or disallowed rpc protocol (first byte {byte:#04x})")
             }
@@ -397,7 +405,7 @@ impl Worker for TtrpcWorker {
                 memory_backing_file: None,
                 rpc_tasks: Vec::new(),
                 transport: self.transport,
-                registry: FdRegistry::default(),
+                registry: ResourceRegistry::default(),
             };
             let code = service.run(self.listener, recv).await?;
             self.exit_code.send(code);
@@ -824,9 +832,10 @@ struct VmService {
     memory_backing_file: Option<PathBuf>,
     rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
-    /// Registry of file descriptors passed in over the fd-passing protocol,
-    /// resolvable by name (e.g. for tap NIC backends).
-    registry: FdRegistry,
+    /// Registry of OS resources passed in over the fd-passing or
+    /// handle-passing protocol, resolvable by name (e.g. for tap NIC backends
+    /// or virtio-fs user tokens).
+    registry: ResourceRegistry,
 }
 
 fn grpc_error(err: anyhow::Error) -> Status {
@@ -1104,8 +1113,8 @@ impl VmService {
         let vmgs = build_vmgs(req_config.vmgs.take()).await?;
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
 
-        // Snapshot the fd registry so tap NIC backends can resolve descriptors
-        // passed in over the fd-passing protocol.
+        // Snapshot the registry so devices can resolve resources passed in
+        // over the fd-passing or handle-passing protocol.
         let registry = self.registry.clone();
 
         // Serial ports are set up before the boot configuration because UEFI
@@ -1124,10 +1133,11 @@ impl VmService {
         let any_serial_configured = ports.iter().any(|port| port.is_some());
         let com1_configured = ports[0].is_some();
 
-        #[cfg(guest_arch = "aarch64")]
-        let arch = vm_manifest_builder::MachineArch::Aarch64;
-        #[cfg(guest_arch = "x86_64")]
-        let arch = vm_manifest_builder::MachineArch::X86_64;
+        let arch = cfg_select! {
+            guest_arch = "x86_64" => vm_manifest_builder::MachineArch::X86_64,
+            guest_arch = "aarch64" => vm_manifest_builder::MachineArch::Aarch64,
+            _ => compile_error!("unsupported guest architecture"),
+        };
 
         // Build SMBIOS identity for direct Linux or UEFI boot.
         let smbios_requested = req_config.smbios_config.is_some();
@@ -1500,7 +1510,7 @@ impl VmService {
             }
 
             for virtiofs in devices_config.virtiofs_config {
-                let resource = build_virtio_fs(virtiofs)?.into_resource();
+                let resource = build_virtio_fs(virtiofs, &registry)?.into_resource();
                 // Use VPCI when possible (currently only on Windows and macOS due
                 // to KVM backend limitations).
                 if cfg!(windows) || cfg!(target_os = "macos") {
@@ -1551,6 +1561,7 @@ impl VmService {
                 .vmbus
                 .as_mut()
                 .context("HVSocket requires VMBus to be enabled")?;
+            crate::cleanup_socket(hvsocket_config.path.as_ref());
             let listener = UnixListener::bind(&hvsocket_config.path).with_context(|| {
                 format!("failed to bind hvsocket path: {}", hvsocket_config.path)
             })?;
@@ -2442,7 +2453,7 @@ enum NicDevice {
 fn parse_nic_config(
     nic: vmservice::NicConfig,
     recv: Option<mesh::Receiver<ConsommeRequest>>,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<NicDevice> {
     use self::vmservice::nic_config::Backend;
     #[cfg(not(target_os = "linux"))]
@@ -2645,7 +2656,7 @@ struct BuiltPcieTopology {
 
 async fn build_pcie_topology(
     topology: vmservice::PcieTopologyConfig,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
     iommufds: &IommufdContexts,
     enable_legacy_pci_config_io: bool,
 ) -> anyhow::Result<BuiltPcieTopology> {
@@ -2722,6 +2733,16 @@ async fn build_pcie_topology(
             vnode: node,
             preserve_bars,
         });
+    }
+
+    // Clean initial paths before creating any listeners. Hot-adds must not
+    // unlink a live device's socket.
+    for (_, device) in &pending_devices {
+        if let Some(vmservice::pcie_device_kind::Kind::Virtio(virtio)) = &device.kind
+            && let Some(vmservice::virtio_device::Kind::Vsock(vsock)) = &virtio.kind
+        {
+            crate::cleanup_socket(vsock.socket_path.as_ref());
+        }
     }
 
     let mut devices = Vec::new();
@@ -2845,7 +2866,7 @@ fn walk_pcie_attachment(
 /// function, an NVMe controller, or a VFIO-assigned host device).
 async fn build_pci_device(
     device: vmservice::PcieDeviceKind,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
     iommufds: &IommufdContexts,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     use vmservice::pcie_device_kind::Kind;
@@ -2855,7 +2876,7 @@ async fn build_pci_device(
             let resource = build_virtio_device(virtio, registry).await?;
             VirtioPciDeviceHandle(resource).into_resource()
         }
-        Kind::Nvme(nvme) => build_nvme_controller(nvme).await?,
+        Kind::Nvme(nvme) => build_nvme_controller(nvme, registry).await?,
         Kind::Vfio(vfio) => build_vfio_device(vfio, iommufds)?,
     })
 }
@@ -2974,6 +2995,7 @@ fn build_vfio_device(
 /// Builds an NVMe controller resource from the proto `NvmeConfig`.
 async fn build_nvme_controller(
     nvme: vmservice::NvmeConfig,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     let vmservice::NvmeConfig {
         controller_id,
@@ -2986,8 +3008,12 @@ async fn build_nvme_controller(
             backend,
             read_only,
         } = ns;
-        let disk =
-            build_disk_backend(backend.context("missing namespace backend")?, read_only).await?;
+        let disk = build_disk_backend(
+            backend.context("missing namespace backend")?,
+            read_only,
+            registry,
+        )
+        .await?;
         namespaces.push(nvme_resources::NamespaceDefinition {
             nsid,
             read_only,
@@ -3008,7 +3034,7 @@ async fn build_nvme_controller(
 /// `VirtioDevice`.
 async fn build_virtio_device(
     device: vmservice::VirtioDevice,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     use vmservice::virtio_device::Kind;
     let vmservice::VirtioDevice { kind } = device;
@@ -3019,7 +3045,8 @@ async fn build_virtio_device(
             serial,
         }) => {
             let disk =
-                build_disk_backend(backend.context("missing blk backend")?, read_only).await?;
+                build_disk_backend(backend.context("missing blk backend")?, read_only, registry)
+                    .await?;
             virtio_resources::blk::VirtioBlkHandle {
                 disk,
                 read_only,
@@ -3070,7 +3097,7 @@ async fn build_virtio_device(
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource()
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
-        Kind::Fs(config) => build_virtio_fs(config)?.into_resource(),
+        Kind::Fs(config) => build_virtio_fs(config, registry)?.into_resource(),
         Kind::Pmem(vmservice::VirtioPmem { backend, read_only }) => {
             let path = match backend
                 .and_then(|b| b.kind)
@@ -3087,30 +3114,17 @@ const OPENVMM_DEFAULT_VSOCK_GUEST_CID: u64 = 3;
 
 fn build_virtio_fs(
     config: vmservice::VirtioFs,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<virtio_resources::fs::VirtioFsHandle> {
     let vmservice::VirtioFs {
         tag,
         root_path,
         read_only,
+        windows_options,
     } = config;
-    const VIRTIO_FS_TAG_LEN: usize = 36;
-    anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");
-    anyhow::ensure!(
-        !tag.contains('\0'),
-        "virtio-fs tag must not contain NUL bytes"
-    );
-    anyhow::ensure!(
-        tag.len() <= VIRTIO_FS_TAG_LEN,
-        "virtio-fs tag exceeds the {VIRTIO_FS_TAG_LEN}-byte protocol limit"
-    );
-    anyhow::ensure!(
-        !root_path.is_empty(),
-        "virtio-fs root path must not be empty"
-    );
-    anyhow::ensure!(
-        !root_path.contains('\0'),
-        "virtio-fs root path must not contain NUL bytes"
-    );
+    let windows_options = windows_options
+        .map(|options| build_virtio_fs_windows_options(options, registry))
+        .transpose()?;
     Ok(virtio_resources::fs::VirtioFsHandle {
         tag,
         fs: virtio_resources::fs::VirtioFsBackend::HostFs {
@@ -3120,26 +3134,59 @@ fn build_virtio_fs(
             } else {
                 String::new()
             },
+            windows_options,
         },
     })
+}
+
+/// Resolves the proto virtio-fs Windows options, looking up the user token
+/// registered via the handle-passing protocol.
+fn build_virtio_fs_windows_options(
+    options: vmservice::virtio_fs::WindowsOptions,
+    registry: &ResourceRegistry,
+) -> anyhow::Result<virtio_resources::fs::VirtioFsWindowsOptions> {
+    let vmservice::virtio_fs::WindowsOptions { user_token_name } = options;
+    #[cfg(windows)]
+    {
+        let user_token = (!user_token_name.is_empty())
+            .then(|| {
+                registry.resolve(&user_token_name).with_context(|| {
+                    format!("failed to resolve virtio-fs user token '{user_token_name}'")
+                })
+            })
+            .transpose()?;
+        Ok(virtio_resources::fs::VirtioFsWindowsOptions { user_token })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = registry;
+        anyhow::ensure!(
+            user_token_name.is_empty(),
+            "virtio-fs user tokens are only supported on Windows"
+        );
+        Ok(virtio_resources::fs::VirtioFsWindowsOptions {})
+    }
 }
 
 /// Builds a disk backend resource from the proto `DiskBackend`.
 async fn build_disk_backend(
     backend: vmservice::DiskBackend,
     read_only: bool,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
-    if let Some(vmservice::disk_backend::Kind::Handle(vmservice::HandleDisk { handle })) =
+    if let Some(vmservice::disk_backend::Kind::Handle(vmservice::HandleDisk { handle_name })) =
         backend.kind
     {
         #[cfg(windows)]
         {
-            let file = disk_file::duplicate_device_handle(handle).context("invalid disk handle")?;
-            return Ok(disk_backend_resources::FileDiskHandle(file).into_resource());
+            let handle = registry
+                .resolve(&handle_name)
+                .with_context(|| format!("failed to resolve disk handle '{handle_name}'"))?;
+            return Ok(disk_backend_resources::FileDiskHandle(handle.into()).into_resource());
         }
         #[cfg(not(windows))]
         {
-            let _ = handle;
+            let _ = (handle_name, registry);
             anyhow::bail!("handle disk backends are only supported on Windows")
         }
     }
@@ -3238,7 +3285,7 @@ fn build_consomme_handle(
 /// Builds a host network endpoint resource from the proto `NicBackend`.
 fn build_nic_backend(
     backend: vmservice::NicBackend,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
     use vmservice::nic_backend::Kind;
     #[cfg(not(target_os = "linux"))]
@@ -3268,7 +3315,7 @@ fn build_nic_backend(
 #[cfg(target_os = "linux")]
 fn build_tap_backend(
     tap: vmservice::TapBackend,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
     use vmservice::tap_backend::Source;
     let fd = match tap.source.context("missing tap source")? {
@@ -3371,6 +3418,54 @@ mod tests {
     #[cfg(target_os = "linux")]
     use vmservice::vfio_bar_address::Source;
 
+    #[test]
+    fn virtio_vsock_reuses_socket_path() {
+        DefaultPool::run_with(async |_| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("vsock");
+            let device = vmservice::VirtioDevice {
+                kind: Some(vmservice::virtio_device::Kind::Vsock(
+                    vmservice::VirtioVsock {
+                        socket_path: path.to_str().unwrap().into(),
+                        guest_cid: None,
+                    },
+                )),
+            };
+            let config = vmservice::PcieTopologyConfig {
+                root_complexes: vec![vmservice::PcieRootComplex {
+                    root_ports: vec![vmservice::PciePort {
+                        attached: Some(vmservice::PcieAttachment {
+                            kind: Some(vmservice::pcie_attachment::Kind::Device(
+                                vmservice::PcieDeviceKind {
+                                    kind: Some(vmservice::pcie_device_kind::Kind::Virtio(
+                                        device.clone(),
+                                    )),
+                                },
+                            )),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let registry = ResourceRegistry::default();
+            let iommufds = IommufdContexts::default();
+            for _ in 0..2 {
+                let topology = build_pcie_topology(config.clone(), &registry, &iommufds, false)
+                    .await
+                    .unwrap();
+                assert!(
+                    build_virtio_device(device.clone(), &registry)
+                        .await
+                        .is_err()
+                );
+                let _connection = unix_socket::UnixStream::connect(&path).unwrap();
+                drop(topology);
+            }
+        });
+    }
+
     fn service(
         driver: DefaultDriver,
         shutdown_rpc: Option<mesh::Sender<ShutdownRpc>>,
@@ -3395,7 +3490,7 @@ mod tests {
             memory_backing_file: None,
             rpc_tasks: Vec::new(),
             transport: ResolvedTransport::Auto,
-            registry: FdRegistry::default(),
+            registry: ResourceRegistry::default(),
         }
     }
 
@@ -3692,20 +3787,82 @@ mod tests {
     }
 
     #[test]
-    fn invalid_handle_disk_backend_is_rejected() {
+    fn unregistered_handle_disk_backend_is_rejected() {
         DefaultPool::run_with(async |_driver| {
-            let backend = vmservice::DiskBackend {
+            let registry = ResourceRegistry::default();
+            for name in ["", "missing"] {
+                let backend = vmservice::DiskBackend {
+                    kind: Some(vmservice::disk_backend::Kind::Handle(
+                        vmservice::HandleDisk {
+                            handle_name: name.into(),
+                        },
+                    )),
+                };
+                let error = build_disk_backend(backend, false, &registry)
+                    .await
+                    .unwrap_err();
+                #[cfg(windows)]
+                assert_eq!(
+                    format!("{error:#}"),
+                    format!(
+                        "failed to resolve disk handle '{name}': no handle registered under name '{name}'"
+                    )
+                );
+                #[cfg(not(windows))]
+                assert_eq!(
+                    error.to_string(),
+                    "handle disk backends are only supported on Windows"
+                );
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn registered_handle_disk_backends() {
+        DefaultPool::run_with(async |_driver| {
+            let registry = ResourceRegistry::default();
+            let file = tempfile::tempfile().unwrap();
+            registry.register("disk".into(), file.into()).unwrap();
+            let backend = || vmservice::DiskBackend {
                 kind: Some(vmservice::disk_backend::Kind::Handle(
-                    vmservice::HandleDisk { handle: 0 },
+                    vmservice::HandleDisk {
+                        handle_name: "disk".into(),
+                    },
                 )),
             };
-            let error = build_disk_backend(backend, false).await.unwrap_err();
-            #[cfg(windows)]
-            assert_eq!(error.to_string(), "invalid disk handle");
-            #[cfg(not(windows))]
-            assert_eq!(
-                error.to_string(),
-                "handle disk backends are only supported on Windows"
+
+            build_nvme_controller(
+                vmservice::NvmeConfig {
+                    namespaces: vec![vmservice::NvmeNamespace {
+                        nsid: 1,
+                        backend: Some(backend()),
+                        read_only: true,
+                    }],
+                    ..Default::default()
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
+            build_virtio_device(
+                vmservice::VirtioDevice {
+                    kind: Some(vmservice::virtio_device::Kind::Blk(vmservice::VirtioBlk {
+                        backend: Some(backend()),
+                        read_only: true,
+                        ..Default::default()
+                    })),
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
+
+            registry.deregister("disk");
+            assert!(
+                build_disk_backend(backend(), true, &registry)
+                    .await
+                    .is_err()
             );
         });
     }
@@ -4338,7 +4495,7 @@ mod tests {
                     memory_backing_file: None,
                     rpc_tasks: vec![driver.spawn("pending-rpc", std::future::pending())],
                     transport: ResolvedTransport::Auto,
-                    registry: FdRegistry::default(),
+                    registry: ResourceRegistry::default(),
                 };
                 event_send.send(VmControllerEvent::ExitRequested { code });
                 assert_eq!(service.run(listener, worker_recv).await.unwrap(), code);
@@ -4705,7 +4862,7 @@ mod tests {
                     }],
                     ..Default::default()
                 },
-                &FdRegistry::default(),
+                &ResourceRegistry::default(),
                 &IommufdContexts::default(),
                 false,
             ));
@@ -4752,7 +4909,7 @@ mod tests {
 
         let topology = futures::executor::block_on(build_pcie_topology(
             topology,
-            &FdRegistry::default(),
+            &ResourceRegistry::default(),
             &IommufdContexts::default(),
             true,
         ))
@@ -4786,7 +4943,7 @@ mod tests {
                             }],
                             ..Default::default()
                         },
-                        &FdRegistry::default(),
+                        &ResourceRegistry::default(),
                         &IommufdContexts::default(),
                         false,
                     ))

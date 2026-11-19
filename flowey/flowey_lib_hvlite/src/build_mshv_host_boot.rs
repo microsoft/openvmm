@@ -12,7 +12,7 @@ pub struct MshvHostBootOutput {
     #[serde(rename = "mshv_host_boot.efi")]
     pub efi: PathBuf,
     #[serde(rename = "mshv_host_boot.pdb")]
-    pub pdb: PathBuf,
+    pub pdb: Option<PathBuf>,
 }
 
 impl Artifact for MshvHostBootOutput {}
@@ -57,7 +57,13 @@ impl SimpleFlowNode for Node {
                 else {
                     unreachable!()
                 };
-                rt.write(host_boot, &MshvHostBootOutput { efi, pdb });
+                rt.write(
+                    host_boot,
+                    &MshvHostBootOutput {
+                        efi,
+                        pdb: Some(pdb),
+                    },
+                );
             }
         });
         Ok(())

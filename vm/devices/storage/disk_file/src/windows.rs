@@ -10,8 +10,6 @@ use std::fs;
 use std::io;
 use std::mem::size_of;
 use std::os::windows::io::AsRawHandle;
-use std::os::windows::io::BorrowedHandle;
-use std::os::windows::io::RawHandle;
 use windows_sys::Win32::Foundation::ERROR_INVALID_FUNCTION;
 use windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED;
 use windows_sys::Win32::System::IO::DeviceIoControl;
@@ -34,25 +32,6 @@ pub(crate) struct DeviceGeometry {
 /// support file metadata queries.
 pub(crate) fn is_device_error(err: &io::Error) -> bool {
     err.raw_os_error() == Some(ERROR_INVALID_FUNCTION as i32)
-}
-
-/// Creates a file, owned by this process, from the raw value of a block device
-/// handle that another process placed in this process (for example, a VM
-/// service client that passes the value over an RPC).
-///
-/// The handle identified by `handle` is only read; it stays owned by whoever
-/// placed it in this process. The device must have been opened for
-/// synchronous I/O.
-pub fn duplicate_device_handle(handle: u64) -> io::Result<fs::File> {
-    let handle =
-        usize::try_from(handle).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    if handle == 0 {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    // SAFETY: the handle is only borrowed for the duration of the duplicate
-    // call, which fails unless it refers to a valid handle in this process.
-    let handle = unsafe { BorrowedHandle::borrow_raw(handle as RawHandle) };
-    Ok(handle.try_clone_to_owned()?.into())
 }
 
 fn ioctl<I, O: Default>(file: &fs::File, code: u32, input: Option<&I>) -> io::Result<O> {

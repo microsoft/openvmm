@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(guest_arch = "x86_64")]
-
 use crate::WhpProcessor;
 use crate::memory::x86::GpaBackingType;
 use hvdef::HV_PAGE_SIZE;
