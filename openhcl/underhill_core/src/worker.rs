@@ -1378,12 +1378,9 @@ fn resolve_vpci_relay(inputs: VpciRelayInputs<'_>) -> anyhow::Result<bool> {
     let missing = if !vmbus_relay {
         "the VMBus relay"
     } else if allowed_devices.is_empty() {
-        // The relay could only reject offers, so don't reserve rings or open
-        // host channels for them.
         "a device policy that allows a device"
     } else if isolation == virt::IsolationType::Vbs && !mmio_hypercalls {
-        // SNP and TDX reach VPCI config space through #VC/#VE; VBS can't.
-        "MMIO hypercalls, which VBS needs to reach VPCI config space"
+        "MMIO hypercalls, which VBS requires for host-emulated MMIO regions"
     } else {
         return Ok(true);
     };

@@ -155,7 +155,9 @@ pub struct ProductPolicyConfig {
     pub policy: ProductPolicy,
     /// Optional device policy file, relative to the manifest: the PCI devices
     /// that the VPCI relay may expose to VTL0, and when the relay runs.
-    /// Without one, the relay exposes no devices.
+    /// Without one, the relay is off by default and VPCI devices reach VTL0
+    /// unfiltered; enabling it with `OPENHCL_ENABLE_VPCI_RELAY=1` fails the
+    /// boot, because no device is allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_policy: Option<PathBuf>,
 }
