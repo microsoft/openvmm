@@ -5,6 +5,7 @@ use arbitrary::Arbitrary;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
 use x86emu::Cpu;
+use x86emu::ReadKind;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
 
@@ -38,7 +39,7 @@ impl Cpu for FuzzerCpu {
         _gva: u64,
         bytes: &mut [u8],
         _is_user_mode: bool,
-        _is_rmw: bool,
+        _kind: ReadKind,
     ) -> Result<(), Self::Error> {
         for c in bytes.chunks_mut(self.mem_data.len()) {
             c.copy_from_slice(&self.mem_data[..c.len()]);

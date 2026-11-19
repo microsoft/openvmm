@@ -5,6 +5,7 @@ use super::AlignmentMode;
 use super::Emulator;
 use super::InternalError;
 use crate::Cpu;
+use crate::ReadKind;
 use iced_x86::Instruction;
 use iced_x86::Register;
 
@@ -23,10 +24,10 @@ impl<T: Cpu> Emulator<'_, T> {
 
         let left: u128 = match op_size {
             64 => {
-                self.read_memory_op::<u64>(instr, 0, alignment, true)
+                self.read_memory_op::<u64>(instr, 0, alignment, ReadKind::ReadModifyWrite)
                     .await? as u128
             }
-            128 => self.read_memory_op(instr, 0, alignment, true).await?,
+            128 => self.read_memory_op(instr, 0, alignment, ReadKind::ReadModifyWrite).await?,
             _ => unreachable!(),
         };
 

@@ -9,6 +9,16 @@ use std::future::Future;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
 
+/// The kind of memory read being performed.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ReadKind {
+    /// A plain read that only requires read permissions.
+    ReadOnly,
+    /// The read half of a read-modify-write operation. Write permissions must
+    /// be validated for the entire range before reading.
+    ReadModifyWrite,
+}
+
 /// Trait for asynchronous callouts from the emulator to the VM.
 ///
 /// Memory addresses already include the segment base.
@@ -18,14 +28,13 @@ pub trait Cpu {
 
     /// Performs a memory read.
     ///
-    /// When `is_rmw` is set, this is the read of a read-modify-write
-    /// operation and must validate write permissions for the entire range.
+    /// See [`ReadKind`] for the permissions that must be validated.
     fn read_memory(
         &mut self,
         gva: u64,
         bytes: &mut [u8],
         is_user_mode: bool,
-        is_rmw: bool,
+        kind: ReadKind,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
     /// Performs a memory write.
@@ -94,9 +103,9 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         gva: u64,
         bytes: &mut [u8],
         is_user_mode: bool,
-        is_rmw: bool,
+        kind: ReadKind,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        (*self).read_memory(gva, bytes, is_user_mode, is_rmw)
+        (*self).read_memory(gva, bytes, is_user_mode, kind)
     }
 
     fn write_memory(

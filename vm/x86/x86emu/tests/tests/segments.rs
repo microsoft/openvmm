@@ -13,6 +13,7 @@ use x86defs::cpuid::Vendor;
 use x86emu::Cpu;
 use x86emu::Emulator;
 use x86emu::Gp;
+use x86emu::ReadKind;
 use x86emu::Segment;
 
 #[test]
@@ -163,7 +164,7 @@ fn virtual_8086_data_segment_selectors() {
                 if write {
                     vec![]
                 } else {
-                    vec![(cpu.valid_gva, 2, false)]
+                    vec![(cpu.valid_gva, 2, ReadKind::ReadOnly)]
                 }
             );
         }

@@ -23,6 +23,7 @@ use x86defs::RFlags;
 use x86defs::SegmentRegister;
 use x86emu::AlignmentMode;
 use x86emu::Gp;
+use x86emu::ReadKind;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
 use zerocopy::FromBytes;
@@ -557,7 +558,8 @@ pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
 
     match op {
         EmulatedMemoryOperation::Read(data) => {
-            emu.read_memory(segment, gva, alignment, data, false).await
+            emu.read_memory(segment, gva, alignment, data, ReadKind::ReadOnly)
+                .await
         }
         EmulatedMemoryOperation::Write(data) => {
             emu.write_memory(segment, gva, alignment, data).await
@@ -874,16 +876,15 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         gva: u64,
         bytes: &mut [u8],
         is_user_mode: bool,
-        is_rmw: bool,
+        kind: ReadKind,
     ) -> Result<(), Self::Error> {
         // Preflight translation and VTL access before reading: MMIO reads may have side effects.
         // RMW operands need write permissions even during this initial read.
         // TODO: Preflight GuestMemory backing permissions for every RAM range too,
         // including write permission for RMW reads, before any data access.
-        let mode = if is_rmw {
-            TranslateMode::Write
-        } else {
-            TranslateMode::Read
+        let mode = match kind {
+            ReadKind::ReadOnly => TranslateMode::Read,
+            ReadKind::ReadModifyWrite => TranslateMode::Write,
         };
         let gpa = self.translate_gva(gva, mode, is_user_mode)?;
         if Some(gpa & !(HV_PAGE_SIZE - 1)) != self.support.lapic_base_address() {

@@ -6,6 +6,7 @@ use super::Emulator;
 use super::InternalError;
 use super::arith::ArithOp;
 use crate::Cpu;
+use crate::ReadKind;
 use crate::Segment;
 use iced_x86::Instruction;
 use iced_x86::OpKind;
@@ -172,7 +173,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 offset,
                 AlignmentMode::Standard,
                 data,
-                false,
+                ReadKind::ReadOnly,
             )
             .await?;
             self.write_io(io_register, data).await?;
@@ -221,7 +222,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 offset,
                 AlignmentMode::Standard,
                 &mut data[..rep.size],
-                false,
+                ReadKind::ReadOnly,
             )
             .await?;
 
@@ -280,7 +281,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 si_offset,
                 AlignmentMode::Standard,
                 data,
-                false,
+                ReadKind::ReadOnly,
             )
             .await?;
             self.write_memory(Segment::ES, di_offset, AlignmentMode::Standard, data)
@@ -319,7 +320,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 si_offset,
                 AlignmentMode::Standard,
                 &mut data_left[..rep.size],
-                false,
+                ReadKind::ReadOnly,
             )
             .await?;
             self.read_memory(
@@ -327,7 +328,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 di_offset,
                 AlignmentMode::Standard,
                 &mut data_right[..rep.size],
-                false,
+                ReadKind::ReadOnly,
             )
             .await?;
 
@@ -371,7 +372,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 di_offset,
                 AlignmentMode::Standard,
                 &mut data[..rep.size],
-                false,
+                ReadKind::ReadOnly,
             )
             .await?;
 

@@ -12,6 +12,7 @@ use x86defs::cpuid::Vendor;
 use x86emu::Cpu;
 use x86emu::Emulator;
 use x86emu::Error;
+use x86emu::ReadKind;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
 
@@ -278,7 +279,7 @@ pub struct SingleCellCpu<T: TestRegister> {
     pub io_val: u32,
     pub xmm: [u128; 16],
     pub invert_after_read: bool,
-    pub memory_reads: Vec<(u64, usize, bool)>,
+    pub memory_reads: Vec<(u64, usize, ReadKind)>,
     pub fail_writes: bool,
     pub state: CpuState,
 }
@@ -301,9 +302,9 @@ impl<T: TestRegister> Cpu for SingleCellCpu<T> {
         gva: u64,
         bytes: &mut [u8],
         _is_user_mode: bool,
-        is_rmw: bool,
+        kind: ReadKind,
     ) -> Result<(), Self::Error> {
-        self.memory_reads.push((gva, bytes.len(), is_rmw));
+        self.memory_reads.push((gva, bytes.len(), kind));
         if gva == self.valid_gva {
             bytes.copy_from_slice(&self.mem_val.to_le_bytes().as_ref()[..bytes.len()]);
             if self.invert_after_read {
@@ -449,7 +450,7 @@ impl Cpu for MultipleCellCpu {
         gva: u64,
         bytes: &mut [u8],
         _is_user_mode: bool,
-        _is_rmw: bool,
+        _kind: ReadKind,
     ) -> Result<(), Self::Error> {
         if gva == self.valid_gva + self.read_mem_offset as u64 {
             if self.mem_val.len() >= bytes.len() {

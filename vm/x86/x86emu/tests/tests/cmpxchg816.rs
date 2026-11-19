@@ -10,6 +10,7 @@ use test_with_tracing::test;
 use x86defs::RFlags;
 use x86emu::Cpu;
 use x86emu::Gp;
+use x86emu::ReadKind;
 
 const RFLAGS_CMPXCHG816B_MASK: RFlags = RFlags::new().with_zero(true);
 
@@ -41,7 +42,10 @@ fn unlocked_mismatch_write_fault_preserves_state() {
         ));
         assert_eq!(cpu.state, initial);
         assert_eq!(cpu.mem_val, 0x1234);
-        assert_eq!(cpu.memory_reads, [(0x100, len, true)]);
+        assert_eq!(
+            cpu.memory_reads,
+            [(0x100, len, ReadKind::ReadModifyWrite)]
+        );
     }
 }
 

@@ -4,6 +4,7 @@
 //! Implements an x86 instruction emulator.
 
 use crate::Cpu;
+use crate::ReadKind;
 use crate::registers::Bitness;
 use crate::registers::Gp;
 use crate::registers::GpSize;
@@ -482,17 +483,16 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         offset: u64,
         alignment: AlignmentMode,
         data: &mut [u8],
-        is_rmw: bool,
+        kind: ReadKind,
     ) -> Result<(), Error<T::Error>> {
-        let op = if is_rmw {
-            OperationKind::Write
-        } else {
-            OperationKind::Read
+        let op = match kind {
+            ReadKind::ReadOnly => OperationKind::Read,
+            ReadKind::ReadModifyWrite => OperationKind::Write,
         };
         let gva = self.compute_and_validate_gva(segment, offset, data.len(), op, alignment)?;
         let user_mode = self.is_user_mode();
         self.cpu
-            .read_memory(gva, data, user_mode, is_rmw)
+            .read_memory(gva, data, user_mode, kind)
             .await
             .map_err(|err| Error::MemoryAccess(gva, op, err))?;
 
@@ -560,7 +560,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         instr: &Instruction,
         operand: u32,
         alignment: AlignmentMode,
-        is_rmw: bool,
+        kind: ReadKind,
     ) -> Result<R, InternalError<T::Error>> {
         let offset = self.memory_op_offset(instr, operand);
         let mut data = R::empty_bytes();
@@ -569,7 +569,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             offset,
             alignment,
             &mut data[..instr.memory_size().size()],
-            is_rmw,
+            kind,
         )
         .await?;
         Ok(R::from_le_bytes(data))
@@ -676,11 +676,11 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         &mut self,
         instr: &Instruction,
         operand: u32,
-        is_rmw: bool,
+        kind: ReadKind,
     ) -> Result<u64, InternalError<T::Error>> {
         Ok(match instr.op_kind(operand) {
             OpKind::Memory => {
-                self.read_memory_op(instr, operand, AlignmentMode::Standard, is_rmw)
+                self.read_memory_op(instr, operand, AlignmentMode::Standard, kind)
                     .await?
             }
             OpKind::Register => self.cpu.gp(instr.op_register(operand).into()),
@@ -702,7 +702,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         instr: &Instruction,
         operand: u32,
     ) -> Result<i64, InternalError<T::Error>> {
-        let value = self.op_value(instr, operand, false).await?;
+        let value = self.op_value(instr, operand, ReadKind::ReadOnly).await?;
         let size = instr.memory_size().size();
         let shift_size = 64 - (size * 8);
         let new_value = ((value as i64) << shift_size) >> shift_size;

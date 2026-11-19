@@ -9,6 +9,7 @@ mod emulator;
 mod registers;
 
 pub use cpu::Cpu;
+pub use cpu::ReadKind;
 pub use emulator::AlignmentMode;
 pub use emulator::Emulator;
 pub use emulator::Error;
