@@ -47,6 +47,12 @@ pub struct SivmPolicy {
     )]
     #[cfg_attr(feature = "inspect", inspect(with = "Vec::<u8>::len"))]
     pub custom_uefi_json: Vec<u8>,
+
+    /// From the device policy file: the VPCI relay settings. Unset means no
+    /// allowed devices and [`crate::VpciRelayMode::DefaultOff`].
+    #[mesh(6)]
+    #[cfg_attr(feature = "manifest", serde(skip))]
+    pub vpci_relay: Option<crate::VpciRelayPolicy>,
 }
 
 impl crate::uefi_security_policy::UefiSecurityPolicyParams for SivmPolicy {

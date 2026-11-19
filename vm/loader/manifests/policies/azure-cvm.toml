@@ -1,0 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Device policy for Azure CVMs: the PCI devices that OpenHCL may relay to the guest.
+devices = "devices.toml"
+allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm"]
+# CVMs run the relay unless their measured command line turns it off.
+vpci_relay = "default_on"

@@ -175,6 +175,7 @@
     - [Sidecar](./reference/architecture/openhcl/sidecar.md)
     - [CPU Scheduling](./reference/architecture/openhcl/cpu_scheduling.md)
     - [IGVM](./reference/architecture/openhcl/igvm.md)
+    - [Measured Product Policy](./reference/architecture/openhcl/product_policy.md)
   - [Device Architecture](./reference/architecture/devices.md)
     - [Storage Pipeline](./reference/architecture/devices/storage.md)
 
