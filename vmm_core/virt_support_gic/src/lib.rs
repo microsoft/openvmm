@@ -120,7 +120,7 @@ impl GicV3Model {
         self.distributor.read(address, data)
     }
 
-    /// Writes a GIC MMIO register, notifying target VPs when SPI requests may become deliverable.
+    /// Writes a GIC MMIO register, notifying target VPs when requests may become deliverable.
     pub fn write(&self, address: u64, data: &[u8], wake: impl FnMut(usize)) -> bool {
         self.distributor.write(address, data, wake)
     }
@@ -1345,14 +1345,21 @@ mod gicd {
             }
         }
 
-        /// Writes a GIC MMIO register, invoking `wake` outside the distributor state lock.
-        pub fn write(&self, address: u64, data: &[u8], wake: impl FnMut(usize)) -> bool {
+        /// Writes a GIC MMIO register, invoking `wake` outside the GIC state locks.
+        pub fn write(&self, address: u64, data: &[u8], mut wake: impl FnMut(usize)) -> bool {
             if self.gicd_range.contains_addr(address) {
                 self.write_gicd(address - self.gicd_range.start(), data, wake);
             } else if self.gicr_range.contains_addr(address) {
                 let vp = (address - self.gicr_range.start()) / aarch64defs::GIC_REDISTRIBUTOR_SIZE;
                 if let Some(gicr) = self.gicr.get(vp as usize) {
-                    gicr.write(address - self.gicr_range.start(), data);
+                    let pending = gicr.write(address - self.gicr_range.start(), data);
+                    let notify = pending != 0 && {
+                        let state = self.state.lock();
+                        gicr.irq_pending(pending, state.enable_grp0, state.enable_grp1)
+                    };
+                    if notify {
+                        wake(vp as usize);
+                    }
                 } else {
                     tracelimit::warn_ratelimited!(
                         address,
@@ -3222,6 +3229,12 @@ mod gicr {
             state.pending_latch | state.lr_pending_latch | state.ppi_level_line
         }
 
+        pub fn irq_pending(&self, mask: u32, enable_grp0: bool, enable_grp1: bool) -> bool {
+            let state = self.mutable.lock();
+            let group = enabled_group_mask(state.group_status, enable_grp0, enable_grp1);
+            Self::effective_pending(&state) & !state.active & state.enable & group & mask != 0
+        }
+
         pub fn raise(&self, intid: u32) -> bool {
             let mask = 1 << intid;
             let mut state = self.mutable.lock();
@@ -3376,12 +3389,14 @@ mod gicr {
             }
         }
 
-        pub fn write(&self, address: u64, data: &[u8]) {
+        /// Returns the software-pended interrupt mask to check for VP notification.
+        pub fn write(&self, address: u64, data: &[u8]) -> u32 {
             if address & (data.len() as u64 - 1) != 0 {
                 tracing::warn!(address, ?data, "gicr write unaligned access");
-                return;
+                return 0;
             }
 
+            let mut pending = 0;
             if address & 0x10000 == 0 {
                 let address = GicrRdRegister(address as u16);
                 let handled = match data.len() {
@@ -3411,7 +3426,11 @@ mod gicr {
                     }
                     4 => {
                         let data = u32::from_ne_bytes(data.try_into().unwrap());
-                        self.sgi_write32(address, data)
+                        let handled = self.sgi_write32(address, data);
+                        if handled && address == GicrSgiRegister::ISPENDR0 {
+                            pending = data;
+                        }
+                        handled
                     }
                     _ => false,
                 };
@@ -3423,6 +3442,7 @@ mod gicr {
                     );
                 }
             }
+            pending
         }
 
         fn rd_read32(&self, address: GicrRdRegister) -> Option<u32> {
@@ -3612,9 +3632,7 @@ mod gicr {
         }
 
         pub(crate) fn irq_pending(&self, group1: bool) -> bool {
-            let state = self.shared.mutable.lock();
-            let pending = SharedState::effective_pending(&state);
-            pending & !state.active & state.enable & group_mask(state.group_status, group1) != 0
+            self.shared.irq_pending(u32::MAX, !group1, group1)
         }
 
         pub fn is_pending_or_active(&self, intid: u32) -> bool {
@@ -3655,7 +3673,141 @@ mod gicr {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::Distributor;
+        use aarch64defs::gic::GicdCtlr;
+        use aarch64defs::gic::GicdRegister;
+        use memory_range::MemoryRange;
         use test_with_tracing::test;
+
+        fn test_private_distributor(group1: bool) -> (Distributor, [Redistributor; 2]) {
+            let gicr_base = aarch64defs::GIC_DISTRIBUTOR_SIZE;
+            let mut distributor = Distributor::new(
+                0,
+                MemoryRange::new(gicr_base..gicr_base + 2 * aarch64defs::GIC_REDISTRIBUTOR_SIZE),
+                64,
+            )
+            .unwrap();
+            let redistributors = [
+                distributor.add_redistributor(0, false),
+                distributor.add_redistributor(1, true),
+            ];
+            assert!(
+                distributor.write(
+                    u64::from(GicdRegister::CTLR.0),
+                    &u32::from(
+                        GicdCtlr::new()
+                            .with_enable_grp0(!group1)
+                            .with_enable_grp1_non_secure(group1),
+                    )
+                    .to_ne_bytes(),
+                    |_| {},
+                )
+            );
+            (distributor, redistributors)
+        }
+
+        #[test]
+        fn software_pending_private_mmio_wakes_addressed_vp() {
+            for target in [0, 1] {
+                for group1 in [false, true] {
+                    for intid in [5, 20] {
+                        let gicr_base = aarch64defs::GIC_DISTRIBUTOR_SIZE;
+                        let (distributor, redistributors) = test_private_distributor(group1);
+                        let gicr = &redistributors[target];
+                        let mask: u32 = (1 << intid) | (1 << (intid + 1));
+                        assert!(
+                            gicr.shared.sgi_write32(
+                                GicrSgiRegister::IGROUPR0,
+                                if group1 { mask } else { 0 },
+                            )
+                        );
+                        assert!(gicr.shared.sgi_write32(GicrSgiRegister::ISENABLER0, mask));
+                        assert!(!distributor.irq_pending(gicr, group1));
+
+                        let address = gicr_base
+                            + target as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE
+                            + aarch64defs::GIC_REDISTRIBUTOR_FRAME_SIZE
+                            + u64::from(GicrSgiRegister::ISPENDR0.0);
+                        let mut wakes = Vec::new();
+                        assert!(distributor.write(address, &mask.to_ne_bytes(), |index| {
+                            assert!(gicr.shared.mutable.try_lock().is_some());
+                            wakes.push(index);
+                        }));
+                        assert_eq!(wakes, [target]);
+                        assert!(distributor.irq_pending(gicr, group1));
+                        assert!(!distributor.irq_pending(&redistributors[1 - target], group1));
+                        assert_eq!(
+                            gicr.shared.sgi_read32(GicrSgiRegister::ISPENDR0),
+                            Some(mask)
+                        );
+
+                        // Existing deliverable requests must not cause a wake
+                        // for zero bits, disabled bits, or unsupported accesses.
+                        for (write_address, data) in [
+                            (address, 0u32.to_ne_bytes().to_vec()),
+                            (address, (1u32 << (intid + 2)).to_ne_bytes().to_vec()),
+                            (address, vec![1]),
+                            (address, u64::from(mask).to_ne_bytes().to_vec()),
+                            (address + 1, mask.to_ne_bytes().to_vec()),
+                            (
+                                address - aarch64defs::GIC_REDISTRIBUTOR_FRAME_SIZE,
+                                mask.to_ne_bytes().to_vec(),
+                            ),
+                        ] {
+                            assert!(distributor.write(write_address, &data, |_| {
+                                panic!("unexpected wake for access at {write_address:#x}")
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn software_pending_private_mmio_respects_delivery_state() {
+            const MASK: u32 = (1 << 5) | (1 << 20);
+            for group1 in [false, true] {
+                for group_enabled in [false, true] {
+                    for enabled in [false, true] {
+                        for active in [false, true] {
+                            let (distributor, redistributors) =
+                                test_private_distributor(if group_enabled {
+                                    group1
+                                } else {
+                                    !group1
+                                });
+                            let gicr = &redistributors[1];
+                            assert!(gicr.shared.sgi_write32(
+                                GicrSgiRegister::IGROUPR0,
+                                if group1 { MASK } else { 0 },
+                            ));
+                            if enabled {
+                                assert!(gicr.shared.sgi_write32(GicrSgiRegister::ISENABLER0, MASK));
+                            }
+                            if active {
+                                assert!(gicr.shared.sgi_write32(GicrSgiRegister::ISACTIVER0, MASK));
+                            }
+                            let address = aarch64defs::GIC_DISTRIBUTOR_SIZE
+                                + aarch64defs::GIC_REDISTRIBUTOR_SIZE
+                                + aarch64defs::GIC_REDISTRIBUTOR_FRAME_SIZE
+                                + u64::from(GicrSgiRegister::ISPENDR0.0);
+                            let mut wakes = Vec::new();
+                            assert!(distributor.write(address, &MASK.to_ne_bytes(), |index| {
+                                assert!(gicr.shared.mutable.try_lock().is_some());
+                                wakes.push(index);
+                            }));
+                            let deliverable = group_enabled && enabled && !active;
+                            assert_eq!(wakes, if deliverable { vec![1] } else { vec![] });
+                            assert_eq!(distributor.irq_pending(gicr, group1), deliverable);
+                            assert_eq!(
+                                gicr.shared.sgi_read32(GicrSgiRegister::ISPENDR0),
+                                Some(MASK)
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         #[test]
         fn ack_selects_highest_pending_inactive_bit() {
