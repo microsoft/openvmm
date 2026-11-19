@@ -1196,6 +1196,25 @@ async fn write_without_flush_waits_for_sync_cache(driver: DefaultDriver) {
     }
 }
 
+#[async_test]
+async fn write_without_flush_reports_fua_error(driver: DefaultDriver) {
+    let disk = HookDisk::new(64 * 1024, 512)
+        .with_fua_respected(true)
+        .with_sync_hook(|operation| match operation {
+            DiskOperation::Write { fua: true, .. } => {
+                Err(DiskError::Io(std::io::Error::other("FUA write failed")))
+            }
+            _ => Ok(()),
+        })
+        .into_disk();
+    let mut harness = TestHarness::new(&driver, disk, false);
+    harness.enable().await;
+
+    let status_gpa = harness.post_write_request(0, 0, &[0xa5; 512]);
+    assert_eq!(harness.wait_for_used().await, (0, 1));
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_IOERR);
+}
+
 /// Flush command should succeed.
 #[async_test]
 async fn flush_succeeds(driver: DefaultDriver) {
