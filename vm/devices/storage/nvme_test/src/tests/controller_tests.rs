@@ -1504,14 +1504,20 @@ async fn delayed_io_completion_survives_worker_stop(
         .expect("stopping the I/O workers did not finish")
         .unwrap();
 
-    let mut cqe = read_completion_from_queue(&gm, &io_cq, 0);
-    while !cqe.status.phase() && entered.elapsed() < DELAY + SLACK {
+    // Take the time after each read, so a completion counts only if it was
+    // already written while the deadline still held. A namespace update that
+    // returns late therefore fails the test instead of hiding a fresh delay.
+    let (cqe, seen_after) = loop {
+        let cqe = read_completion_from_queue(&gm, &io_cq, 0);
+        let seen_after = entered.elapsed();
+        if cqe.status.phase() || seen_after >= DELAY + SLACK {
+            break (cqe, seen_after);
+        }
         timer.sleep(Duration::from_millis(20)).await;
-        cqe = read_completion_from_queue(&gm, &io_cq, 0);
-    }
+    };
     assert!(
-        cqe.status.phase(),
-        "the delayed READ was not completed by its original deadline"
+        cqe.status.phase() && seen_after < DELAY + SLACK,
+        "the delayed READ was not completed by its original deadline (checked {seen_after:?} after the delay started)"
     );
     assert_eq!(cqe.cid, 3);
     assert_eq!(cqe.status.status(), expected_status.0);
