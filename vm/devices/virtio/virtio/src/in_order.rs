@@ -24,8 +24,7 @@
 //! A driver that makes a descriptor head available again before its previous
 //! use has been published violates the virtio spec. The reused head is not
 //! rejected: it is left in the available ring until the earlier use is
-//! published and then processed normally (QEMU's virtio-net transmit path
-//! similarly processes it once the earlier packet completes). While deferred,
+//! published and then processed normally. While deferred,
 //! [`InOrderCompletion::is_blocked`] reports true so callers stop waiting for
 //! kicks.
 //!
