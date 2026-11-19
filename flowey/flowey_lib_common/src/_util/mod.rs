@@ -59,7 +59,7 @@ pub fn retry<T>(
     while let Err(e) = f(rt, args) {
         i += 1;
         if i == attempts {
-            return Err(e.into());
+            return Err(e);
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
