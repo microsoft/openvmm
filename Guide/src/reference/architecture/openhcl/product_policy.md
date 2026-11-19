@@ -113,5 +113,5 @@ The policies are in `vm/loader/manifests/policies`:
 |---|---|---|
 | `openhcl-x64-cvm-{dev,release}.json` | `azure` | `azure-cvm.toml`: NVMe, MANA, and the Azure Integrated HSM; `default_on` |
 | `openhcl-x64-{dev,release}.json`, `openhcl-x64-direct-{dev,release}.json`, `openhcl-aarch64-{dev,release}.json` | `azure` | `azure.toml`: the same devices; `default_off` |
-| `openhcl-x64-cvm-sivm-{dev,release}.json` | `sivm` | `sivm.toml`: NVMe and a GPU; `must_be_on` |
+| `openhcl-x64-cvm-sivm-{dev,release}.json` | `sivm` | `sivm.toml`: a GPU; `must_be_on` |
 | `openhcl-x64-test-sivm.json` | `sivm` | None |

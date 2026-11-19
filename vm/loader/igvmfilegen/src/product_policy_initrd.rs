@@ -174,8 +174,8 @@ mod tests {
     }
 
     /// The Azure device policies must allow exactly the devices that OpenHCL
-    /// used to allow unconditionally, and the SIVM policy only NVMe and the
-    /// GPU. Only CVMs run the VPCI relay by default, and only SIVMs require it.
+    /// used to allow unconditionally, and the SIVM policy only the GPU. Only
+    /// CVMs run the VPCI relay by default, and only SIVMs require it.
     #[test]
     fn device_policy_round_trips_through_initrd() {
         let policies =
@@ -209,7 +209,7 @@ mod tests {
         };
         assert_eq!(
             append_devices(ProductPolicy::Sivm(Default::default()), "sivm.toml"),
-            (vec![class(1, 8, 2), gpu], VpciRelayMode::MustBeOn)
+            (vec![gpu], VpciRelayMode::MustBeOn)
         );
         let azure = vec![class(1, 8, 2), microsoft(0xba, 2), microsoft(0xc003, 0x10)];
         for (file, mode) in [

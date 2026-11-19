@@ -1333,11 +1333,10 @@ fn round_up_to_2mb(bytes: u64) -> u64 {
 
 /// What the VPCI relay needs, as found at startup.
 struct VpciRelayInputs<'a> {
-    /// `Some(true)` if the relay is required, `Some(false)` if it's disabled,
-    /// or `None` for the default.
-    requested: Option<bool>,
-    /// Whether the device policy turns the relay on by default.
-    default_on: bool,
+    /// `OPENHCL_ENABLE_VPCI_RELAY`, if set.
+    env_override: Option<bool>,
+    /// When the device policy runs the relay.
+    mode: product_policy::VpciRelayMode,
     isolation: virt::IsolationType,
     /// Whether the VMBus relay runs.
     vmbus_relay: bool,
@@ -1347,22 +1346,31 @@ struct VpciRelayInputs<'a> {
     allowed_devices: &'a [product_policy::AllowedPciDevice],
 }
 
-/// Decides whether to run the VPCI relay: by default when the device policy
-/// turns it on and allows a device.
+/// Decides whether to run the VPCI relay. `OPENHCL_ENABLE_VPCI_RELAY`
+/// overrides the device policy's default, unless the policy requires the relay.
 ///
-/// Explicitly enabling it where it can't work is an error; otherwise it is
-/// disabled with a warning.
+/// Requiring the relay where it can't run is an error, so the VM fails at boot
+/// instead of starting without its devices; otherwise the relay is disabled
+/// with a warning.
 fn resolve_vpci_relay(inputs: VpciRelayInputs<'_>) -> anyhow::Result<bool> {
+    use product_policy::VpciRelayMode;
+
     let VpciRelayInputs {
-        requested,
-        default_on,
+        env_override,
+        mode,
         isolation,
         vmbus_relay,
         mmio_hypercalls,
         allowed_devices,
     } = inputs;
 
-    let wanted = requested.unwrap_or(default_on && vmbus_relay);
+    let required = mode == VpciRelayMode::MustBeOn || env_override == Some(true);
+
+    let wanted = match mode {
+        VpciRelayMode::MustBeOn => true,
+        VpciRelayMode::DefaultOn => env_override.unwrap_or(vmbus_relay),
+        VpciRelayMode::DefaultOff => env_override.unwrap_or(false),
+    };
     if !wanted {
         return Ok(false);
     }
@@ -1380,7 +1388,7 @@ fn resolve_vpci_relay(inputs: VpciRelayInputs<'_>) -> anyhow::Result<bool> {
         return Ok(true);
     };
 
-    if requested == Some(true) {
+    if required {
         anyhow::bail!("cannot run the VPCI relay without {missing}");
     }
     tracing::warn!(CVM_ALLOWED, missing, "VPCI relay disabled");
@@ -1750,8 +1758,6 @@ async fn new_underhill_vm(
 
     let use_mmio_hypercalls = dps.general.always_relay_host_mmio;
     // TODO: Centralize cpuid based feature determination.
-    // Unlike SNP and TDX, which reach host MMIO through #VC/#VE, VBS needs MMIO
-    // hypercalls (for example, for the VPCI relay), so every isolated guest checks.
     #[cfg(guest_arch = "x86_64")]
     let use_mmio_hypercalls = use_mmio_hypercalls
         || isolation.is_isolated() && {
@@ -1824,18 +1830,9 @@ async fn new_underhill_vm(
             .unwrap_or(MemoryRange::EMPTY),
     };
 
-    // A device policy that requires the relay makes a VM that can't run it
-    // fail at boot instead of starting without its devices. Otherwise
-    // OPENHCL_ENABLE_VPCI_RELAY overrides the policy's default.
-    let vpci_relay_mode = measured_product_policy.vpci_relay();
-    let requested = if vpci_relay_mode == product_policy::VpciRelayMode::MustBeOn {
-        Some(true)
-    } else {
-        env_cfg.enable_vpci_relay
-    };
     let enable_vpci_relay = resolve_vpci_relay(VpciRelayInputs {
-        requested,
-        default_on: vpci_relay_mode == product_policy::VpciRelayMode::DefaultOn,
+        env_override: env_cfg.enable_vpci_relay,
+        mode: measured_product_policy.vpci_relay(),
         isolation,
         vmbus_relay: with_vmbus_relay,
         mmio_hypercalls: use_mmio_hypercalls,
@@ -4638,19 +4635,20 @@ mod tests {
     use super::VpciRelayInputs;
     use super::resolve_vpci_relay;
     use product_policy::AllowedPciDevice;
+    use product_policy::VpciRelayMode;
     use test_with_tracing::test;
     use virt::IsolationType;
 
     /// Resolves the VPCI relay for an SNP guest that has everything the relay
     /// needs and a policy that turns it on by default, after `change`.
     fn resolve(
-        requested: Option<bool>,
+        env_override: Option<bool>,
         change: fn(&mut VpciRelayInputs<'_>),
     ) -> anyhow::Result<bool> {
         let any = [AllowedPciDevice::default()];
         let mut inputs = VpciRelayInputs {
-            requested,
-            default_on: true,
+            env_override,
+            mode: VpciRelayMode::DefaultOn,
             isolation: IsolationType::Snp,
             vmbus_relay: true,
             mmio_hypercalls: true,
@@ -4675,19 +4673,37 @@ mod tests {
         // Only VBS needs MMIO hypercalls.
         assert!(resolve(None, |i| i.mmio_hypercalls = false).unwrap());
         assert!(!resolve(None, vbs_without_mmio_hypercalls).unwrap());
-        assert!(!resolve(None, |i| i.default_on = false).unwrap());
+        assert!(!resolve(None, |i| i.mode = VpciRelayMode::DefaultOff).unwrap());
         assert!(!resolve(None, |i| i.vmbus_relay = false).unwrap());
         assert!(!resolve(None, |i| i.allowed_devices = &[]).unwrap());
     }
 
-    /// An explicit request overrides the policy's default. Requiring the relay
-    /// turns each missing requirement into an error instead of a warning.
+    /// The environment variable overrides the policy's default. Enabling the
+    /// relay with it turns each missing requirement into an error instead of a
+    /// warning.
     #[test]
-    fn vpci_relay_requested() {
+    fn vpci_relay_env_override() {
         assert!(!resolve(Some(false), |_| {}).unwrap());
-        assert!(resolve(Some(true), |i| i.default_on = false).unwrap());
+        assert!(resolve(Some(true), |i| i.mode = VpciRelayMode::DefaultOff).unwrap());
         assert!(resolve(Some(true), vbs_without_mmio_hypercalls).is_err());
         assert!(resolve(Some(true), |i| i.vmbus_relay = false).is_err());
         assert!(resolve(Some(true), |i| i.allowed_devices = &[]).is_err());
+    }
+
+    /// A policy that requires the relay ignores the environment variable, and
+    /// each missing requirement is an error.
+    #[test]
+    fn vpci_relay_must_be_on() {
+        fn must_be_on(inputs: &mut VpciRelayInputs<'_>) {
+            inputs.mode = VpciRelayMode::MustBeOn;
+        }
+        assert!(resolve(Some(false), must_be_on).unwrap());
+        assert!(
+            resolve(None, |i| {
+                must_be_on(i);
+                i.vmbus_relay = false;
+            })
+            .is_err()
+        );
     }
 }
