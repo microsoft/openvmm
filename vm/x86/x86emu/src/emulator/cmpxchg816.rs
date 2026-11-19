@@ -27,7 +27,10 @@ impl<T: Cpu> Emulator<'_, T> {
                 self.read_memory_op::<u64>(instr, 0, alignment, ReadKind::ReadModifyWrite)
                     .await? as u128
             }
-            128 => self.read_memory_op(instr, 0, alignment, ReadKind::ReadModifyWrite).await?,
+            128 => {
+                self.read_memory_op(instr, 0, alignment, ReadKind::ReadModifyWrite)
+                    .await?
+            }
             _ => unreachable!(),
         };
 

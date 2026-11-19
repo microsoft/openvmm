@@ -42,10 +42,7 @@ fn unlocked_mismatch_write_fault_preserves_state() {
         ));
         assert_eq!(cpu.state, initial);
         assert_eq!(cpu.mem_val, 0x1234);
-        assert_eq!(
-            cpu.memory_reads,
-            [(0x100, len, ReadKind::ReadModifyWrite)]
-        );
+        assert_eq!(cpu.memory_reads, [(0x100, len, ReadKind::ReadModifyWrite)]);
     }
 }
 

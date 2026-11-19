@@ -36,12 +36,7 @@ fn memory_access_intent() {
         ("add", |a| a.add(qword_ptr(0x100), rbx), RMW, 4),
         ("or", |a| a.or(qword_ptr(0x100), rbx), RMW, 3),
         ("inc", |a| a.inc(qword_ptr(0x100)), RMW, 4),
-        (
-            "neg",
-            |a| a.neg(qword_ptr(0x100)),
-            RMW,
-            3u64.wrapping_neg(),
-        ),
+        ("neg", |a| a.neg(qword_ptr(0x100)), RMW, 3u64.wrapping_neg()),
         ("not", |a| a.not(qword_ptr(0x100)), RMW, !3u64),
         ("xadd", |a| a.xadd(qword_ptr(0x100), rbx), RMW, 4),
         ("xchg", |a| a.xchg(qword_ptr(0x100), rbx), RMW, 1),

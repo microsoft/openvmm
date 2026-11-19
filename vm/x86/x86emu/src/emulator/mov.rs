@@ -32,7 +32,10 @@ impl<T: Cpu> Emulator<'_, T> {
         alignment: AlignmentMode,
     ) -> Result<(), InternalError<T::Error>> {
         let value = match instr.op1_kind() {
-            OpKind::Memory => self.read_memory_op(instr, 1, alignment, ReadKind::ReadOnly).await?,
+            OpKind::Memory => {
+                self.read_memory_op(instr, 1, alignment, ReadKind::ReadOnly)
+                    .await?
+            }
             OpKind::Register => {
                 let reg = instr.op1_register();
                 assert!(reg.is_xmm());
