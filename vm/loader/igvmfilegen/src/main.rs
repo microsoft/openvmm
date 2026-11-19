@@ -659,6 +659,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
                 linux,
                 memory_page_count,
                 c_bit_position,
+                memory_acceptance,
             } => {
                 if config.max_vtl != 0 {
                     bail!("snp_linux_direct requires max_vtl 0");
@@ -684,6 +685,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
                     linux,
                     memory_page_count: *memory_page_count,
                     c_bit_position: *c_bit_position,
+                    memory_acceptance: *memory_acceptance,
                     policy: SnpPolicy::from(*policy).with_debug(*enable_debug as u8),
                     injection_type,
                     resources: &resources,

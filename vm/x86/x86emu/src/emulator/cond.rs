@@ -4,6 +4,7 @@
 use super::Emulator;
 use super::InternalError;
 use crate::Cpu;
+use crate::ReadKind;
 use iced_x86::ConditionCode;
 use iced_x86::Instruction;
 use x86defs::RFlags;
@@ -24,12 +25,12 @@ impl<T: Cpu> Emulator<'_, T> {
     ) -> Result<(), InternalError<T::Error>> {
         // CMOV always writes to the destination register. This may seem like a no-op on false conditions, but
         // actually can cause truncation when the destination is a 32-bit register.
-        let src_op = if eval_cond(instr, self.cpu.rflags()) {
-            1
+        let source = self.op_value(instr, 1, ReadKind::ReadOnly).await?;
+        let value = if eval_cond(instr, self.cpu.rflags()) {
+            source
         } else {
-            0
+            self.op_value(instr, 0, ReadKind::ReadOnly).await?
         };
-        let value = self.op_value(instr, src_op).await?;
         self.write_op_0(instr, value).await?;
         Ok(())
     }

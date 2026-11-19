@@ -38,6 +38,7 @@ pub(crate) struct WhpEmuCache {
     rflags: RFlags,
 
     cr0: u64,
+    cr4: u64,
     efer: u64,
 }
 
@@ -95,6 +96,10 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
 
     fn cr0(&mut self) -> u64 {
         self.cache.cr0
+    }
+
+    fn cr4(&mut self) -> u64 {
+        self.cache.cr4
     }
 
     fn rflags(&mut self) -> RFlags {
@@ -410,6 +415,7 @@ impl WhpProcessor<'_> {
             gs,
             ss,
             cr0,
+            cr4,
             efer,
         ) = whp::get_registers!(
             self.current_whp(),
@@ -439,6 +445,7 @@ impl WhpProcessor<'_> {
                 whp::RegisterSegment::Gs,
                 whp::RegisterSegment::Ss,
                 whp::Register64::Cr0,
+                whp::Register64::Cr4,
                 whp::Register64::Efer,
             ]
         )
@@ -459,6 +466,7 @@ impl WhpProcessor<'_> {
             rip,
             rflags: rflags.into(),
             cr0,
+            cr4,
             efer,
         }
     }
