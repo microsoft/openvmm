@@ -316,12 +316,6 @@ impl VirtioQueue {
         }
     }
 
-    /// Whether all ring capacity is outstanding: heads for split queues,
-    /// descriptor slots for packed queues.
-    pub(crate) fn is_full(&self) -> bool {
-        self.core.is_full()
-    }
-
     /// Polls until the queue is kicked by the guest, indicating new work may be
     /// available.
     ///
@@ -341,6 +335,19 @@ impl VirtioQueue {
             ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
         }
         Poll::Ready(())
+    }
+
+    /// Like [`Self::poll_kick`], but waits while all ring capacity is outstanding.
+    ///
+    /// Pair with [`Self::try_peek_with_backpressure`]. The caller must also poll
+    /// its completion source with the same waker and retry after completions:
+    /// this method does not register a waker while waiting for capacity.
+    pub(crate) fn poll_kick_with_backpressure(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.core.is_full() {
+            Poll::Pending
+        } else {
+            self.poll_kick(cx)
+        }
     }
 
     /// Try to get the next work item from the queue. Returns `Ok(None)` if no
@@ -372,6 +379,19 @@ impl VirtioQueue {
     pub fn try_peek(&mut self) -> Result<Option<PeekedWork<'_>>, Error> {
         let work = self.core.try_peek_work().map_err(Error::other)?;
         Ok(work.map(|w| PeekedWork::new(self, w)))
+    }
+
+    /// Like [`Self::try_peek`], but returns `Ok(None)` while all ring capacity is
+    /// outstanding (heads for split queues, descriptor slots for packed queues).
+    /// Other queue errors retain their normal failure behavior.
+    ///
+    /// Wait with [`Self::poll_kick_with_backpressure`] and retry after completions
+    /// release capacity.
+    pub(crate) fn try_peek_with_backpressure(&mut self) -> Result<Option<PeekedWork<'_>>, Error> {
+        if self.core.is_full() {
+            return Ok(None);
+        }
+        self.try_peek()
     }
 
     /// Waits until a descriptor is available for peeking, without advancing

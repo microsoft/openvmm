@@ -5623,9 +5623,6 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
         }
         let first = in_order.try_next(&mut queue).unwrap().unwrap();
         let mut second = Some(in_order.try_next(&mut queue).unwrap().unwrap());
-        if buffered {
-            in_order.complete(&mut queue, second.take().unwrap().into_completion(), 20);
-        }
 
         // The reused head is left unconsumed, holding back the descriptors
         // behind it, until its earlier use is published.
@@ -5639,6 +5636,12 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
             "reused head must not be consumed"
         );
         assert_eq!(in_order.outstanding(), 2);
+
+        if buffered {
+            in_order.complete(&mut queue, second.take().unwrap().into_completion(), 20);
+            assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+            assert!(in_order.try_next(&mut queue).unwrap().is_none());
+        }
 
         in_order.complete(&mut queue, first.into_completion(), 30);
         let mut used = 0;
@@ -6159,6 +6162,21 @@ fn write_packed_descriptor(
         &0x100u32.to_le_bytes(),
     )
     .unwrap();
+}
+
+#[async_test]
+async fn peek_with_backpressure_preserves_queue_errors(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_cyclic_chain(&mem);
+
+    let error = queue
+        .try_peek_with_backpressure()
+        .err()
+        .expect("a malformed chain must still fail the queue");
+    assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
+    assert!(queue.try_peek_with_backpressure().unwrap().is_none());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(queue.poll_kick_with_backpressure(&mut cx).is_pending());
 }
 
 #[async_test]

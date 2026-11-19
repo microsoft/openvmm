@@ -94,10 +94,10 @@ impl InOrderCompletion {
         &mut self,
         queue: &mut VirtioQueue,
     ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        if self.is_blocked(queue) {
+        if self.blocked_on.is_some() {
             return Ok(None);
         }
-        let Some(work) = queue.try_peek()? else {
+        let Some(work) = queue.try_peek_with_backpressure()? else {
             return Ok(None);
         };
         let idx = work.descriptor_index();
@@ -119,7 +119,6 @@ impl InOrderCompletion {
             );
             return Ok(None);
         }
-        self.blocked_on = None;
         self.in_flight[idx as usize] = true;
         self.order.push_back(idx);
         Ok(Some(work.consume()))
@@ -133,18 +132,11 @@ impl InOrderCompletion {
     /// retry fetching after processing completions: this method does not
     /// register a waker while blocked on publication.
     pub fn poll_kick(&self, queue: &mut VirtioQueue, cx: &mut Context<'_>) -> Poll<()> {
-        if self.is_blocked(queue) {
+        if self.blocked_on.is_some() {
             Poll::Pending
         } else {
-            queue.poll_kick(cx)
+            queue.poll_kick_with_backpressure(cx)
         }
-    }
-
-    fn is_blocked(&self, queue: &VirtioQueue) -> bool {
-        queue.is_full()
-            || self
-                .blocked_on
-                .is_some_and(|idx| self.in_flight[idx as usize])
     }
 
     /// Records a completion for the descriptor identified by `completion` and
@@ -181,6 +173,9 @@ impl InOrderCompletion {
         if self.order.pop_front_if(|front| *front == idx).is_some() {
             queue.complete_prepared(completion, bytes_written);
             self.in_flight[idx as usize] = false;
+            if self.blocked_on == Some(idx) {
+                self.blocked_on = None;
+            }
             if !self.order.is_empty() {
                 self.drain_completed_prefix(queue);
             }
@@ -218,6 +213,9 @@ impl InOrderCompletion {
             self.order.pop_front();
             queue.complete_prepared(completion, bytes_written);
             self.in_flight[front as usize] = false;
+            if self.blocked_on == Some(front) {
+                self.blocked_on = None;
+            }
         }
     }
 
