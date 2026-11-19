@@ -210,7 +210,11 @@ impl IoHandler {
         loop {
             check.check()?;
             if let Some(delayed) = &state.delayed_completion {
-                self.timer.sleep_until(delayed.deadline).await;
+                // A queue deletion ends the delay at once, so a long fault
+                // does not hold up the teardown.
+                if matches!(state.queue_state, IoQueueState::Active) {
+                    self.timer.sleep_until(delayed.deadline).await;
+                }
                 let completion = state.delayed_completion.take().unwrap().completion;
                 let deleting = !matches!(state.queue_state, IoQueueState::Active);
                 Self::post_completion(state, completion, deleting)?;
