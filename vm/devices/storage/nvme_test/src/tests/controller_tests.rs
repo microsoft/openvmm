@@ -41,6 +41,7 @@ use pal_async::timer::PolledTimer;
 use pci_core::msi::MsiConnection;
 use pci_core::test_helpers::TestPciInterruptController;
 use std::time::Duration;
+use std::time::Instant;
 use user_driver::backoff::Backoff;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -1295,7 +1296,12 @@ async fn test_aer_survives_stop_during_completion_delay(driver: DefaultDriver) {
         .await
         .expect("the AER completion was never held")
         .unwrap();
-    assert!(!nvmec.client().remove_namespace(1).await);
+    let removed = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(nvmec.client().remove_namespace(1))
+        .await
+        .expect("stopping the admin worker did not end the hold");
+    assert!(!removed);
 
     CancelContext::new()
         .with_timeout(Duration::from_secs(10))
@@ -1381,6 +1387,7 @@ async fn test_io_completion_fault_matches_inline_completed_command(driver: Defau
         cqe.status.status(),
         spec::Status::INVALID_NAMESPACE_OR_FORMAT.0
     );
+    assert!(cqe.status.dnr());
 
     let mut data = vec![0; payload.len()];
     gm.read_at(DATA_BASE, &mut data).unwrap();
@@ -1401,13 +1408,25 @@ async fn wait_for_delayed_io_completion(nvmec: &mut NvmeFaultController, timer: 
 }
 
 /// Submits a READ to `nsid` whose completion a `Delay` fault holds back, adds
-/// a namespace while the delay runs (which stops and restarts every I/O
-/// worker), and checks that the READ still completes.
-async fn delayed_io_completion_survives_worker_stop(driver: DefaultDriver, nsid: u32) {
+/// a namespace late in the delay (which stops and restarts every I/O worker),
+/// and checks that the READ completes with its original status by the
+/// original deadline rather than after a fresh delay.
+async fn delayed_io_completion_survives_worker_stop(
+    driver: DefaultDriver,
+    nsid: u32,
+    expected_status: spec::Status,
+    expected_dnr: bool,
+) {
     const IO_CQ_BASE: u64 = 0x4000;
     const IO_SQ_BASE: u64 = 0x5000;
     const DATA_BASE: u64 = 0x6000;
-    const DELAY: Duration = Duration::from_secs(2);
+    const DELAY: Duration = Duration::from_secs(4);
+    // The restart lands about one second before the original deadline, and
+    // the completion must follow within `SLACK` of that deadline. A restart
+    // that started a fresh delay would complete `DELAY` after the restart,
+    // about two seconds past this bound.
+    const RESTART_AFTER: Duration = Duration::from_secs(3);
+    const SLACK: Duration = Duration::from_millis(1500);
 
     let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
         .with_io_queue_fault(
@@ -1469,37 +1488,54 @@ async fn delayed_io_completion_survives_worker_stop(driver: DefaultDriver, nsid:
     // lands inside the delay rather than before the command was taken.
     let mut timer = PolledTimer::new(&driver);
     wait_for_delayed_io_completion(&mut nvmec, &mut timer).await;
+    // The worker set its deadline before the inspection saw the delay, so
+    // the original deadline is no later than `entered + DELAY`.
+    let entered = Instant::now();
+    timer.sleep(RESTART_AFTER).await;
     assert!(
         !read_completion_from_queue(&gm, &io_cq, 0).status.phase(),
-        "the completion was not delayed"
+        "the completion was not delayed until the restart"
     );
     let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
-    nvmec.client().add_namespace(2, disk).await.unwrap();
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(nvmec.client().add_namespace(2, disk))
+        .await
+        .expect("stopping the I/O workers did not finish")
+        .unwrap();
 
     let mut cqe = read_completion_from_queue(&gm, &io_cq, 0);
-    for _ in 0..50 {
-        if cqe.status.phase() {
-            break;
-        }
-        timer.sleep(Duration::from_millis(100)).await;
+    while !cqe.status.phase() && entered.elapsed() < DELAY + SLACK {
+        timer.sleep(Duration::from_millis(20)).await;
         cqe = read_completion_from_queue(&gm, &io_cq, 0);
     }
-    assert!(cqe.status.phase(), "the delayed READ was never completed");
+    assert!(
+        cqe.status.phase(),
+        "the delayed READ was not completed by its original deadline"
+    );
     assert_eq!(cqe.cid, 3);
+    assert_eq!(cqe.status.status(), expected_status.0);
+    assert_eq!(cqe.status.dnr(), expected_dnr);
 }
 
 /// A delayed completion of a READ completed inline (no namespace behind the
 /// NSID) survives an I/O worker stop during the delay.
 #[async_test]
 async fn test_delayed_inline_io_completion_survives_worker_stop(driver: DefaultDriver) {
-    delayed_io_completion_survives_worker_stop(driver, 0).await;
+    delayed_io_completion_survives_worker_stop(
+        driver,
+        0,
+        spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+        true,
+    )
+    .await;
 }
 
 /// A delayed completion of a READ that reached a namespace survives an I/O
 /// worker stop during the delay.
 #[async_test]
 async fn test_delayed_namespace_io_completion_survives_worker_stop(driver: DefaultDriver) {
-    delayed_io_completion_survives_worker_stop(driver, 1).await;
+    delayed_io_completion_survives_worker_stop(driver, 1, spec::Status::SUCCESS, false).await;
 }
 
 /// Deleting an I/O submission queue ends a completion delay at once, so a
