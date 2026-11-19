@@ -5672,6 +5672,59 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
     }
 }
 
+/// With every head outstanding, a reused head would oversubscribe the ring.
+/// It must be deferred rather than failing the queue.
+#[async_test]
+async fn in_order_defers_reuse_on_full_ring(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::read_used;
+
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+    let mut avail = 0;
+    for id in [0, 1, 2, 3, 0] {
+        make_available(
+            &mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            id,
+            &mut avail,
+        );
+    }
+    let mut work: Vec<_> = (0..BOUND_TEST_QUEUE_SIZE)
+        .map(|_| Some(in_order.try_next(&mut queue).unwrap().unwrap()))
+        .collect();
+
+    let state = queue.queue_state();
+    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    assert!(in_order.is_blocked());
+    assert_eq!(
+        queue.queue_state(),
+        state,
+        "reused head must not be consumed"
+    );
+
+    // An out-of-order completion frees no head, so the reuse stays deferred.
+    in_order.complete(&mut queue, work[1].take().unwrap().into_completion(), 10);
+    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    assert!(in_order.is_blocked());
+
+    in_order.complete(&mut queue, work[0].take().unwrap().into_completion(), 0);
+    assert!(!in_order.is_blocked());
+    let mut used = 0;
+    for expected in [(0, 0), (1, 10)] {
+        assert_eq!(
+            read_used(&mem, BOUND_TEST_USED_ADDR, BOUND_TEST_QUEUE_SIZE, &mut used),
+            Some(expected)
+        );
+    }
+
+    let reused = in_order.try_next(&mut queue).unwrap().unwrap();
+    assert_eq!(reused.descriptor_index(), 0);
+    assert_eq!(in_order.outstanding(), 3);
+}
+
 #[async_test]
 async fn in_order_packed_reuse_after_publication_and_wrap(driver: DefaultDriver) {
     use crate::in_order::InOrderCompletion;

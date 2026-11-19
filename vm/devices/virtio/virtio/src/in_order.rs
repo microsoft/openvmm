@@ -94,6 +94,12 @@ impl InOrderCompletion {
         &mut self,
         queue: &mut VirtioQueue,
     ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
+        // With every head outstanding, any available head is a reuse. Defer it
+        // without peeking: the queue's capacity check would otherwise fail the
+        // queue permanently.
+        if self.is_full() {
+            return Ok(None);
+        }
         let Some(work) = queue.try_peek()? else {
             return Ok(None);
         };
@@ -124,14 +130,20 @@ impl InOrderCompletion {
         Ok(Some(work.consume()))
     }
 
-    /// Returns true if the next available descriptor reuses a head that is
-    /// still outstanding. No further work can be consumed until that earlier
-    /// use is published, so callers should wait for completions rather than
-    /// guest kicks: the deferred descriptor keeps the queue non-empty, so
-    /// [`VirtioQueue::poll_kick`] would return immediately.
+    /// Returns true if no work can be consumed until an earlier use is
+    /// published: either every head is outstanding, or the next available
+    /// descriptor reuses a head that is still outstanding. Callers should wait
+    /// for completions rather than guest kicks: a deferred descriptor keeps the
+    /// queue non-empty, so [`VirtioQueue::poll_kick`] would return immediately.
     pub fn is_blocked(&self) -> bool {
-        self.blocked_on
-            .is_some_and(|idx| self.in_flight[idx as usize])
+        self.is_full()
+            || self
+                .blocked_on
+                .is_some_and(|idx| self.in_flight[idx as usize])
+    }
+
+    fn is_full(&self) -> bool {
+        self.order.len() == self.in_flight.len()
     }
 
     /// Records a completion for the descriptor identified by `completion` and
