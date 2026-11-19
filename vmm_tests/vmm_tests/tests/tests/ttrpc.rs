@@ -5,7 +5,8 @@
 
 // Tests for the resource-passing protocols, which share the TTRPC socket. The
 // UNIX fd-passing test resolves a tap `fd_name`, which is Linux-only; the
-// Windows handle-passing test resolves a virtio-fs user token.
+// Windows handle-passing tests resolve a virtio-fs user token and a physical
+// disk.
 #[cfg(target_os = "linux")]
 mod fd_passing;
 #[cfg(windows)]
