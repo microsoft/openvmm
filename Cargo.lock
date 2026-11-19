@@ -1869,6 +1869,7 @@ dependencies = [
  "serde_json",
  "storage_tests",
  "tempfile",
+ "test_with_tracing",
  "tracing",
  "vm_resource",
 ]

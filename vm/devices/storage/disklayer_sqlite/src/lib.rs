@@ -5,6 +5,10 @@
 //!
 //! At this time, **this layer is only designed for use in dev/test scenarios!**
 //!
+//! Writable connections use full synchronization, including for writes that
+//! do not request Force Unit Access (FUA).
+//! On macOS, writable connections request `F_FULLFSYNC` for SQLite syncs.
+//!
 //! # DISCLAIMER: Stability
 //!
 //! There are no stability guarantees around the on-disk data format! The schema
@@ -174,6 +178,16 @@ impl SqliteDiskLayer {
             flags
         })?;
 
+        #[cfg(target_os = "macos")]
+        if !read_only {
+            conn.pragma_update(None, "fullfsync", "ON")
+                .context("enabling SQLite fullfsync")?;
+            let fullfsync: bool = conn
+                .pragma_query_value(None, "fullfsync", |row| row.get(0))
+                .context("checking SQLite fullfsync")?;
+            anyhow::ensure!(fullfsync, "SQLite fullfsync is not enabled");
+        }
+
         let meta = if let Some(FormatParams {
             logically_read_only,
             len,
@@ -224,6 +238,11 @@ impl SqliteDiskLayer {
             serde_json::from_str(&data)?
         };
 
+        if !read_only {
+            // Some frontends do not set FUA when their write cache is disabled.
+            conn.pragma_update(None, "synchronous", "FULL")?;
+        }
+
         Ok(SqliteDiskLayer {
             conn: Arc::new(Mutex::new(conn)),
             meta,
@@ -235,6 +254,7 @@ impl SqliteDiskLayer {
         buffers: &RequestBuffers<'_>,
         sector: u64,
         overwrite: bool,
+        fua: bool,
     ) -> Result<(), DiskError> {
         assert!(!(overwrite && self.meta.logically_read_only));
 
@@ -249,9 +269,18 @@ impl SqliteDiskLayer {
 
         let buf = buffers.reader().read_all()?;
         unblock({
-            let conn = self.conn.clone().lock_owned().await;
+            let mut conn = self.conn.clone().lock_owned().await;
             let sector_size = self.meta.sector_size;
-            move || write_sectors(conn, sector_size, sector, buf, overwrite)
+            move || {
+                let write = |conn: &mut Connection| {
+                    write_sectors(conn, sector_size, sector, buf, overwrite)
+                };
+                if fua {
+                    with_full_synchronous(&mut conn, write)
+                } else {
+                    write(&mut conn)
+                }
+            }
         })
         .await
         .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
@@ -318,7 +347,7 @@ impl LayerIo for SqliteDiskLayer {
     }
 
     fn is_fua_respected(&self) -> bool {
-        false
+        true
     }
 
     async fn read(
@@ -362,9 +391,9 @@ impl LayerIo for SqliteDiskLayer {
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
-        _fua: bool,
+        fua: bool,
     ) -> Result<(), DiskError> {
-        self.write_maybe_overwrite(buffers, sector, true).await
+        self.write_maybe_overwrite(buffers, sector, true, fua).await
     }
 
     fn write_no_overwrite(&self) -> Option<impl WriteNoOverwrite> {
@@ -376,15 +405,13 @@ impl LayerIo for SqliteDiskLayer {
 
         unblock({
             let mut conn = self.conn.clone().lock_owned().await;
-            move || -> rusqlite::Result<()> {
+            move || {
                 // https://sqlite-users.sqlite.narkive.com/LX75NOma/forcing-a-manual-fsync-in-wal-normal-mode
-                conn.pragma_update(None, "synchronous", "FULL")?;
-                {
+                with_full_synchronous(&mut conn, |conn| {
                     let tx = conn.transaction()?;
                     tx.pragma_update(None, "user_version", "0")?;
-                }
-                conn.pragma_update(None, "synchronous", "NORMAL")?;
-                Ok(())
+                    tx.commit()
+                })
             }
         })
         .await
@@ -428,7 +455,8 @@ impl WriteNoOverwrite for SqliteDiskLayer {
         buffers: &RequestBuffers<'_>,
         sector: u64,
     ) -> Result<(), DiskError> {
-        self.write_maybe_overwrite(buffers, sector, false).await
+        self.write_maybe_overwrite(buffers, sector, false, false)
+            .await
     }
 }
 
@@ -475,9 +503,20 @@ fn read_sectors(
     Ok(res)
 }
 
+fn with_full_synchronous(
+    conn: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> rusqlite::Result<()>,
+) -> rusqlite::Result<()> {
+    let previous_mode: u32 = conn.pragma_query_value(None, "synchronous", |row| row.get(0))?;
+    conn.pragma_update(None, "synchronous", "FULL")?;
+    let result = operation(conn);
+    let restore_result = conn.pragma_update(None, "synchronous", previous_mode);
+    result.and(restore_result)
+}
+
 // FUTURE: write into sqlite directly from `RequestBuffers`.
 fn write_sectors(
-    mut conn: OwnedMutexGuard<Connection>,
+    conn: &mut Connection,
     sector_size: u32,
     mut sector: u64,
     buf: Vec<u8>,
@@ -585,10 +624,23 @@ mod tests {
     use crate::FormatParams;
     use crate::SqliteDiskLayer;
     use disk_backend::Disk;
+    use disk_backend::DiskError;
     use disk_layered::DiskLayer;
     use disk_layered::LayerConfiguration;
+    use disk_layered::LayerIo;
     use disk_layered::LayeredDisk;
+    use guestmem::GuestMemory;
     use pal_async::async_test;
+    use rusqlite::Connection;
+    use rusqlite::hooks::AuthAction;
+    use rusqlite::hooks::AuthContext;
+    use rusqlite::hooks::Authorization;
+    use scsi_buffers::OwnedRequestBuffers;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicU8;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
 
     const SECTOR_SIZE: u32 = 512;
     const DISK_SIZE: u64 = 1024 * 1024;
@@ -631,5 +683,165 @@ mod tests {
     async fn layer_sector_range_conformance() {
         let dir = tempfile::tempdir().unwrap();
         storage_tests::sector_range::test_layer_sector_range(&new_layer(&dir)).await;
+    }
+
+    #[async_test]
+    async fn writable_connection_starts_in_full_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let layer = new_layer(&dir);
+        for layer in [
+            layer,
+            SqliteDiskLayer::new(&dir.path().join("test.dbhd"), false, None).unwrap(),
+        ] {
+            let conn = layer.conn.lock().await;
+            let mode: u32 = conn
+                .pragma_query_value(None, "synchronous", |row| row.get(0))
+                .unwrap();
+            assert_eq!(mode, 2, "expected synchronous=FULL");
+            #[cfg(target_os = "macos")]
+            assert!(
+                conn.pragma_query_value(None, "fullfsync", |row| row.get::<_, bool>(0))
+                    .unwrap(),
+                "expected fullfsync=ON"
+            );
+        }
+    }
+
+    fn start_in_normal_and_track_synchronous_full(conn: &Connection) -> Arc<AtomicBool> {
+        conn.pragma_update(None, "synchronous", "NORMAL").unwrap();
+        let synchronous_full = Arc::new(AtomicBool::new(false));
+        let mode = synchronous_full.clone();
+        // The commit hook cannot query the connection. Track mode changes
+        // through the authorizer as SQLite prepares each PRAGMA assignment.
+        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            if let AuthAction::Pragma {
+                pragma_name,
+                pragma_value: Some(value),
+            } = ctx.action
+                && pragma_name.eq_ignore_ascii_case("synchronous")
+            {
+                mode.store(
+                    value.eq_ignore_ascii_case("FULL") || value == "2",
+                    Ordering::Relaxed,
+                );
+            }
+            Authorization::Allow
+        }));
+        synchronous_full
+    }
+
+    #[async_test]
+    async fn fua_writes_commit_in_full_and_restore_normal() {
+        let dir = tempfile::tempdir().unwrap();
+        let layer = new_layer(&dir);
+        let synchronous_full =
+            start_in_normal_and_track_synchronous_full(&*layer.conn.lock().await);
+        let mem = GuestMemory::allocate(SECTOR_SIZE as usize);
+        let buffers = OwnedRequestBuffers::linear(0, SECTOR_SIZE as usize, false);
+        mem.write_at(0, &[0xa5; SECTOR_SIZE as usize]).unwrap();
+
+        for (fua, reject_commit) in [(true, false), (true, true), (false, false)] {
+            let observed_mode = Arc::new(AtomicU8::new(0));
+            let observed = observed_mode.clone();
+            let mode = synchronous_full.clone();
+            layer.conn.lock().await.commit_hook(Some(move || {
+                observed.store(
+                    if mode.load(Ordering::Relaxed) { 2 } else { 1 },
+                    Ordering::Relaxed,
+                );
+                reject_commit
+            }));
+
+            let result = layer.write(&buffers.buffer(&mem), 7, fua).await;
+            if reject_commit {
+                assert!(matches!(result, Err(DiskError::Io(_))));
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(
+                observed_mode.load(Ordering::Relaxed),
+                if fua { 2 } else { 1 },
+                "unexpected synchronous mode at commit"
+            );
+
+            let mode: u32 = layer
+                .conn
+                .lock()
+                .await
+                .pragma_query_value(None, "synchronous", |row| row.get(0))
+                .unwrap();
+            assert_eq!(mode, 1, "expected synchronous=NORMAL after write");
+        }
+    }
+
+    #[async_test]
+    async fn sync_cache_commits_wal_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let layer = new_layer(&dir);
+        let synchronous_full =
+            start_in_normal_and_track_synchronous_full(&*layer.conn.lock().await);
+        let observer = Connection::open(dir.path().join("test.dbhd")).unwrap();
+        let mem = GuestMemory::allocate(SECTOR_SIZE as usize);
+        let buffers = OwnedRequestBuffers::linear(0, SECTOR_SIZE as usize, false);
+
+        for pattern in [0x5a, 0xa5] {
+            mem.write_at(0, &[pattern; SECTOR_SIZE as usize]).unwrap();
+            layer.write(&buffers.buffer(&mem), 7, false).await.unwrap();
+            let before: u32 = observer
+                .pragma_query_value(None, "data_version", |row| row.get(0))
+                .unwrap();
+
+            let synchronous_full = synchronous_full.clone();
+            layer
+                .conn
+                .lock()
+                .await
+                .commit_hook(Some(move || !synchronous_full.load(Ordering::Relaxed)));
+            layer
+                .sync_cache()
+                .await
+                .expect("cache flush must commit with synchronous=FULL");
+            layer.conn.lock().await.commit_hook(None::<fn() -> bool>);
+
+            let after: u32 = observer
+                .pragma_query_value(None, "data_version", |row| row.get(0))
+                .unwrap();
+            assert_ne!(
+                before, after,
+                "cache flush did not commit a WAL transaction"
+            );
+        }
+    }
+
+    #[async_test]
+    async fn sync_cache_reports_commit_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let layer = new_layer(&dir);
+        for (mode, expected) in [("NORMAL", 1), ("FULL", 2)] {
+            {
+                let conn = layer.conn.lock().await;
+                conn.pragma_update(None, "synchronous", mode).unwrap();
+                conn.commit_hook(Some(|| true));
+            }
+
+            assert!(matches!(layer.sync_cache().await, Err(DiskError::Io(_))));
+
+            layer.conn.lock().await.commit_hook(None::<fn() -> bool>);
+            for flush_succeeded in [false, true] {
+                if flush_succeeded {
+                    layer.sync_cache().await.unwrap();
+                }
+                let synchronous: u32 = layer
+                    .conn
+                    .lock()
+                    .await
+                    .pragma_query_value(None, "synchronous", |row| row.get(0))
+                    .unwrap();
+                assert_eq!(
+                    synchronous, expected,
+                    "expected synchronous={mode} after flush (success={flush_succeeded})"
+                );
+            }
+        }
     }
 }
