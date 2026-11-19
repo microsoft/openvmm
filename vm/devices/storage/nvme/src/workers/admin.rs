@@ -410,6 +410,9 @@ pub enum AddNamespaceError {
     /// subsystem (see the `NN` field of Identify Controller).
     #[error("namespace id {0} is out of range (must be 1..={MAX_NSID})")]
     OutOfRange(u32),
+    /// The backend requires kernel-lockable guest memory.
+    #[error("namespace backend requires kernel-lockable guest memory")]
+    GuestMemoryNotLockable,
 }
 
 impl AdminHandler {
@@ -431,11 +434,17 @@ impl AdminHandler {
             return Err(AddNamespaceError::OutOfRange(nsid));
         }
         let namespace = &*match self.namespaces.entry(nsid) {
-            btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(Namespace::new(
-                self.config.mem.clone(),
-                nsid,
-                disk,
-            ))),
+            btree_map::Entry::Vacant(entry) => {
+                if disk.requires_lockable_guest_memory() && !self.config.mem.supports_kernel_lock()
+                {
+                    return Err(AddNamespaceError::GuestMemoryNotLockable);
+                }
+                entry.insert(Arc::new(Namespace::new(
+                    self.config.mem.clone(),
+                    nsid,
+                    disk,
+                )))
+            }
             btree_map::Entry::Occupied(_) => return Err(AddNamespaceError::Conflict(nsid)),
         };
 

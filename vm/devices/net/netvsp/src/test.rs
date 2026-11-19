@@ -142,6 +142,7 @@ struct TestNicEndpointState {
     pub last_use_vf: Option<bool>,
     pub vf_state: Option<TestVirtualFunctionState>,
     pub stop_endpoint_counter: usize,
+    pub get_queues_counter: usize,
     pub link_status_updater: Option<mesh::Sender<VecDeque<bool>>>,
     pub queues: Vec<mesh::Sender<(Vec<u8>, RxMetadata)>>,
     /// When true (default), `TestNicQueue::tx_avail` returns `(true, N)` so
@@ -165,6 +166,7 @@ impl TestNicEndpointState {
             last_use_vf: None,
             vf_state: None,
             stop_endpoint_counter: 0,
+            get_queues_counter: 0,
             link_status_updater: None,
             queues: Vec::new(),
             sync_tx: true,
@@ -218,6 +220,7 @@ impl TestNicEndpointInner {
 struct TestNicEndpoint {
     inner: Arc<futures::lock::Mutex<TestNicEndpointInner>>,
     is_ordered: bool,
+    requires_lockable_guest_memory: bool,
     tx_offload_support: TxOffloadSupport,
     multiqueue_support: MultiQueueSupport,
     link_status_rx: mesh::Receiver<VecDeque<bool>>,
@@ -249,6 +252,7 @@ impl TestNicEndpoint {
         Self {
             inner: Arc::new(futures::lock::Mutex::new(inner)),
             is_ordered: true,
+            requires_lockable_guest_memory: false,
             tx_offload_support,
             multiqueue_support,
             link_status_rx,
@@ -266,6 +270,10 @@ impl InspectMut for TestNicEndpoint {
 impl net_backend::Endpoint for TestNicEndpoint {
     fn endpoint_type(&self) -> &'static str {
         "TestNicEndpoint"
+    }
+
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.requires_lockable_guest_memory
     }
 
     async fn get_queues(
@@ -298,6 +306,7 @@ impl net_backend::Endpoint for TestNicEndpoint {
 
         if let Some(endpoint_state) = &inner.endpoint_state {
             let mut locked_data = endpoint_state.lock();
+            locked_data.get_queues_counter += 1;
             locked_data.tx_restart_triggers = vec![false; senders.len()];
             locked_data.queues = senders;
         }
@@ -2272,6 +2281,172 @@ async fn send_initial_handshake(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel.send_initialize_message().await;
+}
+
+fn memory_binding_nic(
+    driver: &DefaultDriver,
+    endpoint: Box<dyn Endpoint>,
+    mem: GuestMemory,
+) -> (Nic, OpenRequest) {
+    let mut nic = Nic::builder().max_queues(1).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        endpoint,
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let gpadl_map = GpadlMap::new();
+    gpadl_map.add(
+        GpadlId(1),
+        MultiPagedRangeBuf::from_range_buffer(1, vec![(4 * PAGE_SIZE) as u64, 0, 1, 2, 3]).unwrap(),
+    );
+    gpadl_map.add(
+        GpadlId(2),
+        MultiPagedRangeBuf::from_range_buffer(
+            1,
+            std::iter::once((16 * PAGE_SIZE) as u64)
+                .chain(4..20)
+                .collect(),
+        )
+        .unwrap(),
+    );
+    nic.resources.offer_resources = OfferResources::new(mem, None);
+    nic.resources.gpadl_map = gpadl_map.view();
+    nic.resources
+        .channels
+        .push(vmbus_channel::channel::ChannelResources {
+            event: vmcore::notify::Notify::from_slim_event(Arc::new(SlimEvent::new())),
+        });
+    let request = OpenRequest {
+        open_data: OpenData {
+            target_vp: Some(0),
+            ring_offset: 2,
+            ring_gpadl_id: GpadlId(1),
+            event_flag: 1,
+            connection_id: 1,
+            user_data: UserDefinedData::new_zeroed(),
+        },
+        interrupt: Interrupt::from_fn(|| {}),
+        use_confidential_ring: false,
+        use_confidential_external_memory: false,
+        is_external_memory_pinned: false,
+    };
+    (nic, request)
+}
+
+#[async_test]
+async fn open_rejects_nonlockable_endpoint_memory_and_can_retry(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let mut endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    endpoint.requires_lockable_guest_memory = true;
+    let mem = GuestMemory::allocate(20 * PAGE_SIZE);
+    let (mut nic, request) = memory_binding_nic(&driver, Box::new(endpoint), mem.copy_only_view());
+    let err = nic.open(0, &request).await.unwrap_err();
+    assert!(matches!(
+        err.downcast_ref::<OpenError>(),
+        Some(OpenError::GuestMemoryNotLockable)
+    ));
+    assert!(!nic.coordinator.has_state());
+    assert_eq!(
+        nic.adapter.num_sub_channels_opened.load(Ordering::SeqCst),
+        0
+    );
+    assert_eq!(endpoint_state.lock().get_queues_counter, 0);
+
+    nic.coordinator.task_mut().endpoint =
+        Box::new(TestNicEndpoint::new(Some(endpoint_state.clone())));
+    nic.open(0, &request).await.unwrap();
+    nic.coordinator.stop().await;
+    assert!(nic.coordinator.state().unwrap().workers[0].has_state());
+    assert_eq!(
+        nic.adapter.num_sub_channels_opened.load(Ordering::SeqCst),
+        1
+    );
+    nic.close(0).await;
+
+    let mut endpoint = TestNicEndpoint::new(Some(endpoint_state));
+    endpoint.requires_lockable_guest_memory = true;
+    nic.coordinator.task_mut().endpoint = Box::new(endpoint);
+    nic.resources.offer_resources = OfferResources::new(mem, None);
+    nic.open(0, &request).await.unwrap();
+    nic.coordinator.stop().await;
+    assert!(nic.coordinator.state().unwrap().workers[0].has_state());
+    nic.close(0).await;
+}
+
+#[async_test]
+async fn restart_rejects_nonlockable_endpoint_replacement_and_can_retry(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let mem = GuestMemory::allocate(20 * PAGE_SIZE).copy_only_view();
+    let (mut nic, request) = memory_binding_nic(
+        &driver,
+        Box::new(TestNicEndpoint::new(Some(endpoint_state.clone()))),
+        mem.clone(),
+    );
+    nic.insert_coordinator(1, None);
+    let recv_buffer = ReceiveBuffer::new(
+        &nic.resources.gpadl_map,
+        GpadlId(2),
+        0,
+        sub_allocation_size_for_mtu(DEFAULT_MTU),
+    )
+    .unwrap();
+    let state = ActiveState::new(
+        Some(PrimaryChannelState::new(
+            nic.adapter.offload_support.clone(),
+        )),
+        recv_buffer.count,
+    );
+    nic.insert_worker(
+        0,
+        &request,
+        WorkerState::Ready(ReadyState {
+            buffers: Arc::new(ChannelBuffers {
+                version: Version::V5,
+                mem,
+                recv_buffer,
+                send_buffer: None,
+                ndis_version: NdisVersion {
+                    major: 6,
+                    minor: 30,
+                },
+                ndis_config: NdisConfig {
+                    mtu: DEFAULT_MTU,
+                    capabilities: protocol::NdisConfigCapabilities::new(),
+                },
+            }),
+            state,
+            data: ProcessingData::new(),
+        }),
+        false,
+    )
+    .unwrap();
+    let mut coordinator = nic.coordinator.remove();
+    let c_state = nic.coordinator.task_mut();
+    coordinator.restart_queues(c_state).await.unwrap();
+    assert!(coordinator.workers[0].task().queue_state.is_some());
+    assert_eq!(endpoint_state.lock().get_queues_counter, 1);
+
+    let mut endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    endpoint.requires_lockable_guest_memory = true;
+    c_state.endpoint = Box::new(endpoint);
+    assert!(matches!(
+        coordinator.restart_queues(c_state).await,
+        Err(WorkerError::GuestMemoryNotLockable)
+    ));
+    assert!(coordinator.workers[0].task().queue_state.is_none());
+    assert_eq!(endpoint_state.lock().get_queues_counter, 1);
+    assert!(
+        StopTask::run_unstoppable(async |stop| coordinator.process(stop, c_state).await)
+            .now_or_never()
+            .is_none()
+    );
+    assert!(!coordinator.workers[0].is_running());
+
+    c_state.endpoint = Box::new(TestNicEndpoint::new(Some(endpoint_state.clone())));
+    coordinator.restart_queues(c_state).await.unwrap();
+    assert!(coordinator.workers[0].task().queue_state.is_some());
+    assert_eq!(endpoint_state.lock().get_queues_counter, 2);
 }
 
 async fn reject_completion_during_initialization(

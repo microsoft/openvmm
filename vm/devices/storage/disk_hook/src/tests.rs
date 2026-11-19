@@ -533,11 +533,16 @@ async fn guest_memory_errors_propagate() {
 struct ResizingDisk(Arc<ResizeState>);
 
 struct ResizeState {
+    requires_lockable_guest_memory: bool,
     sector_count: AtomicU64,
     changed: event_listener::Event,
 }
 
 impl DiskIo for ResizingDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.0.requires_lockable_guest_memory
+    }
+
     fn disk_type(&self) -> &str {
         "resize-test"
     }
@@ -615,6 +620,7 @@ impl DiskIo for ResizingDisk {
 #[async_test]
 async fn wrapper_forwards_resize_notifications_through_disk_adapter() {
     let state = Arc::new(ResizeState {
+        requires_lockable_guest_memory: false,
         sector_count: AtomicU64::new(2),
         changed: event_listener::Event::new(),
     });
@@ -628,4 +634,30 @@ async fn wrapper_forwards_resize_notifications_through_disk_adapter() {
     assert_eq!(resize.await, 4);
     assert_eq!(cloned.sector_count(), 4);
     assert_eq!(cloned.wait_resize(2).await, 4);
+}
+
+#[test]
+fn caller_memory_contract_propagates_through_wrappers_and_striping() {
+    for requirements in [[false, false], [true, false], [false, true], [true, true]] {
+        let devices = requirements
+            .into_iter()
+            .map(|requires_lockable_guest_memory| {
+                let backing = Disk::new(ResizingDisk(Arc::new(ResizeState {
+                    requires_lockable_guest_memory,
+                    sector_count: AtomicU64::new(512),
+                    changed: event_listener::Event::new(),
+                })))
+                .unwrap();
+                let reserved = Disk::new(DiskWithReservations::new(backing)).unwrap();
+                HookDisk::wrap(reserved).into_disk()
+            })
+            .collect();
+        let striped =
+            Disk::new(disk_striped::StripedDisk::new(devices, None, None).unwrap()).unwrap();
+        assert_eq!(
+            striped.requires_lockable_guest_memory(),
+            requirements.into_iter().any(|required| required),
+            "{requirements:?}"
+        );
+    }
 }

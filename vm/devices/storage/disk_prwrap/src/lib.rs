@@ -99,6 +99,10 @@ impl DiskWithReservations {
 }
 
 impl DiskIo for DiskWithReservations {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.inner.requires_lockable_guest_memory()
+    }
+
     fn disk_type(&self) -> &str {
         "prwrap"
     }

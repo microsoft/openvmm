@@ -145,6 +145,10 @@ impl GetVmgsDisk {
 }
 
 impl DiskIo for GetVmgsDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn disk_type(&self) -> &str {
         "vmgs-get"
     }

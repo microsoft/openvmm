@@ -9,9 +9,15 @@ use crate::prp::PrpRange;
 use crate::spec;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use disk_backend::Disk;
+use disk_backend::DiskError;
+use disk_backend::DiskIo;
+use disk_backend::UnmapBehavior;
 use guestmem::GuestMemory;
+use inspect::Inspect;
 use parking_lot::Mutex;
 use pci_core::msi::SignalMsi;
+use scsi_buffers::RequestBuffers;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -53,6 +59,79 @@ impl SignalMsi for TestPciInterruptController {
 
 pub fn test_memory() -> GuestMemory {
     GuestMemory::allocate(PAGE_SIZE * 64)
+}
+
+#[derive(Inspect)]
+pub struct LockRequiringDisk(pub Disk);
+
+impl DiskIo for LockRequiringDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        true
+    }
+
+    fn disk_type(&self) -> &str {
+        "lock-requiring-test"
+    }
+
+    fn sector_count(&self) -> u64 {
+        self.0.sector_count()
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.0.sector_size()
+    }
+
+    fn disk_id(&self) -> Option<[u8; 16]> {
+        self.0.disk_id()
+    }
+
+    fn physical_sector_size(&self) -> u32 {
+        self.0.physical_sector_size()
+    }
+
+    fn is_fua_respected(&self) -> bool {
+        self.0.is_fua_respected()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.0.is_read_only()
+    }
+
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        self.0.unmap_behavior()
+    }
+
+    async fn unmap(
+        &self,
+        sector: u64,
+        count: u64,
+        block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        self.0.unmap(sector, count, block_level_only).await
+    }
+
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+    ) -> Result<(), DiskError> {
+        let _locked = buffers.lock(true)?;
+        self.0.read_vectored(buffers, sector).await
+    }
+
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+        fua: bool,
+    ) -> Result<(), DiskError> {
+        let _locked = buffers.lock(false)?;
+        self.0.write_vectored(buffers, sector, fua).await
+    }
+
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        self.0.sync_cache().await
+    }
 }
 
 pub struct TestNvmeMmioRegistration {}

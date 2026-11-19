@@ -151,6 +151,10 @@ impl Endpoint for TapEndpoint {
         "tap"
     }
 
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     async fn get_queues(
         &mut self,
         mut config: Vec<QueueConfig>,

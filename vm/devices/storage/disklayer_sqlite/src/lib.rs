@@ -293,6 +293,10 @@ impl LayerAttach for FormatOnAttachSqliteDiskLayer {
 }
 
 impl LayerIo for SqliteDiskLayer {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn layer_type(&self) -> &str {
         "sqlite"
     }

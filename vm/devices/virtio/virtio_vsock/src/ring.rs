@@ -89,12 +89,23 @@ impl RingBuffer {
         while !self.is_empty() {
             let first_end = (self.head + self.len).min(self.buf.len());
             let first = &self.buf[self.head..first_end];
-            let written = if first.len() < self.len {
+            let result = if first.len() < self.len {
                 // Data wraps around — use write_vectored with two slices.
                 let second = &self.buf[..self.len - first.len()];
-                writer.write_vectored(&[IoSlice::new(first), IoSlice::new(second)])?
+                writer.write_vectored(&[IoSlice::new(first), IoSlice::new(second)])
             } else {
-                writer.write(first)?
+                writer.write(first)
+            };
+            let written = match result {
+                Ok(0) => {
+                    return Err(std::io::ErrorKind::WriteZero.into());
+                }
+                Ok(written) => written,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock && total_written != 0 => {
+                    return Ok(total_written);
+                }
+                Err(err) => return Err(err),
             };
 
             self.head = (self.head + written) % self.buf.len();
@@ -109,6 +120,7 @@ impl RingBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     /// Helper: write a single byte slice with no offset.
     fn write_bytes(ring: &mut RingBuffer, data: &[u8]) {
@@ -244,6 +256,43 @@ mod tests {
         let n = ring.read_to(&mut out).unwrap();
         assert_eq!(n, 0);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn partial_write_then_would_block_preserves_progress() {
+        struct PartialWriter(Vec<u8>);
+        impl Write for PartialWriter {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if !self.0.is_empty() {
+                    return Err(std::io::ErrorKind::WouldBlock.into());
+                }
+                self.0.extend_from_slice(&data[..2]);
+                Ok(2)
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut ring = RingBuffer::new(8);
+        write_bytes(&mut ring, b"abcdef");
+        let mut writer = PartialWriter(Vec::new());
+        assert_eq!(ring.read_to(&mut writer).unwrap(), 2);
+        assert_eq!(writer.0, b"ab");
+        assert_eq!(ring.len(), 4);
+        assert_eq!(read_to_vec(&mut ring), b"cdef");
+    }
+
+    #[test]
+    fn zero_write_returns_error_without_dropping_data() {
+        let mut ring = RingBuffer::new(8);
+        write_bytes(&mut ring, b"data");
+        let mut writer = &mut [][..];
+        assert_eq!(
+            ring.read_to(&mut writer).unwrap_err().kind(),
+            std::io::ErrorKind::WriteZero
+        );
+        assert_eq!(read_to_vec(&mut ring), b"data");
     }
 
     fn read_to_vec(ring: &mut RingBuffer) -> Vec<u8> {

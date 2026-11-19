@@ -1297,6 +1297,35 @@ struct VirtioPciTestDevice {
     test_intc: Arc<TestPciInterruptController>,
 }
 
+#[async_test]
+async fn transport_validates_guest_memory_before_start(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    let memory = GuestMemory::allocate(0x10000);
+    for requires_lockable_guest_memory in [false, true] {
+        for copy_only in [false, true] {
+            let mut device = TestDevice::new(&driver_source, DeviceTraits::default(), None);
+            device.requires_lockable_guest_memory = requires_lockable_guest_memory;
+            let memory = if copy_only {
+                memory.copy_only_view()
+            } else {
+                memory.clone()
+            };
+            let result = crate::transport::core::VirtioTransportCore::new(
+                Box::new(device),
+                &driver,
+                memory,
+                None,
+            );
+            if requires_lockable_guest_memory && copy_only {
+                let error = result.err().unwrap();
+                assert!(error.to_string().contains("requires lockable guest memory"));
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
+}
+
 type TestDeviceQueueWorkFn =
     Arc<dyn Fn(u16, &mut VirtioQueue, VirtioQueueCallbackWork) + Send + Sync>;
 
@@ -1338,6 +1367,7 @@ impl VirtioDevice for FailingTestDevice {
 #[inspect(skip)]
 struct TestDevice {
     traits: DeviceTraits,
+    requires_lockable_guest_memory: bool,
     queue_work: Option<TestDeviceQueueWorkFn>,
     driver: vmcore::vm_task::VmTaskDriver,
     workers: Vec<TaskControl<TestDeviceTask, TestDeviceQueue>>,
@@ -1351,6 +1381,7 @@ impl TestDevice {
     ) -> Self {
         Self {
             traits,
+            requires_lockable_guest_memory: false,
             queue_work,
             driver: driver_source.simple(),
             workers: Vec::new(),
@@ -1359,6 +1390,14 @@ impl TestDevice {
 }
 
 impl VirtioDevice for TestDevice {
+    fn validate_guest_memory(&self, memory: &GuestMemory) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.requires_lockable_guest_memory || memory.supports_kernel_lock(),
+            "test device requires lockable guest memory"
+        );
+        Ok(())
+    }
+
     fn traits(&self) -> DeviceTraits {
         self.traits.clone()
     }
@@ -5044,6 +5083,47 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
 
     let result = dev.save();
     assert!(result.is_err(), "save should fail for unsupported device");
+}
+
+#[async_test]
+async fn transport_save_defers_to_device_capability_without_kernel_locks(driver: DefaultDriver) {
+    use vmcore::save_restore::SaveRestore;
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    for policy in [
+        guestmem::GuestMemoryIoPolicy::Direct,
+        guestmem::GuestMemoryIoPolicy::CopyOnly,
+    ] {
+        let memory = GuestMemory::allocate(4096);
+        let memory = if policy == guestmem::GuestMemoryIoPolicy::CopyOnly {
+            memory.copy_only_view()
+        } else {
+            memory
+        };
+        assert_eq!(
+            memory.supports_kernel_lock(),
+            policy == guestmem::GuestMemoryIoPolicy::Direct
+        );
+        let mut device = VirtioMmioDevice::new(
+            Box::new(TestDevice::new(
+                &driver_source,
+                DeviceTraits {
+                    device_id: VirtioDeviceType::CONSOLE,
+                    max_queues: 1,
+                    ..Default::default()
+                },
+                None,
+            )),
+            &driver,
+            memory,
+            LineInterrupt::detached(),
+            None,
+            0,
+            1,
+        )
+        .unwrap();
+        assert!(device.save().is_ok());
+    }
 }
 
 #[async_test]

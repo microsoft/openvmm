@@ -386,6 +386,11 @@ impl BasicNic {
                         if let (Some((sq_id, sq_cq_id)), Some((rq_id, rq_cq_id))) =
                             (vport.queue_cfg.tx, vport.queue_cfg.rx)
                         {
+                            anyhow::ensure!(
+                                !vport.endpoint.requires_lockable_guest_memory()
+                                    || state.queues.gm.supports_kernel_lock(),
+                                "network endpoint requires kernel-lockable guest memory"
+                            );
                             let mut queues = vec![];
                             vport
                                 .endpoint
@@ -774,6 +779,41 @@ mod tests {
 
     #[derive(InspectMut)]
     #[inspect(skip)]
+    struct TestEndpoint {
+        requires_lockable_guest_memory: Arc<Mutex<bool>>,
+        queue_bindings: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Endpoint for TestEndpoint {
+        fn endpoint_type(&self) -> &'static str {
+            "test"
+        }
+
+        fn requires_lockable_guest_memory(&self) -> bool {
+            *self.requires_lockable_guest_memory.lock()
+        }
+
+        async fn get_queues(
+            &mut self,
+            _config: Vec<QueueConfig>,
+            _rss: Option<&net_backend::RssConfig<'_>>,
+            queues: &mut Vec<Box<dyn Queue>>,
+        ) -> anyhow::Result<()> {
+            *self.queue_bindings.lock() += 1;
+            queues.push(Box::new(backend()));
+            Ok(())
+        }
+
+        async fn stop(&mut self) {}
+
+        fn is_ordered(&self) -> bool {
+            true
+        }
+    }
+
+    #[derive(InspectMut)]
+    #[inspect(skip)]
     struct TestQueue {
         state: Arc<Mutex<BackendState>>,
         tx_hook: Arc<helper::StopHook>,
@@ -893,6 +933,104 @@ mod tests {
             .gm
             .read_plain(helper::CQ + index * size_of::<Cqe>() as u64)
             .unwrap()
+    }
+
+    #[test]
+    fn rx_enable_rejects_nonlockable_endpoint_memory_and_can_retry() {
+        let mut pool = DefaultPool::new();
+        let mut queues = helper::queues(&pool, None);
+        let mem = queues.gm.copy_only_view();
+        Arc::get_mut(&mut queues).unwrap().gm = mem.clone();
+        let requires_lockable_guest_memory = Arc::new(Mutex::new(true));
+        let queue_bindings = Arc::new(Mutex::new(0));
+        let mut nic = BasicNic::new(
+            vec![VportConfig {
+                mac_address: [1, 2, 3, 4, 5, 6].into(),
+                endpoint: Box::new(TestEndpoint {
+                    requires_lockable_guest_memory: requires_lockable_guest_memory.clone(),
+                    queue_bindings: queue_bindings.clone(),
+                }),
+            }],
+            BnicConfig::default(),
+        );
+        let txrx = task(queues.clone(), backend());
+        nic.vports[0].queue_cfg.tx = Some((txrx.sq_id, txrx.sq_cq_id));
+        nic.vports[0].queue_cfg.rx = Some((txrx.rq_id, txrx.rq_cq_id));
+        drop(txrx);
+        let mut state = HwState {
+            queues,
+            dma_regions: Slab::new(),
+        };
+        let mut request = ManaCfgRxSteerReq {
+            rx_enable: Tristate::TRUE,
+            ..FromZeros::new_zeroed()
+        };
+        mem.write_plain(0x5000, &request).unwrap();
+        let buffer = |address, size| {
+            let mut wqe = Wqe::new_zeroed();
+            wqe.header.params.set_num_sgl_entries(1);
+            let offset = wqe.header.sgl_offset();
+            wqe.data[offset..offset + size_of::<gdma_defs::Sge>()].copy_from_slice(
+                gdma_defs::Sge {
+                    address,
+                    mem_key: 0,
+                    size,
+                }
+                .as_bytes(),
+            );
+            wqe
+        };
+        let read = buffer(0x5000, size_of::<ManaCfgRxSteerReq>() as u32);
+        let write = buffer(0x6000, 8);
+        let hdr = GdmaReqHdr {
+            req: gdma_defs::GdmaMsgHdr {
+                msg_type: ManaCommandCode::MANA_CONFIG_VPORT_RX.0,
+                ..FromZeros::new_zeroed()
+            },
+            ..FromZeros::new_zeroed()
+        };
+        pool.run_until(async {
+            let err = nic
+                .handle_req(
+                    &mut state,
+                    &hdr,
+                    MemoryRead::limit(read.access(&mem), size_of::<ManaCfgRxSteerReq>()),
+                    MemoryWrite::limit(write.access(&mem), 8),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "network endpoint requires kernel-lockable guest memory"
+            );
+            assert_eq!(*queue_bindings.lock(), 0);
+            assert!(!nic.vports[0].task.has_state());
+            assert!(!nic.vports[0].task.is_running());
+
+            *requires_lockable_guest_memory.lock() = false;
+            nic.handle_req(
+                &mut state,
+                &hdr,
+                MemoryRead::limit(read.access(&mem), size_of::<ManaCfgRxSteerReq>()),
+                MemoryWrite::limit(write.access(&mem), 8),
+            )
+            .await
+            .unwrap();
+            assert_eq!(*queue_bindings.lock(), 1);
+            assert!(nic.vports[0].task.is_running());
+
+            request.rx_enable = Tristate::FALSE;
+            mem.write_plain(0x5000, &request).unwrap();
+            nic.handle_req(
+                &mut state,
+                &hdr,
+                MemoryRead::limit(read.access(&mem), size_of::<ManaCfgRxSteerReq>()),
+                MemoryWrite::limit(write.access(&mem), 8),
+            )
+            .await
+            .unwrap();
+            assert!(!nic.vports[0].task.has_state());
+        });
     }
 
     #[test]

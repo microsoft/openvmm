@@ -57,6 +57,7 @@ zerocopy.workspace = true
 [dev-dependencies]
 criterion = { workspace = true, features = ["async"] }
 disklayer_ram.workspace = true
+stackfuture.workspace = true
 test_with_tracing.workspace = true
 
 [[bench]]

@@ -14,7 +14,7 @@ use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
 
-/// Resolver for virtio-pmem devices.
+/// Resolver for virtio-net devices.
 pub struct VirtioNetResolver;
 
 declare_static_async_resolver! {

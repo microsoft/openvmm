@@ -11,6 +11,7 @@ use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
 use crate::spec;
 use crate::spec::nvm;
+use crate::tests::test_helpers::LockRequiringDisk;
 use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
@@ -29,6 +30,7 @@ use pci_core::bus_range::AssignedBusRange;
 use pci_core::dma::DmaTarget;
 use pci_core::msi::MsiConnection;
 use pci_core::test_helpers::TestPciInterruptController;
+use test_with_tracing::test;
 use user_driver::backoff::Backoff;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -1230,6 +1232,33 @@ async fn test_add_namespace_validation(driver: DefaultDriver) {
         matches!(err, AddNamespaceError::Conflict(1)),
         "duplicate NSID should be Conflict, got {err:?}"
     );
+}
+
+#[async_test]
+async fn namespace_admission_checks_backend_memory_contract(driver: DefaultDriver) {
+    let direct = test_memory();
+    for mem in [direct.clone(), direct.copy_only_view()] {
+        let controller = instantiate_controller(driver.clone(), &mem, None);
+        let client = controller.client();
+        let disk = Disk::new(LockRequiringDisk(ram_disk(1 << 20, false).unwrap())).unwrap();
+        let result = client.add_namespace(1, disk).await;
+        if mem.supports_kernel_lock() {
+            result.unwrap();
+            assert!(client.remove_namespace(1).await);
+        } else {
+            assert!(matches!(
+                result,
+                Err(AddNamespaceError::GuestMemoryNotLockable)
+            ));
+        }
+
+        // A failed admission must not reserve the namespace ID. Copying backends
+        // can use the same memory and ID without requiring a direct I/O mapping.
+        client
+            .add_namespace(1, ram_disk(1 << 20, false).unwrap())
+            .await
+            .unwrap();
+    }
 }
 
 /// Issue an IDENTIFY CONTROLLER command into admin slot `slot`, write the

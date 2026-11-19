@@ -967,6 +967,7 @@ async fn test_endpoint(
     let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
     let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
     let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode).await;
+    assert_eq!(endpoint.requires_lockable_guest_memory(), allow_dma);
     endpoint.set_test_configuration(test_configuration);
     let mut queues = Vec::new();
     let mut pool = net_backend::tests::Bufs::new(payload_mem.clone());

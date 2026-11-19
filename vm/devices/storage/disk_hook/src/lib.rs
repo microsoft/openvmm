@@ -204,6 +204,10 @@ impl HookDisk {
 }
 
 impl DiskIo for HookDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.disk.requires_lockable_guest_memory()
+    }
+
     fn disk_type(&self) -> &str {
         "hook"
     }

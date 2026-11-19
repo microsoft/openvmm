@@ -109,6 +109,9 @@ impl VirtioTransportCore {
         guest_memory: GuestMemory,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     ) -> std::io::Result<Self> {
+        device
+            .validate_guest_memory(&guest_memory)
+            .map_err(std::io::Error::other)?;
         let traits = device.traits();
         let queues: Vec<QueueData> = (0..traits.max_queues)
             .map(|i| {

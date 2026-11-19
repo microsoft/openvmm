@@ -87,6 +87,10 @@ fn vhdx_to_disk_error(e: vhdx::VhdxIoError) -> DiskError {
 }
 
 impl LayerIo for VhdxLayer {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        false
+    }
+
     fn layer_type(&self) -> &str {
         "vhdx"
     }

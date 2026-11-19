@@ -150,3 +150,73 @@ impl Drop for PartitionMapper {
         self.unmap_region(MemoryRange::new(0..self.mapper.len() as u64));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mapping_manager::MappingManager;
+    use pal_async::task::Spawn;
+    use parking_lot::Mutex;
+
+    struct TestPartition {
+        mapper: Weak<VaMapper>,
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl Drop for TestPartition {
+        fn drop(&mut self) {
+            self.events.lock().push("partition closed");
+        }
+    }
+
+    impl PartitionMemoryMap for TestPartition {
+        unsafe fn map_range(
+            &self,
+            _data: *mut u8,
+            _size: usize,
+            _addr: u64,
+            _writable: bool,
+            _exec: bool,
+        ) -> anyhow::Result<()> {
+            self.events.lock().push("mapped");
+            Ok(())
+        }
+
+        fn unmap_range(&self, _addr: u64, _size: u64) -> anyhow::Result<()> {
+            assert!(self.mapper.upgrade().is_some());
+            self.events.lock().push("unmapped");
+            Ok(())
+        }
+
+        #[cfg(windows)]
+        unsafe fn map_remote_range(
+            &self,
+            _process: std::os::windows::io::BorrowedHandle<'_>,
+            _data: *mut u8,
+            _size: usize,
+            _addr: u64,
+            _writable: bool,
+            _exec: bool,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn mapper_unmaps_while_backing_and_partition_are_alive(spawn: impl Spawn) {
+        let manager = MappingManager::new_without_primary(&spawn, 0x10000, None);
+        let mapper = manager.client().new_mapper(true).await.unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let partition: Arc<dyn PartitionMemoryMap> = Arc::new(TestPartition {
+            mapper: Arc::downgrade(&mapper),
+            events: events.clone(),
+        });
+        let weak = Arc::downgrade(&partition);
+        drop(PartitionMapper::new(&partition, mapper, 0, false));
+        assert_eq!(*events.lock(), ["unmapped"]);
+        drop(partition);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(*events.lock(), ["unmapped", "partition closed"]);
+        drop(manager);
+    }
+}

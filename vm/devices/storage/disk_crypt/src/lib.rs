@@ -61,6 +61,11 @@ impl CryptDisk {
 }
 
 impl DiskIo for CryptDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        // Reads pass caller buffers directly to the inner disk.
+        self.inner.requires_lockable_guest_memory()
+    }
+
     fn disk_type(&self) -> &str {
         "crypt"
     }

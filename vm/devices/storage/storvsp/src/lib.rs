@@ -730,6 +730,20 @@ impl ScsiCommandQueue {
                 }
             }
             _ if let Some(controller_disk) = controller_disk => {
+                // Disks and removable media can change after the channel opens.
+                if controller_disk.disk.requires_lockable_guest_memory()
+                    && !self.mem.supports_kernel_lock()
+                {
+                    tracelimit::warn_ratelimited!(
+                        "SCSI backend requires kernel-lockable guest memory"
+                    );
+                    return ScsiResult {
+                        scsi_status: ScsiStatus::CHECK_CONDITION,
+                        srb_status: SrbStatus::INVALID_REQUEST,
+                        tx: 0,
+                        sense_data: None,
+                    };
+                }
                 let mut cdb = [0; 16];
                 cdb.copy_from_slice(&request.payload[0..storvsp_protocol::CDB16GENERIC_LENGTH]);
                 controller_disk
@@ -836,6 +850,15 @@ impl<T: RingMem + 'static> Worker<T> {
         protocol: Arc<Protocol>,
         force_path_id: Option<u8>,
     ) -> anyhow::Result<Self> {
+        for (path, disk) in controller.disks.read().iter() {
+            if force_path_id.is_some_and(|forced| path.path != forced) {
+                continue;
+            }
+            anyhow::ensure!(
+                !disk.disk.requires_lockable_guest_memory() || mem.supports_kernel_lock(),
+                "SCSI backend at {path:?} requires kernel-lockable guest memory"
+            );
+        }
         let queue = Queue::new(channel)?;
         let rescan_notification = Arc::new(RescanNotification::default());
         controller.add_rescan_notification(rescan_notification.clone());
@@ -1952,6 +1975,134 @@ mod tests {
             ScsiController {
                 state: self.state.clone(),
             }
+        }
+    }
+
+    #[derive(Inspect)]
+    #[inspect(skip)]
+    struct MemoryContractScsiDisk {
+        requires_lockable_guest_memory: bool,
+        calls: Arc<AtomicU32>,
+    }
+
+    impl scsi_core::ScsiSaveRestore for MemoryContractScsiDisk {
+        fn save(&self) -> Result<Option<scsi_core::save_restore::ScsiSavedState>, SaveError> {
+            Ok(None)
+        }
+
+        fn restore(
+            &self,
+            _state: &scsi_core::save_restore::ScsiSavedState,
+        ) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    impl AsyncScsiDisk for MemoryContractScsiDisk {
+        fn requires_lockable_guest_memory(&self) -> bool {
+            self.requires_lockable_guest_memory
+        }
+
+        fn execute_scsi<'a>(
+            &'a self,
+            _external_data: &'a RequestBuffers<'a>,
+            _request: &'a Request,
+        ) -> stackfuture::StackFuture<'a, ScsiResult, { scsi_core::ASYNC_SCSI_DISK_STACK_SIZE }>
+        {
+            stackfuture::StackFuture::from(async move {
+                self.calls.fetch_add(1, Relaxed);
+                ScsiResult {
+                    scsi_status: ScsiStatus::GOOD,
+                    srb_status: SrbStatus::SUCCESS,
+                    tx: 0,
+                    sense_data: None,
+                }
+            })
+        }
+    }
+
+    #[test]
+    fn channel_admission_checks_backend_memory_contract() {
+        let direct = GuestMemory::allocate(4096);
+        for mem in [direct.clone(), direct.copy_only_view()] {
+            for requires_lockable_guest_memory in [false, true] {
+                let controller = ScsiController::new();
+                let calls = Arc::new(AtomicU32::new(0));
+                controller
+                    .attach(
+                        ScsiPath {
+                            path: 0,
+                            target: 0,
+                            lun: 0,
+                        },
+                        ScsiControllerDisk::new(Arc::new(MemoryContractScsiDisk {
+                            requires_lockable_guest_memory,
+                            calls: calls.clone(),
+                        })),
+                    )
+                    .unwrap();
+                let (host, _guest) = connected_async_channels(16 * 1024);
+                let result = Worker::new(
+                    controller.state.clone(),
+                    host,
+                    0,
+                    mem.clone(),
+                    Default::default(),
+                    1,
+                    Arc::new(Protocol {
+                        state: RwLock::new(ProtocolState::Init(InitState::Begin)),
+                        ready: Default::default(),
+                    }),
+                    None,
+                );
+                assert_eq!(
+                    result.is_ok(),
+                    !requires_lockable_guest_memory || mem.supports_kernel_lock()
+                );
+                assert_eq!(calls.load(Relaxed), 0);
+            }
+        }
+    }
+
+    #[async_test]
+    async fn hot_attached_disks_are_checked_before_backend_io() {
+        let controller = ScsiController::new();
+        let queue = ScsiCommandQueue {
+            controller: controller.state.clone(),
+            mem: GuestMemory::allocate(4096).copy_only_view(),
+            force_path_id: None,
+        };
+        let request = ScsiRequestAndRange {
+            external_data: Range::default(),
+            external_data_buf: MultiPagedRangeBuf::new(),
+            request: storvsp_protocol::ScsiRequest::new_zeroed(),
+            request_size: storvsp_protocol::SCSI_REQUEST_LEN_V1,
+        };
+        let path = ScsiPath {
+            path: 0,
+            target: 0,
+            lun: 0,
+        };
+        let calls = Arc::new(AtomicU32::new(0));
+        for requires_lockable_guest_memory in [true, false] {
+            controller
+                .attach(
+                    path,
+                    ScsiControllerDisk::new(Arc::new(MemoryContractScsiDisk {
+                        requires_lockable_guest_memory,
+                        calls: calls.clone(),
+                    })),
+                )
+                .unwrap();
+            let result = queue.execute_scsi(&request).await;
+            if requires_lockable_guest_memory {
+                assert_eq!(result.srb_status, SrbStatus::INVALID_REQUEST);
+                assert_eq!(calls.load(Relaxed), 0);
+            } else {
+                assert_eq!(result.srb_status, SrbStatus::SUCCESS);
+                assert_eq!(calls.load(Relaxed), 1);
+            }
+            controller.remove(path).unwrap();
         }
     }
 

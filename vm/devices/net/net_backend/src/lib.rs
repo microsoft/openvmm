@@ -89,6 +89,13 @@ pub trait Endpoint: Send + Sync + InspectMut {
     /// Returns an informational endpoint type.
     fn endpoint_type(&self) -> &'static str;
 
+    /// Whether the backend restricts caller memory to kernel-lockable guest
+    /// backing. DMA-address availability must still be checked separately.
+    ///
+    /// If false, all caller-buffer paths use fallible CPU copies, even if the
+    /// backend locks or DMAs its own staging buffers.
+    fn requires_lockable_guest_memory(&self) -> bool;
+
     /// Initializes the queues associated with the endpoint.
     async fn get_queues(
         &mut self,
@@ -405,6 +412,10 @@ impl Endpoint for DisconnectableEndpoint {
         self.current().endpoint_type()
     }
 
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.current().requires_lockable_guest_memory()
+    }
+
     async fn get_queues(
         &mut self,
         config: Vec<QueueConfig>,
@@ -538,12 +549,17 @@ mod disconnectable_endpoint_tests {
     #[derive(InspectMut)]
     struct TestEndpoint {
         is_ordered: bool,
+        requires_lockable_guest_memory: bool,
     }
 
     #[async_trait]
     impl Endpoint for TestEndpoint {
         fn endpoint_type(&self) -> &'static str {
             "test"
+        }
+
+        fn requires_lockable_guest_memory(&self) -> bool {
+            self.requires_lockable_guest_memory
         }
 
         async fn get_queues(
@@ -568,11 +584,17 @@ mod disconnectable_endpoint_tests {
     fn connect_pins_endpoint_ordering() {
         let (_endpoint, mut control) = DisconnectableEndpoint::new();
         control
-            .connect(Box::new(TestEndpoint { is_ordered: true }))
+            .connect(Box::new(TestEndpoint {
+                is_ordered: true,
+                requires_lockable_guest_memory: false,
+            }))
             .unwrap();
 
         let err = control
-            .connect(Box::new(TestEndpoint { is_ordered: false }))
+            .connect(Box::new(TestEndpoint {
+                is_ordered: false,
+                requires_lockable_guest_memory: false,
+            }))
             .unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -581,10 +603,55 @@ mod disconnectable_endpoint_tests {
 
         let (_endpoint, mut control) = DisconnectableEndpoint::new();
         control
-            .connect(Box::new(TestEndpoint { is_ordered: false }))
+            .connect(Box::new(TestEndpoint {
+                is_ordered: false,
+                requires_lockable_guest_memory: false,
+            }))
             .unwrap();
         control
-            .connect(Box::new(TestEndpoint { is_ordered: true }))
+            .connect(Box::new(TestEndpoint {
+                is_ordered: true,
+                requires_lockable_guest_memory: false,
+            }))
             .unwrap();
+    }
+
+    #[test]
+    fn memory_requirement_tracks_endpoint_replacement() {
+        let (mut endpoint, mut control) = DisconnectableEndpoint::new();
+        assert!(!endpoint.requires_lockable_guest_memory());
+
+        for requires_lockable_guest_memory in [true, false, true] {
+            control
+                .connect(Box::new(TestEndpoint {
+                    is_ordered: true,
+                    requires_lockable_guest_memory,
+                }))
+                .unwrap();
+            assert!(matches!(
+                endpoint.wait_for_endpoint_action().now_or_never(),
+                Some(EndpointAction::RestartRequired)
+            ));
+            assert_eq!(
+                endpoint.requires_lockable_guest_memory(),
+                requires_lockable_guest_memory
+            );
+
+            let mut disconnect = std::pin::pin!(control.disconnect());
+            assert!(disconnect.as_mut().now_or_never().is_none());
+            assert!(matches!(
+                endpoint.wait_for_endpoint_action().now_or_never(),
+                Some(EndpointAction::RestartRequired)
+            ));
+            assert!(!endpoint.requires_lockable_guest_memory());
+
+            // The next action poll completes the disconnect handshake.
+            assert!(endpoint.wait_for_endpoint_action().now_or_never().is_none());
+            let old_endpoint = disconnect.now_or_never().unwrap().unwrap().unwrap();
+            assert_eq!(
+                old_endpoint.requires_lockable_guest_memory(),
+                requires_lockable_guest_memory
+            );
+        }
     }
 }

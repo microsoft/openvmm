@@ -588,6 +588,14 @@ impl VhostVsockDevice {
 }
 
 impl VirtioDevice for VhostVsockDevice {
+    fn validate_guest_memory(&self, memory: &GuestMemory) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            memory.supports_kernel_lock(),
+            "vhost-vsock requires kernel-lockable guest memory"
+        );
+        Ok(())
+    }
+
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: VirtioDeviceType::VSOCK,
@@ -627,6 +635,7 @@ impl VirtioDevice for VhostVsockDevice {
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
         let queue_index = usize::from(index);
+        self.validate_guest_memory(&resources.guest_memory)?;
         anyhow::ensure!(queue_index < QUEUE_COUNT, "invalid queue index {index}");
         anyhow::ensure!(
             self.queues[queue_index].is_none(),
@@ -855,6 +864,21 @@ mod tests {
                 avail_index: 0x8007,
                 used_index: 0x8005,
             }
+        );
+    }
+
+    #[async_test]
+    async fn rejects_copy_only_guest_memory_export() {
+        let guest_memory = GuestMemory::new(
+            "vhost-vsock-test",
+            ShareableGuestMemory::new(SparseMapping::page_size()),
+        )
+        .copy_only_view();
+        let error = VhostMemory::new(&guest_memory).await.err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("requires shared file-backed guest memory")
         );
     }
 

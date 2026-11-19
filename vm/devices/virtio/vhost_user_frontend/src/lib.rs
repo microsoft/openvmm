@@ -259,6 +259,14 @@ impl VhostUserFrontend {
 }
 
 impl VirtioDevice for VhostUserFrontend {
+    fn validate_guest_memory(&self, memory: &GuestMemory) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            memory.supports_kernel_lock(),
+            "vhost-user requires kernel-lockable guest memory"
+        );
+        Ok(())
+    }
+
     fn traits(&self) -> DeviceTraits {
         self.device_traits.clone()
     }
@@ -345,6 +353,7 @@ impl VirtioDevice for VhostUserFrontend {
         // resets. The backend retains the memory mapping (it is
         // connection-scoped, not device-scoped), and the guest memory
         // backing doesn't change for the lifetime of the connection.
+        self.validate_guest_memory(&resources.guest_memory)?;
         if !self.mem_table_sent {
             let sharing = resources.guest_memory.sharing().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1282,6 +1291,26 @@ mod tests {
         frontend.reset().await;
         assert!(frontend.supports_save_restore());
 
+        drop(frontend);
+        backend_task.await;
+    }
+
+    #[async_test]
+    async fn copy_only_rejected_before_memory_table_export(driver: DefaultDriver) {
+        let (mut frontend, guest_memory, backend_task) = setup_frontend_backend(&driver).await;
+        let resources = dummy_queue_resources(
+            Interrupt::from_event(Event::new()),
+            guest_memory.copy_only_view(),
+        );
+        let error = frontend
+            .start_queue(0, resources, &VirtioDeviceFeatures::new(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "vhost-user requires kernel-lockable guest memory"
+        );
+        assert!(!frontend.mem_table_sent);
         drop(frontend);
         backend_task.await;
     }

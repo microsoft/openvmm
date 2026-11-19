@@ -1344,12 +1344,21 @@ impl VmbusDevice for Nic {
         channel_idx: u16,
         open_request: &OpenRequest,
     ) -> Result<(), ChannelOpenError> {
+        if channel_idx != 0 {
+            self.coordinator.stop().await;
+        }
+        if let Err(err) = self.validate_endpoint_memory(open_request) {
+            if channel_idx != 0 {
+                self.coordinator.start();
+            }
+            return Err(err.into());
+        }
+
         // Start the coordinator task if this is the primary channel.
         let state = if channel_idx == 0 {
             self.insert_coordinator(1, None);
             WorkerState::Init(None)
         } else {
-            self.coordinator.stop().await;
             // Get the buffers created when the primary channel was opened.
             let buffers = self.coordinator.state().unwrap().buffers.clone().unwrap();
             WorkerState::Ready(ReadyState {
@@ -1510,6 +1519,23 @@ impl SaveRestoreVmbusDevice for Nic {
 }
 
 impl Nic {
+    fn validate_endpoint_memory(&self, open_request: &OpenRequest) -> Result<(), OpenError> {
+        if self
+            .coordinator
+            .task()
+            .endpoint
+            .requires_lockable_guest_memory()
+            && !self
+                .resources
+                .offer_resources
+                .guest_memory(open_request)
+                .supports_kernel_lock()
+        {
+            return Err(OpenError::GuestMemoryNotLockable);
+        }
+        Ok(())
+    }
+
     /// Allocates and inserts a worker.
     ///
     /// The coordinator must be stopped.
@@ -1520,6 +1546,8 @@ impl Nic {
         state: WorkerState,
         start: bool,
     ) -> Result<(), OpenError> {
+        self.validate_endpoint_memory(open_request)?;
+        let mem = self.resources.offer_resources.guest_memory(open_request);
         let coordinator = self.coordinator.state_mut().unwrap();
 
         // Retarget the driver now that the channel is open.
@@ -1547,11 +1575,7 @@ impl Nic {
         let worker = Worker {
             channel_idx,
             target_vp: open_request.open_data.target_vp,
-            mem: self
-                .resources
-                .offer_resources
-                .guest_memory(open_request)
-                .clone(),
+            mem: mem.clone(),
             channel: NetChannel {
                 adapter: self.adapter.clone(),
                 queue,
@@ -2065,6 +2089,8 @@ enum MessageComponentError {
 
 #[derive(Debug, Error)]
 enum WorkerError {
+    #[error("network endpoint requires kernel-lockable guest memory")]
+    GuestMemoryNotLockable,
     #[error("packet error")]
     Packet(#[source] PacketError),
     #[error("unexpected packet order: {0}")]
@@ -2130,6 +2156,8 @@ impl From<task_control::Cancelled> for WorkerError {
 
 #[derive(Debug, Error)]
 enum OpenError {
+    #[error("network endpoint requires kernel-lockable guest memory")]
+    GuestMemoryNotLockable,
     #[error("error establishing ring buffer")]
     Ring(#[source] vmbus_channel::gpadl_ring::Error),
     #[error("error establishing vmbus queue")]
@@ -4188,12 +4216,18 @@ impl Coordinator {
                 self.restart_worker_queues(stop, state).await?;
             }
 
-            // Ensure that all workers except the primary are started. The
-            // primary is started below if there are no outstanding messages.
+            // Start workers with endpoint queues, but leave them stopped after
+            // a failed restart. The primary can also run channel initialization.
             for worker in &mut self.workers[1..] {
-                worker.start();
+                if !worker.is_running() && worker.task().queue_state.is_some() {
+                    worker.start();
+                }
             }
             if !self.workers[0].is_running()
+                && (self.workers[0].task().queue_state.is_some()
+                    || self.workers[0]
+                        .state()
+                        .is_some_and(|worker| matches!(worker.state, WorkerState::Init(_))))
                 && self.workers[0].state().is_none_or(|worker| {
                     !matches!(worker.state, WorkerState::WaitingForCoordinator(_))
                 })
@@ -4762,6 +4796,20 @@ impl Coordinator {
             .collect::<Vec<_>>();
 
         c_state.endpoint.stop().await;
+
+        if c_state.endpoint.requires_lockable_guest_memory()
+            && self.workers.iter().any(|worker| {
+                worker.state().is_some_and(|worker| {
+                    !worker.mem.supports_kernel_lock()
+                        || worker
+                            .state
+                            .ready()
+                            .is_some_and(|state| !state.buffers.mem.supports_kernel_lock())
+                })
+            })
+        {
+            return Err(WorkerError::GuestMemoryNotLockable);
+        }
 
         let (primary_worker, subworkers) = if let [primary, sub @ ..] = self.workers.as_mut_slice()
         {

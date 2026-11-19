@@ -88,6 +88,10 @@ impl ScsiSaveRestore for AtapiScsiDisk {
 }
 
 impl AsyncScsiDisk for AtapiScsiDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.inner.requires_lockable_guest_memory()
+    }
+
     fn clear_nexus_state(&self) {
         // This wrapper keeps its own sense slot in front of the device's, so
         // both have to be cleared or a REQUEST SENSE still answers from here.
