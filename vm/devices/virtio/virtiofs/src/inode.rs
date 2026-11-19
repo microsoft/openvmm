@@ -17,6 +17,7 @@ use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -41,11 +42,36 @@ pub(crate) fn namespace_ino(volume_id: u32, raw: lx::ino_t) -> lx::ino_t {
     raw ^ u64::from(volume_id).wrapping_mul(INO_NAMESPACE_MULTIPLIER)
 }
 
+/// Returns the key that [`VirtioFsVolume::map_inode`] XORs into the inode
+/// number of an object on another host device than its volume's root, given
+/// the XOR of the two device numbers.
+///
+/// This is MurmurHash3's 64-bit finalizer: a bijection that maps 0, the root's
+/// own device, to 0, and every other device to a key of its own, spread across
+/// all 64 bits. Devices that differ only in their low bits, such as the
+/// anonymous devices of btrfs subvolumes, thereby get keys far apart from each
+/// other and from the small inode numbers that each such device allocates.
+fn device_ino_key(device_difference: u64) -> u64 {
+    let mut key = device_difference;
+    key ^= key >> 33;
+    key = key.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    key ^= key >> 33;
+    key = key.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+    key ^ (key >> 33)
+}
+
 pub(crate) struct VirtioFsVolume {
     pub(crate) volume: Arc<LxVolume>,
     pub(crate) id: u32,
     pub(crate) readonly: bool,
     stable_file_ids: bool,
+    /// The host device of the volume's root object, whose objects need no
+    /// device key (see [`Self::map_inode`]).
+    root_device_nr: u64,
+    /// Whether the volume XORs device keys into inode numbers, which it stops
+    /// doing when it restores a snapshot from a release that numbered objects
+    /// by inode number alone.
+    device_keys: AtomicBool,
     pub(crate) strict_paths: bool,
     pub(crate) policy: SubtreePolicy,
     /// Host objects of the policy's hidden paths, by device and inode number,
@@ -59,18 +85,37 @@ pub(crate) struct VirtioFsVolume {
 }
 
 impl VirtioFsVolume {
-    pub(crate) fn new(volume: LxVolume, id: u32, readonly: bool) -> Self {
+    /// Creates the volume `id` over `volume`, whose root object is its
+    /// directory.
+    pub(crate) fn new(volume: LxVolume, id: u32, readonly: bool) -> lx::Result<Self> {
+        Self::with_exposed_file(volume, id, readonly, None)
+    }
+
+    /// Creates the volume `id` over `volume`, whose root object is
+    /// `exposed_file` if any, and its directory otherwise. The root object
+    /// must be inspectable, since its host device decides how the volume
+    /// numbers objects for the guest (see [`Self::map_inode`]).
+    pub(crate) fn with_exposed_file(
+        volume: LxVolume,
+        id: u32,
+        readonly: bool,
+        exposed_file: Option<PathBuf>,
+    ) -> lx::Result<Self> {
         let stable_file_ids = volume.supports_stable_file_id();
-        Self {
+        let root_entry = exposed_file.as_deref().unwrap_or(Path::new(""));
+        let root_device_nr = volume.lstat(root_entry)?.device_nr;
+        Ok(Self {
             volume: Arc::new(volume),
             id,
             readonly,
             stable_file_ids,
+            root_device_nr,
+            device_keys: AtomicBool::new(true),
             strict_paths: false,
             policy: SubtreePolicy::default(),
             pinned_identities: HashMap::new(),
-            exposed_file: None,
-        }
+            exposed_file,
+        })
     }
 
     pub(crate) fn id(&self) -> u32 {
@@ -97,8 +142,47 @@ impl VirtioFsVolume {
         self.exposed_file().unwrap_or(Path::new(""))
     }
 
-    pub(crate) fn map_inode(&self, raw: lx::ino_t) -> lx::ino_t {
-        namespace_ino(self.id, raw)
+    /// Returns the host device of the volume's root object.
+    pub(crate) fn root_device_nr(&self) -> u64 {
+        self.root_device_nr
+    }
+
+    /// Maps the host device and inode number of one of the volume's objects to
+    /// the inode number that the guest sees.
+    ///
+    /// The guest sees every object under the one device of its FUSE
+    /// superblock, but a volume's objects can lie on several host devices, such
+    /// as below a nested mount or in btrfs subvolumes, whose inode numbers
+    /// repeat each other's. The number is therefore the object's namespaced
+    /// inode number (see [`namespace_ino`]), with a key of its host device
+    /// XORed in when that is another device than the root's. A share on one
+    /// device keeps its namespaced numbers, and the mapping is a bijection
+    /// within each device, so that hard links share a number. Objects of two
+    /// devices still collide if their inode numbers differ by exactly the XOR
+    /// of the devices' keys. A volume that restored a snapshot from a release
+    /// that numbered objects by inode number alone keeps numbering them so
+    /// (see [`Self::set_device_keys`]).
+    pub(crate) fn map_inode(&self, device_nr: u64, raw: lx::ino_t) -> lx::ino_t {
+        let keyed = self.device_keys.load(Ordering::Relaxed);
+        self.map_inode_keyed(device_nr, raw, keyed)
+    }
+
+    /// Maps an object's host device and inode number as [`Self::map_inode`]
+    /// does, but with the device's key only if `keyed`, whatever the volume
+    /// does.
+    pub(crate) fn map_inode_keyed(&self, device_nr: u64, raw: lx::ino_t, keyed: bool) -> lx::ino_t {
+        let ino = namespace_ino(self.id, raw);
+        if keyed {
+            ino ^ device_ino_key(device_nr ^ self.root_device_nr)
+        } else {
+            ino
+        }
+    }
+
+    /// Sets whether the volume XORs device keys into inode numbers, as the
+    /// snapshot that a restore takes numbered its objects.
+    pub(crate) fn set_device_keys(&self, keyed: bool) {
+        self.device_keys.store(keyed, Ordering::Relaxed);
     }
 }
 
@@ -142,7 +226,8 @@ pub struct VirtioFsInode {
     inode_nr: lx::ino_t,
     file_type: lx::mode_t,
     /// This inode's number as reported to the guest: its namespaced inode
-    /// number under the shared superblock.
+    /// number under the shared superblock, keyed by its host device (see
+    /// [`VirtioFsVolume::map_inode`]).
     guest_inode_nr: lx::ino_t,
 }
 
@@ -157,7 +242,7 @@ impl VirtioFsInode {
 
     /// Create a new inode for the specified path, with previously retrieved attributes.
     pub fn with_attr(volume: Arc<VirtioFsVolume>, path: PathBuf, stat: &lx::Stat) -> Self {
-        let guest_inode_nr = volume.map_inode(stat.inode_nr);
+        let guest_inode_nr = volume.map_inode(stat.device_nr, stat.inode_nr);
         let mut aliases = BTreeSet::new();
         aliases.insert(path.clone());
         Self {
@@ -170,6 +255,12 @@ impl VirtioFsInode {
             file_type: stat.mode & lx::S_IFMT,
             guest_inode_nr,
         }
+    }
+
+    /// Returns the number of the host device that holds the object, which
+    /// Windows reports as 0.
+    pub(crate) fn device_nr(&self) -> u64 {
+        self.device_nr
     }
 
     /// Return the files inode number as reported by the underlying file system.
@@ -201,6 +292,13 @@ impl VirtioFsInode {
         self.guest_inode_nr
     }
 
+    /// Numbers this inode, before anything shares it, as a restored snapshot
+    /// recorded its object, which may lack the object's device key (see
+    /// [`VirtioFsVolume::map_inode`]).
+    pub(crate) fn set_guest_inode_nr(&mut self, guest_inode_nr: lx::ino_t) {
+        self.guest_inode_nr = guest_inode_nr;
+    }
+
     pub(crate) fn lookup_count(&self) -> u64 {
         self.lookup_count.load(Ordering::Acquire)
     }
@@ -214,11 +312,18 @@ impl VirtioFsInode {
         self.volume.lstat(&*self.get_path())
     }
 
-    /// Maps a raw host inode number from this inode's volume for guest use. For
-    /// numbers belonging to *other* inodes in the same volume (e.g. readdir
-    /// child entries); for this inode's own number use [`Self::guest_inode_nr`].
+    /// Maps the raw host inode number of an entry of this directory, as an
+    /// enumeration of the directory reports it, for guest use; for this
+    /// inode's own number use [`Self::guest_inode_nr`].
+    ///
+    /// An enumeration reports no entry's device. An entry lies on the
+    /// directory's host device unless it is a mount point or a btrfs
+    /// subvolume, for which the host reports the number of another object
+    /// than a lookup reaches anyway, such as the directory that a mount
+    /// covers. So the number is mapped as one of the directory's device, which
+    /// is what a lookup of any other entry reports.
     pub(crate) fn guest_ino(&self, raw: lx::ino_t) -> lx::ino_t {
-        self.volume.map_inode(raw)
+        self.volume.map_inode(self.device_nr(), raw)
     }
 
     /// Builds a `fuse_attr` from a stat *of this inode*, reporting its cached
@@ -640,11 +745,8 @@ mod tests {
     #[test]
     fn forget_saturates_and_returns_updated_count() {
         let tmp = tempfile::tempdir().unwrap();
-        let volume = Arc::new(VirtioFsVolume::new(
-            LxVolume::new(tmp.path()).unwrap(),
-            0,
-            false,
-        ));
+        let volume =
+            Arc::new(VirtioFsVolume::new(LxVolume::new(tmp.path()).unwrap(), 0, false).unwrap());
         let (inode, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
 
         for (initial, forgotten, expected) in [
@@ -669,7 +771,8 @@ mod tests {
         std::fs::create_dir(tmp.path().join("allowed")).unwrap();
         let mut options = lxutil::LxVolumeOptions::new();
         options.sandbox(true);
-        let mut volume = VirtioFsVolume::new(options.new_volume(tmp.path()).unwrap(), 0, false);
+        let mut volume =
+            VirtioFsVolume::new(options.new_volume(tmp.path()).unwrap(), 0, false).unwrap();
         volume.stable_file_ids = false;
         let volume = Arc::new(volume);
         let (root, _) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new()).unwrap();
@@ -720,7 +823,7 @@ mod tests {
                 .sandbox_disallowed_extensions(vec!["exe"]);
             let fs = crate::VirtioFs::new(root.path(), Some(&options)).unwrap();
             let mut volume =
-                VirtioFsVolume::new(options.new_volume(root.path()).unwrap(), 0, false);
+                VirtioFsVolume::new(options.new_volume(root.path()).unwrap(), 0, false).unwrap();
             // Model FAT/exFAT identity capabilities with native Windows sandbox checks.
             volume.stable_file_ids = false;
             let (root_inode, _) = VirtioFsInode::new(Arc::new(volume), PathBuf::new()).unwrap();
@@ -801,7 +904,7 @@ mod tests {
     }
 
     fn path_keyed_volume(root: &Path, id: u32) -> Arc<VirtioFsVolume> {
-        let mut volume = VirtioFsVolume::new(LxVolume::new(root).unwrap(), id, false);
+        let mut volume = VirtioFsVolume::new(LxVolume::new(root).unwrap(), id, false).unwrap();
         volume.stable_file_ids = false;
         Arc::new(volume)
     }
@@ -813,11 +916,14 @@ mod tests {
             std::fs::write(tmp.path().join("entry"), b"file").unwrap();
             std::fs::create_dir(tmp.path().join("replacement")).unwrap();
             std::fs::write(tmp.path().join("replacement").join("child"), b"child").unwrap();
-            let volume = Arc::new(VirtioFsVolume::new(
-                LxVolume::new(tmp.path()).unwrap(),
-                u32::from(aggregate),
-                false,
-            ));
+            let volume = Arc::new(
+                VirtioFsVolume::new(
+                    LxVolume::new(tmp.path()).unwrap(),
+                    u32::from(aggregate),
+                    false,
+                )
+                .unwrap(),
+            );
             let mut inodes = InodeMap::new(aggregate);
             let (root, _) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new()).unwrap();
             let (root, _) = inodes.insert(root).unwrap();
@@ -862,11 +968,14 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             std::fs::create_dir(tmp.path().join("subvolume")).unwrap();
             std::fs::create_dir(tmp.path().join("bind")).unwrap();
-            let volume = Arc::new(VirtioFsVolume::new(
-                LxVolume::new(tmp.path()).unwrap(),
-                u32::from(aggregate),
-                false,
-            ));
+            let volume = Arc::new(
+                VirtioFsVolume::new(
+                    LxVolume::new(tmp.path()).unwrap(),
+                    u32::from(aggregate),
+                    false,
+                )
+                .unwrap(),
+            );
             let inode = |path: &str, device_nr, inode_nr| {
                 let mut stat = volume.lstat(path).unwrap();
                 stat.device_nr = device_nr;
@@ -990,5 +1099,76 @@ mod tests {
             let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
             assert_eq!(inodes.insert(same).unwrap().1, current_id);
         }
+    }
+
+    /// The guest sees all of a share's objects under one device, but nested
+    /// mounts and btrfs subvolumes put them on several host devices, whose
+    /// inode numbers repeat each other's: every btrfs subvolume numbers its
+    /// root 256 and its files from 257. Distinct objects must get distinct
+    /// guest inode numbers, hard links one, and the objects of the root's
+    /// device keep their namespaced host numbers.
+    #[test]
+    fn guest_inode_numbers_tell_host_devices_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        for volume_id in [0, 1] {
+            let volume = Arc::new(
+                VirtioFsVolume::new(LxVolume::new(tmp.path()).unwrap(), volume_id, false).unwrap(),
+            );
+            let root_device = volume.root_device_nr();
+            let mut stat = volume.lstat("").unwrap();
+            let mut guest_number = |path: &str, device_nr, inode_nr| {
+                stat.device_nr = device_nr;
+                stat.inode_nr = inode_nr;
+                VirtioFsInode::with_attr(Arc::clone(&volume), PathBuf::from(path), &stat)
+                    .guest_inode_nr()
+            };
+            let mut objects = HashMap::new();
+            for device_nr in [root_device, root_device ^ 1, root_device ^ 2] {
+                for inode_nr in 256..1024 {
+                    let number = guest_number("", device_nr, inode_nr);
+                    if device_nr == root_device {
+                        assert_eq!(number, namespace_ino(volume_id, inode_nr));
+                    }
+                    if let Some(other) = objects.insert(number, (device_nr, inode_nr)) {
+                        panic!(
+                            "objects {other:?} and {:?} share guest inode number {number}",
+                            (device_nr, inode_nr)
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                guest_number("link", root_device ^ 1, 300),
+                guest_number("", root_device ^ 1, 300)
+            );
+        }
+    }
+
+    /// A directory enumeration reports each entry's inode number but not its
+    /// device. The entries of a directory on another host device than the
+    /// root, such as below a nested mount, are objects of that device, so a
+    /// plain directory read must number them as lookups of the entries do.
+    #[test]
+    fn directory_entries_are_numbered_on_their_directory_device() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mount = Path::new("mount");
+        let file = mount.join("file");
+        std::fs::create_dir(tmp.path().join(mount)).unwrap();
+        std::fs::write(tmp.path().join(&file), b"data").unwrap();
+        let fs = crate::VirtioFs::new(tmp.path(), None).unwrap();
+        let volume = fs.get_inode(FUSE_ROOT_ID).unwrap().volume();
+        // Model a mount at `mount`, whose objects lie on another device.
+        let mounted = |path: &Path| {
+            let mut stat = volume.lstat(path).unwrap();
+            stat.device_nr = volume.root_device_nr() ^ 1;
+            VirtioFsInode::with_attr(Arc::clone(&volume), path.to_owned(), &stat)
+        };
+        let directory = Arc::new(mounted(mount));
+        let handle = directory.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap();
+        let entries = crate::tests::read_directory(&fs, &handle, 0, 4096, false);
+        let number = entries["file"].0;
+        assert_eq!(number, mounted(&file).guest_inode_nr());
+        let (unmounted, _) = VirtioFsInode::new(Arc::clone(&volume), file).unwrap();
+        assert_ne!(number, unmounted.guest_inode_nr());
     }
 }

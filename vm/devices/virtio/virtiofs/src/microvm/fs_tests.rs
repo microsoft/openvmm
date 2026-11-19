@@ -426,3 +426,197 @@ fn relative_path_validation_rejects_platform_escapes() {
     assert!(validate_relative_path(Path::new("/outside"), true).is_err());
     assert!(validate_relative_path(Path::new("alternate:name"), true).is_err());
 }
+
+#[test]
+fn restore_rejects_a_guest_inode_number_of_another_object() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::write(root_path.join("file"), b"data").unwrap();
+    let profile = profile(root_path);
+    let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let root = source.get_inode(FUSE_ROOT_ID).unwrap();
+    let file = source
+        .lookup_helper(&root, lx::LxStr::from_bytes(b"file"))
+        .unwrap();
+    let mut state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    let saved = state
+        .inodes
+        .iter_mut()
+        .find(|inode| inode.node_id == file.nodeid)
+        .unwrap();
+    assert_eq!(saved.guest_inode_id, file.attr.ino);
+    saved.guest_inode_id ^= 1;
+
+    let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+    let error = destination
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("saved guest inode ID does not match the attachment"),
+        "{error:#}"
+    );
+}
+
+/// A release that numbered objects by inode number alone saved the objects of
+/// host devices other than the share's root, such as below a mount, and the
+/// listings of their directories, without the devices' keys. Its snapshot
+/// must restore with those numbers, and the share must then keep numbering
+/// every object so, as the guest knows them, so that the listings stay valid.
+/// A snapshot cannot number objects both ways, and one with keys restores
+/// with keys.
+#[cfg(target_os = "linux")]
+#[test]
+fn snapshot_without_device_keys_restores_its_numbers() {
+    use std::collections::BTreeMap;
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::DirEntryExt;
+    use std::os::unix::fs::MetadataExt;
+
+    // `/` reaches sysfs and procfs, which are separate host devices.
+    crate::test_helpers::assert_proc_and_sys_share_an_inode_number();
+    let root_path = Path::new("/");
+    let profile = profile(root_path);
+    let host = |path: &str| std::fs::symlink_metadata(path).unwrap();
+    let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let root = source.get_inode(FUSE_ROOT_ID).unwrap();
+    let sys = source
+        .lookup_helper(&root, lx::LxStr::from_bytes(b"sys"))
+        .unwrap();
+    let sys_inode = source.get_inode(sys.nodeid).unwrap();
+    let kernel = source
+        .lookup_helper(&sys_inode, lx::LxStr::from_bytes(b"kernel"))
+        .unwrap();
+    let handle = source
+        .insert_file(sys_inode.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap())
+        .unwrap();
+    source
+        .get_file(handle)
+        .unwrap()
+        .read_dir(&source, 0, 4096, false)
+        .unwrap();
+    // The entries of `/sys` with their host inode numbers, as a release
+    // without device keys listed them.
+    let mut listed: BTreeMap<_, _> = std::fs::read_dir("/sys")
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name().into_vec(), entry.ino())
+        })
+        .collect();
+    listed.insert(b".".to_vec(), host("/sys").ino());
+    listed.insert(b"..".to_vec(), host("/sys").ino());
+    // Saves the share with the given sysfs nodes, and the listing of `/sys`,
+    // numbered without their device's key.
+    let save_unkeyed = |node_ids: &[u64]| {
+        let mut state = source
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+        for inode in &mut state.inodes {
+            if node_ids.contains(&inode.node_id) {
+                assert_ne!(inode.guest_inode_id, inode.object_identity.inode_id);
+                inode.guest_inode_id = inode.object_identity.inode_id;
+            }
+        }
+        let saved = state
+            .handles
+            .iter_mut()
+            .find(|saved| saved.handle_id == handle)
+            .unwrap();
+        assert_eq!(saved.directory_entries.len(), listed.len());
+        for entry in &mut saved.directory_entries {
+            entry.guest_inode_id = listed[&entry.name];
+        }
+        state
+    };
+    let restore = |state| {
+        let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let session = Session::new(destination.clone());
+        destination
+            .restore_microvm_state(&profile, state, &session)
+            .map(|()| destination)
+    };
+
+    let error = restore(save_unkeyed(&[sys.nodeid])).err().unwrap();
+    assert!(
+        format!("{error:#}").contains("both with and without device keys"),
+        "{error:#}"
+    );
+
+    let destination = restore(save_unkeyed(&[sys.nodeid, kernel.nodeid])).unwrap();
+    for (node_id, path) in [(sys.nodeid, "/sys"), (kernel.nodeid, "/sys/kernel")] {
+        let inode = destination.get_inode(node_id).unwrap();
+        assert_eq!(inode.get_attr().unwrap().ino, host(path).ino());
+    }
+    // READDIRPLUS looks the listed entries up again, numbered as listed,
+    // except for a mount point, whose lookup reaches another device.
+    let entries = crate::tests::read_directory(
+        &destination,
+        &destination.get_file(handle).unwrap(),
+        0,
+        4096,
+        true,
+    );
+    assert_eq!(entries.len(), listed.len());
+    let sysfs = host("/sys").dev();
+    for (name, (ino, _)) in entries {
+        let listed_ino = listed[name.as_bytes()];
+        if name == "."
+            || name == ".."
+            || std::fs::symlink_metadata(Path::new("/sys").join(&name))
+                .unwrap()
+                .dev()
+                == sysfs
+        {
+            assert_eq!(ino, listed_ino, "{name}");
+        }
+    }
+    // Objects of devices that the snapshot does not hold get no keys either.
+    let root = destination.get_inode(FUSE_ROOT_ID).unwrap();
+    let proc = destination
+        .lookup_helper(&root, lx::LxStr::from_bytes(b"proc"))
+        .unwrap();
+    assert_eq!(proc.attr.ino, host("/proc").ino());
+
+    let destination = restore(
+        source
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap(),
+    )
+    .unwrap();
+    let root = destination.get_inode(FUSE_ROOT_ID).unwrap();
+    let proc = destination
+        .lookup_helper(&root, lx::LxStr::from_bytes(b"proc"))
+        .unwrap();
+    assert_ne!(proc.attr.ino, host("/proc").ino());
+}
+
+/// The host lists a mount point, such as `/proc` in `/`, by the inode number
+/// of the directory that the mount covers, while a lookup reaches the mounted
+/// root on another device. READDIRPLUS must still list it, with the number
+/// that the lookup reports, which tells mounted roots apart.
+#[cfg(target_os = "linux")]
+#[test]
+fn readdirplus_lists_mount_points() {
+    crate::test_helpers::assert_proc_and_sys_share_an_inode_number();
+    let root_path = Path::new("/");
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let handle = fs
+        .insert_file(
+            Arc::clone(&root)
+                .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                .unwrap(),
+        )
+        .unwrap();
+    let entries = crate::tests::read_directory(&fs, &fs.get_file(handle).unwrap(), 0, 4096, true);
+    for name in ["proc", "sys"] {
+        let lookup = fs
+            .lookup_helper(&root, lx::LxStr::from_bytes(name.as_bytes()))
+            .unwrap();
+        assert_eq!(entries[name].0, lookup.attr.ino, "{name}");
+    }
+    assert_ne!(entries["proc"].0, entries["sys"].0);
+}

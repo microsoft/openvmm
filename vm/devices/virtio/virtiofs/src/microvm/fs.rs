@@ -212,7 +212,7 @@ fn open_microvm_volume(
         policy,
         pinned_identities,
         exposed_file,
-    ));
+    )?);
     let root_entry = volume.root_entry().to_owned();
     let (root_inode, root_stat) = VirtioFsInode::new(Arc::clone(&volume), root_entry)?;
     Ok((volume, root_inode, root_stat))
@@ -625,6 +625,9 @@ impl VirtioFs {
         let mut restored_inodes = InodeMap::new(profile.is_aggregate());
         let mut node_ids = HashSet::with_capacity(state.inodes.len());
         let mut alias_paths = HashSet::new();
+        // Whether the saved nodes key the inode numbers of objects on other
+        // host devices than their volumes' roots, if any node shows it.
+        let mut device_keys = None;
         for saved in &state.inodes {
             anyhow::ensure!(node_ids.insert(saved.node_id), "duplicate saved inode ID");
             let volume = volumes
@@ -665,13 +668,27 @@ impl VirtioFs {
                 aliases.push(path);
             }
             let stat = first_stat.context("saved inode has no reopenable aliases")?;
-            let inode =
-                VirtioFsInode::from_saved(Arc::clone(volume), aliases, saved.lookup_count, &stat)
-                    .map_err(anyhow::Error::from)?;
+            // A release that numbered objects by inode number alone saved the
+            // objects of other host devices than their volumes' roots without
+            // their devices' keys. The attachment then keeps numbering every
+            // object so, as the guest knows them, so all nodes must agree.
+            let keyed_ino = volume.map_inode_keyed(stat.device_nr, stat.inode_nr, true);
+            let unkeyed_ino = volume.map_inode_keyed(stat.device_nr, stat.inode_nr, false);
             anyhow::ensure!(
-                inode.guest_inode_nr() == saved.guest_inode_id,
+                saved.guest_inode_id == keyed_ino || saved.guest_inode_id == unkeyed_ino,
                 "saved guest inode ID does not match the attachment"
             );
+            if keyed_ino != unkeyed_ino {
+                let keyed = saved.guest_inode_id == keyed_ino;
+                anyhow::ensure!(
+                    *device_keys.get_or_insert(keyed) == keyed,
+                    "saved guest inode IDs number objects both with and without device keys"
+                );
+            }
+            let mut inode =
+                VirtioFsInode::from_saved(Arc::clone(volume), aliases, saved.lookup_count, &stat)
+                    .map_err(anyhow::Error::from)?;
+            inode.set_guest_inode_nr(saved.guest_inode_id);
             let key = inode.dedup_key();
             anyhow::ensure!(
                 !restored_inodes.inodes_by_key.contains_key(&key),
@@ -732,6 +749,12 @@ impl VirtioFs {
             .restore_state(session_state)
             .map_err(anyhow::Error::from)
             .context("saved FUSE negotiation cannot be restored")?;
+        // A snapshot that holds no object of another device than its volume's
+        // root does not show how its release numbered them, so they get keys.
+        let device_keys = device_keys.unwrap_or(true);
+        for volume in volumes.values() {
+            volume.set_device_keys(device_keys);
+        }
         *self.inner.inodes.write() = restored_inodes;
         *self.inner.files.write() = restored_files;
         *self.inner.negotiation.write() = fuse_negotiation_from_session(session_state);

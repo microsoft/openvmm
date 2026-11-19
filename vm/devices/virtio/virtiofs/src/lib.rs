@@ -706,7 +706,7 @@ impl VirtioFs {
     ) -> Result<Self, CreateError> {
         let (volume, readonly) = build_volume(root_path, mount_options)?;
         let mut inodes = InodeMap::new(false);
-        let volume = Arc::new(VirtioFsVolume::new(volume, 0, readonly));
+        let volume = Arc::new(VirtioFsVolume::new(volume, 0, readonly)?);
         let (root_inode, _) = VirtioFsInode::new(volume, PathBuf::new())?;
         if inodes.insert(root_inode)?.1 != FUSE_ROOT_ID {
             return Err(lx::Error::EINVAL.into());
@@ -745,6 +745,17 @@ impl VirtioFs {
 
     fn lookup_helper(&self, inode: &VirtioFsInode, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
         let (new_inode, attr) = inode.lookup_child(name)?;
+        self.insert_lookup(new_inode, attr)
+    }
+
+    /// Inserts `new_inode`, which a lookup found with the attributes `attr`,
+    /// taking the lookup reference that its entry hands to the guest, and
+    /// returns the entry.
+    fn insert_lookup(
+        &self,
+        new_inode: VirtioFsInode,
+        attr: fuse_attr,
+    ) -> lx::Result<fuse_entry_out> {
         self.preflight_inode_insert(&new_inode)?;
         let (_, new_inode_nr) = self.insert_inode(new_inode)?;
         Ok(fuse_entry_out::new(
@@ -2046,5 +2057,52 @@ mod tests {
         assert_eq!(reservation.handle, u64::MAX);
         handles.release_reservation(&reservation);
         assert_eq!(handles.insert("last"), Some(u64::MAX));
+    }
+
+    /// On Linux, `/` reaches mounts such as `/proc`, `/sys`, and `/dev`:
+    /// separate host filesystems whose roots all have inode number 1. Each
+    /// distinct host object that a lookup reaches must still get a guest
+    /// inode number of its own, which GETATTR and STATX report too, and the
+    /// objects of the share's own device keep their host numbers.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lookups_across_mounts_number_each_host_object_once() {
+        use std::collections::HashMap;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+
+        crate::test_helpers::assert_proc_and_sys_share_an_inode_number();
+        let mut options = super::LxVolumeOptions::new();
+        options.readonly(true);
+        let fs = VirtioFs::new("/", Some(&options)).unwrap();
+        let root_device = std::fs::symlink_metadata("/").unwrap().dev();
+        let mut objects = HashMap::new();
+        for entry in std::fs::read_dir("/").unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let Ok(reply) = fs.lookup(
+                &request(FUSE_ROOT_ID),
+                lx::LxStr::from_bytes(name.as_bytes()),
+            ) else {
+                continue;
+            };
+            let inode = fs.get_inode(reply.nodeid).unwrap();
+            assert_eq!(inode.get_attr().unwrap().ino, reply.attr.ino, "{name:?}");
+            assert_eq!(inode.get_statx().unwrap().ino, reply.attr.ino, "{name:?}");
+            let host = std::fs::symlink_metadata(entry.path()).unwrap();
+            if host.dev() == root_device {
+                assert_eq!(reply.attr.ino, host.ino(), "{name:?}");
+            }
+            let object = (host.dev(), host.ino());
+            if let Some((other, other_name)) =
+                objects.insert(reply.attr.ino, (object, name.clone()))
+            {
+                assert_eq!(
+                    other, object,
+                    "{other_name:?} and {name:?} share guest inode number {}",
+                    reply.attr.ino
+                );
+            }
+        }
     }
 }
