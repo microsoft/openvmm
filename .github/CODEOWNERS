@@ -5,8 +5,6 @@
 
 # Any CI changes require special approval
 /ci/ @microsoft/openvmm-ci-reviewers
-/ci-flowey/refresh-mirror.yaml @microsoft/openvmm-ci-reviewers
-/flowey/flowey_hvlite/src/pipelines/refresh_mirror.* @microsoft/openvmm-ci-reviewers
 /.github/CODEOWNERS @microsoft/openvmm-maintain
 /.github/labeler.yml @microsoft/openvmm-ci-reviewers
 /.github/scripts/ @microsoft/openvmm-ci-reviewers
