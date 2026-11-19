@@ -15,6 +15,7 @@ use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
+use crate::WakeReason;
 use crate::processor::InterceptMessageState;
 use aarch64defs::CntvCtlEl0;
 use aarch64defs::EsrEl2;
@@ -995,7 +996,12 @@ impl UhProcessor<'_, CcaBacked> {
         for &lr in &logical_lrs {
             let lr = IchLrEl2::from(lr);
             if lr.vintid() >= 32 && lr.state() == IchLrState::PENDING {
-                self.shared.cvm.gic.cancel_spi_reservation(vp, lr.vintid());
+                self.shared
+                    .cvm
+                    .gic
+                    .cancel_spi_reservation(vp, lr.vintid(), |index| {
+                        self.partition.vps[index].wake(vtl, WakeReason::INTCON);
+                    });
             }
         }
 

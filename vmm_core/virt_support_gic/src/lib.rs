@@ -129,8 +129,11 @@ impl GicV3Model {
         self.distributor.set_spi_irq(intid, high)
     }
 
-    pub fn cancel_spi_reservation(&self, vp: VpIndex, intid: u32) {
-        self.distributor.cancel_spi_reservation(vp, intid);
+    /// Withdraws a pending-only SPI reservation and notifies eligible targets
+    /// if the interrupt is no longer routed to its previous owner.
+    /// Invokes `wake` after releasing the distributor state lock.
+    pub fn cancel_spi_reservation(&self, vp: VpIndex, intid: u32, wake: impl FnMut(usize)) {
+        self.distributor.cancel_spi_reservation(vp, intid, wake);
     }
 
     /// Reconcile returned list registers with the durable interrupt model.
@@ -399,23 +402,40 @@ mod gicd {
             }
         }
 
-        pub fn cancel_spi_reservation(&self, vp: VpIndex, intid: u32) {
+        pub fn cancel_spi_reservation(&self, vp: VpIndex, intid: u32, mut wake: impl FnMut(usize)) {
             if intid < 32 || intid > self.max_spi_intid {
                 tracelimit::warn_ratelimited!(intid, "invalid GIC SPI reservation cancellation");
                 return;
             }
 
-            let mut state = self.state.lock();
-            if state.in_flight[intid as usize] == Some(vp.index()) {
-                if Self::set_bit(&mut state.lr_pending_latch, intid, false) {
-                    Self::set_pending_locked(&mut state, intid, true);
+            let mut targets = Vec::new();
+            {
+                let mut state = self.state.lock();
+                if state.in_flight[intid as usize] == Some(vp.index()) {
+                    if Self::set_bit(&mut state.lr_pending_latch, intid, false) {
+                        Self::set_pending_locked(&mut state, intid, true);
+                    }
+                    Self::set_bit(&mut state.lr_pending, intid, false);
+                    Self::set_bit(&mut state.lr_active_changed, intid, false);
+                    state.in_flight[intid as usize] = None;
+                    if let Some(owned) = state.in_flight_by_vp.get_mut(vp.index() as usize) {
+                        owned.retain(|owned_intid| *owned_intid != intid);
+                    }
+                    // A new target may have checked while this VP still owned
+                    // the LR. Notify it again now that it can claim the request.
+                    // Normal repacking on the same target needs no notification.
+                    if !self.spi_targets_vp(&state, intid, vp) {
+                        self.collect_pending_spi_targets(
+                            &state,
+                            intid as usize / 32,
+                            1 << (intid & 31),
+                            &mut targets,
+                        );
+                    }
                 }
-                Self::set_bit(&mut state.lr_pending, intid, false);
-                Self::set_bit(&mut state.lr_active_changed, intid, false);
-                state.in_flight[intid as usize] = None;
-                if let Some(owned) = state.in_flight_by_vp.get_mut(vp.index() as usize) {
-                    owned.retain(|owned_intid| *owned_intid != intid);
-                }
+            }
+            for index in targets {
+                wake(index);
             }
         }
 
@@ -1220,6 +1240,13 @@ mod gicd {
                             let changed = *route != value;
                             *route = value;
                             if changed {
+                                // The previous owner must withdraw its pending LR
+                                // before the new target can reserve the interrupt.
+                                if let Some(owner) = state.in_flight[n as usize] {
+                                    if !self.spi_targets_vp(&state, n as u32, VpIndex::new(owner)) {
+                                        targets.push(owner as usize);
+                                    }
+                                }
                                 self.collect_pending_spi_targets(
                                     &state,
                                     n as usize / 32,
@@ -1748,6 +1775,102 @@ mod gicd {
                         assert!(distributor.irq_pending(&gicr1, true));
                     }
                 }
+            }
+        }
+
+        #[test]
+        fn rerouted_spi_reservation_wakes_owner_and_retries_target() {
+            for software_pending in [false, true] {
+                for returned_lr in [false, true] {
+                    let mut distributor = test_distributor();
+                    let owner = VpIndex::new(0);
+                    let target = VpIndex::new(1);
+                    distributor.add_redistributor(1, true);
+                    if software_pending {
+                        set_software_pending_spi(&distributor, TEST_SPI, true);
+                    } else {
+                        distributor.set_spi_irq(TEST_SPI, true);
+                    }
+                    assert!(reserve_pending_spi(&distributor, owner).is_some());
+                    let pending_lr = [ListRegisterInterrupt {
+                        intid: TEST_SPI,
+                        pending: true,
+                        active: false,
+                    }];
+                    if returned_lr {
+                        distributor.fold_list_registers(owner, &pending_lr);
+                    }
+
+                    let route = GicdRegister(GicdRegister::IROUTER0.0 + (TEST_SPI * 8) as u16);
+                    assert_eq!(
+                        write_gicd_collect_wakes(&distributor, route, &1u64.to_ne_bytes()),
+                        [0, 1]
+                    );
+                    // The new target runs first and cannot claim the owner's LR.
+                    assert!(reserve_pending_spi(&distributor, target).is_none());
+
+                    // The old owner folds and withdraws its pending-only LR.
+                    distributor.fold_list_registers(owner, &pending_lr);
+                    distributor.cancel_spi_reservation(target, TEST_SPI, |_| {
+                        panic!("only the owner can release the reservation")
+                    });
+                    let mut wakes = Vec::new();
+                    distributor.cancel_spi_reservation(owner, TEST_SPI, |index| {
+                        let state = distributor.state.try_lock().unwrap();
+                        assert!(state.in_flight[TEST_SPI as usize].is_none());
+                        wakes.push(index);
+                    });
+                    assert_eq!(wakes, [1]);
+                    distributor.cancel_spi_reservation(owner, TEST_SPI, |_| {
+                        panic!("an already released reservation must not notify again")
+                    });
+                    assert!(reserve_pending_spi(&distributor, owner).is_none());
+                    assert!(reserve_pending_spi(&distributor, target).is_some());
+                }
+            }
+        }
+
+        #[test]
+        fn rerouted_spi_release_checks_current_delivery_state() {
+            for (register, value, deliverable) in [
+                (GicdRegister(GicdRegister::ISENABLER0.0 + 4), 1, true),
+                (GicdRegister(GicdRegister::ICENABLER0.0 + 4), 1, false),
+                (GicdRegister::CTLR, 0, false),
+                (GicdRegister(GicdRegister::ICPENDR0.0 + 4), 1, false),
+            ] {
+                let mut distributor = test_distributor();
+                let owner = VpIndex::new(0);
+                let target = VpIndex::new(1);
+                distributor.add_redistributor(1, true);
+                set_software_pending_spi(&distributor, TEST_SPI, true);
+                assert!(reserve_pending_spi(&distributor, owner).is_some());
+                distributor.fold_list_registers(
+                    owner,
+                    &[ListRegisterInterrupt {
+                        intid: TEST_SPI,
+                        pending: true,
+                        active: false,
+                    }],
+                );
+                let route = GicdRegister(GicdRegister::IROUTER0.0 + (TEST_SPI * 8) as u16);
+                assert_eq!(
+                    write_gicd_collect_wakes(&distributor, route, &1u64.to_ne_bytes()),
+                    [0, 1]
+                );
+
+                // Configuration or pending state can change before the owner
+                // withdraws the LR. Do not notify a target for a masked request.
+                assert!(distributor.write32(register, value, |_| {}));
+                let mut wakes = Vec::new();
+                distributor.cancel_spi_reservation(owner, TEST_SPI, |index| {
+                    assert!(distributor.state.try_lock().is_some());
+                    wakes.push(index);
+                });
+                assert_eq!(wakes, if deliverable { vec![1] } else { vec![] });
+                assert_eq!(
+                    reserve_pending_spi(&distributor, target).is_some(),
+                    deliverable
+                );
             }
         }
 
@@ -2561,9 +2684,11 @@ mod gicd {
                 assert!(reserve_pending_spi(&distributor, vp).is_some());
                 distributor.set_spi_irq(TEST_SPI, false);
                 // A different VP cannot cancel the owner's reservation.
-                distributor.cancel_spi_reservation(other_vp, TEST_SPI);
+                distributor.cancel_spi_reservation(other_vp, TEST_SPI, |_| {});
                 assert!(reserve_pending_spi(&distributor, other_vp).is_none());
-                distributor.cancel_spi_reservation(vp, TEST_SPI);
+                distributor.cancel_spi_reservation(vp, TEST_SPI, |_| {
+                    panic!("normal repacking must not notify other IRM targets")
+                });
                 assert_eq!(
                     reserve_pending_spi(&distributor, other_vp).is_some(),
                     latched
@@ -2621,7 +2746,7 @@ mod gicd {
             assert_eq!(distributor.state.lock().in_flight_by_vp[0], [TEST_SPI]);
             assert!(reserve_pending_spi(&distributor, vp1).is_none());
 
-            distributor.cancel_spi_reservation(vp0, TEST_SPI);
+            distributor.cancel_spi_reservation(vp0, TEST_SPI, |_| {});
             assert!(distributor.state.lock().in_flight_by_vp[0].is_empty());
             assert_eq!(
                 reserve_pending_spi(&distributor, vp1).map(|interrupt| interrupt.intid),
