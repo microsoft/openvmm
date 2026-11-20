@@ -5,6 +5,36 @@
 
 use serde::Deserialize;
 use serde::Serialize;
+use std::path::PathBuf;
+
+/// The executable used for a benchmark, distinct from Burette's build revision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmmInfo {
+    pub name: String,
+    pub executable: PathBuf,
+    pub version: Option<String>,
+    /// Exact QEMU launch command, including device and accelerator settings.
+    pub command: Option<Vec<String>>,
+}
+
+/// Workload settings needed to reproduce a disk comparison.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskIoParameters {
+    pub backend: String,
+    pub data_disk: Option<PathBuf>,
+    pub data_disk_size_gib: u64,
+    pub host_direct: bool,
+    pub guest_direct: bool,
+    pub io_depth: u32,
+    pub block_size_kib: u32,
+    pub runtime_secs: u32,
+    pub ramp_secs: u32,
+    pub workloads: Vec<String>,
+    pub cpu: Option<u32>,
+    pub reuse: bool,
+    pub guest_vps: u32,
+    pub guest_memory_mib: u64,
+}
 
 /// A single metric value produced by one iteration of a perf test.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +80,12 @@ pub struct PerfReport {
     pub git_commit_date: String,
     /// Timestamp when the test run started (ISO 8601).
     pub date: String,
+    /// Measured VMM, absent in older reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vmm: Option<VmmInfo>,
+    /// Disk workload configuration, absent in older reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_io: Option<DiskIoParameters>,
     /// All metric results.
     pub results: Vec<MetricStats>,
 }
@@ -70,6 +106,8 @@ impl PerfReport {
             git_branch,
             git_commit_date: String::new(),
             date,
+            vmm: None,
+            disk_io: None,
             results,
         })
     }
@@ -95,6 +133,16 @@ impl PerfReport {
             println!("  Git commit date: {}", self.git_commit_date);
         }
         println!("  Run date:        {}", self.date);
+        if let Some(vmm) = &self.vmm {
+            println!(
+                "  VMM:             {} ({})",
+                vmm.name,
+                vmm.executable.display()
+            );
+            if let Some(version) = &vmm.version {
+                println!("  VMM version:     {version}");
+            }
+        }
         println!();
         println!(
             "  {:<30} {:>10} {:>12} {:>12} {:>12} {:>12} {:>6}",
@@ -141,6 +189,8 @@ pub fn compare_reports(baseline: &PerfReport, candidate: &PerfReport) -> Compari
     ComparisonReport {
         baseline_revision: baseline.git_revision.clone(),
         candidate_revision: candidate.git_revision.clone(),
+        baseline_vmm: baseline.vmm.clone(),
+        candidate_vmm: candidate.vmm.clone(),
         comparisons,
     }
 }
@@ -152,6 +202,10 @@ pub struct ComparisonReport {
     pub baseline_revision: String,
     /// Git revision of the candidate.
     pub candidate_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_vmm: Option<VmmInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_vmm: Option<VmmInfo>,
     /// Per-metric comparisons.
     pub comparisons: Vec<MetricComparison>,
 }
@@ -162,6 +216,14 @@ impl ComparisonReport {
         println!("Performance Comparison");
         println!("  Baseline:  {}", self.baseline_revision);
         println!("  Candidate: {}", self.candidate_revision);
+        for (label, vmm) in [
+            ("Baseline VMM", &self.baseline_vmm),
+            ("Candidate VMM", &self.candidate_vmm),
+        ] {
+            if let Some(vmm) = vmm {
+                println!("  {label}: {} ({})", vmm.name, vmm.executable.display());
+            }
+        }
         println!();
         println!(
             "  {:<30} {:>10} {:>12} {:>12} {:>12} {:>8}",
@@ -204,4 +266,47 @@ pub struct MetricComparison {
     pub delta: f64,
     /// Relative delta as percentage.
     pub delta_pct: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn cross_vmm_comparison_preserves_identity_and_legacy_reports() -> anyhow::Result<()> {
+        let baseline = PerfReport::from_json(
+            r#"{
+            "git_revision": "old-harness", "date": "2026-11-04T00:00:00Z",
+            "results": [{
+                "name": "fio_virtio-blk_rand_read_iops", "unit": "IOPS",
+                "iterations": 1, "mean": 100.0, "std_dev": 0.0, "min": 100.0, "max": 100.0
+            }]
+        }"#,
+        )?;
+        assert!(baseline.vmm.is_none());
+        assert!(baseline.disk_io.is_none());
+        let mut candidate = baseline.clone();
+        candidate.vmm = Some(VmmInfo {
+            name: "qemu".into(),
+            executable: "/installed/qemu".into(),
+            version: Some("QEMU emulator version test".into()),
+            command: Some(vec![
+                "/installed/qemu".into(),
+                "-accel".into(),
+                "kvm".into(),
+            ]),
+        });
+        candidate.results[0].mean = 125.0;
+        let candidate = PerfReport::from_json(&candidate.to_json()?)?;
+        let comparison = compare_reports(&baseline, &candidate);
+        assert!(comparison.baseline_vmm.is_none());
+        assert_eq!(comparison.candidate_vmm.as_ref().unwrap().name, "qemu");
+        assert_eq!(comparison.comparisons.len(), 1);
+        assert_eq!(comparison.comparisons[0].delta_pct, 25.0);
+        let json = comparison.to_json()?;
+        assert!(json.contains("QEMU emulator version test"));
+        assert!(json.contains("-accel"));
+        Ok(())
+    }
 }

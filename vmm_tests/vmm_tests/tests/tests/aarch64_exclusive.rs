@@ -1199,7 +1199,12 @@ const MEGABYTE: u64 = 1024 * 1024;
 fn test_disk() -> DeviceConfig {
     DeviceConfig::VirtioBlk(VirtioBlkDeviceConfig {
         name: "test-disk".into(),
-        size: 64 * MEGABYTE, // 64M
+        backing: petri::qemu::devices::VirtioBlkBacking::Null(64 * MEGABYTE),
+        options: petri::qemu::devices::VirtioBlkOptions {
+            iommu_platform: Some(true),
+            disable_legacy: Some(true),
+            ..Default::default()
+        },
         vfio: true,
     })
 }

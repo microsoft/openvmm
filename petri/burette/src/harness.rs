@@ -259,6 +259,19 @@ pub async fn run_warm_test(
     driver: &pal_async::DefaultDriver,
     iterations: Option<u32>,
 ) -> anyhow::Result<Vec<MetricStats>> {
+    let (stats, ()) =
+        run_warm_test_with_metadata(test, resolver, driver, iterations, |_| ()).await?;
+    Ok(stats)
+}
+
+/// Run a warm test and retain caller-selected metadata from its initialized state.
+pub async fn run_warm_test_with_metadata<T: WarmPerfTest + ?Sized, M>(
+    test: &T,
+    resolver: &petri::ArtifactResolver<'_>,
+    driver: &pal_async::DefaultDriver,
+    iterations: Option<u32>,
+    metadata: impl FnOnce(&mut T::State) -> M,
+) -> anyhow::Result<(Vec<MetricStats>, M)> {
     let iterations = iterations.unwrap_or(test.default_iterations());
     let warmup = test.warmup_iterations();
     let total = warmup + iterations;
@@ -275,6 +288,7 @@ pub async fn run_warm_test(
         .setup(resolver, driver)
         .await
         .with_context(|| format!("{}: setup", test.name()))?;
+    let metadata = metadata(&mut state);
 
     let mut all_samples: Vec<Vec<MetricResult>> = Vec::new();
 
@@ -317,7 +331,10 @@ pub async fn run_warm_test(
         .await
         .with_context(|| format!("{}: teardown", test.name()))?;
 
-    compute_stats(test.name(), &all_samples, iterations)
+    Ok((
+        compute_stats(test.name(), &all_samples, iterations)?,
+        metadata,
+    ))
 }
 
 /// Aggregate per-metric samples across iterations into statistics.
@@ -371,4 +388,71 @@ fn compute_stats(
     }
 
     Ok(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use test_with_tracing::test;
+
+    struct MetadataTest {
+        torn_down_after: Cell<Option<u32>>,
+    }
+
+    impl WarmPerfTest for MetadataTest {
+        type State = u32;
+
+        fn name(&self) -> &str {
+            "metadata"
+        }
+
+        fn warmup_iterations(&self) -> u32 {
+            1
+        }
+
+        async fn setup(
+            &self,
+            _resolver: &petri::ArtifactResolver<'_>,
+            _driver: &pal_async::DefaultDriver,
+        ) -> anyhow::Result<u32> {
+            Ok(0)
+        }
+
+        async fn run_once(&self, state: &mut u32) -> anyhow::Result<Vec<MetricResult>> {
+            *state += 1;
+            Ok(vec![MetricResult {
+                name: "sample".into(),
+                unit: "count".into(),
+                value: f64::from(*state),
+            }])
+        }
+
+        async fn teardown(&self, state: u32) -> anyhow::Result<()> {
+            self.torn_down_after.set(Some(state));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn metadata_survives_warmup_and_teardown() -> anyhow::Result<()> {
+        let test = MetadataTest {
+            torn_down_after: Cell::new(None),
+        };
+        let mut requirements = petri::TestArtifactRequirements::new();
+        let resolver = petri::ArtifactResolver::collector(&mut requirements);
+        let (stats, metadata) = pal_async::DefaultPool::run_with(async |driver| {
+            run_warm_test_with_metadata(&test, &resolver, &driver, Some(2), |state| {
+                assert_eq!(*state, 0, "metadata should be captured before measurement");
+                vec!["qemu".to_owned(), "-accel".into(), "kvm".into()]
+            })
+            .await
+        })?;
+        assert_eq!(metadata, ["qemu", "-accel", "kvm"]);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].mean, 2.5);
+        assert_eq!(stats[0].iterations, 2);
+        assert_eq!(test.torn_down_after.get(), Some(3));
+        Ok(())
+    }
 }

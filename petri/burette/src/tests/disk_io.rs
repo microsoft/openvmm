@@ -18,6 +18,9 @@ use petri_artifacts_common::tags::MachineArch;
 use std::path::PathBuf;
 use vm_resource::IntoResource;
 
+pub const GUEST_VPS: u32 = 2;
+pub const GUEST_MEMORY_MIB: u64 = 1024;
+
 /// Which disk backend to use for the fio test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum DiskBackend {
@@ -54,6 +57,12 @@ impl DiskWorkload {
     }
 }
 
+impl std::fmt::Display for DiskWorkload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.fio_mode().0)
+    }
+}
+
 fn validate_workloads(workloads: &[DiskWorkload]) -> anyhow::Result<()> {
     for (index, workload) in workloads.iter().enumerate() {
         anyhow::ensure!(
@@ -67,6 +76,8 @@ fn validate_workloads(workloads: &[DiskWorkload]) -> anyhow::Result<()> {
 
 /// Block I/O test via fio.
 pub struct DiskIoTest {
+    /// Installed QEMU executable, or `None` for OpenVMM.
+    pub qemu: Option<PathBuf>,
     /// Print guest diagnostics.
     pub diag: bool,
     /// Which disk backend to test.
@@ -93,11 +104,25 @@ pub struct DiskIoTest {
 
 /// State kept across warm iterations.
 pub struct DiskIoTestState {
-    vm: petri::PetriVm<petri::openvmm::OpenVmmPetriBackend>,
+    vm: DiskIoVm,
     agent: petri::pipette::PipetteClient,
     /// Guest device path for the data disk (e.g. "/dev/vda" or "/dev/sdb").
     disk_device: String,
     iteration: u32,
+}
+
+enum DiskIoVm {
+    OpenVmm(Box<petri::PetriVm<petri::openvmm::OpenVmmPetriBackend>>),
+    Qemu(Box<petri::PetriVm<petri::qemu::QemuPetriBackend>>),
+}
+
+impl DiskIoTestState {
+    pub fn qemu_command(&mut self) -> Option<Vec<String>> {
+        match &mut self.vm {
+            DiskIoVm::Qemu(vm) => Some(vm.backend().command().to_vec()),
+            DiskIoVm::OpenVmm(_) => None,
+        }
+    }
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
@@ -124,6 +149,65 @@ pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
         true,
     );
     require_petritools_erofs(resolver);
+}
+
+fn build_qemu_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
+    match MachineArch::host() {
+        MachineArch::X86_64 => petri::Firmware::linux_direct_bzimage(resolver),
+        MachineArch::Aarch64 => build_firmware(resolver),
+    }
+}
+
+fn qemu_artifacts(
+    resolver: &petri::ArtifactResolver<'_>,
+    binary: &std::path::Path,
+) -> Option<petri::PetriVmArtifacts<petri::qemu::QemuPetriBackend>> {
+    petri::PetriVmArtifacts::new_with_backend(
+        resolver,
+        build_qemu_firmware(resolver),
+        MachineArch::host(),
+        true,
+        petri::qemu::QemuPetriBackend::from_binary(binary.to_owned()),
+    )
+}
+
+/// Register only guest artifacts; QEMU is supplied by the caller, not downloaded.
+pub fn register_qemu_artifacts(resolver: &petri::ArtifactResolver<'_>) {
+    build_qemu_firmware(resolver);
+    petri::disk_image::AgentImage::new(petri_artifacts_common::tags::OsFlavor::Linux)
+        .with_pipette(resolver, MachineArch::host());
+    require_petritools_erofs(resolver);
+}
+
+fn qemu_disk_config(
+    name: &str,
+    path: PathBuf,
+    read_only: bool,
+    direct: bool,
+) -> petri::qemu::devices::DeviceConfig {
+    use petri::qemu::devices::DeviceConfig;
+    use petri::qemu::devices::VirtioBlkBacking;
+    use petri::qemu::devices::VirtioBlkDeviceConfig;
+    use petri::qemu::devices::VirtioBlkOptions;
+    DeviceConfig::VirtioBlk(VirtioBlkDeviceConfig {
+        name: name.into(),
+        backing: VirtioBlkBacking::File {
+            path,
+            read_only,
+            direct,
+        },
+        vfio: false,
+        options: VirtioBlkOptions {
+            packed: Some(true),
+            queue_size: Some(256),
+            num_queues: Some(1),
+            request_merging: Some(false),
+            disable_legacy: Some(true),
+            iommu_platform: Some(false),
+            logical_block_size: Some(512),
+            physical_block_size: Some(4096),
+        },
+    })
 }
 
 /// GUID for the data disk SCSI controller (used for storvsc backend).
@@ -191,93 +275,93 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             );
         }
 
-        let firmware = build_firmware(resolver);
+        let (vm, agent) = if let Some(binary) = &self.qemu {
+            let artifacts = qemu_artifacts(resolver, binary)
+                .context("firmware/arch not compatible with QEMU backend")?;
+            let tools = require_petritools_erofs(resolver).get().to_owned();
+            let data = self
+                .data_disk
+                .clone()
+                .context("QEMU requires a data file")?;
+            let console = match MachineArch::host() {
+                MachineArch::X86_64 => "ttyS0",
+                MachineArch::Aarch64 => "ttyAMA0",
+            };
+            let kernel_args = format!("console={console} panic=-1 quiet isolcpus=managed_irq,1");
+            let direct = self.direct;
+            let builder =
+                petri::PetriVmBuilder::minimal("disk_io", &crate::log_source(), artifacts, driver)?
+                    .with_processor_topology(petri::ProcessorTopology {
+                        vp_count: GUEST_VPS,
+                        ..Default::default()
+                    })
+                    .with_memory(petri::MemoryConfig {
+                        startup_bytes: GUEST_MEMORY_MIB * petri::SIZE_1_MB,
+                        ..Default::default()
+                    })
+                    .without_screenshots()
+                    .modify_backend(move |config| {
+                        config
+                            .with_kvm()
+                            .with_kernel_command_line(kernel_args)
+                            .with_devices([
+                                qemu_disk_config("tools", tools, true, false),
+                                qemu_disk_config("data", data, false, direct),
+                            ])
+                    });
+            let (mut vm, agent) = builder.run().await.context("failed to boot QEMU VM")?;
+            std::fs::write(
+                self.fio_output_dir.join("qemu-command.json"),
+                serde_json::to_vec_pretty(vm.backend().command())?,
+            )
+            .context("failed to record QEMU command")?;
+            (DiskIoVm::Qemu(Box::new(vm)), agent)
+        } else {
+            let firmware = build_firmware(resolver);
 
-        let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver,
-            firmware,
-            MachineArch::host(),
-            true,
-        )
-        .context("firmware/arch not compatible with OpenVMM backend")?;
+            let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
+                resolver,
+                firmware,
+                MachineArch::host(),
+                true,
+            )
+            .context("firmware/arch not compatible with OpenVMM backend")?;
 
-        let log_source = crate::log_source();
+            let log_source = crate::log_source();
 
-        // Open the perf rootfs erofs image for the virtio-blk device.
-        let erofs_path = require_petritools_erofs(resolver);
-        let erofs_file = fs_err::File::open(&erofs_path)?;
+            // Open the perf rootfs erofs image for the virtio-blk device.
+            let erofs_path = require_petritools_erofs(resolver);
+            let erofs_file = fs_err::File::open(&erofs_path)?;
 
-        let mut builder =
-            petri::PetriVmBuilder::minimal("disk_io", &log_source, artifacts, driver)?
-                .with_processor_topology(petri::ProcessorTopology {
-                    vp_count: 2,
-                    ..Default::default()
-                })
-                .with_memory(petri::MemoryConfig {
-                    startup_bytes: 1024 * 1024 * 1024, // 1 GB
-                    ..Default::default()
-                });
+            let mut builder =
+                petri::PetriVmBuilder::minimal("disk_io", &log_source, artifacts, driver)?
+                    .with_processor_topology(petri::ProcessorTopology {
+                        vp_count: GUEST_VPS,
+                        ..Default::default()
+                    })
+                    .with_memory(petri::MemoryConfig {
+                        startup_bytes: GUEST_MEMORY_MIB * petri::SIZE_1_MB,
+                        ..Default::default()
+                    });
 
-        // Attach erofs + data disk and NIC. Only one modify_backend() call is
-        // allowed, so combine all PCIe device setup in a single call.
-        let data_disk_path = self.data_disk.clone();
-        match self.backend {
-            DiskBackend::VirtioBlk => {
-                // Build the disk resource before entering the closure (which
-                // can't propagate errors).
-                let disk = make_disk_resource(&data_disk_path, disk_size_bytes, self.direct)
-                    .await
-                    .context("failed to create data disk resource")?;
-                builder = builder.modify_backend(move |b| {
-                    b.with_nic()
-                        .with_pcie_root_topology(1, 1, 2)
-                        .with_custom_config(|c| {
-                            use disk_backend_resources::FileDiskHandle;
-                            use openvmm_defs::config::PcieDeviceConfig;
-
-                            // erofs image on port 0
-                            c.pcie_devices.push(PcieDeviceConfig {
-                                port_name: "s0rc0rp0".into(),
-                                resource: virtio_resources::VirtioPciDeviceHandle(
-                                    virtio_resources::blk::VirtioBlkHandle {
-                                        disk: FileDiskHandle(erofs_file.into()).into_resource(),
-                                        read_only: true,
-                                        serial: None,
-                                    }
-                                    .into_resource(),
-                                )
-                                .into_resource(),
-                            });
-                            // data disk on port 1
-                            c.pcie_devices.push(PcieDeviceConfig {
-                                port_name: "s0rc0rp1".into(),
-                                resource: virtio_resources::VirtioPciDeviceHandle(
-                                    virtio_resources::blk::VirtioBlkHandle {
-                                        disk,
-                                        read_only: false,
-                                        serial: None,
-                                    }
-                                    .into_resource(),
-                                )
-                                .into_resource(),
-                            });
-                        })
-                });
-            }
-            DiskBackend::Storvsc => {
-                let disk = match &data_disk_path {
-                    Some(p) => petri::Disk::Persistent(p.clone()),
-                    None => petri::Disk::Memory(disk_size_bytes),
-                };
-                builder = builder
-                    .modify_backend(move |b| {
+            // Attach erofs + data disk and NIC. Only one modify_backend() call is
+            // allowed, so combine all PCIe device setup in a single call.
+            let data_disk_path = self.data_disk.clone();
+            match self.backend {
+                DiskBackend::VirtioBlk => {
+                    // Build the disk resource before entering the closure (which
+                    // can't propagate errors).
+                    let disk = make_disk_resource(&data_disk_path, disk_size_bytes, self.direct)
+                        .await
+                        .context("failed to create data disk resource")?;
+                    builder = builder.modify_backend(move |b| {
                         b.with_nic()
-                            .with_pcie_root_topology(1, 1, 1)
+                            .with_pcie_root_topology(1, 1, 2)
                             .with_custom_config(|c| {
                                 use disk_backend_resources::FileDiskHandle;
                                 use openvmm_defs::config::PcieDeviceConfig;
 
-                                // erofs image on a PCIe root port
+                                // erofs image on port 0
                                 c.pcie_devices.push(PcieDeviceConfig {
                                     port_name: "s0rc0rp0".into(),
                                     resource: virtio_resources::VirtioPciDeviceHandle(
@@ -290,28 +374,73 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                                     )
                                     .into_resource(),
                                 });
+                                // data disk on port 1
+                                c.pcie_devices.push(PcieDeviceConfig {
+                                    port_name: "s0rc0rp1".into(),
+                                    resource: virtio_resources::VirtioPciDeviceHandle(
+                                        virtio_resources::blk::VirtioBlkHandle {
+                                            disk,
+                                            read_only: false,
+                                            serial: None,
+                                        }
+                                        .into_resource(),
+                                    )
+                                    .into_resource(),
+                                });
                             })
-                    })
-                    .add_vmbus_storage_controller(
-                        &DATA_DISK_SCSI_CONTROLLER,
-                        petri::Vtl::Vtl0,
-                        petri::VmbusStorageType::Scsi,
-                    )
-                    .add_vmbus_drive(
-                        petri::Drive::new(Some(disk), false),
-                        &DATA_DISK_SCSI_CONTROLLER,
-                        Some(0),
-                    );
+                    });
+                }
+                DiskBackend::Storvsc => {
+                    let disk = match &data_disk_path {
+                        Some(p) => petri::Disk::Persistent(p.clone()),
+                        None => petri::Disk::Memory(disk_size_bytes),
+                    };
+                    builder = builder
+                        .modify_backend(move |b| {
+                            b.with_nic()
+                                .with_pcie_root_topology(1, 1, 1)
+                                .with_custom_config(|c| {
+                                    use disk_backend_resources::FileDiskHandle;
+                                    use openvmm_defs::config::PcieDeviceConfig;
+
+                                    // erofs image on a PCIe root port
+                                    c.pcie_devices.push(PcieDeviceConfig {
+                                        port_name: "s0rc0rp0".into(),
+                                        resource: virtio_resources::VirtioPciDeviceHandle(
+                                            virtio_resources::blk::VirtioBlkHandle {
+                                                disk: FileDiskHandle(erofs_file.into())
+                                                    .into_resource(),
+                                                read_only: true,
+                                                serial: None,
+                                            }
+                                            .into_resource(),
+                                        )
+                                        .into_resource(),
+                                    });
+                                })
+                        })
+                        .add_vmbus_storage_controller(
+                            &DATA_DISK_SCSI_CONTROLLER,
+                            petri::Vtl::Vtl0,
+                            petri::VmbusStorageType::Scsi,
+                        )
+                        .add_vmbus_drive(
+                            petri::Drive::new(Some(disk), false),
+                            &DATA_DISK_SCSI_CONTROLLER,
+                            Some(0),
+                        );
+                }
             }
-        }
 
-        if !self.diag {
-            builder = builder.without_screenshots();
-        } else {
-            builder = builder.with_serial_output();
-        }
+            if !self.diag {
+                builder = builder.without_screenshots();
+            } else {
+                builder = builder.with_serial_output();
+            }
 
-        let (vm, agent) = builder.run().await.context("failed to boot minimal VM")?;
+            let (vm, agent) = builder.run().await.context("failed to boot minimal VM")?;
+            (DiskIoVm::OpenVmm(Box::new(vm)), agent)
+        };
 
         // Mount the erofs image and prepare chroot (fio is pre-installed).
         agent
@@ -363,7 +492,10 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
     async fn run_once(&self, state: &mut DiskIoTestState) -> anyhow::Result<Vec<MetricResult>> {
         let mut metrics = Vec::new();
         let label = self.backend;
-        let pid = state.vm.backend().pid();
+        let pid = match &mut state.vm {
+            DiskIoVm::OpenVmm(vm) => vm.backend().pid(),
+            DiskIoVm::Qemu(vm) => vm.backend().pid(),
+        };
         let mut recorder = crate::harness::PerfRecorder::new(self.perf_dir.as_deref(), pid)?;
         let dev = &state.disk_device;
         state.iteration += 1;
@@ -426,7 +558,10 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
 
     async fn teardown(&self, state: DiskIoTestState) -> anyhow::Result<()> {
         state.agent.power_off().await?;
-        state.vm.wait_for_clean_teardown().await?;
+        match state.vm {
+            DiskIoVm::OpenVmm(vm) => (*vm).wait_for_clean_teardown().await?,
+            DiskIoVm::Qemu(vm) => (*vm).wait_for_clean_teardown().await?,
+        }
         Ok(())
     }
 }
@@ -595,6 +730,35 @@ fn parse_fio_iops(json: &str, metric_name: &str, field: &str) -> anyhow::Result<
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn qemu_registers_guest_artifacts_without_a_vmm_executable() {
+        let mut requirements = petri::TestArtifactRequirements::new();
+        register_qemu_artifacts(&petri::ArtifactResolver::collector(&mut requirements));
+        let pipette = match MachineArch::host() {
+            MachineArch::X86_64 => {
+                petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL.erase()
+            }
+            MachineArch::Aarch64 => {
+                petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64_MUSL.erase()
+            }
+        };
+        assert!(requirements.required_artifacts().any(|a| a == pipette));
+        for artifact in requirements
+            .required_artifacts()
+            .chain(requirements.optional_artifacts())
+        {
+            assert_ne!(
+                artifact,
+                petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase()
+            );
+            assert_ne!(
+                artifact,
+                petri_artifacts_vmm_test::artifacts::QEMU_SYSTEM_AARCH64_LINUX_X64.erase()
+            );
+        }
+    }
 
     #[test]
     fn latency_percentiles_include_submission_time() -> anyhow::Result<()> {

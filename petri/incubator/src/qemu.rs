@@ -26,7 +26,12 @@ pub(crate) fn petri_devices(
                 DeviceConfig::VirtioBlk(c) => {
                     p::DeviceConfig::VirtioBlk(p::VirtioBlkDeviceConfig {
                         name: c.name.clone(),
-                        size: parse_size(&c.size)?,
+                        backing: p::VirtioBlkBacking::Null(parse_size(&c.size)?),
+                        options: p::VirtioBlkOptions {
+                            iommu_platform: Some(true),
+                            disable_legacy: Some(true),
+                            ..Default::default()
+                        },
                         vfio: c.vfio,
                     })
                 }

@@ -1,8 +1,9 @@
 # Performance Tests (burette)
 
 `burette` is a standalone binary that runs performance benchmarks
-against OpenVMM using the `petri` test framework. It measures boot
-time, memory overhead, and concurrent VM scaling behavior, producing
+against OpenVMM using the `petri` test framework, with QEMU/KVM available for
+file-backed virtio-blk comparisons. It measures boot, storage, networking,
+memory overhead, and concurrent VM scaling behavior, producing
 JSON reports that can be compared across builds.
 
 Use Burette for developer-controlled experiments, report comparison, and
@@ -205,6 +206,45 @@ By default a RAM-backed disk is used to isolate virtio/storvsc overhead
 without host filesystem noise. Pass `--data-disk` with a path on fast
 storage (e.g., NVMe) for end-to-end latency measurements.
 
+#### QEMU comparison
+
+On Linux, use the installed QEMU to run the same disk workload under KVM:
+
+```bash
+burette run --vmm qemu --test disk-io \
+  --data-disk path/to/test.raw --data-disk-size-gib 4 \
+  --disk-reuse --disk-cpu 1 --disk-workloads randread,write \
+  --disk-runtime-secs 10 --disk-ramp-secs 2 -o qemu.json
+```
+
+Initialize the file with a run without `--disk-reuse` first. Use the same
+file, workload options, and host CPU placement for the OpenVMM run, omitting
+`--vmm qemu`, then compare the reports with `burette compare`.
+
+QEMU mode requires `--test disk-io`, `--data-disk`, and the virtio-blk
+backend. Other benchmarks, storvsc, and RAM-backed disks are not supported
+in this mode. The executable defaults to `qemu-system-x86_64` or
+`qemu-system-aarch64` on `PATH`; use `--qemu-path path/to/qemu-system-x86_64`
+to select another installed binary. Burette does not download QEMU or use
+the Flowey-managed emulator. Guest kernel, initrd, Pipette, and tool images
+still use Petri artifact resolution. KVM is required; there is no fallback
+to CPU emulation.
+
+The QEMU guest has two vCPUs and 1 GiB RAM. Its data device uses a packed
+virtqueue with 256 entries, one queue, and request merging disabled. Raw
+file I/O uses io_uring with flushes enabled and host caching by default;
+`--disk-direct` bypasses the host page cache. The kernel command line keeps
+managed IRQs off guest CPU1 so `--disk-cpu 1` can separate fio from data IRQ
+handling. Check the retained interrupt snapshots when comparing results;
+host thread affinity is not configured automatically. QEMU debug thread names
+are enabled so external tools can identify threads such as `CPU 0/KVM`.
+
+Reports identify the selected VMM executable and record the disk workload
+settings. QEMU reports also include its version and exact launch command,
+which is retained in `<LOG_DIR>/fio/qemu-command.json`. The report's
+`git_revision` and `git_branch` describe the Burette build, not the measured
+VMM binary. Older reports without the new metadata remain readable.
+
 ### virtio-fs
 
 The virtio-fs benchmark boots a minimal Linux guest, mounts a host-exported
@@ -265,6 +305,8 @@ VMM_TESTS_CONTENT_DIR=$PWD ./burette run -o report.json
 
 The bundle includes `burette`, `openvmm`, `pipette`, the test kernel,
 and initrd — no Rust toolchain or repo checkout needed.
+Linux bundles also include the guest artifacts for QEMU disk comparisons,
+but QEMU itself must be installed on the destination host.
 
 The remote host still needs a supported virtualization interface and any host
 facilities required by the selected network, storage, or filesystem backend.
