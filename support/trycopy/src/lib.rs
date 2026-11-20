@@ -240,6 +240,8 @@ pub unsafe fn try_compare_exchange<T: Copy + IntoBytes + FromBytes>(
         });
     }
 
+    // std caches CPUID results after the first call, so this is just a relaxed
+    // atomic load and bit test.
     #[cfg(target_arch = "x86_64")]
     if size_of::<T>() == 16 && !std::is_x86_feature_detected!("cmpxchg16b") {
         return Err(MemoryError {
