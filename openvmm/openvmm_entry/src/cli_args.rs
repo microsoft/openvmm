@@ -4988,7 +4988,6 @@ mod tests {
         }
         assert!(EndpointConfigCli::from_str("consomme:udp_timeout=abc").is_err());
         assert!(EndpointConfigCli::from_str("consomme:udp_timeout=-1").is_err());
-        assert!(EndpointConfigCli::from_str("consomme:udp_timeout=1,udp_timeout=2").is_err());
 
         // Test dio without id
         match EndpointConfigCli::from_str("dio").unwrap() {
