@@ -243,6 +243,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
                                         disk: FileDiskHandle(erofs_file.into()).into_resource(),
                                         read_only: true,
                                         serial: None,
+                                        options: Default::default(),
                                     }
                                     .into_resource(),
                                 )
@@ -556,6 +557,7 @@ mod tap {
                             disk: FileDiskHandle(erofs_file.into()).into_resource(),
                             read_only: true,
                             serial: None,
+                            options: Default::default(),
                         }
                         .into_resource(),
                     )

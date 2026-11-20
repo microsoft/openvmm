@@ -507,10 +507,10 @@ fn new_memfd(_name: &str) -> io::Result<File> {
 /// `name` labels the memfd so it appears as `/memfd:<name>` in
 /// `/proc/{pid}/smaps` on Linux.
 pub fn alloc_shared_memory(size: usize, name: &str) -> io::Result<OwnedFd> {
-    #[cfg(target_os = "linux")]
-    let fd = new_memfd(name, libc::MFD_CLOEXEC)?;
-    #[cfg(not(target_os = "linux"))]
-    let fd = new_memfd(name)?;
+    let fd = cfg_select! {
+        target_os = "linux" => new_memfd(name, libc::MFD_CLOEXEC)?,
+        _ => new_memfd(name)?,
+    };
     fd.set_len(size as u64)?;
     Ok(fd.into())
 }

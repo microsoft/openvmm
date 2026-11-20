@@ -70,6 +70,7 @@ fn rep_outs() {
                 len <= MAX_REP_LOOPS,
                 |asm| instr(asm.rep()),
                 |cpu| {
+                    cpu.set_gp(Gp::RSI.into(), 0x100);
                     cpu.valid_gva = cpu.gp(Gp::RSI.into());
                     cpu.mem_val.clone_from(&input_vec);
                     cpu.valid_io_port = PORT;

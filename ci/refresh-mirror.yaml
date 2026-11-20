@@ -1,0 +1,58 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# On backport, update the trigger branch and its downstream submodule target.
+trigger:
+  batch: true
+  branches:
+    include:
+    - main
+pr: none
+
+variables:
+  submoduleTarget: main
+
+pool:
+  name: openvmm-ado-amd-westus2-v6
+  # Select a Linux image with Bash and Python 3.
+  demands:
+  - ImageOverride -equals ubuntu2404-amd64-prepped
+
+jobs:
+- job: QueueMirror
+  condition: and(succeeded(), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI'), eq(variables['Build.Repository.Name'], 'microsoft/openvmm'))
+  steps:
+  - checkout: none
+  - bash: |
+      set -euo pipefail
+      python3 - <<'PY'
+      import json
+      import os
+      import urllib.request
+
+      ref = os.environ["BUILD_SOURCEBRANCH"]
+      if not ref.startswith("refs/heads/") or ref == "refs/heads/":
+          raise ValueError("Unexpected source ref")
+      branch = ref.removeprefix("refs/heads/")
+      body = json.dumps({"templateParameters": {
+          "branchToMirror": branch,
+          "branchToUpdateSubmodule": os.environ["SUBMODULE_TARGET"],
+          "updateSubmodule": True,
+      }}).encode()
+      request = urllib.request.Request(
+          "https://dev.azure.com/microsoft/HyperVCloud/_apis/pipelines/149443/runs?api-version=7.1",
+          data=body,
+          headers={
+              "Authorization": "Bearer " + os.environ["SYSTEM_ACCESSTOKEN"],
+              "Content-Type": "application/json",
+          },
+          method="POST",
+      )
+      with urllib.request.urlopen(request, timeout=60) as response:
+          run = json.load(response)
+      print(f"Queued mirror refresh {run['id']} for {branch}")
+      PY
+    displayName: Queue downstream mirror pipeline
+    env:
+      SUBMODULE_TARGET: ${{ variables.submoduleTarget }}
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)

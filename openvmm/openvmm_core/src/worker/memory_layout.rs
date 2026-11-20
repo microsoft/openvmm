@@ -151,7 +151,6 @@ pub(super) struct MemoryLayoutInput<'a> {
 const ARCH_RESERVED: MemoryRange = cfg_select! {
     guest_arch = "x86_64" => MemoryRange::new(0xFE00_0000..0x1_0000_0000),
     guest_arch = "aarch64" => MemoryRange::new(0xEF00_0000..0x1_0000_0000),
-    _ => compile_error!("unsupported guest architecture"),
 };
 
 pub(super) fn resolve_memory_layout(
@@ -618,7 +617,6 @@ mod tests {
     const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = cfg_select! {
         guest_arch = "x86_64" => 128 * 1024 * 1024,
         guest_arch = "aarch64" => 512 * 1024 * 1024,
-        _ => compile_error!("unsupported guest architecture"),
     };
     const DEFAULT_CHIPSET_HIGH_MMIO_SIZE: u64 = 512 * 1024 * 1024;
     const DEFAULT_VTL2_CHIPSET_MMIO_SIZE: u64 = GB;

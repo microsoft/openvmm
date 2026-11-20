@@ -224,7 +224,6 @@ fn parse_vtl0_vp_context(raw: Vec<u8>) -> Result<VpContext, Error> {
         let igvm_reg = cfg_select! {
             guest_arch = "x86_64" => igvm::registers::X86Register::try_from(reg),
             guest_arch = "aarch64" => igvm::registers::AArch64Register::try_from(reg),
-            _ => compile_error!("unsupported guest architecture"),
         }
         .map_err(Error::UnsupportedRegister)?;
 

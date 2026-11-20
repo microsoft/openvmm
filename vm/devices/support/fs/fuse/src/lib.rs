@@ -405,10 +405,14 @@ pub trait Fuse {
     }
 }
 
-#[cfg(windows)]
-pub type FileRef<'a> = std::os::windows::io::BorrowedHandle<'a>;
-#[cfg(unix)]
-pub type FileRef<'a> = std::os::unix::io::BorrowedFd<'a>;
+cfg_select! {
+    windows => {
+        pub type FileRef<'a> = std::os::windows::io::BorrowedHandle<'a>;
+    }
+    unix => {
+        pub type FileRef<'a> = std::os::unix::io::BorrowedFd<'a>;
+    }
+}
 
 /// Trait for mapping files into a shared memory region.
 ///

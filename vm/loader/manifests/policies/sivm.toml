@@ -1,0 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Device policy for SIVMs: OpenHCL may relay only the GPU.
+devices = "devices.toml"
+allowed_pci_devices = ["nvidia-gpu"]
+# The GPU is the reason for a SIVM, so fail at boot if the relay can't run.
+vpci_relay = "must_be_on"

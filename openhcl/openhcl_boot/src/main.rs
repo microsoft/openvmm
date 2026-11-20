@@ -192,26 +192,22 @@ fn build_kernel_command_line(
         "acpi=off",
     ];
 
-    const X86_KERNEL_PARAMETERS: &[&str] = &[
-        // Disable all attempts to use an IOMMU, including swiotlb.
-        "iommu=off",
-        // Don't probe for a PCI bus. PCI devices currently come from VPCI. When
-        // this changes, we will explicitly enumerate a PCI bus via devicetree.
-        "pci=off",
-    ];
-
-    const AARCH64_KERNEL_PARAMETERS: &[&str] = &[];
+    const ARCH_KERNEL_PARAMETERS: &[&str] = cfg_select! {
+        target_arch = "x86_64" => &[
+            // Disable all attempts to use an IOMMU, including swiotlb.
+            "iommu=off",
+            // Don't probe for a PCI bus. PCI devices currently come from VPCI. When
+            // this changes, we will explicitly enumerate a PCI bus via devicetree.
+            "pci=off",
+        ],
+        target_arch = "aarch64" => &[],
+    };
 
     for p in KERNEL_PARAMETERS {
         write!(cmdline, "{p} ")?;
     }
 
-    let arch_parameters = if cfg!(target_arch = "x86_64") {
-        X86_KERNEL_PARAMETERS
-    } else {
-        AARCH64_KERNEL_PARAMETERS
-    };
-    for p in arch_parameters {
+    for p in ARCH_KERNEL_PARAMETERS {
         write!(cmdline, "{p} ")?;
     }
 

@@ -1068,7 +1068,7 @@ message TapBackend {
         // Open /dev/net/tun by this device name (existing behavior).
         string name = 1;
         // Use the file descriptor registered under this name via the
-        // fd-passing protocol (see fd_passing.md).
+        // resource-passing protocol (see resource_passing.md).
         string fd_name = 2;
     }
 }
@@ -1150,7 +1150,21 @@ message WindowsPCIDevice {
 message VirtioFs {
     string tag = 1;
     string root_path = 2;
-    bool read_only = 3;
+    // Backend mount options, separated by ';'. Include "ro" for read-only access.
+    string mount_options = 3;
+    // Host-specific virtio-fs options. Omit on non-Windows hosts.
+    WindowsOptions windows_options = 4;
+
+    message WindowsOptions {
+        // Name of an access token registered with the resource-passing
+        // protocol (see resource_passing.md). OpenVMM duplicates the token for host
+        // filesystem access. The name may be deregistered after this RPC
+        // succeeds. Empty uses the VM service process token.
+        string user_token_name = 1;
+        // Expose shared-memory section objects instead of host files.
+        // root_path is the NT path of an existing object directory.
+        bool shared_mem = 2;
+    }
 }
 
 message VirtioConsoleConfig {

@@ -9,6 +9,7 @@
 
 use crate::VirtioFs;
 use crate::virtio::VirtioFsDevice;
+use crate::virtio::VirtioFsDeviceOptions;
 use fuse::protocol::*;
 use guestmem::GuestMemory;
 use pal_async::DefaultDriver;
@@ -65,14 +66,25 @@ struct TestHarness {
 impl TestHarness {
     fn new(driver: &DefaultDriver) -> Self {
         let tmpdir = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let device = VirtioFsDevice::new(
+            &driver_source,
+            "testfs",
+            fs,
+            VirtioFsDeviceOptions::default(),
+        );
+        Self::with_device(driver, device, tmpdir)
+    }
 
+    fn with_device(
+        driver: &DefaultDriver,
+        device: VirtioFsDevice,
+        tmpdir: tempfile::TempDir,
+    ) -> Self {
         let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
         init_avail_ring(&mem, AVAIL_ADDR);
         init_used_ring(&mem, USED_ADDR);
-
-        let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
-        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None);
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();
@@ -953,5 +965,208 @@ fn stale_directory_paths_do_not_follow_native_links() {
             b"outside"
         );
         assert!(!outside.path().join("renamed").exists());
+    }
+}
+
+/// Tests for serving a file system under a user token on Windows.
+#[cfg(windows)]
+pub(crate) mod user_token {
+    // UNSAFETY: Calling Win32 APIs and constructing owned handles from their
+    // outputs.
+    #![expect(unsafe_code)]
+
+    use super::OUT_HEADER_SIZE;
+    use super::TestHarness;
+    use crate::resolver::impersonating_driver_source;
+    use crate::virtio::VirtioFsDevice;
+    use fuse::Fuse;
+    use fuse::Request;
+    use fuse::SessionInfo;
+    use fuse::protocol::*;
+    use pal::windows::security::RevertToSelfGuard;
+    use pal::windows::security::duplicate_impersonation_token;
+    use pal::windows::security::open_process_token;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::io;
+    use std::os::windows::io::AsHandle;
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::OwnedHandle;
+    use std::ptr;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+    use windows_sys::Win32::Foundation::ERROR_NO_TOKEN;
+    use windows_sys::Win32::Security;
+    use windows_sys::Win32::System::Threading::GetCurrentThread;
+    use windows_sys::Win32::System::Threading::OpenThreadToken;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
+
+    fn process_token() -> OwnedHandle {
+        let token = open_process_token(Security::TOKEN_DUPLICATE).unwrap();
+        duplicate_impersonation_token(token.as_handle()).unwrap()
+    }
+
+    pub(crate) fn thread_token() -> io::Result<OwnedHandle> {
+        let mut token = ptr::null_mut();
+        // SAFETY: Calling Win32 API as documented.
+        unsafe {
+            if OpenThreadToken(GetCurrentThread(), Security::TOKEN_QUERY, 1, &mut token) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(OwnedHandle::from_raw_handle(token))
+        }
+    }
+
+    #[test]
+    fn rejects_non_token_handle() {
+        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        duplicate_impersonation_token(file.as_handle()).unwrap_err();
+    }
+
+    #[test]
+    fn impersonates_until_dropped() {
+        let process_token = process_token();
+        let token = duplicate_impersonation_token(process_token.as_handle()).unwrap();
+        {
+            let _guard = RevertToSelfGuard::impersonate(&token).unwrap();
+            thread_token().unwrap();
+        }
+
+        let err = thread_token().unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(ERROR_NO_TOKEN as i32));
+    }
+
+    /// Returns an impersonation token for this process restricted to the
+    /// Everyone SID.
+    pub(crate) fn restricted_token() -> OwnedHandle {
+        let token = process_token();
+        let mut world_sid = [0u32; Security::SECURITY_MAX_SID_SIZE as usize / size_of::<u32>()];
+        let mut sid_size = size_of_val(&world_sid) as u32;
+        let mut restricted = ptr::null_mut();
+        // SAFETY: The SID buffer is aligned and large enough for a well-known
+        // SID. All inputs remain valid until the new token handle is returned.
+        unsafe {
+            assert_ne!(
+                Security::CreateWellKnownSid(
+                    Security::WinWorldSid,
+                    ptr::null_mut(),
+                    world_sid.as_mut_ptr().cast(),
+                    &mut sid_size,
+                ),
+                0
+            );
+            let sid = Security::SID_AND_ATTRIBUTES {
+                Sid: world_sid.as_mut_ptr().cast(),
+                Attributes: 0,
+            };
+            assert_ne!(
+                Security::CreateRestrictedToken(
+                    token.as_raw_handle(),
+                    Security::DISABLE_MAX_PRIVILEGE,
+                    0,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    1,
+                    &sid,
+                    &mut restricted,
+                ),
+                0
+            );
+            OwnedHandle::from_raw_handle(restricted)
+        }
+    }
+
+    fn token_id(token: &OwnedHandle) -> (u32, i32) {
+        let mut stats = Security::TOKEN_STATISTICS::default();
+        let mut size = 0;
+        // SAFETY: The token is valid and the output buffer matches the queried
+        // information class.
+        unsafe {
+            assert_ne!(
+                Security::GetTokenInformation(
+                    token.as_raw_handle(),
+                    Security::TokenStatistics,
+                    ptr::from_mut(&mut stats).cast(),
+                    size_of_val(&stats) as u32,
+                    &mut size,
+                ),
+                0
+            );
+        }
+        (stats.TokenId.LowPart, stats.TokenId.HighPart)
+    }
+
+    struct TokenCheckingFs {
+        token_id: (u32, i32),
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl TokenCheckingFs {
+        /// Counts the call only if it runs under the expected restricted
+        /// token. This does not panic, since it runs on the device thread.
+        fn check_identity(&self) {
+            let Ok(token) = thread_token() else {
+                return;
+            };
+            // SAFETY: The handle refers to a valid token.
+            let restricted = unsafe { Security::IsTokenRestricted(token.as_raw_handle()) } != 0;
+            if restricted && token_id(&token) == self.token_id {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    impl Fuse for TokenCheckingFs {
+        fn init(&self, _info: &mut SessionInfo) {
+            self.check_identity();
+        }
+
+        fn get_attr(&self, _request: &Request, _flags: u32, _fh: u64) -> lx::Result<fuse_attr_out> {
+            self.check_identity();
+            Err(lx::Error::EACCES)
+        }
+    }
+
+    #[async_test]
+    async fn device_requests_run_under_user_token(driver: DefaultDriver) {
+        let token = restricted_token();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let fs = TokenCheckingFs {
+            token_id: token_id(&token),
+            calls: calls.clone(),
+        };
+        let driver_source = impersonating_driver_source("virtiofs-test".into(), token).unwrap();
+        let device = VirtioFsDevice::new(&driver_source, "testfs", fs, Default::default());
+        let mut harness = TestHarness::with_device(&driver, device, tempfile::tempdir().unwrap());
+        harness.enable().await;
+        harness.fuse_init(0).await;
+
+        let getattr = fuse_getattr_in::new_zeroed();
+        let resp_size = OUT_HEADER_SIZE + size_of::<fuse_attr_out>() as u32;
+        let (unique, resp_gpa) =
+            harness.post_fuse_request(2, FUSE_GETATTR, FUSE_ROOT_ID, getattr.as_bytes(), resp_size);
+        harness.wait_for_used().await;
+        let reply = harness.read_out_header(resp_gpa);
+        assert_eq!(reply.unique, unique);
+        assert_eq!(reply.error, -lx::Error::EACCES.value());
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        // Impersonation is confined to the device thread.
+        assert_eq!(
+            thread_token().unwrap_err().raw_os_error(),
+            Some(ERROR_NO_TOKEN as i32)
+        );
+    }
+
+    #[test]
+    fn impersonating_driver_source_fails_closed() {
+        // A non-token handle makes impersonation fail.
+        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        assert!(impersonating_driver_source("virtiofs-test".into(), file.into()).is_err());
     }
 }

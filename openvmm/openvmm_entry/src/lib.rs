@@ -465,7 +465,6 @@ async fn vm_config_from_command_line(
     let [serial0_name, serial1_name, serial2_name, serial3_name] = cfg_select! {
         guest_arch = "x86_64" => ["ttyS0", "ttyS1", "ttyS2", "ttyS3"],
         guest_arch = "aarch64" => ["ttyAMA0", "ttyAMA1", "ttyAMA2", "ttyAMA3"],
-        _ => compile_error!("unsupported guest architecture"),
     };
     let serial0_cfg = setup_serial(
         "com1",
@@ -632,6 +631,7 @@ async fn vm_config_from_command_line(
         underhill,
         ref pcie_port,
         ref serial,
+        num_queues,
         ref controller,
         nsid,
         lun,
@@ -640,6 +640,9 @@ async fn vm_config_from_command_line(
     {
         if serial.is_some() {
             anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
+        if num_queues.is_some() {
+            anyhow::bail!("`num_queues` is only supported by `--virtio-blk`");
         }
         if controller.is_none() && underhill.is_none() && relay.is_none() {
             tracing::warn!(
@@ -740,6 +743,7 @@ async fn vm_config_from_command_line(
         underhill,
         ref pcie_port,
         ref serial,
+        num_queues,
         controller: _,
         nsid: _,
         lun: _,
@@ -748,6 +752,9 @@ async fn vm_config_from_command_line(
     {
         if serial.is_some() {
             anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
+        if num_queues.is_some() {
+            anyhow::bail!("`num_queues` is only supported by `--virtio-blk`");
         }
         let target = if let Some(port) = pcie_port {
             storage_builder::DiskLocation::Named {
@@ -771,6 +778,7 @@ async fn vm_config_from_command_line(
         ref underhill,
         ref pcie_port,
         ref serial,
+        num_queues,
         controller: _,
         nsid: _,
         lun: _,
@@ -788,6 +796,10 @@ async fn vm_config_from_command_line(
                 storage_builder::DiskLocation::VirtioBlk {
                     pcie_port: pcie_port.clone(),
                     serial: serial.clone(),
+                    options: virtio_resources::blk::VirtioBlkOptions {
+                        queue_count: num_queues.unwrap_or(opt.virtio_blk_queues),
+                        io_depth: opt.virtio_blk_io_depth,
+                    },
                 },
                 kind,
                 is_dvd,
@@ -996,7 +1008,6 @@ async fn vm_config_from_command_line(
     let arch = cfg_select! {
         guest_arch = "x86_64" => MachineArch::X86_64,
         guest_arch = "aarch64" => MachineArch::Aarch64,
-        _ => compile_error!("unsupported guest architecture"),
     };
 
     cfg_select! {
@@ -1026,9 +1037,6 @@ async fn vm_config_from_command_line(
                 }
                 map
             };
-        }
-        _ => {
-            compile_error!("unsupported guest architecture");
         }
     }
     let mut pcie_root_complexes = Vec::new();
@@ -1146,9 +1154,6 @@ async fn vm_config_from_command_line(
             if let Some(name) = smmu_names.into_keys().next() {
                 anyhow::bail!("--smmu refers to unknown root complex '{name}'");
             }
-        }
-        _ => {
-            compile_error!("unsupported guest architecture");
         }
     }
 
@@ -1343,10 +1348,14 @@ async fn vm_config_from_command_line(
     }
 
     let (base_template, custom_uefi_json) = {
-        #[cfg(guest_arch = "aarch64")]
-        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
-        #[cfg(guest_arch = "x86_64")]
-        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
+        cfg_select! {
+            guest_arch = "x86_64" => {
+                use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
+            }
+            guest_arch = "aarch64" => {
+                use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
+            }
+        }
         let base_template = opt.secure_boot_template.map(|template| match template {
             SecureBootTemplateCli::Windows => secure_boot_templates::microsoft_windows(),
             SecureBootTemplateCli::UefiCa => secure_boot_templates::microsoft_uefi_ca(),
@@ -1743,7 +1752,6 @@ async fn vm_config_from_command_line(
         let register_layout = cfg_select! {
             guest_arch = "x86_64" => TpmRegisterLayout::IoPort,
             guest_arch = "aarch64" => TpmRegisterLayout::Mmio,
-            _ => compile_error!("unsupported guest architecture"),
         };
 
         let ppi_store =
@@ -1864,7 +1872,6 @@ async fn vm_config_from_command_line(
                 x2apic: opt.x2apic,
             })
         }
-        _ => compile_error!("unsupported guest architecture"),
     };
 
     let with_isolation = if let Some(isolation) = &opt.isolation {
@@ -1976,6 +1983,7 @@ async fn vm_config_from_command_line(
             fs: virtio_resources::fs::VirtioFsBackend::HostFs {
                 root_path: args.path.clone(),
                 mount_options: args.options.clone(),
+                windows_options: None,
             },
         }
         .into_resource();
@@ -2372,12 +2380,12 @@ pub(crate) fn openvmm_terminal_app() -> Option<PathBuf> {
 
 // Tries to remove `path` if it is confirmed to be a Unix socket.
 fn cleanup_socket(path: &Path) {
-    #[cfg(windows)]
-    let is_socket = pal::windows::fs::is_unix_socket(path).unwrap_or(false);
-    #[cfg(not(windows))]
-    let is_socket = path
-        .metadata()
-        .is_ok_and(|meta| std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type()));
+    let is_socket = cfg_select! {
+        windows => pal::windows::fs::is_unix_socket(path).unwrap_or(false),
+        _ => path
+            .metadata()
+            .is_ok_and(|meta| std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type())),
+    };
 
     if is_socket {
         let _ = std::fs::remove_file(path);
@@ -2455,9 +2463,8 @@ fn parse_endpoint(
             .into_resource()
         }
         EndpointConfigCli::None => net_backend_resources::null::NullHandle.into_resource(),
-        EndpointConfigCli::Dio { id } => {
-            #[cfg(windows)]
-            {
+        EndpointConfigCli::Dio { id } => cfg_select! {
+            windows => {{
                 let (port_id, port) = new_switch_port(id.as_deref())?;
                 resources.switch_ports.push(port);
                 net_backend_resources::dio::WindowsDirectIoHandle {
@@ -2467,28 +2474,23 @@ fn parse_endpoint(
                     },
                 }
                 .into_resource()
-            }
-
-            #[cfg(not(windows))]
-            {
+            }}
+            _ => {{
                 let _ = id;
                 bail!("cannot use dio on non-windows platforms")
-            }
-        }
-        EndpointConfigCli::Tap { name } => {
-            #[cfg(target_os = "linux")]
-            {
+            }}
+        },
+        EndpointConfigCli::Tap { name } => cfg_select! {
+            target_os = "linux" => {{
                 let fd = net_tap::tap::open_tap(name)
                     .with_context(|| format!("failed to open TAP device '{name}'"))?;
                 net_backend_resources::tap::TapHandle { fd }.into_resource()
-            }
-
-            #[cfg(not(target_os = "linux"))]
-            {
+            }}
+            _ => {{
                 let _ = name;
                 bail!("TAP backend is only supported on Linux")
-            }
-        }
+            }}
+        },
     };
 
     let mac_address = cli_cfg.mac_address.unwrap_or_else(|| {
@@ -2787,7 +2789,6 @@ pub(crate) fn system_page_size() -> u32 {
 pub(crate) const GUEST_ARCH: &str = cfg_select! {
     guest_arch = "x86_64" => "x86_64",
     guest_arch = "aarch64" => "aarch64",
-    _ => compile_error!("unsupported guest architecture"),
 };
 
 /// Open a snapshot directory and validate it against the current VM config.
@@ -3056,7 +3057,6 @@ async fn run_control_inner(
                         target_arch: cfg_select! {
                             guest_arch = "x86_64" => debug_worker_defs::TargetArch::X86_64,
                             guest_arch = "aarch64" => debug_worker_defs::TargetArch::Aarch64,
-                            _ => compile_error!("unsupported guest architecture"),
                         },
                     },
                 )

@@ -5,6 +5,7 @@ use super::Emulator;
 use super::InternalError;
 use super::rflags::update_flags_szp;
 use crate::Cpu;
+use crate::ReadKind;
 use iced_x86::Instruction;
 use iced_x86::Register;
 use x86defs::RFlags;
@@ -15,7 +16,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let left = self.op_value(instr, 0).await?;
+        let left = self.op_value(instr, 0, ReadKind::ReadModifyWrite).await?;
         let result = Op::op(left);
         self.compare_if_locked_and_write_op_0(instr, left, result)
             .await?;
@@ -30,8 +31,13 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let left = self.op_value(instr, 0).await?;
-        let right = self.op_value(instr, 1).await?;
+        let left_kind = if Op::UPDATES_RESULT {
+            ReadKind::ReadModifyWrite
+        } else {
+            ReadKind::ReadOnly
+        };
+        let left = self.op_value(instr, 0, left_kind).await?;
+        let right = self.op_value(instr, 1, ReadKind::ReadOnly).await?;
         let mut rflags = self.cpu.rflags();
         let result = Op::op(left, right, rflags);
         if Op::UPDATES_RESULT {
@@ -48,7 +54,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let left = self.op_value(instr, 0).await?;
+        let left = self.op_value(instr, 0, ReadKind::ReadModifyWrite).await?;
         let right_reg = instr.op1_register();
         let right = self.cpu.gp(right_reg.into());
         let result = left.wrapping_add(right);
@@ -75,7 +81,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let left = self.op_value(instr, 0).await?;
+        let left = self.op_value(instr, 0, ReadKind::ReadModifyWrite).await?;
         let right = self.cpu.gp(instr.op1_register().into());
 
         let op_size = instr.memory_size().size();
@@ -90,10 +96,9 @@ impl<T: Cpu> Emulator<'_, T> {
 
         let result = CmpOp::op(cmp_val, left, self.cpu.rflags());
 
-        if result == 0 {
-            self.compare_if_locked_and_write_op_0(instr, left, right)
-                .await?;
-        } else {
+        self.compare_if_locked_and_write_op_0(instr, left, if result == 0 { right } else { left })
+            .await?;
+        if result != 0 {
             self.cpu.set_gp(cmp_reg.into(), left);
         }
 
@@ -109,7 +114,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let left = self.op_value(instr, 0).await?;
+        let left = self.op_value(instr, 0, ReadKind::ReadModifyWrite).await?;
         let right = self.cpu.gp(instr.op1_register().into());
 
         self.compare_if_locked_and_write_op_0(instr, left, right)

@@ -316,8 +316,8 @@ impl VpciRelay {
         Some((MemoryRange::new(mmio_range.start()..base), base))
     }
 
-    /// Adds an allowed device to the list. If one of the hardware ID is `!0`
-    /// then it is treated as a wildcard.
+    /// Adds an allowed device to the list. Within a device entry, a field set
+    /// to `None` imposes no matching constraint.
     ///
     /// Note that if no devices are on the list, then all devices are allowed.
     pub fn add_allowed_device(&mut self, dev: AllowedDevice) {
@@ -354,14 +354,13 @@ impl VpciRelay {
         chipset: &ChipsetDevices,
         units: &mut StateUnits,
     ) -> anyhow::Result<()> {
-        let mut i = 0;
-        while i < self.devices.len() {
-            if self.devices[i].ready_to_remove {
-                let dev = self.devices.remove(i);
-                dev.remove().await;
-            } else {
-                i += 1;
-            }
+        let removed: Vec<_> = self
+            .devices
+            .iter()
+            .filter_map(|(key, dev)| dev.ready_to_remove.then_some(key))
+            .collect();
+        for key in removed {
+            self.devices.remove(key).remove().await;
         }
         while let Some(bus) = self.new_buses.pop() {
             self.relay_vpci_bus(chipset, units, bus).await?;

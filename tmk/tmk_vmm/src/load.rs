@@ -14,9 +14,6 @@ cfg_select! {
         pub use load_aarch64 as load;
         use vm_topology::processor::aarch64::Aarch64Topology;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 
 use anyhow::Context as _;

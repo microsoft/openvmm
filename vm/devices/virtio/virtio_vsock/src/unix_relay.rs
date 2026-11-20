@@ -70,10 +70,10 @@ impl RelaySocket {
     pub fn new(driver: &VmTaskDriver, stream: UnixStream) -> io::Result<Self> {
         let sock_ref = stream.as_sock_ref();
         sock_ref.set_nonblocking(true)?;
-        #[cfg(unix)]
-        let fd = sock_ref.as_raw_fd();
-        #[cfg(windows)]
-        let fd = sock_ref.as_raw_socket();
+        let fd = cfg_select! {
+            unix => sock_ref.as_raw_fd(),
+            windows => sock_ref.as_raw_socket(),
+        };
 
         let poll = driver.new_dyn_socket_ready(fd)?;
 
@@ -192,10 +192,10 @@ impl RelaySocket {
                     // to for full shutdown. This means write and read shutdown cannot be
                     // distinguished.
                     // On Linux, HUP means either both sides were shutdown or the socket was closed.
-                    #[cfg(windows)]
-                    let is_closed = events.has_hup() || events.has_rdhup();
-                    #[cfg(not(windows))]
-                    let is_closed = events.has_hup() || events.has_err();
+                    let is_closed = cfg_select! {
+                        windows => events.has_hup() || events.has_rdhup(),
+                        _ => events.has_hup() || events.has_err(),
+                    };
 
                     if is_closed {
                         inner.closed.store(true, Ordering::Release);

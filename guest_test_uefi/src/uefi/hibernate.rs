@@ -42,8 +42,6 @@ pub fn hibernate() -> ! {
                 options(nomem, nostack),
             );
         },
-
-        _ => compile_error!("unsupported target architecture"),
     }
 
     // The platform should have halted this VP; if control returns, spin so we

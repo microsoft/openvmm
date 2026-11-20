@@ -29,24 +29,23 @@ pub enum Vendor {
 impl Vendor {
     /// Detect the vendor of the host CPU the test is running on.
     pub fn host() -> Self {
-        // xtask-fmt allow-target-arch cpu-intrinsic
-        #[cfg(target_arch = "x86_64")]
-        {
-            let result =
-                safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0);
-            let vendor =
-                x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx);
-            if vendor.is_amd_compatible() {
-                Vendor::Amd
-            } else {
-                assert!(vendor.is_intel_compatible());
-                Vendor::Intel
+        cfg_select! {
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            target_arch = "x86_64" => {
+                let result = safe_intrinsics::cpuid(
+                    x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0,
+                    0,
+                );
+                let vendor =
+                    x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx);
+                if vendor.is_amd_compatible() {
+                    Vendor::Amd
+                } else {
+                    assert!(vendor.is_intel_compatible());
+                    Vendor::Intel
+                }
             }
-        }
-        // xtask-fmt allow-target-arch cpu-intrinsic
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            Vendor::Arm
+            _ => Vendor::Arm,
         }
     }
 }
@@ -116,10 +115,9 @@ pub struct HostContext {
 impl HostContext {
     /// Create a new host context by querying host information
     pub async fn new() -> Self {
-        let is_nested = {
+        let is_nested = cfg_select! {
             // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(target_arch = "x86_64")]
-            {
+            target_arch = "x86_64" => {{
                 let result = safe_intrinsics::cpuid(
                     hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
                     0,
@@ -131,12 +129,8 @@ impl HostContext {
                         | (result.edx as u128) << 96,
                 )
                 .nested()
-            }
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                false
-            }
+            }}
+            _ => false,
         };
 
         let vendor = Vendor::host();
@@ -144,43 +138,38 @@ impl HostContext {
         // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
         let vpci_supported = cfg!(windows);
 
-        let openvmm_hypervisor = if cfg!(target_os = "linux") {
-            if fs_err::File::open("/dev/mshv").is_ok() {
-                Some(OpenVmmHypervisor::Mshv)
-            } else if fs_err::File::options()
-                .read(true)
-                .write(true)
-                .open("/dev/kvm")
-                .is_ok()
-            {
-                Some(OpenVmmHypervisor::Kvm)
-            } else {
-                None
+        let openvmm_hypervisor = cfg_select! {
+            target_os = "linux" => {
+                if fs_err::File::open("/dev/mshv").is_ok() {
+                    Some(OpenVmmHypervisor::Mshv)
+                } else if fs_err::File::options()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/kvm")
+                    .is_ok()
+                {
+                    Some(OpenVmmHypervisor::Kvm)
+                } else {
+                    None
+                }
             }
-        } else if cfg!(windows) {
-            Some(OpenVmmHypervisor::Whp)
-        } else if cfg!(target_os = "macos") {
-            Some(OpenVmmHypervisor::Hvf)
-        } else {
-            None
+            windows => Some(OpenVmmHypervisor::Whp),
+            target_os = "macos" => Some(OpenVmmHypervisor::Hvf),
+            _ => None,
         };
 
-        let vm_host_info = {
-            #[cfg(windows)]
-            {
-                crate::vm::hyperv::powershell::run_get_vm_host()
-                    .await
-                    .ok()
-                    .map(|info| VmHostInfo {
-                        vbs_supported: info.guest_isolation_types.contains(
-                            &crate::vm::hyperv::powershell::HyperVGuestStateIsolationType::Vbs,
-                        ),
-                        snp_status: info.snp_status,
-                        tdx_status: info.tdx_status,
-                    })
-            }
-            #[cfg(not(windows))]
-            {
+        let vm_host_info = cfg_select! {
+            windows => crate::vm::hyperv::powershell::run_get_vm_host()
+                .await
+                .ok()
+                .map(|info| VmHostInfo {
+                    vbs_supported: info.guest_isolation_types.contains(
+                        &crate::vm::hyperv::powershell::HyperVGuestStateIsolationType::Vbs,
+                    ),
+                    snp_status: info.snp_status,
+                    tdx_status: info.tdx_status,
+                }),
+            _ => {
                 // MSHV has no SNP capability query, so probe by creating a
                 // temporary SNP partition. Only AMD hosts can support SNP.
                 (vendor == Vendor::Amd && openvmm_hypervisor == Some(OpenVmmHypervisor::Mshv)).then(

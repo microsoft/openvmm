@@ -220,7 +220,6 @@ impl KvmPartitionInner {
         let vp_id = cfg_select! {
             guest_arch = "x86_64" => vp.vp_info().apic_id,
             guest_arch = "aarch64" => vp.vp_info().base.vp_index.index(),
-            _ => compile_error!("unsupported guest architecture"),
         };
         self.kvm.vp(vp_id).force_exit();
     }

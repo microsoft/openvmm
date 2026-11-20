@@ -11,14 +11,17 @@ acpi.workspace = true
 acpi_spec.workspace = true
 arrayvec.workspace = true
 fdt.workspace = true
+guid.workspace = true
 loader_defs.workspace = true
 memory_range.workspace = true
 minimal_rt.workspace = true
 thiserror.workspace = true
+uefi_specs.workspace = true
 x86defs.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+parking_lot.workspace = true
 test_with_tracing.workspace = true
 
 [build-dependencies]

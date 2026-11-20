@@ -224,7 +224,6 @@ impl CommonState {
                     gic_nr_irqs: 256,
                 })
             }
-            _ => compile_error!("unsupported guest architecture"),
         }
         .build(1)
         .context("failed to build processor topology")?;
@@ -588,9 +587,6 @@ impl RunnerBuilder {
                     } = self.regs.as_ref();
                     state.set_registers(registers)?;
                     state.set_system_registers(system_registers)?;
-                }
-                _ => {
-                    compile_error!("unsupported guest architecture");
                 }
             }
             state.commit()?;

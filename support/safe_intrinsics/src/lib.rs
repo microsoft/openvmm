@@ -34,9 +34,6 @@ pub fn store_fence() {
             // SAFETY: this instruction has no safety requirements.
             unsafe { core::arch::asm!("dsb st", options(nostack)) };
         }
-        _ => {
-            compile_error!("Unsupported architecture");
-        }
     }
 
     // Make the compiler aware.

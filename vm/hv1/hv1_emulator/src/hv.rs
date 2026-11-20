@@ -3,11 +3,6 @@
 
 //! Hypervisor MSR emulation.
 
-use super::synic::GlobalSynic;
-use super::synic::ProcessorSynic;
-use crate::VtlProtectAccess;
-use crate::pages::LockedPage;
-use crate::pages::OverlayPage;
 cfg_select! {
     guest_arch = "aarch64" => {
         use aarch64defs::Vendor;
@@ -15,10 +10,13 @@ cfg_select! {
     guest_arch = "x86_64" => {
         use x86defs::cpuid::Vendor;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
+
+use super::synic::GlobalSynic;
+use super::synic::ProcessorSynic;
+use crate::VtlProtectAccess;
+use crate::pages::LockedPage;
+use crate::pages::OverlayPage;
 use hv1_structs::VtlArray;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
 use hvdef::HvError;

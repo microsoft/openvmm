@@ -534,13 +534,9 @@ impl Kvm {
         // For that, include the `KVM_VM_TYPE_ARM_PROTECTED` flag.
         // Use 0 as the fallback machine type, which implies 40bit
         // IPA on ARM64, and on x86_64 is the only option.
-        #[cfg(target_arch = "aarch64")]
-        {
-            self.check_extension(KVM_CAP_ARM_VM_IPA_SIZE).unwrap_or(0)
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            0
+        cfg_select! {
+            target_arch = "aarch64" => self.check_extension(KVM_CAP_ARM_VM_IPA_SIZE).unwrap_or(0),
+            _ => 0,
         }
     }
 

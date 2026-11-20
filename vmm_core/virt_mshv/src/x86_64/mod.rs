@@ -1117,6 +1117,10 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         self.reg_page.cr0
     }
 
+    fn cr4(&mut self) -> u64 {
+        self.reg_page.cr4
+    }
+
     fn rflags(&mut self) -> RFlags {
         RFlags::from(self.reg_page.rflags)
     }

@@ -12,12 +12,16 @@ use mesh_worker::WorkerId;
 use vm_resource::Resource;
 use vmm_core_defs::HaltReason;
 
-/// File descriptor (Unix) or handle (Windows) for file-backed guest RAM.
-#[cfg(unix)]
-pub type SharedMemoryFd = std::os::fd::OwnedFd;
-/// File descriptor (Unix) or handle (Windows) for file-backed guest RAM.
-#[cfg(windows)]
-pub type SharedMemoryFd = std::os::windows::io::OwnedHandle;
+cfg_select! {
+    unix => {
+        /// File descriptor (Unix) or handle (Windows) for file-backed guest RAM.
+        pub type SharedMemoryFd = std::os::fd::OwnedFd;
+    }
+    windows => {
+        /// File descriptor (Unix) or handle (Windows) for file-backed guest RAM.
+        pub type SharedMemoryFd = std::os::windows::io::OwnedHandle;
+    }
+}
 
 pub const VM_WORKER: WorkerId<VmWorkerParameters> = WorkerId::new("VmWorker");
 
