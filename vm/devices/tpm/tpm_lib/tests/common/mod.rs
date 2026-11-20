@@ -374,6 +374,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -417,6 +418,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -478,6 +480,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -550,6 +553,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -611,6 +615,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: true,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -694,6 +699,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: true,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -724,6 +730,7 @@ fn test_read_write_guest_attestation_indices() {
             support_attestation_report: true,
             mitigate_legacy_akcert: false,
             create_if_missing: true,
+            recovered: false,
         },
     );
     assert!(result.is_ok());
@@ -954,6 +961,7 @@ fn test_with_pre_provisioned_state() {
             support_attestation_report: false,
             mitigate_legacy_akcert: false,
             create_if_missing: true,
+            recovered: false,
         },
     );
     assert!(result.is_ok());
@@ -1821,6 +1829,7 @@ fn test_restore_owner_defined() {
             support_attestation_report: true,
             mitigate_legacy_akcert: false,
             create_if_missing: true,
+            recovered: true,
         },
     );
     assert!(result.is_ok());
@@ -1849,6 +1858,7 @@ fn test_restore_owner_defined() {
             support_attestation_report: true,
             mitigate_legacy_akcert: true,
             create_if_missing: true,
+            recovered: true,
         },
     );
     assert!(result.is_ok());
@@ -1894,6 +1904,7 @@ fn test_oversized_platform_ak_cert_index() {
             support_attestation_report: true,
             mitigate_legacy_akcert: false,
             create_if_missing: true,
+            recovered: false,
         },
     );
     assert!(result.is_ok(), "{result:?}");
