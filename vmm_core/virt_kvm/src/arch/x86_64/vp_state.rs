@@ -353,13 +353,12 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         };
         self.kvm().set_mp_state(state)?;
 
-        let mut event_flags = 0;
-        if nmi_pending {
-            event_flags |= kvm::KVM_VCPUEVENT_VALID_NMI_PENDING;
-        }
-        if interrupt_shadow {
-            event_flags |= kvm::KVM_VCPUEVENT_VALID_SHADOW;
-        }
+        // KVM changes the pending NMI and the interrupt shadow only when these
+        // flags are set, so set them for false values too: a reset or a
+        // restore must clear them. Both happen while the VPs are stopped, so
+        // no other VP can send an NMI that this would discard. (KVM cannot
+        // withdraw an NMI that it has handed to AMD's virtual NMI, though.)
+        let event_flags = kvm::KVM_VCPUEVENT_VALID_NMI_PENDING | kvm::KVM_VCPUEVENT_VALID_SHADOW;
 
         let mut events = kvm::kvm_vcpu_events {
             exception: kvm::kvm_vcpu_events__bindgen_ty_1 {
@@ -706,5 +705,188 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
 
     fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
         Err(KvmError::NotSupported)
+    }
+}
+
+/// Tests against the host's KVM.
+#[cfg(test)]
+mod tests {
+    use crate::Kvm;
+    use crate::KvmPartition;
+    use crate::KvmProcessorBinder;
+    use guestmem::GuestMemory;
+    use hvdef::Vtl;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use virt::BindProcessor;
+    use virt::Hypervisor;
+    use virt::Partition;
+    use virt::PartitionConfig;
+    use virt::Processor;
+    use virt::ProtoPartition;
+    use virt::ProtoPartitionConfig;
+    use virt::irqcon::DeliveryMode;
+    use virt::irqcon::MsiRequest;
+    use virt::state::StateElement;
+    use virt::x86::vp;
+    use virt::x86::vp::AccessVpState;
+    use vm_topology::memory::MemoryLayout;
+    use vm_topology::processor::ProcessorTopology;
+    use vm_topology::processor::TopologyBuilder;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
+
+    /// Returns whether KVM hands pending NMIs to AMD's virtual NMI (the VMCB's
+    /// V_NMI_PENDING), from which `KVM_SET_VCPU_EVENTS` cannot withdraw them.
+    fn kvm_uses_vnmi() -> bool {
+        std::fs::read_to_string("/sys/module/kvm_amd/parameters/vnmi")
+            .is_ok_and(|value| value.trim() == "Y")
+    }
+
+    /// A partition on the host's KVM whose VPs never run, so that it maps no
+    /// RAM.
+    struct Fixture {
+        topology: ProcessorTopology,
+        partition: KvmPartition,
+        binders: Vec<KvmProcessorBinder>,
+        _keeper: VmTimeKeeper,
+    }
+
+    impl Fixture {
+        async fn new(driver: &DefaultDriver, vp_count: u32) -> Self {
+            let keeper = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
+            let vmtime = keeper.builder().build(driver).await.unwrap();
+            let topology = TopologyBuilder::new_x86().build(vp_count).unwrap();
+            let mem_layout = MemoryLayout::new(4096, &[], &[], &[], None).unwrap();
+            let guest_memory = GuestMemory::allocate(4096);
+            let (partition, binders) = Kvm::new()
+                .unwrap()
+                .new_partition(ProtoPartitionConfig {
+                    processor_topology: &topology,
+                    hv_config: None,
+                    vmtime: &vmtime,
+                    isolation: virt::ProtoPartitionIsolation::None,
+                    nested_virt: false,
+                })
+                .unwrap()
+                .build(PartitionConfig {
+                    mem_layout: &mem_layout,
+                    guest_memory: &guest_memory,
+                    cpuid: &[],
+                    vtl0_alias_map: None,
+                    fault_resolver: None,
+                })
+                .unwrap();
+            Self {
+                topology,
+                partition,
+                binders,
+                _keeper: keeper,
+            }
+        }
+    }
+
+    /// Checks that the reset of a VP, the VP part of a VM reset, discards an
+    /// NMI that the VP has not taken and an interrupt shadow (after STI or MOV
+    /// SS), on the BSP and on an AP.
+    #[async_test]
+    #[ignore = "requires access to /dev/kvm"]
+    async fn reset_clears_a_pending_nmi_and_the_interrupt_shadow(driver: DefaultDriver) {
+        // A pending NMI that KVM has handed to AMD's virtual NMI survives a
+        // reset, so only check the interrupt shadow there.
+        let nmi = !kvm_uses_vnmi();
+        if !nmi {
+            tracing::info!("KVM uses AMD's virtual NMI: not checking a pending NMI");
+        }
+        let mut fixture = Fixture::new(&driver, 2).await;
+        let Fixture {
+            topology,
+            partition,
+            binders,
+            ..
+        } = &mut fixture;
+        let mut vps = binders
+            .iter_mut()
+            .map(|binder| binder.bind().unwrap())
+            .collect::<Vec<_>>();
+
+        for (vp, vp_info) in vps.iter_mut().zip(topology.vps_arch()) {
+            if nmi {
+                partition.request_msi(
+                    Vtl::Vtl0,
+                    MsiRequest::new_x86(DeliveryMode::NMI, vp_info.apic_id, false, 0, false),
+                );
+            }
+            let mut access = vp.access_state(Vtl::Vtl0);
+            let mut activity = access.activity().unwrap();
+            assert_eq!(activity.nmi_pending, nmi);
+            activity.interrupt_shadow = true;
+            access.set_activity(&activity).unwrap();
+            let activity = access.activity().unwrap();
+            assert_eq!(
+                (activity.nmi_pending, activity.interrupt_shadow),
+                (nmi, true)
+            );
+        }
+
+        partition.supports_reset().unwrap().reset().unwrap();
+        for (vp, vp_info) in vps.iter_mut().zip(topology.vps_arch()) {
+            vp.reset().unwrap();
+            assert_eq!(
+                vp.access_state(Vtl::Vtl0).activity().unwrap(),
+                vp::Activity::at_reset(partition.caps(), &vp_info)
+            );
+        }
+    }
+
+    /// Checks that setting the activity, as a restore does, replaces the
+    /// pending NMI, NMI masking, and the interrupt shadow, including clearing
+    /// them.
+    #[async_test]
+    #[ignore = "requires access to /dev/kvm"]
+    async fn set_activity_replaces_the_pending_nmi_and_the_interrupt_shadow(
+        driver: DefaultDriver,
+    ) {
+        // KVM cannot withdraw a pending NMI that it has handed to AMD's virtual
+        // NMI, so only check the other state there.
+        let nmi_values: &[bool] = if kvm_uses_vnmi() {
+            tracing::info!("KVM uses AMD's virtual NMI: not checking a pending NMI");
+            &[false]
+        } else {
+            &[false, true]
+        };
+        let mut values = Vec::new();
+        for &nmi_pending in nmi_values {
+            for nmi_masked in [false, true] {
+                for interrupt_shadow in [false, true] {
+                    values.push((nmi_pending, nmi_masked, interrupt_shadow));
+                }
+            }
+        }
+
+        let mut fixture = Fixture::new(&driver, 1).await;
+        let mut vp = fixture.binders[0].bind().unwrap();
+        let mut access = vp.access_state(Vtl::Vtl0);
+        for &from in &values {
+            for &to in &values {
+                for (nmi_pending, nmi_masked, interrupt_shadow) in [from, to] {
+                    let activity = vp::Activity {
+                        mp_state: vp::MpState::Running,
+                        nmi_pending,
+                        nmi_masked,
+                        interrupt_shadow,
+                        pending_event: None,
+                        pending_interruption: None,
+                    };
+                    access.set_activity(&activity).unwrap();
+                    assert_eq!(
+                        access.activity().unwrap(),
+                        activity,
+                        "{from:?} -> {to:?}"
+                    );
+                }
+            }
+        }
     }
 }
