@@ -57,3 +57,34 @@ fn arg_data_reply_len_includes_the_data() {
         assert_eq!(rest, data);
     }
 }
+
+/// Sends an error reply with `error` and returns the error that the reply's
+/// header carries, after checking that the reply is that header alone.
+fn error_reply(error: i32) -> i32 {
+    let mut sender = CapturingSender::default();
+    sender.send_error(7, error).unwrap();
+    let (header, rest) = fuse_out_header::read_from_prefix(&sender.reply).unwrap();
+    assert!(rest.is_empty(), "error {error}");
+    assert_eq!(header.len as usize, sender.reply.len(), "error {error}");
+    assert_eq!(header.unique, 7, "error {error}");
+    header.error
+}
+
+/// A reply carries its error code negated, and FUSE clients accept the codes
+/// from 0, which is success, through 511: Linux refuses a reply whose error is
+/// positive, or -512 (`-ERESTARTSYS`) or less.
+#[test]
+fn error_reply_carries_a_code_from_0_through_511() {
+    for error in [0, 1, 511] {
+        assert_eq!(error_reply(error), -error, "error {error}");
+    }
+}
+
+/// Any other code, such as `i32::MIN`, whose negation overflows, fails the
+/// request with `EIO` instead.
+#[test]
+fn error_reply_replaces_any_other_code_with_eio() {
+    for error in [i32::MIN, -1, 512, i32::MAX] {
+        assert_eq!(error_reply(error), -lx::EIO, "error {error}");
+    }
+}
