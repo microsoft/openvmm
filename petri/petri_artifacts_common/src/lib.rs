@@ -15,12 +15,17 @@ pub mod capabilities {
     /// Support for nested virtualization
     pub const NESTED_VIRT: &str = "nested_virt";
 
+    /// Support for booting an mshv root partition (the Microsoft hypervisor
+    /// and its Linux root) as a guest.
+    pub const NESTED_MSHV: &str = "nested_mshv";
+
     /// All capability names known to petri, including those defined by
     /// tests.
     pub const KNOWN_CAPABILITIES: &[&str] = &[
         VPCI,
         WINDOWS_PARTITION_RESET,
         NESTED_VIRT,
+        NESTED_MSHV,
         "test_disk",
         "edu_initiator",
         "ivshmem_target",

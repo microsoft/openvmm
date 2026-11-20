@@ -58,6 +58,9 @@ struct NestedResolvedConfig {
     l2_config: ResolvedConfig,
 }
 
+/// Reason automatically applied to every Hyper-V VBS config.
+const HYPERV_VBS_UNSTABLE_REASON: &str = "Hyper-V VBS failures are not currently actionable.";
+
 #[derive(Clone)]
 struct Unstable {
     reason: String,
@@ -539,7 +542,7 @@ fn parse_required_capabilities(input: ParseStream<'_>) -> syn::Result<Vec<Requir
 
 impl Config {
     fn resolve(self, overrides: &ParsedOverrides) -> syn::Result<ResolvedConfig> {
-        let config = ResolvedConfig {
+        let mut config = ResolvedConfig {
             vmm: match (overrides.vmm, self.vmm) {
                 (Some(Vmm::HyperV), Some(Vmm::HyperV))
                 | (Some(Vmm::HyperV), None)
@@ -577,9 +580,32 @@ impl Config {
                 "`unstable(on = ...)` requires OpenVMM configurations",
             ));
         }
-        if matches!(&config.firmware, Firmware::Uefi(UefiGuest::Mshv)) && config.vmm != Vmm::OpenVmm
+        if config.vmm == Vmm::HyperV
+            && matches!(
+                &config.firmware,
+                Firmware::OpenhclUefi(
+                    FirmwareOptions {
+                        isolation: Some(IsolationType::Vbs),
+                    },
+                    _
+                )
+            )
         {
-            return Err(Error::new(self.span, "mshv requires the OpenVMM backend"));
+            config.unstable.get_or_insert_with(|| Unstable {
+                reason: HYPERV_VBS_UNSTABLE_REASON.to_string(),
+                on: None,
+            });
+        }
+        if matches!(&config.firmware, Firmware::Uefi(UefiGuest::Mshv)) {
+            if config.vmm != Vmm::OpenVmm {
+                return Err(Error::new(self.span, "mshv requires the OpenVMM backend"));
+            }
+            if !config
+                .requires_capabilities
+                .contains(&capabilities::NESTED_MSHV)
+            {
+                config.requires_capabilities.push(capabilities::NESTED_MSHV);
+            }
         }
         Ok(config)
     }
@@ -1223,6 +1249,7 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
 /// - `vhd(<VHD>)`: One of our supported VHDs
 /// - `guest_test_uefi_{arch}`: Our UEFI test application
 /// - `mshv`: An x86-64 mshv root on OpenVMM with shared test provisioning.
+///   Requires the `nested_mshv` capability, so it is skipped on MSHV hosts.
 /// - `none`: No guest
 ///
 /// Valid x64 VHD options are:
@@ -1440,7 +1467,12 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                 quote! {config, extra_deps}
             };
             config.l1_config.ignored = nested_config.l2_config.ignored.take();
-            config.l1_config.unstable = nested_config.l2_config.unstable.take();
+            // The L1 config can only carry an auto-injected marker (e.g. Hyper-V VBS).
+            config.l1_config.unstable = nested_config
+                .l2_config
+                .unstable
+                .take()
+                .or(config.l1_config.unstable);
             tests.extend(make_vmm_test_config(
                 &name,
                 &nested_config.test_fn.to_token_stream(),
@@ -1697,6 +1729,36 @@ mod tests {
     }
 
     #[test]
+    fn hyperv_vbs_is_automatically_unstable() {
+        let auto = quote!(.unstable(#HYPERV_VBS_UNSTABLE_REASON)).to_string();
+
+        let output = expand(quote! {
+            configs(hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)))
+        })
+        .unwrap();
+        assert!(output.contains(&auto));
+
+        let output = expand(quote! {
+            configs(unstable(
+                reason = "explicit",
+                hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))
+            ))
+        })
+        .unwrap();
+        assert!(output.contains(&quote!(.unstable("explicit")).to_string()));
+        assert!(!output.contains(&auto));
+
+        for config in [
+            quote!(openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
+            quote!(hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))),
+            quote!(hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))),
+        ] {
+            let output = expand(quote!(configs(#config))).unwrap();
+            assert!(!output.contains(".unstable"), "{config}");
+        }
+    }
+
+    #[test]
     fn unconditional_instability_and_ignore_keep_their_syntax() {
         let output = expand(quote! {
             openvmm, unstable(reason = "all hosts",),
@@ -1760,6 +1822,10 @@ mod tests {
             args.configs[0].l1_config.firmware,
             Firmware::Uefi(UefiGuest::Mshv)
         ));
+        assert_eq!(
+            args.configs[0].l1_config.requires_capabilities,
+            [capabilities::NESTED_MSHV]
+        );
         Ok(())
     }
 

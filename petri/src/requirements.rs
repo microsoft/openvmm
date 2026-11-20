@@ -334,6 +334,18 @@ fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'sta
         capabilities.insert(capabilities::NESTED_VIRT);
     }
 
+    // virt_mshv does not support another level of nested virtualization, so
+    // an mshv root partition can only be booted on the other x86 backends.
+    if matches!(
+        (vmm, context.openvmm_hypervisor),
+        (
+            VmmType::OpenVmm,
+            Some(OpenVmmHypervisor::Kvm | OpenVmmHypervisor::Whp)
+        )
+    ) {
+        capabilities.insert(capabilities::NESTED_MSHV);
+    }
+
     match std::env::var("PETRI_CAPABILITIES") {
         Ok(env_capabilities) => {
             for capability in env_capabilities.split(',').map(str::trim) {
@@ -414,6 +426,22 @@ mod tests {
 
         assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
         assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Hvf)));
+    }
+
+    #[test]
+    fn nested_mshv_capability_excludes_the_mshv_backend() {
+        let requirement = |vmm| TestRequirement::RequiresCapability {
+            name: capabilities::NESTED_MSHV,
+            vmm,
+        };
+
+        assert!(requirement(VmmType::OpenVmm).is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+        assert!(requirement(VmmType::OpenVmm).is_satisfied(&host_context(OpenVmmHypervisor::Whp)));
+        assert!(
+            !requirement(VmmType::OpenVmm).is_satisfied(&host_context(OpenVmmHypervisor::Mshv))
+        );
+        assert!(!requirement(VmmType::OpenVmm).is_satisfied(&host_context(OpenVmmHypervisor::Hvf)));
+        assert!(!requirement(VmmType::Qemu).is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
     }
 
     #[test]

@@ -1688,12 +1688,12 @@ impl IntoPipeline for CheckinGatesCli {
         // (e.g. boot_no_vmbus_windows needs the no-vmbus prepped VHD).
         let standard_x64_prep_variants: Vec<String> = vec!["no-vmbus".into()];
 
-        // arbitrarily breaking up this string to please rustfmt
-        let mut mi_secure_filter =
-            "test(openhcl) & !test(servicing) & !test(vbs) & !test(memory_validation)".to_string();
-        mi_secure_filter.push_str("& !test(very_heavy) & !test(pcat) & !test(heuristic)");
-        mi_secure_filter
-            .push_str(" & !test(ubuntu_2404_server_x64) & !test(windows_datacenter_core_2025_x64)");
+        // Run the OpenHCL subset of the standard tests against the mi-secure
+        // builds. Exclude tests that check OpenHCL memory usage against fixed
+        // baselines, since mi-secure's guard pages change the memory usage.
+        let mi_secure_filter = format!(
+            "({standard_filter}) & test(openhcl) & !test(memory_validation) & !test(heuristic)"
+        );
 
         // Run everything that we didn't run in the standard filter
         let cvm_filter = format!("!({standard_filter})");
@@ -1819,12 +1819,7 @@ impl IntoPipeline for CheckinGatesCli {
                 mshv_root: false,
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
-                // - PCAT VMs are unstable on AMD
-                // - Hyper-V VBS VMs fail on AMD with recent prerelease builds
-                // TODO: re-enable once fixed.
-                nextest_filter_expr: format!(
-                    "{cvm_filter} & !test(pcat) & !(test(hyperv) & test(vbs))"
-                ),
+                nextest_filter_expr: cvm_filter.clone(),
                 downloaded_artifacts: windows_x64_cvm_test_artifacts,
                 prep_steps_variants: vec!["standard".into()],
                 external_deps: VmmTestsExternalDeps::Windows(VmmTestsExternalDepsWindows {
@@ -1935,11 +1930,6 @@ impl IntoPipeline for CheckinGatesCli {
                 },
             },
         ] {
-            let nextest_filter_expr = if mshv_root {
-                nextest_filter_expr
-            } else {
-                format!("({nextest_filter_expr}) & !test(_uefi_x64_mshv_)")
-            };
             // Skip unsupported jobs on ADO backend
             if matches!(backend_hint, PipelineBackendHint::Ado) && ado_pool.is_none() {
                 continue;
