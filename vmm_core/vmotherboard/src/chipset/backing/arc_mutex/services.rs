@@ -54,8 +54,8 @@ pub enum FinalizeError {
     EoiHandlerAlreadySet,
     #[error("pic handler already set")]
     PicHandlerAlreadySet,
-    #[error("name already in use")]
-    NameInUse(#[source] state_unit::NameInUse),
+    #[error("failed to add the device's state unit")]
+    AddUnit(#[source] state_unit::UnitBuildError),
 }
 
 impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipsetServices<'_, '_> {
@@ -144,7 +144,7 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
         let driver = self.builder.driver_source.simple();
         let unit = builder
             .spawn(driver.clone(), |recv| device_unit.run(recv))
-            .map_err(FinalizeError::NameInUse)?;
+            .map_err(FinalizeError::AddUnit)?;
 
         inner
             .arc_mutex_device_units
