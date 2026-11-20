@@ -81,6 +81,7 @@ use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_socket::net::OpenSocketSerialConfig;
 use sparse_mmap::alloc_shared_memory;
 use std::collections::HashMap;
+use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -1415,26 +1416,32 @@ fn spawn_dump_handler(driver: &DefaultDriver, logger: &PetriLogSource) -> GuestC
     driver
         .spawn("openhcl-dump-handler", {
             let logger = logger.clone();
-            let driver = driver.clone();
             async move {
-                while let Some(rpc) = recv.next().await {
-                    rpc.handle_failable_sync(|done| {
-                        let (file, path) = logger.create_attachment("openhcl.core")?.into_parts();
-                        driver
-                            .spawn("crash-waiter", async move {
-                                let filename = path.file_name().unwrap().to_str().unwrap();
-                                if done.await.is_ok() {
-                                    tracing::warn!(filename, "openhcl crash dump complete");
-                                } else {
-                                    tracing::error!(
-                                        filename,
-                                        "openhcl crash dump incomplete, may be corrupted"
-                                    );
-                                }
-                            })
-                            .detach();
-                        anyhow::Ok(file)
-                    })
+                if let Some(rpc) = recv.next().await {
+                    let (done, response) = rpc.split();
+                    let (file, path) = match logger.create_attachment("openhcl.core") {
+                        Ok(file) => file.into_parts(),
+                        Err(error) => {
+                            let message =
+                                format!("OpenHCL crashed; failed to create crash dump: {error:#}");
+                            response.complete(Err(mesh::error::RemoteError::new(error)));
+                            panic!("{message}");
+                        }
+                    };
+                    response.complete(Ok(file));
+                    let status = match mesh::CancelContext::new()
+                        .with_timeout(Duration::from_secs(30))
+                        .until_cancelled(done)
+                        .await
+                    {
+                        Ok(Ok(())) => "complete",
+                        Ok(Err(_)) => "incomplete (may be corrupted)",
+                        Err(_) => "completion timed out",
+                    };
+                    tracing::error!(path = %path.display(), status, "OpenHCL crashed");
+                    // Like the watchdog, unwind the pool even if the test is
+                    // blocked on a guest operation. Preserve the dump first.
+                    panic!("OpenHCL crashed; dump {}: {status}", path.display());
                 }
             }
         })
@@ -1641,4 +1648,96 @@ async fn vmbus_storage_controllers_to_openvmm(
     }
 
     Ok((vmbus_devices, vpci_devices))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mesh::rpc::RpcSend;
+    use pal_async::DefaultPool;
+    use pal_async::timer::PolledTimer;
+    use std::io::Write;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+    use std::time::Duration;
+    use test_with_tracing::test;
+
+    fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+        match panic.downcast::<String>() {
+            Ok(message) => *message,
+            Err(panic) => panic.downcast::<&str>().unwrap().to_string(),
+        }
+    }
+
+    #[test]
+    fn openhcl_crash_preserves_dump_and_fails_pending_test() {
+        for complete in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let logger = PetriLogSource::file_only(temp.path()).unwrap();
+            let mut pool = DefaultPool::new();
+            let driver = pool.driver();
+            let handle = spawn_dump_handler(&driver, &logger);
+            let (done, recv) = mesh::oneshot();
+            let failure = catch_unwind(AssertUnwindSafe(|| {
+                pool.run_until(async {
+                    let mut file = handle
+                        .request_dump
+                        .call_failable(|rpc| rpc, recv)
+                        .await
+                        .unwrap();
+                    file.write_all(b"crash dump contents").unwrap();
+                    drop(file);
+                    if complete {
+                        done.send(());
+                    } else {
+                        drop(done);
+                    }
+                    drop(handle);
+                    // A crash must interrupt an outstanding test operation.
+                    PolledTimer::new(&driver)
+                        .sleep(Duration::from_secs(1))
+                        .await;
+                });
+            }))
+            .expect_err("OpenHCL crash did not fail the pending test");
+            let message = panic_message(failure);
+            assert!(message.contains("OpenHCL crashed"), "{message}");
+            if complete {
+                assert!(message.ends_with(": complete"), "{message}");
+            } else {
+                assert!(
+                    message.ends_with(": incomplete (may be corrupted)"),
+                    "{message}"
+                );
+            }
+            assert_eq!(
+                fs_err::read(temp.path().join("openhcl.core")).unwrap(),
+                b"crash dump contents"
+            );
+        }
+    }
+
+    #[test]
+    fn openhcl_crash_fails_when_dump_creation_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let logger = PetriLogSource::file_only(temp.path()).unwrap();
+        fs_err::create_dir(temp.path().join("openhcl.core")).unwrap();
+        let mut pool = DefaultPool::new();
+        let driver = pool.driver();
+        let handle = spawn_dump_handler(&driver, &logger);
+        let (_done, recv) = mesh::oneshot();
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            pool.run_until(async {
+                let _ = handle.request_dump.call_failable(|rpc| rpc, recv).await;
+                drop(handle);
+                PolledTimer::new(&driver)
+                    .sleep(Duration::from_secs(1))
+                    .await;
+            });
+        }))
+        .expect_err("OpenHCL crash did not fail after dump creation failed");
+        let message = panic_message(failure);
+        assert!(message.contains("OpenHCL crashed"), "{message}");
+        assert!(message.contains("failed to create"), "{message}");
+    }
 }
