@@ -33,6 +33,7 @@ chipset_device.workspace = true
 disk_hook.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
+parking_lot.workspace = true
 pci_core.workspace = true
 test_with_tracing.workspace = true
 
