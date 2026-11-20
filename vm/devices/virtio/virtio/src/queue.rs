@@ -11,6 +11,10 @@ use crate::spec::VirtioDeviceFeatures;
 use crate::spec::queue as spec;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use guestmem::cached::AccessScope;
+use guestmem::cached::CachedAccess;
+use guestmem::cached::CachedRange;
+use guestmem::cached::with_access;
 use inspect::Inspect;
 use packed::PackedQueueCompleteWork;
 pub use packed::PackedQueueCompletionContext;
@@ -31,12 +35,58 @@ pub(crate) fn descriptor_offset(index: u16) -> u64 {
 }
 
 pub(crate) fn read_descriptor<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
-    queue_desc: &GuestMemory,
+    queue_desc: &impl QueueMemory,
     index: u16,
 ) -> Result<T, QueueError> {
     queue_desc
-        .read_plain::<T>(descriptor_offset(index))
+        .read_queue::<T>(descriptor_offset(index))
         .map_err(QueueError::Memory)
+}
+
+pub(crate) trait QueueMemory {
+    fn read_queue<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        offset: u64,
+    ) -> Result<T, GuestMemoryError>;
+}
+
+impl QueueMemory for CachedAccess<'_> {
+    #[inline]
+    fn read_queue<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        offset: u64,
+    ) -> Result<T, GuestMemoryError> {
+        self.read_plain(offset)
+    }
+}
+
+impl QueueMemory for GuestMemory {
+    #[inline]
+    fn read_queue<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        offset: u64,
+    ) -> Result<T, GuestMemoryError> {
+        self.read_plain(offset)
+    }
+}
+
+fn cache_queue_memory(
+    mem: &GuestMemory,
+    address: u64,
+    len: u64,
+) -> Result<CachedRange, QueueError> {
+    let cache = mem
+        .cache_range(address, len as usize)
+        .map_err(QueueError::Memory)?;
+    if cache.supports_direct_access() {
+        Ok(cache)
+    } else {
+        // Keep backend-specific aperture/subrange optimizations until those
+        // backings provide revocable cached range preparation.
+        mem.subrange(address, len, true)
+            .and_then(|mem| mem.cache_range(0, len as usize))
+            .map_err(QueueError::Memory)
+    }
 }
 
 /// In-flight (consumed-but-not-completed) buffers for a split queue: the
@@ -197,7 +247,7 @@ pub struct QueueParams {
 
 #[derive(Debug, Inspect)]
 pub(crate) struct QueueCoreGetWork {
-    queue_desc: GuestMemory,
+    queue_desc: CachedRange,
     queue_size: u16,
     features: VirtioDeviceFeatures,
     mem: GuestMemory,
@@ -250,9 +300,8 @@ impl QueueCoreGetWork {
         if !features.ring_packed() && !params.size.is_power_of_two() {
             return Err(QueueError::InvalidQueueSize(params.size));
         }
-        let queue_desc = mem
-            .subrange(params.desc_addr, descriptor_offset(params.size), true)
-            .map_err(QueueError::Memory)?;
+        let queue_desc =
+            cache_queue_memory(&mem, params.desc_addr, descriptor_offset(params.size))?;
         let inner = if features.ring_packed() {
             let (index, wrap) = match initial_avail {
                 Some(v) => (v & 0x7FFF, (v >> 15) != 0),
@@ -325,21 +374,49 @@ impl QueueCoreGetWork {
         if self.failed {
             return Ok(None);
         }
-        let r = self.try_peek_work_inner();
+        let r = with_access(|scope| self.try_peek_work_inner(scope));
         if r.is_err() {
             self.failed = true;
         }
         r
     }
 
-    fn try_peek_work_inner(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
+    fn try_peek_work_inner(
+        &mut self,
+        scope: &AccessScope,
+    ) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
+        let descriptors = self.queue_desc.access(scope);
         let index = match &mut self.inner {
-            QueueGetWorkInner::Split(split) => split.is_available()?,
-            QueueGetWorkInner::Packed(packed) => packed.is_available()?,
+            QueueGetWorkInner::Split(split) => split.is_available(scope)?,
+            QueueGetWorkInner::Packed(packed) => packed.is_available(&descriptors)?,
         };
         let Some(index) = index else { return Ok(None) };
-        self.suppress_if_armed();
-        let work = self.work_from_index(index)?;
+        if self.armed {
+            self.armed = false;
+            let result = match &mut self.inner {
+                QueueGetWorkInner::Split(split) => split.suppress_kicks(scope),
+                QueueGetWorkInner::Packed(packed) => packed.suppress_kicks(scope),
+            };
+            if let Err(err) = result {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to suppress kicks"
+                );
+            }
+        }
+        let index = match &mut self.inner {
+            QueueGetWorkInner::Split(split) => {
+                split.get_available_descriptor_index(index, scope)?
+            }
+            QueueGetWorkInner::Packed(_) => index,
+        };
+        let work = Self::work_from_index(
+            &self.mem,
+            self.queue_size,
+            self.features,
+            index,
+            &descriptors,
+        )?;
 
         // Reject a guest that oversubscribes the ring: the whole chain must fit
         // in the remaining capacity, not just "we aren't already full" (spec caps
@@ -369,10 +446,12 @@ impl QueueCoreGetWork {
         if self.armed {
             return true;
         }
-        let r = match &mut self.inner {
-            QueueGetWorkInner::Split(split) => split.arm_kick(),
-            QueueGetWorkInner::Packed(packed) => packed.arm_kick(),
-        };
+        let r = with_access(|scope| match &mut self.inner {
+            QueueGetWorkInner::Split(split) => split.arm_kick(scope),
+            QueueGetWorkInner::Packed(packed) => {
+                packed.arm_kick(scope, &self.queue_desc.access(scope))
+            }
+        });
         match r {
             Ok(true) => {
                 self.armed = true;
@@ -388,25 +467,6 @@ impl QueueCoreGetWork {
                 // that treat `false` as "retry immediately".
                 self.armed = true;
                 true
-            }
-        }
-    }
-
-    /// If kicks are armed, suppress them. Called automatically when work is
-    /// found so the guest doesn't send unnecessary doorbells while draining.
-    fn suppress_if_armed(&mut self) {
-        if self.armed {
-            self.armed = false;
-            let r = match &self.inner {
-                QueueGetWorkInner::Split(split) => split.suppress_kicks(),
-                QueueGetWorkInner::Packed(packed) => packed.suppress_kicks(),
-            };
-
-            if let Err(err) = r {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to suppress kicks"
-                );
             }
         }
     }
@@ -440,109 +500,98 @@ impl QueueCoreGetWork {
             .expect("completed more than was consumed");
     }
 
-    fn work_from_index(&mut self, index: u16) -> Result<VirtioQueueCallbackWork, QueueError> {
-        if let QueueGetWorkInner::Split(split) = &mut self.inner {
-            let descriptor_index = split.get_available_descriptor_index(index)?;
-            let payload = self
-                .reader(descriptor_index)
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(VirtioQueueCallbackWork::from_parts(
-                QueueCompletion {
-                    descriptor_index,
-                    context: QueueCompletionContext::Split,
-                },
-                payload,
-            ))
-        } else {
-            let (payload, last_primary_desc_index) = {
-                let mut reader = self.reader(index);
-                (
-                    (&mut reader).collect::<Result<Vec<_>, _>>()?,
-                    reader.last_primary_desc_index(),
-                )
-            };
-            let last = self.descriptor(&self.queue_desc, last_primary_desc_index, None)?;
+    fn work_from_index(
+        mem: &GuestMemory,
+        queue_size: u16,
+        features: VirtioDeviceFeatures,
+        index: u16,
+        descriptors: &CachedAccess<'_>,
+    ) -> Result<VirtioQueueCallbackWork, QueueError> {
+        let mut reader = DescriptorReader {
+            chain: DescriptorChain::new(mem, queue_size, features, index, descriptors),
+        };
+        let payload = (&mut reader).collect::<Result<Vec<_>, _>>()?;
+        let context = if features.ring_packed() {
+            let last_primary_desc_index = reader.last_primary_desc_index();
+            let last = Self::descriptor(
+                features,
+                queue_size,
+                descriptors,
+                last_primary_desc_index,
+                None,
+            )?;
             let count = if last_primary_desc_index >= index {
                 last_primary_desc_index - index + 1
             } else {
                 // Wrapped around the end of the queue.
-                self.queue_size - index + last_primary_desc_index + 1
+                queue_size - index + last_primary_desc_index + 1
             };
             let completion_context = PackedQueueCompletionContext::new(&last, count);
-            Ok(VirtioQueueCallbackWork::from_parts(
-                QueueCompletion {
-                    context: QueueCompletionContext::Packed(completion_context),
-                    descriptor_index: index,
-                },
-                payload,
-            ))
-        }
-    }
-
-    fn reader(&mut self, descriptor_index: u16) -> DescriptorReader<'_> {
-        DescriptorReader {
-            chain: DescriptorChain::new(self, self.features.ring_indirect_desc(), descriptor_index),
-        }
+            QueueCompletionContext::Packed(completion_context)
+        } else {
+            QueueCompletionContext::Split
+        };
+        Ok(VirtioQueueCallbackWork::from_parts(
+            QueueCompletion {
+                context,
+                descriptor_index: index,
+            },
+            payload,
+        ))
     }
 
     fn descriptor(
-        &self,
-        desc_queue: &GuestMemory,
+        features: VirtioDeviceFeatures,
+        queue_size: u16,
+        desc_queue: &impl QueueMemory,
         index: u16,
         active_indirect_len: Option<u16>,
     ) -> Result<QueueDescriptor, QueueError> {
-        let descriptor = match self.inner {
-            QueueGetWorkInner::Split(_) => {
-                let descriptor: SplitDescriptor = read_descriptor(desc_queue, index)?;
-                QueueDescriptor {
-                    address: descriptor.address.get(),
-                    length: descriptor.length.get(),
-                    flags: descriptor.flags(),
-                    buffer_id: None,
-                    next: if descriptor.flags().next() {
-                        Some(descriptor.next.get())
-                    } else {
-                        None
-                    },
-                }
+        let descriptor = if !features.ring_packed() {
+            let descriptor: SplitDescriptor = read_descriptor(desc_queue, index)?;
+            QueueDescriptor {
+                address: descriptor.address.get(),
+                length: descriptor.length.get(),
+                flags: descriptor.flags(),
+                buffer_id: None,
+                next: if descriptor.flags().next() {
+                    Some(descriptor.next.get())
+                } else {
+                    None
+                },
             }
-            QueueGetWorkInner::Packed(_) => {
-                let descriptor: PackedDescriptor = read_descriptor(desc_queue, index)?;
-                QueueDescriptor {
-                    address: descriptor.address.get(),
-                    length: descriptor.length.get(),
-                    flags: descriptor.flags(),
-                    buffer_id: Some(descriptor.buffer_id.get()),
-                    next: if let Some(active_indirect_len) = active_indirect_len {
-                        // Packed descriptors consume all of the indirect
-                        // descriptors based on the buffer length, regardless
-                        // of the NEXT flag.
-                        let next = index.wrapping_add(1);
-                        if next < active_indirect_len {
-                            Some(next)
-                        } else {
-                            None
-                        }
-                    } else if descriptor.flags().next() {
-                        // Packed ring descriptors are sequential and wrap
-                        // at queue_size.
-                        let next = index.wrapping_add(1);
-                        if next >= self.queue_size {
-                            Some(0)
-                        } else {
-                            Some(next)
-                        }
+        } else {
+            let descriptor: PackedDescriptor = read_descriptor(desc_queue, index)?;
+            QueueDescriptor {
+                address: descriptor.address.get(),
+                length: descriptor.length.get(),
+                flags: descriptor.flags(),
+                buffer_id: Some(descriptor.buffer_id.get()),
+                next: if let Some(active_indirect_len) = active_indirect_len {
+                    // Packed descriptors consume all of the indirect
+                    // descriptors based on the buffer length, regardless
+                    // of the NEXT flag.
+                    let next = index.wrapping_add(1);
+                    if next < active_indirect_len {
+                        Some(next)
                     } else {
                         None
-                    },
-                }
+                    }
+                } else if descriptor.flags().next() {
+                    // Packed ring descriptors are sequential and wrap
+                    // at queue_size.
+                    let next = index.wrapping_add(1);
+                    if next >= queue_size {
+                        Some(0)
+                    } else {
+                        Some(next)
+                    }
+                } else {
+                    None
+                },
             }
         };
         Ok(descriptor)
-    }
-
-    fn size(&self) -> u16 {
-        self.queue_size
     }
 }
 
@@ -596,17 +645,17 @@ impl QueueCoreCompleteWork {
         completion: &QueueCompletion,
         bytes_written: u32,
     ) -> Result<bool, QueueError> {
-        match &mut self.inner {
+        with_access(|scope| match &mut self.inner {
             QueueCompleteWorkInner::Split(split) => {
-                split.complete_descriptor(completion.descriptor_index, bytes_written)
+                split.complete_descriptor(completion.descriptor_index, bytes_written, scope)
             }
             QueueCompleteWorkInner::Packed(packed) => {
                 let QueueCompletionContext::Packed(context) = &completion.context else {
                     panic!("mismatched queue completion context for packed queue");
                 };
-                packed.complete_descriptor(context, bytes_written)
+                packed.complete_descriptor(context, bytes_written, scope)
             }
-        }
+        })
     }
 }
 
@@ -652,7 +701,9 @@ impl Iterator for DescriptorReader<'_> {
 }
 
 struct DescriptorChain<'a> {
-    queue: &'a QueueCoreGetWork,
+    mem: &'a GuestMemory,
+    features: VirtioDeviceFeatures,
+    descriptors: &'a CachedAccess<'a>,
     /// Maximum chain length — always the original ring queue size (spec §2.7.5.3.1).
     queue_size: u16,
     indirect_support: bool,
@@ -665,11 +716,19 @@ struct DescriptorChain<'a> {
 }
 
 impl<'a> DescriptorChain<'a> {
-    fn new(queue: &'a QueueCoreGetWork, indirect_support: bool, descriptor_index: u16) -> Self {
+    fn new(
+        mem: &'a GuestMemory,
+        queue_size: u16,
+        features: VirtioDeviceFeatures,
+        descriptor_index: u16,
+        descriptors: &'a CachedAccess<'a>,
+    ) -> Self {
         Self {
-            queue,
-            queue_size: queue.size(),
-            indirect_support,
+            mem,
+            features,
+            descriptors,
+            queue_size,
+            indirect_support: features.ring_indirect_desc(),
             indirect_queue: None,
             indirect_table_len: None,
             descriptor_index: Some(descriptor_index),
@@ -682,13 +741,23 @@ impl<'a> DescriptorChain<'a> {
         let Some(descriptor_index) = self.descriptor_index else {
             return Ok(None);
         };
-        let descriptor = self.queue.descriptor(
-            self.indirect_queue
-                .as_ref()
-                .unwrap_or(&self.queue.queue_desc),
-            descriptor_index,
-            self.indirect_table_len,
-        )?;
+        let descriptor = if let Some(indirect) = &self.indirect_queue {
+            QueueCoreGetWork::descriptor(
+                self.features,
+                self.queue_size,
+                indirect,
+                descriptor_index,
+                self.indirect_table_len,
+            )?
+        } else {
+            QueueCoreGetWork::descriptor(
+                self.features,
+                self.queue_size,
+                self.descriptors,
+                descriptor_index,
+                None,
+            )?
+        };
         let descriptor = if !self.indirect_support || !descriptor.flags.indirect() {
             if self.indirect_queue.is_none() {
                 self.last_primary_desc_index = descriptor_index;
@@ -699,16 +768,20 @@ impl<'a> DescriptorChain<'a> {
                 return Err(QueueError::DoubleIndirect);
             }
             let indirect_queue = self.indirect_queue.insert(
-                self.queue
-                    .mem
+                self.mem
                     .subrange(descriptor.address, descriptor.length as u64, true)
                     .map_err(QueueError::Memory)?,
             );
             self.descriptor_index = Some(0);
             let indirect_len = (descriptor.length / size_of::<SplitDescriptor>() as u32) as u16;
             self.indirect_table_len = Some(indirect_len);
-            self.queue
-                .descriptor(indirect_queue, 0, Some(indirect_len))?
+            QueueCoreGetWork::descriptor(
+                self.features,
+                self.queue_size,
+                indirect_queue,
+                0,
+                Some(indirect_len),
+            )?
         };
 
         self.num_read += 1;
@@ -739,6 +812,170 @@ impl Iterator for DescriptorChain<'_> {
 mod tests {
     use super::QueueError;
     use super::packed_in_flight;
+    use test_with_tracing::test;
+
+    struct CachedTestMemory {
+        memory: guestmem::AlignedHeapMemory,
+        subranges: std::sync::atomic::AtomicUsize,
+    }
+
+    // UNSAFETY: implementing the backing trait for an in-memory queue test.
+    #[expect(unsafe_code)]
+    // SAFETY: the heap mapping is fully accessible and never replaced.
+    unsafe impl guestmem::GuestMemoryAccess for CachedTestMemory {
+        fn mapping(&self) -> Option<std::ptr::NonNull<u8>> {
+            guestmem::GuestMemoryAccess::mapping(&self.memory)
+        }
+
+        fn max_address(&self) -> u64 {
+            self.memory.len() as u64
+        }
+
+        fn cache_invalidation(
+            &self,
+        ) -> Option<std::sync::Arc<guestmem::cached::CacheInvalidation>> {
+            guestmem::GuestMemoryAccess::cache_invalidation(&self.memory)
+        }
+
+        fn subrange(
+            &self,
+            _offset: u64,
+            _len: u64,
+            _allow_preemptive_locking: bool,
+        ) -> Result<Option<guestmem::GuestMemory>, guestmem::GuestMemoryBackingError> {
+            self.subranges
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn cached_fixed_rings_preserve_indirect_fetch_and_completion() {
+        use super::*;
+        use crate::spec::u16_le;
+        use guestmem::GuestMemory;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        for packed in [false, true] {
+            let backing = Arc::new(CachedTestMemory {
+                memory: guestmem::AlignedHeapMemory::new(6 * 4096),
+                subranges: AtomicUsize::new(0),
+            });
+            let memory = GuestMemory::new("cached-queue", backing.clone());
+            let params = QueueParams {
+                size: 4,
+                enable: true,
+                desc_addr: 0,
+                avail_addr: 4096,
+                used_addr: 8192,
+            };
+            let indirect = 3 * 4096u64;
+            if packed {
+                memory
+                    .write_plain(
+                        0,
+                        &PackedDescriptor {
+                            address: indirect.into(),
+                            length: 32.into(),
+                            buffer_id: 17.into(),
+                            flags_raw: DescriptorFlags::new()
+                                .with_indirect(true)
+                                .with_available(true)
+                                .into_bits()
+                                .into(),
+                        },
+                    )
+                    .unwrap();
+                for (i, write) in [(0u64, false), (1, true)] {
+                    memory
+                        .write_plain(
+                            indirect + 16 * i,
+                            &PackedDescriptor {
+                                address: (4 * 4096 + 128 * i).into(),
+                                length: 64.into(),
+                                buffer_id: 0.into(),
+                                flags_raw: DescriptorFlags::new()
+                                    .with_write(write)
+                                    .into_bits()
+                                    .into(),
+                            },
+                        )
+                        .unwrap();
+                }
+            } else {
+                memory
+                    .write_plain(
+                        0,
+                        &SplitDescriptor {
+                            address: indirect.into(),
+                            length: 32.into(),
+                            flags_raw: DescriptorFlags::new()
+                                .with_indirect(true)
+                                .into_bits()
+                                .into(),
+                            next: 0.into(),
+                        },
+                    )
+                    .unwrap();
+                for (i, write) in [(0u64, false), (1, true)] {
+                    memory
+                        .write_plain(
+                            indirect + 16 * i,
+                            &SplitDescriptor {
+                                address: (4 * 4096 + 128 * i).into(),
+                                length: 64.into(),
+                                flags_raw: DescriptorFlags::new()
+                                    .with_next(i == 0)
+                                    .with_write(write)
+                                    .into_bits()
+                                    .into(),
+                                next: 1.into(),
+                            },
+                        )
+                        .unwrap();
+                }
+                memory
+                    .write_plain(4096 + spec::AVAIL_OFFSET_IDX, &u16_le::new(1))
+                    .unwrap();
+            }
+            let features = VirtioDeviceFeatures::new()
+                .with_ring_packed(packed)
+                .with_ring_indirect_desc(true);
+            let (mut fetch, mut complete) =
+                new_queue(features, memory.clone(), params, None).unwrap();
+            assert_eq!(backing.subranges.load(Ordering::Relaxed), 0);
+            let work = fetch.try_next_work().unwrap().unwrap();
+            assert_eq!(work.payload.len(), 2);
+            assert_eq!(work.payload[0].address, 4 * 4096);
+            assert!(!work.payload[0].writeable);
+            assert_eq!(work.payload[1].address, 4 * 4096 + 128);
+            assert!(work.payload[1].writeable);
+            assert_eq!(backing.subranges.load(Ordering::Relaxed), 1);
+            let completion = work.into_completion();
+            fetch.work_completed(&completion);
+            complete.complete_descriptor(&completion, 64).unwrap();
+            if packed {
+                let descriptor: PackedDescriptor = memory.read_plain(0).unwrap();
+                assert_eq!(descriptor.buffer_id.get(), 17);
+                assert_eq!(descriptor.length.get(), 64);
+                assert!(descriptor.flags().used());
+            } else {
+                let used: spec::UsedElement =
+                    memory.read_plain(8192 + spec::USED_OFFSET_RING).unwrap();
+                assert_eq!(used.id.get(), 0);
+                assert_eq!(used.len.get(), 64);
+                assert_eq!(
+                    memory
+                        .read_plain::<u16_le>(8192 + spec::USED_OFFSET_IDX)
+                        .unwrap()
+                        .get(),
+                    1
+                );
+            }
+        }
+    }
 
     /// Encodes a packed cursor as it is stored in `QueueState`:
     /// `index | (wrap_counter << 15)`.
