@@ -97,6 +97,14 @@ restoring it again would combine modified memory with the original device
 state.
 ```
 
+The ttrpc `RestoreVM` API also supports eager-copy restore. In that mode
+OpenVMM allocates independent RAM for the restored VM and copies `memory.bin`
+into it before applying processor and device state, so the snapshot isn't
+modified and can be restored into any number of isolated clones. See
+[gRPC / ttrpc](../../reference/openvmm/management/grpc.md#snapshots-savevm-and-restorevm).
+The `--restore-snapshot` CLI continues to use the shared-in-place behavior
+described above.
+
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
 the snapshot manifest. If they do not match, OpenVMM will report a
@@ -199,10 +207,9 @@ immediately with a clear error if any active device does not support it.
 
 - Snapshots are **not portable** across architectures (e.g., you cannot
   restore an x86_64 snapshot on aarch64)
-- After restoring, `memory.bin` in the snapshot directory becomes the live
-  guest RAM backing file and will be modified as the VM runs. To restore
-  from the same snapshot multiple times, copy the snapshot directory before
-  each restore.
+- After restoring with the CLI or shared-in-place `RestoreVM`, `memory.bin` in
+  the snapshot directory becomes the live guest RAM backing file and will be
+  modified as the VM runs. Eager-copy `RestoreVM` keeps the snapshot reusable.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
 - VMs using PCAT firmware do not support save/restore

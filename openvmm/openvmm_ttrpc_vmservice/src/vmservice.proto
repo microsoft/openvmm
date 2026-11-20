@@ -203,8 +203,31 @@ message MemoryConfig {
     uint64 high_mmio_base_in_mb = 8;
     uint64 high_mmio_gap_in_mb = 9;
     // Optional host file used to back guest memory. SaveVM requires
-    // file-backed memory. Must not be set for RestoreVM.
+    // file-backed memory. During eager-copy RestoreVM this is the destination
+    // backing; shared-in-place RestoreVM must not set it.
     optional string backing_file_path = 10;
+    // Snapshot population for RestoreVM. Must not be set for CreateVM.
+    // Absent during RestoreVM preserves the legacy shared-in-place behavior.
+    optional MemorySource source = 11;
+}
+
+message MemorySource {
+    oneof kind {
+        SnapshotMemorySource snapshot = 1;
+    }
+}
+
+message SnapshotMemorySource {
+    SnapshotMemoryPopulation population = 1;
+}
+
+enum SnapshotMemoryPopulation {
+    SNAPSHOT_MEMORY_POPULATION_UNSPECIFIED = 0;
+    // Copy the snapshot memory into independent guest RAM before restoring
+    // device state. The snapshot is not modified.
+    SNAPSHOT_MEMORY_POPULATION_EAGER_COPY = 1;
+    // Map the snapshot memory directly as mutable guest RAM.
+    SNAPSHOT_MEMORY_POPULATION_SHARED_IN_PLACE = 2;
 }
 
 message ProcessorConfig {
