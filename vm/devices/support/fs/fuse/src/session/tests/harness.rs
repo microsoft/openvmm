@@ -5,17 +5,18 @@
 //!
 //! [`initialized_session`] starts a session of a file system with
 //! `FUSE_INIT`, [`make_request`] encodes a request, and [`dispatch_request`]
-//! sends a request to a session, checks the length of its reply, and returns
-//! the reply.
+//! sends a request to a session, checks that the session sends one reply of
+//! the right length, and returns the reply.
 
-use super::CapturingSender;
 use crate::Fuse;
 use crate::protocol::FUSE_ROOT_ID;
 use crate::protocol::fuse_in_header;
 use crate::protocol::fuse_out_header;
+use crate::reply::ReplySender;
 use crate::request::Request;
 use crate::request::tests::FUSE_INIT_REQUEST;
 use crate::session::Session;
+use std::io;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -51,16 +52,38 @@ pub(super) fn make_request(
     [header.as_bytes(), arg.as_bytes(), data].concat()
 }
 
+/// A sender that keeps each reply that it sends.
+#[derive(Default)]
+struct RecordingSender {
+    replies: Vec<Vec<u8>>,
+}
+
+impl ReplySender for RecordingSender {
+    fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+        self.replies
+            .push(bufs.iter().flat_map(|buf| buf.iter()).copied().collect());
+        Ok(())
+    }
+}
+
 /// Sends `request` to `session`, and returns the header of the reply and the
-/// bytes that follow it. Checks that the header's `len` is the length of the
-/// whole reply, which is how FUSE clients learn the reply's length.
+/// bytes that follow it. Checks that the session sends exactly one reply, as
+/// a FUSE client expects for each request, and that the header's `len` is the
+/// length of the whole reply, which is how FUSE clients learn the reply's
+/// length.
 pub(super) fn dispatch_request(session: &Session, request: &[u8]) -> (fuse_out_header, Vec<u8>) {
-    let mut sender = CapturingSender::default();
+    let mut sender = RecordingSender::default();
     session.dispatch(Request::new(request).unwrap(), &mut sender, None);
-    let (header, body) = fuse_out_header::read_from_prefix(&sender.data).unwrap();
+    let [reply] = sender.replies.as_slice() else {
+        panic!(
+            "the session sent {} replies instead of one",
+            sender.replies.len()
+        );
+    };
+    let (header, body) = fuse_out_header::read_from_prefix(reply).unwrap();
     assert_eq!(
         header.len as usize,
-        sender.data.len(),
+        reply.len(),
         "the reply's len is not its length"
     );
     (header, body.to_vec())
