@@ -7,6 +7,8 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr;
 use std::slice;
+use widestring::U16CStr;
+use widestring::U16Str;
 use windows_sys::Win32::Foundation::E_FAIL;
 use windows_sys::Win32::Foundation::E_INVALIDARG;
 use windows_sys::Win32::Foundation::E_OUTOFMEMORY;
@@ -143,27 +145,16 @@ fn read_utf16(ptr: *const u16) -> Option<String> {
         return None;
     }
 
+    // Truncate if no null terminator is found within MAX_LEN.
+    //
     // SAFETY: The caller (RPC runtime) is responsible for providing valid pointers.
     // This is a test server, so we trust the RPC infrastructure to provide valid data.
-    unsafe {
-        let mut len = 0usize;
-
-        // Scan for null terminator with bounds checking
-        while len < MAX_LEN {
-            if *ptr.add(len) == 0 {
-                break;
-            }
-            len += 1;
-        }
-
-        // If we hit MAX_LEN without finding a null terminator, truncate
-        if len == MAX_LEN {
-            len = MAX_LEN - 1;
-        }
-
-        let slice = slice::from_raw_parts(ptr, len);
-        String::from_utf16(slice).ok()
-    }
+    let s = unsafe {
+        U16CStr::from_ptr_truncate(ptr, MAX_LEN - 1)
+            .map(U16CStr::as_ustr)
+            .unwrap_or_else(|_| U16Str::from_ptr(ptr, MAX_LEN - 1))
+    };
+    s.to_string().ok()
 }
 
 /// Entry point that services `RpcIGVmAttest` requests for the test agent.

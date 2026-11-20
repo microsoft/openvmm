@@ -13,6 +13,7 @@ use std::os::windows::prelude::*;
 use std::ptr::null;
 use std::ptr::null_mut;
 use widestring::U16CString;
+use widestring::U16String;
 use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
 use windows_sys::Win32::Foundation::SetHandleInformation;
@@ -608,9 +609,9 @@ impl Stdio<'_> {
 #[derive(Debug)]
 pub struct Builder<'a> {
     creation_flags: u32,
-    command_line: Vec<u16>,
-    application_name: Option<Vec<u16>>,
-    current_directory: Option<Vec<u16>>,
+    command_line: U16String,
+    application_name: Option<U16String>,
+    current_directory: Option<U16String>,
     handles: Vec<BorrowedHandle<'a>>,
     jobs: Vec<BorrowedHandle<'a>>,
     stdin: Stdio<'a>,
@@ -624,22 +625,10 @@ pub struct Builder<'a> {
     child_process_policy: ChildProcessPolicy,
 }
 
-fn wstr(s: &OsStr) -> Vec<u16> {
-    s.encode_wide().collect()
-}
-
 /// Null terminates a wide string, ensuring that there are no internal null characters.
-fn null_terminate(v: Vec<u16>) -> Result<U16CString, io::Error> {
+fn null_terminate(v: U16String) -> Result<U16CString, io::Error> {
     U16CString::from_vec(v)
         .map_err(|_| io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as i32))
-}
-
-fn ensure_no_null(v: &OsStr) -> Result<(), io::Error> {
-    if v.encode_wide().all(|x| x != 0) {
-        Ok(())
-    } else {
-        Err(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as i32))
-    }
 }
 
 fn ptr_or_null<T, U>(v: &Option<U>) -> *const T
@@ -710,7 +699,7 @@ impl<'a> Builder<'a> {
     pub fn new(command_line: impl AsRef<OsStr>) -> Self {
         Self {
             creation_flags: 0,
-            command_line: wstr(command_line.as_ref()),
+            command_line: U16String::from_os_str(&command_line),
             application_name: None,
             current_directory: None,
             handles: Vec::new(),
@@ -728,7 +717,7 @@ impl<'a> Builder<'a> {
     }
 
     pub fn application_name(&mut self, path: impl AsRef<OsStr>) -> &mut Self {
-        self.application_name = Some(wstr(path.as_ref()));
+        self.application_name = Some(U16String::from_os_str(&path));
         self
     }
 
@@ -924,16 +913,14 @@ impl<'a> Builder<'a> {
                         }
                     }
                 }
-                let mut block = Vec::new();
+                let mut block = U16String::new();
                 for (key, val) in env {
-                    ensure_no_null(&key)?;
-                    block.extend(key.encode_wide());
-                    block.push('=' as u16);
-                    ensure_no_null(&val)?;
-                    block.extend(val.encode_wide());
-                    block.push(0);
+                    let mut entry = U16String::from_os_str(&key);
+                    entry.push_char('=');
+                    entry.push_os_str(val);
+                    block.push_slice(null_terminate(entry)?.as_slice_with_nul());
                 }
-                block.push(0);
+                block.push_char('\0');
                 env_block = Some(block);
             }
 
@@ -1017,8 +1004,39 @@ pub(crate) fn terminate(exit_code: i32) -> ! {
 
 #[cfg(test)]
 mod tests {
+    use super::Builder;
     use super::EmptyProcess;
     use super::empty_process;
+    use test_with_tracing::test;
+
+    #[test]
+    fn test_unicode_environment_block() {
+        let value = "value-\u{1f680}";
+        let command_line = format!(
+            r#"cmd.exe /d /c if "%PAL_WIDE_VALUE%:%PAL_SECOND_VALUE%"=="{value}:other" (exit /b 42) else (exit /b 1)"#
+        );
+        let mut builder = Builder::new(command_line);
+        builder
+            .env_clear()
+            .env("PAL_WIDE_VALUE", value)
+            .env("PAL_SECOND_VALUE", "other");
+        let process = builder.spawn().unwrap();
+        process.wait();
+        assert_eq!(process.exit_code(), 42);
+    }
+
+    #[test]
+    fn test_environment_rejects_interior_nul() {
+        for (key, value) in [("nul\0key", "value"), ("key", "nul\0value")] {
+            let mut builder = Builder::new("unused");
+            builder.env_clear().env(key, value);
+            let error = builder.spawn().unwrap_err();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER as i32)
+            );
+        }
+    }
 
     #[test]
     fn test_empty() {

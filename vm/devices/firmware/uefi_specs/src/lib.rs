@@ -26,7 +26,10 @@ macro_rules! defn_nvram_var {
 
             (
                 $guid,
-                Ucs2LeSlice::from_slice_with_nul(wchar::wchz!(u16, $name).as_bytes()).unwrap(),
+                Ucs2LeSlice::from_slice_with_nul(
+                    widestring::u16cstr!($name).as_slice_with_nul().as_bytes(),
+                )
+                .unwrap(),
             )
         }
     };

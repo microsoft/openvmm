@@ -35,6 +35,7 @@ static_assertions.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
+widestring.workspace = true
 zerocopy.workspace = true
 hvdef.workspace = true
 

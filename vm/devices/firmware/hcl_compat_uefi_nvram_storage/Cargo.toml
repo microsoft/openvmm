@@ -31,7 +31,6 @@ tracing.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
 pal_async.workspace = true
-wchar.workspace = true
 
 [lints]
 workspace = true

@@ -244,7 +244,7 @@ impl LxVolume {
         assert!(path.is_relative());
         // NTFS interprets ':' as a stream separator, which this API does not support.
         // Linux filename colons are escaped by PathExt/PathBufExt before opening.
-        if path.as_os_str().encode_wide().any(|c| c == b':' as u16) {
+        if path.as_os_str().as_encoded_bytes().contains(&b':') {
             return Err(lx::Error::EINVAL);
         }
         self.check_sandbox_enforcement(path)?;
@@ -1537,6 +1537,9 @@ mod tests {
     use crate::LxCreateOptions;
     use crate::LxVolumeOptions;
     use test_with_tracing::test;
+    use widestring::U16CString;
+    use widestring::U16String;
+    use widestring::u16cstr;
 
     fn set_host_attributes(path: &Path, attributes: u32) {
         let file = std::fs::OpenOptions::new()
@@ -1718,10 +1721,13 @@ mod tests {
             .unwrap();
         // Version 3: package family, application ID, executable, and application type.
         let mut data = 3u32.to_le_bytes().to_vec();
-        for field in ["test-package", "test-package!app", r"C:\unused.exe", "0"] {
-            for value in field.encode_utf16().chain([0]) {
-                data.extend_from_slice(&value.to_le_bytes());
-            }
+        for field in [
+            u16cstr!("test-package"),
+            u16cstr!("test-package!app"),
+            u16cstr!(r"C:\unused.exe"),
+            u16cstr!("0"),
+        ] {
+            data.extend_from_slice(field.as_slice_with_nul().as_bytes());
         }
         let mut reparse = W32Ss::IO_REPARSE_TAG_APPEXECLINK.to_le_bytes().to_vec();
         reparse.extend_from_slice(&u16::try_from(data.len()).unwrap().to_le_bytes());
@@ -2219,9 +2225,9 @@ mod tests {
                 )
                 .open(link)
                 .unwrap();
-            let mut substitute = ffi::OsString::from(r"\??\");
-            substitute.push(target);
-            let substitute: Vec<u16> = substitute.encode_wide().collect();
+            let mut substitute = U16String::from_str(r"\??\");
+            substitute.push_os_str(target);
+            let substitute = U16CString::from_ustr(substitute).unwrap();
             let length = u16::try_from(substitute.len() * 2).unwrap();
             // Mount-point data has four name fields, followed by two terminated names.
             let mut reparse = Vec::new();
@@ -2229,9 +2235,9 @@ mod tests {
             for value in [8 + length + 4, 0, 0, length, length + 2, 0] {
                 reparse.extend_from_slice(&value.to_le_bytes());
             }
-            for value in substitute.into_iter().chain([0, 0]) {
-                reparse.extend_from_slice(&value.to_le_bytes());
-            }
+            reparse.extend_from_slice(substitute.as_slice_with_nul().as_bytes());
+            // The print name is empty.
+            reparse.extend_from_slice(u16cstr!("").as_slice_with_nul().as_bytes());
             util::set_reparse_point(&handle.into(), &reparse).unwrap();
         });
     }

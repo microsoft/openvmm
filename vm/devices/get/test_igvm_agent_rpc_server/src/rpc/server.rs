@@ -2,11 +2,11 @@
 // Licensed under the MIT License.
 
 use core::ffi::c_void;
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
 use std::ptr;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use widestring::U16CStr;
+use widestring::u16cstr;
 use windows_sys::Win32::Foundation::FALSE;
 use windows_sys::Win32::Foundation::TRUE;
 use windows_sys::Win32::System::Console::CTRL_BREAK_EVENT;
@@ -26,18 +26,14 @@ use windows_sys::Win32::System::Rpc::RpcServerUnregisterIf;
 use windows_sys::Win32::System::Rpc::RpcServerUseProtseqEpW;
 use windows_sys::core::BOOL;
 
-pub const PROTOCOL_SEQUENCE: &str = "ncalrpc";
-pub const ENDPOINT: &str = "IGVM_AGENT_RPC_SERVER";
+pub const PROTOCOL_SEQUENCE: &U16CStr = u16cstr!("ncalrpc");
+pub const ENDPOINT: &U16CStr = u16cstr!("IGVM_AGENT_RPC_SERVER");
 
 pub type RpcInterfaceHandle = *mut c_void;
 
 // SAFETY: FFI handle
 unsafe extern "C" {
     pub static IGVmAgentRpcApi_v1_0_s_ifspec: RpcInterfaceHandle;
-}
-
-fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain([0]).collect()
 }
 
 /// # SAFETY
@@ -97,16 +93,18 @@ impl Drop for ConsoleHandlerGuard {
 }
 
 fn register_protocol_and_interface() -> Result<(), String> {
-    tracing::info!(protocol = %PROTOCOL_SEQUENCE, endpoint = %ENDPOINT, "registering RPC protocol");
-    let mut protocol_seq = to_wide(PROTOCOL_SEQUENCE);
-    let mut endpoint = to_wide(ENDPOINT);
+    tracing::info!(
+        protocol = %PROTOCOL_SEQUENCE.display(),
+        endpoint = %ENDPOINT.display(),
+        "registering RPC protocol"
+    );
 
     // SAFETY: Make an FFI call.
     let status = unsafe {
         RpcServerUseProtseqEpW(
-            protocol_seq.as_mut_ptr(),
+            PROTOCOL_SEQUENCE.as_ptr(),
             RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
-            endpoint.as_mut_ptr(),
+            ENDPOINT.as_ptr(),
             ptr::null_mut(),
         )
     };

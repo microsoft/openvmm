@@ -25,6 +25,7 @@ use vm_resource::ResolveResource;
 use vm_resource::ResourceId;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
+use widestring::U16CString;
 
 mod scsi;
 
@@ -394,6 +395,11 @@ mod virtdisk {
 /// Handle for an open VHD file.
 pub struct Vhd(fs::File);
 
+fn wide_path(path: &Path) -> std::io::Result<U16CString> {
+    U16CString::from_os_str(path)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+}
+
 fn chk_win32(err: u32) -> std::io::Result<()> {
     if err == 0 {
         Ok(())
@@ -444,8 +450,7 @@ impl OpenOptions {
                 },
             },
         };
-        let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
-        path16.push(0);
+        let path16 = wide_path(path)?;
         let mut handle = std::ptr::null_mut();
 
         // SAFETY: All structs are correctly initialized, the path has a null
@@ -481,8 +486,7 @@ impl OpenOptions {
 impl Vhd {
     /// Create a new dynamic VHD
     pub fn create_dynamic(path: &Path, max_size_mb: u64, vhdx: bool) -> std::io::Result<Self> {
-        let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
-        path16.push(0);
+        let path16 = wide_path(path)?;
 
         let mut storage_type = virtdisk::VIRTUAL_STORAGE_TYPE {
             DeviceId: if vhdx {
@@ -539,11 +543,9 @@ impl Vhd {
     pub fn create_diff(path: &Path, parent_path: &Path) -> std::io::Result<Self> {
         let mut storage_type = virtdisk::VIRTUAL_STORAGE_TYPE::default();
 
-        let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
-        path16.push(0);
+        let path16 = wide_path(path)?;
 
-        let mut parent_path16: Vec<_> = parent_path.as_os_str().encode_wide().collect();
-        parent_path16.push(0);
+        let parent_path16 = wide_path(parent_path)?;
 
         // Use a unique ID for each open to avoid virtual disk sharing
         // within VHDMP. In the future, consider taking this as a parameter

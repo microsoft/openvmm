@@ -14,6 +14,7 @@ use crate::win::decode_object;
 use crate::win::encode_object;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use widestring::U16CString;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
 use windows::Win32::Security::Cryptography::CERT_AUTHORITY_KEY_ID2_INFO;
 use windows::Win32::Security::Cryptography::CERT_CONTEXT;
@@ -373,8 +374,7 @@ impl X509CertificateInner {
         if written == 0 {
             return Err(last_err("formatting the issuer distinguished name"));
         }
-        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        Ok(String::from_utf16_lossy(&buf[..len]))
+        Ok(U16CString::from_vec_truncate(buf).to_string_lossy())
     }
 
     pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
@@ -468,9 +468,7 @@ impl X509CertificateInner {
         if written == 0 {
             return Err(last_err("reading the subject common name"));
         }
-        // Strip trailing NUL.
-        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        Ok(Some(String::from_utf16_lossy(&buf[..len])))
+        Ok(Some(U16CString::from_vec_truncate(buf).to_string_lossy()))
     }
 
     #[cfg(any(test, feature = "test_helpers"))]
@@ -689,28 +687,31 @@ fn encode_x500_name(
     use windows::Win32::Security::Cryptography::CERT_RDN_UTF8_STRING;
     use windows::Win32::Security::Cryptography::szOID_COUNTRY_NAME;
 
-    let mut rdn_entries: Vec<(PCSTR, Vec<u16>)> = vec![
-        (szOID_COUNTRY_NAME, country.encode_utf16().collect()),
+    let mut rdn_entries: Vec<_> = [
+        (szOID_COUNTRY_NAME, country),
         (
             windows::Win32::Security::Cryptography::szOID_STATE_OR_PROVINCE_NAME,
-            state.encode_utf16().collect(),
+            state,
         ),
         (
             windows::Win32::Security::Cryptography::szOID_LOCALITY_NAME,
-            locality.encode_utf16().collect(),
+            locality,
         ),
         (
             windows::Win32::Security::Cryptography::szOID_ORGANIZATION_NAME,
-            organization.encode_utf16().collect(),
+            organization,
         ),
-        (szOID_COMMON_NAME, common_name.encode_utf16().collect()),
-    ];
+        (szOID_COMMON_NAME, common_name),
+    ]
+    .into_iter()
+    .map(|(oid, value)| (oid, widestring::U16String::from_str(value)))
+    .collect();
     rdn_entries.retain(|(_, value)| !value.is_empty());
 
     // Build CERT_RDN_ATTR list and one CERT_RDN per attribute (each in its
     // own RDN so the resulting DN is fully ordered).
     let mut attrs: Vec<CERT_RDN_ATTR> = Vec::with_capacity(rdn_entries.len());
-    for (oid, bytes) in &mut rdn_entries {
+    for (oid, value) in &mut rdn_entries {
         attrs.push(CERT_RDN_ATTR {
             pszObjId: windows::core::PSTR(oid.0.cast_mut()),
             dwValueType: if *oid == szOID_COUNTRY_NAME {
@@ -719,8 +720,8 @@ fn encode_x500_name(
                 CERT_RDN_UTF8_STRING.0 as u32
             },
             Value: CRYPT_INTEGER_BLOB {
-                cbData: (bytes.len() * size_of::<u16>()) as u32,
-                pbData: bytes.as_mut_ptr().cast(),
+                cbData: (value.len() * size_of::<u16>()) as u32,
+                pbData: value.as_mut_ptr().cast(),
             },
         });
     }

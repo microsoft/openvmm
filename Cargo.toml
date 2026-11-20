@@ -563,7 +563,6 @@ serde_json = { version = "1.0", default-features = false }
 serde_yaml = "0.9"
 toml_edit = "0.23"
 urlencoding = "2.1.3"
-wchar = "0.11"
 widestring = "1.0"
 # We add the derive feature here since the vast majority of our crates use it.
 zerocopy = { version = "0.8.25", features = ["derive"]}

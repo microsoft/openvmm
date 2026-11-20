@@ -180,10 +180,9 @@ pub fn is_secure_boot_policy_var(vendor: Guid, name: &ucs2::Ucs2LeSlice) -> bool
 
 /// UEFI spec 3.3 - Table 3-1
 ///
-/// Due to the Rust compiler not having built-in support for defining
-/// wide-string literals, and me not wanting to yak-shave a proc macro
-/// implementation that emits valid Utf16LeSlices at compile time, these
-/// "constants" are actually methods that can only be called at runtime.
+/// The UTF-16 literals are generated at compile time, but validation as
+/// [`ucs2::Ucs2LeSlice`] happens at runtime, so these helpers are functions
+/// rather than constants.
 #[cfg(feature = "std")]
 pub mod vars {
     use guid::Guid;

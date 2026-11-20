@@ -368,17 +368,20 @@ impl<R: Read + Seek> HvsFileReader<R> {
             });
         }
         // Data format: u32 size_in_bytes, then UTF-16LE data
-        if entry.data.len() < 4 {
+        let Some((byte_len, data)) = entry.data.split_first_chunk::<4>() else {
             return Ok(String::new());
-        }
-        let byte_len = u32::from_le_bytes(entry.data[..4].try_into().unwrap_or_default()) as usize;
-        let utf16_bytes = &entry.data[4..4 + byte_len.min(entry.data.len() - 4)];
-        let utf16: Vec<u16> = utf16_bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        };
+        let byte_len = u32::from_le_bytes(*byte_len) as usize;
+        let utf16 = data[..byte_len.min(data.len())]
+            .as_chunks()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c));
+        let mut s: String = char::decode_utf16(utf16)
+            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect();
-        let s = String::from_utf16_lossy(&utf16);
-        Ok(s.trim_end_matches('\0').to_string())
+        s.truncate(s.trim_end_matches('\0').len());
+        Ok(s)
     }
 
     /// Reads a boolean value.

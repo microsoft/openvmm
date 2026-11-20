@@ -1485,14 +1485,12 @@ mod save_restore {
 mod test {
     use super::*;
     use uefi_nvram_storage::in_memory::InMemoryNvram;
-    // TODO: wchz returns UTF-16 strings, _not_ UCS-2 strings. This works fine
+    // TODO: Ucs2LeVec::from encodes UTF-16, _not_ UCS-2. This works fine
     // when using english variable names, but things will _not_ work as expected
     // if one tries to use any particularly "exotic" chars (that cannot be
     // represented in UCS-2).
     use pal_async::async_test;
-    use wchar::wchz;
-
-    use zerocopy::IntoBytes;
+    use ucs2::Ucs2LeVec;
 
     /// Extension trait around `NvramServices` that makes it easier to use the
     /// API outside the context of the UEFI device
@@ -1569,10 +1567,10 @@ mod test {
 
         nvram.prepare_for_boot();
 
-        let name1 = wchz!(u16, "var1").as_bytes();
-        let name2 = wchz!(u16, "var2").as_bytes();
-        let name3 = wchz!(u16, "var3").as_bytes();
-        let name4 = wchz!(u16, "var4").as_bytes();
+        let name1: &[u8] = &Ucs2LeVec::from("var1").into_inner();
+        let name2: &[u8] = &Ucs2LeVec::from("var2").into_inner();
+        let name3: &[u8] = &Ucs2LeVec::from("var3").into_inner();
+        let name4: &[u8] = &Ucs2LeVec::from("var4").into_inner();
 
         let dummy_data = b"dummy data".to_vec();
 
@@ -1619,7 +1617,7 @@ mod test {
         assert_eq!(data, Some(dummy_data.clone()));
 
         // access them sequentially
-        let mut name = Some(wchz!(u16, "").as_bytes().into());
+        let mut name = Some(Ucs2LeVec::from("").into_inner());
         name = nvram.get_next_test_var(name).await.unwrap_efi_success();
         assert_eq!(name, Some(name1.into()));
 
@@ -1643,7 +1641,7 @@ mod test {
         // try to set non-runtime access var
         let NvramResult(_, status, err) = nvram
             .set_test_var(
-                wchz!(u16, "non-volatile").as_bytes(),
+                Ucs2LeVec::from("non-volatile").as_bytes(),
                 no_runtime_attr,
                 &dummy_data,
             )
@@ -1673,7 +1671,7 @@ mod test {
         assert!(matches!(err, Some(NvramError::InvalidRuntimeAccess)));
 
         // access them sequentially
-        let mut name = Some(wchz!(u16, "").as_bytes().into());
+        let mut name = Some(Ucs2LeVec::from("").into_inner());
         name = nvram.get_next_test_var(name).await.unwrap_efi_success();
         assert_eq!(name, Some(name1.into()));
 
@@ -1697,7 +1695,7 @@ mod test {
 
         nvram.prepare_for_boot();
 
-        let name = wchz!(u16, "TestVar").as_bytes();
+        let name: &[u8] = &Ucs2LeVec::from("TestVar").into_inner();
         let dummy_data = b"test data".to_vec();
 
         // Create a variable with specific attributes
@@ -1747,7 +1745,7 @@ mod test {
 
         nvram.prepare_for_boot();
 
-        let name = wchz!(u16, "RegularVar").as_bytes();
+        let name: &[u8] = &Ucs2LeVec::from("RegularVar").into_inner();
         let dummy_data = b"regular data".to_vec();
 
         // Create a regular (non-authenticated) variable
@@ -1798,7 +1796,7 @@ mod test {
 
         nvram.prepare_for_boot();
 
-        let name = wchz!(u16, "TestVar").as_bytes();
+        let name: &[u8] = &Ucs2LeVec::from("TestVar").into_inner();
         let dummy_data = b"test data".to_vec();
 
         // Create a regular variable
@@ -1832,7 +1830,7 @@ mod test {
 
         nvram.prepare_for_boot();
 
-        let name = wchz!(u16, "ZeroDataVar").as_bytes();
+        let name: &[u8] = &Ucs2LeVec::from("ZeroDataVar").into_inner();
         let dummy_data = b"some data".to_vec();
 
         // Create a variable
@@ -1864,8 +1862,8 @@ mod test {
 
         nvram.prepare_for_boot();
 
-        let name1 = wchz!(u16, "RuntimeVar").as_bytes();
-        let name2 = wchz!(u16, "BootVar").as_bytes();
+        let name1: &[u8] = &Ucs2LeVec::from("RuntimeVar").into_inner();
+        let name2: &[u8] = &Ucs2LeVec::from("BootVar").into_inner();
         let dummy_data = b"data".to_vec();
 
         // Create runtime-accessible variable
@@ -1923,7 +1921,7 @@ mod test {
 
         nvram.prepare_for_boot();
 
-        let name = wchz!(u16, "AppendVar").as_bytes();
+        let name: &[u8] = &Ucs2LeVec::from("AppendVar").into_inner();
         let initial_data = b"initial".to_vec();
         let append_data = b"appended".to_vec();
 

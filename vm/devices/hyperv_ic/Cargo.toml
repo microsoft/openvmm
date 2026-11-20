@@ -29,6 +29,7 @@ futures.workspace = true
 futures-concurrency.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+widestring.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]

@@ -11,7 +11,7 @@ default = []
 
 inspect = ["dep:inspect"]
 # The NVRAM variable-name helpers, which need `ucs2`.
-std = ["dep:ucs2", "dep:wchar"]
+std = ["dep:ucs2", "dep:widestring"]
 
 [dependencies]
 guid.workspace = true
@@ -21,7 +21,7 @@ ucs2 = { workspace = true, optional = true }
 
 bitfield-struct.workspace = true
 static_assertions.workspace = true
-wchar = { workspace = true, optional = true }
+widestring = { workspace = true, optional = true }
 zerocopy.workspace = true
 [dev-dependencies]
 

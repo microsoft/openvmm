@@ -6,11 +6,13 @@
 // UNSAFETY: needed for the FFI bindings.
 #![expect(unsafe_code)]
 
+use std::ffi::OsStr;
 use std::ops::Deref;
-use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::null;
 use std::ptr::null_mut;
+use widestring::U16CString;
+use widestring::U16String;
 use windows_sys::Wdk::System::OfflineRegistry::ORCloseHive;
 use windows_sys::Wdk::System::OfflineRegistry::ORCloseKey;
 use windows_sys::Wdk::System::OfflineRegistry::ORCreateHive;
@@ -36,11 +38,7 @@ impl Hive {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let path16 = path
-            .as_os_str()
-            .encode_wide()
-            .chain([0])
-            .collect::<Vec<_>>();
+        let path16 = wide(path)?;
 
         // SAFETY: calling as documented with owned key and null-terminated
         // path.
@@ -104,7 +102,7 @@ pub struct Key(ORHKEY);
 impl Key {
     pub fn create_key(&self, name: &str) -> anyhow::Result<OwnedKey> {
         let mut new_key = null_mut();
-        let name16 = name.encode_utf16().chain([0]).collect::<Vec<_>>();
+        let name16 = wide(name)?;
         // SAFETY: calling as documented with owned key and null-terminated
         // path.
         unsafe {
@@ -122,7 +120,7 @@ impl Key {
     }
 
     pub fn set_dword(&self, name: &str, dword: u32) -> std::io::Result<()> {
-        let name16 = name.encode_utf16().chain([0]).collect::<Vec<_>>();
+        let name16 = wide(name)?;
         // SAFETY: calling as documented with owned key and null-terminated
         // name.
         unsafe {
@@ -138,8 +136,8 @@ impl Key {
     }
 
     pub fn set_sz(&self, name: &str, value: &str) -> std::io::Result<()> {
-        let name16 = name.encode_utf16().chain([0]).collect::<Vec<_>>();
-        let value16 = value.encode_utf16().chain([0]).collect::<Vec<_>>();
+        let name16 = wide(name)?;
+        let value16 = wide(value)?;
         // SAFETY: calling as documented with owned key and null-terminated
         // name and value.
         unsafe {
@@ -148,15 +146,15 @@ impl Key {
                 name16.as_ptr(),
                 REG_SZ,
                 value16.as_ptr().cast(),
-                value16.len() as u32 * 2,
+                value16.as_slice_with_nul().len() as u32 * 2,
             ))?;
         }
         Ok(())
     }
 
     pub fn set_expand_sz(&self, name: &str, value: &str) -> std::io::Result<()> {
-        let name16 = name.encode_utf16().chain([0]).collect::<Vec<_>>();
-        let value16 = value.encode_utf16().chain([0]).collect::<Vec<_>>();
+        let name16 = wide(name)?;
+        let value16 = wide(value)?;
         // SAFETY: calling as documented with owned key and null-terminated
         // name and value.
         unsafe {
@@ -165,7 +163,7 @@ impl Key {
                 name16.as_ptr(),
                 REG_EXPAND_SZ,
                 value16.as_ptr().cast(),
-                value16.len() as u32 * 2,
+                value16.as_slice_with_nul().len() as u32 * 2,
             ))?;
         }
         Ok(())
@@ -176,12 +174,12 @@ impl Key {
         name: &str,
         value: impl IntoIterator<Item = &'a str>,
     ) -> std::io::Result<()> {
-        let name16 = name.encode_utf16().chain([0]).collect::<Vec<_>>();
-        let value16 = value
-            .into_iter()
-            .flat_map(|s| s.encode_utf16().chain([0]))
-            .chain([0])
-            .collect::<Vec<_>>();
+        let name16 = wide(name)?;
+        let mut value16 = U16String::new();
+        for s in value {
+            value16.push_slice(wide(s)?.as_slice_with_nul());
+        }
+        value16.push_char('\0');
         // SAFETY: calling as documented with owned key and null-terminated
         // name and value.
         unsafe {
@@ -195,6 +193,10 @@ impl Key {
         }
         Ok(())
     }
+}
+
+fn wide(s: impl AsRef<OsStr>) -> std::io::Result<U16CString> {
+    U16CString::from_os_str(s).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
 }
 
 fn chk(err: u32) -> std::io::Result<()> {

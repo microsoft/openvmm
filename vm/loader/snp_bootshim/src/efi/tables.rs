@@ -379,8 +379,8 @@ mod tests {
         assert_eq!(st.configuration_table, address(&efi.configuration_tables));
         assert_eq!(st.number_of_table_entries, 4);
         assert_eq!(
-            &efi.firmware_vendor[..8],
-            &"OpenVMM\0".encode_utf16().collect::<Vec<_>>()[..]
+            efi.firmware_vendor.as_slice(),
+            "OpenVMM\0".encode_utf16().collect::<Vec<_>>()
         );
         assert_eq!(efi.loaded_image.load_options, 6 * MB);
         assert_eq!(efi.loaded_image.image_base, MB);

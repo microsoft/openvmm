@@ -80,6 +80,7 @@ jiff.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+widestring.workspace = true
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",

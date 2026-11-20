@@ -1162,6 +1162,7 @@ dependencies = [
  "signature",
  "symcrypt",
  "thiserror 2.0.16",
+ "widestring",
  "windows 0.62.0",
  "windows-result 0.4.0",
  "x509-cert",
@@ -1798,6 +1799,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.16",
  "vm_resource",
+ "widestring",
  "windows-sys 0.61.0",
  "zerocopy",
 ]
@@ -2266,7 +2268,6 @@ dependencies = [
  "vmcore",
  "vmm_core",
  "watchdog_core",
- "wchar",
  "zerocopy",
 ]
 
@@ -3480,7 +3481,6 @@ dependencies = [
  "ucs2 0.0.0",
  "uefi_nvram_storage",
  "vmcore",
- "wchar",
  "zerocopy",
 ]
 
@@ -3752,6 +3752,7 @@ dependencies = [
  "static_assertions",
  "tempfile",
  "virt",
+ "widestring",
  "zerocopy",
 ]
 
@@ -3780,6 +3781,7 @@ dependencies = [
  "vmbus_channel",
  "vmbus_ring",
  "vmcore",
+ "widestring",
  "zerocopy",
 ]
 
@@ -4645,6 +4647,7 @@ name = "make_imc_hive"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "widestring",
  "windows-sys 0.61.0",
 ]
 
@@ -5322,6 +5325,7 @@ dependencies = [
  "vmbus_core",
  "vmbus_ring",
  "vmcore",
+ "widestring",
  "zerocopy",
 ]
 
@@ -8804,6 +8808,7 @@ dependencies = [
  "test_with_tracing",
  "tracing",
  "tracing-subscriber",
+ "widestring",
  "windows-sys 0.61.0",
 ]
 
@@ -9388,7 +9393,6 @@ dependencies = [
  "ucs2 0.0.0",
  "uefi_specs",
  "vmcore",
- "wchar",
  "zerocopy",
 ]
 
@@ -9402,7 +9406,7 @@ dependencies = [
  "open_enum",
  "static_assertions",
  "ucs2 0.0.0",
- "wchar",
+ "widestring",
  "zerocopy",
 ]
 
@@ -10055,6 +10059,7 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
+ "widestring",
  "windows 0.62.0",
  "zerocopy",
 ]
@@ -11904,26 +11909,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wchar"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8be48fe4c433c0d4aa71bb8759c5f7b1da6dacb1b99998566ebe16503f6a59c"
-dependencies = [
- "wchar-impl",
-]
-
-[[package]]
-name = "wchar-impl"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "075c93156fed21f9dab57af5e81604d0fdb67432c919a8c1f78bb979f06a3d25"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "web-time"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11963,6 +11948,7 @@ dependencies = [
  "criterion",
  "guid",
  "pal",
+ "widestring",
  "windows-sys 0.61.0",
 ]
 

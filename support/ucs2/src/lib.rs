@@ -106,12 +106,11 @@ impl From<Ucs2LeVec> for std::borrow::Cow<'_, Ucs2LeSlice> {
 
 impl<'a> From<&'a str> for Ucs2LeVec {
     fn from(s: &'a str) -> Ucs2LeVec {
-        let mut s = s
+        let s = s
             .encode_utf16()
-            .flat_map(|w| [w as u8, (w >> 8) as u8])
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
             .collect::<Vec<u8>>();
-        s.push(0);
-        s.push(0);
         // SAFETY: UTF-8 str has been converted into a valid null-terminated UCS-2 Le string
         Ucs2LeVec(s)
     }
@@ -160,11 +159,7 @@ impl Ucs2LeSlice {
         // Unlike UTF-8 or UTF-16, UCS-2 doesn't require any complex semantic
         // validation, as all values from 0 to 0xFFFF are valid codepoints.
 
-        let mut buf_as_u16_iter = buf
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes(c.try_into().unwrap()));
-
-        match buf_as_u16_iter.position(|c| c == 0) {
+        match buf.as_chunks().0.iter().position(|c| *c == [0, 0]) {
             None => Err(Ucs2ParseError::MissingNullTerm),
             // SAFETY: buf has been validated to contain valid data
             Some(idx) => Ok(unsafe { Ucs2LeSlice::from_slice_unchecked(&buf[..(idx + 1) * 2]) }),
@@ -205,14 +200,10 @@ impl Ucs2LeSlice {
         //
         // Properly converting UCS-2 to UTF-8/16 is a bit more subtle, and
         // handling this properly will require a PR in its own right.
-        String::from_utf16_lossy(
-            &self
-                .0
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
-                .take_while(|b| *b != 0)
-                .collect::<Vec<u16>>(),
-        )
+        let units = self.0.as_chunks().0.iter().map(|&c| u16::from_le_bytes(c));
+        char::decode_utf16(units.take_while(|&c| c != 0))
+            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect()
     }
 }
 
@@ -254,7 +245,7 @@ mod test {
         // Too bad UEFI doesn't support proper UTF-16... imagine if we could use
         // Emoji as nvram variable names 👀
         s.encode_utf16()
-            .flat_map(|b| b.to_le_bytes().into_iter())
+            .flat_map(u16::to_le_bytes)
             .collect::<Vec<u8>>()
     }
 
@@ -313,5 +304,23 @@ mod test {
         let s16 = str_to_utf16_buf(s8);
         let res = Ucs2LeSlice::from_slice_with_nul(&s16);
         assert!(matches!(res, Err(Ucs2ParseError::MissingNullTerm)))
+    }
+
+    #[test]
+    fn from_str_encodes_little_endian_with_null() {
+        let s = Ucs2LeVec::from("hi\u{1f680}");
+        assert_eq!(
+            s.as_bytes(),
+            [b'h', 0, b'i', 0, 0x3d, 0xd8, 0x80, 0xde, 0, 0]
+        );
+        assert_eq!(s.to_string(), "hi\u{1f680}");
+    }
+
+    #[test]
+    fn display_replaces_unpaired_surrogates() {
+        let raw = [b'a', 0, 0x00, 0xd8, b'b', 0, 0, 0];
+        let s = Ucs2LeSlice::from_slice_with_nul(&raw).unwrap();
+        assert_eq!(s.to_string(), "a\u{fffd}b");
+        assert_eq!(format!("{s:?}"), "\"a\u{fffd}b\"");
     }
 }

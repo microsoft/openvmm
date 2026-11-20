@@ -76,11 +76,9 @@ fn translate_absolute_target(
     if substitute_name.len() < 6 {
         return Err(lx::Error::EIO);
     }
-    let name = if substitute_name[substitute_name.len() - 1] == 0 {
-        &substitute_name[..substitute_name.len() - 1]
-    } else {
-        &substitute_name[..substitute_name.len()]
-    };
+    let name = substitute_name
+        .strip_suffix(&[0])
+        .unwrap_or(substitute_name);
     let name = match String::from_utf16(name) {
         Ok(name) => name,
         Err(_) => return Err(lx::Error::EIO),
