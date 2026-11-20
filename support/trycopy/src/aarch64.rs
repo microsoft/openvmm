@@ -280,7 +280,6 @@ try_read!(pub(crate) try_read8, u8, "ldrb {out:w}, [{src}]");
 try_read!(pub(crate) try_read16, u16, "ldrh {out:w}, [{src}]");
 try_read!(pub(crate) try_read32, u32, "ldr {out:w}, [{src}]");
 try_read!(pub(crate) try_read64, u64, "ldr {out:x}, [{src}]");
-try_read!(pub(crate) try_read32_acquire, u32, "ldar {out:w}, [{src}]");
 
 macro_rules! try_write {
     ($vis:vis $func:ident, $ty:ty, $asm:expr) => {
@@ -311,7 +310,6 @@ try_write!(pub(crate) try_write8, u8, "strb {val:w}, [{dest}]");
 try_write!(pub(crate) try_write16, u16, "strh {val:w}, [{dest}]");
 try_write!(pub(crate) try_write32, u32, "str {val:w}, [{dest}]");
 try_write!(pub(crate) try_write64, u64, "str {val:x}, [{dest}]");
-try_write!(pub(crate) try_write32_release, u32, "stlr {val:w}, [{dest}]");
 
 macro_rules! try_cmpxchg {
     ($vis:vis $func:ident, $ty:ty, $asm:expr) => {

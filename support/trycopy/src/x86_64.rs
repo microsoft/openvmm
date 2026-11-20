@@ -358,29 +358,6 @@ try_write!(pub(crate) try_write16, u16, "mov word ptr [{dest}], {val:x}");
 try_write!(pub(crate) try_write32, u32, "mov dword ptr [{dest}], {val:e}");
 try_write!(pub(crate) try_write64, u64, "mov qword ptr [{dest}], {val:r}");
 
-/// # Safety
-/// `dest` must be a reserved, naturally aligned address that may be written
-/// without violating Rust's aliasing rules.
-#[inline]
-pub(crate) unsafe fn try_write32_seqcst(dest: *mut u32, value: u32) -> Result<(), Fault> {
-    let result: i32;
-    // SAFETY: the caller supplies the address; xchg provides a full barrier.
-    unsafe {
-        core::arch::asm!(
-            "2:",
-            "xchg dword ptr [{dest}], {value:e}",
-            "xor ecx, ecx",
-            "3:",
-            recovery_descriptor!("2b", "3b", "."),
-            dest = in(reg) dest,
-            value = inout(reg) value => _,
-            lateout("rcx") result,
-            options(nostack),
-        );
-    }
-    if result == 0 { Ok(()) } else { Err(Fault) }
-}
-
 macro_rules! try_cmpxchg {
     ($vis:vis $func:ident, $ty:ty, $ax:tt, $reg_kind:tt, $asm:expr) => {
         /// # Safety

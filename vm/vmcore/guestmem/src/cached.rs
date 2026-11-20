@@ -241,8 +241,6 @@ pub trait PageAccess {
     ) -> Result<(), GuestMemoryError>;
     fn read_at(&self, offset: u64, data: &mut [u8]) -> Result<(), GuestMemoryError>;
     fn write_at(&self, offset: u64, data: &[u8]) -> Result<(), GuestMemoryError>;
-    fn load_u32(&self, offset: u64, order: Ordering) -> Result<u32, GuestMemoryError>;
-    fn store_u32(&self, offset: u64, value: u32, order: Ordering) -> Result<(), GuestMemoryError>;
 }
 
 /// A page list whose direct/ordinary implementation was selected by its caller.
@@ -739,41 +737,6 @@ impl PageAccess for DirectAccess<'_> {
             },
         )
     }
-
-    #[inline]
-    fn load_u32(&self, offset: u64, order: Ordering) -> Result<u32, GuestMemoryError> {
-        let offset = self.word(offset, GuestMemoryOperation::Read)?;
-        // SAFETY: the admitted page and word offset are naturally aligned.
-        unsafe { trycopy::try_load_u32(self.mapping.as_ptr().add(offset).cast(), order) }.map_err(
-            |fault| {
-                Self::fault(
-                    self.description,
-                    self.index,
-                    offset,
-                    4,
-                    GuestMemoryOperation::Read,
-                    fault,
-                )
-            },
-        )
-    }
-
-    #[inline]
-    fn store_u32(&self, offset: u64, value: u32, order: Ordering) -> Result<(), GuestMemoryError> {
-        let offset = self.word(offset, GuestMemoryOperation::Write)?;
-        // SAFETY: the admitted page and word offset are naturally aligned.
-        unsafe { trycopy::try_store_u32(self.mapping.as_ptr().add(offset).cast(), value, order) }
-            .map_err(|fault| {
-                Self::fault(
-                    self.description,
-                    self.index,
-                    offset,
-                    4,
-                    GuestMemoryOperation::Write,
-                    fault,
-                )
-            })
-    }
 }
 
 impl DirectAccess<'_> {
@@ -797,20 +760,6 @@ impl DirectAccess<'_> {
                 self.index,
                 offset,
                 len,
-                op,
-            ))
-        }
-    }
-
-    #[inline]
-    fn word(&self, offset: u64, op: GuestMemoryOperation) -> Result<usize, GuestMemoryError> {
-        let offset = self.range(offset, 4, op)?;
-        if offset.is_multiple_of(4) {
-            Ok(offset)
-        } else {
-            Err(unaligned_word(
-                &self.description.memory,
-                Self::gpa(self.description, self.index, offset as u64),
                 op,
             ))
         }
@@ -849,34 +798,6 @@ impl DirectAccess<'_> {
             fault,
         )
     }
-}
-
-#[inline]
-fn check_word_alignment(
-    memory: &GuestMemory,
-    gpa: u64,
-    op: GuestMemoryOperation,
-) -> Result<(), GuestMemoryError> {
-    if gpa.is_multiple_of(4) {
-        Ok(())
-    } else {
-        Err(unaligned_word(memory, gpa, op))
-    }
-}
-
-#[cold]
-fn unaligned_word(memory: &GuestMemory, gpa: u64, op: GuestMemoryOperation) -> GuestMemoryError {
-    memory.wrap_err(
-        Some((gpa, 4)),
-        op,
-        GuestMemoryBackingError::other(
-            gpa,
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "unaligned atomic control word",
-            ),
-        ),
-    )
 }
 
 #[cold]
@@ -928,12 +849,6 @@ impl PageAccess for CachedAccess<'_> {
     }
     fn write_at(&self, offset: u64, data: &[u8]) -> Result<(), GuestMemoryError> {
         CachedAccess::write_at(self, offset, data)
-    }
-    fn load_u32(&self, offset: u64, order: Ordering) -> Result<u32, GuestMemoryError> {
-        CachedAccess::load_u32(self, offset, order)
-    }
-    fn store_u32(&self, offset: u64, value: u32, order: Ordering) -> Result<(), GuestMemoryError> {
-        CachedAccess::store_u32(self, offset, value, order)
     }
 }
 
@@ -1038,7 +953,6 @@ impl CachedTranslation {
 /// Typed and bulk copies retain trycopy's atomicity, unaligned handling, and
 /// fault containment. Admitted-pointer faults return errors without retrying
 /// ordinary access; unavailable translations retain ordinary fault handling.
-/// Ordered control-word accesses use aligned scalar trycopy with explicit fences.
 pub struct CachedAccess<'a> {
     memory: &'a GuestMemory,
     gpa: u64,
@@ -1049,119 +963,6 @@ pub struct CachedAccess<'a> {
 }
 
 impl CachedAccess<'_> {
-    #[inline]
-    fn word(
-        &self,
-        offset: u64,
-        op: GuestMemoryOperation,
-    ) -> Result<(u64, usize), GuestMemoryError> {
-        let (gpa, offset) = self.range(offset, 4, op)?;
-        check_word_alignment(self.memory, gpa, op)?;
-        Ok((gpa, offset))
-    }
-
-    /// Loads an aligned control word with the specified memory ordering.
-    ///
-    /// Copy-only backings without a mapping return an error: a byte-copy
-    /// fallback is not sufficient to implement atomic control-word semantics.
-    #[inline]
-    pub fn load_u32(&self, offset: u64, order: Ordering) -> Result<u32, GuestMemoryError> {
-        assert!(matches!(
-            order,
-            Ordering::Relaxed | Ordering::Acquire | Ordering::SeqCst
-        ));
-        let (gpa, offset) = self.word(offset, GuestMemoryOperation::Read)?;
-        let read = |pointer: *mut u8| {
-            // SAFETY: cached and ordinary paths supply a reserved, bounded word.
-            unsafe { trycopy::try_load_u32(pointer.cast::<u32>(), order) }
-        };
-        if let Some(mapping) = self.read_mapping {
-            let pointer = mapping.as_ptr().wrapping_add(offset);
-            if pointer.cast::<u32>().is_aligned() {
-                let result = read(pointer);
-                return result.map_err(|fault| {
-                    cached_fault(self.memory, gpa, 4, GuestMemoryOperation::Read, fault)
-                });
-            }
-        }
-        self.ordered_fallback(gpa, AccessType::Read, read)
-    }
-
-    /// Stores an aligned control word with the specified memory ordering.
-    ///
-    /// Copy-only backings without a mapping return an error.
-    #[inline]
-    pub fn store_u32(
-        &self,
-        offset: u64,
-        value: u32,
-        order: Ordering,
-    ) -> Result<(), GuestMemoryError> {
-        assert!(matches!(
-            order,
-            Ordering::Relaxed | Ordering::Release | Ordering::SeqCst
-        ));
-        let (gpa, offset) = self.word(offset, GuestMemoryOperation::Write)?;
-        let write = |pointer: *mut u8| {
-            // SAFETY: cached and ordinary paths supply a reserved, bounded word.
-            unsafe { trycopy::try_store_u32(pointer.cast::<u32>(), value, order) }
-        };
-        if let Some(mapping) = self.write_mapping {
-            let pointer = mapping.as_ptr().wrapping_add(offset);
-            if pointer.cast::<u32>().is_aligned() {
-                let result = write(pointer);
-                return result.map_err(|fault| {
-                    cached_fault(self.memory, gpa, 4, GuestMemoryOperation::Write, fault)
-                });
-            }
-        }
-        self.ordered_fallback(gpa, AccessType::Write, write)
-    }
-
-    #[cold]
-    fn ordered_fallback<T>(
-        &self,
-        gpa: u64,
-        access: AccessType,
-        mut f: impl FnMut(*mut u8) -> Result<T, trycopy::MemoryError>,
-    ) -> Result<T, GuestMemoryError> {
-        let op = match access {
-            AccessType::Read => GuestMemoryOperation::Read,
-            AccessType::Write => GuestMemoryOperation::Write,
-        };
-        self.memory.with_op(Some((gpa, 4)), op, || {
-            self.memory
-                .run_on_mapping(
-                    access,
-                    gpa,
-                    4,
-                    (),
-                    |(), pointer| {
-                        if !pointer.cast::<u32>().is_aligned() {
-                            return Ok(Err(GuestMemoryBackingError::other(
-                                gpa,
-                                std::io::Error::new(
-                                    std::io::ErrorKind::Unsupported,
-                                    "ordered control access requires an aligned mapping",
-                                ),
-                            )));
-                        }
-                        f(pointer).map(Ok)
-                    },
-                    |()| {
-                        Err(GuestMemoryBackingError::other(
-                            gpa,
-                            std::io::Error::new(
-                                std::io::ErrorKind::Unsupported,
-                                "ordered control access requires mapped atomic memory",
-                            ),
-                        ))
-                    },
-                )
-                .and_then(|result| result)
-        })
-    }
-
     #[inline]
     fn range(
         &self,
@@ -1564,7 +1365,7 @@ mod tests {
         with_access(|scope| {
             let old_range = range.access(scope);
             let old_pages = pages.try_access(scope).unwrap();
-            assert_eq!(old_range.load_u32(0, Ordering::Acquire).unwrap(), 0);
+            assert_eq!(old_range.read_plain::<u32>(0).unwrap(), 0);
             assert_eq!(old_pages.page(0).unwrap().read_plain::<u32>(0).unwrap(), 2);
             backing.switch(1);
             assert_eq!(old_range.read_plain::<u32>(0).unwrap(), 0);
@@ -1576,19 +1377,8 @@ mod tests {
             let new_pages = pages.try_access(scope).unwrap();
             assert_eq!(new_range.read_plain::<u32>(0).unwrap(), 10);
             assert_eq!(new_pages.page(0).unwrap().read_plain::<u32>(0).unwrap(), 12);
-            new_pages
-                .page(1)
-                .unwrap()
-                .store_u32(0, 99, Ordering::Release)
-                .unwrap();
-            assert_eq!(
-                new_pages
-                    .page(3)
-                    .unwrap()
-                    .load_u32(0, Ordering::Acquire)
-                    .unwrap(),
-                99
-            );
+            new_pages.page(1).unwrap().write_plain(0, &99u32).unwrap();
+            assert_eq!(new_pages.page(3).unwrap().read_plain::<u32>(0).unwrap(), 99);
         });
         assert_eq!(backing.memories[0].read_plain::<u32>(0).unwrap(), 0);
         assert_eq!(backing.memories[1].read_plain::<u32>(0).unwrap(), 99);
@@ -1770,14 +1560,8 @@ mod tests {
         }
 
         fn exercise(page: &impl PageAccess, gpa: u64) {
-            for (load, store) in [
-                (Ordering::Relaxed, Ordering::Relaxed),
-                (Ordering::Acquire, Ordering::Release),
-                (Ordering::SeqCst, Ordering::SeqCst),
-            ] {
-                assert_fault(page.store_u32(4, 99, store).unwrap_err(), gpa + 4);
-                assert_fault(page.load_u32(4, load).unwrap_err(), gpa + 4);
-            }
+            assert_fault(page.write_plain(4, &99u32).unwrap_err(), gpa + 4);
+            assert_fault(page.read_plain::<u32>(4).unwrap_err(), gpa + 4);
             assert_fault(page.read_plain::<u64>(16).unwrap_err(), gpa + 16);
             assert_fault(page.write_plain(16, &789u64).unwrap_err(), gpa + 16);
             assert_fault(page.write_at(32, &[1, 2, 3, 4, 5]).unwrap_err(), gpa + 32);
@@ -1817,8 +1601,6 @@ mod tests {
         with_access(|scope| {
             let admitted = pages.try_access(scope).unwrap();
             let mut page = admitted.page(2).unwrap();
-            assert!(page.load_u32(1, Ordering::Acquire).is_err());
-            assert!(page.store_u32(1, 0, Ordering::Release).is_err());
             assert_eq!(
                 page.read_plain::<u64>(crate::PAGE_SIZE64 - 4)
                     .unwrap_err()
@@ -2003,13 +1785,11 @@ mod tests {
                 .write_at(crate::PAGE_SIZE - 2, &[1, 2, 3, 4])
                 .unwrap();
             let page = access.page(1).unwrap();
-            assert!(page.store_u32(8, 456, Ordering::SeqCst).is_err());
-            assert!(page.load_u32(8, Ordering::Acquire).is_err());
-            assert!(page.load_u32(1, Ordering::Relaxed).is_err());
-            assert!(page.store_u32(1, 0, Ordering::Relaxed).is_err());
+            page.write_plain(8, &456u32).unwrap();
+            assert_eq!(page.read_plain::<u32>(8).unwrap(), 456);
             backing.fail_write.store(true, Ordering::Relaxed);
-            assert!(page.store_u32(8, 0, Ordering::Release).is_err());
-            assert!(page.load_u32(8, Ordering::SeqCst).is_err());
+            assert!(page.write_plain(8, &0u32).is_err());
+            assert_eq!(page.read_plain::<u32>(8).unwrap(), 456);
         });
     }
 
@@ -2038,8 +1818,8 @@ mod tests {
             last.write_plain(0, &22u64).unwrap();
             assert_eq!(first.read_plain::<u64>(0).unwrap(), 11);
             assert_eq!(subrange.read_plain::<u64>(0).unwrap(), 22);
-            subrange.store_u32(8, 123, Ordering::SeqCst).unwrap();
-            assert_eq!(subrange.load_u32(8, Ordering::Acquire).unwrap(), 123);
+            subrange.write_plain(8, &123u32).unwrap();
+            assert_eq!(subrange.read_plain::<u32>(8).unwrap(), 123);
         });
         assert!(memory.cache_range(4 * size, 1).is_err());
         assert!(memory.cache_range(size - 1, 2).is_err());
@@ -2141,7 +1921,7 @@ mod tests {
                     let access = cache.access(scope);
                     let admitted = pages.try_access(scope).unwrap();
                     let page = admitted.page(0).unwrap();
-                    access.store_u32(0, 123, Ordering::SeqCst).unwrap();
+                    access.write_plain(0, &123u32).unwrap();
                     let backing = backing.clone();
                     threads.spawn(move || {
                         backing.read.store(0, Ordering::Relaxed);
@@ -2160,23 +1940,14 @@ mod tests {
                     closed_recv.recv_timeout(Duration::from_secs(5)).unwrap();
                     // This view was admitted before closure and must not consult
                     // the newly cleared bitmap on each operation.
-                    access.store_u32(0, 456, Ordering::Release).unwrap();
-                    assert_eq!(access.load_u32(0, Ordering::Acquire).unwrap(), 456);
-                    assert_eq!(page.load_u32(0, Ordering::Acquire).unwrap(), 456);
-                    assert_eq!(
-                        admitted
-                            .page(1)
-                            .unwrap()
-                            .load_u32(0, Ordering::Acquire)
-                            .unwrap(),
-                        0
-                    );
+                    access.write_plain(0, &456u32).unwrap();
+                    assert_eq!(access.read_plain::<u32>(0).unwrap(), 456);
+                    assert_eq!(page.read_plain::<u32>(0).unwrap(), 456);
+                    assert_eq!(admitted.page(1).unwrap().read_plain::<u32>(0).unwrap(), 0);
                     assert!(pages.try_access(scope).is_none());
                     let denied = alias_cache.access(scope);
                     assert!(denied.read_plain::<u64>(0).is_err());
                     assert!(denied.write_plain(0, &0u64).is_err());
-                    assert!(denied.load_u32(0, Ordering::SeqCst).is_err());
-                    assert!(denied.store_u32(0, 0, Ordering::SeqCst).is_err());
                 });
                 exited_send.send(()).unwrap();
             });
@@ -2285,27 +2056,9 @@ mod tests {
             with_access(|scope| {
                 assert!(pages.try_access(scope).is_none());
                 let pages = pages.uncached(scope);
-                assert!(
-                    pages
-                        .page(1)
-                        .unwrap()
-                        .load_u32(0, Ordering::Acquire)
-                        .is_err()
-                );
-                assert!(
-                    pages
-                        .page(0)
-                        .unwrap()
-                        .load_u32(0, Ordering::Acquire)
-                        .is_ok()
-                );
-                assert!(
-                    pages
-                        .page(2)
-                        .unwrap()
-                        .load_u32(0, Ordering::Acquire)
-                        .is_ok()
-                );
+                assert!(pages.page(1).unwrap().read_plain::<u32>(0).is_err());
+                assert!(pages.page(0).unwrap().read_plain::<u32>(0).is_ok());
+                assert!(pages.page(2).unwrap().read_plain::<u32>(0).is_ok());
             });
             with_access(|scope| {
                 let access = cache.access(scope);
