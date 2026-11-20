@@ -30,7 +30,7 @@ jobs:
       import os
       import urllib.request
 
-      ref = os.environ["BUILD_SOURCEBRANCH"]
+      ref = "refs/heads/main"
       if not ref.startswith("refs/heads/") or ref == "refs/heads/":
           raise ValueError("Unexpected source ref")
       branch = ref.removeprefix("refs/heads/")
@@ -53,7 +53,6 @@ jobs:
       print(f"Queued mirror refresh {run['id']} for {branch}")
       PY
     env:
-      BUILD_SOURCEBRANCH: refs/heads/main
       SUBMODULE_TARGET: ${{ variables.submoduleTarget }}
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
     displayName: Queue downstream mirror pipeline
