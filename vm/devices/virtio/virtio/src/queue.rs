@@ -441,11 +441,10 @@ impl QueueCoreGetWork {
     }
 
     fn work_from_index(&mut self, index: u16) -> Result<VirtioQueueCallbackWork, QueueError> {
+        let mut payload = Vec::new();
         if let QueueGetWorkInner::Split(split) = &mut self.inner {
             let descriptor_index = split.get_available_descriptor_index(index)?;
-            let payload = self
-                .reader(descriptor_index)
-                .collect::<Result<Vec<_>, _>>()?;
+            self.read_chain(descriptor_index, &mut payload)?;
             Ok(VirtioQueueCallbackWork::from_parts(
                 QueueCompletion {
                     descriptor_index,
@@ -454,21 +453,19 @@ impl QueueCoreGetWork {
                 payload,
             ))
         } else {
-            let (payload, last_primary_desc_index) = {
-                let mut reader = self.reader(index);
-                (
-                    (&mut reader).collect::<Result<Vec<_>, _>>()?,
-                    reader.last_primary_desc_index(),
-                )
-            };
-            let last = self.descriptor(&self.queue_desc, last_primary_desc_index, None)?;
-            let count = if last_primary_desc_index >= index {
-                last_primary_desc_index - index + 1
+            let tail = self.read_chain(index, &mut payload)?;
+            let count = if tail.last_primary_desc_index >= index {
+                tail.last_primary_desc_index - index + 1
             } else {
                 // Wrapped around the end of the queue.
-                self.queue_size - index + last_primary_desc_index + 1
+                self.queue_size - index + tail.last_primary_desc_index + 1
             };
-            let completion_context = PackedQueueCompletionContext::new(&last, count);
+            // The packed path always reads at least one primary descriptor, and
+            // `descriptor` always sets a buffer id there.
+            let buffer_id = tail
+                .last_primary_buffer_id
+                .expect("packed descriptors have buffer id");
+            let completion_context = PackedQueueCompletionContext::new(buffer_id, count);
             Ok(VirtioQueueCallbackWork::from_parts(
                 QueueCompletion {
                     context: QueueCompletionContext::Packed(completion_context),
@@ -479,10 +476,23 @@ impl QueueCoreGetWork {
         }
     }
 
-    fn reader(&mut self, descriptor_index: u16) -> DescriptorReader<'_> {
-        DescriptorReader {
-            chain: DescriptorChain::new(self, self.features.ring_indirect_desc(), descriptor_index),
+    /// Walks the descriptor chain at `descriptor_index`, appending each buffer
+    /// to `payload`, and reports what the completion needs from its tail.
+    fn read_chain(
+        &self,
+        descriptor_index: u16,
+        payload: &mut Vec<VirtioQueuePayload>,
+    ) -> Result<ChainTail, QueueError> {
+        let mut chain =
+            DescriptorChain::new(self, self.features.ring_indirect_desc(), descriptor_index);
+        while let Some(descriptor) = chain.next_descriptor()? {
+            payload.push(VirtioQueuePayload {
+                writeable: descriptor.flags.write(),
+                address: descriptor.address,
+                length: descriptor.length,
+            });
         }
+        Ok(chain.tail())
     }
 
     fn descriptor(
@@ -621,34 +631,16 @@ pub(crate) fn new_queue(
     Ok((get_work, complete_work))
 }
 
-struct DescriptorReader<'a> {
-    chain: DescriptorChain<'a>,
-}
-
-impl DescriptorReader<'_> {
-    pub fn last_primary_desc_index(&self) -> u16 {
-        self.chain.last_primary_desc_index()
-    }
-}
-
 pub struct VirtioQueuePayload {
     pub writeable: bool,
     pub address: u64,
     pub length: u32,
 }
 
-impl Iterator for DescriptorReader<'_> {
-    type Item = Result<VirtioQueuePayload, QueueError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.chain.next().map(|descriptor| {
-            descriptor.map(|descriptor| VirtioQueuePayload {
-                writeable: descriptor.flags.write(),
-                address: descriptor.address,
-                length: descriptor.length,
-            })
-        })
-    }
+/// The last primary ring descriptor of a chain, as a packed completion needs it.
+struct ChainTail {
+    last_primary_desc_index: u16,
+    last_primary_buffer_id: Option<u16>,
 }
 
 struct DescriptorChain<'a> {
@@ -661,6 +653,7 @@ struct DescriptorChain<'a> {
     indirect_table_len: Option<u16>,
     descriptor_index: Option<u16>,
     last_primary_desc_index: u16,
+    last_primary_buffer_id: Option<u16>,
     num_read: u16,
 }
 
@@ -674,7 +667,15 @@ impl<'a> DescriptorChain<'a> {
             indirect_table_len: None,
             descriptor_index: Some(descriptor_index),
             last_primary_desc_index: descriptor_index,
+            last_primary_buffer_id: None,
             num_read: 0,
+        }
+    }
+
+    fn tail(&self) -> ChainTail {
+        ChainTail {
+            last_primary_desc_index: self.last_primary_desc_index,
+            last_primary_buffer_id: self.last_primary_buffer_id,
         }
     }
 
@@ -689,10 +690,11 @@ impl<'a> DescriptorChain<'a> {
             descriptor_index,
             self.indirect_table_len,
         )?;
+        if self.indirect_queue.is_none() {
+            self.last_primary_desc_index = descriptor_index;
+            self.last_primary_buffer_id = descriptor.buffer_id;
+        }
         let descriptor = if !self.indirect_support || !descriptor.flags.indirect() {
-            if self.indirect_queue.is_none() {
-                self.last_primary_desc_index = descriptor_index;
-            }
             descriptor
         } else {
             if self.indirect_queue.is_some() {
@@ -720,18 +722,6 @@ impl<'a> DescriptorChain<'a> {
             return Err(QueueError::TooLong);
         }
         Ok(Some(descriptor))
-    }
-
-    pub fn last_primary_desc_index(&self) -> u16 {
-        self.last_primary_desc_index
-    }
-}
-
-impl Iterator for DescriptorChain<'_> {
-    type Item = Result<QueueDescriptor, QueueError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_descriptor().transpose()
     }
 }
 
