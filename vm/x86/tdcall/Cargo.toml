@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [features]
 default = []
-tracing = ["dep:tracing"]
+tracing = ["dep:tracing", "dep:tracelimit", "dep:cvm_tracing"]
 
 [dependencies]
 hvdef.workspace = true
@@ -17,6 +17,11 @@ thiserror.workspace = true
 x86defs.workspace = true
 
 tracing = { workspace = true, optional = true }
+tracelimit = { workspace = true, optional = true }
+cvm_tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
