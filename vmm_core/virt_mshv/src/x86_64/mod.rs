@@ -75,7 +75,6 @@ pub(super) use snp::SnpError;
 pub(crate) use snp::SnpLaunchState;
 pub(crate) use snp::SnpPartitionState;
 pub(crate) use snp::SnpVpState;
-pub(crate) use snp::acquire_snp_host_access;
 use snp::prepare_snp_config;
 use snp::snp_cpuid_overrides;
 use snp::snp_hv_cpuid_overrides;
@@ -485,10 +484,19 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         self.max_physical_address_size()
     }
 
+    fn supports_guest_memory_locking(&self) -> bool {
+        matches!(self.isolation, MshvProtoPartitionIsolation::None)
+    }
+
     fn build(
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        validate_guest_memory_locking(
+            self.supports_guest_memory_locking(),
+            config.guest_memory.supports_kernel_lock(),
+            config.guest_memory.supports_user_lock(),
+        )?;
         let snp_config = match &self.isolation {
             MshvProtoPartitionIsolation::None => None,
             MshvProtoPartitionIsolation::Snp { config, .. } => config.as_deref(),
@@ -656,6 +664,20 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 
         Ok((partition, vps))
     }
+}
+
+fn validate_guest_memory_locking(
+    allow_locking: bool,
+    kernel_lockable: bool,
+    user_lockable: bool,
+) -> Result<(), Error> {
+    if !allow_locking && (kernel_lockable || user_lockable) {
+        return Err(ErrorInner::InvalidConfiguration(
+            "MSHV requires non-lockable guest memory for this mode",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 impl virt::Partition for MshvPartition {
@@ -1686,6 +1708,19 @@ fn supported_xsave_features() -> hvdef::HvX64PartitionProcessorXsaveFeatures {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn non_lockable_mode_rejects_either_locking_capability() {
+        for kernel_lockable in [false, true] {
+            for user_lockable in [false, true] {
+                assert_eq!(
+                    validate_guest_memory_locking(false, kernel_lockable, user_lockable).is_ok(),
+                    !kernel_lockable && !user_lockable,
+                );
+                validate_guest_memory_locking(true, kernel_lockable, user_lockable).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn can_disable_snp_cpuid_offloads() {

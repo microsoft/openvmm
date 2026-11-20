@@ -922,6 +922,8 @@ pub enum VpHaltReason {
     Stop(VpStopped),
     /// The processor task should be restarted, possibly on a different thread.
     Cancel,
+    /// The backend reported an inconsistent or unusable execution state.
+    BackendError(anyhow::Error),
     /// The processor initiated a power off.
     PowerOff,
     /// The processor initiated a reboot.
