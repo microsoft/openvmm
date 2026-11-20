@@ -585,6 +585,15 @@ impl LoadedVm {
             }
         };
 
+        self.stop().await;
+        if let Err(err) = self.emuplat_servicing.rtc_local_clock.flush().await {
+            tracing::error!(
+                CVM_ALLOWED,
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to flush RTC skew before teardown"
+            );
+        }
+
         // Drain resealing before tearing down any storage transport. Removing
         // the unit closes its request stream; in-flight I/O finishes first.
         if let Some(resealer) = self.hardware_reseal.take() {
@@ -952,7 +961,11 @@ impl LoadedVm {
         // Save the emulation platform state prior to any network settings so that
         // it can capture any relevant state from the network devices that may be
         // needed for a successful restore.
-        let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
+        let emuplat = self
+            .emuplat_servicing
+            .save()
+            .await
+            .context("emuplat save failed")?;
 
         // For servicing without MANA keepalive, preserve the synthetic NIC state
         // units and unload MANA to exclude its allocations from the DMA snapshot.

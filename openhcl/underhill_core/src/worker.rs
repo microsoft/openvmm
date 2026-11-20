@@ -2654,6 +2654,7 @@ async fn new_underhill_vm(
 
     let rtc_time_source = ArcMutexUnderhillLocalClock(Arc::new(Mutex::new(
         UnderhillLocalClock::new(
+            &driver_source.simple(),
             get_client.clone(),
             if let Some(vmgs_client) = vmgs_client.as_ref() {
                 vmgs_client
@@ -4134,7 +4135,7 @@ async fn new_underhill_vm(
         nvme_manager,
         emuplat_servicing: EmuplatServicing {
             get_backed_adjust_gpa_range: emuplat_adjust_gpa_range,
-            rtc_local_clock: rtc_time_source.0,
+            rtc_local_clock: rtc_time_source,
             netvsp_state,
             network_adapter_index: network_adapter_index.clone(),
         },
