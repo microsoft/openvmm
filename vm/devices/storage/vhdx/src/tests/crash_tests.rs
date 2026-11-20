@@ -19,6 +19,7 @@ use crate::tests::support::CrashTestFile;
 use crate::tests::support::InMemoryFile;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use test_with_tracing::test;
 
 /// Helper: write a data pattern via the write path.
 async fn write_pattern<F: AsyncFile>(vhdx: &VhdxFile<F>, offset: u64, len: usize, value: u8) {
@@ -284,6 +285,73 @@ async fn bat_page_no_fsn_partial_safe(driver: DefaultDriver) {
 // =============================================================================
 // End-to-end crash recovery tests using CrashTestFile
 // =============================================================================
+
+#[async_test]
+async fn flush_shares_one_barrier_for_payload_and_wal(driver: DefaultDriver) {
+    let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
+    let vhdx = VhdxFile::open(CrashTestFile::from_durable(file.snapshot()))
+        .writable(&driver)
+        .await
+        .unwrap();
+    write_pattern(&vhdx, 0, vhdx.block_size as usize, 0xAB).await;
+    let flushes = vhdx.file.flush_count();
+    vhdx.flush().await.unwrap();
+    assert_eq!(
+        vhdx.file.flush_count(),
+        flushes + 1,
+        "one caller flush should cover both payload and its WAL"
+    );
+    let recovered = VhdxFile::open(InMemoryFile::from_snapshot(vhdx.file.durable_snapshot()))
+        .allow_replay(true)
+        .read_only()
+        .await
+        .unwrap();
+    assert!(
+        read_pattern(&recovered, 0, 4096)
+            .await
+            .iter()
+            .all(|&b| b == 0xAB)
+    );
+    vhdx.abort().await;
+}
+
+#[async_test]
+async fn flush_persists_payload_without_new_wal(driver: DefaultDriver) {
+    let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
+    let vhdx = VhdxFile::open(CrashTestFile::from_durable(file.snapshot()))
+        .writable(&driver)
+        .await
+        .unwrap();
+    write_pattern(&vhdx, 0, vhdx.block_size as usize, 0xAB).await;
+    vhdx.flush().await.unwrap();
+    let flushes = vhdx.file.flush_count();
+    let lsn = vhdx.cache.commit().unwrap();
+
+    write_pattern(&vhdx, 0, 4096, 0xCD).await;
+    assert_eq!(
+        vhdx.cache.commit().unwrap(),
+        lsn,
+        "overwrite changed the BAT"
+    );
+    vhdx.flush().await.unwrap();
+    assert_eq!(
+        vhdx.file.flush_count(),
+        flushes + 1,
+        "an already-durable WAL must not suppress a new payload flush"
+    );
+    let recovered = VhdxFile::open(InMemoryFile::from_snapshot(vhdx.file.durable_snapshot()))
+        .allow_replay(true)
+        .read_only()
+        .await
+        .unwrap();
+    assert!(
+        read_pattern(&recovered, 0, 4096)
+            .await
+            .iter()
+            .all(|&b| b == 0xCD)
+    );
+    vhdx.abort().await;
+}
 
 /// Write + flush → crash → replay recovers data.
 #[async_test]

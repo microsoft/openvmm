@@ -498,11 +498,10 @@ mod log_task_integration {
         }
     }
 
-    /// Stress test: pump a large number of writes through the pipeline
-    /// without individual flushes, then flush once at the end. This
-    /// exercises batch-full commit (automatic commits when dirty_count
-    /// reaches MAX_COMMIT_PAGES) combined with the log task's LogFull
-    /// retry and permit backpressure from the apply task.
+    /// Write many blocks without individual flushes, then verify their data
+    /// after a final flush and reopen. These blocks share a BAT page; the
+    /// log task tests exercise batch-full commit and permit pressure using
+    /// distinct cache pages.
     #[async_test]
     async fn log_pipeline_stress(driver: DefaultDriver) {
         const BLOCK_COUNT: usize = 500;
@@ -513,11 +512,6 @@ mod log_task_integration {
         let file = create_test_vhdx_file(disk_size).await;
         let vhdx = VhdxFile::open(file).writable(&driver).await.unwrap();
 
-        // Write to 500 distinct blocks without flushing. The cache will
-        // trigger batch-full commits as dirty pages accumulate, and the
-        // log task will hit LogFull and retry as the circular buffer
-        // fills. The apply task must release permits to keep the
-        // pipeline moving.
         for i in 0..BLOCK_COUNT {
             let offset = i as u64 * BLOCK_SIZE;
             let pattern = (i & 0xFF) as u8;
