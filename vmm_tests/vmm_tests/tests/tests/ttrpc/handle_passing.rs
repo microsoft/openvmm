@@ -392,23 +392,28 @@ impl MountedImage {
     /// Mounts the fixed VHD at `path` read/write as an online host disk.
     fn mount(path: &Path) -> anyhow::Result<Self> {
         let image = powershell_literal(path);
+        powershell(&format!(
+            "Mount-DiskImage -ImagePath {image} -StorageType VHD -Access ReadWrite \
+             -NoDriveLetter | Out-Null"
+        ))
+        .context("failed to mount disk image (requires administrator)")?;
+        // Establish cleanup before any subsequent setup or parsing can fail.
+        let mut mounted = Self {
+            path: path.to_path_buf(),
+            disk_number: 0,
+        };
         let output = powershell(&format!(
-            "$image = Mount-DiskImage -ImagePath {image} -StorageType VHD -Access ReadWrite \
-             -NoDriveLetter -PassThru; \
-             $disk = $image | Get-Disk; \
+            "$disk = Get-DiskImage -ImagePath {image} | Get-Disk; \
              if ($disk.IsOffline) {{ Set-Disk -Number $disk.Number -IsOffline $false }}; \
              if ($disk.IsReadOnly) {{ Set-Disk -Number $disk.Number -IsReadOnly $false }}; \
              $disk.Number"
         ))
-        .context("failed to mount disk image (requires administrator)")?;
-        let disk_number = output
+        .context("failed to configure mounted disk image")?;
+        mounted.disk_number = output
             .trim()
             .parse()
             .with_context(|| format!("invalid disk number {output:?}"))?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            disk_number,
-        })
+        Ok(mounted)
     }
 }
 
