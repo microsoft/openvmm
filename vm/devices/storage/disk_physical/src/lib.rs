@@ -19,6 +19,7 @@ use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::PhysicalDiskHandle;
 use disk_file::FileDisk;
 use inspect::Inspect;
+use scsi_buffers::BounceBuffer;
 use scsi_buffers::RequestBuffers;
 use std::fs::File;
 use thiserror::Error;
@@ -73,6 +74,14 @@ impl PhysicalDisk {
         // an overlapped handle.
         pal::windows::fs::ensure_synchronous(&file)?;
         let geometry = geometry::query_disk_geometry(&file)?;
+        // Unbuffered I/O requires sector-aligned buffers, which aligned
+        // buffers provide only up to their fixed alignment.
+        if geometry.sector_size as usize > BounceBuffer::ALIGNMENT {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("unsupported sector size {}", geometry.sector_size),
+            ));
+        }
         let file = FileDisk::with_metadata(
             file,
             disk_file::Metadata {
@@ -81,7 +90,8 @@ impl PhysicalDisk {
                 physical_sector_size: geometry.physical_sector_size,
                 read_only,
             },
-        );
+        )
+        .with_aligned_buffers();
         Ok(Self { file })
     }
 }
