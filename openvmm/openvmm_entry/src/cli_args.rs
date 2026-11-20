@@ -622,6 +622,10 @@ options:
     ///   --net consomme:hostfwd=tcp:127.0.0.1:8080-:80
     ///   --net consomme:hostfwd=tcp:\[::1\]:8080-:80
     ///   --net consomme:10.0.0.0/24,hostfwd=tcp::22-:22,hostfwd=udp::5000-:5000
+    ///
+    /// For consomme, set the UDP/ICMP idle flow timeout in seconds with
+    /// `udp_timeout=` (default 300; `0` means flows never expire):
+    ///   --net consomme:10.0.0.0/24,udp_timeout=0
     #[clap(long)]
     pub net: Vec<NicConfigCli>,
 
@@ -3011,6 +3015,7 @@ pub enum EndpointConfigCli {
     Consomme {
         cidr: Option<String>,
         host_fwd: Vec<HostPortConfigCli>,
+        udp_timeout_secs: Option<u64>,
     },
     Dio {
         id: Option<String>,
@@ -3121,16 +3126,26 @@ impl FromStr for EndpointConfigCli {
                 let remaining = rest.join(":");
                 let mut cidr = None;
                 let mut host_fwd = Vec::new();
+                let mut udp_timeout_secs = None;
                 for opt in remaining.split(',').filter(|s| !s.is_empty()) {
                     if let Some(fwd) = opt.strip_prefix("hostfwd=") {
                         host_fwd.push(parse_hostfwd(fwd)?);
+                    } else if let Some(secs) = opt.strip_prefix("udp_timeout=") {
+                        udp_timeout_secs = Some(
+                            secs.parse()
+                                .map_err(|_| format!("invalid udp_timeout '{secs}'"))?,
+                        );
                     } else if cidr.is_none() {
                         cidr = Some(opt.to_owned());
                     } else {
                         return Err(format!("unexpected consomme option '{opt}'"));
                     }
                 }
-                EndpointConfigCli::Consomme { cidr, host_fwd }
+                EndpointConfigCli::Consomme {
+                    cidr,
+                    host_fwd,
+                    udp_timeout_secs,
+                }
             }
             ["dio", s @ ..] => EndpointConfigCli::Dio {
                 id: s.first().map(|s| (*s).to_owned()),
@@ -4845,6 +4860,7 @@ mod tests {
             EndpointConfigCli::Consomme {
                 cidr: None,
                 host_fwd,
+                udp_timeout_secs: None,
             } => assert!(host_fwd.is_empty()),
             _ => panic!("Expected Consomme variant without cidr"),
         }
@@ -4854,6 +4870,7 @@ mod tests {
             EndpointConfigCli::Consomme {
                 cidr: Some(cidr),
                 host_fwd,
+                ..
             } => {
                 assert_eq!(cidr, "192.168.0.0/24");
                 assert!(host_fwd.is_empty());
@@ -4863,7 +4880,7 @@ mod tests {
 
         // Test consomme with hostfwd
         match EndpointConfigCli::from_str("consomme:hostfwd=udp:127.0.0.1:5000-:5000").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Udp);
@@ -4879,7 +4896,7 @@ mod tests {
 
         // Test consomme with cidr and hostfwd
         match EndpointConfigCli::from_str("consomme:10.0.0.0/24,hostfwd=tcp::2222-:22").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, .. } => {
                 assert_eq!(cidr.as_deref(), Some("10.0.0.0/24"));
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4893,7 +4910,7 @@ mod tests {
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::2222-:22,hostfwd=tcp::3389-:3389")
             .unwrap()
         {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 2);
                 assert_eq!(host_fwd[0].host_port, 2222);
@@ -4906,7 +4923,7 @@ mod tests {
 
         // Test consomme with different host and guest ports
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:127.0.0.1:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4922,7 +4939,7 @@ mod tests {
 
         // Test consomme with guest address (accepted but ignored by backend)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-10.0.0.2:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
@@ -4932,7 +4949,7 @@ mod tests {
 
         // Test consomme with IPv6 host address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:[::1]:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4948,13 +4965,30 @@ mod tests {
 
         // Test consomme with IPv6 guest address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-[::1]:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
             }
             _ => panic!("Expected Consomme variant with IPv6 guest address"),
         }
+
+        // Test consomme with udp_timeout, including 0 (never expire)
+        match EndpointConfigCli::from_str("consomme:udp_timeout=0").unwrap() {
+            EndpointConfigCli::Consomme {
+                udp_timeout_secs, ..
+            } => assert_eq!(udp_timeout_secs, Some(0)),
+            _ => panic!("Expected Consomme variant with udp_timeout"),
+        }
+        match EndpointConfigCli::from_str("consomme:10.0.1.0/24,udp_timeout=600").unwrap() {
+            EndpointConfigCli::Consomme {
+                udp_timeout_secs, ..
+            } => assert_eq!(udp_timeout_secs, Some(600)),
+            _ => panic!("Expected Consomme variant with udp_timeout"),
+        }
+        assert!(EndpointConfigCli::from_str("consomme:udp_timeout=abc").is_err());
+        assert!(EndpointConfigCli::from_str("consomme:udp_timeout=-1").is_err());
+        assert!(EndpointConfigCli::from_str("consomme:udp_timeout=1,udp_timeout=2").is_err());
 
         // Test dio without id
         match EndpointConfigCli::from_str("dio").unwrap() {
