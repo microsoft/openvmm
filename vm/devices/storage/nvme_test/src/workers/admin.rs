@@ -642,6 +642,13 @@ impl AdminHandler {
                 }
 
                 let result = match opcode {
+                    // Identify Controller reports no fused operations (FUSES is
+                    // 0), and admin commands over PCIe always use PRPs (NVMe
+                    // Base 2.1 Figure 91), so any other FUSE or PSDT value is
+                    // unsupported.
+                    _ if command.cdw0.fuse() != 0 || command.cdw0.psdt() != 0 => Err(
+                        NvmeError::do_not_retry(spec::Status::INVALID_FIELD_IN_COMMAND),
+                    ),
                     spec::AdminOpcode::IDENTIFY => self
                         .handle_identify(state, &command)
                         .map(|()| Some(Default::default())),

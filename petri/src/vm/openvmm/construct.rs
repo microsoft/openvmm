@@ -323,6 +323,7 @@ impl PetriVmConfigOpenVmm {
                         disk,
                         read_only: false,
                         serial: None,
+                        options: Default::default(),
                     }
                     .into_resource(),
                 )
@@ -1627,6 +1628,7 @@ async fn vmbus_storage_controllers_to_openvmm(
                                 disk: petri_disk_to_openvmm(disk).await?,
                                 read_only: false,
                                 serial: None,
+                                options: Default::default(),
                             }
                             .into_resource(),
                         )

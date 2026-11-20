@@ -236,13 +236,14 @@ where
 
         // Set MTRRs and PAT on all VPs.
         #[cfg(guest_arch = "x86_64")]
-        access
-            .set_mtrrs(mtrrs)
-            .map_err(|err| RegisterSetError("mtrrs", err.into()))?;
-        #[cfg(guest_arch = "x86_64")]
-        access
-            .set_pat(pat)
-            .map_err(|err| RegisterSetError("pat", err.into()))?;
+        {
+            access
+                .set_mtrrs(mtrrs)
+                .map_err(|err| RegisterSetError("mtrrs", err.into()))?;
+            access
+                .set_pat(pat)
+                .map_err(|err| RegisterSetError("pat", err.into()))?;
+        }
 
         Ok(())
     }
@@ -252,34 +253,35 @@ where
         self
     }
 
-    #[cfg(all(guest_arch = "x86_64", feature = "dump"))]
+    #[cfg(feature = "dump")]
     fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState> {
         let mut access = self.vp.access_state(vtl);
         let registers = access.registers().context("failed to get registers")?;
-        let debug_registers = access
-            .debug_regs()
-            .context("failed to get debug registers")?;
-        let xsave = access.xsave().context("failed to get xsave state")?;
-        let xcr0 = access.xcr().context("failed to get xcr0")?;
-        Ok(hyperv_dump::VpState::X64(hyperv_dump::X64VpState {
-            registers,
-            debug_registers,
-            xsave,
-            xcr0,
-        }))
-    }
-
-    #[cfg(all(guest_arch = "aarch64", feature = "dump"))]
-    fn get_dump_vp_state(&mut self, vtl: Vtl) -> anyhow::Result<hyperv_dump::VpState> {
-        let mut access = self.vp.access_state(vtl);
-        let registers = access.registers().context("failed to get registers")?;
-        let system_registers = access
-            .system_registers()
-            .context("failed to get system registers")?;
-        Ok(hyperv_dump::VpState::Aarch64(hyperv_dump::Aarch64VpState {
-            registers,
-            system_registers: Some(system_registers),
-        }))
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                let debug_registers = access
+                    .debug_regs()
+                    .context("failed to get debug registers")?;
+                let xsave = access.xsave().context("failed to get xsave state")?;
+                let xcr0 = access.xcr().context("failed to get xcr0")?;
+                Ok(hyperv_dump::VpState::X64(hyperv_dump::X64VpState {
+                    registers,
+                    debug_registers,
+                    xsave,
+                    xcr0,
+                }))
+            }}
+            guest_arch = "aarch64" => {{
+                let system_registers = access
+                    .system_registers()
+                    .context("failed to get system registers")?;
+                Ok(hyperv_dump::VpState::Aarch64(hyperv_dump::Aarch64VpState {
+                    registers,
+                    system_registers: Some(system_registers),
+                }))
+            }}
+            _ => compile_error!("unsupported guest architecture"),
+        }
     }
 }
 

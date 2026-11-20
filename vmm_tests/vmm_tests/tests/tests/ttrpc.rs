@@ -3,11 +3,13 @@
 
 //! Integration tests for OpenVMM's TTRPC interface.
 
-// Tests for the fd-passing protocol, which shares the TTRPC socket. It is
-// UNIX-only and tap `fd_name` resolution is Linux-only, so it only builds on
-// Linux.
+// Tests for the resource-passing protocols, which share the TTRPC socket. The
+// UNIX fd-passing test resolves a tap `fd_name`, which is Linux-only; the
+// Windows handle-passing test resolves a virtio-fs user token.
 #[cfg(target_os = "linux")]
 mod fd_passing;
+#[cfg(windows)]
+mod handle_passing;
 
 use anyhow::Context;
 use futures::AsyncBufReadExt;
@@ -1119,7 +1121,8 @@ async fn test_ttrpc_interface(
                     vec![vmservice::VirtioFs {
                         tag: "testfs".to_string(),
                         root_path: virtiofs_root.to_string_lossy().into(),
-                        read_only: i == 0,
+                        mount_options: if i == 0 { "ro" } else { "" }.to_string(),
+                        windows_options: None,
                     }]
                 },
                 // A SCSI controller keeps a request channel
@@ -1387,7 +1390,8 @@ async fn test_ttrpc_interface(
                             vmservice::VirtioFs {
                                 tag: "hotplugfs".to_string(),
                                 root_path: hotplug_virtiofs_root.to_string_lossy().into(),
-                                read_only: true,
+                                mount_options: "ro".to_string(),
+                                windows_options: None,
                             },
                         ))),
                     },
@@ -2488,7 +2492,8 @@ fn virtio_fs_vpci_request(
             vmservice::VirtioFs {
                 tag: tag.to_string(),
                 root_path: root_path.to_string_lossy().into_owned(),
-                read_only,
+                mount_options: if read_only { "ro" } else { "" }.to_string(),
+                windows_options: None,
             },
         ))),
     }
@@ -2739,6 +2744,43 @@ async fn launch_openvmm(
     );
 
     Ok((child, client, stderr_task))
+}
+
+/// Sends a resource-passing client handshake with `magic` and validates the
+/// server's reply. See `openvmm_ttrpc_vmservice/src/resource_passing.md`.
+#[cfg(any(target_os = "linux", windows))]
+async fn resource_passing_handshake(
+    sock: &mut PolledSocket<UnixStream>,
+    magic: [u8; 4],
+) -> anyhow::Result<()> {
+    use futures::AsyncWriteExt as _;
+
+    let mut client_handshake = [0u8; 8];
+    client_handshake[..4].copy_from_slice(&magic);
+    sock.write_all(&client_handshake).await?;
+    let mut server_handshake = [0u8; 8];
+    sock.read_exact(&mut server_handshake).await?;
+    anyhow::ensure!(
+        server_handshake[..4] == magic,
+        "bad server handshake magic: {:x?}",
+        &server_handshake[..4]
+    );
+    Ok(())
+}
+
+/// Reads one resource-passing response frame: `status: u8`, `msg_len: u16`
+/// (LE), `msg`.
+#[cfg(any(target_os = "linux", windows))]
+async fn read_resource_passing_response(
+    sock: &mut PolledSocket<UnixStream>,
+) -> anyhow::Result<(u8, String)> {
+    let mut hdr = [0u8; 3];
+    sock.read_exact(&mut hdr).await?;
+    let status = hdr[0];
+    let msg_len = u16::from_le_bytes([hdr[1], hdr[2]]) as usize;
+    let mut msg = vec![0u8; msg_len];
+    sock.read_exact(&mut msg).await?;
+    Ok((status, String::from_utf8_lossy(&msg).into_owned()))
 }
 
 /// Builds a file-backed disk backend for the given path.

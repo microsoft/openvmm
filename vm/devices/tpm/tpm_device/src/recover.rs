@@ -26,21 +26,24 @@ fn check_blob(blob: &[u8]) -> Result<(), usize> {
 }
 
 /// Fixup an NVRAM blob that has data past the end, by zeroing out the last
-/// header that refers to data past the end.
-pub fn recover_blob(blob: &mut [u8]) {
+/// header that refers to data past the end. Returns true if any changes were
+/// made.
+pub fn recover_blob(blob: &mut [u8]) -> bool {
     let original_size = blob.len();
     if original_size != LEGACY_VTPM_SIZE {
         tracing::debug!("TPM NVRAM size is not legacy size, skipping recovery");
-        return;
+        return false;
     }
 
     match check_blob(blob) {
         Ok(()) => {
             tracing::info!("TPM NVRAM is already good, skipping recovery");
+            false
         }
         Err(bad_offset) => {
             tracing::warn!("TPM NVRAM blob is corrupt, truncating at offset {bad_offset}");
             blob[bad_offset..].fill(0);
+            true
         }
     }
 }

@@ -1890,6 +1890,17 @@ pub mod steps {
             /// `build.BuildNumber`
             pub const BUILD_BUILD_NUMBER: AdoRuntimeVar = AdoRuntimeVar::new("build.BuildNumber");
 
+            /// `Build.BuildId`
+            pub const BUILD_BUILD_ID: AdoRuntimeVar = AdoRuntimeVar::new("Build.BuildId");
+
+            /// `System.CollectionUri`
+            pub const SYSTEM_COLLECTION_URI: AdoRuntimeVar =
+                AdoRuntimeVar::new("System.CollectionUri");
+
+            /// `System.TeamProjectId`
+            pub const SYSTEM_TEAM_PROJECT_ID: AdoRuntimeVar =
+                AdoRuntimeVar::new("System.TeamProjectId");
+
             /// `System.AccessToken`
             pub const SYSTEM_ACCESS_TOKEN: AdoRuntimeVar =
                 AdoRuntimeVar::new_secret("System.AccessToken");

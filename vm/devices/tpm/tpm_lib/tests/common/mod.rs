@@ -33,6 +33,9 @@ use tpm_protocol::tpm20proto::protocol::TpmtSensitive;
 use tpm_protocol::tpm20proto::protocol::TpmtSymDefObject;
 use zerocopy::FromZeros;
 
+mod hash_sequences;
+mod mixed_operations;
+
 impl TpmEngine for TestTpmPlatform {
     fn execute_command(
         &mut self,
@@ -371,6 +374,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -414,6 +418,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -475,6 +480,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -547,6 +553,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: false,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -608,6 +615,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: true,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -691,6 +699,7 @@ fn test_allocate_guest_attestation_nv_indices() {
                 support_attestation_report: true,
                 mitigate_legacy_akcert: false,
                 create_if_missing: true,
+                recovered: false,
             },
         );
         assert!(result.is_ok());
@@ -721,6 +730,7 @@ fn test_read_write_guest_attestation_indices() {
             support_attestation_report: true,
             mitigate_legacy_akcert: false,
             create_if_missing: true,
+            recovered: false,
         },
     );
     assert!(result.is_ok());
@@ -951,6 +961,7 @@ fn test_with_pre_provisioned_state() {
             support_attestation_report: false,
             mitigate_legacy_akcert: false,
             create_if_missing: true,
+            recovered: false,
         },
     );
     assert!(result.is_ok());
@@ -1622,7 +1633,7 @@ fn test_clear() {
         panic!()
     }
 }
-fn generate_rsa() -> (TpmtPublic, Tpm2bBuffer) {
+pub(super) fn generate_rsa() -> (TpmtPublic, Tpm2bBuffer) {
     // Using hard-coded value to avoid OpenSSL dependency
     // RSA-2k public modulus
     const N: [u8; 256] = [
@@ -1703,7 +1714,7 @@ fn generate_rsa() -> (TpmtPublic, Tpm2bBuffer) {
     (rsa_public, rsa_private)
 }
 
-fn rsa_srk_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
+pub(super) fn rsa_srk_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     let symmetric = TpmtSymDefObject::new(
         AlgIdEnum::AES.into(),
         Some(128),
@@ -1818,6 +1829,7 @@ fn test_restore_owner_defined() {
             support_attestation_report: true,
             mitigate_legacy_akcert: false,
             create_if_missing: true,
+            recovered: true,
         },
     );
     assert!(result.is_ok());
@@ -1846,6 +1858,7 @@ fn test_restore_owner_defined() {
             support_attestation_report: true,
             mitigate_legacy_akcert: true,
             create_if_missing: true,
+            recovered: true,
         },
     );
     assert!(result.is_ok());
@@ -1891,6 +1904,7 @@ fn test_oversized_platform_ak_cert_index() {
             support_attestation_report: true,
             mitigate_legacy_akcert: false,
             create_if_missing: true,
+            recovered: false,
         },
     );
     assert!(result.is_ok(), "{result:?}");
@@ -1917,4 +1931,58 @@ fn test_oversized_platform_ak_cert_index() {
         &mut attestation_report_output,
     );
     assert!(matches!(result.unwrap(), NvIndexState::Uninitialized));
+}
+
+#[test]
+fn test_hash_sequence_start_sha1_multiple_objects() {
+    use tpm_protocol::tpm20proto::SessionTagEnum;
+    use tpm_protocol::tpm20proto::protocol::common::CmdHeader;
+    use tpm_protocol::tpm20proto::protocol::common::ReplyHeader;
+    use zerocopy::FromBytes;
+    use zerocopy::IntoBytes;
+
+    let mut tpm = create_tpm_engine_helper();
+    tpm.initialize_tpm_engine().unwrap();
+
+    let header = CmdHeader::new::<[u8; 14]>(
+        SessionTagEnum::NoSessions.into(),
+        CommandCodeEnum::HashSequenceStart.into(),
+    );
+    let mut command = [
+        header.as_bytes(),
+        &0u16.to_be_bytes(), // Empty sequence authorization.
+        &(AlgIdEnum::SHA as u16).to_be_bytes(),
+    ]
+    .concat();
+    let mut response = [0u8; 4096];
+    let mut handles = Vec::new();
+
+    // Keep the sequences live: flushing each immediately would only exercise
+    // the first object's hash-state alignment.
+    for slot in 0..3 {
+        let response_size = tpm
+            .tpm_engine
+            .execute_command(&mut command, &mut response)
+            .unwrap();
+        let (header, payload) = ReplyHeader::read_from_prefix(&response[..response_size]).unwrap();
+        assert!(
+            header
+                .base_validation(SessionTagEnum::NoSessions.into(), 14)
+                .unwrap(),
+            "SHA-1 HashSequenceStart failed for slot {slot}: {header:?}"
+        );
+        assert_eq!(
+            response_size, 14,
+            "unexpected response size for slot {slot}"
+        );
+        assert_eq!(header.size.get(), 14);
+
+        let handle = ReservedHandle::read_from_bytes(payload).unwrap();
+        assert_eq!(handle, ReservedHandle::new(0x80, slot));
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        tpm.flush_context(handle).unwrap();
+    }
 }

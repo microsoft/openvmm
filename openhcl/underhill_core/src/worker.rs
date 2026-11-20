@@ -8,14 +8,19 @@ cfg_select! {
         use chipset_device_resources::BSP_LINT_LINE_SET;
         use chipset_resources::pm::DEFAULT_ACPI_IRQ;
         use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
+        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
+        use virt::X86Partition;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
     }
     guest_arch = "aarch64" => {
+        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
         use virt::Aarch64Partition;
     }
-    _ => {}
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
 }
 
 use crate::ControlRequest;
@@ -147,8 +152,6 @@ use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::vfio::VfioDmaClients;
 use virt::Partition;
 use virt::VpIndex;
-#[cfg(guest_arch = "x86_64")]
-use virt::X86Partition;
 use virt::state::HvRegisterState;
 use virt_mshv_vtl::UhPartition;
 use virt_mshv_vtl::UhPartitionNewParams;
@@ -1331,6 +1334,67 @@ fn round_up_to_2mb(bytes: u64) -> u64 {
     (bytes + (2 * 1024 * 1024) - 1) & !((2 * 1024 * 1024) - 1)
 }
 
+/// What the VPCI relay needs, as found at startup.
+struct VpciRelayInputs<'a> {
+    /// `OPENHCL_ENABLE_VPCI_RELAY`, if set.
+    env_override: Option<bool>,
+    /// When the device policy runs the relay.
+    mode: product_policy::VpciRelayMode,
+    isolation: virt::IsolationType,
+    /// Whether the VMBus relay runs.
+    vmbus_relay: bool,
+    /// Whether the hypervisor offers MMIO hypercalls.
+    mmio_hypercalls: bool,
+    /// The devices that the measured policy allows.
+    allowed_devices: &'a [product_policy::AllowedPciDevice],
+}
+
+/// Decides whether to run the VPCI relay. `OPENHCL_ENABLE_VPCI_RELAY`
+/// overrides the device policy's default, unless the policy requires the relay.
+///
+/// Requiring the relay where it can't run is an error, so the VM fails at boot
+/// instead of starting without its devices; otherwise the relay is disabled
+/// with a warning.
+fn resolve_vpci_relay(inputs: VpciRelayInputs<'_>) -> anyhow::Result<bool> {
+    use product_policy::VpciRelayMode;
+
+    let VpciRelayInputs {
+        env_override,
+        mode,
+        isolation,
+        vmbus_relay,
+        mmio_hypercalls,
+        allowed_devices,
+    } = inputs;
+
+    let required = mode == VpciRelayMode::MustBeOn || env_override == Some(true);
+
+    let wanted = match mode {
+        VpciRelayMode::MustBeOn => true,
+        VpciRelayMode::DefaultOn => env_override.unwrap_or(vmbus_relay),
+        VpciRelayMode::DefaultOff => env_override.unwrap_or(false),
+    };
+    if !wanted {
+        return Ok(false);
+    }
+
+    let missing = if !vmbus_relay {
+        "the VMBus relay"
+    } else if allowed_devices.is_empty() {
+        "a device policy that allows a device"
+    } else if isolation == virt::IsolationType::Vbs && !mmio_hypercalls {
+        "MMIO hypercalls, which VBS requires for host-emulated MMIO regions"
+    } else {
+        return Ok(true);
+    };
+
+    if required {
+        anyhow::bail!("cannot run the VPCI relay without {missing}");
+    }
+    tracing::warn!(CVM_ALLOWED, missing, "VPCI relay disabled");
+    Ok(false)
+}
+
 #[cfg(guest_arch = "x86_64")]
 fn new_x86_topology(
     cpus: &[bootloader_fdt_parser::Cpu],
@@ -1696,7 +1760,7 @@ async fn new_underhill_vm(
     // TODO: Centralize cpuid based feature determination.
     #[cfg(guest_arch = "x86_64")]
     let use_mmio_hypercalls = use_mmio_hypercalls
-        || hardware_isolated && {
+        || isolation.is_isolated() && {
             let result =
                 safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
             hvdef::HvEnlightenmentInformation::from(
@@ -1707,6 +1771,7 @@ async fn new_underhill_vm(
             )
             .use_hypercall_for_mmio_access()
         };
+    tracing::info!(CVM_ALLOWED, use_mmio_hypercalls, "MMIO access mode");
 
     let boot_info = runtime_params.parsed_openhcl_boot();
 
@@ -1721,28 +1786,6 @@ async fn new_underhill_vm(
     let nvme_device_dma = 130 * hvdef::HV_PAGE_SIZE * (boot_info.cpus.len() as u64).min(128);
     // Support up to 8 devices for each
     let device_dma = net_device_dma * 8 + nvme_device_dma * 8;
-
-    // Determine the amount of shared memory to reserve from VTL0.
-    let shared_pool_size = match isolation {
-        #[cfg(guest_arch = "x86_64")]
-        virt::IsolationType::Snp => {
-            let cpu_bytes = boot_info.cpus.len() as u64
-                * virt_mshv_vtl::SnpBacked::shared_pages_required_per_cpu()
-                * hvdef::HV_PAGE_SIZE;
-
-            round_up_to_2mb(cpu_bytes + device_dma + attestation)
-        }
-        #[cfg(guest_arch = "x86_64")]
-        virt::IsolationType::Tdx => {
-            let cpu_bytes = boot_info.cpus.len() as u64
-                * virt_mshv_vtl::TdxBacked::shared_pages_required_per_cpu()
-                * hvdef::HV_PAGE_SIZE;
-
-            round_up_to_2mb(cpu_bytes + device_dma + attestation)
-        }
-        virt::IsolationType::Vbs => round_up_to_2mb(device_dma + attestation),
-        _ => 0,
-    };
 
     // Construct the VTL0 memory map by filtering out non-VTL0 ranges.
     let vtl0_memory_map = runtime_params
@@ -1772,14 +1815,6 @@ async fn new_underhill_vm(
         with_vmbus_relay = !hide_isolation;
     }
 
-    let enable_vpci_relay = env_cfg
-        .enable_vpci_relay
-        .unwrap_or(hardware_isolated && !hide_isolation && with_vmbus_relay);
-
-    if enable_vpci_relay && !with_vmbus_relay {
-        anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
-    }
-
     // Construct chipset MMIO ranges from the positional convention in the
     // device tree: [0] = low (below 4 GiB), [1] = high (above RAM).
     let mut chipset_mmio = ChipsetMmioRanges {
@@ -1794,6 +1829,15 @@ async fn new_underhill_vm(
             .copied()
             .unwrap_or(MemoryRange::EMPTY),
     };
+
+    let enable_vpci_relay = resolve_vpci_relay(VpciRelayInputs {
+        env_override: env_cfg.enable_vpci_relay,
+        mode: measured_product_policy.vpci_relay(),
+        isolation,
+        vmbus_relay: with_vmbus_relay,
+        mmio_hypercalls: use_mmio_hypercalls,
+        allowed_devices: measured_product_policy.allowed_pci_devices(),
+    })?;
 
     let vpci_relay_mmio = if enable_vpci_relay {
         // Carve out enough VTL0 MMIO space from the high range for 64 devices.
@@ -1810,6 +1854,43 @@ async fn new_underhill_vm(
         MemoryRange::EMPTY
     };
 
+    // Determine the amount of shared memory to reserve from VTL0. In isolated
+    // guests, the VPCI relay's VMBus rings also come from the shared pool.
+    // The relay gives each of its 64 devices a 20-page VMBus ring.
+    let vpci_ring_bytes = if enable_vpci_relay {
+        64 * 20 * hvdef::HV_PAGE_SIZE
+    } else {
+        0
+    };
+    let shared_pool_size = match isolation {
+        #[cfg(guest_arch = "x86_64")]
+        virt::IsolationType::Snp => {
+            let cpu_bytes = boot_info.cpus.len() as u64
+                * virt_mshv_vtl::SnpBacked::shared_pages_required_per_cpu()
+                * hvdef::HV_PAGE_SIZE;
+
+            round_up_to_2mb(cpu_bytes + device_dma + attestation + vpci_ring_bytes)
+        }
+        #[cfg(guest_arch = "x86_64")]
+        virt::IsolationType::Tdx => {
+            let cpu_bytes = boot_info.cpus.len() as u64
+                * virt_mshv_vtl::TdxBacked::shared_pages_required_per_cpu()
+                * hvdef::HV_PAGE_SIZE;
+
+            round_up_to_2mb(cpu_bytes + device_dma + attestation + vpci_ring_bytes)
+        }
+        virt::IsolationType::Vbs => {
+            // Only VBS uses the shutdown relay's 4-page ring.
+            let shutdown_ring_bytes = if with_vmbus_relay {
+                4 * hvdef::HV_PAGE_SIZE
+            } else {
+                0
+            };
+            round_up_to_2mb(device_dma + attestation + vpci_ring_bytes + shutdown_ring_bytes)
+        }
+        _ => 0,
+    };
+
     let BuiltVtl0MemoryLayout {
         vtl0_memory_map,
         vtl0_memory_layout: mem_layout,
@@ -1817,46 +1898,46 @@ async fn new_underhill_vm(
         complete_memory_layout,
     } = build_vtl0_memory_layout(vtl0_memory_map, &chipset_mmio, shared_pool_size)?;
 
-    // Determine if x2apic is supported so that the topology matches
-    // reality.
-    //
-    // We don't know if x2apic is forced on, but currently it doesn't really
-    // matter because the topology's initial x2apic state is not currently
-    // used in Underhill.
-    //
-    // FUTURE: consider having Underhill decide whether x2apic is enabled at
-    // boot rather than allowing the host to make that decision. This would
-    // just require Underhill setting the apicbase register on the VPs
-    // before start.
-    //
-    // TODO: centralize cpuid querying logic.
-    #[cfg(guest_arch = "x86_64")]
-    let x2apic = if isolation.is_hardware_isolated() && !hide_isolation {
-        // For hardware CVMs, always enable x2apic support at boot.
-        vm_topology::processor::x86::X2ApicState::Enabled
-    } else {
-        let features = x86defs::cpuid::VersionAndFeaturesEcx::from(
-            safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx,
-        );
-        if features.x2_apic() {
-            vm_topology::processor::x86::X2ApicState::Supported
-        } else {
-            vm_topology::processor::x86::X2ApicState::Unsupported
-        }
-    };
-
-    #[cfg(guest_arch = "x86_64")]
-    let processor_topology = new_x86_topology(&boot_info.cpus, x2apic)
-        .context("failed to construct the processor topology")?;
-
-    #[cfg(guest_arch = "aarch64")]
-    let processor_topology = {
-        let platform = boot_info
-            .gic
-            .context("did not get gic state from bootloader")?;
-        new_aarch64_topology(platform, &boot_info.cpus)
-            .context("failed to construct the processor topology")?
-    };
+    let processor_topology = cfg_select! {
+        guest_arch = "x86_64" => {{
+            // Determine if x2apic is supported so that the topology matches
+            // reality.
+            //
+            // We don't know if x2apic is forced on, but currently it doesn't really
+            // matter because the topology's initial x2apic state is not currently
+            // used in Underhill.
+            //
+            // FUTURE: consider having Underhill decide whether x2apic is enabled at
+            // boot rather than allowing the host to make that decision. This would
+            // just require Underhill setting the apicbase register on the VPs
+            // before start.
+            //
+            // TODO: centralize cpuid querying logic.
+            let x2apic = if isolation.is_hardware_isolated() && !hide_isolation {
+                // For hardware CVMs, always enable x2apic support at boot.
+                vm_topology::processor::x86::X2ApicState::Enabled
+            } else {
+                let features = x86defs::cpuid::VersionAndFeaturesEcx::from(
+                    safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0)
+                        .ecx,
+                );
+                if features.x2_apic() {
+                    vm_topology::processor::x86::X2ApicState::Supported
+                } else {
+                    vm_topology::processor::x86::X2ApicState::Unsupported
+                }
+            };
+            new_x86_topology(&boot_info.cpus, x2apic)
+        }}
+        guest_arch = "aarch64" => {{
+            let platform = boot_info
+                .gic
+                .context("did not get gic state from bootloader")?;
+            new_aarch64_topology(platform, &boot_info.cpus)
+        }}
+        _ => compile_error!("unsupported guest architecture"),
+    }
+    .context("failed to construct the processor topology")?;
 
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
@@ -2229,9 +2310,13 @@ async fn new_underhill_vm(
         // suppressed). See the comment where `stateful` is computed.
         tpm_persisted: stateful,
         hardware_sealing_policy,
+        // On VBS, report whether the VPCI relay actually filters devices. SNP and
+        // TDX keep their original condition: the claim is an input to their
+        // hardware-derived VMGS keys, so changing it would break unsealing.
         filtered_vpci_devices_allowed: with_vmbus_relay
             && dps.general.vpci_boot_enabled
-            && isolation.is_isolated(),
+            && hardware_isolated
+            || (isolation == virt::IsolationType::Vbs && enable_vpci_relay),
         vm_unique_id: dps.general.bios_guid.to_string(),
         vmgs_provisioner: prov_claims.clone(),
     };
@@ -2621,12 +2706,10 @@ async fn new_underhill_vm(
             FirmwareType::Uefi => vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
             FirmwareType::None => vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
         },
-        if cfg!(guest_arch = "x86_64") {
-            vm_manifest_builder::MachineArch::X86_64
-        } else if cfg!(guest_arch = "aarch64") {
-            vm_manifest_builder::MachineArch::Aarch64
-        } else {
-            anyhow::bail!("unsupported guest architecture")
+        cfg_select! {
+            guest_arch = "x86_64" => vm_manifest_builder::MachineArch::X86_64,
+            guest_arch = "aarch64" => vm_manifest_builder::MachineArch::Aarch64,
+            _ => compile_error!("unsupported guest architecture"),
         },
     );
 
@@ -2674,10 +2757,6 @@ async fn new_underhill_vm(
         use crate::emuplat::uefi::*;
         use guest_emulation_transport::api::platform_settings::SecureBootTemplateType;
 
-        #[cfg(guest_arch = "aarch64")]
-        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
-        #[cfg(guest_arch = "x86_64")]
-        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
         let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
             SecureBootTemplateType::MicrosoftWindows => {
@@ -2701,17 +2780,18 @@ async fn new_underhill_vm(
         }
         .map(Into::into);
 
+        let (use_mmio, command_set) = cfg_select! {
+            guest_arch = "x86_64" => (false, UefiCommandSet::X64),
+            guest_arch = "aarch64" => (true, UefiCommandSet::Aarch64),
+            _ => compile_error!("unsupported guest architecture"),
+        };
         let config = firmware_uefi_resources::UefiConfig {
             base_template,
             custom_uefi_json,
             secure_boot: dps.general.secure_boot_enabled,
             initial_generation_id,
-            use_mmio: cfg!(not(guest_arch = "x86_64")),
-            command_set: if cfg!(guest_arch = "x86_64") {
-                UefiCommandSet::X64
-            } else {
-                UefiCommandSet::Aarch64
-            },
+            use_mmio,
+            command_set,
             diagnostics_log_level: {
                 use get_protocol::dps_json::EfiDiagnosticsLogLevelType as LogLevelType;
                 let level = dps.general.efi_diagnostics_log_level.0;
@@ -2769,117 +2849,119 @@ async fn new_underhill_vm(
         .build()
         .context("failed to build chipset configuration")?;
 
-    #[cfg(guest_arch = "x86_64")]
-    let mut deps_hyperv_firmware_pcat = None;
-    #[cfg(not(guest_arch = "x86_64"))]
-    let deps_hyperv_firmware_pcat = None;
-
-    match firmware_type {
-        #[cfg(not(guest_arch = "x86_64"))]
+    let deps_hyperv_firmware_pcat = match firmware_type {
         FirmwareType::Pcat => {
-            panic!("Not supported");
-        }
-        #[cfg(guest_arch = "x86_64")]
-        FirmwareType::Pcat => {
-            let acpi_builder = AcpiTablesBuilder {
-                processor_topology: &processor_topology,
-                mem_layout: &mem_layout,
-                cache_topology: None,
-                pcie_host_bridges: &vec![],
-                slit_info: None,
-                generic_initiators: &[],
-                arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                    with_ioapic: capabilities.with_ioapic,
-                    with_pic: capabilities.with_pic,
-                    with_pit: capabilities.with_pit,
-                    with_psp: dps.general.psp_enabled,
-                    pm_base: DEFAULT_PM_PIO_BASE,
-                    acpi_irq: DEFAULT_ACPI_IRQ,
-                    iommu: None,
-                },
-            };
-
-            let config = firmware_pcat::config::PcatBiosConfig {
-                processor_topology: processor_topology.clone(),
-                mem_layout: mem_layout.clone(),
-                chipset_low_mmio: chipset_mmio.low,
-                chipset_high_mmio: chipset_mmio.high,
-                srat: acpi_builder.build_srat(),
-                hibernation_enabled: dps.general.hibernation_enabled,
-                initial_generation_id,
-                boot_order: dps.general.pcat_boot_device_order.map(|e| {
-                    use firmware_pcat::config::BootDevice;
-                    use firmware_pcat::config::BootDeviceStatus;
-                    use guest_emulation_transport::api::platform_settings::PcatBootDevice;
-
-                    let kind = match e {
-                        PcatBootDevice::Floppy => BootDevice::Floppy,
-                        PcatBootDevice::Optical => BootDevice::Optical,
-                        PcatBootDevice::HardDrive => BootDevice::HardDrive,
-                        PcatBootDevice::Network => BootDevice::Network,
+            cfg_select! {
+                guest_arch = "x86_64" => {{
+                    let acpi_builder = AcpiTablesBuilder {
+                        processor_topology: &processor_topology,
+                        mem_layout: &mem_layout,
+                        cache_topology: None,
+                        pcie_host_bridges: &vec![],
+                        slit_info: None,
+                        generic_initiators: &[],
+                        arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                            with_ioapic: capabilities.with_ioapic,
+                            with_pic: capabilities.with_pic,
+                            with_pit: capabilities.with_pit,
+                            with_psp: dps.general.psp_enabled,
+                            pm_base: DEFAULT_PM_PIO_BASE,
+                            acpi_irq: DEFAULT_ACPI_IRQ,
+                            iommu: None,
+                        },
                     };
 
-                    // TODO: Correctly mark if devices are attached or not.
-                    BootDeviceStatus {
-                        kind,
-                        attached: true,
-                    }
-                }),
-                num_lock_enabled: dps.general.num_lock_enabled,
-                smbios: firmware_pcat::config::SmbiosConstants {
-                    bios_guid: dps.general.bios_guid,
-                    // Truncate rather than fail: the serial comes from the host
-                    // via DPS, and the PCAT config port caps each string at a
-                    // fixed length regardless.
-                    system_serial_number: {
-                        let mut serial = dps.smbios.serial_number.clone().into_bytes();
-                        if serial.len() > firmware_pcat::config::SMBIOS_STRING_MAX_LEN {
-                            tracing::warn!(
-                                len = serial.len(),
-                                max = firmware_pcat::config::SMBIOS_STRING_MAX_LEN,
-                                "SMBIOS system serial number too long; truncating for PCAT"
-                            );
-                            serial.truncate(firmware_pcat::config::SMBIOS_STRING_MAX_LEN);
-                        }
-                        serial
-                    },
-                    base_board_serial_number: dps
-                        .smbios
-                        .base_board_serial_number
-                        .clone()
-                        .into_bytes(),
-                    chassis_serial_number: dps.smbios.chassis_serial_number.clone().into_bytes(),
-                    chassis_asset_tag: dps.smbios.chassis_asset_tag.clone().into_bytes(),
-                    bios_lock_string: dps.smbios.bios_lock_string.clone().into_bytes(),
-                    processor_manufacturer: dps.smbios.processor_manufacturer.clone(),
-                    processor_version: dps.smbios.processor_version.clone(),
-                    cpu_info_bundle: Some(firmware_pcat::config::SmbiosProcessorInfoBundle {
-                        processor_family: dps.smbios.processor_family2 as u8,
-                        voltage: dps.smbios.voltage,
-                        external_clock: dps.smbios.external_clock,
-                        max_speed: dps.smbios.max_speed,
-                        current_speed: dps.smbios.current_speed,
-                    }),
-                },
-            };
+                    let config = firmware_pcat::config::PcatBiosConfig {
+                        processor_topology: processor_topology.clone(),
+                        mem_layout: mem_layout.clone(),
+                        chipset_low_mmio: chipset_mmio.low,
+                        chipset_high_mmio: chipset_mmio.high,
+                        srat: acpi_builder.build_srat(),
+                        hibernation_enabled: dps.general.hibernation_enabled,
+                        initial_generation_id,
+                        boot_order: dps.general.pcat_boot_device_order.map(|e| {
+                            use firmware_pcat::config::BootDevice;
+                            use firmware_pcat::config::BootDeviceStatus;
+                            use guest_emulation_transport::api::platform_settings::PcatBootDevice;
 
-            let halt_vps = halt_vps.clone();
+                            let kind = match e {
+                                PcatBootDevice::Floppy => BootDevice::Floppy,
+                                PcatBootDevice::Optical => BootDevice::Optical,
+                                PcatBootDevice::HardDrive => BootDevice::HardDrive,
+                                PcatBootDevice::Network => BootDevice::Network,
+                            };
 
-            deps_hyperv_firmware_pcat = Some(dev::HyperVFirmwarePcat {
-                config,
-                logger: Box::new(crate::emuplat::firmware::UnderhillLogger {
-                    get: get_client.clone(),
-                }),
-                generation_id_recv: get_client
-                    .take_generation_id_recv()
-                    .await
-                    .context("failed to get generation ID channel")?,
-                rom: None,
-                replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
-            })
+                            // TODO: Correctly mark if devices are attached or not.
+                            BootDeviceStatus {
+                                kind,
+                                attached: true,
+                            }
+                        }),
+                        num_lock_enabled: dps.general.num_lock_enabled,
+                        smbios: firmware_pcat::config::SmbiosConstants {
+                            bios_guid: dps.general.bios_guid,
+                            // Truncate rather than fail: the serial comes from the host
+                            // via DPS, and the PCAT config port caps each string at a
+                            // fixed length regardless.
+                            system_serial_number: {
+                                let mut serial = dps.smbios.serial_number.clone().into_bytes();
+                                if serial.len() > firmware_pcat::config::SMBIOS_STRING_MAX_LEN {
+                                    tracing::warn!(
+                                        len = serial.len(),
+                                        max = firmware_pcat::config::SMBIOS_STRING_MAX_LEN,
+                                        "SMBIOS system serial number too long; truncating for PCAT"
+                                    );
+                                    serial.truncate(firmware_pcat::config::SMBIOS_STRING_MAX_LEN);
+                                }
+                                serial
+                            },
+                            base_board_serial_number: dps
+                                .smbios
+                                .base_board_serial_number
+                                .clone()
+                                .into_bytes(),
+                            chassis_serial_number: dps
+                                .smbios
+                                .chassis_serial_number
+                                .clone()
+                                .into_bytes(),
+                            chassis_asset_tag: dps.smbios.chassis_asset_tag.clone().into_bytes(),
+                            bios_lock_string: dps.smbios.bios_lock_string.clone().into_bytes(),
+                            processor_manufacturer: dps.smbios.processor_manufacturer.clone(),
+                            processor_version: dps.smbios.processor_version.clone(),
+                            cpu_info_bundle: Some(
+                                firmware_pcat::config::SmbiosProcessorInfoBundle {
+                                    processor_family: dps.smbios.processor_family2 as u8,
+                                    voltage: dps.smbios.voltage,
+                                    external_clock: dps.smbios.external_clock,
+                                    max_speed: dps.smbios.max_speed,
+                                    current_speed: dps.smbios.current_speed,
+                                },
+                            ),
+                        },
+                    };
+
+                    let halt_vps = halt_vps.clone();
+
+                    Some(dev::HyperVFirmwarePcat {
+                        config,
+                        logger: Box::new(crate::emuplat::firmware::UnderhillLogger {
+                            get: get_client.clone(),
+                        }),
+                        generation_id_recv: get_client
+                            .take_generation_id_recv()
+                            .await
+                            .context("failed to get generation ID channel")?,
+                        rom: None,
+                        replay_mtrrs: Box::new(move || halt_vps.replay_mtrrs()),
+                    })
+                }}
+                _ => panic!("Not supported"),
+            }
         }
         FirmwareType::Uefi | FirmwareType::None => {
             // UEFI is configured via `chipset.with_uefi(...)` above
+            None
         }
     };
 
@@ -3071,15 +3153,14 @@ async fn new_underhill_vm(
         .with_winbond_super_io_and_floppy_stub
         .then_some(dev::WinbondSuperIoAndFloppyStubDeps);
 
-    #[cfg(not(guest_arch = "x86_64"))]
-    let deps_piix4_cmos_rtc = None;
-
-    #[cfg(guest_arch = "x86_64")]
-    let deps_piix4_cmos_rtc = chipset.with_piix4_cmos_rtc.then(|| dev::Piix4CmosRtcDeps {
-        time_source: PlatformResource.into_resource(),
-        initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
-        enlightened_interrupts: true, // As advertised by the PCAT BIOS.
-    });
+    let deps_piix4_cmos_rtc = cfg_select! {
+        guest_arch = "x86_64" => chipset.with_piix4_cmos_rtc.then(|| dev::Piix4CmosRtcDeps {
+            time_source: PlatformResource.into_resource(),
+            initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
+            enlightened_interrupts: true, // As advertised by the PCAT BIOS.
+        }),
+        _ => None,
+    };
 
     let deps_hyperv_ide = if chipset.with_hyperv_ide {
         let [primary_channel_drives, secondary_channel_drives] = ide_drives;
@@ -3221,10 +3302,10 @@ async fn new_underhill_vm(
             }
         };
 
-        let register_layout = if cfg!(guest_arch = "x86_64") {
-            TpmRegisterLayout::IoPort
-        } else {
-            TpmRegisterLayout::Mmio
+        let register_layout = cfg_select! {
+            guest_arch = "x86_64" => TpmRegisterLayout::IoPort,
+            guest_arch = "aarch64" => TpmRegisterLayout::Mmio,
+            _ => compile_error!("unsupported guest architecture"),
         };
 
         chipset_devices.push(ChipsetDeviceHandle {
@@ -3401,19 +3482,21 @@ async fn new_underhill_vm(
         tracing::info!(CVM_ALLOWED, enable_mnf, "Underhill MNF enabled?");
 
         // Enable the GPA pinning feature only if the hypercalls are available.
-        #[cfg(not(guest_arch = "x86_64"))]
-        let support_gpa_pinning = false;
-        #[cfg(guest_arch = "x86_64")]
-        let support_gpa_pinning = {
-            let result =
-                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
-            hvdef::HvEnlightenmentInformation::from(
-                result.eax as u128
-                    | (result.ebx as u128) << 32
-                    | (result.ecx as u128) << 64
-                    | (result.edx as u128) << 96,
-            )
-            .use_gpa_pinning_hypercall()
+        let support_gpa_pinning = cfg_select! {
+            guest_arch = "x86_64" => {{
+                let result = safe_intrinsics::cpuid(
+                    hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                    0,
+                );
+                hvdef::HvEnlightenmentInformation::from(
+                    result.eax as u128
+                        | (result.ebx as u128) << 32
+                        | (result.ecx as u128) << 64
+                        | (result.edx as u128) << 96,
+                )
+                .use_gpa_pinning_hypercall()
+            }}
+            _ => false,
         };
 
         let max_version = env_cfg
@@ -3521,7 +3604,7 @@ async fn new_underhill_vm(
                     dma_manager.new_client(DmaClientParameters {
                         device_name: "vpci-relay".into(),
                         lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                        allocation_visibility: if hardware_isolated {
+                        allocation_visibility: if isolation.is_isolated() {
                             AllocationVisibility::Shared
                         } else {
                             AllocationVisibility::Private
@@ -3548,43 +3631,20 @@ async fn new_underhill_vm(
                     },
                 );
 
-                // Allow NVMe devices.
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: None,
-                    device_id: None,
-                    revision_id: None,
-                    prog_if: Some(
-                        ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
-                    ),
-                    sub_class: Some(Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY),
-                    base_class: Some(ClassCode::MASS_STORAGE_CONTROLLER),
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
-
-                // Allow MANA devices.
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(pci_core::microsoft::VENDOR_ID),
-                    device_id: Some(pci_core::microsoft::DeviceId::GDMA.0),
-                    revision_id: None,
-                    prog_if: Some(ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA),
-                    sub_class: Some(Subclass::NETWORK_CONTROLLER_ETHERNET),
-                    base_class: Some(ClassCode::NETWORK_CONTROLLER),
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
-
-                // Allow Azi HSM devices.
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(pci_core::microsoft::VENDOR_ID), // Microsoft vendor ID
-                    device_id: Some(pci_core::microsoft::DeviceId::AZIHSM.0), // Azi HSM device ID
-                    revision_id: None,
-                    prog_if: Some(ProgrammingInterface::NONE),
-                    sub_class: Some(Subclass::NONE),
-                    base_class: Some(ClassCode::ENCRYPTION_CONTROLLER),
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
+                for d in measured_product_policy.allowed_pci_devices() {
+                    let device = AllowedDevice {
+                        vendor_id: d.vendor_id,
+                        device_id: d.device_id,
+                        revision_id: d.revision_id,
+                        prog_if: d.prog_if.map(ProgrammingInterface),
+                        sub_class: d.sub_class.map(Subclass),
+                        base_class: d.base_class.map(ClassCode),
+                        sub_vendor_id: None,
+                        sub_system_id: None,
+                    };
+                    tracing::info!(CVM_ALLOWED, ?device, "allowing VPCI device");
+                    relay.add_allowed_device(device);
+                }
 
                 vpci_relay = Some(relay);
             }
@@ -3816,7 +3876,11 @@ async fn new_underhill_vm(
                 .new_client(DmaClientParameters {
                     device_name: "shutdown-relay".into(),
                     lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                    allocation_visibility: AllocationVisibility::Private,
+                    allocation_visibility: if isolation.is_isolated() {
+                        AllocationVisibility::Shared
+                    } else {
+                        AllocationVisibility::Private
+                    },
                     persistent_allocations: false,
                 })
                 .context("shutdown relay dma client")?,
@@ -4489,9 +4553,10 @@ async fn load_firmware(
     )
     .context("failed to load firmware")?;
 
+    let crate::loader::VpContext::Vbs(registers) = vtl0_vp_context;
     #[cfg(guest_arch = "x86_64")]
     let registers = {
-        let crate::loader::VpContext::Vbs(mut registers) = vtl0_vp_context;
+        let mut registers = registers;
         registers.extend(loader::common::compute_variable_mtrrs(
             mem_layout,
             partition.caps().physical_address_width,
@@ -4500,9 +4565,6 @@ async fn load_firmware(
         ));
         registers
     };
-    #[cfg(guest_arch = "aarch64")]
-    let crate::loader::VpContext::Vbs(registers) = vtl0_vp_context;
-
     let registers = initial_regs(&registers, caps, &processor_topology.vp_arch(VpIndex::BSP));
     partition_unit
         .set_initial_regs(Vtl::Vtl0, registers)
@@ -4556,4 +4618,82 @@ impl chipset_device_worker::RemoteDynamicResolvers for OpenHclRemoteDynamicResol
 
 mesh_worker::register_workers! {
     chipset_device_worker::worker::RemoteChipsetDeviceWorker<OpenHclRemoteDynamicResolvers>
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VpciRelayInputs;
+    use super::resolve_vpci_relay;
+    use product_policy::AllowedPciDevice;
+    use product_policy::VpciRelayMode;
+    use test_with_tracing::test;
+    use virt::IsolationType;
+
+    /// Resolves the VPCI relay for an SNP guest that has everything the relay
+    /// needs and a policy that turns it on by default, after `change`.
+    fn resolve(
+        env_override: Option<bool>,
+        change: fn(&mut VpciRelayInputs<'_>),
+    ) -> anyhow::Result<bool> {
+        let any = [AllowedPciDevice::default()];
+        let mut inputs = VpciRelayInputs {
+            env_override,
+            mode: VpciRelayMode::DefaultOn,
+            isolation: IsolationType::Snp,
+            vmbus_relay: true,
+            mmio_hypercalls: true,
+            allowed_devices: &any,
+        };
+        change(&mut inputs);
+        resolve_vpci_relay(inputs)
+    }
+
+    fn vbs_without_mmio_hypercalls(inputs: &mut VpciRelayInputs<'_>) {
+        inputs.isolation = IsolationType::Vbs;
+        inputs.mmio_hypercalls = false;
+    }
+
+    /// By default the relay runs when the policy turns it on and the guest has
+    /// everything it needs, and is otherwise disabled.
+    #[test]
+    fn vpci_relay_default() {
+        assert!(resolve(None, |_| {}).unwrap());
+        assert!(resolve(None, |i| i.isolation = IsolationType::Vbs).unwrap());
+        assert!(resolve(None, |i| i.isolation = IsolationType::None).unwrap());
+        // Only VBS needs MMIO hypercalls.
+        assert!(resolve(None, |i| i.mmio_hypercalls = false).unwrap());
+        assert!(!resolve(None, vbs_without_mmio_hypercalls).unwrap());
+        assert!(!resolve(None, |i| i.mode = VpciRelayMode::DefaultOff).unwrap());
+        assert!(!resolve(None, |i| i.vmbus_relay = false).unwrap());
+        assert!(!resolve(None, |i| i.allowed_devices = &[]).unwrap());
+    }
+
+    /// The environment variable overrides the policy's default. Enabling the
+    /// relay with it turns each missing requirement into an error instead of a
+    /// warning.
+    #[test]
+    fn vpci_relay_env_override() {
+        assert!(!resolve(Some(false), |_| {}).unwrap());
+        assert!(resolve(Some(true), |i| i.mode = VpciRelayMode::DefaultOff).unwrap());
+        assert!(resolve(Some(true), vbs_without_mmio_hypercalls).is_err());
+        assert!(resolve(Some(true), |i| i.vmbus_relay = false).is_err());
+        assert!(resolve(Some(true), |i| i.allowed_devices = &[]).is_err());
+    }
+
+    /// A policy that requires the relay ignores the environment variable, and
+    /// each missing requirement is an error.
+    #[test]
+    fn vpci_relay_must_be_on() {
+        fn must_be_on(inputs: &mut VpciRelayInputs<'_>) {
+            inputs.mode = VpciRelayMode::MustBeOn;
+        }
+        assert!(resolve(Some(false), must_be_on).unwrap());
+        assert!(
+            resolve(None, |i| {
+                must_be_on(i);
+                i.vmbus_relay = false;
+            })
+            .is_err()
+        );
+    }
 }

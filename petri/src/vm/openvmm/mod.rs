@@ -128,6 +128,17 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     const SUPPORTS_FILE_SHARING: bool = cfg!(any(windows, target_os = "linux"));
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
+        if matches!(
+            firmware,
+            Firmware::Uefi {
+                guest: crate::UefiGuest::Mshv(_),
+                ..
+            }
+        ) {
+            return cfg!(any(windows, target_os = "linux"))
+                && arch == MachineArch::X86_64
+                && MachineArch::host() == MachineArch::X86_64;
+        }
         !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))
     }
 
@@ -197,6 +208,8 @@ pub struct OpenVmmRelaunchConfig {
     builder: crate::PetriVmBuilder<OpenVmmPetriBackend>,
     /// Holds the disk write files shared by all launched workers.
     _diff_dir: tempfile::TempDir,
+    /// Bounds the entire recipe, including time between worker launches.
+    _watchdog_task: Option<Task<()>>,
 }
 
 impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
@@ -254,9 +267,12 @@ impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
             }
         }
 
+        let watchdog_task =
+            Self::start_watchdog_timer(&builder.resources.driver, builder.watchdog_timeout);
         Ok(OpenVmmRelaunchConfig {
             builder,
             _diff_dir: diff_dir,
+            _watchdog_task: watchdog_task,
         })
     }
 }

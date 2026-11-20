@@ -17,6 +17,8 @@
 
 #![forbid(unsafe_code)]
 
+use anyhow::Context;
+use mesh::rpc::RpcSend;
 use pal_async::DefaultPool;
 use petri::ArtifactResolver;
 use petri::BootImageConfig;
@@ -323,10 +325,10 @@ async fn run_no_vmbus(
     Ok(())
 }
 
-/// Boot a prep VM with a target disk attached as a second SCSI controller.
+/// Boot the source Windows image, then attach the target on a second SCSI controller.
 ///
-/// The target disk is exposed to the guest as drive E:. Returns the running
-/// VM and pipette agent.
+/// This prevents firmware from booting the target and lets Windows mount the
+/// pipette disk at D: before the target arrives at E:.
 async fn boot_vm_with_target_disk(
     driver: &pal_async::DefaultDriver,
     name: &str,
@@ -334,7 +336,8 @@ async fn boot_vm_with_target_disk(
     artifacts: PetriVmArtifacts<OpenVmmPetriBackend>,
     target_disk: vm_resource::Resource<vm_resource::kind::DiskHandleKind>,
 ) -> anyhow::Result<(petri::PetriVm<OpenVmmPetriBackend>, PipetteClient)> {
-    PetriVmBuilder::new(
+    let (requests, recv) = mesh::channel();
+    let (vm, agent) = PetriVmBuilder::new(
         PetriTestParams {
             test_name: name,
             log_source: logger,
@@ -353,20 +356,8 @@ async fn boot_vm_with_target_disk(
                     instance_id: guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48aff"),
                     max_sub_channel_count: 1,
                     io_queue_depth: None,
-                    devices: vec![storvsp_resources::ScsiDeviceAndPath {
-                        path: storvsp_resources::ScsiPath {
-                            path: 0,
-                            target: 0,
-                            lun: 0,
-                        },
-                        device: scsidisk_resources::SimpleScsiDiskHandle {
-                            read_only: false,
-                            parameters: Default::default(),
-                            disk: target_disk,
-                        }
-                        .into_resource(),
-                    }],
-                    requests: None,
+                    devices: Vec::new(),
+                    requests: Some(recv),
                     poll_mode_queue_depth: None,
                 }
                 .into_resource(),
@@ -374,7 +365,52 @@ async fn boot_vm_with_target_disk(
         })
     })
     .run()
-    .await
+    .await?;
+    requests
+        .call_failable(
+            storvsp_resources::ScsiControllerRequest::AddDevice,
+            storvsp_resources::ScsiDeviceAndPath {
+                path: storvsp_resources::ScsiPath {
+                    path: 0,
+                    target: 0,
+                    lun: 0,
+                },
+                device: scsidisk_resources::SimpleScsiDiskHandle {
+                    read_only: false,
+                    parameters: Default::default(),
+                    disk: target_disk,
+                }
+                .into_resource(),
+            },
+        )
+        .await
+        .context("failed to attach the offline target disk")?;
+    tracing::info!("Attached target disk after the source Windows image booted");
+
+    let shell = agent.windows_shell();
+    for _ in 0..30 {
+        let output = cmd!(shell, "cmd.exe")
+            .args([
+                "/d",
+                "/c",
+                r"if exist E:\Windows\System32\config\SYSTEM (exit /b 0) else (exit /b 1)",
+            ])
+            .ignore_status()
+            .output()
+            .await?;
+        if output.status.success() {
+            return Ok((vm, agent));
+        }
+        anyhow::ensure!(
+            output.status.code() == Some(1),
+            "target-volume check failed: {}",
+            output.status
+        );
+        pal_async::timer::PolledTimer::new(driver)
+            .sleep(std::time::Duration::from_secs(1))
+            .await;
+    }
+    anyhow::bail!("target Windows volume did not appear at E: within 30 seconds")
 }
 
 /// Copy the IMC hive's pipette service registration into the target disk's

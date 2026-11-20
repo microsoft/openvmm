@@ -53,6 +53,9 @@ impl EmulatorSupport for MockSupport {
     fn cr0(&mut self) -> u64 {
         self.state.cr0
     }
+    fn cr4(&mut self) -> u64 {
+        self.state.cr4
+    }
     fn rflags(&mut self) -> RFlags {
         self.state.rflags
     }

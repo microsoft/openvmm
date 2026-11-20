@@ -251,7 +251,9 @@ impl<M: RingMem + Unpin> TimesyncChannel<M> {
                     *state = ReadyState::WaitForResponse;
                 }
                 ReadyState::WaitForResponse => {
-                    self.pipe.read_response().await?;
+                    if self.pipe.read_response(versions).await?.is_none() {
+                        return Ok(());
+                    }
                     // Send another sample in a few seconds.
                     *state = ReadyState::SleepUntilNextSample {
                         next_sample: Instant::now() + SAMPLE_PERIOD,
