@@ -142,7 +142,6 @@ impl HostExt for FlowArch {
             target_arch = "x86_64" => Self::X86_64,
             // xtask-fmt allow-target-arch oneoff-flowey
             target_arch = "aarch64" => Self::Aarch64,
-            _ => compile_error!("unsupported target architecture"),
         }
     }
 }

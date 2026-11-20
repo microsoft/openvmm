@@ -602,10 +602,10 @@ impl SnpBackedShared {
             SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
         tracing::info!(CVM_ALLOWED, ?sev_status, "SEV status");
 
-        #[cfg(feature = "disable_secure_avic")]
-        let secure_avic = false;
-        #[cfg(not(feature = "disable_secure_avic"))]
-        let secure_avic = sev_status.secure_avic();
+        let secure_avic = cfg_select! {
+            feature = "disable_secure_avic" => false,
+            _ => sev_status.secure_avic(),
+        };
         tracing::info!(CVM_ALLOWED, ?secure_avic, "Secure AVIC status");
 
         // Configure timer interface for lower VTLs.

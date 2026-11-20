@@ -5,13 +5,16 @@ use mesh::payload::DefaultEncoding;
 use mesh::payload::encoding::ResourceField;
 use std::sync::Arc;
 
-/// A section handle.
-#[cfg(windows)]
-type OwnedType = std::os::windows::io::OwnedHandle;
-
-/// A file descriptor.
-#[cfg(unix)]
-type OwnedType = std::os::fd::OwnedFd;
+cfg_select! {
+    windows => {
+        /// A section handle.
+        type OwnedType = std::os::windows::io::OwnedHandle;
+    }
+    unix => {
+        /// A file descriptor.
+        type OwnedType = std::os::fd::OwnedFd;
+    }
+}
 
 /// A handle/fd to an OS object that can be mapped into memory.
 ///

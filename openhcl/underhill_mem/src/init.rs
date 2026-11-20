@@ -557,24 +557,27 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         let vtl1_mapping = if params.maximum_vtl >= Vtl::Vtl1 {
             if params.vtl0_alias_map_bit.is_none() {
-                if cfg!(guest_arch = "x86_64") {
-                    // Guest VSM cannot be exposed to the guest unless the
-                    // alias map is available. Otherwise, Underhill cannot
-                    // correctly check for VTL0 access protections. Ideally, UH
-                    // would hide Guest VSM from the guest if the alias map is
-                    // not available, but the guest secure kernel checks the
-                    // access_vsm permission to determine if Guest VSM is
-                    // supported, and there is no mechanism for UH to hide that
-                    // from the guest. Thus, it is not safe to proceed.
-                    anyhow::bail!("cannot safely support VTL 1 without using the alias map");
-                } else {
-                    // On ARM, the alias map is not exposed: see
-                    // underhill_core::init::vtl0_alias_map_bit.
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        "cannot safely support VTL 1 without using the alias map; Guest VSM not supported"
-                    );
-                    None
+                cfg_select! {
+                    guest_arch = "x86_64" => {
+                        // Guest VSM cannot be exposed to the guest unless the
+                        // alias map is available. Otherwise, Underhill cannot
+                        // correctly check for VTL0 access protections. Ideally, UH
+                        // would hide Guest VSM from the guest if the alias map is
+                        // not available, but the guest secure kernel checks the
+                        // access_vsm permission to determine if Guest VSM is
+                        // supported, and there is no mechanism for UH to hide that
+                        // from the guest. Thus, it is not safe to proceed.
+                        anyhow::bail!("cannot safely support VTL 1 without using the alias map");
+                    }
+                    guest_arch = "aarch64" => {
+                        // On ARM, the alias map is not exposed: see
+                        // underhill_core::init::vtl0_alias_map_bit.
+                        tracing::warn!(
+                            CVM_ALLOWED,
+                            "cannot safely support VTL 1 without using the alias map; Guest VSM not supported"
+                        );
+                        None
+                    }
                 }
             } else {
                 tracing::debug!("Creating VTL 1 memory map");

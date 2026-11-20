@@ -81,10 +81,9 @@ const USE_SEQPACKET: bool = cfg!(target_os = "linux");
 ///
 /// These values were chosen arbitrarily and have not been tested for
 /// performance.
-const MAX_PACKET_SIZE: usize = if cfg!(target_os = "linux") {
-    0x4000
-} else {
-    0x40000
+const MAX_PACKET_SIZE: usize = cfg_select! {
+    target_os = "linux" => 0x4000,
+    _ => 0x40000,
 };
 
 const MAX_SMALL_EVENT_SIZE: usize = MAX_PACKET_SIZE - size_of::<protocol::PacketHeader>();

@@ -280,7 +280,6 @@ where
                     system_registers: Some(system_registers),
                 }))
             }}
-            _ => compile_error!("unsupported guest architecture"),
         }
     }
 }

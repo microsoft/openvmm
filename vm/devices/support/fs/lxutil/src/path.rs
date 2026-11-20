@@ -1,10 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#[cfg(unix)]
-use super::unix as sys;
-#[cfg(windows)]
-use super::windows as sys;
+cfg_select! {
+    unix => {
+        use super::unix as sys;
+    }
+    windows => {
+        use super::windows as sys;
+    }
+}
+
 use std::borrow::Cow;
 use std::path::Component;
 use std::path::Path;

@@ -10,9 +10,6 @@ cfg_select! {
     guest_arch = "x86_64" => {
         pub use x86_initial_regs as initial_regs;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 
 use loader::importer::Aarch64Register;

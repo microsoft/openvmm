@@ -7,6 +7,15 @@
 #![forbid(unsafe_code)]
 #![expect(missing_docs)]
 
+cfg_select! {
+    target_os = "linux" => {
+        use pal::unix::affinity::get_cpu_number;
+    }
+    windows => {
+        use pal::windows::affinity::get_cpu_number;
+    }
+}
+
 use async_trait::async_trait;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -16,10 +25,6 @@ use inspect::Inspect;
 use nvme_common::from_nvme_reservation_report;
 use nvme_spec::Status;
 use nvme_spec::nvm;
-#[cfg(target_os = "linux")]
-use pal::unix::affinity::get_cpu_number;
-#[cfg(windows)]
-use pal::windows::affinity::get_cpu_number;
 use std::io;
 
 #[derive(Debug, Inspect)]

@@ -66,14 +66,12 @@ fn setup_dll_search_path_inner() -> bool {
         return false;
     }
 
-    // xtask-fmt allow-target-arch sys-crate
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    // xtask-fmt allow-target-arch sys-crate
-    } else if cfg!(target_arch = "x86_64") {
-        "x64"
-    } else {
-        return false;
+    let arch = cfg_select! {
+        // xtask-fmt allow-target-arch sys-crate
+        target_arch = "aarch64" => "arm64",
+        // xtask-fmt allow-target-arch sys-crate
+        target_arch = "x86_64" => "x64",
+        _ => return false,
     };
 
     let mut versions: Vec<PathBuf> = std::fs::read_dir(&kits_root)

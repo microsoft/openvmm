@@ -69,23 +69,23 @@ async fn relay_stdio(
 /// by `path`.
 pub fn relay_console(path: &Path, console_title: &str) -> anyhow::Result<()> {
     block_with_io(async |driver| {
-        #[cfg(unix)]
-        let (read, write) = {
-            let pipe = pal_async::socket::PolledSocket::connect_unix(&driver, path)
-                .await
-                .context("failed to connect to console socket")?;
-            pipe.split()
-        };
-        #[cfg(windows)]
-        let (read, write) = {
-            let pipe = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(path)
-                .context("failed to connect to console pipe")?;
-            let pipe = pal_async::pipe::PolledPipe::new(&driver, pipe)
-                .context("failed to create polled pipe")?;
-            AsyncReadExt::split(pipe)
+        let (read, write) = cfg_select! {
+            unix => {{
+                let pipe = pal_async::socket::PolledSocket::connect_unix(&driver, path)
+                    .await
+                    .context("failed to connect to console socket")?;
+                pipe.split()
+            }}
+            windows => {{
+                let pipe = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path)
+                    .context("failed to connect to console pipe")?;
+                let pipe = pal_async::pipe::PolledPipe::new(&driver, pipe)
+                    .context("failed to create polled pipe")?;
+                AsyncReadExt::split(pipe)
+            }}
         };
 
         relay_stdio(read, write, console_title).await
@@ -215,10 +215,10 @@ fn add_argument_separator(command: &mut Command, app: &Path) {
 
 /// Computes a random console path (pipe path for Windows, Unix socket path for Unix).
 pub fn random_console_path() -> PathBuf {
-    #[cfg(windows)]
-    let mut path = PathBuf::from("\\\\.\\pipe");
-    #[cfg(unix)]
-    let mut path = std::env::temp_dir();
+    let mut path = cfg_select! {
+        windows => PathBuf::from("\\\\.\\pipe"),
+        unix => std::env::temp_dir(),
+    };
 
     let mut random = [0; 16];
     getrandom::fill(&mut random).expect("rng failure");
@@ -232,10 +232,10 @@ pub fn random_console_path() -> PathBuf {
 /// To write to the console, use methods from [`AsyncWrite`]. To read from the
 /// console, use methods from [`AsyncRead`].
 pub struct Console {
-    #[cfg(windows)]
-    sys: windows::WindowsNamedPipeConsole,
-    #[cfg(unix)]
-    sys: unix::UnixSocketConsole,
+    sys: cfg_select! {
+        windows => windows::WindowsNamedPipeConsole,
+        unix => unix::UnixSocketConsole,
+    },
 }
 
 impl Console {
@@ -261,12 +261,12 @@ impl Console {
     }
 
     fn new_from_path(driver: impl Driver, path: &Path) -> anyhow::Result<Self> {
-        #[cfg(windows)]
-        let sys = windows::WindowsNamedPipeConsole::new(Box::new(driver), path)
-            .context("failed to create console pipe")?;
-        #[cfg(unix)]
-        let sys = unix::UnixSocketConsole::new(Box::new(driver), path)
-            .context("failed to create console socket")?;
+        let sys = cfg_select! {
+            windows => windows::WindowsNamedPipeConsole::new(Box::new(driver), path)
+                .context("failed to create console pipe")?,
+            unix => unix::UnixSocketConsole::new(Box::new(driver), path)
+                .context("failed to create console socket")?,
+        };
         Ok(Console { sys })
     }
 

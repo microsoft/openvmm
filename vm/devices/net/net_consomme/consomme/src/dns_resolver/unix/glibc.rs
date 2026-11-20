@@ -22,10 +22,10 @@ const RES_USEVC: c_ulong = 0x00000040;
 
 /// Size of the `res_state` structure for different platforms.
 /// These values were derived from including resolv.h and using sizeof(struct __res_state).
-#[cfg(target_os = "macos")]
-const RES_STATE_SIZE: usize = 552;
-#[cfg(target_os = "linux")]
-const RES_STATE_SIZE: usize = 568;
+const RES_STATE_SIZE: usize = cfg_select! {
+    target_os = "macos" => 552,
+    target_os = "linux" => 568,
+};
 
 /// The prefix of the glibc `struct __res_state` that we need to access.
 /// This matches the layout defined in glibc resolv/bits/types/res_state.h:

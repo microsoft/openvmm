@@ -8,7 +8,6 @@ mod cpuid;
 mod generic;
 pub mod io;
 pub mod irqcon;
-pub use vmcore::irqfd;
 pub mod state;
 pub mod synic;
 pub mod x86;
@@ -17,6 +16,7 @@ pub use arch::*;
 pub use cpuid::*;
 pub use generic::*;
 pub use vm_topology::processor::VpInfo;
+pub use vmcore::irqfd;
 
 mod arch {
     cfg_select! {
@@ -33,9 +33,6 @@ mod arch {
             pub use crate::aarch64::Aarch64PartitionCapabilitiesError as PartitionCapabilitiesError;
             pub use crate::aarch64::vm;
             pub use crate::aarch64::vp;
-        }
-        _ => {
-            compile_error!("unsupported guest architecture");
         }
     }
 }

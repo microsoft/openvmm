@@ -275,7 +275,10 @@ pub fn write_dt(
 
     // For ARM v8, always specify two register cells, which can accommodate
     // higher number of VPs.
-    let address_cells = if cfg!(target_arch = "aarch64") { 2 } else { 1 };
+    let address_cells = cfg_select! {
+        target_arch = "x86_64" => 1,
+        target_arch = "aarch64" => 2,
+    };
     let mut cpu_builder = root_builder
         .start_node("cpus")?
         .add_u32(p_address_cells, address_cells)?
