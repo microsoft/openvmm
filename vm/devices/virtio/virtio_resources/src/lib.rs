@@ -51,11 +51,23 @@ pub mod fs {
         pub fs: VirtioFsBackend,
     }
 
+    #[derive(MeshPayload, Default)]
+    pub struct VirtioFsWindowsOptions {
+        /// Access token to impersonate for host file system access. `None`
+        /// uses the VMM process token.
+        #[cfg(windows)]
+        pub user_token: Option<std::os::windows::io::OwnedHandle>,
+        /// Expose shared-memory section objects instead of host files. Only
+        /// supported on Windows.
+        pub shared_mem: bool,
+    }
+
     #[derive(MeshPayload)]
     pub enum VirtioFsBackend {
         HostFs {
             root_path: String,
             mount_options: String,
+            windows_options: Option<VirtioFsWindowsOptions>,
         },
         SectionFs {
             root_path: String,

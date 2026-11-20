@@ -146,11 +146,13 @@ pub(super) struct MemoryLayoutInput<'a> {
     pub physical_address_size: u8,
 }
 
-/// Architectural reserved zone for x86_64: LAPIC, IOAPIC, battery, TPM.
-const ARCH_RESERVED_X86_64: MemoryRange = MemoryRange::new(0xFE00_0000..0x1_0000_0000);
-
-/// Architectural reserved zone for aarch64: GIC, PL011, battery.
-const ARCH_RESERVED_AARCH64: MemoryRange = MemoryRange::new(0xEF00_0000..0x1_0000_0000);
+/// Architectural reserved zone: LAPIC, IOAPIC, battery, TPM on x86_64;
+/// GIC, PL011, battery on aarch64.
+const ARCH_RESERVED: MemoryRange = cfg_select! {
+    guest_arch = "x86_64" => MemoryRange::new(0xFE00_0000..0x1_0000_0000),
+    guest_arch = "aarch64" => MemoryRange::new(0xEF00_0000..0x1_0000_0000),
+    _ => compile_error!("unsupported guest architecture"),
+};
 
 pub(super) fn resolve_memory_layout(
     input: MemoryLayoutInput<'_>,
@@ -184,15 +186,10 @@ pub(super) fn resolve_memory_layout(
         builder.reserve("low-ram-gap", MemoryRange::new(0..input.ram_start_address));
     }
 
-    let arch_reserved = if cfg!(guest_arch = "x86_64") {
-        ARCH_RESERVED_X86_64
-    } else {
-        ARCH_RESERVED_AARCH64
-    };
     let four_gb = 4 * GB;
     let low_mmio_size = u64::from(input.layout.chipset_low_mmio_size)
         .next_multiple_of(0x1000)
-        .max(arch_reserved.len());
+        .max(ARCH_RESERVED.len());
     let chipset_low_mmio = MemoryRange::new(four_gb - low_mmio_size..four_gb);
     builder.fixed("chipset-low-mmio", chipset_low_mmio);
 
@@ -618,14 +615,11 @@ mod tests {
 
     const MB: u64 = 1024 * 1024;
     // Match the production defaults from `vm_manifest_builder`.
-    #[cfg(guest_arch = "x86_64")]
-    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = 128 * 1024 * 1024;
-    #[cfg(guest_arch = "aarch64")]
-    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = 512 * 1024 * 1024;
-    #[cfg(guest_arch = "x86_64")]
-    const ARCH_RESERVED: MemoryRange = ARCH_RESERVED_X86_64;
-    #[cfg(guest_arch = "aarch64")]
-    const ARCH_RESERVED: MemoryRange = ARCH_RESERVED_AARCH64;
+    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = cfg_select! {
+        guest_arch = "x86_64" => 128 * 1024 * 1024,
+        guest_arch = "aarch64" => 512 * 1024 * 1024,
+        _ => compile_error!("unsupported guest architecture"),
+    };
     const DEFAULT_CHIPSET_HIGH_MMIO_SIZE: u64 = 512 * 1024 * 1024;
     const DEFAULT_VTL2_CHIPSET_MMIO_SIZE: u64 = GB;
 

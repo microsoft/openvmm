@@ -17,11 +17,13 @@ use pal::windows::pipe::PipeMode;
 use pal::windows::pipe::new_named_pipe;
 use pal_async_test::async_test;
 use std::fs::OpenOptions;
+use std::io;
 use std::io::Read;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use test_with_tracing::test;
+use windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED;
 use windows_sys::Win32::Foundation::GENERIC_READ;
 use windows_sys::Win32::Foundation::GENERIC_WRITE;
 
@@ -155,6 +157,44 @@ async fn client_read_completes_when_server_disconnects(driver: DefaultDriver) {
     assert!(futures::poll!(&mut read).is_pending());
     server.disconnect_pipe().unwrap();
     assert_eq!(read.await.unwrap(), 0);
+}
+
+#[async_test]
+async fn disconnected_pipe_event_query_reports_eof(driver: DefaultDriver) {
+    let mut id = [0; 16];
+    getrandom::fill(&mut id).unwrap();
+    let path = format!(r"\\.\pipe\{:0x}", u128::from_ne_bytes(id));
+    let server = new_named_pipe(
+        &path,
+        GENERIC_READ | GENERIC_WRITE,
+        Disposition::Create,
+        PipeMode::Byte,
+    )
+    .unwrap();
+    let client = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let mut connected = PolledPipe::new(&driver, client).unwrap();
+    assert!(
+        poll_fn(|cx| connected.poll_closing(cx))
+            .now_or_never()
+            .is_none()
+    );
+    server.disconnect_pipe().unwrap();
+
+    // Force the query-error path rather than relying on disconnect event timing.
+    connected
+        .update_events(Err(io::Error::from_raw_os_error(
+            ERROR_PIPE_NOT_CONNECTED as i32,
+        )))
+        .unwrap();
+    poll_fn(|cx| connected.poll_closing(cx))
+        .now_or_never()
+        .expect("disconnected pipe should be closing")
+        .unwrap();
+    assert_eq!(connected.read(&mut [0]).await.unwrap(), 0);
 }
 
 #[async_test]

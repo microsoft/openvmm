@@ -3,10 +3,17 @@
 
 //! Logic for generating the initial register set for a VM.
 
-#[cfg(guest_arch = "aarch64")]
-pub use aarch64_initial_regs as initial_regs;
-#[cfg(guest_arch = "x86_64")]
-pub use x86_initial_regs as initial_regs;
+cfg_select! {
+    guest_arch = "aarch64" => {
+        pub use aarch64_initial_regs as initial_regs;
+    }
+    guest_arch = "x86_64" => {
+        pub use x86_initial_regs as initial_regs;
+    }
+    _ => {
+        compile_error!("unsupported guest architecture");
+    }
+}
 
 use loader::importer::Aarch64Register;
 use loader::importer::X86Register;

@@ -81,27 +81,28 @@ fn new_runner() -> (PartitionUnitRunner, Arc<Mutex<Clock>>, Arc<Halt>) {
     }));
     let (halt, halt_recv) = Halt::new();
     let halt = Arc::new(halt);
-    #[cfg(guest_arch = "x86_64")]
-    let topology = TopologyBuilder::new_x86().build(1).unwrap();
-    #[cfg(guest_arch = "aarch64")]
-    let topology = {
-        use vm_topology::processor::aarch64::Aarch64PlatformConfig;
-        use vm_topology::processor::aarch64::GicMsiController;
-        use vm_topology::processor::aarch64::GicVersion;
+    let topology = cfg_select! {
+        guest_arch = "x86_64" => TopologyBuilder::new_x86(),
+        guest_arch = "aarch64" => {{
+            use vm_topology::processor::aarch64::Aarch64PlatformConfig;
+            use vm_topology::processor::aarch64::GicMsiController;
+            use vm_topology::processor::aarch64::GicVersion;
 
-        TopologyBuilder::new_aarch64(Aarch64PlatformConfig {
-            gic_distributor_base: 0x10000,
-            gic_version: GicVersion::V3 {
-                redistributors_base: 0x20000,
-            },
-            gic_msi: GicMsiController::None,
-            pmu_gsiv: None,
-            virt_timer_ppi: 20,
-            gic_nr_irqs: 256,
-        })
-        .build(1)
-        .unwrap()
-    };
+            TopologyBuilder::new_aarch64(Aarch64PlatformConfig {
+                gic_distributor_base: 0x10000,
+                gic_version: GicVersion::V3 {
+                    redistributors_base: 0x20000,
+                },
+                gic_msi: GicMsiController::None,
+                pmu_gsiv: None,
+                virt_timer_ppi: 20,
+                gic_nr_irqs: 256,
+            })
+        }}
+        _ => compile_error!("unsupported guest architecture"),
+    }
+    .build(1)
+    .unwrap();
     let runner = PartitionUnitRunner {
         partition: Box::new(TestPartition {
             clock: clock.clone(),

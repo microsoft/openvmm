@@ -1,13 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Append measured product policy to the OpenHCL initrd.
+//! Append measured product policy and allowed PCI devices to the OpenHCL initrd.
 
 use anyhow::Context as _;
 use product_policy::ProductPolicy;
 
-pub fn append(initrd: &mut Vec<u8>, policy: &ProductPolicy) -> anyhow::Result<()> {
-    let (require_secure_boot, require_vars, require_bcd, custom_uefi_json) = match policy {
+/// Appends `policy` to the OpenHCL initrd, with the devices from
+/// `device_policy`.
+pub fn append(
+    initrd: &mut Vec<u8>,
+    policy: &ProductPolicy,
+    device_policy: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    let mut policy = policy.clone();
+    if let Some(path) = device_policy {
+        load_device_policy(path, &mut policy)?;
+    }
+    let (require_secure_boot, require_vars, require_bcd, custom_uefi_json) = match &policy {
         ProductPolicy::Sivm(p) => (
             p.require_secure_boot,
             p.require_secure_boot_vars,
@@ -20,13 +30,14 @@ pub fn append(initrd: &mut Vec<u8>, policy: &ProductPolicy) -> anyhow::Result<()
             p.require_bcd_integrity,
             &p.custom_uefi_json,
         ),
+        ProductPolicy::Azure(_) => (false, false, false, &Vec::new()),
     };
     anyhow::ensure!(
         !(require_secure_boot && (require_vars || require_bcd) && custom_uefi_json.is_empty()),
         "product policy requires non-empty custom_uefi_json"
     );
 
-    let bytes = product_policy::encode_product_policy(policy);
+    let bytes = product_policy::encode_product_policy(&policy);
     initrd_cpio::append_to_initrd(
         initrd,
         product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/'),
@@ -36,9 +47,44 @@ pub fn append(initrd: &mut Vec<u8>, policy: &ProductPolicy) -> anyhow::Result<()
     .context("failed to append product policy to OpenHCL initrd")
 }
 
+/// Loads a device policy (see `vm/loader/manifests/policies`) into `policy`.
+/// `"*"` allows every device.
+fn load_device_policy(path: &std::path::Path, policy: &mut ProductPolicy) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct DevicePolicy {
+        devices: std::path::PathBuf,
+        allowed_pci_devices: Vec<String>,
+        vpci_relay: Option<product_policy::VpciRelayMode>,
+    }
+    let device_policy: DevicePolicy = toml_edit::de::from_str(&fs_err::read_to_string(path)?)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    let devices_path = path.with_file_name(&device_policy.devices);
+    let devices: std::collections::BTreeMap<String, product_policy::AllowedPciDevice> =
+        toml_edit::de::from_str(&fs_err::read_to_string(&devices_path)?)
+            .with_context(|| format!("parsing {}", devices_path.display()))?;
+    // An entry with no IDs matches every device; only "*" may produce one.
+    let any = product_policy::AllowedPciDevice::default();
+    let device = |name: &String| match devices.get(name) {
+        _ if name == "*" => Ok(any.clone()),
+        Some(device) if *device != any => Ok(device.clone()),
+        _ => anyhow::bail!("{name:?} isn't defined or sets no IDs in {devices_path:?}"),
+    };
+    policy.set_vpci_relay(product_policy::VpciRelayPolicy {
+        allowed_pci_devices: device_policy
+            .allowed_pci_devices
+            .iter()
+            .map(device)
+            .collect::<anyhow::Result<_>>()?,
+        mode: device_policy.vpci_relay.unwrap_or_default(),
+    });
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use product_policy::VpciRelayMode;
     use product_policy::cwcow::CwcowPolicy;
     use product_policy::sivm::SivmPolicy;
     use std::collections::BTreeMap;
@@ -82,7 +128,7 @@ mod tests {
         initrd_cpio::append_to_initrd(&mut initrd, "init", b"existing init", 0o100400).unwrap();
         initrd_cpio::append_to_initrd(&mut initrd, "extra-layer", b"extra data", 0o100400).unwrap();
         let old_policy = ProductPolicy::Sivm(SivmPolicy::default());
-        append(&mut initrd, &old_policy).unwrap();
+        append(&mut initrd, &old_policy, None).unwrap();
         let original = initrd.clone();
 
         let policy = ProductPolicy::Sivm(SivmPolicy {
@@ -91,7 +137,7 @@ mod tests {
             custom_uefi_json: vec![0xA5; 8192],
             ..Default::default()
         });
-        append(&mut initrd, &policy).unwrap();
+        append(&mut initrd, &policy, None).unwrap();
         assert_eq!(&initrd[..original.len()], &original);
         let files = extract_files(&initrd);
         assert_eq!(files["init"], b"existing init");
@@ -110,13 +156,63 @@ mod tests {
             ..Default::default()
         });
         let mut initrd = Vec::new();
-        append(&mut initrd, &policy).unwrap();
+        append(&mut initrd, &policy, None).unwrap();
         let files = extract_files(&initrd);
         let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
         assert_eq!(
             product_policy::decode_product_policy(bytes).unwrap(),
             policy
         );
+    }
+
+    /// The Azure device policies must allow exactly the devices that OpenHCL
+    /// used to allow unconditionally, and the SIVM policy only the GPU. Only
+    /// CVMs run the VPCI relay by default, and only SIVMs require it.
+    #[test]
+    fn device_policy_round_trips_through_initrd() {
+        let policies =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests/policies");
+        let append_devices = |policy: ProductPolicy, file: &str| {
+            let mut initrd = Vec::new();
+            append(&mut initrd, &policy, Some(&policies.join(file))).unwrap();
+            let files = extract_files(&initrd);
+            let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
+            let decoded = product_policy::decode_product_policy(bytes).unwrap();
+            assert_eq!(decoded.name(), policy.name());
+            let decoded = product_policy::MeasuredProductPolicy::new(Some(decoded));
+            (decoded.allowed_pci_devices().to_vec(), decoded.vpci_relay())
+        };
+        let class = |base_class, sub_class, prog_if| product_policy::AllowedPciDevice {
+            base_class: Some(base_class),
+            sub_class: Some(sub_class),
+            prog_if: Some(prog_if),
+            ..Default::default()
+        };
+        let microsoft = |device_id, base_class| product_policy::AllowedPciDevice {
+            vendor_id: Some(0x1414),
+            device_id: Some(device_id),
+            ..class(base_class, 0, 0)
+        };
+        let gpu = product_policy::AllowedPciDevice {
+            vendor_id: Some(0x10de),
+            device_id: Some(0x2704),
+            revision_id: Some(0xa1),
+            ..Default::default()
+        };
+        assert_eq!(
+            append_devices(ProductPolicy::Sivm(Default::default()), "sivm.toml"),
+            (vec![gpu], VpciRelayMode::MustBeOn)
+        );
+        let azure = vec![class(1, 8, 2), microsoft(0xba, 2), microsoft(0xc003, 0x10)];
+        for (file, mode) in [
+            ("azure-cvm.toml", VpciRelayMode::DefaultOn),
+            ("azure.toml", VpciRelayMode::DefaultOff),
+        ] {
+            assert_eq!(
+                append_devices(ProductPolicy::Azure(Default::default()), file),
+                (azure.clone(), mode)
+            );
+        }
     }
 
     #[test]
@@ -134,7 +230,7 @@ mod tests {
             }),
         ] {
             let mut initrd = vec![1, 2, 3];
-            let error = append(&mut initrd, &policy).unwrap_err();
+            let error = append(&mut initrd, &policy, None).unwrap_err();
             assert!(error.to_string().contains("non-empty custom_uefi_json"));
             assert_eq!(initrd, [1, 2, 3]);
         }

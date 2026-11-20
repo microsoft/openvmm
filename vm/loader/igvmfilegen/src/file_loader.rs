@@ -949,21 +949,6 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
         R::arch()
     }
 
-    /// Returns the first GPA after all imported page-data directives.
-    pub fn next_available_gpa(&self) -> anyhow::Result<u64> {
-        self.page_data_directives
-            .iter()
-            .filter_map(|directive| match directive {
-                IgvmDirectiveHeader::PageData { gpa, .. } => Some(*gpa),
-                _ => None,
-            })
-            .max()
-            .map_or(Ok(0), |gpa| {
-                gpa.checked_add(PAGE_SIZE_4K)
-                    .context("next imported address overflow")
-            })
-    }
-
     /// Returns unimported RAM page ranges for an SNP Linux-direct image.
     pub fn unimported_ram_ranges(
         &self,

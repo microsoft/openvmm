@@ -469,13 +469,10 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
 pub fn load_igvm(
     params: LoadIgvmParams<'_, vm_topology::processor::TargetTopology>,
 ) -> Result<InitialLoad<loader::importer::Register>, Error> {
-    #[cfg(guest_arch = "x86_64")]
-    {
-        load_igvm_x86(params)
-    }
-    #[cfg(guest_arch = "aarch64")]
-    {
-        load_igvm_aarch64(params)
+    cfg_select! {
+        guest_arch = "x86_64" => load_igvm_x86(params),
+        guest_arch = "aarch64" => load_igvm_aarch64(params),
+        _ => compile_error!("unsupported guest architecture"),
     }
 }
 
