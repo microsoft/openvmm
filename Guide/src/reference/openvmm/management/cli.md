@@ -526,6 +526,19 @@ PCIe root port. The syntax varies slightly between device types:
 The optional `serial` value accepts 1-20 printable ASCII bytes except commas
 and brackets. If omitted, OpenVMM uses the disk ID or `openvmm-virtio-blk`.
 
+#### Guest-memory I/O policy
+
+`--force-guest-memory-bounce` disables user-mode and kernel page locking and
+backing exports for guest RAM. It defaults to off. Backends use copying or
+staging paths where available; unsupported export requests fail when made.
+This option does not enable pointer-based VMBus rings or synthetic page loans.
+
+```admonish warning
+This is a VMM backing restriction, not Linux memory isolation. The force-bounce
+option does not revoke other mappings, change guest page visibility, or add
+kernel enforcement.
+```
+
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 
 ```sh

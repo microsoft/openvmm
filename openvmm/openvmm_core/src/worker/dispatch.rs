@@ -1448,7 +1448,9 @@ impl InitializedVm {
 
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
-            .allow_locking(proto.supports_guest_memory_locking())
+            .allow_locking(
+                !cfg.hypervisor.force_guest_memory_bounce && proto.supports_guest_memory_locking(),
+            )
             .vtl0_alias_map(vtl0_alias_map)
             .supports_memory_fault_resolution(supports_memory_fault_resolution)
             .x86_legacy_support(

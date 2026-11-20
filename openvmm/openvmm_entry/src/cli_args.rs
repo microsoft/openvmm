@@ -151,6 +151,14 @@ pub struct NumaDistanceCli {
     long_version = openvmm_build_info::get().long_version(),
 )]
 pub struct Options {
+    /// Disable guest-RAM locking and exports to exercise device copying paths.
+    ///
+    /// Unsupported export operations fail when requested.
+    /// VMBus rings and synthetic-page loans may be unavailable. Host-owned
+    /// I/O buffers remain kernel-accessible.
+    #[clap(long)]
+    pub force_guest_memory_bounce: bool,
+
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
     pub processors: u32,
@@ -4401,6 +4409,20 @@ mod tests {
                 "accepted {selection:?}"
             );
         }
+    }
+
+    #[test]
+    fn force_guest_memory_bounce_is_vm_wide_and_defaults_off() {
+        assert!(
+            !Options::try_parse_from(["openvmm"])
+                .unwrap()
+                .force_guest_memory_bounce
+        );
+        assert!(
+            Options::try_parse_from(["openvmm", "--force-guest-memory-bounce"])
+                .unwrap()
+                .force_guest_memory_bounce
+        );
     }
 
     /// `--version` reports the resolved build identity rather than clap's
