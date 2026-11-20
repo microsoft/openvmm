@@ -222,7 +222,7 @@ fn handle_request(mem: &GuestMemory, work: &VirtioQueueCallbackWork) -> u32 {
             }
             let response = spec::RespClockCap {
                 head: ok_head(),
-                clock_type: spec::CLOCK_UTC_MAYBE_SMEARED,
+                clock_type: spec::CLOCK_UTC_SMEARED,
                 leap_second_smearing: spec::SMEAR_UNSPECIFIED,
                 flags: 0,
                 reserved: [0; 5],
