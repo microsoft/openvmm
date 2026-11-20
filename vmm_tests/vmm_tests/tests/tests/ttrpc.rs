@@ -160,6 +160,7 @@ exec /bin/busybox poweroff -f
                                 socket_path: com1_path.to_string_lossy().into(),
                                 connect: false,
                             }],
+                            ..Default::default()
                         }),
                         ..Default::default()
                     }),
@@ -569,6 +570,7 @@ async fn test_ttrpc_no_vmbus(
                                 socket_path: com1_path.to_string_lossy().into(),
                                 connect: false,
                             }],
+                            ..Default::default()
                         }),
                         ..Default::default()
                     }),
@@ -1083,6 +1085,7 @@ async fn test_ttrpc_interface(
                     socket_path: com1_path.to_string_lossy().into(),
                     connect: use_connect,
                 }],
+                ..Default::default()
             }),
             devices_config: Some(vmservice::DevicesConfig {
                 nic_config: vec![vmservice::NicConfig {
@@ -2070,6 +2073,7 @@ async fn test_ttrpc_uefi_boot(
                                 socket_path: com1_path.to_string_lossy().into(),
                                 connect: false,
                             }],
+                            ..Default::default()
                         }),
                         devices_config: Some(vmservice::DevicesConfig {
                             scsi_disks: vec![vmservice::ScsiDisk {
