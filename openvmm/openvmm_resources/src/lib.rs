@@ -66,7 +66,7 @@ vm_resource::register_static_resolvers! {
     disk_crypt::resolver::DiskCryptResolver,
     disk_file::FileDiskResolver,
     #[cfg(windows)]
-    disk_file::PhysicalDiskResolver,
+    disk_physical::PhysicalDiskResolver,
     #[cfg(target_os = "linux")]
     disk_blockdevice::resolver::StaticBlockDeviceResolver,
     disk_prwrap::DiskWithReservationsResolver,
