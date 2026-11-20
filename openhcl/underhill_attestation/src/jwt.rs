@@ -338,9 +338,7 @@ mod tests {
         // UTF-16 string
         let data = "UTF-16 encoded"
             .encode_utf16()
-            .collect::<Vec<u16>>()
-            .iter()
-            .flat_map(|character| character.to_ne_bytes())
+            .flat_map(u16::to_ne_bytes)
             .collect::<Vec<u8>>();
         let result = string_from_utf8_preserve_invalid_bytes(data.as_slice());
         assert_eq!(result, "U\0T\0F\0-\x001\x006\0 \0e\0n\0c\0o\0d\0e\0d\0");

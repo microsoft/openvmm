@@ -20,6 +20,7 @@ mesh.workspace = true
 futures.workspace = true
 blocking.workspace = true
 thiserror.workspace = true
+widestring.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Storage_Vhd", "Win32_System_IO"] }
 zerocopy.workspace = true
 

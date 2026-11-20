@@ -71,3 +71,28 @@ async fn stop_between_rejected_responses_keeps_kvp_negotiation(driver: DefaultDr
         stop_with_timeout(&mut task, &driver).await;
     }
 }
+
+#[test]
+fn string_round_trip_fills_buffer_exactly() {
+    let mut buf = [0xffff; 4];
+    // The surrogate pair and terminator exactly fill the buffer.
+    let n = write_str(&mut buf, "a\u{1f680}").unwrap();
+    assert_eq!(n, 8);
+    assert_eq!(parse_str(&buf, n).unwrap(), "a\u{1f680}");
+    assert!(write_str(&mut buf, "abcd").is_err());
+}
+
+#[test]
+fn malformed_strings_are_rejected() {
+    let mut buf = [0; 8];
+    for s in ["a\0b", "a\0", "\0"] {
+        assert!(write_str(&mut buf, s).is_err(), "{s:?}");
+    }
+
+    let guest = [b'a' as u16, 0, b'b' as u16, 0];
+    assert_eq!(parse_str(&guest, 4).unwrap(), "a");
+    // Interior null, odd length, too long, and missing terminator.
+    for n in [8, 3, 10, 2] {
+        assert!(parse_str(&guest, n).is_err(), "{n}");
+    }
+}

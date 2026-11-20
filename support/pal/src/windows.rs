@@ -48,6 +48,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use widestring::U16CString;
+use widestring::U16String;
 use widestring::Utf16Str;
 use windows_sys::Wdk::Storage::FileSystem::NtCreateDirectoryObject;
 use windows_sys::Wdk::Storage::FileSystem::NtOpenDirectoryObject;
@@ -607,8 +608,8 @@ impl<'a> TryFrom<&'a OsStr> for UnicodeString {
     type Error = StringTooLong;
     fn try_from(value: &'a OsStr) -> std::result::Result<Self, Self::Error> {
         // FUTURE: figure out how to do this without a second allocation.
-        let value16: Vec<_> = value.encode_wide().collect();
-        Self::new(&value16)
+        let value16 = U16String::from_os_str(value);
+        Self::new(value16.as_slice())
     }
 }
 
@@ -1201,23 +1202,28 @@ pub fn disable_hard_error_dialog() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+    use widestring::u16str;
 
     #[test]
     fn test_dos_to_nt_path() {
         let pathu = dos_to_nt_path("c:\\foo").unwrap();
-        assert!(
-            pathu
-                .as_slice()
-                .iter()
-                .copied()
-                .eq("\\??\\c:\\foo".encode_utf16())
-        );
+        assert_eq!(pathu.as_slice(), u16str!("\\??\\c:\\foo").as_slice());
     }
 
     #[test]
     fn test_alloc_unicode_string() {
         let s: UnicodeString = "abc".try_into().unwrap();
-        assert!(s.as_slice().iter().copied().eq("abc".encode_utf16()));
+        assert_eq!(s.as_slice(), u16str!("abc").as_slice());
+    }
+
+    #[test]
+    fn test_alloc_unicode_string_preserves_code_units() {
+        let value = [b'a' as u16, 0, 0xd83d, 0xde80, 0xd800];
+        let value = U16String::from_vec(value);
+        let s = UnicodeString::try_from(value.to_os_string().as_os_str()).unwrap();
+        assert_eq!(s.as_slice(), value.as_slice());
+        assert_eq!(s.length(), size_of_val(value.as_slice()));
     }
 
     #[test]

@@ -70,20 +70,10 @@ fn decode_utf16le(data: &[u8], offset: usize, length: usize) -> Option<String> {
         return None;
     }
     let slice = &data[offset..end];
-    if has_embedded_null(slice) {
-        return None;
-    }
-    let u16s: Vec<u16> = slice
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    String::from_utf16(&u16s).ok()
-}
-
-/// Check that a UTF-16LE byte slice does not contain embedded null characters.
-fn has_embedded_null(data: &[u8]) -> bool {
-    data.chunks_exact(2)
-        .any(|c| u16::from_le_bytes([c[0], c[1]]) == 0)
+    let units = slice.as_chunks().0.iter().map(|&c| u16::from_le_bytes(c));
+    char::decode_utf16(units)
+        .map(|c| c.ok().filter(|&c| c != '\0'))
+        .collect()
 }
 
 impl ParentLocator {

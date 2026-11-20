@@ -314,9 +314,7 @@ impl<W: Write + Seek> HvsFileWriter<W> {
                     Value::Bool(v) => (KeyType::BOOL, 0u8, (v as i32).to_le_bytes().to_vec()),
                     Value::String(s) => {
                         let mut data = vec![0u8; 4];
-                        for ch in s.encode_utf16().chain(core::iter::once(0)) {
-                            data.extend_from_slice(&ch.to_le_bytes());
-                        }
+                        data.extend(s.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
                         let byte_len = (data.len() - 4) as u32;
                         data[..4].copy_from_slice(&byte_len.to_le_bytes());
                         (KeyType::STRING, 0u8, data)

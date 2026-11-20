@@ -44,6 +44,8 @@ use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::NoSavedState;
+use widestring::U16CStr;
+use widestring::U16CString;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -735,20 +737,21 @@ fn parse_str(v: &[u16], n: u32) -> anyhow::Result<String> {
         anyhow::bail!("invalid string length");
     }
     let v = v.get(..n as usize / 2).context("string length too large")?;
-    if v.last() != Some(&0) {
-        anyhow::bail!("missing null terminator");
-    }
-    String::from_utf16(&v[..v.len() - 1]).context("invalid utf-16")
+    U16CStr::from_slice(v)
+        .context("invalid null terminator")?
+        .to_string()
+        .context("invalid utf-16")
 }
 
 fn write_str(v: &mut [u16], s: &str) -> anyhow::Result<u32> {
-    let mut i = 0;
-    for (s, d) in s.encode_utf16().zip(&mut *v) {
-        *d = s;
-        i += 1;
-    }
-    *v.get_mut(i).context("string too long")? = 0;
-    Ok((i + 1) as u32 * 2)
+    // `U16CString::from_str` would accept a trailing NUL as the terminator.
+    anyhow::ensure!(!s.contains('\0'), "string contains a null character");
+    let s = U16CString::from_str_truncate(s);
+    let s = s.as_slice_with_nul();
+    v.get_mut(..s.len())
+        .context("string too long")?
+        .copy_from_slice(s);
+    Ok(size_of_val(s) as u32)
 }
 
 fn write_value(buf: &mut [u8], v: &Value) -> anyhow::Result<(proto::ValueType, u32)> {

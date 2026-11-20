@@ -646,17 +646,16 @@ pub fn process_user_sid(process_id: u32) -> std::io::Result<MaximumSid> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
     use std::fs;
     use std::fs::OpenOptions;
     use std::io;
     use std::io::Read;
     use std::io::Seek;
     use std::io::Write;
-    use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
     use test_with_tracing::test;
     use widestring::U16CStr;
+    use widestring::u16str;
     use windows_sys::Win32::Foundation::ERROR_NO_TOKEN;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
@@ -860,12 +859,7 @@ mod tests {
     fn rejects_paths_with_interior_nul() {
         let root = TestDirectory::new();
         let descriptor = protected_descriptor();
-        let path = root.join(OsString::from_wide(&[
-            b'n' as u16,
-            0,
-            b'u' as u16,
-            b'l' as u16,
-        ]));
+        let path = root.join(u16str!("n\0ul").to_os_string());
 
         assert_eq!(
             create_directory_with_security(&path, &descriptor)

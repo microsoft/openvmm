@@ -12,8 +12,6 @@ use crate::windows::chk_status;
 use std::cell::UnsafeCell;
 use std::fs;
 use std::io;
-use std::os::windows::ffi::OsStrExt;
-use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::AsHandle;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
@@ -21,6 +19,9 @@ use std::ptr;
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
+use widestring::U16Str;
+use widestring::U16String;
+use widestring::u16str;
 use windows_sys::Wdk::Storage::FileSystem as ntioapi;
 use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Foundation::STATUS_NO_MORE_FILES;
@@ -104,15 +105,15 @@ fn ensure_synchronous(file: &fs::File) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_relative_component(name: &std::ffi::OsStr, description: &str) -> io::Result<Vec<u16>> {
-    let name: Vec<u16> = name.encode_wide().collect();
+fn validate_relative_component(name: &std::ffi::OsStr, description: &str) -> io::Result<U16String> {
+    let name = U16String::from_os_str(name);
     // Native relative opens do not apply Win32 dot-component normalization,
     // but dot names still violate this API's single-component contract.
     if name.is_empty()
-        || name.contains(&0)
-        || name.as_slice() == ['.' as u16]
-        || name.as_slice() == ['.' as u16, '.' as u16]
-        || name.iter().any(|character| {
+        || name.as_slice().contains(&0)
+        || name == u16str!(".")
+        || name == u16str!("..")
+        || name.as_slice().iter().any(|character| {
             *character == b'/' as u16 || *character == b'\\' as u16 || *character == b':' as u16
         })
     {
@@ -181,7 +182,7 @@ fn open_relative_file(
     create_disposition: u32,
 ) -> io::Result<fs::File> {
     let name = validate_relative_component(name, "file")?;
-    let name = UnicodeString::new(&name)
+    let name = UnicodeString::new(name.as_slice())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name is too long"))?;
     let mut attributes = ObjectAttributes::new();
     attributes
@@ -354,7 +355,7 @@ pub fn directory_entry_names(directory: &fs::File) -> io::Result<Vec<std::ffi::O
         let name = unsafe {
             std::slice::from_raw_parts(entry.FileName.as_ptr(), name_length / size_of::<u16>())
         };
-        let name = std::ffi::OsString::from_wide(name);
+        let name = U16Str::from_slice(name).to_os_string();
         if name != "." && name != ".." {
             names.push(name);
         }
@@ -518,7 +519,7 @@ mod tests {
                 (*entry).FileNameLength as usize / size_of::<u16>(),
             )
         };
-        Some(String::from_utf16(name).unwrap())
+        Some(U16Str::from_slice(name).to_string().unwrap())
     }
 
     #[test]
@@ -542,6 +543,13 @@ mod tests {
                 "{name:?}"
             );
         }
+    }
+
+    #[test]
+    fn relative_name_preserves_unpaired_surrogates() {
+        let name = U16String::from_vec([b'f' as u16, 0xd800]);
+        let validated = validate_relative_component(&name.to_os_string(), "file").unwrap();
+        assert_eq!(validated, name);
     }
 
     #[test]

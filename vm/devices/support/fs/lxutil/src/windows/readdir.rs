@@ -10,11 +10,11 @@ use bitfield_struct::bitfield;
 use pal::windows::UnicodeString;
 use pal::windows::UnicodeStringRef;
 use std::ffi;
-use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::io::OwnedHandle;
 use std::ptr;
+use widestring::U16Str;
 use windows::Wdk::Storage::FileSystem;
 use windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS;
 use windows::Wdk::System::Threading;
@@ -903,7 +903,8 @@ impl DirEntrySource for WindowsDirEntrySource<'_> {
                     // Cache the policy decision from the enumeration snapshot,
                     // without reopening or querying each child.
                     let visible = if self.state.options.sandbox {
-                        let name = ffi::OsString::from_wide(file_info.file_name.as_slice());
+                        let name =
+                            U16Str::from_slice(file_info.file_name.as_slice()).to_os_string();
                         match self.state.check_sandbox_name(&name).and_then(|()| {
                             self.state
                                 .check_sandbox_attributes(file_info.file_attributes)

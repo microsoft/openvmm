@@ -3618,9 +3618,9 @@ impl Adapter {
             }
             rndisprot::Oid::OID_GEN_MAXIMUM_SEND_PACKETS => writer.write(u32::MAX.as_bytes())?,
             rndisprot::Oid::OID_GEN_FRIENDLY_NAME => {
-                let name16: Vec<u16> = "Network Device".encode_utf16().collect();
+                let name16 = widestring::u16str!("Network Device").as_slice();
                 let mut name = rndisprot::FriendlyName::new_zeroed();
-                name.name[..name16.len()].copy_from_slice(&name16);
+                name.name[..name16.len()].copy_from_slice(name16);
                 writer.write(name.as_bytes())?
             }
             rndisprot::Oid::OID_802_3_PERMANENT_ADDRESS

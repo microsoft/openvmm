@@ -30,6 +30,7 @@ use vhdx::ReadRange;
 use vhdx::TrimMode;
 use vhdx::TrimRequest;
 use vhdx::WriteRange;
+use widestring::U16CString;
 
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Foundation::HANDLE;
@@ -170,18 +171,6 @@ const VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT: windows::core::GUID = windows::core
 };
 
 // ---------------------------------------------------------------------
-// Path helper
-// ---------------------------------------------------------------------
-
-fn to_wide(path: &Path) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    path.as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
-
-// ---------------------------------------------------------------------
 // NativeVhdx — RAII wrapper around Windows virtual disk APIs
 // ---------------------------------------------------------------------
 
@@ -198,7 +187,7 @@ impl NativeVhdx {
             VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
         };
 
-        let wide = to_wide(path);
+        let wide = U16CString::from_os_str(path).unwrap();
 
         let mut params = CREATE_VIRTUAL_DISK_PARAMETERS {
             Version: CREATE_VIRTUAL_DISK_VERSION_2,
@@ -240,7 +229,7 @@ impl NativeVhdx {
             VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
         };
 
-        let wide = to_wide(path);
+        let wide = U16CString::from_os_str(path).unwrap();
 
         let params = OPEN_VIRTUAL_DISK_PARAMETERS {
             Version: OPEN_VIRTUAL_DISK_VERSION_2,
@@ -1137,8 +1126,8 @@ impl NativeVhdx {
             VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
         };
 
-        let wide = to_wide(path);
-        let parent_wide = to_wide(parent_path);
+        let wide = U16CString::from_os_str(path).unwrap();
+        let parent_wide = U16CString::from_os_str(parent_path).unwrap();
 
         let mut params = CREATE_VIRTUAL_DISK_PARAMETERS {
             Version: CREATE_VIRTUAL_DISK_VERSION_2,

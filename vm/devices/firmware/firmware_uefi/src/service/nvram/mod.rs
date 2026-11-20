@@ -712,12 +712,12 @@ mod tests {
     use firmware_uefi_custom_vars::ApplyDeltaError;
     use pal_async::async_test;
     use ucs2::Ucs2LeSlice;
+    use ucs2::Ucs2LeVec;
     use uefi_nvram_specvars::signature_list::SignatureData;
     use uefi_nvram_specvars::signature_list::SignatureList;
     use uefi_nvram_storage::EFI_TIME;
     use uefi_nvram_storage::NvramStorage;
     use uefi_nvram_storage::in_memory::InMemoryNvram;
-    use wchar::wchz;
 
     const TEST_SIGNATURE_OWNER: Guid = guid::guid!("00000000-0000-0000-0000-000000000001");
 
@@ -792,7 +792,7 @@ mod tests {
             attributes: u32,
             data: &[u8],
         ) -> EfiStatus {
-            let name = wchz!(u16, "var").as_bytes();
+            let name: &[u8] = &Ucs2LeVec::from("var").into_inner();
             gm.write_at(0x2000, name).unwrap();
             gm.write_at(0x3000, data).unwrap();
             gm.write_plain(
@@ -830,7 +830,7 @@ mod tests {
             .with_non_volatile(true)
             .with_bootservice_access(true)
             .with_runtime_access(true);
-        let data = vec![0x5a; 32 * 1024 - 48 - wchz!(u16, "var").as_bytes().len()];
+        let data = vec![0x5a; 32 * 1024 - 48 - Ucs2LeVec::from("var").as_bytes().len()];
         nvram.services.prepare_for_boot();
 
         for &vendor in &vendors {
@@ -892,7 +892,7 @@ mod tests {
                 .await,
                 EfiStatus::INVALID_PARAMETER
             );
-            let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var").as_bytes()).unwrap();
+            let name: &Ucs2LeSlice = &Ucs2LeVec::from("var");
             let (stored_attributes, stored_data) = nvram
                 .services
                 .get_variable_ucs2(vendors[0], name)
@@ -1083,7 +1083,7 @@ mod tests {
         );
 
         // A legal request still passes the gate and is stored.
-        let name = wchz!(u16, "TestVar");
+        let name = Ucs2LeVec::from("TestVar");
         let name_addr = 0x2000;
         let data_addr = 0x2200;
         let data = b"test";
@@ -1194,7 +1194,7 @@ mod tests {
     #[async_test]
     async fn invalid_templates_are_ignored_after_first_boot_without_secure_boot() {
         let mut storage = InMemoryNvram::new();
-        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
+        let name: &Ucs2LeSlice = &Ucs2LeVec::from("existing");
         storage
             .set_variable(name, Guid::default(), 0, vec![1], EFI_TIME::default())
             .await
@@ -1215,7 +1215,7 @@ mod tests {
     #[async_test]
     async fn invalid_base_template_is_ignored_after_first_boot_with_secure_boot() {
         let mut storage = InMemoryNvram::new();
-        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
+        let name: &Ucs2LeSlice = &Ucs2LeVec::from("existing");
         storage
             .set_variable(name, Guid::default(), 0, vec![1], EFI_TIME::default())
             .await

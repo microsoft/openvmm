@@ -24,6 +24,7 @@ zerocopy.workspace = true
 test_with_tracing.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
+widestring.workspace = true
 windows = { workspace = true, features = [
     "Win32_Storage_Vhd",
     "Win32_Foundation",

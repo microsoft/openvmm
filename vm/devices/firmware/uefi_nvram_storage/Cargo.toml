@@ -22,7 +22,6 @@ vmcore = { workspace = true, optional = true }
 
 async-trait.workspace = true
 thiserror.workspace = true
-wchar.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
 pal_async.workspace = true

@@ -10,6 +10,7 @@ use super::AesKeyWrapErrorInner;
 use super::kwp;
 use crate::win::*;
 use std::sync::LazyLock;
+use widestring::U16CStr;
 use windows::Win32::Foundation::NTE_BAD_DATA;
 use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_CHAIN_MODE_ECB;
@@ -35,12 +36,11 @@ static AES_ECB: LazyLock<Result<AlgHandle, AesKeyWrapError>> = LazyLock::new(|| 
         .map(|()| AlgHandle(handle))
         .map_err(|e| err(e, "opening the AES algorithm provider"))?;
 
-        let mut chaining_mode = BCRYPT_CHAIN_MODE_ECB.as_wide().to_vec();
-        chaining_mode.push(0);
+        let chaining_mode = U16CStr::from_ptr_str(BCRYPT_CHAIN_MODE_ECB.as_ptr());
         windows::Win32::Security::Cryptography::BCryptSetProperty(
             handle.0.into(),
             windows::Win32::Security::Cryptography::BCRYPT_CHAINING_MODE,
-            chaining_mode.as_bytes(),
+            chaining_mode.as_slice_with_nul().as_bytes(),
             0,
         )
         .ok()

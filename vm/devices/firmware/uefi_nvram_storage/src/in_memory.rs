@@ -273,13 +273,12 @@ pub mod impl_agnostic_tests {
     use crate::NvramStorage;
     use guid::Guid;
     use ucs2::Ucs2LeSlice;
-    use wchar::wchz;
+    use ucs2::Ucs2LeVec;
     use zerocopy::FromZeros;
-    use zerocopy::IntoBytes;
 
     pub async fn test_single_variable(nvram: &mut dyn NvramStorage) {
         let vendor = Guid::new_random();
-        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var1").as_bytes()).unwrap();
+        let name: &Ucs2LeSlice = &Ucs2LeVec::from("var1");
         let attr = 0x1234;
         let data = vec![0x1, 0x2, 0x3, 0x4, 0x5];
         let data1 = vec![0xa, 0xb, 0xc];
@@ -320,11 +319,11 @@ pub mod impl_agnostic_tests {
 
     pub async fn test_next(nvram: &mut dyn NvramStorage) {
         let vendor1 = Guid::new_random();
-        let name1 = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var1").as_bytes()).unwrap();
+        let name1: &Ucs2LeSlice = &Ucs2LeVec::from("var1");
         let vendor2 = Guid::new_random();
-        let name2 = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var2").as_bytes()).unwrap();
+        let name2: &Ucs2LeSlice = &Ucs2LeVec::from("var2");
         let vendor3 = Guid::new_random();
-        let name3 = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var3").as_bytes()).unwrap();
+        let name3: &Ucs2LeSlice = &Ucs2LeVec::from("var3");
         let attr = 0x1234;
         let data = vec![0x1, 0x2, 0x3, 0x4, 0x5];
         let timestamp = EFI_TIME::new_zeroed();
@@ -411,11 +410,11 @@ pub mod impl_agnostic_tests {
 
     pub async fn test_multiple_variable(nvram: &mut dyn NvramStorage) {
         let vendor1 = Guid::new_random();
-        let name1 = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var1").as_bytes()).unwrap();
+        let name1: &Ucs2LeSlice = &Ucs2LeVec::from("var1");
         let vendor2 = Guid::new_random();
-        let name2 = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var2").as_bytes()).unwrap();
+        let name2: &Ucs2LeSlice = &Ucs2LeVec::from("var2");
         let vendor3 = Guid::new_random();
-        let name3 = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var3").as_bytes()).unwrap();
+        let name3: &Ucs2LeSlice = &Ucs2LeVec::from("var3");
         let attr = 0x1234;
         let data = vec![0x1, 0x2, 0x3, 0x4, 0x5];
         let timestamp = EFI_TIME::new_zeroed();

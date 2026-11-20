@@ -30,6 +30,7 @@ use std::os::windows::prelude::*;
 use std::ptr::NonNull;
 use std::ptr::null;
 use std::ptr::null_mut;
+use widestring::U16CString;
 use windows_sys::Win32::Foundation::ERROR_BAD_PATHNAME;
 use windows_sys::Win32::Foundation::LUID;
 use windows_sys::Win32::System::Power::DEVICE_POWER_STATE;
@@ -960,12 +961,13 @@ impl VpciResource {
                         VirtualFunctionIndex: *index,
                         Reserved: 0,
                     };
-                    let mut path16: Vec<_> = path.encode_utf16().collect();
-                    path16.push(0);
+                    let path16 =
+                        U16CString::from_str(path).map_err(|_| WHvError::ERROR_BAD_PATHNAME)?;
+                    let path16 = path16.as_slice_with_nul();
                     if path16.len() > sriov.PnpInstanceId.len() {
                         return Err(WHvError::ERROR_BAD_PATHNAME);
                     }
-                    sriov.PnpInstanceId[..path16.len()].copy_from_slice(&path16);
+                    sriov.PnpInstanceId[..path16.len()].copy_from_slice(path16);
                     std::slice::from_raw_parts(
                         std::ptr::from_ref(&sriov).cast(),
                         size_of_val(&sriov),

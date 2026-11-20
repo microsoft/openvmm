@@ -9,6 +9,7 @@ rust-version.workspace = true
 [target.'cfg(windows)'.dependencies]
 guid.workspace = true
 pal.workspace = true
+widestring.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Power"] }
 
 [target.'cfg(windows)'.dev-dependencies]

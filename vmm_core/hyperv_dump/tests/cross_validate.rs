@@ -21,6 +21,7 @@ use std::ffi::c_void;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use widestring::U16CString;
 
 mod dll {
     use std::ffi::c_void;
@@ -88,12 +89,7 @@ fn setup_dll_search_path_inner() -> bool {
         let dll_dir = version_dir.join(arch);
         let dll_path = dll_dir.join("vmsavedstatedumpprovider.dll");
         if dll_path.exists() {
-            let wide_dir: Vec<u16> = dll_dir
-                .to_str()
-                .unwrap()
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let wide_dir = U16CString::from_os_str(&dll_dir).unwrap();
             // SAFETY: Calling SetDllDirectoryW with a valid null-terminated
             // wide string to add the SDK directory to the DLL search path.
             unsafe {
@@ -207,12 +203,7 @@ fn load_and_verify(vmrs_data: &[u8], expected_vp_count: u32, _test_name: &str) {
     std::io::Write::write_all(&mut tmp, vmrs_data).unwrap();
 
     let vmrs_path = tmp.path();
-    let wide_path: Vec<u16> = vmrs_path
-        .to_str()
-        .unwrap()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
+    let wide_path = U16CString::from_os_str(vmrs_path).unwrap();
 
     // SAFETY: Calling VmSavedStateDumpProvider FFI functions with valid
     // pointers. The handle is obtained from LoadSavedStateFile and released
@@ -353,12 +344,7 @@ fn dll_validates_large_memory() {
 
     // Verify the DLL can load the file.
     let vmrs_path = tmp.path();
-    let wide_path: Vec<u16> = vmrs_path
-        .to_str()
-        .unwrap()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
+    let wide_path = U16CString::from_os_str(vmrs_path).unwrap();
 
     // SAFETY: Calling VmSavedStateDumpProvider FFI functions with valid
     // pointers. The handle is obtained from LoadSavedStateFile and released

@@ -27,6 +27,8 @@ use std::path::Path;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use widestring::U16CString;
+use widestring::U16String;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -440,9 +442,8 @@ pub fn get_attributes(
 
 // Determine if a name is a reserved legacy DOS device name
 pub fn is_dos_device_name(name: &ffi::OsStr) -> lx::Result<bool> {
-    let nameu = widestring::U16CString::from_os_str(name).map_err(|_| lx::Error::EINVAL)?;
-    if unsafe { FileSystem::RtlIsDosDeviceName_U(PCWSTR(nameu.as_slice_with_nul().as_ptr())) } == 0
-    {
+    let nameu = U16CString::from_os_str(name).map_err(|_| lx::Error::EINVAL)?;
+    if unsafe { FileSystem::RtlIsDosDeviceName_U(PCWSTR(nameu.as_ptr())) } == 0 {
         Ok(false)
     } else {
         Ok(true)
@@ -1095,7 +1096,7 @@ pub fn create_link(
     link_root: &OwnedHandle,
     new_path: &Path,
 ) -> lx::Result<()> {
-    let new_path: Vec<u16> = new_path.as_os_str().encode_wide().collect();
+    let new_path = U16String::from_os_str(new_path);
 
     // This matches the public definition of FILE_LINK_INFORMATION in ntifs.h, with the variable length payload field
     // at the end removed. u8 arrays are used for fields to remove the need for padding and repr(packed).
@@ -1126,6 +1127,7 @@ pub fn create_link(
     );
 
     let file_name_length: u32 = new_path
+        .as_slice()
         .as_bytes()
         .len()
         .try_into()
@@ -1181,14 +1183,13 @@ pub fn rename(
     target_path: &Path,
     flags: fs::RenameFlags,
 ) -> lx::Result<()> {
-    // If necessary, escape the path, then convert it into a Vec<u16>
-    let target_name: Vec<u16> = if flags.escape_name() {
-        path::path_from_lx(target_path.as_os_str().as_encoded_bytes())?
-            .as_os_str()
-            .encode_wide()
-            .collect()
+    // If necessary, escape the path before converting it to UTF-16.
+    let target_name = if flags.escape_name() {
+        U16String::from_os_str(
+            path::path_from_lx(target_path.as_os_str().as_encoded_bytes())?.as_os_str(),
+        )
     } else {
-        target_path.as_os_str().encode_wide().collect()
+        U16String::from_os_str(target_path)
     };
 
     // Create the union field of FILE_RENAME_INFORMATION--if POSIX semantics are enabled,
@@ -1270,6 +1271,7 @@ pub fn rename(
     );
 
     let file_name_length: u32 = target_name
+        .as_slice()
         .as_bytes()
         .len()
         .try_into()

@@ -509,7 +509,6 @@ mod test {
     use pal_async::async_test;
     use ucs2::Ucs2LeVec;
     use uefi_nvram_storage::in_memory::impl_agnostic_tests;
-    use wchar::wchz;
 
     /// An ephemeral implementation of [`StorageBackend`] backed by an in-memory
     /// buffer. Useful for tests, stateless VM scenarios.
@@ -628,7 +627,7 @@ mod test {
 
     #[async_test]
     async fn storage_limit_rejects_writes_without_mutation() {
-        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var").as_bytes()).unwrap();
+        let name: &Ucs2LeSlice = &Ucs2LeVec::from("var");
         let timestamp = EFI_TIME::default();
         let vendors: [Guid; 4] = std::array::from_fn(|_| Guid::new_random());
         let entry_overhead = size_of::<format::NvramVariable>() + name.as_bytes().len();
@@ -717,11 +716,11 @@ mod test {
         let mut storage = EphemeralStorageBackend::default();
 
         let vendor1 = Guid::new_random();
-        let name1 = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var1").as_bytes()).unwrap();
+        let name1: &Ucs2LeSlice = &Ucs2LeVec::from("var1");
         let vendor2 = Guid::new_random();
-        let name2 = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var2").as_bytes()).unwrap();
+        let name2: &Ucs2LeSlice = &Ucs2LeVec::from("var2");
         let vendor3 = Guid::new_random();
-        let name3 = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var3").as_bytes()).unwrap();
+        let name3: &Ucs2LeSlice = &Ucs2LeVec::from("var3");
         let attr = 0x1234;
         let data = vec![0x1, 0x2, 0x3, 0x4, 0x5];
         let timestamp = EFI_TIME::default();
@@ -770,7 +769,7 @@ mod test {
         use vmcore::save_restore::SaveRestore;
 
         let vendor = Guid::new_random();
-        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var").as_bytes()).unwrap();
+        let name: &Ucs2LeSlice = &Ucs2LeVec::from("var");
         let timestamp = EFI_TIME::default();
 
         let mut source = HclCompatNvram::new(EphemeralStorageBackend::default(), None);
