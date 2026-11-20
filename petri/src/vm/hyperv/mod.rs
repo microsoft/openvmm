@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod host_diagnostics;
 mod hvc;
 pub mod powershell;
 pub mod vm;

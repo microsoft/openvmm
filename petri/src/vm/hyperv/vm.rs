@@ -3,6 +3,7 @@
 
 //! Provides an interface for creating and managing Hyper-V VMs
 
+use super::host_diagnostics::HostDiagnostics;
 use super::hvc;
 use super::hvc::VmState;
 use super::powershell;
@@ -49,6 +50,9 @@ pub struct HyperVVM {
     destroyed: bool,
     last_start_time: Option<Timestamp>,
     last_log_flushed: Option<Timestamp>,
+
+    // Dropped after `Drop::drop` removes the VM, so it covers VM teardown.
+    _host_diagnostics: Option<HostDiagnostics>,
 }
 
 impl HyperVVM {
@@ -102,6 +106,15 @@ impl HyperVVM {
             }
         }
 
+        // SNP VMs can receive unrecoverable exception intercepts whose cause
+        // is only visible to the hypervisor, so trace hypervisor diagnostics
+        // for their lifetime.
+        let host_diagnostics = matches!(
+            args.guest_state_isolation_type,
+            Some(powershell::HyperVGuestStateIsolationType::Snp)
+        )
+        .then(|| HostDiagnostics::start(logger.output_dir()));
+
         args.make_compatible().await?;
         let vmid = powershell::run_new_customvm(&ps_mod, args).await?;
 
@@ -120,6 +133,7 @@ impl HyperVVM {
             destroyed: false,
             last_start_time: None,
             last_log_flushed: None,
+            _host_diagnostics: host_diagnostics,
         })
     }
 

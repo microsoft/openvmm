@@ -34,6 +34,7 @@ pub mod build_tpm_guest_tests;
 pub mod build_vmfirmwareigvm_dll;
 pub mod build_vmgstool;
 pub mod build_xtask;
+pub mod capture_hyperv_host_logs;
 pub mod cfg_openvmm_magicpath;
 pub mod cfg_rustup_version;
 pub mod common;
