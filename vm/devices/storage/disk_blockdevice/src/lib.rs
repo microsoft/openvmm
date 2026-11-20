@@ -1120,10 +1120,39 @@ mod tests {
         storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
     }
 
-    async fn run_async_disk_io(fua: bool) {
+    struct NonLockableMemory(GuestMemory);
+
+    // SAFETY: The owned heap memory keeps its full mapping alive and stable.
+    unsafe impl guestmem::GuestMemoryAccess for NonLockableMemory {
+        fn mapping(&self) -> Option<std::ptr::NonNull<u8>> {
+            std::ptr::NonNull::new(self.0.full_mapping().unwrap().0)
+        }
+
+        fn max_address(&self) -> u64 {
+            self.0.full_mapping().unwrap().1 as u64
+        }
+
+        fn supports_kernel_lock(&self) -> bool {
+            false
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            false
+        }
+    }
+
+    async fn run_async_disk_io(fua: bool, copy_only: bool) {
         let disk = get_block_device_or_skip!();
 
         let test_guest_mem = GuestMemory::allocate(0x8000);
+        let test_guest_mem = if copy_only {
+            GuestMemory::new(
+                "non-lockable-test-memory",
+                NonLockableMemory(test_guest_mem),
+            )
+        } else {
+            test_guest_mem
+        };
         test_guest_mem
             .write_at(0, &(0..0x8000).map(|x| x as u8).collect::<Vec<_>>())
             .unwrap();
@@ -1153,12 +1182,18 @@ mod tests {
 
     #[async_test]
     async fn test_async_disk_io() {
-        run_async_disk_io(false).await;
+        run_async_disk_io(false, false).await;
     }
 
     #[async_test]
     async fn test_async_disk_io_fua() {
-        run_async_disk_io(true).await;
+        run_async_disk_io(true, false).await;
+    }
+
+    #[async_test]
+    async fn test_async_disk_io_copy_only_regular_file() {
+        run_async_disk_io(false, true).await;
+        run_async_disk_io(true, true).await;
     }
 
     async fn run_async_disk_io_unaligned(fua: bool) {

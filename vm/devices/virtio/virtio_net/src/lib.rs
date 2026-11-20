@@ -9,12 +9,14 @@
 //! TX completion modes depending on the backend.
 
 #![expect(missing_docs)]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod buffers;
 pub mod resolver;
 
 #[cfg(test)]
+// UNSAFETY: Implementing GuestMemoryAccess for a test-only backing.
+#[expect(unsafe_code)]
 mod tests;
 
 use crate::buffers::VirtioWorkPool;

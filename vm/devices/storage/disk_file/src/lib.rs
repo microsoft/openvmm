@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-#![forbid(unsafe_code)]
+#![cfg_attr(not(test), forbid(unsafe_code))]
+#![deny(unsafe_code)]
 
 mod readwriteat;
 
@@ -237,6 +238,7 @@ mod tests {
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
+    use test_with_tracing::test;
 
     const SECTOR_SIZE: usize = 512;
     const DISK_SIZE: u64 = 1024 * 1024;
@@ -309,5 +311,107 @@ mod tests {
         mem.read_at(0, &mut buf).unwrap();
         assert_ne!(buf, [0xcd; SECTOR_SIZE], "read returned sector 0");
         assert!(matches!(r, Err(DiskError::IllegalBlock)), "{r:?}");
+    }
+
+    #[async_test]
+    async fn truncated_file_read_does_not_copy_padding() {
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(DISK_SIZE).unwrap();
+        let control = file.try_clone().unwrap();
+        let disk = Disk::new(FileDisk::open(file, false).unwrap()).unwrap();
+        control.set_len(0).unwrap();
+        let memory = GuestMemory::allocate(SECTOR_SIZE);
+        memory.write_at(0, &[0x73; SECTOR_SIZE]).unwrap();
+        let range = OwnedRequestBuffers::linear(0, SECTOR_SIZE, true);
+        let result = disk.read_vectored(&range.buffer(&memory), 0).await;
+        assert!(matches!(
+            result,
+            Err(DiskError::Io(ref err)) if err.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
+        let mut actual = [0; SECTOR_SIZE];
+        memory.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, [0x73; SECTOR_SIZE]);
+    }
+
+    struct NonLockableMemory(GuestMemory);
+
+    // UNSAFETY: The owned heap memory keeps its full mapping alive and stable.
+    #[expect(unsafe_code)]
+    unsafe impl guestmem::GuestMemoryAccess for NonLockableMemory {
+        fn mapping(&self) -> Option<std::ptr::NonNull<u8>> {
+            std::ptr::NonNull::new(self.0.full_mapping().unwrap().0)
+        }
+
+        fn max_address(&self) -> u64 {
+            self.0.full_mapping().unwrap().1 as u64
+        }
+
+        fn supports_kernel_lock(&self) -> bool {
+            false
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            false
+        }
+    }
+
+    #[async_test]
+    async fn large_copy_only_file_roundtrip() {
+        let size = 2 * 1024 * 1024;
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(size as u64).unwrap();
+        let disk = Disk::new(FileDisk::open(file, false).unwrap()).unwrap();
+        let memory = GuestMemory::new(
+            "non-lockable-test-memory",
+            NonLockableMemory(GuestMemory::allocate(size)),
+        );
+        let expected = vec![0x5a; size];
+        memory.write_at(0, &expected).unwrap();
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(0, size, false).buffer(&memory),
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        memory.fill_at(0, 0, size).unwrap();
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, size, true).buffer(&memory),
+            0,
+        )
+        .await
+        .unwrap();
+        let mut actual = vec![0; size];
+        memory.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[async_test]
+    async fn copy_only_file_roundtrip_with_explicit_flush() {
+        let disk = file_disk();
+        assert!(!disk.is_fua_respected());
+        let memory = GuestMemory::new(
+            "non-lockable-test-memory",
+            NonLockableMemory(GuestMemory::allocate(SECTOR_SIZE)),
+        );
+        memory.write_at(0, &[0x42; SECTOR_SIZE]).unwrap();
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(0, SECTOR_SIZE, false).buffer(&memory),
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        disk.sync_cache().await.unwrap();
+        memory.fill_at(0, 0, SECTOR_SIZE).unwrap();
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, SECTOR_SIZE, true).buffer(&memory),
+            0,
+        )
+        .await
+        .unwrap();
+        let mut actual = [0; SECTOR_SIZE];
+        memory.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, [0x42; SECTOR_SIZE]);
     }
 }

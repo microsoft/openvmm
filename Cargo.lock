@@ -1646,6 +1646,7 @@ dependencies = [
  "scsi_buffers",
  "storage_tests",
  "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "vm_resource",
 ]
@@ -10457,8 +10458,10 @@ dependencies = [
  "guestmem",
  "inspect",
  "inspect_counters",
+ "mesh",
  "pal_async",
  "pal_event",
+ "parking_lot",
  "pci_core",
  "scsi_buffers",
  "task_control",

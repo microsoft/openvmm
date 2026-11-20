@@ -645,3 +645,97 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
 
     Ok(locked)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    pub(super) struct NonLockableMemory(pub(super) GuestMemory);
+
+    // SAFETY: The backing owns the fully allocated heap mapping for its lifetime.
+    unsafe impl guestmem::GuestMemoryAccess for NonLockableMemory {
+        fn mapping(&self) -> Option<std::ptr::NonNull<u8>> {
+            std::ptr::NonNull::new(self.0.full_mapping().unwrap().0)
+        }
+
+        fn max_address(&self) -> u64 {
+            self.0.full_mapping().unwrap().1 as u64
+        }
+
+        fn supports_kernel_lock(&self) -> bool {
+            false
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn nonlockable_backing_uses_bounce_for_direct_compatible_payload() {
+        let memory = GuestMemory::allocate(3 * guestmem::PAGE_SIZE);
+        let payload = [
+            VirtioQueuePayload {
+                address: 0,
+                length: VSOCK_HEADER_SIZE as u32,
+                writeable: false,
+            },
+            VirtioQueuePayload {
+                address: guestmem::PAGE_SIZE as u64,
+                length: guestmem::PAGE_SIZE as u32,
+                writeable: false,
+            },
+        ];
+        assert!(
+            lock_payload_data(
+                &memory,
+                &payload,
+                guestmem::PAGE_SIZE as u64,
+                true,
+                false,
+                LockedIoSlice::new(),
+            )
+            .unwrap()
+            .is_some()
+        );
+        let memory = GuestMemory::new("nonlockable vsock test", NonLockableMemory(memory));
+        assert!(!memory.supports_kernel_lock());
+        assert!(
+            lock_payload_data(
+                &memory,
+                &payload,
+                guestmem::PAGE_SIZE as u64,
+                true,
+                false,
+                LockedIoSlice::new(),
+            )
+            .unwrap()
+            .is_none()
+        );
+        let payload = [
+            VirtioQueuePayload {
+                address: 0,
+                length: VSOCK_HEADER_SIZE as u32,
+                writeable: true,
+            },
+            VirtioQueuePayload {
+                address: guestmem::PAGE_SIZE as u64,
+                length: guestmem::PAGE_SIZE as u32,
+                writeable: true,
+            },
+        ];
+        assert!(
+            lock_payload_data(
+                &memory,
+                &payload,
+                guestmem::PAGE_SIZE as u64,
+                false,
+                true,
+                LockedIoSliceMut::new(),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+}

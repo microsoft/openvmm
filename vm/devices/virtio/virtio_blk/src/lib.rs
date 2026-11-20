@@ -3,7 +3,8 @@
 
 //! Virtio block device implementation.
 
-#![forbid(unsafe_code)]
+#![cfg_attr(not(test), forbid(unsafe_code))]
+#![deny(unsafe_code)]
 
 pub mod resolver;
 
@@ -773,6 +774,7 @@ fn write_status_byte(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     // ---- copy_regions tests ----
 
