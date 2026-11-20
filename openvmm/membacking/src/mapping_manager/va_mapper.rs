@@ -57,19 +57,27 @@ use super::manager::MappingParams;
 use super::manager::MappingRequest;
 use super::manager::MemoryPolicy;
 use crate::RemoteProcess;
+use futures::FutureExt;
 use futures::executor::block_on;
+use futures::future::LocalBoxFuture;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
 use guestmem::GuestMemoryErrorKind;
 use guestmem::GuestMemorySharing;
 use guestmem::PageFaultAction;
 use guestmem::PageFaultError;
+use guestmem::cached::CacheInvalidation;
+use guestmem::cached::CachePermissions;
 use inspect::Inspect;
 use inspect_counters::SharedCounter;
 use memory_range::MemoryRange;
 use mesh::error::RemoteError;
+use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
+use pal_async::DefaultDriver;
+use pal_async::DefaultPool;
+use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use range_map_vec::RangeMap;
@@ -131,6 +139,7 @@ struct MappingProps {
     /// Backed by private anonymous memory (committed up front) rather than a
     /// shared file/section mapping.
     private: bool,
+    writable: bool,
     /// General per-mapping fault counters, always present. See [`FaultStats`].
     stats: FaultStats,
     /// Soft-large-page (Windows THP) state, or `None` when the scheme does not
@@ -175,6 +184,7 @@ impl std::fmt::Debug for VaMapper {
 
 impl Drop for VaMapper {
     fn drop(&mut self) {
+        self.inner.published.store(false, Ordering::Release);
         // Do not join the mapper thread here. The mapping manager must process
         // this request before the mapper request channel closes, and joining in
         // Drop could deadlock if the manager task needs the current executor to
@@ -249,6 +259,11 @@ struct MapperInner {
     /// this is set.
     supports_memory_fault_resolution: bool,
     req_send: mesh::Sender<MappingRequest>,
+    fault_send: Option<mesh::Sender<(MapperId, MemoryRange)>>,
+    cache_invalidation: Arc<CacheInvalidation>,
+    /// A returned VaMapper handle can own cached views. Failed registration
+    /// and final handle drop cannot have any such readers of this reservation.
+    published: AtomicBool,
     /// Maintains a weak reference to avoid a reference cycle with the partition.
     host_access: OnceLock<HostAccess>,
 }
@@ -296,20 +311,97 @@ struct MapperTask {
     inner: Arc<MapperInner>,
 }
 
+struct PendingUnmap {
+    range: MemoryRange,
+    rpc: Rpc<(), ()>,
+    drain: LocalBoxFuture<'static, ()>,
+}
+
 impl MapperTask {
-    async fn run(mut self, mut req_recv: mesh::Receiver<MapperRequest>) {
-        while let Ok(req) = req_recv.recv().await {
-            match req {
-                MapperRequest::Unmap(rpc) => rpc.handle_sync(|range| {
-                    tracing::debug!(%range, "invalidate received");
+    async fn run(mut self, mut req_recv: mesh::Receiver<MapperRequest>, driver: DefaultDriver) {
+        let mut pending: Option<PendingUnmap> = None;
+        loop {
+            enum Event {
+                Request(Result<MapperRequest, mesh::RecvError>),
+                Drained,
+            }
+            let event = {
+                let mut drain = std::pin::pin!(
+                    async {
+                        if let Some(pending) = &mut pending {
+                            pending.drain.as_mut().await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                    .fuse()
+                );
+                let mut request = std::pin::pin!(req_recv.recv().fuse());
+                futures::select! {
+                    request = request => Event::Request(request),
+                    () = drain => Event::Drained,
+                }
+            };
+            let req = match event {
+                Event::Request(Ok(req)) => req,
+                Event::Request(Err(_)) => break,
+                Event::Drained => {
+                    let pending = pending.take().unwrap();
                     self.inner
                         .mapping
-                        .unmap(range.start() as usize, range.len() as usize)
+                        .unmap(pending.range.start() as usize, pending.range.len() as usize)
                         .expect("invalidate request should be valid");
+                    pending.rpc.complete(());
+                    continue;
+                }
+            };
+            match req {
+                MapperRequest::Unmap(rpc) => {
+                    assert!(
+                        pending.is_none(),
+                        "mapping manager serializes invalidations"
+                    );
+                    let (range, rpc) = rpc.split();
+                    tracing::debug!(%range, "invalidate received");
+                    // Stop admitting new cache views, but preserve the old VA
+                    // while readers and unrelated lazy faults make progress.
                     self.inner.remove_mapping(range);
-                }),
+                    self.wake_waiters(range, None);
+                    if self.inner.fault_send.is_none() {
+                        // Old coordinators cannot service faults while waiting
+                        // for this reply. They never enable our direct cache.
+                        self.inner
+                            .mapping
+                            .unmap(range.start() as usize, range.len() as usize)
+                            .expect("invalidate request should be valid");
+                        rpc.complete(());
+                        continue;
+                    }
+                    let mut timer = PolledTimer::new(&driver);
+                    pending = Some(PendingUnmap {
+                        range,
+                        rpc,
+                        drain: async move {
+                            guestmem::rcu()
+                                .synchronize(async |duration| {
+                                    timer.sleep(duration).await;
+                                })
+                                .await;
+                        }
+                        .boxed_local(),
+                    });
+                }
                 MapperRequest::MapEager(rpc) => {
                     rpc.handle_failable_sync(|params| {
+                        if pending
+                            .as_ref()
+                            .is_some_and(|p| p.range.overlaps(&params.range))
+                        {
+                            return Err(MappingError::new(
+                                params.range,
+                                std::io::Error::other("mapping is being retired"),
+                            ));
+                        }
                         tracing::debug!(range = %params.range, "eager mapping received");
                         self.map(params)
                     });
@@ -317,6 +409,10 @@ impl MapperTask {
                 MapperRequest::MapLazy(params) => {
                     tracing::debug!(range = %params.range, "lazy mapping received");
                     let (range, writable) = (params.range, params.writable);
+                    if pending.as_ref().is_some_and(|p| p.range.overlaps(&range)) {
+                        self.wake_waiters(range, None);
+                        continue;
+                    }
                     match self.map(params) {
                         Ok(()) => self.wake_waiters(range, Some(writable)),
                         Err(e) => {
@@ -342,13 +438,53 @@ impl MapperTask {
             }
         }
         // Don't allow more waiters.
-        *self.inner.waiters.lock() = None;
-        // Invalidate everything.
-        let _ = self.inner.mapping.unmap(0, self.inner.mapping.len());
+        let waiters = self.inner.waiters.lock().take();
+        drop(waiters);
+        {
+            let mut mappings = self.inner.mappings.write();
+            *mappings = RangeMap::new();
+            self.inner.cache_invalidation.invalidate();
+        }
+        if self.inner.fault_send.is_some() && self.inner.published.load(Ordering::Acquire) {
+            let mut timer = PolledTimer::new(&driver);
+            guestmem::rcu()
+                .synchronize(async |duration| {
+                    timer.sleep(duration).await;
+                })
+                .await;
+        }
+        self.inner
+            .mapping
+            .unmap(0, self.inner.mapping.len())
+            .expect("mapper shutdown range should be valid");
+        if let Some(pending) = pending {
+            pending.rpc.complete(());
+        }
     }
 
     /// Establishes a mapping in the VA space, dispatching on how it is backed.
     fn map(&self, params: MappingParams) -> Result<(), MappingError> {
+        {
+            let mappings = self.inner.mappings.read();
+            if mappings
+                .get_entry(&params.range.start())
+                .is_some_and(|(start, end, _)| {
+                    *start == params.range.start() && *end + 1 == params.range.end()
+                })
+            {
+                // Multiple faults can request the same immutable mapping.
+                // Do not replace its VA while existing readers are using it.
+                return Ok(());
+            }
+            if mappings.iter().any(|(range, _)| {
+                *range.start() < params.range.end() && params.range.start() <= *range.end()
+            }) {
+                return Err(MappingError::new(
+                    params.range,
+                    std::io::Error::other("overlapping mapping was not invalidated"),
+                ));
+            }
+        }
         // Soft large pages apply only to writable THP-eligible RAM on the primary
         // mapper (Windows); `SoftLp::new` returns `None` otherwise. See the
         // `soft_lp` module. They also depend on the partition delivering write
@@ -387,6 +523,7 @@ impl MapperTask {
             params.range,
             MappingProps {
                 private,
+                writable: params.writable,
                 stats: FaultStats::default(),
                 soft_lp,
             },
@@ -584,16 +721,22 @@ impl MapperTask {
     }
 
     fn wake_waiters(&mut self, range: MemoryRange, writable: Option<bool>) {
-        let mut waiters = self.inner.waiters.lock();
-        let waiters = waiters.as_mut().unwrap();
-
-        let mut i = 0;
-        while i < waiters.len() {
-            if let Some(success) = waiters[i].complete(range, writable) {
-                waiters.swap_remove(i).done.send(success);
-            } else {
-                i += 1;
+        let completed = {
+            let mut waiters = self.inner.waiters.lock();
+            let waiters = waiters.as_mut().unwrap();
+            let mut completed = Vec::new();
+            let mut i = 0;
+            while i < waiters.len() {
+                if let Some(success) = waiters[i].complete(range, writable) {
+                    completed.push((waiters.swap_remove(i).done, success));
+                } else {
+                    i += 1;
+                }
             }
+            completed
+        };
+        for (done, success) in completed {
+            done.send(success);
         }
     }
 }
@@ -627,6 +770,7 @@ impl MapperInner {
             inserted,
             "mapping index range should be clear after removal"
         );
+        self.cache_invalidation.invalidate();
     }
 
     /// Removes a mapping from the index.
@@ -634,14 +778,14 @@ impl MapperInner {
         if range.is_empty() {
             return;
         }
-        self.mappings
-            .write()
-            .remove_range(range.start()..=range.end() - 1);
+        let mut mappings = self.mappings.write();
+        mappings.remove_range(range.start()..=range.end() - 1);
+        self.cache_invalidation.invalidate();
     }
 
     /// Request that the mapping manager send mappings for the given range.
     ///
-    /// Registers a waiter, sends `SendMappings` (fire-and-forget), and
+    /// Registers a waiter, sends a fault request (fire-and-forget), and
     /// awaits the waiter oneshot. The mapping manager will send `MapLazy`
     /// or `NoMapping` messages to the mapper task, which wakes the waiter.
     async fn request_mapping(
@@ -662,7 +806,11 @@ impl MapperInner {
             });
 
         tracing::debug!(%range, "waiting for mappings");
-        self.req_send.send(MappingRequest::SendMappings(id, range));
+        if let Some(send) = &self.fault_send {
+            send.send((id, range));
+        } else {
+            self.req_send.send(MappingRequest::SendMappings(id, range));
+        }
         match recv.await {
             Ok(true) => Ok(()),
             Ok(false) | Err(_) => Err(NoMapping(range)),
@@ -725,6 +873,7 @@ impl MapperInner {
 impl VaMapper {
     pub(crate) async fn new(
         req_send: mesh::Sender<MappingRequest>,
+        fault_send: Option<mesh::Sender<(MapperId, MemoryRange)>>,
         len: u64,
         remote_process: Option<RemoteProcess>,
         minimum_alignment: Option<usize>,
@@ -772,6 +921,9 @@ impl VaMapper {
             primary,
             supports_memory_fault_resolution,
             req_send,
+            fault_send,
+            cache_invalidation: Arc::new(CacheInvalidation::default()),
+            published: AtomicBool::new(false),
             host_access: OnceLock::new(),
         });
 
@@ -787,7 +939,11 @@ impl VaMapper {
                 let runner = MapperTask {
                     inner: inner.clone(),
                 };
-                || block_on(runner.run(req_recv))
+                move || {
+                    let mut pool = DefaultPool::new();
+                    let driver = pool.driver();
+                    pool.run_until(runner.run(req_recv, driver));
+                }
             })
             .unwrap();
 
@@ -813,6 +969,7 @@ impl VaMapper {
             }
         };
 
+        inner.published.store(true, Ordering::Release);
         Ok(VaMapper {
             inner,
             id,
@@ -836,6 +993,7 @@ impl VaMapper {
                 .is_ok(),
             "host access is already installed"
         );
+        self.inner.cache_invalidation.invalidate();
     }
 
     /// Returns the length of the VA reservation in bytes.
@@ -874,6 +1032,68 @@ unsafe impl GuestMemoryAccess for VaMapper {
 
     fn max_address(&self) -> u64 {
         self.inner.mapping.len() as u64
+    }
+
+    fn cache_invalidation(&self) -> Option<Arc<CacheInvalidation>> {
+        self.inner
+            .fault_send
+            .as_ref()
+            .map(|_| self.inner.cache_invalidation.clone())
+    }
+
+    fn cached_access(&self, address: u64, len: usize) -> CachePermissions {
+        if self.inner.fault_send.is_none() || self.inner.host_access.get().is_some() {
+            return CachePermissions::NONE;
+        }
+        let Some(end) = address
+            .checked_add(len as u64)
+            .filter(|&end| end <= self.inner.mapping.len() as u64)
+        else {
+            return CachePermissions::NONE;
+        };
+        let mut cursor = address;
+        let mut writable = true;
+        let mappings = self.inner.mappings.read();
+        while cursor < end {
+            let Some((_, mapping_end, props)) = mappings.get_entry(&cursor) else {
+                return CachePermissions::NONE;
+            };
+            // Deferred-protect/host-access mappings retain fault resolution
+            // until their permission transitions participate in this protocol.
+            if props.soft_lp.is_some() {
+                return CachePermissions::NONE;
+            }
+            writable &= props.writable;
+            cursor = end.min(*mapping_end + 1);
+        }
+        CachePermissions {
+            read: true,
+            write: writable,
+        }
+    }
+
+    fn prepare_cached_access(
+        &self,
+        address: u64,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError> {
+        let end = address
+            .checked_add(len as u64)
+            .filter(|&end| end <= self.inner.mapping.len() as u64)
+            .ok_or_else(|| {
+                GuestMemoryBackingError::new(
+                    GuestMemoryErrorKind::OutOfRange,
+                    address,
+                    UnexpectedPageFault,
+                )
+            })?;
+        block_on(
+            self.inner
+                .request_mapping(self.id, MemoryRange::bounding(address..end), true),
+        )
+        .map_err(|error| {
+            GuestMemoryBackingError::new(GuestMemoryErrorKind::OutOfRange, address, error)
+        })
     }
 
     fn page_fault(
