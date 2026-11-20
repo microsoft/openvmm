@@ -154,7 +154,8 @@ pub struct Options {
     ///
     /// Unsupported export operations fail when requested.
     /// VMBus rings and synthetic-page loans may be unavailable. Host-owned
-    /// I/O buffers are not restricted.
+    /// I/O buffers are not restricted. MSHV SNP uses non-lockable backing
+    /// automatically, without this option.
     #[clap(long = "force-guest-memory-bounce")]
     pub force_guest_memory_bounce: bool,
 
@@ -1607,6 +1608,13 @@ impl Options {
                 anyhow::bail!("SNP isolation currently does not support hugetlb memory");
             }
         }
+        Ok(())
+    }
+
+    /// Validates VM options before resource construction or other side effects.
+    pub fn validate_vm_options(&self) -> anyhow::Result<()> {
+        self.validate_isolation_options()?;
+        self.validate_igvm_options()?;
         Ok(())
     }
 
@@ -6226,6 +6234,8 @@ mod tests {
             "--isolation",
             "snp",
             "--snp-restricted-injection",
+            "--memory",
+            "thp=off",
         ])
         .unwrap();
         assert_eq!(
@@ -6240,6 +6250,8 @@ mod tests {
             "--isolation",
             "snp",
             "--snp-restricted-injection",
+            "--memory",
+            "thp=off",
         ])
         .unwrap();
         opt.validate_isolation_options().unwrap();

@@ -37,6 +37,7 @@ use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_EXECUTE;
 use hvdef::hypercall::HvRegisterAssoc;
 use inspect::Inspect;
 use inspect::InspectMut;
+use memory_range::MemoryRange;
 use mshv_bindings::MSHV_SET_MEM_BIT_EXECUTABLE;
 use mshv_bindings::MSHV_SET_MEM_BIT_WRITABLE;
 use mshv_bindings::mshv_install_intercept;
@@ -325,6 +326,17 @@ enum MshvIsolationState {
 }
 
 impl MshvIsolationState {
+    fn validate_device_memory_mapping(&self, _range: MemoryRange) -> Result<(), Error> {
+        match self {
+            Self::None => Ok(()),
+            #[cfg(guest_arch = "x86_64")]
+            Self::Snp(_) => Err(ErrorInner::InvalidConfiguration(
+                "MSHV SNP does not support device-backed memory mappings",
+            )
+            .into()),
+        }
+    }
+
     #[cfg(guest_arch = "x86_64")]
     fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
         match self {
@@ -1154,22 +1166,21 @@ impl virt::PartitionMemoryMapper for MshvPartition {
 // TODO: figure out a better abstraction that also works for KVM and WHP.
 impl virt::PartitionHostAccess for MshvPartitionInner {
     fn acquire_host_access(&self, _addr: u64, _size: u64, _write: bool) -> anyhow::Result<()> {
-        // TODO: The current prototype only provides the acquisition half of
-        // the host-visibility lifecycle. This is sufficient for single-threaded
-        // bring-up with no concurrent page-state changes, but the GPA attribute
-        // intercept revocation path must share serialized state with
-        // acquire_snp_host_access before concurrent use is safe.
-        // TODO: Investigate whether MSHV supports read-only host-access
-        // requests and use `_write` to avoid granting write access for reads.
         #[cfg(guest_arch = "x86_64")]
-        if self.isolation.snp().is_some() {
-            return arch::acquire_snp_host_access(self, _addr, _size);
+        if let Some(snp) = self.isolation.snp() {
+            return snp.acquire_host_access(self, _addr, _size, _write);
         }
         anyhow::bail!("acquiring host access is not supported")
     }
 }
 
 impl virt::PartitionMemoryMap for MshvPartitionInner {
+    fn validate_device_memory_mapping(&self, range: MemoryRange) -> anyhow::Result<()> {
+        self.isolation
+            .validate_device_memory_mapping(range)
+            .map_err(anyhow::Error::from)
+    }
+
     unsafe fn map_range(
         &self,
         data: *mut u8,
