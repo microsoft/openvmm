@@ -9,6 +9,10 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+/// The largest error code that a reply can carry: Linux refuses a reply whose error, the negated
+/// code, is -512 (`-ERESTARTSYS`) or less.
+const MAX_ERROR: i32 = 511;
+
 /// Trait used by objects that send FUSE replies to the kernel.
 pub trait ReplySender {
     /// Send the specified buffers to the kernel.
@@ -34,7 +38,18 @@ pub trait ReplySender {
     }
 
     /// Send an error reply.
+    ///
+    /// `error` is a Linux error code from 1 through 511, which the reply carries negated, or 0 for
+    /// an empty reply. FUSE clients refuse a reply that carries any other code, so any other code
+    /// fails the request with `EIO` instead.
     fn send_error(&mut self, unique: u64, error: i32) -> io::Result<()> {
+        let error = if (0..=MAX_ERROR).contains(&error) {
+            error
+        } else {
+            tracelimit::error_ratelimited!(unique, error, "Invalid error code, replying EIO");
+            lx::EIO
+        };
+
         if error != 0 {
             tracing::debug!(unique, error, "reply");
         }

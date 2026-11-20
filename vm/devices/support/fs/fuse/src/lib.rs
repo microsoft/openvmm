@@ -58,6 +58,9 @@ pub struct CreateOut {
 ///
 /// For many operations, a reply of `ENOSYS` is taken as permanent failure, preventing the client
 /// from ever issuing that operation again.
+///
+/// An operation that fails returns a Linux error code from 1 through 511, which the reply to its
+/// request carries; any other code fails the request with `EIO` instead.
 pub trait Fuse {
     /// Looks up a child of an inode.
     ///
