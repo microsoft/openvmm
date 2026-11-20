@@ -657,12 +657,19 @@ async fn second_page_vtl_fault_address() {
 
 #[async_test]
 async fn cmpxchg16b_ram() {
-    const OLD: u64 = u64::from_le_bytes([0xa5; 8]);
-    const NEW: u64 = 0x123456789abcdef0;
-    for matches in [false, true] {
+    const OLD: u128 = 0x0123456789abcdef_fedcba9876543210;
+    const NEW: u128 = 0x1122334455667788_99aabbccddeeff00;
+    // Locked emulation uses a host 16-byte atomic, which requires CMPXCHG16B on x86_64.
+    let host_supports_cmpxchg16b = cfg_select! {
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        target_arch = "x86_64" => std::is_x86_feature_detected!("cmpxchg16b"),
+        _ => true,
+    };
+    for current in [OLD, OLD ^ 1, OLD ^ (1 << 64)] {
+        let matches = current == OLD;
         for locked in [false, true] {
             let gm = GuestMemory::allocate(0x1000);
-            gm.fill_at(0x400, 0xa5, 16).unwrap();
+            gm.write_plain(0x400, &OLD).unwrap();
             let mut support = MockSupport::new(
                 MockSupportMode::Code(TranslateGvaResultCode::SUCCESS),
                 MockSupportTranslation {
@@ -674,10 +681,10 @@ async fn cmpxchg16b_ram() {
                 &gm,
             );
             support.state.gps[Gp::RDI as usize] = 0x400;
-            support.state.gps[Gp::RAX as usize] = if matches { OLD } else { 0 };
-            support.state.gps[Gp::RDX as usize] = if matches { OLD } else { 0 };
-            support.state.gps[Gp::RBX as usize] = NEW;
-            support.state.gps[Gp::RCX as usize] = NEW;
+            support.state.gps[Gp::RAX as usize] = current as u64;
+            support.state.gps[Gp::RDX as usize] = (current >> 64) as u64;
+            support.state.gps[Gp::RBX as usize] = NEW as u64;
+            support.state.gps[Gp::RCX as usize] = (NEW >> 64) as u64;
             let mut asm = CodeAssembler::new(64).unwrap();
             let assembler = if locked { asm.lock() } else { &mut asm };
             assembler.cmpxchg16b(xmmword_ptr(rdi)).unwrap();
@@ -696,34 +703,36 @@ async fn cmpxchg16b_ram() {
             )
             .await;
 
-            let mut expected = [0xa5; 16];
-            if locked {
+            if locked && !host_supports_cmpxchg16b {
                 assert!(matches!(
                     result,
                     Err(virt::VpHaltReason::TripleFault { .. })
                 ));
                 assert_eq!(support.state.rip, rip);
-            } else {
-                result.unwrap();
-                if matches {
-                    expected[..8].copy_from_slice(&NEW.to_le_bytes());
-                    expected[8..].copy_from_slice(&NEW.to_le_bytes());
-                } else {
-                    registers[Gp::RAX as usize] = OLD;
-                    registers[Gp::RDX as usize] = OLD;
-                }
-                flags.set_zero(matches);
-                assert_eq!(
-                    support.state.rip,
-                    rip + support.instruction_bytes.len() as u64
-                );
+                assert_eq!(support.state.gps, registers);
+                assert_eq!(support.state.rflags, flags);
+                assert!(support.injected_event().is_none());
+                assert_eq!(gm.read_plain::<u128>(0x400).unwrap(), OLD);
+                continue;
             }
+            result.unwrap();
+
+            if !matches {
+                registers[Gp::RAX as usize] = OLD as u64;
+                registers[Gp::RDX as usize] = (OLD >> 64) as u64;
+            }
+            flags.set_zero(matches);
+            assert_eq!(
+                support.state.rip,
+                rip + support.instruction_bytes.len() as u64
+            );
             assert_eq!(support.state.gps, registers);
             assert_eq!(support.state.rflags, flags);
             assert!(support.injected_event().is_none());
-            let mut actual = [0; 16];
-            gm.read_at(0x400, &mut actual).unwrap();
-            assert_eq!(actual, expected);
+            assert_eq!(
+                gm.read_plain::<u128>(0x400).unwrap(),
+                if matches { NEW } else { OLD }
+            );
         }
     }
 }

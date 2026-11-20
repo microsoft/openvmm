@@ -31,6 +31,8 @@ flowey_request! {
     }
 }
 
+const APT_RETRIES: usize = 5;
+
 fn query_installed_packages(
     rt: &mut RustRuntimeServices<'_>,
     distro: FlowPlatformLinuxDistro,
@@ -93,7 +95,7 @@ fn parse_installed_packages(
 
 fn update_packages(
     rt: &mut RustRuntimeServices<'_>,
-    distro: FlowPlatformLinuxDistro,
+    distro: &FlowPlatformLinuxDistro,
 ) -> anyhow::Result<()> {
     match distro {
         FlowPlatformLinuxDistro::Ubuntu => flowey::shell_cmd!(rt, "sudo apt-get update").run()?,
@@ -297,15 +299,12 @@ impl FlowNodeWithConfig for Node {
                     return Ok(());
                 }
                 if !skip_update {
-                    // Retry on failure in CI
-                    let mut i = 0;
-                    while let Err(e) = update_packages(rt, distro) {
-                        i += 1;
-                        if i == 5 || interactive {
-                            return Err(e);
-                        }
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                    }
+                    crate::_util::retry(
+                        rt,
+                        update_packages,
+                        &distro,
+                        if interactive { 1 } else { APT_RETRIES },
+                    )?;
                 }
                 install_packages(rt, distro, &packages, interactive)?;
 
