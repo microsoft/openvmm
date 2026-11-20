@@ -554,6 +554,19 @@ The in-flight limit is per queue: eight queues at the default depth 64 allow
 512 concurrent requests per disk. This limit is separate from the virtqueue
 descriptor-ring size.
 
+#### Guest-memory I/O policy
+
+`--force-guest-memory-bounce` disables user-mode and kernel page locking and
+backing exports for guest RAM. It defaults to off. Backends use copying or
+staging paths where available; unsupported export requests fail when made.
+This option does not enable pointer-based VMBus rings or synthetic page loans.
+
+```admonish warning
+This is a VMM backing restriction, not Linux memory isolation. The force-bounce
+option does not revoke other mappings, change guest page visibility, or add
+kernel enforcement.
+```
+
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 
 ```sh

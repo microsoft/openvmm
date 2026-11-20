@@ -574,6 +574,9 @@ pub struct HypervisorConfig {
     /// rejects it rather than silently ignoring it (see
     /// `virt::Hypervisor::recognizes_nested_virt`).
     pub nested_virt: bool,
+    /// Disable persistent guest-memory locking while keeping CPU copies available.
+    /// Host-owned I/O buffers are not restricted.
+    pub disable_guest_memory_locking: bool,
 }
 
 #[derive(Debug, MeshPayload)]
