@@ -5669,7 +5669,7 @@ async fn in_order_defers_reuse_until_published(driver: DefaultDriver) {
         );
         if let Some(second) = second {
             // Publication allows a retry even if the reused head is still
-            // outstanding. The retry parks again at the new used cursor.
+            // outstanding. The retry parks again at the new outstanding count.
             assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
             assert!(in_order.try_next(&mut queue).unwrap().is_none());
             assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
@@ -5724,19 +5724,20 @@ async fn in_order_successful_fetch_clears_deferral(driver: DefaultDriver) {
     assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
 
     // The guest replaces the unconsumed entry rather than waiting for its
-    // earlier use. A successful fetch must invalidate the old deferral even
-    // though nothing has been published.
+    // earlier use. After completing that use, a successful fetch brings the
+    // outstanding count back to the snapshot and must clear the old deferral.
     mem.write_plain(
         BOUND_TEST_AVAIL_ADDR + AVAIL_OFFSET_RING + AVAIL_ELEMENT_SIZE,
         &1u16,
     )
     .unwrap();
+    in_order.complete(&mut queue, first.into_completion(), 0);
     let second = in_order.try_next(&mut queue).unwrap().unwrap();
     assert_eq!(second.descriptor_index(), 1);
     assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
     let third = in_order.try_next(&mut queue).unwrap().unwrap();
     assert_eq!(third.descriptor_index(), 2);
-    for work in [first, second, third] {
+    for work in [second, third] {
         in_order.complete(&mut queue, work.into_completion(), 0);
     }
     assert!(in_order.try_next(&mut queue).unwrap().is_none());
@@ -5843,29 +5844,36 @@ async fn in_order_defers_reuse_on_full_ring(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn in_order_defers_when_packed_chain_fills_ring(driver: DefaultDriver) {
+async fn in_order_rejects_reposted_packed_chain_filling_ring(driver: DefaultDriver) {
     use crate::in_order::InOrderCompletion;
 
-    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
-    let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let post_chain = |wrap| {
-        for index in 0..BOUND_TEST_QUEUE_SIZE {
-            write_packed_descriptor(
-                &mem,
-                index,
-                BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
-                index,
-                DescriptorFlags::new()
-                    .with_write(true)
-                    .with_next(index + 1 < BOUND_TEST_QUEUE_SIZE)
-                    .with_available(wrap)
-                    .with_used(!wrap),
-            );
-        }
-    };
-
-    for wrap in [true, false, true] {
+    for wrap in [true, false] {
+        let initial_index = u16::from(wrap) << 15;
+        let (mem, mut queue) = new_bound_test_queue(
+            &driver,
+            true,
+            Some(QueueState {
+                avail_index: initial_index,
+                used_index: initial_index,
+            }),
+        );
+        let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let post_chain = |wrap| {
+            for index in 0..BOUND_TEST_QUEUE_SIZE {
+                write_packed_descriptor(
+                    &mem,
+                    index,
+                    BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                    index,
+                    DescriptorFlags::new()
+                        .with_write(true)
+                        .with_next(index + 1 < BOUND_TEST_QUEUE_SIZE)
+                        .with_available(wrap)
+                        .with_used(!wrap),
+                );
+            }
+        };
         post_chain(wrap);
         assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
         let work = in_order.try_next(&mut queue).unwrap().unwrap();
@@ -5874,18 +5882,24 @@ async fn in_order_defers_when_packed_chain_fills_ring(driver: DefaultDriver) {
         assert!(in_order.try_next(&mut queue).unwrap().is_none());
         assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
 
-        // Premature wrap-flag reuse must not retire the queue, even though
-        // only one head is outstanding.
+        // Publication overwrites the reposted head, so packed overlap cannot
+        // be deferred even though only one head is outstanding.
         post_chain(!wrap);
         let state = queue.queue_state();
-        assert!(in_order.try_next(&mut queue).unwrap().is_none());
+        let error = in_order
+            .try_next(&mut queue)
+            .err()
+            .expect("a reposted packed chain must fail the queue");
+        assert_in_flight_error(error, BOUND_TEST_QUEUE_SIZE, BOUND_TEST_QUEUE_SIZE);
         assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
         assert_eq!(queue.queue_state(), state);
 
         in_order.complete(&mut queue, work.into_completion(), 0);
         assert_eq!(in_order.outstanding(), 0);
         assert_eq!(queue.queue_state().used_index, state.avail_index);
-        // The next lap is posted and consumed without signalling a kick.
+        // Retry immediately, without reposting the overwritten descriptors.
+        assert!(in_order.try_next(&mut queue).unwrap().is_none());
+        assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
     }
 }
 
@@ -6067,34 +6081,56 @@ async fn in_order_write_failure_releases_ownership_and_capacity(driver: DefaultD
 
     for buffered in [false, true] {
         for offset in [USED_OFFSET_RING, USED_OFFSET_IDX] {
-            let access = VirtioTestMemoryAccess::new();
-            access.modify_memory_map(BOUND_TEST_DESC_ADDR, &vec![0; 0x4000], true);
-            let mem = GuestMemory::new("in-order-write-failure", access.clone());
-            let (mem, mut queue) =
-                new_bound_test_queue_with_memory(&driver, false, None, mem).unwrap();
-            let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
-            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, 0);
-            let mut work: Vec<_> = (0..BOUND_TEST_QUEUE_SIZE)
-                .map(|_| in_order.try_next(&mut queue).unwrap().unwrap())
-                .collect();
-            let failed_address = BOUND_TEST_USED_ADDR + offset;
-            *access.failed_write_range.lock() = Some(failed_address..failed_address + 2);
+            for outstanding in [1, BOUND_TEST_QUEUE_SIZE] {
+                let access = VirtioTestMemoryAccess::new();
+                access.modify_memory_map(BOUND_TEST_DESC_ADDR, &vec![0; 0x4000], true);
+                let mem = GuestMemory::new("in-order-write-failure", access.clone());
+                let (mem, mut queue) =
+                    new_bound_test_queue_with_memory(&driver, false, None, mem).unwrap();
+                let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+                make_split_bound_test_work(&mem, outstanding, 0);
+                let mut work: Vec<_> = (0..outstanding)
+                    .map(|_| in_order.try_next(&mut queue).unwrap().unwrap())
+                    .collect();
+                make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, outstanding);
+                let state = queue.queue_state();
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                assert!(in_order.try_next(&mut queue).unwrap().is_none());
+                assert_eq!(queue.queue_state(), state);
+                assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+                let failed_address = BOUND_TEST_USED_ADDR + offset;
+                *access.failed_write_range.lock() = Some(failed_address..failed_address + 2);
 
-            if buffered {
-                work.reverse();
-            }
-            for work in work {
-                in_order.complete(&mut queue, work.into_completion(), 0);
-            }
-            assert_eq!(read_used_idx(&mem, BOUND_TEST_USED_ADDR), 0);
-            assert_eq!(in_order.outstanding(), 0);
-
-            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, BOUND_TEST_QUEUE_SIZE);
-            for _ in 0..BOUND_TEST_QUEUE_SIZE {
+                if buffered {
+                    work.reverse();
+                }
+                for work in work {
+                    in_order.complete(&mut queue, work.into_completion(), 0);
+                    if buffered && in_order.outstanding() != 0 {
+                        assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
+                    }
+                }
+                assert_eq!(read_used_idx(&mem, BOUND_TEST_USED_ADDR), 0);
+                assert_eq!(in_order.outstanding(), 0);
+                if offset == USED_OFFSET_RING {
+                    assert_eq!(queue.queue_state().used_index, state.used_index);
+                }
                 assert!(
-                    in_order.try_next(&mut queue).unwrap().is_some(),
-                    "failed publication must not strand host descriptor ownership or capacity"
+                    in_order.poll_kick(&mut queue, &mut cx).is_ready(),
+                    "failed publication must not strand deferred work"
                 );
+
+                for index in 0..BOUND_TEST_QUEUE_SIZE {
+                    assert_eq!(
+                        in_order
+                            .try_next(&mut queue)
+                            .unwrap()
+                            .unwrap()
+                            .descriptor_index(),
+                        index,
+                        "failed publication must not strand host descriptor ownership or capacity",
+                    );
+                }
             }
         }
     }
@@ -6447,25 +6483,18 @@ async fn packed_queue_rejects_chain_exceeding_free_space(driver: DefaultDriver) 
         write(2, available.with_next(true));
         write(3, available.with_next(true));
         write(0, available);
-        if !backpressure {
-            assert_in_flight_error(next_error(&mut queue), 2, 3);
-            continue;
-        }
-
         let state = queue.queue_state();
-        assert!(matches!(
-            queue.try_peek_with_backpressure().unwrap(),
-            PeekResult::CapacityBlocked
-        ));
+        let error = if backpressure {
+            queue
+                .try_peek_with_backpressure()
+                .err()
+                .expect("backpressure must not allow packed overlap")
+        } else {
+            next_error(&mut queue)
+        };
+        assert_in_flight_error(error, 2, 3);
         assert_eq!(queue.queue_state(), state);
         queue.complete(first, 0);
-        let PeekResult::Work(work) = queue.try_peek_with_backpressure().unwrap() else {
-            panic!("publication must free enough capacity for the chain");
-        };
-        let work = work.consume();
-        assert_eq!(work.descriptor_index(), 2);
-        assert_eq!(work.payload.len(), 3);
-        queue.complete(work, 0);
         assert!(matches!(
             queue.try_peek_with_backpressure().unwrap(),
             PeekResult::Empty
@@ -6474,7 +6503,7 @@ async fn packed_queue_rejects_chain_exceeding_free_space(driver: DefaultDriver) 
 }
 
 #[async_test]
-async fn in_order_retries_packed_capacity_after_each_publication(driver: DefaultDriver) {
+async fn in_order_rejects_packed_chain_exceeding_free_space(driver: DefaultDriver) {
     use crate::in_order::InOrderCompletion;
 
     let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
@@ -6494,37 +6523,25 @@ async fn in_order_retries_packed_capacity_after_each_publication(driver: Default
         write(index, available);
         work.push(in_order.try_next(&mut queue).unwrap().unwrap());
     }
-    let post_chain = || {
-        write(3, available.with_next(true));
-        write(0, available.with_next(true));
-        write(1, available);
-    };
-    post_chain();
+    write(3, available.with_next(true));
+    write(0, available.with_next(true));
+    write(1, available);
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     let state = queue.queue_state();
-    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    let error = in_order
+        .try_next(&mut queue)
+        .err()
+        .expect("a packed chain exceeding free space must fail the queue");
+    assert_in_flight_error(error, 3, 3);
     assert_eq!(queue.queue_state(), state);
     assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
 
-    in_order.complete(&mut queue, work.remove(0).into_completion(), 0);
-    post_chain();
-    assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
-    // Two free slots still cannot accommodate the three-slot chain.
-    let state = queue.queue_state();
-    assert!(in_order.try_next(&mut queue).unwrap().is_none());
-    assert_eq!(queue.queue_state(), state);
-    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
-    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
-
-    in_order.complete(&mut queue, work.remove(0).into_completion(), 0);
-    post_chain();
-    assert!(in_order.poll_kick(&mut queue, &mut cx).is_ready());
-    let chain = in_order.try_next(&mut queue).unwrap().unwrap();
-    assert_eq!(chain.descriptor_index(), 3);
-    assert_eq!(chain.payload.len(), 3);
-    in_order.complete(&mut queue, chain.into_completion(), 0);
-    in_order.complete(&mut queue, work.remove(0).into_completion(), 0);
+    for work in work {
+        in_order.complete(&mut queue, work.into_completion(), 0);
+    }
     assert_eq!(in_order.outstanding(), 0);
+    assert!(in_order.try_next(&mut queue).unwrap().is_none());
+    assert!(in_order.poll_kick(&mut queue, &mut cx).is_pending());
 }
 
 /// Oversubscribing the ring retires the queue like any other protocol

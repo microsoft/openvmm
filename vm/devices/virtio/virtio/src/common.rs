@@ -374,14 +374,16 @@ impl VirtioQueue {
         Ok(work.map(|w| PeekedWork::new(self, w)))
     }
 
-    /// Like [`Self::try_peek`], but distinguishes an empty queue from a chain
-    /// exceeding the remaining capacity (heads for split, slots for packed).
-    /// Capacity blocking is temporary; other errors still retire the queue.
+    /// Like [`Self::try_peek`], but distinguishes an empty queue from a split
+    /// ring with no remaining head capacity. Packed capacity errors and other
+    /// errors still retire the queue.
     pub(crate) fn try_peek_with_backpressure(&mut self) -> Result<PeekResult<'_>, Error> {
         match self.core.try_peek_work_with_backpressure() {
             Ok(Some(work)) => Ok(PeekResult::Work(PeekedWork::new(self, work))),
             Ok(None) => Ok(PeekResult::Empty),
-            Err(QueueError::TooManyInFlightDescriptors { .. }) => Ok(PeekResult::CapacityBlocked),
+            Err(QueueError::TooManyInFlightDescriptors { .. }) if !self.core.failed() => {
+                Ok(PeekResult::CapacityBlocked)
+            }
             Err(err) => Err(Error::other(err)),
         }
     }

@@ -19,11 +19,12 @@
 //! (possibly out of order), and only the contiguous filled prefix is published
 //! to the used ring, in order.
 //!
-//! A driver that makes a descriptor head available again before its previous
-//! use has been published violates the virtio spec. The reused head is not
-//! rejected: it is left in the available ring until the earlier use is
-//! published and then processed normally. Use [`InOrderCompletion::poll_kick`]
-//! to wait for work without spinning on a deferred descriptor.
+//! A driver that makes a split-ring descriptor head available again before
+//! its previous use has been published violates the virtio spec. The reused
+//! head is left in the available ring until the earlier use is published and
+//! then processed normally. Packed-ring overlap is rejected, since publishing
+//! the earlier completion overwrites the reused descriptor metadata. Use
+//! [`InOrderCompletion::poll_kick`] to wait without spinning on a deferred head.
 
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
@@ -59,9 +60,10 @@ pub struct InOrderCompletion {
     /// index while still outstanding is deferred by `try_next`.
     #[inspect(skip)]
     completed: Vec<Option<Completed>>,
-    /// Used cursor observed when fetching required publication to make progress.
+    /// Outstanding count when fetching required a completion to retire.
+    /// Between fetches, `order` can only shrink, even if publication fails.
     /// Cleared by the next fetch, never maintained by completion paths.
-    blocked_at_used: Option<u16>,
+    blocked_at_outstanding: Option<usize>,
 }
 
 struct Completed {
@@ -76,7 +78,7 @@ impl InOrderCompletion {
             order: VecDeque::with_capacity(queue_size as usize),
             in_flight: vec![false; queue_size as usize],
             completed: (0..queue_size).map(|_| None).collect(),
-            blocked_at_used: None,
+            blocked_at_outstanding: None,
         }
     }
 
@@ -85,19 +87,19 @@ impl InOrderCompletion {
     ///
     /// If the next available descriptor head is still outstanding, it is left
     /// unconsumed and `Ok(None)` is returned until the earlier use is
-    /// published. A chain exceeding the remaining ring capacity is likewise
-    /// deferred until publication frees capacity.
+    /// published. A split ring with no remaining head capacity is likewise
+    /// deferred. Packed chains exceeding the remaining capacity fail the queue.
     ///
     /// Use this in place of [`VirtioQueue::try_next`].
     pub fn try_next(
         &mut self,
         queue: &mut VirtioQueue,
     ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        self.blocked_at_used = None;
+        self.blocked_at_outstanding = None;
         let work = match queue.try_peek_with_backpressure()? {
             PeekResult::Empty => return Ok(None),
             PeekResult::CapacityBlocked => {
-                self.blocked_at_used = Some(queue.queue_state().used_index);
+                self.blocked_at_outstanding = Some(self.order.len());
                 return Ok(None);
             }
             PeekResult::Work(work) => work,
@@ -114,7 +116,7 @@ impl InOrderCompletion {
         );
         if self.in_flight[idx as usize] {
             drop(work);
-            self.blocked_at_used = Some(queue.queue_state().used_index);
+            self.blocked_at_outstanding = Some(self.order.len());
             tracelimit::event_ratelimited_static!(
                 level: DEBUG,
                 descriptor_index = idx,
@@ -130,14 +132,14 @@ impl InOrderCompletion {
     /// Waits for guest work that can be consumed by [`try_next`](Self::try_next).
     ///
     /// Unlike [`VirtioQueue::poll_kick`], this returns `Pending` if fetching
-    /// encountered reuse or insufficient capacity and publication has not
-    /// advanced since. Any publication permits a retry, which may defer again.
+    /// encountered reuse or insufficient capacity and no outstanding entry has
+    /// retired since. Retirement permits a retry even if publication failed.
     /// Callers must also poll their completion source with the same waker and
     /// retry fetching after processing completions: this method does not
-    /// register a waker for publication.
+    /// register a waker for retirement.
     pub fn poll_kick(&self, queue: &mut VirtioQueue, cx: &mut Context<'_>) -> Poll<()> {
         ready!(queue.poll_kick(cx));
-        if self.blocked_at_used == Some(queue.queue_state().used_index) {
+        if self.blocked_at_outstanding == Some(self.order.len()) {
             Poll::Pending
         } else {
             Poll::Ready(())

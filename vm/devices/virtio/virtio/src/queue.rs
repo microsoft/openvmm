@@ -325,8 +325,9 @@ impl QueueCoreGetWork {
         self.try_peek_work_with_policy(false)
     }
 
-    /// Like [`Self::try_peek_work`], but a capacity error does not retire the
-    /// queue, allowing the caller to retry after outstanding work completes.
+    /// Like [`Self::try_peek_work`], but a split-ring capacity error does not
+    /// retire the queue, allowing a retry after outstanding work completes.
+    /// Packed overlap remains fatal: publication overwrites descriptor metadata.
     pub fn try_peek_work_with_backpressure(
         &mut self,
     ) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
@@ -335,14 +336,16 @@ impl QueueCoreGetWork {
 
     fn try_peek_work_with_policy(
         &mut self,
-        defer_capacity: bool,
+        defer_split_capacity: bool,
     ) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
         if self.failed {
             return Ok(None);
         }
         let result = self.try_peek_work_inner();
         if let Err(err) = &result
-            && !(defer_capacity && matches!(err, QueueError::TooManyInFlightDescriptors { .. }))
+            && !(defer_split_capacity
+                && matches!(err, QueueError::TooManyInFlightDescriptors { .. })
+                && matches!(self.inner, QueueGetWorkInner::Split(_)))
         {
             self.failed = true;
         }
