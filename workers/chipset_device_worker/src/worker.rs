@@ -24,15 +24,19 @@ use chipset_device_resources::ErasedChipsetDevice;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
+use mesh::rpc::FailableRpc;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use pal_async::DefaultPool;
+use std::future::Future;
+use std::pin::Pin;
 use std::task::Poll;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::device_state::InputHookCompletion;
 use vmcore::save_restore::AsyncProtobufSaveRestore;
 
 /// Worker ID for ChipsetDevice workers.
@@ -190,6 +194,10 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
 
     fn run(mut self, mut rpc_recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
         self.pool.take().unwrap().run_until(async move {
+            // An input hook request, whose answer waits for the hook's
+            // completion. The worker keeps serving guest requests and polling
+            // the device meanwhile, since vCPUs may still access the device.
+            let mut input_hook: Option<(FailableRpc<(), ()>, InputHookCompletion)> = None;
             loop {
                 enum WorkerEvent {
                     Rpc(WorkerRpc<()>),
@@ -201,6 +209,13 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                         && let Some(poll_device) = self.device.supports_poll_device()
                     {
                         poll_device.poll_device(cx);
+                    }
+
+                    if let Some((_, completion)) = &mut input_hook
+                        && let Poll::Ready(result) = Pin::new(completion).poll(cx)
+                    {
+                        let (rpc, _) = input_hook.take().unwrap();
+                        rpc.complete(result.map_err(RemoteError::new));
                     }
 
                     self.deferred_reads
@@ -264,6 +279,12 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                         DeviceRequest::Start => {
                             self.device.start();
                             self.running = true;
+                        }
+                        DeviceRequest::QuiesceInput(rpc) => {
+                            input_hook = Some((rpc, self.device.quiesce_input()));
+                        }
+                        DeviceRequest::ResumeInput(rpc) => {
+                            input_hook = Some((rpc, self.device.resume_input()));
                         }
                         DeviceRequest::Teardown(rpc) => {
                             assert!(

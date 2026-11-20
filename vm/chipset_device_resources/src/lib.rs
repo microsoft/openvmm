@@ -13,6 +13,7 @@ use std::ops::RangeInclusive;
 use vm_resource::CanResolveTo;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::device_state::InputHookCompletion;
 use vmcore::line_interrupt::LineInterrupt;
 use vmcore::save_restore::AsyncProtobufSaveRestore;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -92,6 +93,8 @@ pub trait ConfigureChipsetDevice: Send {
 #[async_trait]
 trait DynChipsetDevice: ChipsetDevice + AsyncProtobufSaveRestore + InspectMut {
     fn start(&mut self);
+    fn quiesce_input(&mut self) -> InputHookCompletion;
+    fn resume_input(&mut self) -> InputHookCompletion;
     async fn stop(&mut self);
     async fn reset(&mut self);
     async fn teardown(self: Box<Self>);
@@ -103,6 +106,12 @@ impl<T: ChangeDeviceState + ChipsetDevice + AsyncProtobufSaveRestore + InspectMu
 {
     fn start(&mut self) {
         self.start()
+    }
+    fn quiesce_input(&mut self) -> InputHookCompletion {
+        self.quiesce_input()
+    }
+    fn resume_input(&mut self) -> InputHookCompletion {
+        self.resume_input()
     }
     async fn stop(&mut self) {
         self.stop().await
@@ -134,6 +143,14 @@ impl<T: ChangeDeviceState + ChipsetDevice + AsyncProtobufSaveRestore + InspectMu
 impl ChangeDeviceState for ErasedChipsetDevice {
     fn start(&mut self) {
         self.0.start()
+    }
+
+    fn quiesce_input(&mut self) -> InputHookCompletion {
+        self.0.quiesce_input()
+    }
+
+    fn resume_input(&mut self) -> InputHookCompletion {
+        self.0.resume_input()
     }
 
     async fn stop(&mut self) {
