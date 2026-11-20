@@ -653,6 +653,7 @@ enum OperationError {
 
 #[cfg(test)]
 mod tests {
+    mod error_reply;
     mod harness;
     mod ioctl;
     mod saved_state;
