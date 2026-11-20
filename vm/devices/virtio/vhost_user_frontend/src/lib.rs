@@ -1121,6 +1121,14 @@ mod tests {
             self.size
         }
 
+        fn supports_kernel_lock(&self) -> bool {
+            false
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            false
+        }
+
         fn sharing(&self) -> Option<GuestMemorySharing> {
             Some(GuestMemorySharing::new(TestRegionProvider {
                 fd: self.fd.clone(),
@@ -1282,6 +1290,26 @@ mod tests {
         frontend.reset().await;
         assert!(frontend.supports_save_restore());
 
+        drop(frontend);
+        backend_task.await;
+    }
+
+    #[async_test]
+    async fn unshared_memory_rejected_before_memory_table_export(driver: DefaultDriver) {
+        let (mut frontend, _guest_memory, backend_task) = setup_frontend_backend(&driver).await;
+        let resources = dummy_queue_resources(
+            Interrupt::from_event(Event::new()),
+            GuestMemory::allocate(65536),
+        );
+        let error = frontend
+            .start_queue(0, resources, &VirtioDeviceFeatures::new(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "vhost-user requires file-backed guest memory (sharing() returned None)"
+        );
+        assert!(!frontend.mem_table_sent);
         drop(frontend);
         backend_task.await;
     }

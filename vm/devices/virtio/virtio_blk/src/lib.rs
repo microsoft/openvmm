@@ -831,6 +831,7 @@ fn write_status_byte(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     // ---- copy_regions tests ----
 

@@ -1120,10 +1120,9 @@ mod tests {
         storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
     }
 
-    async fn run_async_disk_io(fua: bool) {
+    async fn run_async_disk_io(test_guest_mem: GuestMemory, fua: bool) {
         let disk = get_block_device_or_skip!();
 
-        let test_guest_mem = GuestMemory::allocate(0x8000);
         test_guest_mem
             .write_at(0, &(0..0x8000).map(|x| x as u8).collect::<Vec<_>>())
             .unwrap();
@@ -1153,12 +1152,26 @@ mod tests {
 
     #[async_test]
     async fn test_async_disk_io() {
-        run_async_disk_io(false).await;
+        run_async_disk_io(GuestMemory::allocate(0x8000), false).await;
     }
 
     #[async_test]
     async fn test_async_disk_io_fua() {
-        run_async_disk_io(true).await;
+        run_async_disk_io(GuestMemory::allocate(0x8000), true).await;
+    }
+
+    #[async_test]
+    async fn test_async_disk_io_copy_only_regular_file() {
+        for fua in [false, true] {
+            run_async_disk_io(
+                GuestMemory::new(
+                    "non-lockable-test-memory",
+                    guestmem::NonLockable(guestmem::AlignedHeapMemory::new(0x8000)),
+                ),
+                fua,
+            )
+            .await;
+        }
     }
 
     async fn run_async_disk_io_unaligned(fua: bool) {

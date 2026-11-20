@@ -87,8 +87,14 @@ async fn handle_passing_virtiofs_user_token(
         .as_handle()
         .duplicate(true, None)?;
     let token_value = token.as_raw_handle() as u64;
-    let (mut child, client, stderr_task) =
-        super::launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+    let (mut child, client, stderr_task) = super::launch_openvmm(
+        &driver,
+        params.log_source,
+        &openvmm,
+        &socket_path,
+        &pidfile_path,
+    )
+    .await?;
     drop(token);
 
     let mut conn = PolledSocket::connect_unix(&driver, &socket_path)
@@ -192,8 +198,14 @@ async fn handle_passing_virtual_disk(
     // real client would `DuplicateHandle` into OpenVMM.
     let inherited_disk = vhd.as_handle().duplicate(true, None)?;
     let disk_value = inherited_disk.as_raw_handle() as u64;
-    let (mut child, client, stderr_task) =
-        super::launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
+    let (mut child, client, stderr_task) = super::launch_openvmm(
+        &driver,
+        params.log_source,
+        &openvmm,
+        &socket_path,
+        &pidfile_path,
+    )
+    .await?;
     drop(inherited_disk);
 
     let mut conn = PolledSocket::connect_unix(&driver, &socket_path)
