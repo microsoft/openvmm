@@ -116,7 +116,7 @@ describes the source definitions.
   openvmm --hypervisor mshv --isolation snp \
     --igvm firmware=path/to/snp-linux-direct.bin,personality=linux-direct \
     --com1 console \
-    --hv --no-vmbus --memory size=160MB,thp=off -p 1
+    --hv --no-vmbus --memory size=160MB -p 1
   ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
   MSHV partition and loader-generated SNP VMSA. This is only supported on mshv
@@ -127,8 +127,8 @@ describes the source definitions.
   `--isolation snp`.
 * MSHV SNP disables guest-RAM locking and exports. Devices use owned bounce
   buffers.
-  Pass `thp=off` for guest RAM, including on every NUMA node. Existing
-  guest-memory backing files are not supported. The MSHV backend rejects
+  Guest RAM keeps the ordinary THP default. Existing guest-memory backing
+  files are not supported. The MSHV backend rejects
   unsupported RAM backing before allocation and mapping. Devices that need
   guest-memory locking or exports fail at device binding or when they request
   access. MSHV SNP also rejects device-backed memory mappings, including RAM
@@ -139,6 +139,8 @@ describes the source definitions.
   OpenVMM opens or creates a requested RAM backing file before backend
   validation. A rejected SNP configuration can leave that file on disk.
   No guest RAM is allocated or mapped before this validation.
+
+  For VM-service configuration, see [MSHV SNP devices](grpc.md#mshv-snp-devices).
 
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,

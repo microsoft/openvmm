@@ -4557,6 +4557,116 @@ mod tests {
         });
     }
 
+    fn snp_service_config() -> vmservice::VmConfig {
+        vmservice::VmConfig {
+            disable_vmbus: true,
+            isolation_config: Some(vmservice::IsolationConfig {
+                isolation_type: Some(vmservice::isolation_config::IsolationType::Snp(
+                    Default::default(),
+                )),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn snp_pcie_config(device: vmservice::PcieDeviceKind) -> vmservice::VmConfig {
+        vmservice::VmConfig {
+            pcie: Some(vmservice::PcieTopologyConfig {
+                root_complexes: vec![vmservice::PcieRootComplex {
+                    root_ports: vec![vmservice::PciePort {
+                        attached: Some(vmservice::PcieAttachment {
+                            kind: Some(vmservice::pcie_attachment::Kind::Switch(
+                                vmservice::PcieSwitch {
+                                    downstream_ports: vec![vmservice::PciePort {
+                                        attached: Some(vmservice::PcieAttachment {
+                                            kind: Some(vmservice::pcie_attachment::Kind::Device(
+                                                device,
+                                            )),
+                                        }),
+                                        ..Default::default()
+                                    }],
+                                    ..Default::default()
+                                },
+                            )),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..snp_service_config()
+        }
+    }
+
+    fn virtio_pci(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceKind {
+        vmservice::PcieDeviceKind {
+            kind: Some(vmservice::pcie_device_kind::Kind::Virtio(
+                vmservice::VirtioDevice { kind: Some(kind) },
+            )),
+        }
+    }
+
+    fn file_blk(path: &str, direct: bool) -> vmservice::VirtioBlk {
+        vmservice::VirtioBlk {
+            backend: Some(vmservice::DiskBackend {
+                kind: Some(vmservice::disk_backend::Kind::File(vmservice::FileDisk {
+                    path: path.into(),
+                    direct,
+                    create_size_bytes: None,
+                })),
+            }),
+            read_only: true,
+            serial: Some("snp-block".into()),
+        }
+    }
+
+    #[test]
+    fn snp_service_builds_supported_boot_and_hotplug_resources() {
+        use vmservice::virtio_device::Kind;
+
+        for hotplug in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let disk_path = directory.path().join("disk.raw");
+            std::fs::write(&disk_path, [0; 512]).unwrap();
+            for kind in [
+                Kind::Blk(file_blk(disk_path.to_str().unwrap(), false)),
+                Kind::Net(vmservice::VirtioNet {
+                    backend: Some(vmservice::NicBackend {
+                        kind: Some(vmservice::nic_backend::Kind::Consomme(Default::default())),
+                    }),
+                    mac_address: "00-15-5d-01-02-03".into(),
+                    ..Default::default()
+                }),
+                Kind::Vsock(vmservice::VirtioVsock {
+                    socket_path: directory.path().join("vsock").to_str().unwrap().into(),
+                    guest_cid: None,
+                }),
+            ] {
+                let device = virtio_pci(kind);
+                let registry = ResourceRegistry::default();
+                let iommufds = IommufdContexts::default();
+                if hotplug {
+                    let resource =
+                        futures::executor::block_on(build_pci_device(device, &registry, &iommufds))
+                            .unwrap();
+                    assert_eq!(resource.id(), "virtio");
+                } else {
+                    let config = snp_pcie_config(device);
+                    let topology = futures::executor::block_on(build_pcie_topology(
+                        config.pcie.unwrap(),
+                        &registry,
+                        &iommufds,
+                        true,
+                    ))
+                    .unwrap();
+                    assert_eq!(topology.devices.len(), 1);
+                    assert_eq!(topology.devices[0].resource.id(), "virtio");
+                }
+            }
+        }
+    }
+
     #[test]
     fn uefi_initial_variables_defaults() {
         for arch in [

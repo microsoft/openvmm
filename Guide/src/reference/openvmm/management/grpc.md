@@ -209,6 +209,25 @@ Port forwarding retains its existing semantics: `UPDATE` binds the supplied
 ports and `REMOVE` unbinds them. DNS and virtual-address operations only
 support `UPDATE`.
 
+## MSHV SNP devices
+
+MSHV SNP disables guest-RAM locking and exports. Devices use copying or
+staging paths where available; no force-bounce API option is needed.
+`CreateVM` and `AddPcieDevice` do not apply a software-device allow-list.
+Device binding or export operations report unsupported memory requirements.
+MSHV SNP rejects device-backed memory mappings, including RAM overlays.
+
+Disks retain their normal format restrictions. On Linux, raw regular files
+and host block devices support buffered or direct I/O through
+`FileDisk.direct`. Host block devices are treated as raw disks regardless
+of their path suffix. Flat VMDK images require read-only access without
+direct I/O. Character devices and FIFOs are rejected.
+
+Guest RAM is THP-eligible by default. THP is advisory and does not guarantee
+physical huge-page backing. MSHV SNP rejects existing backing before RAM
+allocation and mapping. Other backends keep their own backing support,
+independent of whether guest-memory locking is enabled.
+
 ## VFIO and accelerated SMMU
 
 On Linux, declare named host iommufd contexts in `VMConfig.iommufds`, then
