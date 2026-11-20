@@ -659,6 +659,12 @@ async fn second_page_vtl_fault_address() {
 async fn cmpxchg16b_ram() {
     const OLD: u128 = 0x0123456789abcdef_fedcba9876543210;
     const NEW: u128 = 0x1122334455667788_99aabbccddeeff00;
+    // Locked emulation uses a host 16-byte atomic, which requires CMPXCHG16B on x86_64.
+    let host_supports_cmpxchg16b = cfg_select! {
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        target_arch = "x86_64" => std::is_x86_feature_detected!("cmpxchg16b"),
+        _ => true,
+    };
     for current in [OLD, OLD ^ 1, OLD ^ (1 << 64)] {
         let matches = current == OLD;
         for locked in [false, true] {
@@ -686,7 +692,7 @@ async fn cmpxchg16b_ram() {
             let mut registers = support.state.gps;
             let mut flags = support.state.rflags;
             let rip = support.state.rip;
-            emulate(
+            let result = emulate(
                 &mut support,
                 &EmulatorMemoryAccess {
                     gm: &gm,
@@ -695,8 +701,21 @@ async fn cmpxchg16b_ram() {
                 },
                 &MockCpu,
             )
-            .await
-            .unwrap();
+            .await;
+
+            if locked && !host_supports_cmpxchg16b {
+                assert!(matches!(
+                    result,
+                    Err(virt::VpHaltReason::TripleFault { .. })
+                ));
+                assert_eq!(support.state.rip, rip);
+                assert_eq!(support.state.gps, registers);
+                assert_eq!(support.state.rflags, flags);
+                assert!(support.injected_event().is_none());
+                assert_eq!(gm.read_plain::<u128>(0x400).unwrap(), OLD);
+                continue;
+            }
+            result.unwrap();
 
             if !matches {
                 registers[Gp::RAX as usize] = OLD as u64;

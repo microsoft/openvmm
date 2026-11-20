@@ -2908,6 +2908,12 @@ mod tests {
 
     #[test]
     fn test_compare_exchange_u128_concurrent() {
+        // test_compare_exchange_u128 covers the unsupported result.
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(target_arch = "x86_64")]
+        if !std::is_x86_feature_detected!("cmpxchg16b") {
+            return;
+        }
         let gm = GuestMemory::allocate(PAGE_SIZE);
         std::thread::scope(|scope| {
             for _ in 0..4 {
