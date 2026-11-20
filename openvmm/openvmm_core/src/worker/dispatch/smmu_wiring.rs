@@ -16,6 +16,37 @@ use std::sync::Arc;
 use vm_topology::pcie::PcieHostBridge;
 use vmotherboard::ChipsetBuilder;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SmmuBackend {
+    Local,
+    HyperV,
+}
+
+fn smmu_backend(accel: bool, direct: bool) -> SmmuBackend {
+    if accel && direct {
+        SmmuBackend::HyperV
+    } else {
+        SmmuBackend::Local
+    }
+}
+
+fn validate_backend_capabilities(
+    accel: bool,
+    direct: bool,
+    ats: bool,
+    ssid_bits: u8,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !direct || accel,
+        "direct assignment requires accelerated translation"
+    );
+    anyhow::ensure!(
+        direct || (!ats && ssid_bits == 0),
+        "ATS and SSID/PASID support require direct assignment"
+    );
+    Ok(())
+}
+
 /// Default advertised OAS (in bits) for an `oas=auto` SMMU.
 ///
 /// This is a fixed sizing policy, not a computed maximum: rather than sizing
@@ -94,18 +125,60 @@ pub(super) fn resolve_smmu_resources(
     }
 }
 
+/// Configuration for a hypervisor-managed virtual IOMMU.
+#[derive(Debug, Clone)]
+#[cfg_attr(not(target_os = "linux"), expect(dead_code))]
+pub struct VirtIommuSetup {
+    /// ID unique within the partition.
+    pub virt_iommu_id: u32,
+    /// Guest page number of the vSMMU register window.
+    pub base_gpa_page: u64,
+    /// GIC INTID for the event queue interrupt.
+    pub evtq_intid: u32,
+    /// GIC INTID for the global error interrupt.
+    pub gerr_intid: u32,
+    /// Index of the root complex this virtual IOMMU covers.
+    pub rc_index: u32,
+    /// Advertise endpoint ATS. PASID-tagged traffic is controlled separately.
+    pub ats: bool,
+    /// Guest substream/PASID width; nonzero requests PASID/SVA.
+    pub ssid_bits: u8,
+    /// Guest output address width.
+    pub oas_bits: u8,
+}
+
+pub(super) fn mark_rmr_bridges_preserve_config(
+    bridges: &mut [PcieHostBridge],
+    configs: &[vmm_core::acpi_builder::AcpiSmmuConfig],
+) {
+    for config in configs
+        .iter()
+        .filter(|config| !config.reserved_iova_ranges.is_empty())
+    {
+        if let Some(bridge) = bridges
+            .iter_mut()
+            .find(|bridge| bridge.index == config.rc_index)
+        {
+            bridge.preserve_boot_config = true;
+        }
+    }
+}
+
 /// Result of [`setup_smmu`].
 #[derive(Default)]
 pub(super) struct SmmuDevicesResult {
-    /// Per-RC SMMU shared state, indexed parallel to `pcie_host_bridges`.
-    /// `None` for root complexes without an SMMU.
+    /// Per-RC emulated SMMU state; direct Hyper-V SMMUs use `None`.
     pub shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>>,
     /// Firmware wiring paired with the corresponding device state.
     devices: Vec<SmmuFirmwareDevice>,
+    /// ACPI IORT configuration for each SMMU instance.
+    pub configs: Vec<vmm_core::acpi_builder::AcpiSmmuConfig>,
+    /// Accelerated SMMUs to create in the hypervisor.
+    pub virt_iommus: Vec<VirtIommuSetup>,
 }
 
 struct SmmuFirmwareDevice {
-    config: vmm_core::acpi_builder::AcpiSmmuConfig,
+    rc_index: u32,
     shared_state: Arc<smmu::SmmuSharedState>,
 }
 
@@ -113,13 +186,19 @@ impl SmmuDevicesResult {
     /// Builds firmware configuration after PCI assignment has started the
     /// devices and frozen their capabilities.
     pub fn firmware_configs(&self) -> Vec<vmm_core::acpi_builder::AcpiSmmuConfig> {
-        self.devices
+        self.configs
             .iter()
-            .map(|device| vmm_core::acpi_builder::AcpiSmmuConfig {
+            .map(|config| vmm_core::acpi_builder::AcpiSmmuConfig {
                 // Platform policy: offer ATS on the RC when its SMMU supports
                 // it. IORT describes RC support, not the SMMU's IDR0 bit.
-                ats_supported: device.shared_state.ats_supported(),
-                ..device.config.clone()
+                ats_supported: self
+                    .devices
+                    .iter()
+                    .find(|device| device.rc_index == config.rc_index)
+                    .map_or(config.ats_supported, |device| {
+                        device.shared_state.ats_supported()
+                    }),
+                ..config.clone()
             })
             .collect()
     }
@@ -132,9 +211,14 @@ fn reserved_iova_ranges(
     if !accel {
         return Ok(Vec::new());
     }
-    Ok(vec![device_assignment_msi_iova_range.context(
+    let range = device_assignment_msi_iova_range.context(
         "the hypervisor does not support an accelerated device-assignment MSI IOVA reservation",
-    )?])
+    )?;
+    range
+        .end()
+        .checked_next_multiple_of(0x1_0000)
+        .context("device-assignment MSI IOVA reservation alignment overflow")?;
+    Ok(vec![range])
 }
 
 /// Instantiate SMMU chipset devices for root complexes that have SMMU
@@ -151,11 +235,14 @@ pub(super) fn setup_smmu(
     chipset_builder: &ChipsetBuilder<'_>,
     gm: &GuestMemory,
     acpi_available: bool,
+    direct_iommu_rc_indices: &[u32],
 ) -> anyhow::Result<SmmuDevicesResult> {
     // Instantiate SMMU chipset devices.
     let mut shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>> =
         vec![None; pcie_host_bridges.len()];
     let mut devices = Vec::new();
+    let mut configs = Vec::new();
+    let mut virt_iommus = Vec::new();
 
     for smmu in &resolved.instances {
         let rc_pos = smmu.rc_pos;
@@ -172,6 +259,8 @@ pub(super) fn setup_smmu(
         let rc_name = &rc.name;
         let Some(openvmm_defs::config::PcieIommuConfig::Smmu {
             accel,
+            ats,
+            ssid_bits,
             oas,
             ssidsize,
         }) = rc.iommu
@@ -182,10 +271,54 @@ pub(super) fn setup_smmu(
             shared_states[rc_pos].is_none(),
             "duplicate SMMU for root complex {rc_name}"
         );
+        let rc_index = bridge.index;
+        let direct = direct_iommu_rc_indices.contains(&rc_index);
         anyhow::ensure!(
             !accel || acpi_available,
             "SMMU on root complex {rc_name}: accelerated translation requires ACPI"
         );
+        validate_backend_capabilities(accel, direct, ats, ssid_bits)
+            .with_context(|| format!("SMMU on root complex {}", rc.name))?;
+
+        let oas_bits = match oas {
+            openvmm_defs::config::SmmuOas::Auto => DEFAULT_AUTO_OAS_BITS,
+            openvmm_defs::config::SmmuOas::Fixed(bits) => {
+                anyhow::ensure!(
+                    smmu::VALID_OAS_BITS.contains(&bits),
+                    "SMMU on root complex {}: OAS {bits} is not a valid SMMUv3 output address size (expected one of {:?})",
+                    rc.name,
+                    smmu::VALID_OAS_BITS
+                );
+                bits
+            }
+        };
+
+        if smmu_backend(accel, direct) == SmmuBackend::HyperV {
+            virt_iommus.push(VirtIommuSetup {
+                virt_iommu_id: (virt_iommus.len() + 1) as u32,
+                base_gpa_page: smmu.base >> 12,
+                evtq_intid: smmu.evtq_intid,
+                gerr_intid: smmu.gerr_intid,
+                rc_index,
+                ats,
+                ssid_bits,
+                oas_bits,
+            });
+            let reserved_iova_ranges =
+                reserved_iova_ranges(true, resolved.device_assignment_msi_iova_range)
+                    .with_context(|| format!("SMMU on root complex {}", rc.name))?;
+            configs.push(vmm_core::acpi_builder::AcpiSmmuConfig {
+                rc_index,
+                segment: pcie_host_bridges[rc_pos].segment,
+                base: smmu.base,
+                event_gsiv: smmu.evtq_intid,
+                gerr_gsiv: smmu.gerr_intid,
+                reserved_iova_ranges,
+                ats_supported: ats,
+                device_stream_ids: Vec::new(),
+            });
+            continue;
+        }
 
         let evtq_irq_vector = smmu.evtq_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let gerror_irq_vector = smmu.gerr_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
@@ -235,22 +368,26 @@ pub(super) fn setup_smmu(
         }
 
         devices.push(SmmuFirmwareDevice {
-            config: vmm_core::acpi_builder::AcpiSmmuConfig {
-                rc_index: bridge.index,
-                segment: bridge.segment,
-                base: smmu.base,
-                event_gsiv: smmu.evtq_intid,
-                gerr_gsiv: smmu.gerr_intid,
-                ats_supported: false,
-                reserved_iova_ranges,
-            },
+            rc_index: bridge.index,
             shared_state,
+        });
+        configs.push(vmm_core::acpi_builder::AcpiSmmuConfig {
+            rc_index: bridge.index,
+            segment: bridge.segment,
+            base: smmu.base,
+            event_gsiv: smmu.evtq_intid,
+            gerr_gsiv: smmu.gerr_intid,
+            reserved_iova_ranges,
+            ats_supported: false,
+            device_stream_ids: Vec::new(),
         });
     }
 
     Ok(SmmuDevicesResult {
         shared_states,
         devices,
+        configs,
+        virt_iommus,
     })
 }
 
@@ -288,6 +425,8 @@ mod tests {
                 cxl: None,
                 iommu: ssid.map(|bits| PcieIommuConfig::Smmu {
                     accel: false,
+                    ats: false,
+                    ssid_bits: 0,
                     oas: SmmuOas::Auto,
                     ssidsize: SmmuSsidSize::Fixed(bits),
                 }),
@@ -361,15 +500,18 @@ mod tests {
                 shared_states: vec![Some(state.clone())],
                 devices: vec![SmmuFirmwareDevice {
                     shared_state: state.clone(),
-                    config: vmm_core::acpi_builder::AcpiSmmuConfig {
-                        rc_index: 7,
-                        segment: 2,
-                        base: 0,
-                        event_gsiv: 35,
-                        gerr_gsiv: 36,
-                        ats_supported: false,
-                        reserved_iova_ranges: Vec::new(),
-                    },
+                    rc_index: 7,
+                }],
+                virt_iommus: Vec::new(),
+                configs: vec![vmm_core::acpi_builder::AcpiSmmuConfig {
+                    rc_index: 7,
+                    segment: 2,
+                    base: 0,
+                    event_gsiv: 35,
+                    gerr_gsiv: 36,
+                    ats_supported: false,
+                    reserved_iova_ranges: Vec::new(),
+                    device_stream_ids: Vec::new(),
                 }],
             };
             // Reading firmware configuration must not freeze discovery.
@@ -431,5 +573,62 @@ mod tests {
     #[test]
     fn accelerated_smmu_requires_reserved_iova_range() {
         assert!(reserved_iova_ranges(true, None).is_err());
+    }
+
+    #[test]
+    fn accelerated_smmu_rejects_rmr_alignment_overflow() {
+        let end = u64::MAX - 0xfff;
+        let range = memory_range::MemoryRange::new((end - 0x1000)..end);
+        assert!(reserved_iova_ranges(true, Some(range)).is_err());
+    }
+
+    #[test]
+    fn accelerated_smmu_uses_hyperv_not_local_device() {
+        assert_eq!(smmu_backend(true, true), SmmuBackend::HyperV);
+        assert_eq!(smmu_backend(true, false), SmmuBackend::Local);
+        assert_eq!(smmu_backend(false, false), SmmuBackend::Local);
+    }
+
+    #[test]
+    fn direct_backend_retains_cuda_ats_capabilities() {
+        validate_backend_capabilities(true, true, true, 14).unwrap();
+        validate_backend_capabilities(true, true, false, 14).unwrap();
+    }
+
+    #[test]
+    fn local_backend_rejects_direct_only_capabilities() {
+        validate_backend_capabilities(true, false, false, 0).unwrap();
+        assert!(validate_backend_capabilities(true, false, true, 14).is_err());
+        assert!(validate_backend_capabilities(true, false, false, 14).is_err());
+        assert!(validate_backend_capabilities(false, true, false, 0).is_err());
+    }
+
+    #[test]
+    fn direct_msi_rmr_forces_preserve_config() {
+        let mut bridges = vec![PcieHostBridge {
+            index: 7,
+            segment: 8,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: memory_range::MemoryRange::new(0..0x1000),
+            low_mmio: memory_range::MemoryRange::new(0x1000..0x2000),
+            high_mmio: memory_range::MemoryRange::new(0x1_0000_0000..0x1_0000_1000),
+            cxl: None,
+            vnode: None,
+            preserve_bars: false,
+            preserve_boot_config: false,
+        }];
+        let configs = vec![vmm_core::acpi_builder::AcpiSmmuConfig {
+            rc_index: 7,
+            segment: 8,
+            base: 0xeffa_0000,
+            event_gsiv: 35,
+            gerr_gsiv: 36,
+            reserved_iova_ranges: vec![memory_range::MemoryRange::new(0xeff6_8000..0xeff7_8000)],
+            ats_supported: false,
+            device_stream_ids: vec![0x100],
+        }];
+        mark_rmr_bridges_preserve_config(&mut bridges, &configs);
+        assert!(bridges[0].preserve_boot_config);
     }
 }

@@ -45,6 +45,54 @@ before their implementation is connected end to end.
 * RemoveVpciDevice
 * Quit
 
+## Accelerated SMMU and MSHV device assignment
+
+`PcieRootComplex.iommu.smmu.accel` is supported over ttrpc and gRPC.
+With an ordinary `IommufdConfig`, it uses Linux SMMUv3 nesting. Set
+`IommufdConfig.direct_iommu` to use MSHV DIRECT assignment instead.
+DIRECT assignment is supported only for aarch64 guests on Linux with a
+compatible MSHV kernel and Hyper-V backend.
+
+For a GB200 device, declare a direct context, reference its ID from
+`VfioDevice.iommufd_id`, and supply the SMMU PASID/ATS configuration:
+
+```text
+iommufds { id: "iommu0" direct_iommu: true }
+pcie {
+  root_complexes {
+    name: "rc0"
+    iommu { smmu { accel: true ats: true ssid_bits: 14 } }
+    root_ports {
+      name: "rp0"
+      pasid: true
+      attached { device { vfio {
+        host_pci_address: "0008:06:00.0"
+        iommufd_id: "iommu0"
+        bar_addresses { bar_index: 4 fixed: 549755813888 }
+      } } }
+    }
+  }
+  generic_initiators {
+    port_name: "rp0"
+    node: 1
+    memory_base: 549755813888
+    memory_length: 198674743296
+  }
+}
+```
+
+This is a configuration fragment, not a complete VM request. Configure the
+boot image, memory, processors, MMIO windows, BAR placement and NUMA node
+separately. The Generic Initiator memory range is in guest physical
+addresses and must match the assigned coherent BAR range; both base and
+length must be present together.
+
+`ats` defaults to false. Enabling it requires `accel` and an explicit
+nonzero `ssid_bits` value. For ordinary nesting, an omitted SSID width
+retains automatic host-capability sizing. A direct context cannot span
+multiple root complexes. Direct VFIO uses boot-time PCIe topology;
+runtime direct hot-add and VPCI assignment are not supported.
+
 ## Snapshots (SaveVM and RestoreVM)
 
 `SaveVM` is a compound operation that pauses the VM and writes `manifest.bin`,

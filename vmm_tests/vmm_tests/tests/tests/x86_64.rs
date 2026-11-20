@@ -484,11 +484,10 @@ async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     let (vm, agent) = config
         .modify_backend(|b| {
             b.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
-                c.pcie_devices.push(PcieDeviceConfig {
-                    port_name: "s0rc0rp0".to_string(),
-                    resource: VirtioPciDeviceHandle(VirtioRngHandle.into_resource())
-                        .into_resource(),
-                });
+                c.pcie_devices.push(PcieDeviceConfig::new(
+                    "s0rc0rp0".to_string(),
+                    VirtioPciDeviceHandle(VirtioRngHandle.into_resource()).into_resource(),
+                ));
             })
         })
         .run()
@@ -574,9 +573,9 @@ async fn virtio_pmem_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
     let (vm, agent) = config
         .modify_backend(move |b| {
             b.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
-                c.pcie_devices.push(PcieDeviceConfig {
-                    port_name: "s0rc0rp0".to_string(),
-                    resource: VirtioPciDeviceHandle(
+                c.pcie_devices.push(PcieDeviceConfig::new(
+                    "s0rc0rp0".to_string(),
+                    VirtioPciDeviceHandle(
                         VirtioPmemHandle {
                             path,
                             read_only: false,
@@ -584,7 +583,7 @@ async fn virtio_pmem_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
                         .into_resource(),
                     )
                     .into_resource(),
-                });
+                ));
             })
         })
         .run()

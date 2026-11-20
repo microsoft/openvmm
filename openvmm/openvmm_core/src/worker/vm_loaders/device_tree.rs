@@ -1080,6 +1080,7 @@ mod tests {
             gerr_gsiv: 36,
             ats_supported: false,
             reserved_iova_ranges: vec![],
+            device_stream_ids: Vec::new(),
         }
     }
 

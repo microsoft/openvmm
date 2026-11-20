@@ -42,13 +42,15 @@ pub struct AcpiSmmuConfig {
     pub event_gsiv: u32,
     /// GIC SPI INTID for the global error interrupt.
     pub gerr_gsiv: u32,
-    /// Whether the PCI root complex may use ATS through this SMMU.
-    pub ats_supported: bool,
     /// IOVA ranges reserved by the host IOMMU (e.g., MSI windows). When
     /// non-empty, an IORT RMR node (or DT `reserved-memory` entry) is
     /// generated so the guest identity-maps these ranges in its S1 page
     /// tables.
     pub reserved_iova_ranges: Vec<MemoryRange>,
+    /// Whether the PCI root complex may enable ATS.
+    pub ats_supported: bool,
+    /// Guest requester IDs of DIRECT devices bound to this SMMU.
+    pub device_stream_ids: Vec<u32>,
 }
 
 /// Binary ACPI tables constructed by [`AcpiTablesBuilder`].
@@ -87,6 +89,8 @@ pub struct GenericInitiator {
     pub function: u8,
     /// Proximity domain (NUMA node) this initiator is associated with.
     pub vnode: u32,
+    /// Optional coherent-memory aperture to expose in the same proximity domain.
+    pub memory_range: Option<MemoryRange>,
 }
 
 /// Builder to construct a set of [`BuiltAcpiTables`]
@@ -504,6 +508,17 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 )
                 .as_bytes(),
             );
+            if let Some(memory_range) = gi.memory_range {
+                let mut coherent = acpi_spec::srat::SratMemory::new(
+                    memory_range.start(),
+                    memory_range.len(),
+                    gi.vnode,
+                );
+                coherent.flags = (acpi_spec::srat::SratMemoryFlags::ENABLED.0
+                    | acpi_spec::srat::SratMemoryFlags::HOT_PLUGGABLE.0)
+                    .into();
+                srat_extra.extend_from_slice(coherent.as_bytes());
+            }
         }
 
         (f)(&acpi::builder::Table::new_dyn(
@@ -662,7 +677,6 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         };
         let its_node_count: u32 = if has_its { 1 } else { 0 };
         let smmu_node_count = smmu_configs.len() as u32;
-        // Count RMR nodes: one per SMMU with reserved IOVA ranges.
         let rmr_node_count = smmu_configs
             .iter()
             .filter(|cfg| !cfg.reserved_iova_ranges.is_empty())
@@ -811,36 +825,56 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 continue;
             }
 
-            let rmr_count = cfg.reserved_iova_ranges.len() as u32;
-            // One ID mapping pointing to the SMMUv3 node, covering the
-            // full BDF range.
-            let mapping_count = 1u32;
-            let rmr = iort::IortRmr::new(
-                cfg_idx as u32 + 0x1000, // unique identifier
-                0,                       // flags: no ACCESS_PRIVILEGE, no REMAP_PERMITTED
-                rmr_count,
-                mapping_count,
-            );
-            iort_extra.extend_from_slice(rmr.as_bytes());
-
-            // ID mapping first (must come before RMR descriptors to match
-            // the offset layout in IortRmr::new).
+            let smmu_offset = node.offset;
+            let direct = !cfg.device_stream_ids.is_empty();
+            let mapping_count = if direct {
+                cfg.device_stream_ids
+                    .len()
+                    .try_into()
+                    .expect("too many DIRECT devices for IORT RMR")
+            } else {
+                1
+            };
             iort_extra.extend_from_slice(
-                iort::IortIdMapping::new(
-                    0,           // input_base
-                    0xFFFF,      // id_count (full 16-bit BDF range)
-                    0,           // output_base
-                    node.offset, // output_reference → SMMUv3 node
-                    0,           // flags
+                iort::IortRmr::new(
+                    cfg_idx as u32 + 0x1000,
+                    0, // Strict identity mapping with unprivileged access.
+                    cfg.reserved_iova_ranges.len() as u32,
+                    mapping_count,
                 )
                 .as_bytes(),
             );
-
-            // RMR descriptors.
-            for &range in &cfg.reserved_iova_ranges {
+            if direct {
+                for &stream_id in &cfg.device_stream_ids {
+                    iort_extra.extend_from_slice(
+                        iort::IortIdMapping::new(
+                            stream_id,
+                            0, // id_count (one ID; field stores count minus one)
+                            stream_id,
+                            smmu_offset,
+                            iort::IORT_ID_SINGLE_MAPPING,
+                        )
+                        .as_bytes(),
+                    );
+                }
+            } else {
                 iort_extra.extend_from_slice(
-                    iort::IortRmrDescriptor::new(range.start(), range.len()).as_bytes(),
+                    iort::IortIdMapping::new(0, 0xFFFF, 0, smmu_offset, 0).as_bytes(),
                 );
+            }
+            const RMR_ALIGN: u64 = 0x1_0000;
+            for &range in &cfg.reserved_iova_ranges {
+                let (base, length) = if direct {
+                    let base = range.start() & !(RMR_ALIGN - 1);
+                    let end = range
+                        .end()
+                        .checked_next_multiple_of(RMR_ALIGN)
+                        .unwrap_or(u64::MAX);
+                    (base, end - base)
+                } else {
+                    (range.start(), range.len())
+                };
+                iort_extra.extend_from_slice(iort::IortRmrDescriptor::new(base, length).as_bytes());
             }
         }
 
@@ -1909,6 +1943,7 @@ mod test {
                     gerr_gsiv: 36,
                     ats_supported: false,
                     reserved_iova_ranges: Vec::new(),
+                    device_stream_ids: Vec::new(),
                 }],
             },
         }
@@ -2157,6 +2192,7 @@ mod test {
                 gerr_gsiv: 36,
                 ats_supported: false,
                 reserved_iova_ranges: Vec::new(),
+                device_stream_ids: Vec::new(),
             },
             AcpiSmmuConfig {
                 rc_index: 9,
@@ -2166,6 +2202,7 @@ mod test {
                 gerr_gsiv: 38,
                 ats_supported: true,
                 reserved_iova_ranges: Vec::new(),
+                device_stream_ids: Vec::new(),
             },
         ];
 
@@ -2256,6 +2293,7 @@ mod test {
                     gerr_gsiv: 36 + bridge.index * 2,
                     ats_supported: true,
                     reserved_iova_ranges: Vec::new(),
+                    device_stream_ids: Vec::new(),
                 })
                 .collect();
 
@@ -2341,6 +2379,7 @@ mod test {
                 gerr_gsiv: 36 + bridge.index * 2,
                 ats_supported: bridge.index == 2,
                 reserved_iova_ranges: Vec::new(),
+                device_stream_ids: Vec::new(),
             })
             .collect();
 
@@ -2424,6 +2463,89 @@ mod test {
         assert_eq!(u32_at(&data, rc_node + 24), 0); // ATS unsupported
         let rc_mapping = rc_node + 36;
         assert_eq!(u32_at(&data, rc_mapping + 12), iort::IORT_NODE_OFFSET); // → ITS group
+    }
+
+    #[test]
+    fn test_iort_direct_smmu_pasid_and_ats_modes() {
+        use acpi_spec::iort;
+
+        let mem = new_mem();
+        let topology = new_aarch64_its_topology();
+        let pcie_host_bridges = vec![PcieHostBridge {
+            index: 0,
+            segment: 0,
+            start_bus: 0,
+            end_bus: 255,
+            ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+            low_mmio: MemoryRange::new(0xdc000000..0xe0000000),
+            high_mmio: MemoryRange::new(0x1000000000..0x1040000000),
+            cxl: None,
+            vnode: None,
+            preserve_bars: false,
+            preserve_boot_config: true,
+        }];
+        let mut builder =
+            new_aarch64_builder_with_smmu(&mem, &topology, &pcie_host_bridges, 0xEFFA_0000);
+        let AcpiArchConfig::Aarch64 { smmu, .. } = &mut builder.arch else {
+            unreachable!();
+        };
+        smmu[0].device_stream_ids = vec![0x100, 0x200];
+        smmu[0].reserved_iova_ranges = vec![MemoryRange::new(0xEFF6_8000..0xEFF7_8000)];
+
+        let data = builder.build_iort().unwrap();
+        let mut offset = iort::IORT_NODE_OFFSET as usize;
+        let mut pasid_only_rc = None;
+        for _ in 0..u32_at(&data, 36) {
+            if data[offset] == iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX {
+                pasid_only_rc = Some(offset);
+                break;
+            }
+            offset += u16_at(&data, offset + 1) as usize;
+        }
+        assert_eq!(u32_at(&data, pasid_only_rc.unwrap() + 24), 0);
+
+        let AcpiArchConfig::Aarch64 { smmu, .. } = &mut builder.arch else {
+            unreachable!();
+        };
+        smmu[0].ats_supported = true;
+        let data = builder.build_iort().unwrap();
+        let mut nodes = Vec::new();
+        let mut offset = iort::IORT_NODE_OFFSET as usize;
+        for _ in 0..u32_at(&data, 36) {
+            nodes.push(offset);
+            offset += u16_at(&data, offset + 1) as usize;
+        }
+
+        let rc = *nodes
+            .iter()
+            .find(|&&offset| data[offset] == iort::IORT_NODE_TYPE_PCI_ROOT_COMPLEX)
+            .unwrap();
+        assert_eq!(u32_at(&data, rc + 24), iort::IORT_ATS_SUPPORTED);
+        let rc_mapping = rc + u32_at(&data, rc + 12) as usize;
+        assert_eq!(u32_at(&data, rc_mapping), 0);
+        assert_eq!(u32_at(&data, rc_mapping + 4), 0xFFFF);
+        assert_eq!(u32_at(&data, rc_mapping + 8), 0);
+
+        let rmr = *nodes
+            .iter()
+            .find(|&&offset| data[offset] == iort::IORT_NODE_TYPE_RMR)
+            .unwrap();
+        assert_eq!(u32_at(&data, rmr + 8), 2);
+        assert_eq!(iort::IORT_RMR_REMAP_PERMITTED, 1);
+        assert_eq!(iort::IORT_RMR_ACCESS_PRIVILEGE, 1 << 1);
+        assert_eq!(u32_at(&data, rmr + 16), 0);
+        assert_eq!(u32_at(&data, rmr + 20), 1);
+        let mapping = rmr + u32_at(&data, rmr + 12) as usize;
+        for (index, stream_id) in [0x100, 0x200].into_iter().enumerate() {
+            let mapping = mapping + index * 20;
+            assert_eq!(u32_at(&data, mapping), stream_id);
+            assert_eq!(u32_at(&data, mapping + 4), 0); // one ID
+            assert_eq!(u32_at(&data, mapping + 8), stream_id);
+            assert_eq!(u32_at(&data, mapping + 16), iort::IORT_ID_SINGLE_MAPPING);
+        }
+        let descriptor = rmr + u32_at(&data, rmr + 24) as usize;
+        assert_eq!(u64_at(&data, descriptor), 0xEFF6_0000);
+        assert_eq!(u64_at(&data, descriptor + 8), 0x2_0000);
     }
 
     #[test]

@@ -227,25 +227,25 @@ impl PetriVmConfigOpenVmm {
             recv: None,
         }
         .into_resource();
-        self.config.pcie_devices.push(PcieDeviceConfig {
-            port_name: port_name.to_string(),
-            resource: GdmaDeviceHandle {
+        self.config.pcie_devices.push(PcieDeviceConfig::new(
+            port_name.to_string(),
+            GdmaDeviceHandle {
                 vports: vec![VportDefinition {
                     mac_address,
                     endpoint,
                 }],
             }
             .into_resource(),
-        });
+        ));
 
         self
     }
 
     /// Add a PCIe NVMe device to the VM using the NVMe emulator.
     pub fn with_pcie_nvme(mut self, port_name: &str, subsystem_id: Guid) -> Self {
-        self.config.pcie_devices.push(PcieDeviceConfig {
-            port_name: port_name.to_string(),
-            resource: NvmeControllerHandle {
+        self.config.pcie_devices.push(PcieDeviceConfig::new(
+            port_name.to_string(),
+            NvmeControllerHandle {
                 subsystem_id,
                 max_io_queues: 64,
                 msix_count: 64,
@@ -261,7 +261,7 @@ impl PetriVmConfigOpenVmm {
                 requests: None,
             }
             .into_resource(),
-        });
+        ));
 
         self
     }
@@ -290,9 +290,9 @@ impl PetriVmConfigOpenVmm {
         }
         .into_resource();
 
-        self.config.pcie_devices.push(PcieDeviceConfig {
-            port_name: port_name.to_string(),
-            resource: virtio_resources::VirtioPciDeviceHandle(
+        self.config.pcie_devices.push(PcieDeviceConfig::new(
+            port_name.to_string(),
+            virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
                     enable_rx_gso,
@@ -302,7 +302,7 @@ impl PetriVmConfigOpenVmm {
                 .into_resource(),
             )
             .into_resource(),
-        });
+        ));
 
         self
     }
@@ -331,9 +331,9 @@ impl PetriVmConfigOpenVmm {
             recv: None,
         }
         .into_resource();
-        self.config.pcie_devices.push(PcieDeviceConfig {
-            port_name: port_name.to_string(),
-            resource: virtio_resources::VirtioPciDeviceHandle(
+        self.config.pcie_devices.push(PcieDeviceConfig::new(
+            port_name.to_string(),
+            virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
                     enable_rx_gso: false,
@@ -343,7 +343,7 @@ impl PetriVmConfigOpenVmm {
                 .into_resource(),
             )
             .into_resource(),
-        });
+        ));
         self.resources.tcp_pipette_port = Some(port_recv);
         self
     }
@@ -621,7 +621,12 @@ impl PetriVmConfigOpenVmm {
             .flat_map(|rc| &rc.ports)
             .chain(self.config.pcie_switches.iter().flat_map(|s| &s.ports))
             .map(|p| p.name.clone())
-            .chain(self.config.pcie_devices.iter().map(|d| d.port_name.clone()))
+            .chain(
+                self.config
+                    .pcie_devices
+                    .iter()
+                    .map(|d| d.port_name().to_owned()),
+            )
             .collect::<std::collections::HashSet<_>>();
         let mut shares = std::mem::take(&mut self.guest_shares)
             .into_iter()
@@ -658,10 +663,10 @@ impl PetriVmConfigOpenVmm {
                     cxl: false,
                     pasid: false,
                 });
-            self.config.pcie_devices.push(PcieDeviceConfig {
+            self.config.pcie_devices.push(PcieDeviceConfig::new(
                 port_name,
-                resource: virtio_resources::VirtioPciDeviceHandle(resource).into_resource(),
-            });
+                virtio_resources::VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         }
         self
     }
@@ -703,6 +708,8 @@ impl PetriVmConfigOpenVmm {
                 name.to_string(),
                 PcieIommuConfig::Smmu {
                     accel: false,
+                    ats: false,
+                    ssid_bits: 0,
                     oas: openvmm_defs::config::SmmuOas::Auto,
                     ssidsize: openvmm_defs::config::SmmuSsidSize::Auto,
                 },
@@ -725,6 +732,8 @@ impl PetriVmConfigOpenVmm {
                 name.to_string(),
                 PcieIommuConfig::Smmu {
                     accel: true,
+                    ats: false,
+                    ssid_bits: 0,
                     oas: openvmm_defs::config::SmmuOas::Auto,
                     ssidsize: openvmm_defs::config::SmmuSsidSize::Auto,
                 },

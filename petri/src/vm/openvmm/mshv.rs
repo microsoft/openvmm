@@ -356,13 +356,14 @@ mod tests {
                         b.with_pcie_root_topology_at(1, 1, 1, 1)
                             .with_custom_config(|c| {
                                 c.pcie_root_complexes[0].ports[0].name = "petri-share-0".into();
-                                c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
-                                    port_name: "petri-share-0".into(),
-                                    resource: virtio_resources::VirtioPciDeviceHandle(
-                                        virtio_resources::rng::VirtioRngHandle.into_resource(),
-                                    )
-                                    .into_resource(),
-                                });
+                                c.pcie_devices
+                                    .push(openvmm_defs::config::PcieDeviceConfig::new(
+                                        "petri-share-0".into(),
+                                        virtio_resources::VirtioPciDeviceHandle(
+                                            virtio_resources::rng::VirtioRngHandle.into_resource(),
+                                        )
+                                        .into_resource(),
+                                    ));
                             })
                     });
                 }
@@ -374,8 +375,11 @@ mod tests {
                 let first_share = usize::from(custom_topology);
                 for i in 0..2 {
                     let device = &backend.config.pcie_devices[first_share + i];
-                    assert_eq!(device.port_name, format!("petri-share-{}", first_share + i));
-                    assert!(root.ports.iter().any(|p| p.name == device.port_name));
+                    assert_eq!(
+                        device.port_name(),
+                        format!("petri-share-{}", first_share + i)
+                    );
+                    assert!(root.ports.iter().any(|p| p.name == device.port_name()));
                 }
                 assert_eq!(root.ports.len(), first_share + 2);
                 assert!(backend.guest_shares.is_empty());
@@ -504,13 +508,14 @@ mod tests {
                         .zip(["petri-console-0", "petri-vsock-0"])
                     {
                         port.name = name.into();
-                        c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
-                            port_name: name.into(),
-                            resource: virtio_resources::VirtioPciDeviceHandle(
-                                virtio_resources::rng::VirtioRngHandle.into_resource(),
-                            )
-                            .into_resource(),
-                        });
+                        c.pcie_devices
+                            .push(openvmm_defs::config::PcieDeviceConfig::new(
+                                name.into(),
+                                virtio_resources::VirtioPciDeviceHandle(
+                                    virtio_resources::rng::VirtioRngHandle.into_resource(),
+                                )
+                                .into_resource(),
+                            ));
                     }
                 })
             });
@@ -558,7 +563,7 @@ mod tests {
                         .config
                         .pcie_devices
                         .iter()
-                        .any(|d| d.port_name == port)
+                        .any(|d| d.port_name() == port)
                 );
                 assert!(
                     backend.config.pcie_root_complexes[1]

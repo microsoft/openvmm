@@ -758,6 +758,8 @@ async fn smmu_software_ssidsize_aarch64_tcg(
                         .expect("test root complex exists");
                     rc.iommu = Some(openvmm_defs::config::PcieIommuConfig::Smmu {
                         accel: false,
+                        ats: false,
+                        ssid_bits: 0,
                         oas: openvmm_defs::config::SmmuOas::Auto,
                         ssidsize: openvmm_defs::config::SmmuSsidSize::Fixed(SSID_BITS),
                     });
