@@ -81,7 +81,7 @@ for the full trait signatures and type definitions.
    backend has received a packet. It writes the packet data into
    guest memory through `pool.write_packet(rx_id, metadata, data)`.
 3. The frontend calls `queue.rx_poll(&mut pool, &mut ids)` to
-   collect the IDs of completed buffers, then delivers them to the
+   collect packet completions and their buffer IDs, then delivers them to the
    guest (e.g. by completing virtio descriptors or sending VMBus
    completion packets).
 4. The guest eventually returns the buffer, and the frontend recycles
@@ -150,33 +150,31 @@ read is followed by a read that reaches `EAGAIN`; an initial asynchronous
 `Pending` does not prove that the queue drained. Steady-state and other vnet
 metadata violations still fail fast.
 
-Virtio-net receive GSO is disabled by default. Advertising guest TCP
-segmentation offload without mergeable receive buffers causes Linux guests to
-allocate receive buffers large enough for a complete coalesced packet, commonly
-64 KiB per descriptor. OpenVMM can opt in with the `rx_gso:` prefix on a
-`--virtio-net` argument when testing or when that allocation tradeoff is
-acceptable.
+Virtio-net advertises TCP receive GSO and mergeable receive buffers by default.
+When mergeable receive buffers are negotiated, TAP and Consomme can split a
+coalesced packet across guest buffers; other backends use one buffer per packet.
+Without mergeable buffers, guests still need one buffer large enough for the
+complete packet, commonly 64 KiB.
 
-When enabled, receive GSO is advertised only when the selected backend reports
-that it can produce coalesced receive packets. TCP GSO also requires guest
-checksum support; a guest that selects TCP GSO without checksum support does not
-cause the backend to request an invalid TAP offload configuration. Receive GSO
-can become the default after virtio-net supports distributing one packet across
-multiple mergeable receive buffers.
+Receive GSO is enabled for the backend only when the guest negotiates it.
+TCP GSO also requires guest checksum support; a guest that selects TCP GSO
+without checksum support does not cause the backend to request an invalid TAP
+offload configuration.
 
 Frontends must also publish a receive completion only after the packet
 payload and frontend-specific header have both been written successfully.
 For virtio-net, a capacity or guest-memory write failure leaves the
-descriptor as a dropped receive and increments an explicit drop counter;
+packet as a dropped receive and increments an explicit drop counter;
 it is never counted as a successfully received packet.
 
 Frontends reject intrinsically unusable receive buffers before posting them
-to a backend. For example, virtio-net completes a descriptor that cannot hold
-a minimum Ethernet header as a zero-length dropped receive. If a valid TAP
-frame is larger than the oldest posted buffer, TAP drops that frame but retains
-the buffer at the front of the queue for the next frame. It does not skip ahead
-to a later buffer, because frontend completions may need to be published in the
-original descriptor order.
+to a backend. Without mergeable buffers, virtio-net completes a descriptor
+that cannot hold its header and a minimum Ethernet header as a zero-length
+dropped receive. With mergeable buffers, a descriptor that cannot hold its
+header stops the worker. If a valid TAP frame is larger than the available
+receive capacity, TAP drops that frame but retains the buffers for the next
+frame. It does not skip ahead to later buffers, because frontend completions
+may need to be published in the original descriptor order.
 
 ## Lifecycle
 

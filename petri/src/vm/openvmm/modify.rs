@@ -270,17 +270,7 @@ impl PetriVmConfigOpenVmm {
     ///
     /// This exposes a virtio-net device on a PCIe root port, suitable for
     /// guests running virtio drivers (e.g. Linux with UEFI boot).
-    pub fn with_virtio_nic(self, port_name: &str, mac_address: MacAddress) -> Self {
-        self.with_virtio_nic_rx_gso(port_name, mac_address, false)
-    }
-
-    /// Enable a Consomme-backed virtio-net NIC with configurable receive GSO.
-    pub fn with_virtio_nic_rx_gso(
-        mut self,
-        port_name: &str,
-        mac_address: MacAddress,
-        enable_rx_gso: bool,
-    ) -> Self {
+    pub fn with_virtio_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             params: Default::default(),
@@ -295,7 +285,6 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
-                    enable_rx_gso,
                     mac_address,
                     endpoint,
                 }
@@ -336,7 +325,6 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
-                    enable_rx_gso: false,
                     mac_address,
                     endpoint,
                 }

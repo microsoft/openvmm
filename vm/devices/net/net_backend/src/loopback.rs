@@ -99,12 +99,16 @@ impl Queue for LoopbackQueue {
         &mut self,
         _pool: &mut dyn BufferAccess,
         packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<Vec<crate::RxBufferCompletion>> {
         let n = packets.len().min(self.rx_done.len());
         for (d, s) in packets.iter_mut().zip(self.rx_done.drain(..n)) {
             *d = s;
         }
-        Ok(n)
+        Ok(packets[..n]
+            .iter()
+            .copied()
+            .map(crate::RxBufferCompletion::single)
+            .collect())
     }
 
     fn tx_avail(

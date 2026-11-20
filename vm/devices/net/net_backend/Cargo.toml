@@ -24,6 +24,7 @@ futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+tracelimit.workspace = true
 thiserror.workspace = true
 inspect_counters.workspace = true
 

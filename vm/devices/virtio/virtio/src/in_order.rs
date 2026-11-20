@@ -158,20 +158,70 @@ impl InOrderCompletion {
         });
     }
 
+    /// Records and atomically publishes a nonempty group of completions.
+    /// The group must be consecutive in consumption order.
+    pub fn complete_batch(
+        &mut self,
+        queue: &mut VirtioQueue,
+        completions: Vec<(QueueCompletion, u32)>,
+    ) {
+        let first = completions.first().expect("empty completion batch");
+        let start = self
+            .order
+            .iter()
+            .position(|&idx| idx == first.0.descriptor_index())
+            .expect("batch must be outstanding");
+        assert!(
+            self.order.len() - start >= completions.len()
+                && self
+                    .order
+                    .iter()
+                    .skip(start)
+                    .zip(&completions)
+                    .all(|(&idx, (completion, _))| idx == completion.descriptor_index()),
+            "batch must be consecutive in consumption order"
+        );
+        if start == 0 {
+            for (completion, _) in &completions {
+                self.order.pop_front();
+                self.in_flight[completion.descriptor_index() as usize] = false;
+            }
+            queue.complete_prepared_batch(completions);
+            self.drain_completed_prefix(queue);
+            return;
+        }
+        for (completion, bytes_written) in completions {
+            let idx = completion.descriptor_index();
+            let slot = self
+                .completed
+                .get_mut(idx as usize)
+                .expect("completed descriptor index must be within the queue size");
+            assert!(
+                slot.is_none(),
+                "descriptor {idx} completed more than once while outstanding"
+            );
+            *slot = Some(Completed {
+                completion,
+                bytes_written,
+            });
+        }
+        self.drain_completed_prefix(queue);
+    }
+
     /// Publishes the longest run of already-completed descriptors at the front
     /// of the consumption order, in order.
     fn drain_completed_prefix(&mut self, queue: &mut VirtioQueue) {
-        while let Some(&front) = self.order.front() {
-            let Some(Completed {
-                completion,
-                bytes_written,
-            }) = self.completed[front as usize].take()
-            else {
+        let mut ready = Vec::new();
+        while let Some(&idx) = self.order.front() {
+            let Some(completed) = self.completed[idx as usize].take() else {
                 break;
             };
             self.order.pop_front();
-            queue.complete_prepared(completion, bytes_written);
-            self.in_flight[front as usize] = false;
+            ready.push((completed.completion, completed.bytes_written));
+            self.in_flight[idx as usize] = false;
+        }
+        if !ready.is_empty() {
+            queue.complete_prepared_batch(ready);
         }
     }
 
