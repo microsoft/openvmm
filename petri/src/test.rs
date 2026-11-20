@@ -692,7 +692,6 @@ mod tests {
             vm_host_info: None,
             vendor: Vendor::Intel,
             execution_environment: ExecutionEnvironment::Baremetal,
-            vpci_supported: false,
             openvmm_hypervisor: hypervisor,
         }
     }

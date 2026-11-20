@@ -106,8 +106,6 @@ pub struct HostContext {
     pub vendor: Vendor,
     /// Execution environment
     pub execution_environment: ExecutionEnvironment,
-    /// Whether the host hypervisor supports software VPCI device emulation
-    pub vpci_supported: bool,
     /// Hypervisor backend that OpenVMM will select on this host.
     pub openvmm_hypervisor: Option<OpenVmmHypervisor>,
 }
@@ -134,9 +132,6 @@ impl HostContext {
         };
 
         let vendor = Vendor::host();
-
-        // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
-        let vpci_supported = cfg!(windows);
 
         let openvmm_hypervisor = cfg_select! {
             target_os = "linux" => {
@@ -190,7 +185,6 @@ impl HostContext {
             } else {
                 ExecutionEnvironment::Baremetal
             },
-            vpci_supported,
             openvmm_hypervisor,
         }
     }
@@ -307,7 +301,16 @@ pub fn is_known_capability(name: &str) -> bool {
 fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'static str> {
     let mut capabilities = BTreeSet::new();
 
-    if context.vpci_supported {
+    // Software VPCI devices are supported by Hyper-V and by the OpenVMM
+    // backends that implement virtual device creation.
+    if matches!(
+        (vmm, context.openvmm_hypervisor),
+        (VmmType::HyperV, _)
+            | (
+                VmmType::OpenVmm,
+                Some(OpenVmmHypervisor::Whp | OpenVmmHypervisor::Mshv)
+            )
+    ) {
         capabilities.insert(capabilities::VPCI);
     }
 
@@ -399,7 +402,6 @@ mod tests {
             vm_host_info: None,
             vendor: Vendor::Intel,
             execution_environment: ExecutionEnvironment::Baremetal,
-            vpci_supported: false,
             openvmm_hypervisor: Some(openvmm_hypervisor),
         }
     }

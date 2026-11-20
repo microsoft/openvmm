@@ -354,3 +354,44 @@ try_cmpxchg!(pub(crate) try_cmpxchg8, u8, "casalb {expected:w}, {desired:w}, [{d
 try_cmpxchg!(pub(crate) try_cmpxchg16, u16, "casalh {expected:w}, {desired:w}, [{dest}]");
 try_cmpxchg!(pub(crate) try_cmpxchg32, u32, "casal {expected:w}, {desired:w}, [{dest}]");
 try_cmpxchg!(pub(crate) try_cmpxchg64, u64, "casal {expected:x}, {desired:x}, [{dest}]");
+
+/// # Safety
+/// `dest` must be an address that's reserved and can be written to without
+/// violating Rust's aliasing rules.
+pub(crate) unsafe fn try_cmpxchg128(
+    dest: *mut u128,
+    expected: &mut u128,
+    desired: u128,
+) -> Result<bool, Fault> {
+    let low: u64;
+    let high: u64;
+    let result: i32;
+    // SAFETY: caller ensured. CASPAL requires consecutive even/odd register pairs.
+    unsafe {
+        core::arch::asm! {
+            "1:",
+            "caspal x2, x3, x4, x5, [{dest}]",
+            "mov w0, wzr",
+            "2:",
+            recovery_descriptor!("1b", "2b", "."),
+            dest = in(reg) dest,
+            inout("x2") *expected as u64 => low,
+            inout("x3") (*expected >> 64) as u64 => high,
+            in("x4") desired as u64,
+            in("x5") (desired >> 64) as u64,
+            lateout("x0") result,
+            options(nostack),
+        }
+    }
+    if result == 0 {
+        let actual = (u128::from(high) << 64) | u128::from(low);
+        if *expected == actual {
+            Ok(true)
+        } else {
+            *expected = actual;
+            Ok(false)
+        }
+    } else {
+        Err(Fault)
+    }
+}

@@ -1671,7 +1671,8 @@ impl GuestMemory {
                 match f(&mut param, mapping) {
                     Ok(t) => return Ok(t),
                     Err(fault) => match fault.kind() {
-                        trycopy::MemoryErrorKind::UnalignedAtomicAccess => {
+                        trycopy::MemoryErrorKind::UnalignedAtomicAccess
+                        | trycopy::MemoryErrorKind::UnsupportedAtomicAccess => {
                             return Err(GuestMemoryBackingError::other(gpa, fault));
                         }
                         trycopy::MemoryErrorKind::AccessViolation => {
@@ -1885,8 +1886,12 @@ impl GuestMemory {
 
     /// Attempts a sequentially-consistent compare exchange of the value at `gpa`.
     ///
+    /// `T` must be 1, 2, 4, 8, or 16 bytes, with an alignment of at least its
+    /// size.
+    ///
     /// Direct accesses to unaligned host addresses are supported where the
     /// platform supports them; otherwise, they return an error.
+    /// On x86_64, direct 16-byte accesses also require CMPXCHG16B support.
     pub fn compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownLayout + Copy>(
         &self,
         gpa: u64,
@@ -1894,7 +1899,7 @@ impl GuestMemory {
         new: T,
     ) -> Result<Result<T, T>, GuestMemoryError> {
         const {
-            assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
+            assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8 | 16));
             assert!(align_of::<T>() >= size_of::<T>());
         };
         let len = size_of_val(&new);
@@ -2861,6 +2866,79 @@ mod tests {
         let addr = SIZE_1MB as u64;
         let result = gm.read_plain::<u8>(addr);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compare_exchange_u128() {
+        const OLD: u128 = 0x0123456789abcdef_fedcba9876543210;
+        const NEW: u128 = 0x1122334455667788_99aabbccddeeff00;
+        let gm = GuestMemory::new("test", create_test_mapping());
+        let addr = PAGE_SIZE64 - 16;
+        gm.write_plain(addr - 16, &OLD).unwrap();
+        gm.write_plain(addr, &OLD).unwrap();
+        gm.write_plain(addr + 16, &OLD).unwrap();
+
+        let result = gm.compare_exchange(addr, OLD, NEW);
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(target_arch = "x86_64")]
+        if !std::is_x86_feature_detected!("cmpxchg16b") {
+            let error = result.unwrap_err();
+            let source = std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<trycopy::MemoryError>()
+                .unwrap();
+            assert_eq!(
+                source.kind(),
+                trycopy::MemoryErrorKind::UnsupportedAtomicAccess
+            );
+            assert_eq!(gm.read_plain::<u128>(addr).unwrap(), OLD);
+            return;
+        }
+        assert_eq!(result.unwrap(), Ok(NEW));
+        for current in [NEW ^ 1, NEW ^ (1 << 64)] {
+            assert_eq!(gm.compare_exchange(addr, current, OLD).unwrap(), Err(NEW));
+            assert_eq!(gm.read_plain::<u128>(addr).unwrap(), NEW);
+        }
+        assert_eq!(gm.read_plain::<u128>(addr - 16).unwrap(), OLD);
+        assert_eq!(gm.read_plain::<u128>(addr + 16).unwrap(), OLD);
+        gm.compare_exchange(SIZE_1MB as u64, OLD, NEW).unwrap_err();
+        gm.compare_exchange(4 * SIZE_1MB as u64, OLD, NEW)
+            .unwrap_err();
+    }
+
+    #[test]
+    fn test_compare_exchange_u128_concurrent() {
+        // test_compare_exchange_u128 covers the unsupported result.
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(target_arch = "x86_64")]
+        if !std::is_x86_feature_detected!("cmpxchg16b") {
+            return;
+        }
+        let gm = GuestMemory::allocate(PAGE_SIZE);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let gm = &gm;
+                scope.spawn(move || {
+                    let mut current = 0u128;
+                    for _ in 0..1000 {
+                        loop {
+                            let new = current + (1 << 64) + 1;
+                            match gm.compare_exchange(0, current, new).unwrap() {
+                                Ok(_) => {
+                                    current = new;
+                                    break;
+                                }
+                                Err(actual) => {
+                                    assert_eq!(actual as u64, (actual >> 64) as u64);
+                                    current = actual;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(gm.read_plain::<u128>(0).unwrap(), (4000 << 64) | 4000);
     }
 
     #[test]

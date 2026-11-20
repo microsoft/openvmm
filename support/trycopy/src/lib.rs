@@ -97,6 +97,8 @@ cfg_select! {
 
 use std::mem::MaybeUninit;
 use thiserror::Error;
+use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Must be called before using [`try_copy`] or other `try_` functions with a
 /// memory buffer that could fault.
@@ -183,30 +185,73 @@ pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<
 /// Unaligned compare-exchanges are supported where the platform supports them.
 /// Otherwise, they return an error without accessing memory.
 ///
-/// Fails at compile time if the size is not 1, 2, 4, or 8 bytes, or if the type
+/// On x86_64, 16-byte compare-exchanges require the CPU's CMPXCHG16B feature.
+/// If it is unavailable, they return an error without accessing memory.
+///
+/// Fails at compile time if the size is not 1, 2, 4, 8, or 16 bytes, or if the type
 /// is under-aligned.
+///
+/// `T` must have no padding and be valid for every bit pattern.
+///
+/// ```compile_fail
+/// use std::num::NonZeroU128;
+///
+/// let initial = NonZeroU128::new(1).unwrap();
+/// let mut value = initial;
+/// unsafe { trycopy::try_compare_exchange(&mut value, initial, initial) };
+/// ```
+///
+/// ```compile_fail
+/// #[repr(C, align(16))]
+/// #[derive(Copy, Clone, zerocopy::FromBytes)]
+/// struct Padded {
+///     low: u64,
+///     high: u32,
+/// }
+///
+/// let value = Padded { low: 1, high: 2 };
+/// let mut dest = value;
+/// unsafe { trycopy::try_compare_exchange(&mut dest, value, value) };
+/// ```
 ///
 /// # Safety
 /// `dest` must point to a reserved address, which may or may not be backed.
 /// `dest` cannot point to memory that would violate Rust's aliasing rules.
-pub unsafe fn try_compare_exchange<T: Copy>(
+pub unsafe fn try_compare_exchange<T: Copy + IntoBytes + FromBytes>(
     dest: *mut T,
     mut current: T,
     new: T,
 ) -> Result<Result<T, T>, MemoryError> {
     const {
-        assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
+        assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8 | 16));
         // This `T` must be at least as aligned as the primitive type's natural
         // alignment (which is its size).
         assert!(align_of::<T>() >= size_of::<T>());
     };
-    #[cfg(not(target_arch = "x86_64"))]
-    if !dest.addr().is_multiple_of(size_of::<T>()) {
+    let supports_unaligned = cfg_select! {
+        // cmpxchg16b requires 16-byte alignment.
+        target_arch = "x86_64" => size_of::<T>() <= 8,
+        _ => false,
+    };
+    if !supports_unaligned && !dest.addr().is_multiple_of(size_of::<T>()) {
         return Err(MemoryError {
             offset: 0,
             is_write: true,
             source: AccessError::UnalignedAtomicAccess {
                 address: dest.addr(),
+                len: size_of::<T>(),
+            },
+        });
+    }
+
+    // std caches CPUID results after the first call, so this is just a relaxed
+    // atomic load and bit test.
+    #[cfg(target_arch = "x86_64")]
+    if size_of::<T>() == 16 && !std::is_x86_feature_detected!("cmpxchg16b") {
+        return Err(MemoryError {
+            offset: 0,
+            is_write: true,
+            source: AccessError::UnsupportedAtomicAccess {
                 len: size_of::<T>(),
             },
         });
@@ -234,6 +279,11 @@ pub unsafe fn try_compare_exchange<T: Copy>(
                 dest.cast(),
                 std::mem::transmute::<&mut T, &mut u64>(&mut current),
                 std::mem::transmute_copy::<T, u64>(&new),
+            ),
+            16 => try_cmpxchg128(
+                dest.cast(),
+                std::mem::transmute::<&mut T, &mut u128>(&mut current),
+                std::mem::transmute_copy::<T, u128>(&new),
             ),
             _ => unreachable!(),
         }
@@ -354,6 +404,8 @@ pub enum MemoryErrorKind {
     AccessViolation,
     /// The platform does not support the atomic destination's alignment.
     UnalignedAtomicAccess,
+    /// The CPU does not support the atomic access width.
+    UnsupportedAtomicAccess,
 }
 
 /// Error returned when a memory access fails.
@@ -374,9 +426,11 @@ enum AccessError {
     #[cfg(unix)]
     #[error(transparent)]
     Os(OsAccessError),
-    #[cfg(not(target_arch = "x86_64"))]
     #[error("unaligned {len}-byte atomic access at address {address:#x}")]
     UnalignedAtomicAccess { address: usize, len: usize },
+    #[cfg(target_arch = "x86_64")]
+    #[error("CPU does not support {len}-byte atomic accesses")]
+    UnsupportedAtomicAccess { len: usize },
 }
 
 #[cfg(unix)]
@@ -416,16 +470,11 @@ impl std::fmt::Display for OsAccessError {
 impl MemoryError {
     /// Returns the kind of memory access failure.
     pub fn kind(&self) -> MemoryErrorKind {
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            match self.source {
-                AccessError::UnalignedAtomicAccess { .. } => MemoryErrorKind::UnalignedAtomicAccess,
-                _ => MemoryErrorKind::AccessViolation,
-            }
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            MemoryErrorKind::AccessViolation
+        match self.source {
+            AccessError::UnalignedAtomicAccess { .. } => MemoryErrorKind::UnalignedAtomicAccess,
+            #[cfg(target_arch = "x86_64")]
+            AccessError::UnsupportedAtomicAccess { .. } => MemoryErrorKind::UnsupportedAtomicAccess,
+            _ => MemoryErrorKind::AccessViolation,
         }
     }
 
@@ -619,7 +668,7 @@ unsafe fn install_signal_handlers() {
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 fn aarch64_extended_context<T>(ctx: &libc::mcontext_t, magic: u32) -> Option<&T>
 where
-    T: zerocopy::FromBytes + zerocopy::KnownLayout + zerocopy::Immutable,
+    T: FromBytes + zerocopy::KnownLayout + zerocopy::Immutable,
 {
     use zerocopy::FromBytes;
 
@@ -945,6 +994,8 @@ mod tests {
     use crate::try_write32;
     use crate::try_write64;
     use test_with_tracing::test;
+    use zerocopy::FromBytes;
+    use zerocopy::IntoBytes;
 
     struct GuardedMapping {
         ptr: *mut u8,
@@ -1157,6 +1208,9 @@ mod tests {
             let atomic = try_compare_exchange(guard.cast::<u64>(), 0, 1).unwrap_err();
             assert_eq!(atomic.offset(), 0);
             assert!(atomic.is_write);
+            let atomic = try_compare_exchange(guard.cast::<u128>(), 0, 1).unwrap_err();
+            assert_eq!(atomic.offset(), 0);
+            assert!(atomic.is_write);
         }
     }
 
@@ -1185,14 +1239,28 @@ mod tests {
 
     #[test]
     fn test_public_compare_exchange_sizes() {
-        fn check<T: Copy + PartialEq + std::fmt::Debug>(initial: T, new: T, wrong: T) {
+        fn check<T: Copy + IntoBytes + FromBytes + PartialEq + std::fmt::Debug>(
+            initial: T,
+            new: T,
+            wrong: T,
+        ) {
             let mut values = [initial; 3];
             // SAFETY: the middle element is a valid, naturally aligned destination.
             unsafe {
-                assert_eq!(
-                    try_compare_exchange(&mut values[1], initial, new).unwrap(),
-                    Ok(new)
-                );
+                let result = try_compare_exchange(&mut values[1], initial, new);
+                #[cfg(target_arch = "x86_64")]
+                if size_of::<T>() == 16 && !std::is_x86_feature_detected!("cmpxchg16b") {
+                    let error = result.unwrap_err();
+                    assert_eq!(
+                        error.kind(),
+                        crate::MemoryErrorKind::UnsupportedAtomicAccess
+                    );
+                    assert_eq!(error.offset(), 0);
+                    assert!(error.is_write);
+                    assert_eq!(values, [initial; 3]);
+                    return;
+                }
+                assert_eq!(result.unwrap(), Ok(new));
                 assert_eq!(values, [initial, new, initial]);
                 assert_eq!(
                     try_compare_exchange(&mut values[1], wrong, initial).unwrap(),
@@ -1207,13 +1275,27 @@ mod tests {
         check(0x1234u16, 0x5678, 0x9abc);
         check(0x12345678u32, 0x9abcdef0, 0x01234567);
         check(0x0123456789abcdefu64, 0xfedcba9876543210, 0);
+        check(
+            0x0123456789abcdef_fedcba9876543210u128,
+            0x1122334455667788_99aabbccddeeff00,
+            0x1122334455667788_99aabbccddeeff01,
+        );
+        check(
+            0x0123456789abcdef_fedcba9876543210u128,
+            0x1122334455667788_99aabbccddeeff00,
+            0x1122334455667789_99aabbccddeeff00,
+        );
+        check(u128::MAX, 0, 1);
     }
 
     #[test]
     fn test_public_compare_exchange_unaligned() {
-        fn check<T: Copy + PartialEq + std::fmt::Debug>(initial: T, new: T) {
+        fn check<T: Copy + IntoBytes + FromBytes + PartialEq + std::fmt::Debug>(
+            initial: T,
+            new: T,
+        ) {
             for offset in 1..size_of::<T>() {
-                let mut buffer = [0xa5a5a5a5a5a5a5a5u64; 3];
+                let mut buffer = [u128::from_ne_bytes([0xa5; 16]); 3];
                 let mut expected = buffer;
                 // SAFETY: both ranges are within the exclusively owned buffers.
                 // The raw pointers may be unaligned, but no unaligned references
@@ -1225,8 +1307,18 @@ mod tests {
                     expected_dest.write_unaligned(initial);
 
                     let result = try_compare_exchange(dest, initial, new);
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
+                    let supports_unaligned = cfg_select! {
+                        target_arch = "x86_64" => size_of::<T>() <= 8,
+                        _ => false,
+                    };
+                    if supports_unaligned {
+                        assert_eq!(result.unwrap(), Ok(new));
+                        expected_dest.write_unaligned(new);
+                        assert_eq!(
+                            try_compare_exchange(dest, initial, initial).unwrap(),
+                            Err(new)
+                        );
+                    } else {
                         let error = result.unwrap_err();
                         assert_eq!(error.offset(), 0);
                         assert!(error.is_write);
@@ -1235,15 +1327,6 @@ mod tests {
                             crate::AccessError::UnalignedAtomicAccess { address, len }
                                 if address == dest.addr() && len == size_of::<T>()
                         ));
-                    }
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        assert_eq!(result.unwrap(), Ok(new));
-                        expected_dest.write_unaligned(new);
-                        assert_eq!(
-                            try_compare_exchange(dest, initial, initial).unwrap(),
-                            Err(new)
-                        );
                     }
                     assert_eq!(buffer, expected);
                 }
@@ -1254,6 +1337,10 @@ mod tests {
         check(0x1234u16, 0x5678);
         check(0x12345678u32, 0x9abcdef0);
         check(0x0123456789abcdefu64, 0xfedcba9876543210);
+        check(
+            0x0123456789abcdef_fedcba9876543210u128,
+            0x1122334455667788_99aabbccddeeff00,
+        );
     }
 
     #[derive(Copy, Clone, Debug)]
