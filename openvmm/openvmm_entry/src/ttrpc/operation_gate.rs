@@ -13,8 +13,9 @@
 //!
 //! The gate must be acquired before any side effect of the operation, and is
 //! released when its guard drops, so completion, error, and cancellation all
-//! release it. The state is behind `Arc<Mutex<_>>` because guards move into
-//! spawned operation futures, which must be `Send`.
+//! release it. A committed SaveVM seals the gate permanently; the process must
+//! be quit and recreated. The state is behind `Arc<Mutex<_>>` because guards
+//! move into spawned operation futures, which must be `Send`.
 
 use anyhow::Context;
 use mesh_rpc::service::Code;
@@ -56,6 +57,9 @@ enum State {
     /// `n` topology operations in flight.
     Shared(u32),
     Exclusive(VmOperation),
+    /// The VM is terminal after a committed SaveVM. Only service-level
+    /// read/wait operations and Quit are allowed.
+    Sealed,
 }
 
 pub(crate) struct VmOperationGate {
@@ -83,6 +87,11 @@ impl VmOperationGate {
     /// shared-operation count would overflow.
     pub(crate) fn try_acquire(&self, operation: VmOperation) -> anyhow::Result<VmOperationGuard> {
         let mut state = self.state.lock();
+        if *state == State::Sealed {
+            return Err(anyhow::Error::new(Code::FailedPrecondition)).context(
+                "VM is sealed after SaveVM; only PropertiesVM, WaitVM, and Quit are allowed",
+            );
+        }
         let held = match (*state, operation.is_shared()) {
             (State::Idle, true) => {
                 *state = State::Shared(1);
@@ -106,6 +115,7 @@ impl VmOperationGate {
             }
             (State::Shared(_), false) => Some(VmOperation::Topology),
             (State::Exclusive(held), _) => Some(held),
+            (State::Sealed, _) => unreachable!("sealed state handled above"),
         };
         if let Some(held) = held {
             return Err(anyhow::Error::new(Code::Aborted)).with_context(|| {
@@ -121,6 +131,17 @@ impl VmOperationGate {
             operation,
         })
     }
+
+    /// Permanently rejects further gated VM mutations. The caller must release
+    /// the current guard before sealing.
+    pub(crate) fn seal(&self) {
+        let mut state = self.state.lock();
+        assert!(
+            matches!(*state, State::Idle | State::Sealed),
+            "cannot seal while an operation is in flight"
+        );
+        *state = State::Sealed;
+    }
 }
 
 impl Drop for VmOperationGuard {
@@ -128,6 +149,7 @@ impl Drop for VmOperationGuard {
         let mut state = self.state.lock();
         *state = match *state {
             State::Shared(n) if self.operation.is_shared() && n > 1 => State::Shared(n - 1),
+            State::Sealed => State::Sealed,
             _ => State::Idle,
         };
     }
@@ -197,5 +219,22 @@ mod tests {
         assert!(gate.try_acquire(VmOperation::Pause).is_err());
         drop(fut);
         assert!(gate.try_acquire(VmOperation::Pause).is_ok());
+    }
+
+    #[test]
+    fn sealed_gate_rejects_all_mutations_with_failed_precondition() {
+        let gate = VmOperationGate::default();
+        gate.seal();
+        for op in [
+            VmOperation::Pause,
+            VmOperation::Resume,
+            VmOperation::Save,
+            VmOperation::Topology,
+        ] {
+            let status = grpc_error(gate.try_acquire(op).err().unwrap());
+            assert_eq!(status.code, i32::from(Code::FailedPrecondition));
+            assert!(status.message.contains("sealed after SaveVM"));
+        }
+        gate.seal();
     }
 }

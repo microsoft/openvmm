@@ -586,6 +586,15 @@ impl VmService {
         }
     }
 
+    fn ensure_vm_mutation_allowed(&self, operation: &str) -> anyhow::Result<()> {
+        if self.snapshot_saved {
+            return Err(anyhow::Error::new(Code::FailedPrecondition).context(format!(
+                "{operation} is not allowed after SaveVM; only PropertiesVM, WaitVM, and Quit are allowed"
+            )));
+        }
+        Ok(())
+    }
+
     /// Like [`Self::start_rpc`], but admits the operation through the
     /// VM-mutation gate first. `build` runs only after admission, so a rejected
     /// operation has no side effects, and the gate is held until the operation
@@ -600,6 +609,10 @@ impl VmService {
         F: 'static + Future<Output = anyhow::Result<R>> + Send,
         R: 'static + MeshPayload + Send,
     {
+        if let Err(err) = self.ensure_vm_mutation_allowed("device or resource modification") {
+            response.send(Err(grpc_error(err)));
+            return;
+        }
         let fut = match self
             .operation_gate
             .try_acquire(operation)
@@ -905,8 +918,8 @@ struct VmService {
     /// The gate guard of a SaveVM whose controller request hasn't completed.
     /// Held by the service rather than the request, so a client that cancels
     /// SaveVM doesn't release the gate while the controller is still writing
-    /// the snapshot. Released when the save completes, at teardown, or when
-    /// the worker stops.
+    /// the snapshot. Released when the save completes, `Quit` terminates the
+    /// service, or the worker stops.
     save_guard: Option<VmOperationGuard>,
     /// In-flight gated operations that run as background tasks (device and
     /// resource changes).
@@ -1079,7 +1092,10 @@ impl VmService {
                 self.start_rpc(response, Ok(self.inspect(ctx, request)))
             }
             InspectService::Update(request, response) => {
-                self.start_rpc(response, Ok(self.update(ctx, request)))
+                let r = self
+                    .ensure_vm_mutation_allowed("inspect update")
+                    .map(|()| self.update(ctx, request));
+                self.start_rpc(response, r)
             }
         }
     }
@@ -1132,6 +1148,7 @@ impl VmService {
     }
 
     async fn create_vm(&mut self, request: vmservice::CreateVmRequest) -> anyhow::Result<()> {
+        self.ensure_vm_mutation_allowed("CreateVM")?;
         let req_config = request.config.context("missing configuration")?;
         self.create_vm_inner(req_config, None).await.map(drop)
     }
@@ -1140,6 +1157,7 @@ impl VmService {
         &mut self,
         request: vmservice::RestoreVmRequest,
     ) -> anyhow::Result<vmservice::RestoreVmResponse> {
+        self.ensure_vm_mutation_allowed("RestoreVM")?;
         let source_dir = PathBuf::from(request.source_dir);
         if source_dir.as_os_str().is_empty() {
             return Err(anyhow!(Code::InvalidArgument).context("missing snapshot source directory"));
@@ -1198,6 +1216,7 @@ impl VmService {
         mut req_config: vmservice::VmConfig,
         restore: Option<RestoreParameters>,
     ) -> anyhow::Result<Option<Guid>> {
+        self.ensure_vm_mutation_allowed("CreateVM or RestoreVM")?;
         if self.vm.is_some() {
             bail!("VM already created");
         }
@@ -1777,10 +1796,11 @@ impl VmService {
     }
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
+        self.ensure_vm_mutation_allowed("TeardownVM")?;
         // Teardown is terminal: it cancels in-flight device and resource
         // changes rather than being rejected by them. Pause, resume, and save
-        // run inline, so none can be in flight here, but a save whose client
-        // cancelled may still hold the gate (`save_guard`).
+        // run inline, so none can be in flight here. A cancelled save is
+        // already terminal and was rejected above; only Quit can consume it.
         self.cancel_gated_tasks().await;
         let controller = self.vm_controller.take().context("vm not created")?;
         // Drop the VM's device RPC channels before waiting on the controller.
@@ -1853,6 +1873,7 @@ impl VmService {
         mut ctx: mesh::CancelContext,
         request: vmservice::ShutdownVmRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        self.ensure_vm_mutation_allowed("ShutdownVM")?;
         use vmservice::shutdown_vm_request::Mechanism;
 
         enum ShutdownSender {
@@ -1945,6 +1966,7 @@ impl VmService {
     }
 
     async fn pause_vm(&mut self) -> anyhow::Result<()> {
+        self.ensure_vm_mutation_allowed("PauseVM")?;
         let _gate = self.operation_gate.try_acquire(VmOperation::Pause)?;
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
@@ -1959,9 +1981,7 @@ impl VmService {
     }
 
     async fn resume_vm(&mut self) -> anyhow::Result<()> {
-        if self.snapshot_saved {
-            bail!("cannot resume a VM after SaveVM");
-        }
+        self.ensure_vm_mutation_allowed("ResumeVM")?;
         let _gate = self.operation_gate.try_acquire(VmOperation::Resume)?;
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
@@ -1984,16 +2004,17 @@ impl VmService {
                 anyhow!(Code::InvalidArgument).context("missing snapshot destination directory")
             );
         }
+        // The snapshot shares the VM's memory backing file, so only one
+        // snapshot per VM is allowed.
+        if self.snapshot_saved {
+            return Err(anyhow!(Code::FailedPrecondition).context(
+                "VM is terminal after SaveVM; only PropertiesVM, WaitVM, and Quit are allowed",
+            ));
+        }
         if !matches!(self.lifecycle, VmLifecycle::Running | VmLifecycle::Paused) {
             return Err(
                 anyhow!(Code::FailedPrecondition).context("SaveVM requires a running or paused VM")
             );
-        }
-        // The snapshot shares the VM's memory backing file, so only one
-        // snapshot per VM is allowed.
-        if self.snapshot_saved {
-            return Err(anyhow!(Code::FailedPrecondition)
-                .context("VM already saved; tear down the VM or restore the snapshot"));
         }
         let controller = self
             .vm_controller
@@ -2017,9 +2038,10 @@ impl VmService {
         // controller still finishes the save, and resuming would then write
         // guest memory into the snapshot. For the same reason the service,
         // not this future, holds the gate: until the controller replies or,
-        // if the client cancels, until teardown.
+        // if the client cancels, until Quit or worker failure.
         self.snapshot_saved = true;
-        self.lifecycle = VmLifecycle::Paused;
+        self.lifecycle =
+            VmLifecycle::Halted("snapshot save in progress or committed; Quit the VM".into());
         self.save_guard = Some(gate);
 
         let result = controller
@@ -2029,15 +2051,20 @@ impl VmService {
             .and_then(|r| r.map_err(anyhow::Error::from));
         self.save_guard = None;
         match result {
-            Ok(snapshot_id) => Ok(vmservice::SaveVmResponse {
-                snapshot_id: snapshot_id.to_string(),
-            }),
+            Ok(snapshot_id) => {
+                self.operation_gate.seal();
+                self.lifecycle = VmLifecycle::Halted("snapshot saved".into());
+                Ok(vmservice::SaveVmResponse {
+                    snapshot_id: snapshot_id.to_string(),
+                })
+            }
             Err(err) => {
                 // On failure the controller removes the files it created, so
                 // no snapshot references guest memory and the VM may be
                 // resumed. The prechecks above ensure the controller paused
                 // the VM before failing, so the VM stays paused.
                 self.snapshot_saved = false;
+                self.lifecycle = VmLifecycle::Paused;
                 Err(err).context("snapshot failed")
             }
         }
@@ -2073,11 +2100,19 @@ impl VmService {
                 // Clear VM state since the worker is gone. The controller
                 // task will be awaited during final cleanup. A save whose
                 // client cancelled can no longer be writing, so release its
-                // gate too; otherwise a later VM would stay gated.
+                // gate too; snapshot_saved keeps subsequent operations terminal
+                // until Quit rather than permitting a later VM in this process.
                 self.vm.take();
                 self.vm_controller.take();
                 self.save_guard = None;
-                self.lifecycle = VmLifecycle::Uninitialized;
+                if self.snapshot_saved {
+                    self.operation_gate.seal();
+                    self.lifecycle = VmLifecycle::Halted(
+                        "snapshot save committed or outcome uncertain; Quit the VM".into(),
+                    );
+                } else {
+                    self.lifecycle = VmLifecycle::Uninitialized;
+                }
             }
             VmControllerEvent::VncWorkerStopped { error } => {
                 if let Some(err) = &error {
@@ -3735,8 +3770,8 @@ mod tests {
     }
 
     /// SaveVM holds the gate while the controller writes the snapshot. A
-    /// completed save releases it; a save whose client cancelled keeps it,
-    /// because the controller may still be writing, until teardown.
+    /// completed save seals it; a save whose client cancelled remains
+    /// terminal because the controller may still commit the snapshot.
     #[test]
     fn save_holds_the_gate_until_the_controller_replies() {
         DefaultPool::run_with(async |driver| {
@@ -3751,7 +3786,7 @@ mod tests {
                 recv
             };
 
-            // Completed save: the gate is released.
+            // Completed save: the gate is sealed and the VM is terminal.
             let mut svc = service(driver.clone(), None);
             let mut controller = with_controller(&mut svc);
             let (result, ()) = futures::join!(svc.save_vm(request("completed")), async {
@@ -3762,13 +3797,42 @@ mod tests {
                 response.complete(Ok(Guid::new_random()));
             });
             result.unwrap();
-            drop(
+            let status = grpc_error(
                 svc.operation_gate
                     .try_acquire(VmOperation::Topology)
-                    .expect("a completed save releases the gate"),
+                    .err()
+                    .expect("a completed save seals the gate"),
             );
+            assert_eq!(status.code, i32::from(Code::FailedPrecondition));
+            assert!(matches!(
+                svc.lifecycle,
+                VmLifecycle::Halted(ref reason) if reason == "snapshot saved"
+            ));
+            let properties = svc.build_properties();
+            assert_eq!(properties.state, vmservice::VmState::Halted as i32);
+            assert_eq!(properties.halt_reason.as_deref(), Some("snapshot saved"));
+            let (response, result) = mesh::oneshot();
+            assert!(matches!(
+                svc.handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::WaitVm((), response),
+                )
+                .await,
+                HandleAction::None
+            ));
+            result.await.unwrap().unwrap();
+            for operation in [
+                svc.pause_vm().await,
+                svc.resume_vm().await,
+                svc.teardown_vm().await,
+                svc.create_vm(Default::default()).await,
+                svc.restore_vm(Default::default()).await.map(drop),
+            ] {
+                let status = grpc_error(operation.expect_err("operation must remain terminal"));
+                assert_eq!(status.code, i32::from(Code::FailedPrecondition));
+            }
 
-            // Cancelled save: the gate stays held until teardown.
+            // Cancelled save: the gate stays held and the service stays terminal.
             let mut svc = service(driver.clone(), None);
             let mut controller = with_controller(&mut svc);
             let rpc = match futures::future::select(
@@ -3805,15 +3869,26 @@ mod tests {
             );
             let (_dir, response) = rpc.split();
             response.complete(Ok(Guid::new_random()));
-            svc.teardown_vm().await.unwrap();
-            drop(
-                svc.operation_gate
-                    .try_acquire(VmOperation::Topology)
-                    .expect("teardown releases the gate"),
+            let status = grpc_error(
+                svc.teardown_vm()
+                    .await
+                    .expect_err("teardown is not allowed after save"),
             );
+            assert_eq!(status.code, i32::from(Code::FailedPrecondition));
 
-            // Cancelled save, then the worker stops: the gate is released, so
-            // a later VM isn't blocked.
+            let (response, result) = mesh::oneshot();
+            assert!(matches!(
+                svc.handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::Quit((), response),
+                )
+                .await,
+                HandleAction::Quit
+            ));
+            result.await.unwrap().unwrap();
+
+            // Cancelled save, then the worker stops: the service remains
+            // terminal, so a later VM cannot reuse the process.
             let mut svc = service(driver, None);
             let mut controller = with_controller(&mut svc);
             drop(
@@ -3825,11 +3900,14 @@ mod tests {
             );
             assert!(svc.save_guard.is_some());
             svc.handle_controller_event(VmControllerEvent::WorkerStopped { error: None });
-            drop(
+            let status = grpc_error(
                 svc.operation_gate
                     .try_acquire(VmOperation::Topology)
-                    .expect("a stopped worker releases the gate"),
+                    .err()
+                    .expect("a stopped worker remains terminal"),
             );
+            assert_eq!(status.code, i32::from(Code::FailedPrecondition));
+            assert!(matches!(svc.lifecycle, VmLifecycle::Halted(_)));
         });
     }
 

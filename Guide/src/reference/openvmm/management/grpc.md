@@ -51,11 +51,16 @@ before their implementation is connected end to end.
 `state.bin`, and `memory.bin` to the requested directory. The VM must use the
 `MemoryConfig.backing_file_path` setting. The currently supported
 implementation hard-links that backing file into the snapshot, so after a
-successful save the VM can't be resumed and should be torn down. Each save
-generates a unique snapshot ID (a GUID string) that is stored in
+successful save the VM is terminal and can't be resumed or reused. Its state
+is `Halted` with halt reason `snapshot saved`; `PropertiesVM`, `WaitVM`, and
+`Quit` remain available. `TeardownVM`, `CreateVM`, `RestoreVM`, and VM-changing
+operations return `FAILED_PRECONDITION`. The management client must send
+`Quit` and wait for process exit. Each save generates a unique snapshot ID (a
+GUID string) that is stored in
 `manifest.bin` and returned in `SaveVMResponse.snapshot_id`.
 Cancelling `SaveVM` only stops the caller from waiting; the save may still
-complete.
+complete, so the service becomes terminal before waiting and remains terminal
+until `Quit`.
 
 `RestoreVM` creates a VM from a snapshot directory and a compatible
 `VMConfig`. Device configuration is not stored in the snapshot and must be
@@ -141,7 +146,7 @@ flight, rather than queuing it.
 |---|---|---|
 | `ModifyResource`, `AddPcieDevice`, `RemovePcieDevice`, `AddVpciDevice`, `RemoveVpciDevice` | Shared | Runs alongside it |
 | `PauseVM`, `ResumeVM`, `SaveVM` | Exclusive | Rejected with `ABORTED` |
-| `TeardownVM`, `Quit` | Terminal | Cancels it; the change returns `CANCELLED` |
+| `TeardownVM` before Save, `Quit` | Terminal | Cancels it; the change returns `CANCELLED` |
 
 - A rejected request has no side effects, and the server never retries it.
 - `PauseVM`, `ResumeVM`, `SaveVM`, and `TeardownVM` complete before the server
@@ -154,11 +159,16 @@ flight, rather than queuing it.
   stopping the VM waits for it.
 - A client that cancels or disconnects does not end the operation early. If a
   `SaveVM` client cancels, the save may still be writing the snapshot, so
-  device and resource changes and `PauseVM` are rejected with `ABORTED` until
-  `TeardownVM` or until the VM worker stops.
+  the service remains terminal. Device and resource changes and lifecycle
+  operations return `FAILED_PRECONDITION`; the client must send `Quit` or
+  wait for the VM worker to stop.
+- Once `SaveVM` commits, the VM operation gate is sealed. This prevents a
+  caller from accidentally resuming, mutating, tearing down, or recreating the
+  saved VM in the same process.
 - `CreateVM`, `RestoreVM`, `WaitVM`, `CapabilitiesVM`, and `PropertiesVM` are
   not gated. `CreateVM` and `RestoreVM` require that no VM exists, so no change
-  can be in flight.
+  can be in flight. After a committed or uncertain Save, `CreateVM` and
+  `RestoreVM` are rejected with `FAILED_PRECONDITION` until `Quit`.
 - Consomme NIC changes (`ModifyResource` `UPDATE` or `REMOVE` of a Consomme
   NIC, including ports, DNS records, and virtual addresses) require a running
   VM and otherwise fail with `FAILED_PRECONDITION`, before the rest of the
