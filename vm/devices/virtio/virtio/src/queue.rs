@@ -322,14 +322,34 @@ impl QueueCoreGetWork {
     /// Returns `Ok(None)` forever once the queue has failed, so that the error
     /// is reported exactly once.
     pub fn try_peek_work(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
+        self.try_peek_work_with_policy(false)
+    }
+
+    /// Like [`Self::try_peek_work`], but a split-ring capacity error does not
+    /// retire the queue, allowing a retry after outstanding work completes.
+    /// Packed overlap remains fatal: publication overwrites descriptor metadata.
+    pub fn try_peek_work_with_backpressure(
+        &mut self,
+    ) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
+        self.try_peek_work_with_policy(true)
+    }
+
+    fn try_peek_work_with_policy(
+        &mut self,
+        defer_split_capacity: bool,
+    ) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {
         if self.failed {
             return Ok(None);
         }
-        let r = self.try_peek_work_inner();
-        if r.is_err() {
+        let result = self.try_peek_work_inner();
+        if let Err(err) = &result
+            && !(defer_split_capacity
+                && matches!(err, QueueError::TooManyInFlightDescriptors { .. })
+                && matches!(self.inner, QueueGetWorkInner::Split(_)))
+        {
             self.failed = true;
         }
-        r
+        result
     }
 
     fn try_peek_work_inner(&mut self) -> Result<Option<VirtioQueueCallbackWork>, QueueError> {

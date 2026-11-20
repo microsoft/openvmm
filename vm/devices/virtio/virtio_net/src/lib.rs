@@ -968,6 +968,8 @@ impl Worker {
             // cancellation.
             let pending_rx_packets = &mut self.active_state.pending_rx_packets;
             let tx_segments = &self.active_state.data.tx_segments;
+            let tx_in_order = &self.virtio_state.tx_in_order;
+            let rx_in_order = &self.virtio_state.rx_in_order;
             let tx_queue = &mut self.virtio_state.tx_queue;
             let rx_queue = &mut self.virtio_state.rx_queue;
             stop.until_stopped(std::future::poll_fn(|cx| {
@@ -976,12 +978,12 @@ impl Worker {
                 }
 
                 if tx_segments.is_empty()
-                    && let Poll::Ready(()) = tx_queue.poll_kick(cx)
+                    && let Poll::Ready(()) = tx_in_order.poll_kick(tx_queue, cx)
                 {
                     return Poll::Ready(());
                 }
 
-                if let Poll::Ready(()) = rx_queue.poll_kick(cx) {
+                if let Poll::Ready(()) = rx_in_order.poll_kick(rx_queue, cx) {
                     return Poll::Ready(());
                 }
 
