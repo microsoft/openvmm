@@ -3145,26 +3145,27 @@ fn build_virtio_fs_windows_options(
     } = options;
     cfg_select! {
         windows => {{
-          let user_token = (!user_token_name.is_empty())
-              .then(|| {
-                  registry.resolve(&user_token_name).with_context(|| {
-                      format!("failed to resolve virtio-fs user token '{user_token_name}'")
-                  })
-              })
-              .transpose()?;
-          Ok(virtio_resources::fs::VirtioFsWindowsOptions {
-              user_token,
-              shared_mem,
-          })
+            let user_token = (!user_token_name.is_empty())
+                .then(|| {
+                    registry.resolve(&user_token_name).with_context(|| {
+                        format!("failed to resolve virtio-fs user token '{user_token_name}'")
+                    })
+                })
+                .transpose()?;
+            Ok(virtio_resources::fs::VirtioFsWindowsOptions {
+                user_token,
+                shared_mem,
+            })
         }}
         _ => {{
-          let _ = registry;
-          anyhow::ensure!(
-              user_token_name.is_empty(),
-              "virtio-fs user tokens are only supported on Windows"
-          );
-          Ok(virtio_resources::fs::VirtioFsWindowsOptions { shared_mem })
-    }}
+            let _ = registry;
+            anyhow::ensure!(
+                user_token_name.is_empty(),
+                "virtio-fs user tokens are only supported on Windows"
+            );
+            Ok(virtio_resources::fs::VirtioFsWindowsOptions { shared_mem })
+        }}
+    }
 }
 
 /// Builds a disk backend resource from the proto `DiskBackend`.

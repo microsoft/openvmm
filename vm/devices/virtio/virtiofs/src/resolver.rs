@@ -108,7 +108,9 @@ fn parse_shared_mem(
                 "virtio-fs shared_mem does not support mount_options"
             );
             anyhow::ensure!(
-                windows_options.and_then(|options| options.user_token).is_none(),
+                windows_options
+                    .and_then(|options| options.user_token)
+                    .is_none(),
                 "virtio-fs shared_mem does not support user tokens"
             );
             Ok(ParsedVirtioFsBackend::SectionFs { root_path })
