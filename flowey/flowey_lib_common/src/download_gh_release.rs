@@ -271,9 +271,12 @@ fn download_all_reqs(
             // multiple processes to saturate the network connection in cases where
             // multiple (repo, tag) pairs are being pulled at the same time.
             let patterns = files.keys().flat_map(|k| ["--pattern".into(), k.clone()]);
+            // Clobber here so we don't skip files that were incompletely
+            // downloaded. The caller should check if the file already exists
+            // in the cache, so this shouldn't overwrite a valid download.
             flowey::shell_cmd!(
                 rt,
-                "{gh_cli} release download -R {repo} {tag} {patterns...} --skip-existing"
+                "{gh_cli} release download -R {repo} {tag} {patterns...} --clobber"
             )
             .run()?;
         } else {

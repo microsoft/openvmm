@@ -3,9 +3,7 @@
 
 pub use flowey::util::copy_dir_all;
 
-use flowey::node::prelude::FlowPlatformKind;
-use flowey::node::prelude::RustRuntimeServices;
-use flowey::node::prelude::anyhow;
+use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 pub mod cargo_install;
@@ -62,6 +60,8 @@ pub fn retry<T>(
             return Err(e);
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
+
+        log::warn!("retry count: {i}");
     }
 
     Ok(())
