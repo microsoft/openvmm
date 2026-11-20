@@ -4,8 +4,8 @@
 //! A disk backed by a Windows physical disk, such as `\\.\PhysicalDriveN`.
 //!
 //! The disk's size and sector sizes are queried from the device. I/O is
-//! performed by [`FileDisk`], so the handle must be opened for synchronous
-//! I/O, with or without `FILE_FLAG_NO_BUFFERING`.
+//! performed by `disk_file::FileDisk`, so the handle must be opened for
+//! synchronous I/O, with or without `FILE_FLAG_NO_BUFFERING`.
 
 #![cfg(windows)]
 #![deny(unsafe_code)]
