@@ -3251,6 +3251,7 @@ fn build_consomme_handle(
             net_mask: parse_optional(&consomme.net_mask, "net mask")?,
             client_ip_ipv6: parse_optional(&consomme.client_ip_ipv6, "client IPv6")?,
             allow_host_local_access: consomme.allow_host_local_access,
+            udp_timeout_secs: None,
         },
         cidr: (!consomme.cidr.is_empty()).then_some(consomme.cidr),
         internal_dns: consomme.internal_dns.unwrap_or(true),

@@ -860,6 +860,7 @@ async fn vm_config_from_command_line(
                 endpoint: EndpointConfigCli::Consomme {
                     cidr: None,
                     host_fwd: Vec::new(),
+                    udp_timeout_secs: None,
                 },
                 mac_address: None,
                 max_queues: None,
@@ -2422,7 +2423,11 @@ fn parse_endpoint(
 ) -> anyhow::Result<NicConfig> {
     let _ = resources;
     let endpoint = match &cli_cfg.endpoint {
-        EndpointConfigCli::Consomme { cidr, host_fwd } => {
+        EndpointConfigCli::Consomme {
+            cidr,
+            host_fwd,
+            udp_timeout_secs,
+        } => {
             let ports = host_fwd
                 .iter()
                 .map(|fwd| {
@@ -2452,7 +2457,10 @@ fn parse_endpoint(
             };
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
-                params: Default::default(),
+                params: net_backend_resources::consomme::ConsommeParams {
+                    udp_timeout_secs: *udp_timeout_secs,
+                    ..Default::default()
+                },
                 ports,
                 internal_dns: true,
                 recv,

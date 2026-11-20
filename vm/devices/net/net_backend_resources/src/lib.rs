@@ -128,6 +128,9 @@ pub mod consomme {
         /// If true, allow guest traffic to host-local addresses (loopback,
         /// unspecified, link-local).
         pub allow_host_local_access: bool,
+        /// Idle timeout in seconds for UDP and ICMP flows. 0 means flows
+        /// never expire. None keeps the Consomme default.
+        pub udp_timeout_secs: Option<u64>,
     }
 
     /// Handle to a Consomme network endpoint.
