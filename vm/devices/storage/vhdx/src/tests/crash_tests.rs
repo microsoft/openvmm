@@ -217,12 +217,11 @@ async fn bat_page_no_fsn_safe_soft_anchor(driver: DefaultDriver) {
     vhdx.close().await.unwrap();
 }
 
-/// Partial write triggering non-TFP allocation with unsafe space →
-/// pre_log_fsn set.
+/// Partial write allocating unsafe space → pre_log_fsn set.
 ///
 /// Write a partial block (less than full block) where the allocation
 /// comes from the free pool. Since the space contains stale data from
-/// another block, SpaceState::CrossStale (unsafe) → the non-TFP path sets pre_log_fsn.
+/// another block, SpaceState::CrossStale (unsafe) → completion sets pre_log_fsn.
 #[async_test]
 async fn bat_page_has_fsn_partial_unsafe(driver: DefaultDriver) {
     let (file, _) = InMemoryFile::create_test_vhdx(format::GB1).await;
@@ -239,9 +238,9 @@ async fn bat_page_has_fsn_partial_unsafe(driver: DefaultDriver) {
     vhdx.trim(trim_request).await.unwrap();
     vhdx.flush().await.unwrap();
 
-    // Write a partial block at block 1 (less than full block_size). This
-    // triggers the non-TFP allocation path. Space comes from free pool →
-    // SpaceState::CrossStale (unsafe).
+    // Write a partial block at block 1 (less than full block_size).
+    // Space comes from the free pool → SpaceState::CrossStale (unsafe).
+    // Publication is deferred until complete(), which stamps pre_log_fsn.
     let partial_size = 4096;
     write_pattern(&vhdx, block_size, partial_size, 0xCC).await;
 
@@ -266,7 +265,8 @@ async fn bat_page_no_fsn_partial_safe(driver: DefaultDriver) {
     let vhdx = VhdxFile::open(file).writable(&driver).await.unwrap();
 
     // Partial write to block 0 (less than full block). Space comes from
-    // near-EOF → SpaceState::OwnStale (safe).
+    // near-EOF → SpaceState::Zero (safe). Publication waits for complete(),
+    // but safe space does not stamp pre_log_fsn.
     let partial_size = 4096;
     write_pattern(&vhdx, 0, partial_size, 0xDD).await;
 
