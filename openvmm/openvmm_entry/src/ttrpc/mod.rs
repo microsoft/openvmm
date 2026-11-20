@@ -15,12 +15,16 @@
 mod fd_passing;
 #[cfg(windows)]
 mod handle_passing;
+mod operation_gate;
 mod resource_passing;
 
 #[cfg(unix)]
 use fd_passing as resource_transport;
 #[cfg(windows)]
 use handle_passing as resource_transport;
+use operation_gate::VmOperation;
+use operation_gate::VmOperationGate;
+use operation_gate::VmOperationGuard;
 
 /// The registry of OS resources (fds or handles) passed in by clients, keyed by
 /// client-chosen name.
@@ -393,6 +397,7 @@ impl Worker for TtrpcWorker {
 
     fn run(self, recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
         DefaultPool::run_with(async |driver| {
+            let (gated_cancel_ctx, gated_cancel) = mesh::CancelContext::new().with_cancel();
             let mut service = VmService {
                 driver,
                 vm: None,
@@ -404,6 +409,11 @@ impl Worker for TtrpcWorker {
                 snapshot_saved: false,
                 memory_backing_file: None,
                 rpc_tasks: Vec::new(),
+                operation_gate: VmOperationGate::default(),
+                save_guard: None,
+                gated_tasks: Vec::new(),
+                gated_cancel_ctx,
+                gated_cancel,
                 transport: self.transport,
                 registry: ResourceRegistry::default(),
             };
@@ -537,6 +547,9 @@ impl VmService {
             }
         };
 
+        // Cancel in-flight device and resource changes; see `cancel_gated_tasks`.
+        self.cancel_gated_tasks().await;
+
         // If the controller is still alive (non-Quit exit), shut it down.
         if !quit {
             if let Some(controller) = self.vm_controller.take() {
@@ -579,6 +592,83 @@ impl VmService {
             }
             Err(err) => response.send(Err(grpc_error(err))),
         }
+    }
+
+    fn ensure_vm_mutation_allowed(&self, operation: &str) -> anyhow::Result<()> {
+        if self.snapshot_saved {
+            return Err(anyhow::Error::new(Code::FailedPrecondition).context(format!(
+                "{operation} is not allowed after SaveVM; only PropertiesVM, WaitVM, and Quit are allowed"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Like [`Self::start_rpc`], but admits the operation through the
+    /// VM-mutation gate first. `build` runs only after admission, so a rejected
+    /// operation has no side effects, and the gate is held until the operation
+    /// completes or is cancelled by a terminal operation (see
+    /// [`Self::cancel_gated_tasks`]).
+    fn start_gated_rpc<F, R>(
+        &mut self,
+        operation: VmOperation,
+        response: mesh::OneshotSender<Result<R, Status>>,
+        build: impl FnOnce(&Self) -> anyhow::Result<F>,
+    ) where
+        F: 'static + Future<Output = anyhow::Result<R>> + Send,
+        R: 'static + MeshPayload + Send,
+    {
+        if let Err(err) = self.ensure_vm_mutation_allowed("device or resource modification") {
+            response.send(Err(grpc_error(err)));
+            return;
+        }
+        let fut = match self
+            .operation_gate
+            .try_acquire(operation)
+            .and_then(|guard| build(self).map(|fut| (guard, fut)))
+        {
+            Ok(v) => v,
+            Err(err) => {
+                response.send(Err(grpc_error(err)));
+                return;
+            }
+        };
+        let (guard, fut) = fut;
+        let mut cancel = self.gated_cancel_ctx.clone();
+        let task = self.driver.spawn("ttrpc-gated-rpc", async move {
+            let r = match cancel.until_cancelled(fut).await {
+                Ok(r) => r,
+                Err(_) => Err(anyhow::Error::new(Code::Cancelled))
+                    .context("cancelled because the VM is being torn down"),
+            };
+            drop(guard);
+            response.send(map_grpc(r));
+        });
+        self.gated_tasks.retain(|task| !task.is_finished());
+        self.gated_tasks.push(task);
+    }
+
+    /// Cancels every in-flight gated background operation and waits for it to
+    /// finish, so it releases the gate and any device RPC channel it holds.
+    ///
+    /// Used by the terminal operations (teardown and quit), which must always
+    /// make progress: an in-flight device or resource change has no meaning
+    /// once the VM is destroyed, and one can otherwise wait forever (for
+    /// example, a Consomme port change whose NIC is not processing its queue).
+    /// The cancelled callers receive `CANCELLED`. Only the service-side wait
+    /// is cancelled; a request already delivered to the VM is completed or
+    /// discarded when the VM worker stops, and if the worker is blocked on it
+    /// (for example, on an unresponsive device backend), stopping the worker
+    /// waits for it.
+    ///
+    /// Cancellation drops the operation's future, so gated futures must be
+    /// safe to drop at any await point. Today they await only RPC replies and
+    /// blocking file I/O. They must not issue io_uring I/O on the service
+    /// driver, whose in-flight futures abort the process if dropped.
+    async fn cancel_gated_tasks(&mut self) {
+        let (ctx, cancel) = mesh::CancelContext::new().with_cancel();
+        self.gated_cancel_ctx = ctx;
+        std::mem::replace(&mut self.gated_cancel, cancel).cancel();
+        futures::future::join_all(self.gated_tasks.drain(..)).await;
     }
 }
 
@@ -831,6 +921,21 @@ struct VmService {
     /// one.
     memory_backing_file: Option<PathBuf>,
     rpc_tasks: Vec<Task<()>>,
+    /// Rejects an operation that conflicts with one already in flight.
+    operation_gate: VmOperationGate,
+    /// The gate guard of a SaveVM whose controller request hasn't completed.
+    /// Held by the service rather than the request, so a client that cancels
+    /// SaveVM doesn't release the gate while the controller is still writing
+    /// the snapshot. Released when the save completes, `Quit` terminates the
+    /// service, or the worker stops.
+    save_guard: Option<VmOperationGuard>,
+    /// In-flight gated operations that run as background tasks (device and
+    /// resource changes).
+    gated_tasks: Vec<Task<()>>,
+    /// Observed by every task in `gated_tasks`; cancelled by the terminal
+    /// operations (teardown and quit) through `gated_cancel`.
+    gated_cancel_ctx: mesh::CancelContext,
+    gated_cancel: mesh::Cancel,
     transport: ResolvedTransport,
     /// Registry of OS resources passed in over the fd-passing or
     /// handle-passing protocol, resolvable by name (e.g. for tap NIC backends
@@ -878,6 +983,12 @@ impl VmService {
                 response.send(map_grpc(self.teardown_vm().await))
             }
             vmservice::Vm::Quit((), response) => {
+                // Quit is terminal. Cancel in-flight device and resource
+                // changes first: each can hold a clone of a device RPC channel
+                // (for example the SCSI controller's), and a live channel keeps
+                // the worker from stopping, so the controller wait below could
+                // otherwise hang.
+                self.cancel_gated_tasks().await;
                 // Shut down the controller (which stops and joins the worker).
                 // Drop the VM's device RPC channels first; see `teardown_vm`.
                 self.vm.take();
@@ -956,24 +1067,29 @@ impl VmService {
                 }
             }
             vmservice::Vm::ModifyResource(request, response) => {
-                let r = self.modify_resource(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.modify_resource(request)
+                });
             }
             vmservice::Vm::AddPcieDevice(request, response) => {
-                let r = self.add_pcie_device(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.add_pcie_device(request)
+                });
             }
             vmservice::Vm::RemovePcieDevice(request, response) => {
-                let r = self.remove_pcie_device(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.remove_pcie_device(request)
+                });
             }
             vmservice::Vm::AddVpciDevice(request, response) => {
-                let r = self.add_vpci_device(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.add_vpci_device(request)
+                });
             }
             vmservice::Vm::RemoveVpciDevice(request, response) => {
-                let r = self.remove_vpci_device(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.remove_vpci_device(request)
+                });
             }
         }
         HandleAction::None
@@ -985,7 +1101,10 @@ impl VmService {
                 self.start_rpc(response, Ok(self.inspect(ctx, request)))
             }
             InspectService::Update(request, response) => {
-                self.start_rpc(response, Ok(self.update(ctx, request)))
+                let r = self
+                    .ensure_vm_mutation_allowed("inspect update")
+                    .map(|()| self.update(ctx, request));
+                self.start_rpc(response, r)
             }
         }
     }
@@ -1038,6 +1157,7 @@ impl VmService {
     }
 
     async fn create_vm(&mut self, request: vmservice::CreateVmRequest) -> anyhow::Result<()> {
+        self.ensure_vm_mutation_allowed("CreateVM")?;
         let req_config = request.config.context("missing configuration")?;
         self.create_vm_inner(req_config, None).await.map(drop)
     }
@@ -1046,6 +1166,7 @@ impl VmService {
         &mut self,
         request: vmservice::RestoreVmRequest,
     ) -> anyhow::Result<vmservice::RestoreVmResponse> {
+        self.ensure_vm_mutation_allowed("RestoreVM")?;
         let source_dir = PathBuf::from(request.source_dir);
         if source_dir.as_os_str().is_empty() {
             return Err(anyhow!(Code::InvalidArgument).context("missing snapshot source directory"));
@@ -1104,6 +1225,7 @@ impl VmService {
         mut req_config: vmservice::VmConfig,
         restore: Option<RestoreParameters>,
     ) -> anyhow::Result<Option<Guid>> {
+        self.ensure_vm_mutation_allowed("CreateVM or RestoreVM")?;
         if self.vm.is_some() {
             bail!("VM already created");
         }
@@ -1666,7 +1788,31 @@ impl VmService {
         Ok(snapshot_id)
     }
 
+    /// Consomme NIC changes (port, DNS record, and virtual-address requests)
+    /// are serviced only from the NIC's queue processing, which is stopped
+    /// while the VM is not running. Such a request would never complete, and
+    /// while waiting it would hold the gate, so `ResumeVM` would be rejected
+    /// and the VM could not run again until teardown. Reject it up front.
+    ///
+    /// This is best effort: a running guest that stops processing traffic can
+    /// still stall the request (teardown cancels it). The root fix is to
+    /// service these requests outside queue processing (see the TODO in
+    /// `net_consomme`'s `poll_ready`).
+    fn require_running_for_consomme_changes(&self) -> anyhow::Result<()> {
+        if !matches!(self.lifecycle, VmLifecycle::Running) {
+            return Err(anyhow::Error::new(Code::FailedPrecondition))
+                .context("consomme NIC changes require a running VM");
+        }
+        Ok(())
+    }
+
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
+        self.ensure_vm_mutation_allowed("TeardownVM")?;
+        // Teardown is terminal: it cancels in-flight device and resource
+        // changes rather than being rejected by them. Pause, resume, and save
+        // run inline, so none can be in flight here. A cancelled save is
+        // already terminal and was rejected above; only Quit can consume it.
+        self.cancel_gated_tasks().await;
         let controller = self.vm_controller.take().context("vm not created")?;
         // Drop the VM's device RPC channels before waiting on the controller.
         // A live `ScsiControllerRequest` sender keeps the detached storvsp task
@@ -1682,6 +1828,7 @@ impl VmService {
         self.vm_controller_events.take();
         self.lifecycle = VmLifecycle::Uninitialized;
         self.snapshot_saved = false;
+        self.save_guard = None;
         self.memory_backing_file = None;
         if let Some((_, response)) = self.wait_vm_response.take() {
             response.send(Err(grpc_error(anyhow!("VM torn down"))));
@@ -1737,6 +1884,7 @@ impl VmService {
         mut ctx: mesh::CancelContext,
         request: vmservice::ShutdownVmRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        self.ensure_vm_mutation_allowed("ShutdownVM")?;
         use vmservice::shutdown_vm_request::Mechanism;
 
         enum ShutdownSender {
@@ -1829,6 +1977,8 @@ impl VmService {
     }
 
     async fn pause_vm(&mut self) -> anyhow::Result<()> {
+        self.ensure_vm_mutation_allowed("PauseVM")?;
+        let _gate = self.operation_gate.try_acquire(VmOperation::Pause)?;
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
             .call(VmRpc::Pause, ())
@@ -1842,9 +1992,8 @@ impl VmService {
     }
 
     async fn resume_vm(&mut self) -> anyhow::Result<()> {
-        if self.snapshot_saved {
-            bail!("cannot resume a VM after SaveVM");
-        }
+        self.ensure_vm_mutation_allowed("ResumeVM")?;
+        let _gate = self.operation_gate.try_acquire(VmOperation::Resume)?;
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
             .call(VmRpc::Resume, ())
@@ -1866,16 +2015,17 @@ impl VmService {
                 anyhow!(Code::InvalidArgument).context("missing snapshot destination directory")
             );
         }
+        // The snapshot shares the VM's memory backing file, so only one
+        // snapshot per VM is allowed.
+        if self.snapshot_saved {
+            return Err(anyhow!(Code::FailedPrecondition).context(
+                "VM is terminal after SaveVM; only PropertiesVM, WaitVM, and Quit are allowed",
+            ));
+        }
         if !matches!(self.lifecycle, VmLifecycle::Running | VmLifecycle::Paused) {
             return Err(
                 anyhow!(Code::FailedPrecondition).context("SaveVM requires a running or paused VM")
             );
-        }
-        // The snapshot shares the VM's memory backing file, so only one
-        // snapshot per VM is allowed.
-        if self.snapshot_saved {
-            return Err(anyhow!(Code::FailedPrecondition)
-                .context("VM already saved; tear down the VM or restore the snapshot"));
         }
         let controller = self
             .vm_controller
@@ -1885,6 +2035,9 @@ impl VmService {
             return Err(anyhow!(Code::FailedPrecondition)
                 .context("SaveVM requires MemoryConfig.backing_file_path"));
         }
+        // After the checks above, which a retry can't change, so a conflict is
+        // the only reason to report `ABORTED`.
+        let gate = self.operation_gate.try_acquire(VmOperation::Save)?;
         // Check the destination before the controller pauses the VM, so a
         // rejected destination leaves the VM untouched.
         openvmm_helpers::snapshot::check_snapshot_destination(Path::new(&request.destination_dir))
@@ -1894,25 +2047,35 @@ impl VmService {
         // hard-links the guest memory backing file. Record that before
         // awaiting: if this future is dropped (the client cancelled), the
         // controller still finishes the save, and resuming would then write
-        // guest memory into the snapshot.
+        // guest memory into the snapshot. For the same reason the service,
+        // not this future, holds the gate: until the controller replies or,
+        // if the client cancels, until Quit or worker failure.
         self.snapshot_saved = true;
-        self.lifecycle = VmLifecycle::Paused;
+        self.lifecycle =
+            VmLifecycle::Halted("snapshot save in progress or committed; Quit the VM".into());
+        self.save_guard = Some(gate);
 
         let result = controller
             .call(VmControllerRpc::SaveSnapshot, request.destination_dir)
             .await
             .map_err(anyhow::Error::from)
             .and_then(|r| r.map_err(anyhow::Error::from));
+        self.save_guard = None;
         match result {
-            Ok(snapshot_id) => Ok(vmservice::SaveVmResponse {
-                snapshot_id: snapshot_id.to_string(),
-            }),
+            Ok(snapshot_id) => {
+                self.operation_gate.seal();
+                self.lifecycle = VmLifecycle::Halted("snapshot saved".into());
+                Ok(vmservice::SaveVmResponse {
+                    snapshot_id: snapshot_id.to_string(),
+                })
+            }
             Err(err) => {
                 // On failure the controller removes the files it created, so
                 // no snapshot references guest memory and the VM may be
                 // resumed. The prechecks above ensure the controller paused
                 // the VM before failing, so the VM stays paused.
                 self.snapshot_saved = false;
+                self.lifecycle = VmLifecycle::Paused;
                 Err(err).context("snapshot failed")
             }
         }
@@ -1946,10 +2109,21 @@ impl VmService {
                     response.send(Err(status));
                 }
                 // Clear VM state since the worker is gone. The controller
-                // task will be awaited during final cleanup.
+                // task will be awaited during final cleanup. A save whose
+                // client cancelled can no longer be writing, so release its
+                // gate too; snapshot_saved keeps subsequent operations terminal
+                // until Quit rather than permitting a later VM in this process.
                 self.vm.take();
                 self.vm_controller.take();
-                self.lifecycle = VmLifecycle::Uninitialized;
+                self.save_guard = None;
+                if self.snapshot_saved {
+                    self.operation_gate.seal();
+                    self.lifecycle = VmLifecycle::Halted(
+                        "snapshot save committed or outcome uncertain; Quit the VM".into(),
+                    );
+                } else {
+                    self.lifecycle = VmLifecycle::Uninitialized;
+                }
             }
             VmControllerEvent::VncWorkerStopped { error } => {
                 if let Some(err) = &error {
@@ -2109,6 +2283,16 @@ impl VmService {
                 } else if request.r#type == vmservice::ModifyType::Update as i32
                     || request.r#type == vmservice::ModifyType::Remove as i32
                 {
+                    // Check the VM state once the NIC is known to be a
+                    // Consomme NIC, before validating the rest of the change:
+                    // a paused VM fails fast with `FAILED_PRECONDITION`, and
+                    // other backends still get `parse`'s backend error.
+                    if matches!(
+                        nic.backend,
+                        Some(vmservice::nic_config::Backend::Consomme(_))
+                    ) {
+                        self.require_running_for_consomme_changes()?;
+                    }
                     let modification = ConsommeNicModification::parse(nic, request.r#type)?;
                     Ok(modify_consomme_nic(vm, modification)?.boxed())
                 } else {
@@ -3479,6 +3663,7 @@ mod tests {
         shutdown_rpc: Option<mesh::Sender<ShutdownRpc>>,
     ) -> VmService {
         let (worker_rpc, _) = mesh::channel();
+        let (gated_cancel_ctx, gated_cancel) = mesh::CancelContext::new().with_cancel();
         VmService {
             driver,
             vm: Some(Arc::new(Vm {
@@ -3497,6 +3682,11 @@ mod tests {
             snapshot_saved: false,
             memory_backing_file: None,
             rpc_tasks: Vec::new(),
+            operation_gate: VmOperationGate::default(),
+            save_guard: None,
+            gated_tasks: Vec::new(),
+            gated_cancel_ctx,
+            gated_cancel,
             transport: ResolvedTransport::Auto,
             registry: ResourceRegistry::default(),
         }
@@ -3555,6 +3745,289 @@ mod tests {
                 let (response, ()) = futures::join!(response, worker);
                 assert!(response.unwrap().result.is_none());
             }
+        });
+    }
+
+    /// While the VM is paused, a Consomme NIC change fails on the VM state
+    /// before the rest of the change is validated; a NIC with another backend
+    /// still gets the backend error.
+    #[test]
+    fn consomme_change_while_paused_checks_backend_then_state() {
+        DefaultPool::run_with(async |driver| {
+            let mut service = service(driver, None);
+            service.lifecycle = VmLifecycle::Paused;
+            let nic_update = |backend| vmservice::ModifyResourceRequest {
+                r#type: vmservice::ModifyType::Update as i32,
+                resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
+                    vmservice::NicConfig {
+                        nic_id: Guid::new_random().to_string(),
+                        backend: Some(backend),
+                        ..Default::default()
+                    },
+                )),
+            };
+
+            // The invalid protocol isn't reached: the state is checked first.
+            let consomme = vmservice::nic_config::Backend::Consomme(vmservice::ConsommeBackend {
+                ports: vec![vmservice::PortConfig {
+                    host_port: 8080,
+                    guest_port: 80,
+                    protocol: 99,
+                    host_address: String::new(),
+                }],
+                ..Default::default()
+            });
+            let status = grpc_error(service.modify_resource(nic_update(consomme)).err().unwrap());
+            assert_eq!(
+                status.code,
+                i32::from(Code::FailedPrecondition),
+                "{}",
+                status.message
+            );
+
+            let tap = vmservice::nic_config::Backend::Tap(Default::default());
+            let status = grpc_error(service.modify_resource(nic_update(tap)).err().unwrap());
+            assert!(
+                status
+                    .message
+                    .contains("only supported for consomme backend"),
+                "{}",
+                status.message
+            );
+        });
+    }
+
+    /// A terminal operation cancels a gated operation that is waiting on a
+    /// device reply: the caller gets `CANCELLED`, the operation drops its clone
+    /// of the device sender, the gate is released, and a gated operation started
+    /// afterwards isn't affected by the cancellation.
+    #[test]
+    fn terminal_cancellation_releases_active_gated_task() {
+        DefaultPool::run_with(async |driver| {
+            let mut service = service(driver, None);
+            let dir = tempfile::tempdir().unwrap();
+            let disk_path = dir.path().join("disk.img");
+            std::fs::write(&disk_path, vec![0; 0x100000]).unwrap();
+            let add_disk = || vmservice::ModifyResourceRequest {
+                r#type: vmservice::ModifyType::Add as i32,
+                resource: Some(vmservice::modify_resource_request::Resource::ScsiDisk(
+                    vmservice::ScsiDisk {
+                        controller: 0,
+                        lun: 0,
+                        host_path: disk_path.to_str().unwrap().into(),
+                        ..Default::default()
+                    },
+                )),
+            };
+
+            // Start a gated SCSI disk add and hold the controller's reply.
+            let (scsi_send, mut scsi_recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap()).unwrap().scsi_rpc = Some(scsi_send);
+            let (send, recv) = mesh::oneshot();
+            service.start_gated_rpc(VmOperation::Topology, send, |this| {
+                this.modify_resource(add_disk())
+            });
+            let ScsiControllerRequest::AddDevice(pending) = scsi_recv.next().await.unwrap() else {
+                panic!("expected a SCSI AddDevice request");
+            };
+            let status = grpc_error(service.pause_vm().await.unwrap_err());
+            assert_eq!(
+                status.code,
+                i32::from(Code::Aborted),
+                "PauseVM is rejected while the change is in flight: {}",
+                status.message
+            );
+            let (controller, _controller_recv) = mesh::channel();
+            service.vm_controller = Some(controller);
+            service.memory_backing_file = Some(dir.path().join("memory.bin"));
+            let status = grpc_error(
+                service
+                    .save_vm(vmservice::SaveVmRequest {
+                        destination_dir: dir.path().join("snapshot").to_str().unwrap().into(),
+                    })
+                    .await
+                    .unwrap_err(),
+            );
+            assert_eq!(
+                status.code,
+                i32::from(Code::Aborted),
+                "SaveVM is rejected while the change is in flight: {}",
+                status.message
+            );
+
+            service.cancel_gated_tasks().await;
+            let status = recv.await.unwrap().unwrap_err();
+            assert_eq!(status.code, i32::from(Code::Cancelled));
+            drop(
+                service
+                    .operation_gate
+                    .try_acquire(VmOperation::Pause)
+                    .expect("the gate is released after cancellation"),
+            );
+
+            // The cancelled operation no longer holds a controller sender: once
+            // the VM's own sender is dropped, the controller sees its channel
+            // close.
+            drop(pending);
+            Arc::get_mut(service.vm.as_mut().unwrap()).unwrap().scsi_rpc = None;
+            assert!(scsi_recv.next().await.is_none());
+
+            // A gated operation started after the cancellation completes
+            // normally.
+            let (scsi_send, mut scsi_recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap()).unwrap().scsi_rpc = Some(scsi_send);
+            let (send, recv) = mesh::oneshot();
+            service.start_gated_rpc(VmOperation::Topology, send, |this| {
+                this.modify_resource(add_disk())
+            });
+            let ScsiControllerRequest::AddDevice(rpc) = scsi_recv.next().await.unwrap() else {
+                panic!("expected a SCSI AddDevice request");
+            };
+            let (_config, response) = rpc.split();
+            response.complete(Ok(()));
+            recv.await.unwrap().unwrap();
+        });
+    }
+
+    /// SaveVM holds the gate while the controller writes the snapshot. A
+    /// completed save seals it; a save whose client cancelled remains
+    /// terminal because the controller may still commit the snapshot.
+    #[test]
+    fn save_holds_the_gate_until_the_controller_replies() {
+        DefaultPool::run_with(async |driver| {
+            let dir = tempfile::tempdir().unwrap();
+            let request = |name: &str| vmservice::SaveVmRequest {
+                destination_dir: dir.path().join(name).to_str().unwrap().into(),
+            };
+            let with_controller = |service: &mut VmService| {
+                let (send, recv) = mesh::channel();
+                service.vm_controller = Some(send);
+                service.memory_backing_file = Some(dir.path().join("memory.bin"));
+                recv
+            };
+
+            // Completed save: the gate is sealed and the VM is terminal.
+            let mut svc = service(driver.clone(), None);
+            let mut controller = with_controller(&mut svc);
+            let (result, ()) = futures::join!(svc.save_vm(request("completed")), async {
+                let Some(VmControllerRpc::SaveSnapshot(rpc)) = controller.next().await else {
+                    panic!("expected a SaveSnapshot request");
+                };
+                let (_dir, response) = rpc.split();
+                response.complete(Ok(Guid::new_random()));
+            });
+            result.unwrap();
+            let status = grpc_error(
+                svc.operation_gate
+                    .try_acquire(VmOperation::Topology)
+                    .err()
+                    .expect("a completed save seals the gate"),
+            );
+            assert_eq!(status.code, i32::from(Code::FailedPrecondition));
+            assert!(matches!(
+                svc.lifecycle,
+                VmLifecycle::Halted(ref reason) if reason == "snapshot saved"
+            ));
+            let properties = svc.build_properties();
+            assert_eq!(properties.state, vmservice::VmState::Halted as i32);
+            assert_eq!(properties.halt_reason.as_deref(), Some("snapshot saved"));
+            let (response, result) = mesh::oneshot();
+            assert!(matches!(
+                svc.handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::WaitVm((), response),
+                )
+                .await,
+                HandleAction::None
+            ));
+            result.await.unwrap().unwrap();
+            for operation in [
+                svc.pause_vm().await,
+                svc.resume_vm().await,
+                svc.teardown_vm().await,
+                svc.create_vm(Default::default()).await,
+                svc.restore_vm(Default::default()).await.map(drop),
+            ] {
+                let status = grpc_error(operation.expect_err("operation must remain terminal"));
+                assert_eq!(status.code, i32::from(Code::FailedPrecondition));
+            }
+
+            // Cancelled save: the gate stays held and the service stays terminal.
+            let mut svc = service(driver.clone(), None);
+            let mut controller = with_controller(&mut svc);
+            let rpc = match futures::future::select(
+                std::pin::pin!(svc.save_vm(request("cancelled"))),
+                controller.next(),
+            )
+            .await
+            {
+                futures::future::Either::Right((Some(VmControllerRpc::SaveSnapshot(rpc)), _)) => {
+                    rpc
+                }
+                _ => panic!("expected a SaveSnapshot request"),
+            };
+            let status = grpc_error(
+                svc.operation_gate
+                    .try_acquire(VmOperation::Topology)
+                    .err()
+                    .expect("the gate stays held after the client cancels"),
+            );
+            assert_eq!(status.code, i32::from(Code::Aborted));
+            assert!(
+                status.message.contains("save in progress"),
+                "{}",
+                status.message
+            );
+            // A second save fails on its precondition, not the gate, so the
+            // client doesn't retry it.
+            let status = grpc_error(svc.save_vm(request("again")).await.unwrap_err());
+            assert_eq!(
+                status.code,
+                i32::from(Code::FailedPrecondition),
+                "{}",
+                status.message
+            );
+            let (_dir, response) = rpc.split();
+            response.complete(Ok(Guid::new_random()));
+            let status = grpc_error(
+                svc.teardown_vm()
+                    .await
+                    .expect_err("teardown is not allowed after save"),
+            );
+            assert_eq!(status.code, i32::from(Code::FailedPrecondition));
+
+            let (response, result) = mesh::oneshot();
+            assert!(matches!(
+                svc.handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::Quit((), response),
+                )
+                .await,
+                HandleAction::Quit
+            ));
+            result.await.unwrap().unwrap();
+
+            // Cancelled save, then the worker stops: the service remains
+            // terminal, so a later VM cannot reuse the process.
+            let mut svc = service(driver, None);
+            let mut controller = with_controller(&mut svc);
+            drop(
+                futures::future::select(
+                    std::pin::pin!(svc.save_vm(request("worker-stopped"))),
+                    controller.next(),
+                )
+                .await,
+            );
+            assert!(svc.save_guard.is_some());
+            svc.handle_controller_event(VmControllerEvent::WorkerStopped { error: None });
+            let status = grpc_error(
+                svc.operation_gate
+                    .try_acquire(VmOperation::Topology)
+                    .err()
+                    .expect("a stopped worker remains terminal"),
+            );
+            assert_eq!(status.code, i32::from(Code::FailedPrecondition));
+            assert!(matches!(svc.lifecycle, VmLifecycle::Halted(_)));
         });
     }
 
@@ -4410,6 +4883,7 @@ mod tests {
                 let listener = UnixListener::bind(dir.path().join("rpc.sock")).unwrap();
                 let (event_send, event_recv) = mesh::channel();
                 let (_worker_send, worker_recv) = mesh::channel();
+                let (gated_cancel_ctx, gated_cancel) = mesh::CancelContext::new().with_cancel();
                 let mut service = VmService {
                     driver: driver.clone(),
                     vm: None,
@@ -4421,6 +4895,11 @@ mod tests {
                     snapshot_saved: false,
                     memory_backing_file: None,
                     rpc_tasks: vec![driver.spawn("pending-rpc", std::future::pending())],
+                    operation_gate: VmOperationGate::default(),
+                    save_guard: None,
+                    gated_tasks: Vec::new(),
+                    gated_cancel_ctx,
+                    gated_cancel,
                     transport: ResolvedTransport::Auto,
                     registry: ResourceRegistry::default(),
                 };
