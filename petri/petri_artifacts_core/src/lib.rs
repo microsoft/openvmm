@@ -292,15 +292,12 @@ impl<'a> ArtifactResolver<'a> {
     /// Set `PETRI_REMOTE_ARTIFACTS=0` to force all artifacts to be resolved
     /// locally, even if `RemoteAccess::Allow` is specified per-call or per-test.
     pub fn set_remote_policy(&mut self, test_policy: RemoteAccess) {
-        self.remote_policy = if matches!(test_policy, RemoteAccess::LocalOnly)
-            || matches!(
-                std::env::var(env::PETRI_REMOTE_ARTIFACTS).as_deref(),
-                Ok("0") | Ok("false")
-            ) {
-            RemoteAccess::LocalOnly
-        } else {
-            RemoteAccess::Allow
-        };
+        self.remote_policy =
+            if matches!(test_policy, RemoteAccess::LocalOnly) || env::remote_artifacts_disabled() {
+                RemoteAccess::LocalOnly
+            } else {
+                RemoteAccess::Allow
+            };
     }
 
     /// Returns a resolver to collect requirements; the artifact objects returned by
@@ -973,6 +970,15 @@ pub mod env {
     pub const PETRI_REMOTE_ARTIFACTS: &str = "PETRI_REMOTE_ARTIFACTS";
     /// Whether petri should return success if an unstable test fails
     pub const PETRI_IGNORE_UNSTABLE_FAILURES: &str = "PETRI_IGNORE_UNSTABLE_FAILURES";
+
+    /// Returns whether [`PETRI_REMOTE_ARTIFACTS`] forces all artifacts to be
+    /// resolved locally.
+    pub fn remote_artifacts_disabled() -> bool {
+        matches!(
+            std::env::var(PETRI_REMOTE_ARTIFACTS).as_deref(),
+            Ok("0") | Ok("false")
+        )
+    }
 }
 /// Artifact tag trait declarations
 pub mod tags {
