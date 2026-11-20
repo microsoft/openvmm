@@ -392,12 +392,21 @@ impl RegionManagerTask {
         &mut self,
         partition: PartitionMapper,
     ) -> Result<(), crate::partition_mapper::PartitionMapperError> {
+        // Include inactive regions: they may be scheduled beneath an overlay.
+        for region in &self.regions {
+            partition.validate_region(region.params.range, region.params.mapping_type)?;
+        }
+
         // Map existing regions. On failure, all regions will be unmapped by the
         // region mapper's drop impl, so don't worry about that.
         for region in &self.regions {
             if region.is_active {
                 partition
-                    .map_region(region.params.range, region.map_params.unwrap())
+                    .map_region(
+                        region.params.range,
+                        region.map_params.unwrap(),
+                        region.params.mapping_type,
+                    )
                     .await?;
             }
         }
@@ -572,6 +581,8 @@ impl RegionManagerTask {
         let region = &mut self.regions[index];
         let range = region.params.range;
         let priority = region.params.priority;
+        self.inner
+            .validate_region(range, region.params.mapping_type)?;
         if region.map_params == Some(map_params) {
             return Ok(());
         }
@@ -759,8 +770,16 @@ impl RegionManagerTask {
 }
 
 impl RegionManagerTaskInner {
+    fn validate_region(&self, range: MemoryRange, mapping_type: MappingType) -> anyhow::Result<()> {
+        for partition in &self.partitions {
+            partition.validate_region(range, mapping_type)?;
+        }
+        Ok(())
+    }
+
     async fn enable_region(&mut self, region: &mut Region) -> anyhow::Result<()> {
         assert!(!region.is_active);
+        self.validate_region(region.params.range, region.params.mapping_type)?;
         let map_params = region.map_params.unwrap();
 
         tracing::debug!(
@@ -841,7 +860,7 @@ impl RegionManagerTaskInner {
         // Map the region into the partitions.
         for partition in &mut self.partitions {
             partition
-                .map_region(region.params.range, map_params)
+                .map_region(region.params.range, map_params, region.params.mapping_type)
                 .await
                 .expect("cannot recover from failed mapping");
         }
@@ -1139,6 +1158,8 @@ mod tests {
     use crate::mapping_manager::MappingBacking;
     use crate::mapping_manager::MappingManager;
     use crate::mapping_manager::MemoryPolicy;
+    use crate::partition_mapper::PartitionMapper;
+    use crate::partition_mapper::PartitionMapperError;
     use crate::region_manager::AddRegionError;
     use crate::region_manager::DmaMapRequest;
     use crate::region_manager::DmaTarget;
@@ -1152,6 +1173,245 @@ mod tests {
     use parking_lot::Mutex;
     use std::ops::Range;
     use std::sync::Arc;
+    use test_with_tracing::test;
+    use virt::PartitionMemoryMap;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum PartitionEvent {
+        Validate(MemoryRange),
+        Map(MemoryRange),
+        Pin(MemoryRange),
+        Unmap(MemoryRange),
+    }
+
+    struct RecordingPartition {
+        reject_device_memory: bool,
+        events: Mutex<Vec<PartitionEvent>>,
+    }
+
+    impl PartitionMemoryMap for RecordingPartition {
+        fn validate_device_memory_mapping(&self, range: MemoryRange) -> anyhow::Result<()> {
+            self.events.lock().push(PartitionEvent::Validate(range));
+            anyhow::ensure!(!self.reject_device_memory, "device memory rejected");
+            Ok(())
+        }
+
+        unsafe fn map_range(
+            &self,
+            _data: *mut u8,
+            size: usize,
+            addr: u64,
+            _writable: bool,
+            _exec: bool,
+        ) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .push(PartitionEvent::Map(MemoryRange::new(
+                    addr..addr + size as u64,
+                )));
+            Ok(())
+        }
+
+        fn pin_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .push(PartitionEvent::Pin(MemoryRange::new(addr..addr + size)));
+            Ok(())
+        }
+
+        fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .push(PartitionEvent::Unmap(MemoryRange::new(addr..addr + size)));
+            Ok(())
+        }
+
+        #[cfg(windows)]
+        unsafe fn map_remote_range(
+            &self,
+            _process: std::os::windows::io::BorrowedHandle<'_>,
+            _data: *mut u8,
+            _size: usize,
+            _addr: u64,
+            _writable: bool,
+            _exec: bool,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[async_test]
+    async fn device_rejection_preserves_ram_overlay_and_dma(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let range = MemoryRange::new(0x1000..0x2000);
+        let params = MapParams {
+            writable: true,
+            executable: true,
+            prefetch: false,
+        };
+        let ram = t
+            .task
+            .add_region(RegionParams {
+                name: "ram".into(),
+                range,
+                priority: 0,
+                mapping_type: MappingType::Ram,
+            })
+            .unwrap();
+        t.add_private_mapping(ram, 0..0x1000).await;
+        t.task.map_region(ram, params).await.unwrap();
+        let dma = Arc::new(RecordingDmaTarget::default());
+        t.task.add_dma_mapper(dma.clone(), false).await.unwrap();
+        dma.take_events();
+        let backend = Arc::new(RecordingPartition {
+            reject_device_memory: true,
+            events: Mutex::new(Vec::new()),
+        });
+        let partition: Arc<dyn PartitionMemoryMap> = backend.clone();
+        let mapper = t.task.inner.mapping_manager.new_mapper(true).await.unwrap();
+        let offset = 0x1_0000_0000;
+        t.task
+            .add_partition(PartitionMapper::new(&partition, mapper, offset, true))
+            .await
+            .unwrap();
+        backend.events.lock().clear();
+        let device = t
+            .task
+            .add_region(RegionParams {
+                name: "device-overlay".into(),
+                range,
+                priority: 1,
+                mapping_type: MappingType::Device,
+            })
+            .unwrap();
+        let error = t.task.map_region(device, params).await.unwrap_err();
+        assert!(format!("{error:#}").contains("device memory rejected"));
+        assert!(format!("{error:#}").contains(&format!(
+            "{:?}",
+            MemoryRange::new(range.start() + offset..range.end() + offset)
+        )));
+        assert_eq!(
+            *backend.events.lock(),
+            [PartitionEvent::Validate(MemoryRange::new(
+                range.start() + offset..range.end() + offset
+            ),)]
+        );
+        assert!(dma.take_events().is_empty());
+        assert!(t.task.regions[t.task.region_index(ram)].is_active);
+        let device_region = &t.task.regions[t.task.region_index(device)];
+        assert!(!device_region.is_active);
+        assert_eq!(device_region.map_params, None);
+        t.task.unmap_region(device, true).await;
+        assert!(t.task.regions[t.task.region_index(ram)].is_active);
+        assert!(dma.take_events().is_empty());
+    }
+
+    #[async_test]
+    async fn partition_preflight_rejects_inactive_device_regions_before_ram_map(spawn: impl Spawn) {
+        for scheduled in [false, true] {
+            let mut t = DmaTestTask::new(&spawn);
+            let range = MemoryRange::new(0x1000..0x2000);
+            let params = MapParams {
+                writable: true,
+                executable: true,
+                prefetch: false,
+            };
+            let ram = t
+                .task
+                .add_region(RegionParams {
+                    name: "ram".into(),
+                    range,
+                    priority: 1,
+                    mapping_type: MappingType::Ram,
+                })
+                .unwrap();
+            t.task.map_region(ram, params).await.unwrap();
+            let device = t
+                .task
+                .add_region(RegionParams {
+                    name: "inactive-device".into(),
+                    range,
+                    priority: 0,
+                    mapping_type: MappingType::Device,
+                })
+                .unwrap();
+            if scheduled {
+                t.task.map_region(device, params).await.unwrap();
+            }
+            assert!(!t.task.regions[t.task.region_index(device)].is_active);
+            let backend = Arc::new(RecordingPartition {
+                reject_device_memory: true,
+                events: Mutex::new(Vec::new()),
+            });
+            let partition: Arc<dyn PartitionMemoryMap> = backend.clone();
+            let mapper = t.task.inner.mapping_manager.new_mapper(true).await.unwrap();
+            let error = t
+                .task
+                .add_partition(PartitionMapper::new(&partition, mapper, 0, true))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, PartitionMapperError::DeviceMemory(_)));
+            assert!(
+                !backend
+                    .events
+                    .lock()
+                    .iter()
+                    .any(|event| matches!(event, PartitionEvent::Map(_) | PartitionEvent::Pin(_)))
+            );
+            assert!(t.task.inner.partitions.is_empty());
+            assert!(t.task.regions[t.task.region_index(ram)].is_active);
+        }
+    }
+
+    #[async_test]
+    async fn accepted_device_overlay_reenables_ram(spawn: impl Spawn) {
+        let mut t = DmaTestTask::new(&spawn);
+        let range = MemoryRange::new(0x1000..0x2000);
+        let params = MapParams {
+            writable: true,
+            executable: true,
+            prefetch: false,
+        };
+        let ram = t
+            .task
+            .add_region(RegionParams {
+                name: "ram".into(),
+                range,
+                priority: 0,
+                mapping_type: MappingType::Ram,
+            })
+            .unwrap();
+        t.add_mapping(ram, 0..0x1000).await;
+        t.task.map_region(ram, params).await.unwrap();
+        let backend = Arc::new(RecordingPartition {
+            reject_device_memory: false,
+            events: Mutex::new(Vec::new()),
+        });
+        let partition: Arc<dyn PartitionMemoryMap> = backend.clone();
+        let mapper = t.task.inner.mapping_manager.new_mapper(true).await.unwrap();
+        t.task
+            .add_partition(PartitionMapper::new(&partition, mapper, 0, true))
+            .await
+            .unwrap();
+        let device = t
+            .task
+            .add_region(RegionParams {
+                name: "device-overlay".into(),
+                range,
+                priority: 1,
+                mapping_type: MappingType::Device,
+            })
+            .unwrap();
+        t.add_mapping(device, 0..0x1000).await;
+        t.task.map_region(device, params).await.unwrap();
+        assert!(t.task.regions[t.task.region_index(device)].is_active);
+        assert!(!t.task.regions[t.task.region_index(ram)].is_active);
+        backend.events.lock().clear();
+        t.task.unmap_region(device, true).await;
+        assert!(t.task.regions[t.task.region_index(ram)].is_active);
+        assert!(backend.events.lock().contains(&PartitionEvent::Map(range)));
+        assert!(backend.events.lock().contains(&PartitionEvent::Pin(range)));
+    }
 
     /// Records map/unmap calls for test assertions.
     #[derive(Default)]

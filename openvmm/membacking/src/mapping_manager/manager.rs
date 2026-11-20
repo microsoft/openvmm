@@ -10,6 +10,7 @@ use super::object_cache::ObjectCache;
 use super::object_cache::ObjectId;
 use super::va_mapper::MapperRole;
 use super::va_mapper::VaMapper;
+use super::va_mapper::VaMapperConfig;
 use super::va_mapper::VaMapperError;
 use crate::RemoteProcess;
 use crate::region_manager::MappingType;
@@ -40,6 +41,14 @@ pub struct MappingManager {
     client: MappingManagerClient,
 }
 
+/// Fixed capabilities for a mapping manager and its mappers.
+pub struct MappingManagerConfig {
+    /// Whether the partition resolves guest-memory faults.
+    pub supports_memory_fault_resolution: bool,
+    /// Whether guest pages can be locked for direct access.
+    pub supports_locking: bool,
+}
+
 impl MappingManager {
     /// Returns a new mapping manager (mapping addresses up to `max_addr`) and
     /// its primary VA mapper.
@@ -60,9 +69,14 @@ impl MappingManager {
         spawn: impl Spawn,
         max_addr: u64,
         minimum_va_alignment: Option<usize>,
-        supports_memory_fault_resolution: bool,
+        config: MappingManagerConfig,
     ) -> Result<(Self, Arc<VaMapper>), VaMapperError> {
-        let this = Self::new_bare(spawn, max_addr, minimum_va_alignment);
+        let this = Self::new_bare(
+            spawn,
+            max_addr,
+            minimum_va_alignment,
+            config.supports_locking,
+        );
         // Create the primary mapper as part of construction. Being first, it is
         // the instance the shared cache hands to every later `new_mapper` in
         // this process.
@@ -71,7 +85,7 @@ impl MappingManager {
             .get_or_create_mapper(
                 true,
                 MapperRole::Primary {
-                    supports_memory_fault_resolution,
+                    supports_memory_fault_resolution: config.supports_memory_fault_resolution,
                 },
             )
             .await?;
@@ -80,7 +94,12 @@ impl MappingManager {
 
     /// Spawns the manager task and builds the client, without creating a primary
     /// mapper.
-    fn new_bare(spawn: impl Spawn, max_addr: u64, minimum_va_alignment: Option<usize>) -> Self {
+    fn new_bare(
+        spawn: impl Spawn,
+        max_addr: u64,
+        minimum_va_alignment: Option<usize>,
+        supports_locking: bool,
+    ) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
@@ -96,6 +115,7 @@ impl MappingManager {
                 req_send,
                 max_addr,
                 minimum_va_alignment,
+                supports_locking,
             },
         }
     }
@@ -109,7 +129,7 @@ impl MappingManager {
         max_addr: u64,
         minimum_va_alignment: Option<usize>,
     ) -> Self {
-        Self::new_bare(spawn, max_addr, minimum_va_alignment)
+        Self::new_bare(spawn, max_addr, minimum_va_alignment, true)
     }
 
     /// Returns an object used to access the mapping manager, potentially from a
@@ -126,6 +146,8 @@ pub struct MappingManagerClient {
     id: ObjectId,
     max_addr: u64,
     minimum_va_alignment: Option<usize>,
+    // Carried over mesh so every mapper has the same fixed locking support.
+    supports_locking: bool,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
@@ -178,8 +200,11 @@ impl MappingManagerClient {
                     self.max_addr,
                     None,
                     self.minimum_va_alignment,
-                    eager,
-                    role,
+                    VaMapperConfig {
+                        eager,
+                        role,
+                        supports_locking: self.supports_locking,
+                    },
                 )
                 .await
             })
@@ -216,13 +241,16 @@ impl MappingManagerClient {
                 self.max_addr,
                 Some(process),
                 self.minimum_va_alignment,
-                true, // eager — remote mappers used for partition mappings
-                // Secondary: this backs a partition from a remote process, but
-                // the soft-large-page work (deferred protect, first-write 2 MB
-                // populate, fault resolution) runs on the single primary mapper
-                // in the owning process. This mapper shares the same section
-                // pages, so it just maps them plain read-write 4 KB.
-                MapperRole::Secondary,
+                VaMapperConfig {
+                    eager: true, // eager — remote mappers used for partition mappings
+                    // Secondary: this backs a partition from a remote process, but
+                    // the soft-large-page work (deferred protect, first-write 2 MB
+                    // populate, fault resolution) runs on the single primary mapper
+                    // in the owning process. This mapper shares the same section
+                    // pages, so it just maps them plain read-write 4 KB.
+                    role: MapperRole::Secondary,
+                    supports_locking: self.supports_locking,
+                },
             )
             .await?,
         ))
@@ -1487,9 +1515,12 @@ mod tests {
             0x10000,
             None,
             None,
-            true, // eager
-            MapperRole::Primary {
-                supports_memory_fault_resolution: false,
+            VaMapperConfig {
+                eager: true,
+                role: MapperRole::Primary {
+                    supports_memory_fault_resolution: false,
+                },
+                supports_locking: true,
             },
         );
         let (mapper, _) = futures::join!(mapper_future, async {
@@ -1527,9 +1558,12 @@ mod tests {
             0x10000,
             None,
             None,
-            true, // eager
-            MapperRole::Primary {
-                supports_memory_fault_resolution: false,
+            VaMapperConfig {
+                eager: true,
+                role: MapperRole::Primary {
+                    supports_memory_fault_resolution: false,
+                },
+                supports_locking: true,
             },
         );
         let (mapper, mapper_req_send) = futures::join!(mapper_future, async {

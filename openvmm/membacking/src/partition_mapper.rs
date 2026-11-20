@@ -9,6 +9,8 @@
 
 use crate::mapping_manager::VaMapper;
 use crate::region_manager::MapParams;
+use crate::region_manager::MappingType;
+use anyhow::Context;
 use memory_range::MemoryRange;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -27,6 +29,8 @@ pub struct PartitionMapper {
 /// Failure to map a region.
 #[derive(Debug, Error)]
 pub enum PartitionMapperError {
+    #[error("partition rejected device memory mapping")]
+    DeviceMemory(#[source] anyhow::Error),
     #[error("failed to map range to partition")]
     Map(#[source] anyhow::Error),
     #[error("failed to pin range to partition")]
@@ -55,12 +59,44 @@ impl PartitionMapper {
         }
     }
 
+    /// Validates the backing source before changing any mappings.
+    pub fn validate_region(
+        &self,
+        range: MemoryRange,
+        mapping_type: MappingType,
+    ) -> Result<(), PartitionMapperError> {
+        if mapping_type == MappingType::Device
+            && let Some(partition) = self.partition.upgrade()
+        {
+            let start = range.start().checked_add(self.offset).ok_or_else(|| {
+                PartitionMapperError::DeviceMemory(anyhow::anyhow!(
+                    "device memory range overflows partition address space"
+                ))
+            })?;
+            let end = range.end().checked_add(self.offset).ok_or_else(|| {
+                PartitionMapperError::DeviceMemory(anyhow::anyhow!(
+                    "device memory range overflows partition address space"
+                ))
+            })?;
+            let range = MemoryRange::try_new(start..end)
+                .map_err(|error| PartitionMapperError::DeviceMemory(error.into()))?;
+            partition
+                .validate_device_memory_mapping(range)
+                .with_context(|| format!("device mapping rejected for GPA range {range:?}"))
+                .map_err(PartitionMapperError::DeviceMemory)?;
+        }
+        Ok(())
+    }
+
     /// Maps a region.
     pub async fn map_region(
         &self,
         range: MemoryRange,
         params: MapParams,
+        mapping_type: MappingType,
     ) -> Result<(), PartitionMapperError> {
+        self.validate_region(range, mapping_type)?;
+
         // Ensure this range does not exceed the mapper's reserved VA range.
         assert!(range.end() <= self.mapper.len() as u64);
 

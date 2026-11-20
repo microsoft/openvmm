@@ -12,6 +12,7 @@ use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingBacking;
 use crate::mapping_manager::MappingManager;
 use crate::mapping_manager::MappingManagerClient;
+use crate::mapping_manager::MappingManagerConfig;
 use crate::mapping_manager::MemoryPolicy;
 use crate::mapping_manager::VaMapper;
 use crate::mapping_manager::VaMapperError;
@@ -349,6 +350,7 @@ pub struct GuestMemoryBuilder {
     x86_legacy_support: bool,
     supports_memory_fault_resolution: bool,
     backing_requests: Vec<RamBackingRequest>,
+    supports_locking: bool,
 }
 
 impl GuestMemoryBuilder {
@@ -360,6 +362,7 @@ impl GuestMemoryBuilder {
             x86_legacy_support: false,
             supports_memory_fault_resolution: false,
             backing_requests: Vec::new(),
+            supports_locking: true,
         }
     }
 
@@ -408,6 +411,12 @@ impl GuestMemoryBuilder {
     /// or once for a non-NUMA VM).
     pub fn add_backing(mut self, request: RamBackingRequest) -> Self {
         self.backing_requests.push(request);
+        self
+    }
+
+    /// Records backing locking support before constructing any guest-memory view.
+    pub fn supports_locking(mut self, supports: bool) -> Self {
+        self.supports_locking = supports;
         self
     }
 
@@ -574,7 +583,10 @@ impl GuestMemoryBuilder {
             &spawner,
             max_addr,
             max_hugepage_size,
-            self.supports_memory_fault_resolution,
+            MappingManagerConfig {
+                supports_memory_fault_resolution: self.supports_memory_fault_resolution,
+                supports_locking: self.supports_locking,
+            },
         )
         .await
         .map_err(MemoryBuildError::VaMapper)?;
@@ -752,9 +764,15 @@ impl GuestMemoryManager {
         DeviceMemoryMapper::new(self.region_manager.client().clone())
     }
 
-    /// Returns a client for registering DMA mappers (VFIO, iommufd).
-    pub fn dma_mapper_client(&self) -> crate::region_manager::DmaMapperClient {
-        crate::region_manager::DmaMapperClient::new(self.region_manager.client())
+    /// Returns a client for registering DMA mappers (VFIO, iommufd), unless
+    /// the guest backing forbids I/O exports.
+    pub fn dma_mapper_client(&self) -> Option<crate::region_manager::DmaMapperClient> {
+        if !self.va_mapper.supports_locking() {
+            return None;
+        }
+        Some(crate::region_manager::DmaMapperClient::new(
+            self.region_manager.client(),
+        ))
     }
 
     /// Returns an object for manipulating the visibility state of different RAM
@@ -778,6 +796,9 @@ impl GuestMemoryManager {
     /// file-backed. This currently means multi-backing and private-memory
     /// configurations cannot be restarted.
     pub fn shared_memory_backing(&self) -> Option<SharedMemoryBacking> {
+        if !self.va_mapper.supports_locking() {
+            return None;
+        }
         // Require exactly one backing, and it must be file-backed.
         if self.guest_ram.len() != 1 {
             return None;
