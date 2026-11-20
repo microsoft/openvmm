@@ -349,6 +349,7 @@ pub struct GuestMemoryBuilder {
     x86_legacy_support: bool,
     supports_memory_fault_resolution: bool,
     backing_requests: Vec<RamBackingRequest>,
+    allow_locking: bool,
 }
 
 impl GuestMemoryBuilder {
@@ -360,6 +361,7 @@ impl GuestMemoryBuilder {
             x86_legacy_support: false,
             supports_memory_fault_resolution: false,
             backing_requests: Vec::new(),
+            allow_locking: true,
         }
     }
 
@@ -408,6 +410,12 @@ impl GuestMemoryBuilder {
     /// or once for a non-NUMA VM).
     pub fn add_backing(mut self, request: RamBackingRequest) -> Self {
         self.backing_requests.push(request);
+        self
+    }
+
+    /// Controls locking and exports before constructing any guest-memory view.
+    pub fn allow_locking(mut self, allow: bool) -> Self {
+        self.allow_locking = allow;
         self
     }
 
@@ -575,6 +583,7 @@ impl GuestMemoryBuilder {
             max_addr,
             max_hugepage_size,
             self.supports_memory_fault_resolution,
+            self.allow_locking,
         )
         .await
         .map_err(MemoryBuildError::VaMapper)?;
@@ -752,9 +761,15 @@ impl GuestMemoryManager {
         DeviceMemoryMapper::new(self.region_manager.client().clone())
     }
 
-    /// Returns a client for registering DMA mappers (VFIO, iommufd).
-    pub fn dma_mapper_client(&self) -> crate::region_manager::DmaMapperClient {
-        crate::region_manager::DmaMapperClient::new(self.region_manager.client())
+    /// Returns a client for registering DMA mappers (VFIO, iommufd), unless
+    /// the guest backing forbids I/O exports.
+    pub fn dma_mapper_client(&self) -> Option<crate::region_manager::DmaMapperClient> {
+        if !self.va_mapper.allows_locking() {
+            return None;
+        }
+        Some(crate::region_manager::DmaMapperClient::new(
+            self.region_manager.client(),
+        ))
     }
 
     /// Returns an object for manipulating the visibility state of different RAM
@@ -778,6 +793,9 @@ impl GuestMemoryManager {
     /// file-backed. This currently means multi-backing and private-memory
     /// configurations cannot be restarted.
     pub fn shared_memory_backing(&self) -> Option<SharedMemoryBacking> {
+        if !self.va_mapper.allows_locking() {
+            return None;
+        }
         // Require exactly one backing, and it must be file-backed.
         if self.guest_ram.len() != 1 {
             return None;
@@ -946,6 +964,41 @@ mod tests {
         let mgr = builder.build(max_addr).await.unwrap();
         let gm = mgr.client().guest_memory().await.unwrap();
         (mgr, gm)
+    }
+
+    #[async_test]
+    async fn backing_locking_support_precedes_callback_attachment() {
+        for allow_locking in [false, true] {
+            let manager = GuestMemoryBuilder::new()
+                .allow_locking(allow_locking)
+                .add_backing(RamBackingRequest::new(vec![MemoryRange::new(0..0x10000)]))
+                .build(0x10000)
+                .await
+                .unwrap();
+            let memory = manager.client().guest_memory().await.unwrap();
+            let reconstructed = manager.client().guest_memory().await.unwrap();
+            let derived = memory.subrange(0, 0x1000, false).unwrap();
+            for memory in [&memory, &reconstructed, &derived] {
+                assert_eq!(memory.supports_kernel_lock(), allow_locking);
+                assert_eq!(memory.supports_user_lock(), allow_locking);
+                assert_eq!(memory.full_mapping().is_some(), allow_locking);
+                assert!(memory.iova(0).is_none());
+            }
+            for memory in [&memory, &reconstructed] {
+                assert_eq!(memory.sharing().is_some(), allow_locking);
+            }
+            assert!(derived.sharing().is_none());
+            assert_eq!(manager.shared_memory_backing().is_some(), allow_locking);
+            assert_eq!(manager.dma_mapper_client().is_some(), allow_locking);
+            memory.write_at(0, b"copied RAM").unwrap();
+            let mut readback = [0; 10];
+            reconstructed.read_at(0, &mut readback).unwrap();
+            assert_eq!(&readback, b"copied RAM");
+            for access in [guestmem::AccessType::Read, guestmem::AccessType::Write] {
+                assert_eq!(memory.lock_kernel_gpns(access, &[0]).is_ok(), allow_locking);
+                assert_eq!(memory.lock_user_gpns(access, &[0]).is_ok(), allow_locking);
+            }
+        }
     }
 
     #[async_test]

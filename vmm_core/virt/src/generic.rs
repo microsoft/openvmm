@@ -441,6 +441,14 @@ pub trait ProtoPartition {
         false
     }
 
+    /// Whether this backend and isolation mode permit guest-memory locking.
+    ///
+    /// Select this before constructing any guest-memory views. Guest page
+    /// visibility changes do not change this capability.
+    fn supports_guest_memory_locking(&self) -> bool {
+        true
+    }
+
     /// Constructs the full partition.
     fn build(
         self,
