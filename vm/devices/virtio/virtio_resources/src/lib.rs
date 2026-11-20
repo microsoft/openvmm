@@ -57,6 +57,9 @@ pub mod fs {
         /// uses the VMM process token.
         #[cfg(windows)]
         pub user_token: Option<std::os::windows::io::OwnedHandle>,
+        /// Expose shared-memory section objects instead of host files. Only
+        /// supported on Windows.
+        pub shared_mem: bool,
     }
 
     #[derive(MeshPayload)]

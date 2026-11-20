@@ -4023,10 +4023,10 @@ dependencies = [
  "serde",
  "serde_json",
  "test_with_tracing",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
- "vm_topology",
  "x86defs",
  "zerocopy",
 ]
@@ -8327,12 +8327,15 @@ dependencies = [
  "acpi_spec",
  "arrayvec",
  "fdt",
+ "guid",
  "loader_defs",
  "memory_range",
  "minimal_rt",
  "minimal_rt_build",
+ "parking_lot",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "uefi_specs",
  "x86defs",
  "zerocopy",
 ]
@@ -8665,10 +8668,12 @@ dependencies = [
 name = "tdcall"
 version = "0.0.0"
 dependencies = [
+ "cvm_tracing",
  "hvdef",
  "memory_range",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "x86defs",
 ]
@@ -9605,7 +9610,6 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "parking_lot",
- "pci_core",
  "product_policy",
  "profiler_worker",
  "safe_intrinsics",
@@ -10357,6 +10361,7 @@ dependencies = [
  "hvdef",
  "iced-x86",
  "pal_async",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -12581,6 +12586,7 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "iced-x86",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "x86defs",

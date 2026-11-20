@@ -6,6 +6,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "tracing")]
+use cvm_tracing::CVM_ALLOWED;
 use hvdef::hypercall::HypercallOutput;
 use memory_range::AlignedSubranges;
 use memory_range::MemoryRange;
@@ -497,14 +499,15 @@ pub fn tdcall_page_attr_wr(
     attributes: TdgMemPageGpaAttr,
     mask: TdgMemPageAttrWriteR8,
 ) -> Result<(), TdCallResultCode> {
-    const MAX_ATTEMPTS: usize = 64;
+    #[cfg(feature = "tracing")]
+    const WARN_AFTER_BUSY_ATTEMPTS: usize = 64;
 
     #[cfg(feature = "tracing")]
     tracing::trace!(?mapping, ?attributes, ?mask, "tdcall_page_attr_wr");
 
-    let mut attempts = 0;
+    #[cfg(feature = "tracing")]
+    let mut busy_attempts = 0usize;
     loop {
-        attempts += 1;
         let input = TdcallInput {
             leaf: TdCallLeaf::MEM_PAGE_ATTR_WR,
             rcx: mapping.into(),
@@ -524,7 +527,22 @@ pub fn tdcall_page_attr_wr(
         // TODO TDX: RCX and RDX also contain info that could be returned
 
         match output.rax.code() {
-            TdCallResultCode::OPERAND_BUSY if attempts < MAX_ATTEMPTS => {}
+            TdCallResultCode::OPERAND_BUSY => {
+                #[cfg(feature = "tracing")]
+                {
+                    busy_attempts = busy_attempts.saturating_add(1);
+                    if busy_attempts == WARN_AFTER_BUSY_ATTEMPTS {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            ?mapping,
+                            ?attributes,
+                            ?mask,
+                            busy_attempts,
+                            "TDG.MEM.PAGE.ATTR.WR is busy; continuing to retry"
+                        );
+                    }
+                }
+            }
             TdCallResultCode::SUCCESS => break Ok(()),
             val => break Err(val),
         }
@@ -1224,12 +1242,9 @@ mod tests {
         for (busy_calls, final_status, expected, expected_calls) in [
             (0, TdCallResultCode::SUCCESS, Ok(()), 1),
             (63, TdCallResultCode::SUCCESS, Ok(()), 64),
-            (
-                64,
-                TdCallResultCode::SUCCESS,
-                Err(TdCallResultCode::OPERAND_BUSY),
-                64,
-            ),
+            (64, TdCallResultCode::SUCCESS, Ok(()), 65),
+            (65, TdCallResultCode::SUCCESS, Ok(()), 66),
+            (4096, TdCallResultCode::SUCCESS, Ok(()), 4097),
             (
                 0,
                 TdCallResultCode::OPERAND_INVALID,
@@ -1241,6 +1256,12 @@ mod tests {
                 TdCallResultCode::PAGE_SIZE_MISMATCH,
                 Err(TdCallResultCode::PAGE_SIZE_MISMATCH),
                 3,
+            ),
+            (
+                64,
+                TdCallResultCode::OPERAND_INVALID,
+                Err(TdCallResultCode::OPERAND_INVALID),
+                65,
             ),
         ] {
             let mut call = AttrWriteTdcall {

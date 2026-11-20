@@ -62,11 +62,18 @@ impl ParsedVirtioFs {
                 windows_options,
             } => {
                 validate_root_path(&root_path)?;
-                let platform = ParsedHostFsPlatform::parse(windows_options)?;
-                ParsedVirtioFsBackend::HostFs {
-                    root_path,
-                    mount_options: LxVolumeOptions::from_option_string(&mount_options),
-                    platform,
+                if windows_options
+                    .as_ref()
+                    .is_some_and(|options| options.shared_mem)
+                {
+                    parse_shared_mem(root_path, &mount_options, windows_options)?
+                } else {
+                    let platform = ParsedHostFsPlatform::parse(windows_options)?;
+                    ParsedVirtioFsBackend::HostFs {
+                        root_path,
+                        mount_options: LxVolumeOptions::from_option_string(&mount_options),
+                        platform,
+                    }
                 }
             }
             #[cfg(windows)]
@@ -84,6 +91,32 @@ impl ParsedVirtioFs {
         };
 
         Ok(Self { tag, backend })
+    }
+}
+
+/// Parses a host filesystem share that requests shared-memory section
+/// objects instead of host files.
+fn parse_shared_mem(
+    root_path: String,
+    mount_options: &str,
+    windows_options: Option<VirtioFsWindowsOptions>,
+) -> anyhow::Result<ParsedVirtioFsBackend> {
+    cfg_select! {
+        windows => {
+            anyhow::ensure!(
+                mount_options.is_empty(),
+                "virtio-fs shared_mem does not support mount_options"
+            );
+            anyhow::ensure!(
+                windows_options.and_then(|options| options.user_token).is_none(),
+                "virtio-fs shared_mem does not support user tokens"
+            );
+            Ok(ParsedVirtioFsBackend::SectionFs { root_path })
+        }
+        _ => {
+            let _ = (root_path, mount_options, windows_options);
+            anyhow::bail!("virtio-fs shared_mem is only supported on Windows")
+        }
     }
 }
 
@@ -277,6 +310,7 @@ mod tests {
     use test_with_tracing::test;
     use virtio_resources::fs::VirtioFsBackend;
     use virtio_resources::fs::VirtioFsHandle;
+    use virtio_resources::fs::VirtioFsWindowsOptions;
 
     fn host_fs(tag: &str, root_path: &str, mount_options: &str) -> VirtioFsHandle {
         VirtioFsHandle {
@@ -289,6 +323,22 @@ mod tests {
         }
     }
 
+    fn shared_mem_fs(mount_options: &str) -> VirtioFsHandle {
+        let mut resource = host_fs("tag", "root", mount_options);
+        let VirtioFsBackend::HostFs {
+            windows_options, ..
+        } = &mut resource.fs
+        else {
+            unreachable!();
+        };
+        *windows_options = Some(VirtioFsWindowsOptions {
+            #[cfg(windows)]
+            user_token: None,
+            shared_mem: true,
+        });
+        resource
+    }
+
     #[test]
     fn parse_rejects_invalid_tag_and_root_path() {
         assert!(ParsedVirtioFs::parse(host_fs("", "root", "")).is_err());
@@ -297,13 +347,51 @@ mod tests {
     }
 
     #[test]
-    fn parse_preserves_read_only_mount_option() {
-        let parsed = ParsedVirtioFs::parse(host_fs("tag", "root", "uid=1000;ro"))
-            .expect("parse virtio-fs resource");
-        let ParsedVirtioFsBackend::HostFs { mount_options, .. } = parsed.backend else {
-            panic!("expected host filesystem backend");
+    fn parse_applies_read_only_mount_option() {
+        for (options, readonly) in [
+            ("", false),
+            ("uid=1000", false),
+            ("ro", true),
+            ("uid=1000;ro", true),
+        ] {
+            let parsed = ParsedVirtioFs::parse(host_fs("tag", "root", options))
+                .expect("parse virtio-fs resource");
+            let ParsedVirtioFsBackend::HostFs { mount_options, .. } = parsed.backend else {
+                panic!("expected host filesystem backend");
+            };
+            assert_eq!(mount_options.is_readonly(), readonly);
+        }
+    }
+
+    #[test]
+    fn parse_shared_memory_options() {
+        let result = ParsedVirtioFs::parse(shared_mem_fs(""));
+        #[cfg(windows)]
+        assert!(matches!(
+            result.unwrap().backend,
+            ParsedVirtioFsBackend::SectionFs { .. }
+        ));
+        #[cfg(not(windows))]
+        assert!(result.is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parse_rejects_host_options_for_shared_memory() {
+        for mount_options in ["ro", "uid=1000"] {
+            assert!(ParsedVirtioFs::parse(shared_mem_fs(mount_options)).is_err());
+        }
+
+        let mut resource = shared_mem_fs("");
+        let VirtioFsBackend::HostFs {
+            windows_options: Some(options),
+            ..
+        } = &mut resource.fs
+        else {
+            unreachable!();
         };
-        assert!(mount_options.is_readonly());
+        options.user_token = Some(crate::integration_tests::user_token::restricted_token());
+        assert!(ParsedVirtioFs::parse(resource).is_err());
     }
 
     #[cfg(not(windows))]
@@ -343,7 +431,6 @@ mod tests {
         use crate::integration_tests::user_token::thread_token;
         use pal::windows::security::LocalSecurityDescriptor;
         use pal::windows::security::create_directory_with_security;
-        use virtio_resources::fs::VirtioFsWindowsOptions;
         use windows_sys::Win32::Foundation::ERROR_NO_TOKEN;
 
         fn assert_no_thread_token() {
@@ -363,6 +450,7 @@ mod tests {
             };
             *windows_options = Some(VirtioFsWindowsOptions {
                 user_token: user_token.then(restricted_token),
+                shared_mem: false,
             });
             let parsed = ParsedVirtioFs::parse(resource)?;
             let ParsedVirtioFsBackend::HostFs {

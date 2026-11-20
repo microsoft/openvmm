@@ -41,6 +41,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+#[derive(Clone)]
 enum Media {
     Unloaded,
     Loaded(Disk),
@@ -76,9 +77,10 @@ enum ScsiDvdError {
     IllegalRequestNoSenseData,
 }
 
-struct RequestParametersIso {
+struct RequestParametersIso<'a> {
     tx: usize,
     offset: u64,
+    disk: Option<&'a Disk>,
 }
 
 impl AsyncScsiDisk for SimpleScsiDvd {
@@ -106,12 +108,22 @@ impl AsyncScsiDisk for SimpleScsiDvd {
         StackFuture::from(async move {
             let op = request.scsiop();
 
-            let sector_count = self.sector_count();
+            // The command uses this copy of the media throughout, so a media
+            // change while it runs does not affect it. Nothing holds `media`
+            // across the disk I/O: a command never waits for another command,
+            // and a media change never waits for a command.
+            // The guard is dropped at the end of this block, before the command
+            // runs. (`drop` alone does not end its scope for the `Send` check
+            // on this future.)
+            let media = {
+                let guard = self.media.read();
+                guard.clone()
+            };
             let result = match op {
                 ScsiOp::INQUIRY => self.handle_inquiry_iso(external_data, request),
                 ScsiOp::TEST_UNIT_READY => self.handle_test_unit_ready_iso(),
                 ScsiOp::READ | ScsiOp::READ12 | ScsiOp::READ16 => {
-                    self.handle_data_cdb_async_iso(external_data, request, sector_count)
+                    self.handle_data_cdb_async_iso(&media, external_data, request)
                         .instrument(tracing::trace_span!("handle_data_cdb_async", ?op,))
                         .await
                 }
@@ -119,20 +131,22 @@ impl AsyncScsiDisk for SimpleScsiDvd {
                 ScsiOp::GET_CONFIGURATION => {
                     self.handle_get_configuration_iso(external_data, request)
                 }
-                ScsiOp::READ_CAPACITY => self.handle_read_capacity_iso(external_data, sector_count),
-                ScsiOp::READ_TOC => self.handle_read_toc(external_data, request),
+                ScsiOp::READ_CAPACITY => self.handle_read_capacity_iso(&media, external_data),
+                ScsiOp::READ_TOC => self.handle_read_toc(&media, external_data, request),
                 ScsiOp::START_STOP_UNIT => self.handle_start_stop_unit(request).await,
                 ScsiOp::MODE_SENSE10 => self.handle_mode_sense_iso(external_data, request),
                 ScsiOp::REQUEST_SENSE => self.handle_request_sense_iso(external_data, request),
                 ScsiOp::MEDIUM_REMOVAL => self.handle_medium_removal_iso(request),
                 ScsiOp::MODE_SELECT10 => self.handle_mode_select_iso(request, external_data),
                 ScsiOp::READ_TRACK_INFORMATION => {
-                    self.handle_read_track_information_iso(external_data, request)
+                    self.handle_read_track_information_iso(&media, external_data, request)
                 }
                 ScsiOp::READ_DVD_STRUCTURE => {
                     self.handle_read_dvd_structure(external_data, request)
                 }
-                ScsiOp::GET_PERFORMANCE => self.handle_get_performance(external_data, request),
+                ScsiOp::GET_PERFORMANCE => {
+                    self.handle_get_performance(&media, external_data, request)
+                }
                 ScsiOp::MECHANISM_STATUS => self.handle_mechanism_status(external_data, request),
                 ScsiOp::READ_BUFFER_CAPACITY => {
                     self.handle_read_buffer_capacity(external_data, request)
@@ -140,7 +154,7 @@ impl AsyncScsiDisk for SimpleScsiDvd {
                 ScsiOp::READ_DISC_INFORMATION => {
                     self.handle_read_disc_information(external_data, request)
                 }
-                ScsiOp::SET_STREAMING => self.handle_set_streaming(external_data, request),
+                ScsiOp::SET_STREAMING => self.handle_set_streaming(&media, external_data, request),
                 _ => {
                     tracelimit::warn_ratelimited!(op = ?op, "illegal command");
                     Err(ScsiDvdError::IllegalRequest(
@@ -229,27 +243,38 @@ impl SimpleScsiDvd {
         ISO_SECTOR_SIZE.trailing_zeros() as u8
     }
 
-    fn sector_count(&self) -> u64 {
-        match &*self.media.read() {
-            Media::Unloaded => 0,
-            Media::Loaded(disk) => disk.sector_count() / self.balancer(),
+    /// Returns the loaded disk, or the error for an empty drive.
+    fn loaded_disk<'a>(&self, media: &'a Media) -> Result<&'a Disk, ScsiDvdError> {
+        self.validate_media_for_read()?;
+        match media {
+            Media::Loaded(disk) => Ok(disk),
+            // The drive state is saved and restored, the media is not, so the
+            // two can disagree after a restore.
+            Media::Unloaded => Err(ScsiDvdError::SenseNotReady(
+                AdditionalSenseCode::NO_MEDIA_IN_DEVICE,
+                if self.media_state.lock().drive_state.tray_open() {
+                    scsi::MEDIUM_NOT_PRESENT_TRAY_OPEN
+                } else {
+                    scsi::MEDIUM_NOT_PRESENT_TRAY_CLOSED
+                },
+            )),
         }
     }
+}
 
-    fn balancer(&self) -> u64 {
-        match &*self.media.read() {
-            Media::Unloaded => unreachable!("cannot read/write from unloaded disk"),
-            Media::Loaded(disk) => {
-                // Per protocol, the sector size for an ISO is 2048. Any read request which
-                // goes to backend disk with sector size <= 2048 then we need to convert
-                // read offset and sector count accordingly.
-                // e.g.: If disk backend has sector_size = 512 then a read request at sector n
-                // should actually go to sector 4*n of backend disk. If sector count of
-                // backend device is n then it should be reported as sector count/4 to the guest.
-                (ISO_SECTOR_SIZE / disk.sector_size()) as u64
-            }
-        }
-    }
+/// Returns the capacity of `disk` in ISO sectors.
+fn iso_sector_count(disk: &Disk) -> u64 {
+    disk.sector_count() / disk_balancer(disk)
+}
+
+fn disk_balancer(disk: &Disk) -> u64 {
+    // Per protocol, the sector size for an ISO is 2048. Any read request which
+    // goes to backend disk with sector size <= 2048 then we need to convert
+    // read offset and sector count accordingly.
+    // e.g.: If disk backend has sector_size = 512 then a read request at sector n
+    // should actually go to sector 4*n of backend disk. If sector count of
+    // backend device is n then it should be reported as sector count/4 to the guest.
+    (ISO_SECTOR_SIZE / disk.sector_size()) as u64
 }
 
 impl ScsiSaveRestore for SimpleScsiDvd {
@@ -409,24 +434,17 @@ impl SimpleScsiDvd {
 
     async fn handle_data_cdb_async_iso(
         &self,
+        media: &Media,
         external_data: &RequestBuffers<'_>,
         request: &Request,
-        sector_count: u64,
     ) -> Result<usize, ScsiDvdError> {
         let op = request.scsiop();
-        let p = self.validate_data_cdb_iso(external_data, request, sector_count, op)?;
+        let p = self.validate_data_cdb_iso(media, external_data, request, op)?;
 
-        if p.tx != 0 {
-            let mut media = None;
-            if let Media::Loaded(disk) = &*self.media.read() {
-                media = Some(disk.clone());
-            }
-
-            if let Some(disk) = media {
-                disk.read_vectored(&external_data.subrange(0, p.tx), p.offset)
-                    .await
-                    .map_err(ScsiDvdError::IoError)?;
-            }
+        if let Some(disk) = p.disk {
+            disk.read_vectored(&external_data.subrange(0, p.tx), p.offset)
+                .await
+                .map_err(ScsiDvdError::IoError)?;
         }
 
         Ok(p.tx)
@@ -805,15 +823,15 @@ impl SimpleScsiDvd {
 
     fn handle_read_capacity_iso(
         &self,
+        media: &Media,
         external_data: &RequestBuffers<'_>,
-        sector_count: u64,
     ) -> Result<usize, ScsiDvdError> {
         let tx = size_of::<scsi::ReadCapacityData>();
 
         // media is no longer accessible
-        self.validate_media_for_read()?;
+        let disk = self.loaded_disk(media)?;
 
-        let last_lba = std::cmp::min(sector_count - 1, u32::MAX.into());
+        let last_lba = std::cmp::min(iso_sector_count(disk) - 1, u32::MAX.into());
         let data = scsi::ReadCapacityData {
             logical_block_address: (last_lba as u32).into(),
             bytes_per_block: ISO_SECTOR_SIZE.into(),
@@ -829,6 +847,7 @@ impl SimpleScsiDvd {
 
     fn handle_read_toc(
         &self,
+        media: &Media,
         external_data: &RequestBuffers<'_>,
         request: &Request,
     ) -> Result<usize, ScsiDvdError> {
@@ -871,9 +890,9 @@ impl SimpleScsiDvd {
         };
         let data_transfer_length: usize;
 
-        self.validate_media_for_read()?;
+        let disk = self.loaded_disk(media)?;
 
-        let last_lba = std::cmp::min(self.sector_count() - 1, u32::MAX.into());
+        let last_lba = std::cmp::min(iso_sector_count(disk) - 1, u32::MAX.into());
         if allocation_length > external_data.len() {
             return Err(ScsiDvdError::DataOverrun);
         }
@@ -939,12 +958,12 @@ impl SimpleScsiDvd {
             (true, false) => {
                 let mut previous_media = None;
                 {
+                    // Take `media` before `media_state`, as `change_media` does.
+                    let mut media = self.media.write();
                     let mut media_state = self.media_state.lock();
                     // eject the disc if permitted
                     if !media_state.prevent {
                         if media_state.drive_state == DriveState::MediumPresentTrayClosed {
-                            let mut media = self.media.write();
-
                             // This will cause the next GESN or TUR command to report medium removal
                             media_state.pending_medium_event = IsoMediumEvent::MediaToNoMedia;
 
@@ -1196,6 +1215,7 @@ impl SimpleScsiDvd {
 
     fn handle_read_track_information_iso(
         &self,
+        media: &Media,
         external_data: &RequestBuffers<'_>,
         request: &Request,
     ) -> Result<usize, ScsiDvdError> {
@@ -1207,8 +1227,8 @@ impl SimpleScsiDvd {
         let logical_track_number = cdb.logical_track_number.get() as usize;
         let allocation_length = cdb.allocation_length.get() as usize;
 
-        self.validate_media_for_read()?;
-        let last_lba = std::cmp::min(self.sector_count() - 1, u32::MAX.into()) as u32;
+        let disk = self.loaded_disk(media)?;
+        let last_lba = std::cmp::min(iso_sector_count(disk) - 1, u32::MAX.into()) as u32;
 
         if allocation_length > external_data.len() {
             return Err(ScsiDvdError::DataOverrun);
@@ -1400,6 +1420,7 @@ impl SimpleScsiDvd {
 
     fn handle_get_performance(
         &self,
+        media: &Media,
         external_data: &RequestBuffers<'_>,
         request: &Request,
     ) -> Result<usize, ScsiDvdError> {
@@ -1420,9 +1441,9 @@ impl SimpleScsiDvd {
         let maximum_number_of_descriptors = cdb.maximum_number_of_descriptors.get();
         let mut data_transfer_length: u64;
 
-        self.validate_media_for_read()?;
+        let disk = self.loaded_disk(media)?;
 
-        let last_lba = std::cmp::min(self.sector_count() - 1, u32::MAX.into())
+        let last_lba = std::cmp::min(iso_sector_count(disk) - 1, u32::MAX.into())
             .try_into()
             .expect("last_lba must be u32");
         match data_type {
@@ -1608,6 +1629,7 @@ impl SimpleScsiDvd {
 
     fn handle_set_streaming(
         &self,
+        media: &Media,
         external_data: &RequestBuffers<'_>,
         request: &Request,
     ) -> Result<usize, ScsiDvdError> {
@@ -1621,7 +1643,7 @@ impl SimpleScsiDvd {
             return Ok(0);
         }
 
-        self.validate_media_for_read()?;
+        let disk = self.loaded_disk(media)?;
 
         if parameter_list_length > external_data.len() {
             return Err(ScsiDvdError::DataOverrun);
@@ -1653,7 +1675,7 @@ impl SimpleScsiDvd {
         if performance_descriptor.flags.rdd() {
             return Ok(0);
         }
-        let last_lba = std::cmp::min(self.sector_count() - 1, u32::MAX.into()) as u32;
+        let last_lba = std::cmp::min(iso_sector_count(disk) - 1, u32::MAX.into()) as u32;
 
         if u32::from(performance_descriptor.start_lba) > last_lba
             || u32::from(performance_descriptor.end_lba) > last_lba
@@ -2098,13 +2120,13 @@ impl SimpleScsiDvd {
         )
     }
 
-    fn validate_data_cdb_iso(
+    fn validate_data_cdb_iso<'a>(
         &self,
+        media: &'a Media,
         external_data: &RequestBuffers<'_>,
         request: &Request,
-        sector_count: u64,
         op: ScsiOp,
-    ) -> Result<RequestParametersIso, ScsiDvdError> {
+    ) -> Result<RequestParametersIso<'a>, ScsiDvdError> {
         let (len, offset) = match op {
             ScsiOp::READ => {
                 let cdb = scsi::Cdb10::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
@@ -2131,10 +2153,12 @@ impl SimpleScsiDvd {
             return Ok(RequestParametersIso {
                 tx: len as usize,
                 offset: 0,
+                disk: None,
             });
         }
 
-        self.validate_media_for_read()?;
+        let disk = self.loaded_disk(media)?;
+        let sector_count = iso_sector_count(disk);
 
         let sector_shift = self.sector_shift();
         let max = external_data.len() >> sector_shift;
@@ -2157,7 +2181,8 @@ impl SimpleScsiDvd {
         let tx = (len as usize) << sector_shift;
         Ok(RequestParametersIso {
             tx,
-            offset: (offset * self.balancer()),
+            offset: (offset * disk_balancer(disk)),
+            disk: Some(disk),
         })
     }
 
@@ -2391,16 +2416,23 @@ fn illegal_request_sense_iso(sense_code: AdditionalSenseCode, sense_qualifier: u
 #[cfg(test)]
 mod tests {
     use super::Media;
+    use super::disk_balancer;
+    use super::iso_sector_count;
     use crate::SavedSenseData;
     use crate::ScsiSaveRestore;
     use crate::ScsiSavedState;
     use crate::scsi;
     use crate::scsidvd::ISO_SECTOR_SIZE;
     use crate::scsidvd::SimpleScsiDvd;
+    use disk_backend::Disk;
+    use disk_backend::DiskError;
     use disk_backend::DiskIo;
     use disk_backend::UnmapBehavior;
+    use disk_hook::DiskOperation;
     use disk_hook::HookDisk;
+    use futures::FutureExt;
     use guestmem::GuestMemory;
+    use inspect::Inspect;
     use pal_async::async_test;
     use scsi::AdditionalSenseCode;
     use scsi::ScsiOp;
@@ -2409,8 +2441,16 @@ mod tests {
     use scsi_buffers::RequestBuffers;
     use scsi_core::AsyncScsiDisk;
     use scsi_core::Request;
+    use scsi_core::save_restore::DriveState;
     use scsi_core::save_restore::IsoMediumEvent;
     use scsi_core::save_restore::ScsiDvdSavedState;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::sync::Barrier;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::time::Duration;
     use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
@@ -2434,9 +2474,9 @@ mod tests {
         .unwrap();
         let scsi_dvd = SimpleScsiDvd::new(Some(disk.with_read_only(read_only).into_disk()));
         let sector_shift = ISO_SECTOR_SIZE.trailing_zeros() as u8;
-        assert_eq!(scsi_dvd.sector_count(), sector_count / scsi_dvd.balancer());
         assert_eq!(scsi_dvd.sector_shift(), sector_shift);
         if let Media::Loaded(disk) = &*scsi_dvd.media.read() {
+            assert_eq!(iso_sector_count(disk), sector_count / disk_balancer(disk));
             assert_eq!(disk.is_read_only(), read_only);
             assert_eq!(disk.sector_size(), sector_size);
             assert_eq!(disk.physical_sector_size(), sector_size);
@@ -2725,7 +2765,9 @@ mod tests {
             let mut data = vec![0; len];
             fill_repeat_data_buffer(&mut data, sector_size as usize);
 
-            for start_lba in [0, 3, scsi_dvd.sector_count() - u64::from(lba_count)] {
+            let sector_count =
+                iso_sector_count(scsi_dvd.loaded_disk(&scsi_dvd.media.read()).unwrap());
+            for start_lba in [0, 3, sector_count - u64::from(lba_count)] {
                 guest_mem.fill_at(0, 0xff, len).unwrap();
                 let request = make_cdb16_request(ScsiOp::READ16, start_lba, lba_count);
                 check_execute_scsi(
@@ -2762,5 +2804,328 @@ mod tests {
             additional_sense_code_qualifier: scsi::SCSI_SENSEQ_OPERATING_DEFINITION_CHANGED,
         });
         restore_scsi_dvd(saved_state, &scsi_dvd);
+    }
+
+    /// A disk that calls a hook from `sector_count()`.
+    #[derive(Inspect)]
+    #[inspect(skip)]
+    struct SectorCountHookDisk(Box<dyn Fn() + Send + Sync>);
+
+    impl DiskIo for SectorCountHookDisk {
+        fn disk_type(&self) -> &str {
+            "sector-count-hook"
+        }
+
+        fn sector_count(&self) -> u64 {
+            (self.0)();
+            2048
+        }
+
+        fn sector_size(&self) -> u32 {
+            512
+        }
+
+        fn physical_sector_size(&self) -> u32 {
+            512
+        }
+
+        fn disk_id(&self) -> Option<[u8; 16]> {
+            None
+        }
+
+        fn is_read_only(&self) -> bool {
+            true
+        }
+
+        fn is_fua_respected(&self) -> bool {
+            false
+        }
+
+        fn unmap_behavior(&self) -> UnmapBehavior {
+            UnmapBehavior::Ignored
+        }
+
+        async fn read_vectored(
+            &self,
+            _buffers: &RequestBuffers<'_>,
+            _sector: u64,
+        ) -> Result<(), DiskError> {
+            Err(DiskError::InvalidInput)
+        }
+
+        async fn write_vectored(
+            &self,
+            _buffers: &RequestBuffers<'_>,
+            _sector: u64,
+            _fua: bool,
+        ) -> Result<(), DiskError> {
+            Err(DiskError::InvalidInput)
+        }
+
+        async fn sync_cache(&self) -> Result<(), DiskError> {
+            Ok(())
+        }
+
+        async fn unmap(
+            &self,
+            _sector: u64,
+            _count: u64,
+            _block_level_only: bool,
+        ) -> Result<(), DiskError> {
+            Err(DiskError::InvalidInput)
+        }
+    }
+
+    fn make_request(cdb: &[u8]) -> Request {
+        let mut data = [0u8; 16];
+        data[..cdb.len()].copy_from_slice(cdb);
+        Request {
+            cdb: data,
+            srb_flags: 0,
+        }
+    }
+
+    /// Runs `request` on a drive whose media is `disk(pause)`, with the disk
+    /// calling `pause` where the command should stop. While the command is
+    /// stopped, runs `change` and checks that the change completes without
+    /// waiting for the command. Returns the command's status and the first
+    /// four bytes it transferred.
+    fn check_media_change_during_command(
+        disk: impl FnOnce(Box<dyn Fn() + Send + Sync>) -> Disk,
+        request: Request,
+        change: fn(&SimpleScsiDvd),
+    ) -> (scsi::ScsiStatus, [u8; 4]) {
+        let barrier = Arc::new(Barrier::new(2));
+        let disk = disk(Box::new({
+            let barrier = barrier.clone();
+            let paused = AtomicBool::new(false);
+            move || {
+                // Only the command under test pauses.
+                if !paused.swap(true, Ordering::SeqCst) {
+                    barrier.wait();
+                    barrier.wait();
+                }
+            }
+        }));
+        let scsi_dvd = Arc::new(SimpleScsiDvd::new(Some(disk)));
+
+        let (command_done, command_result) = mpsc::channel();
+        std::thread::spawn({
+            let scsi_dvd = scsi_dvd.clone();
+            move || {
+                let external_data = OwnedRequestBuffers::linear(0, ISO_SECTOR_SIZE as usize, true);
+                let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+                let result = pal_async::local::block_on(
+                    scsi_dvd.execute_scsi(&external_data.buffer(&guest_mem), &request),
+                );
+                let mut data = [0; 4];
+                guest_mem.read_at(0, &mut data).unwrap();
+                command_done.send((result.scsi_status, data)).unwrap();
+            }
+        });
+        barrier.wait();
+        let (change_done, change_result) = mpsc::channel();
+        std::thread::spawn({
+            let scsi_dvd = scsi_dvd.clone();
+            move || {
+                change(&scsi_dvd);
+                change_done.send(()).unwrap();
+            }
+        });
+        change_result
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the media change waited for the command");
+        assert_eq!(
+            scsi_dvd.media_state.lock().drive_state,
+            DriveState::MediumNotPresentTrayOpen
+        );
+        assert!(matches!(*scsi_dvd.media.read(), Media::Unloaded));
+        barrier.wait();
+
+        // The command finishes with the disk it started with.
+        command_result
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the command did not finish")
+    }
+
+    /// Checks `change` during READ CAPACITY while it asks the disk for its
+    /// size, and during READ16 while its disk read is in flight.
+    fn check_media_change_during_commands(change: fn(&SimpleScsiDvd)) {
+        let result = check_media_change_during_command(
+            |pause| Disk::new(SectorCountHookDisk(pause)).unwrap(),
+            make_request(&[ScsiOp::READ_CAPACITY.0]),
+            change,
+        );
+        assert_eq!(
+            result,
+            (scsi::ScsiStatus::GOOD, (2048u32 / 4 - 1).to_be_bytes())
+        );
+
+        let result = check_media_change_during_command(
+            |pause| {
+                let disk = HookDisk::new(1024 * 1024, 512)
+                    .with_sync_hook(move |op| {
+                        if matches!(op, DiskOperation::Read { .. }) {
+                            pause();
+                        }
+                        Ok(())
+                    })
+                    .into_disk();
+                let mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+                mem.fill_at(0, 0x5a, ISO_SECTOR_SIZE as usize).unwrap();
+                let buffers = OwnedRequestBuffers::linear(0, ISO_SECTOR_SIZE as usize, false);
+                pal_async::local::block_on(disk.write_vectored(&buffers.buffer(&mem), 0, false))
+                    .unwrap();
+                disk
+            },
+            make_cdb16_request(ScsiOp::READ16, 0, 1),
+            change,
+        );
+        assert_eq!(result, (scsi::ScsiStatus::GOOD, [0x5a; 4]));
+    }
+
+    #[test]
+    fn host_eject_does_not_wait_for_running_commands() {
+        check_media_change_during_commands(|scsi_dvd| scsi_dvd.change_media(None));
+    }
+
+    #[test]
+    fn guest_eject_does_not_wait_for_running_commands() {
+        check_media_change_during_commands(|scsi_dvd| {
+            let external_data = OwnedRequestBuffers::new(&[0]);
+            let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+            let result = pal_async::local::block_on(
+                scsi_dvd.execute_scsi(&external_data.buffer(&guest_mem), &make_eject_request()),
+            );
+            assert_eq!(result.scsi_status, scsi::ScsiStatus::GOOD);
+        });
+    }
+
+    /// Returns a disk with `byte` in its first ISO sector, whose first read
+    /// waits for `released` if it is given.
+    async fn filled_disk(byte: u8, released: Option<mesh::OneshotReceiver<()>>) -> Disk {
+        let mut disk = HookDisk::new(1024 * 1024, 512);
+        if let Some(released) = released {
+            let released = parking_lot::Mutex::new(Some(released));
+            disk = disk.with_async_hook(move |op| {
+                let released = matches!(op, DiskOperation::Read { .. })
+                    .then(|| released.lock().take())
+                    .flatten();
+                async move {
+                    if let Some(released) = released {
+                        let _ = released.await;
+                    }
+                    Ok(())
+                }
+            });
+        }
+        let disk = disk.into_disk();
+        let mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+        mem.fill_at(0, byte, ISO_SECTOR_SIZE as usize).unwrap();
+        let buffers = OwnedRequestBuffers::linear(0, ISO_SECTOR_SIZE as usize, false);
+        disk.write_vectored(&buffers.buffer(&mem), 0, false)
+            .await
+            .unwrap();
+        disk
+    }
+
+    /// storvsp runs each channel's commands in that channel's worker, and on a
+    /// reset it stops all the workers and then drains the channels one at a
+    /// time. A command that waits for a command on another channel would never
+    /// finish there, so a command must complete while another one is stuck.
+    #[async_test]
+    async fn commands_do_not_wait_for_each_other() {
+        let (release, released) = mesh::oneshot();
+        let scsi_dvd = SimpleScsiDvd::new(Some(filled_disk(0x5a, Some(released)).await));
+
+        // A READ16 whose disk read does not complete, as if its channel had
+        // been stopped.
+        let read_data = OwnedRequestBuffers::linear(0, ISO_SECTOR_SIZE as usize, true);
+        let read_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+        let read_request = make_cdb16_request(ScsiOp::READ16, 0, 1);
+        let read_buffers = read_data.buffer(&read_mem);
+        let mut read = pin!(scsi_dvd.execute_scsi(&read_buffers, &read_request));
+        assert!(futures::poll!(read.as_mut()).is_pending());
+
+        // Other commands complete without it being polled.
+        let external_data = OwnedRequestBuffers::linear(0, ISO_SECTOR_SIZE as usize, true);
+        let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+        for request in [
+            make_request(&[ScsiOp::TEST_UNIT_READY.0]),
+            make_request(&[ScsiOp::READ_CAPACITY.0]),
+            make_request(&[ScsiOp::READ_TOC.0, 0, 0, 0, 0, 0, 0, 0, 12]),
+        ] {
+            let result = scsi_dvd
+                .execute_scsi(&external_data.buffer(&guest_mem), &request)
+                .now_or_never()
+                .expect("the command waited for the stuck READ16");
+            assert_eq!(result.scsi_status, scsi::ScsiStatus::GOOD, "{request:?}");
+        }
+
+        // So does a media change, and the commands after it use the new disk.
+        scsi_dvd.change_media(Some(filled_disk(0xa5, None).await));
+        let result = scsi_dvd
+            .execute_scsi(&external_data.buffer(&guest_mem), &read_request)
+            .now_or_never()
+            .expect("the READ16 of the new disk waited for the stuck READ16");
+        assert_eq!(result.scsi_status, scsi::ScsiStatus::GOOD);
+        let mut data = [0; 4];
+        guest_mem.read_at(0, &mut data).unwrap();
+        assert_eq!(data, [0xa5; 4]);
+
+        // The READ16 that was in flight finishes from the disk it started with.
+        release.send(());
+        assert_eq!(read.await.scsi_status, scsi::ScsiStatus::GOOD);
+        read_mem.read_at(0, &mut data).unwrap();
+        assert_eq!(data, [0x5a; 4]);
+    }
+
+    #[async_test]
+    async fn validate_media_missing_behind_drive_state() {
+        let scsi_dvd = new_scsi_dvd(ISO_SECTOR_SIZE, 2048, true).await;
+        // The drive state says that the medium is present but there is none,
+        // as can happen after a restore: the drive state is restored, the
+        // media is not.
+        *scsi_dvd.media.write() = Media::Unloaded;
+
+        let external_data = OwnedRequestBuffers::linear(0, ISO_SECTOR_SIZE as usize, true);
+        let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
+        for (drive_state, qualifier) in [
+            (
+                DriveState::MediumPresentTrayClosed,
+                scsi::MEDIUM_NOT_PRESENT_TRAY_CLOSED,
+            ),
+            (
+                DriveState::MediumPresentTrayOpen,
+                scsi::MEDIUM_NOT_PRESENT_TRAY_OPEN,
+            ),
+        ] {
+            scsi_dvd.media_state.lock().drive_state = drive_state;
+            for request in [
+                make_cdb16_request(ScsiOp::READ16, 0, 1),
+                make_request(&[ScsiOp::READ_CAPACITY.0]),
+                make_request(&[ScsiOp::READ_TOC.0, 0, 0, 0, 0, 0, 0, 0, 12]),
+            ] {
+                let result = scsi_dvd
+                    .execute_scsi(&external_data.buffer(&guest_mem), &request)
+                    .await;
+                let sense = result.sense_data.expect("no sense data");
+                assert_eq!(
+                    (
+                        result.scsi_status,
+                        sense.header.sense_key,
+                        sense.additional_sense_code,
+                        sense.additional_sense_code_qualifier
+                    ),
+                    (
+                        scsi::ScsiStatus::CHECK_CONDITION,
+                        SenseKey::NOT_READY,
+                        AdditionalSenseCode::NO_MEDIA_IN_DEVICE,
+                        qualifier
+                    ),
+                    "{drive_state:?} {request:?}"
+                );
+            }
+        }
     }
 }

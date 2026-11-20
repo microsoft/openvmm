@@ -108,8 +108,10 @@ pub(crate) fn bitness(cr0: u64, efer: u64, cs: SegmentRegister) -> Bitness {
         if efer & x86defs::X64_EFER_LMA != 0 {
             if cs.attributes.long() {
                 Bitness::Bit64
-            } else {
+            } else if cs.attributes.default() {
                 Bitness::Bit32
+            } else {
+                Bitness::Bit16
             }
         } else {
             if cs.attributes.default() {

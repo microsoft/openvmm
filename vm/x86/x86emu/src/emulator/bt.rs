@@ -6,6 +6,7 @@ use super::Emulator;
 use super::InternalError;
 use super::instruction;
 use crate::Cpu;
+use crate::ReadKind;
 use iced_x86::Instruction;
 
 impl<T: Cpu> Emulator<'_, T> {
@@ -33,11 +34,17 @@ impl<T: Cpu> Emulator<'_, T> {
             & address_mask;
 
         let mut data = [0; 8];
+        let kind = if Op::UPDATES_RESULT {
+            ReadKind::ReadModifyWrite
+        } else {
+            ReadKind::ReadOnly
+        };
         self.read_memory(
             instr.memory_segment().into(),
             address,
             AlignmentMode::Standard,
             &mut data[..op_size as usize],
+            kind,
         )
         .await?;
         let val = u64::from_le_bytes(data);
