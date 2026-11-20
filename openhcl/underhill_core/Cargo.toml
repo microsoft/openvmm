@@ -58,7 +58,6 @@ disk_blockdevice.workspace = true
 disk_get_vmgs.workspace = true
 disk_nvme.workspace = true
 firmware_uefi_resources.workspace = true
-pci_core.workspace = true
 hyperv_ic_guest.workspace = true
 hyperv_ic_resources.workspace = true
 framebuffer.workspace = true

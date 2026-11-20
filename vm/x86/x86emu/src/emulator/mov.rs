@@ -5,13 +5,14 @@ use super::AlignmentMode;
 use super::Emulator;
 use super::InternalError;
 use crate::Cpu;
+use crate::ReadKind;
 use crate::Segment;
 use iced_x86::Instruction;
 use iced_x86::OpKind;
 
 impl<T: Cpu> Emulator<'_, T> {
     pub(super) async fn mov(&mut self, instr: &Instruction) -> Result<(), InternalError<T::Error>> {
-        let value = self.op_value(instr, 1).await?;
+        let value = self.op_value(instr, 1, ReadKind::ReadOnly).await?;
         self.write_op_0(instr, value).await?;
         Ok(())
     }
@@ -31,7 +32,10 @@ impl<T: Cpu> Emulator<'_, T> {
         alignment: AlignmentMode,
     ) -> Result<(), InternalError<T::Error>> {
         let value = match instr.op1_kind() {
-            OpKind::Memory => self.read_memory_op(instr, 1, alignment).await?,
+            OpKind::Memory => {
+                self.read_memory_op(instr, 1, alignment, ReadKind::ReadOnly)
+                    .await?
+            }
             OpKind::Register => {
                 let reg = instr.op1_register();
                 assert!(reg.is_xmm());
@@ -67,6 +71,7 @@ impl<T: Cpu> Emulator<'_, T> {
             src,
             AlignmentMode::Unaligned,
             &mut buffer,
+            ReadKind::ReadOnly,
         )
         .await?;
 

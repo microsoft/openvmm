@@ -439,26 +439,22 @@ impl MapperTask {
         // other targets so the shared parameter doesn't warn.
         let _ = deferred_protect;
         let map_result = cfg_select! {
-            windows => {
-                self.inner.mapping.map_view_of_file_access(
-                    range.start() as usize,
-                    range.len() as usize,
-                    mappable,
-                    file_offset,
-                    protect,
-                    access,
-                    numa_node,
-                )
-            }
-            _ => {
-                self.inner.mapping.map_file(
-                    range.start() as usize,
-                    range.len() as usize,
-                    mappable,
-                    file_offset,
-                    writable,
-                )
-            }
+            windows => self.inner.mapping.map_view_of_file_access(
+                range.start() as usize,
+                range.len() as usize,
+                mappable,
+                file_offset,
+                protect,
+                access,
+                numa_node,
+            ),
+            _ => self.inner.mapping.map_file(
+                range.start() as usize,
+                range.len() as usize,
+                mappable,
+                file_offset,
+                writable,
+            ),
         };
 
         if let Err(e) = map_result {
@@ -484,22 +480,26 @@ impl MapperTask {
         // according to `/sys/kernel/mm/transparent_hugepage/shmem_enabled`.
         // The kernel may accept the advice without allocating huge pages;
         // advice failures are logged but do not fail the mapping.
-        #[cfg(target_os = "linux")]
-        if transparent_hugepages {
-            if let Err(e) = self
-                .inner
-                .mapping
-                .madvise_hugepage(range.start() as usize, range.len() as usize)
-            {
-                tracing::warn!(
-                    error = &e as &dyn std::error::Error,
-                    %range,
-                    "failed to mark shared RAM as THP eligible"
-                );
+        cfg_select! {
+            target_os = "linux" => {
+                if transparent_hugepages {
+                    if let Err(e) = self
+                        .inner
+                        .mapping
+                        .madvise_hugepage(range.start() as usize, range.len() as usize)
+                    {
+                        tracing::warn!(
+                            error = &e as &dyn std::error::Error,
+                            %range,
+                            "failed to mark shared RAM as THP eligible"
+                        );
+                    }
+                }
+            }
+            _ => {
+                let _ = transparent_hugepages;
             }
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = transparent_hugepages;
 
         cfg_select! {
             target_os = "linux" => {
@@ -523,7 +523,10 @@ impl MapperTask {
                 let _ = numa_node;
             }
             _ => {
-                assert!(numa_node.is_none(), "NUMA not supported on this platform; should have been rejected at build time");
+                assert!(
+                    numa_node.is_none(),
+                    "NUMA not supported on this platform; should have been rejected at build time"
+                );
             }
         }
 
@@ -568,18 +571,22 @@ impl MapperTask {
             .mapping
             .set_name(offset, len, "guest-ram-private");
 
-        #[cfg(target_os = "linux")]
-        if transparent_hugepages {
-            if let Err(e) = self.inner.mapping.madvise_hugepage(offset, len) {
-                tracing::warn!(
-                    error = &e as &dyn std::error::Error,
-                    %range,
-                    "failed to mark private RAM as THP eligible"
-                );
+        cfg_select! {
+            target_os = "linux" => {
+                if transparent_hugepages {
+                    if let Err(e) = self.inner.mapping.madvise_hugepage(offset, len) {
+                        tracing::warn!(
+                            error = &e as &dyn std::error::Error,
+                            %range,
+                            "failed to mark private RAM as THP eligible"
+                        );
+                    }
+                }
+            }
+            _ => {
+                let _ = transparent_hugepages;
             }
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = transparent_hugepages;
 
         Ok(())
     }
@@ -713,7 +720,10 @@ impl MapperInner {
             }
             _ => {
                 let _ = deferred_protect;
-                assert!(numa_node.is_none(), "NUMA not supported on this platform; should have been rejected at build time");
+                assert!(
+                    numa_node.is_none(),
+                    "NUMA not supported on this platform; should have been rejected at build time"
+                );
                 self.mapping.alloc(offset, len)
             }
         }

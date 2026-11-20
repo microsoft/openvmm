@@ -74,6 +74,15 @@ Only files corresponding to platforms present in the manifest are emitted.
 The `.idblock` file is the SNP signing payload used by the production signing
 mode described below.
 
+### Product and device policies
+
+An `openhcl` image can name a measured product policy in
+`product_policy.policy`, and a PCI device policy file in
+`product_policy.device_policy`, relative to the manifest.
+`igvmfilegen` appends them to the OpenHCL initrd. See
+[Measured Product Policy](../../reference/architecture/openhcl/product_policy.md)
+for the formats and what OpenHCL enforces.
+
 ## Inspect an IGVM
 
 Dump headers and directives in a human-readable form:

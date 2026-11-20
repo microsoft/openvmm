@@ -26,7 +26,7 @@
 # Hack to work around incorrect thread count on large machines
 [[profile.ci-large.overrides]]
 filter = 'package(~vmm_tests)'
-threads-required = 1
+threads-required = 2
 
 [[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the

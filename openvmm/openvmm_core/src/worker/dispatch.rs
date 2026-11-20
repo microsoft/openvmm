@@ -1176,22 +1176,29 @@ impl InitializedVm {
             None
         };
 
-        #[cfg(guest_arch = "aarch64")]
-        let (mut processor_topology, spi_layout) = {
-            let smmu_count = cfg
-                .pcie_root_complexes
-                .iter()
-                .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu { .. })))
-                .count();
-            let result =
-                build_aarch64_topology(&cfg.processor_topology, &platform_info, smmu_count)?;
-            (result.processor_topology, result.spi_layout)
-        };
-        #[cfg(not(guest_arch = "aarch64"))]
-        let mut processor_topology = {
-            let result = build_x86_topology(&cfg.processor_topology)?;
-            result.processor_topology
-        };
+        cfg_select! {
+            guest_arch = "aarch64" => {
+                let (mut processor_topology, spi_layout) = {
+                    let smmu_count = cfg
+                        .pcie_root_complexes
+                        .iter()
+                        .filter(|rc| matches!(rc.iommu, Some(PcieIommuConfig::Smmu { .. })))
+                        .count();
+                    let result = build_aarch64_topology(
+                        &cfg.processor_topology,
+                        &platform_info,
+                        smmu_count,
+                    )?;
+                    (result.processor_topology, result.spi_layout)
+                };
+            }
+            guest_arch = "x86_64" => {
+                let mut processor_topology = {
+                    let result = build_x86_topology(&cfg.processor_topology)?;
+                    result.processor_topology
+                };
+            }
+        }
 
         // Validate NUMA topology and resolve VP-to-vnode assignments.
         let vp_to_vnode = super::numa::resolve_numa_vp_assignment(
@@ -1325,27 +1332,27 @@ impl InitializedVm {
         // Combine the IOMMU RC configs with the MMIO ranges from the layout
         // engine into the resolved per-instance resources. A VM has at most one
         // IOMMU type, so this produces a single `ResolvedIommu`.
-        #[cfg(guest_arch = "x86_64")]
-        let resolved_iommu = match &resolved_layout.iommu_ranges {
-            ResolvedIommuRanges::AmdVi(ranges) => ResolvedIommu::AmdVi(
-                amd_iommu_wiring::resolve_iommu_resources(&cfg.pcie_root_complexes, ranges),
-            ),
-            ResolvedIommuRanges::IntelVtd(ranges) => ResolvedIommu::IntelVtd(
-                intel_vtd_wiring::resolve_vtd_resources(&cfg.pcie_root_complexes, ranges)?,
-            ),
-            _ => ResolvedIommu::None,
-        };
-        #[cfg(guest_arch = "aarch64")]
-        let resolved_iommu = match &resolved_layout.iommu_ranges {
-            ResolvedIommuRanges::Smmu(ranges) => {
-                ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
-                    &cfg.pcie_root_complexes,
-                    ranges,
-                    &spi_layout,
-                    device_assignment_msi_iova_range,
-                ))
-            }
-            _ => ResolvedIommu::None,
+        let resolved_iommu = cfg_select! {
+            guest_arch = "x86_64" => match &resolved_layout.iommu_ranges {
+                ResolvedIommuRanges::AmdVi(ranges) => ResolvedIommu::AmdVi(
+                    amd_iommu_wiring::resolve_iommu_resources(&cfg.pcie_root_complexes, ranges),
+                ),
+                ResolvedIommuRanges::IntelVtd(ranges) => ResolvedIommu::IntelVtd(
+                    intel_vtd_wiring::resolve_vtd_resources(&cfg.pcie_root_complexes, ranges)?,
+                ),
+                _ => ResolvedIommu::None,
+            },
+            guest_arch = "aarch64" => match &resolved_layout.iommu_ranges {
+                ResolvedIommuRanges::Smmu(ranges) => {
+                    ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
+                        &cfg.pcie_root_complexes,
+                        ranges,
+                        &spi_layout,
+                        device_assignment_msi_iova_range,
+                    ))
+                }
+                _ => ResolvedIommu::None,
+            },
         };
 
         // Place the alias map at the end of the address space. Newer versions
@@ -2133,27 +2140,31 @@ impl InitializedVm {
                 })?;
         }
 
-        // Add the GIC.
-        #[cfg(guest_arch = "aarch64")]
-        chipset_builder.add_external_line_target(
-            IRQ_LINE_SET,
-            0..=vmm_core::emuplat::gic::SPI_RANGE.end() - vmm_core::emuplat::gic::SPI_RANGE.start(),
-            *vmm_core::emuplat::gic::SPI_RANGE.start(),
-            "gic",
-            Arc::new(vmm_core::emuplat::gic::GicInterruptTarget::new(
-                partition.clone().control_gic(Vtl::Vtl0),
-            )),
-        );
-
-        // Add the x86 BSP's LINTs for the PIC to use.
-        #[cfg(guest_arch = "x86_64")]
-        chipset_builder.add_external_line_target(
-            chipset_device_resources::BSP_LINT_LINE_SET,
-            0..=1,
-            0,
-            "bsp",
-            partition.clone().into_lint_target(Vtl::Vtl0),
-        );
+        cfg_select! {
+            guest_arch = "x86_64" => {
+                // Add the x86 BSP's LINTs for the PIC to use.
+                chipset_builder.add_external_line_target(
+                    chipset_device_resources::BSP_LINT_LINE_SET,
+                    0..=1,
+                    0,
+                    "bsp",
+                    partition.clone().into_lint_target(Vtl::Vtl0),
+                );
+            }
+            guest_arch = "aarch64" => {
+                // Add the GIC.
+                chipset_builder.add_external_line_target(
+                    IRQ_LINE_SET,
+                    0..=vmm_core::emuplat::gic::SPI_RANGE.end()
+                        - vmm_core::emuplat::gic::SPI_RANGE.start(),
+                    *vmm_core::emuplat::gic::SPI_RANGE.start(),
+                    "gic",
+                    Arc::new(vmm_core::emuplat::gic::GicInterruptTarget::new(
+                        partition.clone().control_gic(Vtl::Vtl0),
+                    )),
+                );
+            }
+        }
 
         if let Some(framebuffer) = base_chipset_device_interfaces.framebuffer_local_control {
             resolver.add_resolver(framebuffer);
@@ -2263,40 +2274,40 @@ impl InitializedVm {
                 // When the AMD IOMMU is enabled for this root complex,
                 // reserve device 0 for the IOMMU RCiEP and start root
                 // ports at device 1.
-                #[cfg(guest_arch = "x86_64")]
-                let rc_iommu = rc.iommu.as_ref();
-                #[cfg(guest_arch = "x86_64")]
-                let root_port_start_device: u8 = if matches!(rc_iommu, Some(PcieIommuConfig::AmdVi))
-                {
-                    1
-                } else {
-                    0
-                };
-                #[cfg(not(guest_arch = "x86_64"))]
-                let root_port_start_device: u8 = 0;
+                let (root_port_start_device, reserved_device_numbers): (u8, u32) = cfg_select! {
+                    guest_arch = "x86_64" => {{
+                        let rc_iommu = rc.iommu.as_ref();
+                        let root_port_start_device =
+                            if matches!(rc_iommu, Some(PcieIommuConfig::AmdVi)) {
+                                1
+                            } else {
+                                0
+                            };
 
-                // On the segment-0 root complex covered by an x86 IOMMU, the
-                // phantom southbridge IOAPIC occupies a fixed devfn whose
-                // device number must not be assigned to a root port. The
-                // IOAPIC RID is on bus 0, so only reserve the device number on
-                // the root complex whose bus range includes bus 0; reserving
-                // it on other segment-0 root complexes would wrongly reject
-                // otherwise-valid port counts. Reserve that device number so
-                // that an overly large port count is rejected rather than
-                // silently shadowing the IOAPIC entry.
-                #[cfg(guest_arch = "x86_64")]
-                let reserved_device_numbers: u32 = if rc.segment == 0
-                    && rc.start_bus == 0
-                    && matches!(
-                        rc_iommu,
-                        Some(PcieIommuConfig::AmdVi | PcieIommuConfig::IntelVtd)
-                    ) {
-                    1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
-                } else {
-                    0
+                        // On the segment-0 root complex covered by an x86 IOMMU, the
+                        // phantom southbridge IOAPIC occupies a fixed devfn whose
+                        // device number must not be assigned to a root port. The
+                        // IOAPIC RID is on bus 0, so only reserve the device number on
+                        // the root complex whose bus range includes bus 0; reserving
+                        // it on other segment-0 root complexes would wrongly reject
+                        // otherwise-valid port counts. Reserve that device number so
+                        // that an overly large port count is rejected rather than
+                        // silently shadowing the IOAPIC entry.
+                        let reserved_device_numbers = if rc.segment == 0
+                            && rc.start_bus == 0
+                            && matches!(
+                                rc_iommu,
+                                Some(PcieIommuConfig::AmdVi | PcieIommuConfig::IntelVtd)
+                            ) {
+                            1u32 << (ioapic_iommu_wiring::IOAPIC_PHANTOM_DEVFN >> 3)
+                        } else {
+                            0
+                        };
+
+                        (root_port_start_device, reserved_device_numbers)
+                    }}
+                    _ => (0, 0),
                 };
-                #[cfg(not(guest_arch = "x86_64"))]
-                let reserved_device_numbers: u32 = 0;
 
                 let root_complex =
                     chipset_builder
@@ -2552,87 +2563,68 @@ impl InitializedVm {
             (Some(handle), Some(cdev_handle))
         };
 
-        // Instantiate SMMU devices and build port-level lookup maps.
-        // When active, PCIe devices on the covered root complexes get
-        // translating GuestMemory and SignalMsi wrappers that route DMA
-        // and MSI writes through the emulated SMMUv3.
-        #[cfg(guest_arch = "aarch64")]
-        let smmu_devices = {
-            let acpi_available = match &cfg.load_mode {
-                LoadMode::Linux {
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
-                    ..
-                } => false,
-                LoadMode::Linux {
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
-                    ..
+        // Instantiate the configured IOMMU devices and collapse the results
+        // into the type-keyed enum.
+        let iommu_devices = cfg_select! {
+            guest_arch = "x86_64" => match &resolved_iommu {
+                // Instantiate an AMD IOMMU on each root complex listed in
+                // --amd-iommu. Each IOMMU is an RCiEP at device 0, function 0 on
+                // its root complex's start bus with a distinct MMIO base address.
+                // Per-device wrappers are created in the PCIe device loop below.
+                ResolvedIommu::AmdVi(resolved) => {
+                    IommuDevices::AmdVi(amd_iommu_wiring::setup_amd_iommu(
+                        resolved,
+                        &pcie_host_bridges,
+                        &chipset_builder,
+                        partition.as_ref(),
+                        &gm,
+                    )?)
                 }
-                | LoadMode::Uefi { .. }
-                | LoadMode::Pcat { .. }
-                | LoadMode::Igvm { .. }
-                | LoadMode::None => true,
-            };
-            match &resolved_iommu {
-                ResolvedIommu::Smmu(resolved) => smmu_wiring::setup_smmu(
-                    &cfg.pcie_root_complexes,
-                    resolved,
-                    &mut pcie_host_bridges,
-                    &chipset_builder,
-                    &gm,
-                    acpi_available,
-                )?,
-                _ => smmu_wiring::SmmuDevicesResult::default(),
-            }
-        };
-
-        // Instantiate an AMD IOMMU on each root complex listed in
-        // --amd-iommu. Each IOMMU is an RCiEP at device 0, function 0 on
-        // its root complex's start bus with a distinct MMIO base address.
-        // Per-device wrappers are created in the PCIe device loop below.
-        #[cfg(guest_arch = "x86_64")]
-        let amd_devices = {
-            let resolved: &[amd_iommu_wiring::ResolvedIommuResources] = match &resolved_iommu {
-                ResolvedIommu::AmdVi(resources) => resources,
-                _ => &[],
-            };
-            amd_iommu_wiring::setup_amd_iommu(
-                resolved,
-                &pcie_host_bridges,
-                &chipset_builder,
-                partition.as_ref(),
-                &gm,
-            )?
-        };
-
-        // Instantiate an Intel VT-d unit on each root complex listed in
-        // --intel-vtd. Each unit is a pure MMIO platform device (no PCI
-        // config space), discovered by the guest via the DMAR ACPI table.
-        #[cfg(guest_arch = "x86_64")]
-        let vtd_devices = {
-            let resolved: &[intel_vtd_wiring::ResolvedVtdResources] = match &resolved_iommu {
-                ResolvedIommu::IntelVtd(resources) => resources,
-                _ => &[],
-            };
-            intel_vtd_wiring::setup_intel_vtd(
-                resolved,
-                &pcie_host_bridges,
-                &chipset_builder,
-                partition.as_ref(),
-                &gm,
-            )?
-        };
-
-        // Collapse the IOMMU setup results into the type-keyed enum.
-        #[cfg(guest_arch = "x86_64")]
-        let iommu_devices = match resolved_iommu {
-            ResolvedIommu::AmdVi(_) => IommuDevices::AmdVi(amd_devices),
-            ResolvedIommu::IntelVtd(_) => IommuDevices::IntelVtd(vtd_devices),
-            ResolvedIommu::None => IommuDevices::None,
-        };
-        #[cfg(guest_arch = "aarch64")]
-        let iommu_devices = match resolved_iommu {
-            ResolvedIommu::Smmu(_) => IommuDevices::Smmu(smmu_devices),
-            ResolvedIommu::None => IommuDevices::None,
+                // Instantiate an Intel VT-d unit on each root complex listed in
+                // --intel-vtd. Each unit is a pure MMIO platform device (no PCI
+                // config space), discovered by the guest via the DMAR ACPI table.
+                ResolvedIommu::IntelVtd(resolved) => {
+                    IommuDevices::IntelVtd(intel_vtd_wiring::setup_intel_vtd(
+                        resolved,
+                        &pcie_host_bridges,
+                        &chipset_builder,
+                        partition.as_ref(),
+                        &gm,
+                    )?)
+                }
+                ResolvedIommu::None => IommuDevices::None,
+            },
+            guest_arch = "aarch64" => match &resolved_iommu {
+                // Instantiate SMMU devices and build port-level lookup maps.
+                // When active, PCIe devices on the covered root complexes get
+                // translating GuestMemory and SignalMsi wrappers that route DMA
+                // and MSI writes through the emulated SMMUv3.
+                ResolvedIommu::Smmu(resolved) => {
+                    let acpi_available = match &cfg.load_mode {
+                        LoadMode::Linux {
+                            boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
+                            ..
+                        } => false,
+                        LoadMode::Linux {
+                            boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                            ..
+                        }
+                        | LoadMode::Uefi { .. }
+                        | LoadMode::Pcat { .. }
+                        | LoadMode::Igvm { .. }
+                        | LoadMode::None => true,
+                    };
+                    IommuDevices::Smmu(smmu_wiring::setup_smmu(
+                        &cfg.pcie_root_complexes,
+                        resolved,
+                        &mut pcie_host_bridges,
+                        &chipset_builder,
+                        &gm,
+                        acpi_available,
+                    )?)
+                }
+                ResolvedIommu::None => IommuDevices::None,
+            },
         };
 
         // Set up IOAPIC routing. When an x86 IOMMU covers the southbridge
@@ -2642,16 +2634,17 @@ impl InitializedVm {
         // commands trigger retranslation. The RID and the remapper come from
         // the same IOMMU, so ACPI discovery and runtime remapping agree.
         #[cfg(guest_arch = "x86_64")]
-        let ioapic_iommu = match &iommu_devices {
-            IommuDevices::AmdVi(devices) => devices.ioapic_iommu.as_ref(),
-            IommuDevices::IntelVtd(devices) => devices.ioapic_iommu.as_ref(),
-            IommuDevices::None => None,
+        let ioapic_iommu_rid: Option<u16> = {
+            let ioapic_iommu = match &iommu_devices {
+                IommuDevices::AmdVi(devices) => devices.ioapic_iommu.as_ref(),
+                IommuDevices::IntelVtd(devices) => devices.ioapic_iommu.as_ref(),
+                IommuDevices::None => None,
+            };
+            ioapic_iommu.map(|sel| {
+                ioapic_routing.connect_remapper(sel.ioapic_rid, sel.remapper.clone());
+                sel.ioapic_rid
+            })
         };
-        #[cfg(guest_arch = "x86_64")]
-        let ioapic_iommu_rid: Option<u16> = ioapic_iommu.map(|sel| {
-            ioapic_routing.connect_remapper(sel.ioapic_rid, sel.remapper.clone());
-            sel.ioapic_rid
-        });
 
         // Wire deferred root complex and switch MSI connections now that
         // IOMMU setup is complete. On x86_64, this applies IOMMU
@@ -3307,46 +3300,46 @@ impl LoadedVmInner {
             pcie_host_bridges: &self.pcie_host_bridges,
             slit_info: slit_info.as_ref(),
             generic_initiators: &generic_initiators,
-            #[cfg(guest_arch = "x86_64")]
-            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                with_ioapic: self.chipset_capabilities.with_ioapic,
-                with_psp: self.chipset_cfg.with_generic_psp,
-                with_pic: self.chipset_capabilities.with_pic,
-                with_pit: self.chipset_capabilities.with_pit,
-                pm_base: PM_BASE,
-                acpi_irq: SYSTEM_IRQ_ACPI,
-                iommu: match &self.iommu_devices {
-                    IommuDevices::AmdVi(devices) => {
-                        Some(vmm_core::acpi_builder::X86IommuAcpiConfig::AmdVi(
-                            vmm_core::acpi_builder::AmdIommuIvrsConfig {
-                                pa_size: amd_iommu::PA_SIZE,
-                                va_size: amd_iommu::VA_SIZE,
-                                iommus: devices.acpi_configs.clone(),
-                                ioapic_rid: self.ioapic_iommu_rid,
-                            },
-                        ))
-                    }
-                    IommuDevices::IntelVtd(devices) => {
-                        Some(vmm_core::acpi_builder::X86IommuAcpiConfig::IntelVtd(
-                            vmm_core::acpi_builder::IntelVtdDmarConfig {
-                                host_address_width: 48,
-                                units: devices.acpi_configs.clone(),
-                                ioapic_rid: self.ioapic_iommu_rid,
-                            },
-                        ))
-                    }
-                    IommuDevices::None => None,
+            arch: cfg_select! {
+                guest_arch = "x86_64" => vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                    with_ioapic: self.chipset_capabilities.with_ioapic,
+                    with_psp: self.chipset_cfg.with_generic_psp,
+                    with_pic: self.chipset_capabilities.with_pic,
+                    with_pit: self.chipset_capabilities.with_pit,
+                    pm_base: PM_BASE,
+                    acpi_irq: SYSTEM_IRQ_ACPI,
+                    iommu: match &self.iommu_devices {
+                        IommuDevices::AmdVi(devices) => {
+                            Some(vmm_core::acpi_builder::X86IommuAcpiConfig::AmdVi(
+                                vmm_core::acpi_builder::AmdIommuIvrsConfig {
+                                    pa_size: amd_iommu::PA_SIZE,
+                                    va_size: amd_iommu::VA_SIZE,
+                                    iommus: devices.acpi_configs.clone(),
+                                    ioapic_rid: self.ioapic_iommu_rid,
+                                },
+                            ))
+                        }
+                        IommuDevices::IntelVtd(devices) => {
+                            Some(vmm_core::acpi_builder::X86IommuAcpiConfig::IntelVtd(
+                                vmm_core::acpi_builder::IntelVtdDmarConfig {
+                                    host_address_width: 48,
+                                    units: devices.acpi_configs.clone(),
+                                    ioapic_rid: self.ioapic_iommu_rid,
+                                },
+                            ))
+                        }
+                        IommuDevices::None => None,
+                    },
                 },
-            },
-            #[cfg(guest_arch = "aarch64")]
-            arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
-                hypervisor_vendor_identity: if self.hypervisor_cfg.with_hv {
-                    u64::from_le_bytes(*b"MsHyperV")
-                } else {
-                    0
+                guest_arch = "aarch64" => vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
+                    hypervisor_vendor_identity: if self.hypervisor_cfg.with_hv {
+                        u64::from_le_bytes(*b"MsHyperV")
+                    } else {
+                        0
+                    },
+                    virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
+                    smmu: smmu_configs.clone(),
                 },
-                virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
-                smmu: smmu_configs.clone(),
             },
         };
 

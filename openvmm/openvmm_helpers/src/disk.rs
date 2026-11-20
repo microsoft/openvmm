@@ -90,23 +90,19 @@ pub async fn open_disk_type(
                 Err(err) => return Err(err.into()),
             }
         }
-        Some("vhdx") => {
-            #[cfg(windows)]
-            {
-                Resource::new(disk_vhdmp::OpenVhdmpDiskConfig(
-                    disk_vhdmp::VhdmpDisk::options()
-                        .read_only(read_only)
-                        .cached_io(!options.direct)
-                        .open(path)
-                        .with_context(|| disk_open_error(path, "failed to open"))?,
-                ))
-            }
-            #[cfg(not(windows))]
-            {
+        Some("vhdx") => cfg_select! {
+            windows => Resource::new(disk_vhdmp::OpenVhdmpDiskConfig(
+                disk_vhdmp::VhdmpDisk::options()
+                    .read_only(read_only)
+                    .cached_io(!options.direct)
+                    .open(path)
+                    .with_context(|| disk_open_error(path, "failed to open"))?,
+            )),
+            _ => {{
                 ensure_no_direct(".vhdx")?;
                 disklayer_vhdx::chain::open_vhdx_chain(path, read_only).await?
-            }
-        }
+            }}
+        },
         Some("iso") if !read_only => {
             anyhow::bail!("iso file cannot be opened as read/write")
         }
@@ -199,16 +195,12 @@ fn open_raw_disk(
         file.set_len(size)?;
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        Ok(Resource::new(
-            disk_backend_resources::BlockDeviceDiskHandle { file },
-        ))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Ok(Resource::new(disk_backend_resources::FileDiskHandle(file)))
-    }
+    Ok(cfg_select! {
+        target_os = "linux" => {
+            Resource::new(disk_backend_resources::BlockDeviceDiskHandle { file })
+        }
+        _ => Resource::new(disk_backend_resources::FileDiskHandle(file)),
+    })
 }
 
 #[cfg(test)]

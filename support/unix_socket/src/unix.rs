@@ -194,10 +194,10 @@ impl ScmReceiver {
         }
 
         // On Linux, atomically set O_CLOEXEC on incoming descriptors.
-        #[cfg(target_os = "linux")]
-        let flags = libc::MSG_CMSG_CLOEXEC;
-        #[cfg(not(target_os = "linux"))]
-        let flags = 0;
+        let flags = cfg_select! {
+            target_os = "linux" => libc::MSG_CMSG_CLOEXEC,
+            _ => 0,
+        };
 
         // SAFETY: calling `recvmsg` with valid, initialized buffers.
         let n = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut hdr, flags) };
@@ -240,12 +240,16 @@ impl ScmReceiver {
 
             // If ancillary data was truncated the kernel discarded the
             // descriptors that did not fit; the ones we did get are useless
-            // without the full set, so close them and fail.
+            // without the full set, so close them and fail. Besides a control
+            // buffer too small for the sender's descriptors, this happens when
+            // installing them would exceed this process's RLIMIT_NOFILE
+            // (unix(7)).
             if hdr.msg_flags & libc::MSG_CTRUNC != 0 {
                 self.clear();
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "control message truncated: sender sent too many file descriptors",
+                    "control message truncated: sender sent too many file descriptors, \
+                     or receiving them would exceed the open file limit (RLIMIT_NOFILE)",
                 ));
             }
         }

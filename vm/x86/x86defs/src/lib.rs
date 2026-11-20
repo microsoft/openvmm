@@ -414,6 +414,22 @@ pub struct IdtEntry64 {
     pub reserved: u32,
 }
 
+/// The 10-byte operand of `LGDT`, `LIDT`, `SGDT`, and `SIDT` in 64-bit mode
+/// (Intel SDM Vol. 3A, 3.5.1 and 6.10).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct DescriptorTableRegister {
+    /// The size of the table in bytes, minus one.
+    pub limit: u16,
+    /// The linear address of the table.
+    pub base: u64,
+}
+
+/// The [`IdtAttributes::gate_type`] of a 64-bit interrupt gate.
+pub const X64_IDT_GATE_TYPE_INTERRUPT: u8 = 0xe;
+/// The [`IdtAttributes::gate_type`] of a 64-bit trap gate.
+pub const X64_IDT_GATE_TYPE_TRAP: u8 = 0xf;
+
 #[bitfield(u16)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IdtAttributes {

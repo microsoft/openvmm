@@ -11,12 +11,14 @@
                     "memory_page_count": 131072,
                     "uefi": true,
                     "product_policy": {
-                        "sivm": {
-                            "require_ephemeral_vmgs": true,
-                            "require_secure_boot": true,
-                            "require_secure_boot_vars": false,
-                            "require_bcd_integrity": false,
-                            "custom_uefi_json": "e30="
+                        "policy": {
+                            "sivm": {
+                                "require_ephemeral_vmgs": true,
+                                "require_secure_boot": true,
+                                "require_secure_boot_vars": false,
+                                "require_bcd_integrity": false,
+                                "custom_uefi_json": "e30="
+                            }
                         }
                     }
                 }

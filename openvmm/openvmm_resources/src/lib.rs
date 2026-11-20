@@ -9,38 +9,31 @@
 mod hypervisor_resolvers;
 
 // Resources.
+#[cfg(guest_arch = "x86_64")]
+vm_resource::register_static_resolvers! {
+    // Chipset devices
+    chipset::i8042::resolver::I8042Resolver,
+    chipset_legacy::piix4_uhci::resolver::Piix4PciUsbUhciStubResolver,
+    chipset_legacy::piix4_pci_isa_bridge::resolver::Piix4PciIsaBridgeResolver,
+    chipset::dma::resolver::GenericIsaDmaResolver,
+    chipset_legacy::piix4_pm::resolver::Piix4PowerManagementResolver,
+    chipset_legacy::i440bx_host_pci_bridge::resolver::I440BxHostPciBridgeResolver,
+    chipset::pit::resolver::PitResolver,
+    chipset::pic::resolver::PicResolver,
+    chipset::ioapic::resolver::GenericIoApicResolver,
+    chipset::pm::resolver::HyperVPowerManagementResolver,
+    serial_16550::resolver::Serial16550Resolver,
+    serial_debugcon::resolver::SerialDebugconResolver,
+}
+
 vm_resource::register_static_resolvers! {
     // Chipset devices
     chipset::acpi_power_button::AcpiPowerButtonResolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset::i8042::resolver::I8042Resolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset_legacy::piix4_uhci::resolver::Piix4PciUsbUhciStubResolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset_legacy::piix4_pci_isa_bridge::resolver::Piix4PciIsaBridgeResolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset::dma::resolver::GenericIsaDmaResolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset_legacy::piix4_pm::resolver::Piix4PowerManagementResolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset_legacy::i440bx_host_pci_bridge::resolver::I440BxHostPciBridgeResolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset::pit::resolver::PitResolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset::pic::resolver::PicResolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset::ioapic::resolver::GenericIoApicResolver,
-    #[cfg(guest_arch = "x86_64")]
-    chipset::pm::resolver::HyperVPowerManagementResolver,
     chipset_resources::cmos_rtc_time_source::SystemTimeClockResolver,
     firmware_uefi::resolver::UefiDeviceResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,
-    #[cfg(guest_arch = "x86_64")]
-    serial_16550::resolver::Serial16550Resolver,
-    #[cfg(guest_arch = "x86_64")]
-    serial_debugcon::resolver::SerialDebugconResolver,
     #[cfg(guest_arch = "aarch64")]
     serial_pl011::resolver::SerialPl011Resolver,
     chipset::battery::resolver::BatteryResolver,

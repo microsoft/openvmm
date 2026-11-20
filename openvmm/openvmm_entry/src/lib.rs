@@ -17,6 +17,7 @@ mod serial_io;
 mod storage_builder;
 mod tracing_init;
 mod ttrpc;
+mod usb;
 mod vm_controller;
 
 // `pub` so that the missing_docs warning fires for options without
@@ -211,6 +212,55 @@ struct VmResources {
 struct ConsoleState<'a> {
     device: &'a str,
     input: Box<dyn AsyncWrite + Unpin + Send>,
+}
+
+/// Builds controller configurations from the USB command-line options. The
+/// controller resolver assigns omitted connectors and validates connectors.
+fn usb_controller_configs(
+    pcie_ports: &[cli_args::UsbXhciCli],
+    devices: &[cli_args::UsbDeviceCli],
+) -> anyhow::Result<Vec<(String, usb_config_resources::UsbControllerConfig)>> {
+    let mut controllers: Vec<_> = pcie_ports
+        .iter()
+        .map(|pcie_port| usb::UsbControllerSpec {
+            port_name: pcie_port.port_name.clone(),
+            devices: Vec::new(),
+            winusb_all: false,
+        })
+        .collect();
+    let default_pcie_port = if let [pcie_port] = pcie_ports {
+        Some(pcie_port.port_name.as_str())
+    } else {
+        None
+    };
+    for device in devices {
+        let pcie_port_name = device
+            .controller_pcie_port()
+            .or(default_pcie_port)
+            .context("on=PCIE_PORT is required unless exactly one xHCI controller is declared")?;
+        let controller = controllers
+            .iter_mut()
+            .find(|controller| controller.port_name == pcie_port_name)
+            .with_context(|| {
+                format!(
+                    "USB device references undeclared controller on PCIe port {pcie_port_name:?}"
+                )
+            })?;
+        match device {
+            cli_args::UsbDeviceCli::Device { location, backend } => controller.devices.push((
+                location.connector.map(cli_args::UsbConnectorCli::number),
+                backend.clone(),
+            )),
+            cli_args::UsbDeviceCli::WinUsbAll { .. } => {
+                anyhow::ensure!(
+                    !controller.winusb_all,
+                    "winusb-all may be selected only once per VM"
+                );
+                controller.winusb_all = true;
+            }
+        }
+    }
+    usb::controller_configs(controllers)
 }
 
 /// Build a flat list of switches with their parent port assignments.
@@ -412,49 +462,37 @@ async fn vm_config_from_command_line(
         opt.com4.as_ref().is_some_and(|c| c.debugger_mode),
     ];
 
+    let [serial0_name, serial1_name, serial2_name, serial3_name] = cfg_select! {
+        guest_arch = "x86_64" => ["ttyS0", "ttyS1", "ttyS2", "ttyS3"],
+        guest_arch = "aarch64" => ["ttyAMA0", "ttyAMA1", "ttyAMA2", "ttyAMA3"],
+    };
     let serial0_cfg = setup_serial(
         "com1",
         opt.com1
             .clone()
             .map_or(SerialConfigCli::Console, |c| c.backend),
-        if cfg!(guest_arch = "x86_64") {
-            "ttyS0"
-        } else {
-            "ttyAMA0"
-        },
+        serial0_name,
     )?;
     let serial1_cfg = setup_serial(
         "com2",
         opt.com2
             .clone()
             .map_or(SerialConfigCli::None, |c| c.backend),
-        if cfg!(guest_arch = "x86_64") {
-            "ttyS1"
-        } else {
-            "ttyAMA1"
-        },
+        serial1_name,
     )?;
     let serial2_cfg = setup_serial(
         "com3",
         opt.com3
             .clone()
             .map_or(SerialConfigCli::None, |c| c.backend),
-        if cfg!(guest_arch = "x86_64") {
-            "ttyS2"
-        } else {
-            "ttyAMA2"
-        },
+        serial2_name,
     )?;
     let serial3_cfg = setup_serial(
         "com4",
         opt.com4
             .clone()
             .map_or(SerialConfigCli::None, |c| c.backend),
-        if cfg!(guest_arch = "x86_64") {
-            "ttyS3"
-        } else {
-            "ttyAMA3"
-        },
+        serial3_name,
     )?;
     let with_vmbus_com1_serial = if let Some(vmbus_com1_cfg) = setup_serial(
         "vmbus_com1",
@@ -593,6 +631,7 @@ async fn vm_config_from_command_line(
         underhill,
         ref pcie_port,
         ref serial,
+        num_queues,
         ref controller,
         nsid,
         lun,
@@ -601,6 +640,9 @@ async fn vm_config_from_command_line(
     {
         if serial.is_some() {
             anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
+        if num_queues.is_some() {
+            anyhow::bail!("`num_queues` is only supported by `--virtio-blk`");
         }
         if controller.is_none() && underhill.is_none() && relay.is_none() {
             tracing::warn!(
@@ -701,6 +743,7 @@ async fn vm_config_from_command_line(
         underhill,
         ref pcie_port,
         ref serial,
+        num_queues,
         controller: _,
         nsid: _,
         lun: _,
@@ -709,6 +752,9 @@ async fn vm_config_from_command_line(
     {
         if serial.is_some() {
             anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
+        if num_queues.is_some() {
+            anyhow::bail!("`num_queues` is only supported by `--virtio-blk`");
         }
         let target = if let Some(port) = pcie_port {
             storage_builder::DiskLocation::Named {
@@ -732,6 +778,7 @@ async fn vm_config_from_command_line(
         ref underhill,
         ref pcie_port,
         ref serial,
+        num_queues,
         controller: _,
         nsid: _,
         lun: _,
@@ -749,6 +796,10 @@ async fn vm_config_from_command_line(
                 storage_builder::DiskLocation::VirtioBlk {
                     pcie_port: pcie_port.clone(),
                     serial: serial.clone(),
+                    options: virtio_resources::blk::VirtioBlkOptions {
+                        queue_count: num_queues.unwrap_or(opt.virtio_blk_queues),
+                        io_depth: opt.virtio_blk_io_depth,
+                    },
                 },
                 kind,
                 is_dvd,
@@ -825,6 +876,12 @@ async fn vm_config_from_command_line(
     // Build initial PCIe devices list from CLI options. Storage devices
     // (e.g., NVMe controllers on PCIe ports) are added later by storage_builder.
     let mut pcie_devices = Vec::new();
+    for (pcie_port_name, config) in usb_controller_configs(&opt.usb_xhci, &opt.usb_device)? {
+        pcie_devices.push(PcieDeviceConfig {
+            port_name: pcie_port_name,
+            resource: config.into_resource(),
+        });
+    }
     for (index, cli_cfg) in opt.pcie_remote.iter().enumerate() {
         tracing::info!(
             port_name = %cli_cfg.port_name,
@@ -945,39 +1002,40 @@ async fn vm_config_from_command_line(
         });
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    let arch = MachineArch::Aarch64;
-    #[cfg(guest_arch = "x86_64")]
-    let arch = MachineArch::X86_64;
-
-    #[cfg(guest_arch = "x86_64")]
-    anyhow::ensure!(
-        opt.amd_iommu.is_empty() || opt.intel_vtd.is_empty(),
-        "--amd-iommu and --intel-vtd cannot both be used in the same VM"
-    );
-
-    #[cfg(guest_arch = "x86_64")]
-    let mut amd_iommu_names: HashSet<&str> = opt.amd_iommu.iter().map(|s| s.as_str()).collect();
-    #[cfg(guest_arch = "x86_64")]
-    let mut vtd_names: HashSet<&str> = opt.intel_vtd.iter().map(|s| s.as_str()).collect();
-
-    // Map each `--smmu` entry to its root complex, rejecting duplicate `rc=`
-    // entries up front. Entries are removed as they are matched to a root
-    // complex below; any left over refer to unknown root complexes.
-    #[cfg(guest_arch = "aarch64")]
-    let mut smmu_names: std::collections::HashMap<&str, &cli_args::SmmuCli> = {
-        let mut map = std::collections::HashMap::new();
-        for s in &opt.smmu {
-            if map.insert(s.rc_name.as_str(), s).is_some() {
-                anyhow::bail!(
-                    "--smmu specified multiple times for root complex '{}'",
-                    s.rc_name
-                );
-            }
-        }
-        map
+    let arch = cfg_select! {
+        guest_arch = "x86_64" => MachineArch::X86_64,
+        guest_arch = "aarch64" => MachineArch::Aarch64,
     };
 
+    cfg_select! {
+        guest_arch = "x86_64" => {
+            anyhow::ensure!(
+                opt.amd_iommu.is_empty() || opt.intel_vtd.is_empty(),
+                "--amd-iommu and --intel-vtd cannot both be used in the same VM"
+            );
+
+            let mut amd_iommu_names: HashSet<&str> =
+                opt.amd_iommu.iter().map(|s| s.as_str()).collect();
+            let mut vtd_names: HashSet<&str> = opt.intel_vtd.iter().map(|s| s.as_str()).collect();
+        }
+        guest_arch = "aarch64" => {
+            // Map each `--smmu` entry to its root complex, rejecting duplicate `rc=`
+            // entries up front. Entries are removed as they are matched to a root
+            // complex below; any left over refer to unknown root complexes.
+            let mut smmu_names: std::collections::HashMap<&str, &cli_args::SmmuCli> = {
+                let mut map = std::collections::HashMap::new();
+                for s in &opt.smmu {
+                    if map.insert(s.rc_name.as_str(), s).is_some() {
+                        anyhow::bail!(
+                            "--smmu specified multiple times for root complex '{}'",
+                            s.rc_name
+                        );
+                    }
+                }
+                map
+            };
+        }
+    }
     let mut pcie_root_complexes = Vec::new();
     let mut legacy_pci_config_io_for_pcie = false;
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
@@ -1080,17 +1138,20 @@ async fn vm_config_from_command_line(
         });
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    if let Some(name) = smmu_names.into_keys().next() {
-        anyhow::bail!("--smmu refers to unknown root complex '{name}'");
-    }
-    #[cfg(guest_arch = "x86_64")]
-    if let Some(name) = amd_iommu_names.into_iter().next() {
-        anyhow::bail!("--amd-iommu refers to unknown root complex '{name}'");
-    }
-    #[cfg(guest_arch = "x86_64")]
-    if let Some(name) = vtd_names.into_iter().next() {
-        anyhow::bail!("--intel-vtd refers to unknown root complex '{name}'");
+    cfg_select! {
+        guest_arch = "x86_64" => {
+            if let Some(name) = amd_iommu_names.into_iter().next() {
+                anyhow::bail!("--amd-iommu refers to unknown root complex '{name}'");
+            }
+            if let Some(name) = vtd_names.into_iter().next() {
+                anyhow::bail!("--intel-vtd refers to unknown root complex '{name}'");
+            }
+        }
+        guest_arch = "aarch64" => {
+            if let Some(name) = smmu_names.into_keys().next() {
+                anyhow::bail!("--smmu refers to unknown root complex '{name}'");
+            }
+        }
     }
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
@@ -1284,10 +1345,14 @@ async fn vm_config_from_command_line(
     }
 
     let (base_template, custom_uefi_json) = {
-        #[cfg(guest_arch = "aarch64")]
-        use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
-        #[cfg(guest_arch = "x86_64")]
-        use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
+        cfg_select! {
+            guest_arch = "x86_64" => {
+                use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
+            }
+            guest_arch = "aarch64" => {
+                use firmware_uefi_resources::aarch64_secure_boot_templates as secure_boot_templates;
+            }
+        }
         let base_template = opt.secure_boot_template.map(|template| match template {
             SecureBootTemplateCli::Windows => secure_boot_templates::microsoft_windows(),
             SecureBootTemplateCli::UefiCa => secure_boot_templates::microsoft_uefi_ca(),
@@ -1681,10 +1746,9 @@ async fn vm_config_from_command_line(
     if let Some(tpm_version) = tpm_version
         && !opt.vtl2
     {
-        let register_layout = if cfg!(guest_arch = "x86_64") {
-            TpmRegisterLayout::IoPort
-        } else {
-            TpmRegisterLayout::Mmio
+        let register_layout = cfg_select! {
+            guest_arch = "x86_64" => TpmRegisterLayout::IoPort,
+            guest_arch = "aarch64" => TpmRegisterLayout::Mmio,
         };
 
         let ppi_store =
@@ -1784,27 +1848,28 @@ async fn vm_config_from_command_line(
         vmbus_devices.push((openhcl_vtl, resource));
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    let topology_arch = openvmm_defs::config::ArchTopologyConfig::Aarch64(
-        openvmm_defs::config::Aarch64TopologyConfig {
-            // TODO: allow this to be configured from the command line
-            gic_config: None,
-            pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
-            gic_msi: match opt.gic_msi {
-                cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
-                cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
-                cli_args::GicMsiCli::V2m => {
-                    openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
-                }
+    let topology_arch = cfg_select! {
+        guest_arch = "aarch64" => openvmm_defs::config::ArchTopologyConfig::Aarch64(
+            openvmm_defs::config::Aarch64TopologyConfig {
+                // TODO: allow this to be configured from the command line
+                gic_config: None,
+                pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
+                gic_msi: match opt.gic_msi {
+                    cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
+                    cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
+                    cli_args::GicMsiCli::V2m => {
+                        openvmm_defs::config::GicMsiConfig::V2m { spi_count: None }
+                    }
+                },
             },
-        },
-    );
-    #[cfg(guest_arch = "x86_64")]
-    let topology_arch =
-        openvmm_defs::config::ArchTopologyConfig::X86(openvmm_defs::config::X86TopologyConfig {
-            apic_id_offset: opt.apic_id_offset,
-            x2apic: opt.x2apic,
-        });
+        ),
+        guest_arch = "x86_64" => {
+            openvmm_defs::config::ArchTopologyConfig::X86(openvmm_defs::config::X86TopologyConfig {
+                apic_id_offset: opt.apic_id_offset,
+                x2apic: opt.x2apic,
+            })
+        }
+    };
 
     let with_isolation = if let Some(isolation) = &opt.isolation {
         match isolation {
@@ -1915,6 +1980,7 @@ async fn vm_config_from_command_line(
             fs: virtio_resources::fs::VirtioFsBackend::HostFs {
                 root_path: args.path.clone(),
                 mount_options: args.options.clone(),
+                windows_options: None,
             },
         }
         .into_resource();
@@ -2311,12 +2377,12 @@ pub(crate) fn openvmm_terminal_app() -> Option<PathBuf> {
 
 // Tries to remove `path` if it is confirmed to be a Unix socket.
 fn cleanup_socket(path: &Path) {
-    #[cfg(windows)]
-    let is_socket = pal::windows::fs::is_unix_socket(path).unwrap_or(false);
-    #[cfg(not(windows))]
-    let is_socket = path
-        .metadata()
-        .is_ok_and(|meta| std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type()));
+    let is_socket = cfg_select! {
+        windows => pal::windows::fs::is_unix_socket(path).unwrap_or(false),
+        _ => path
+            .metadata()
+            .is_ok_and(|meta| std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type())),
+    };
 
     if is_socket {
         let _ = std::fs::remove_file(path);
@@ -2394,9 +2460,8 @@ fn parse_endpoint(
             .into_resource()
         }
         EndpointConfigCli::None => net_backend_resources::null::NullHandle.into_resource(),
-        EndpointConfigCli::Dio { id } => {
-            #[cfg(windows)]
-            {
+        EndpointConfigCli::Dio { id } => cfg_select! {
+            windows => {{
                 let (port_id, port) = new_switch_port(id.as_deref())?;
                 resources.switch_ports.push(port);
                 net_backend_resources::dio::WindowsDirectIoHandle {
@@ -2406,28 +2471,23 @@ fn parse_endpoint(
                     },
                 }
                 .into_resource()
-            }
-
-            #[cfg(not(windows))]
-            {
+            }}
+            _ => {{
                 let _ = id;
                 bail!("cannot use dio on non-windows platforms")
-            }
-        }
-        EndpointConfigCli::Tap { name } => {
-            #[cfg(target_os = "linux")]
-            {
+            }}
+        },
+        EndpointConfigCli::Tap { name } => cfg_select! {
+            target_os = "linux" => {{
                 let fd = net_tap::tap::open_tap(name)
                     .with_context(|| format!("failed to open TAP device '{name}'"))?;
                 net_backend_resources::tap::TapHandle { fd }.into_resource()
-            }
-
-            #[cfg(not(target_os = "linux"))]
-            {
+            }}
+            _ => {{
                 let _ = name;
                 bail!("TAP backend is only supported on Linux")
-            }
-        }
+            }}
+        },
     };
 
     let mac_address = cli_cfg.mac_address.unwrap_or_else(|| {
@@ -2711,10 +2771,9 @@ pub(crate) fn system_page_size() -> u32 {
 }
 
 /// The guest architecture string, derived from the compile-time `guest_arch` cfg.
-pub(crate) const GUEST_ARCH: &str = if cfg!(guest_arch = "x86_64") {
-    "x86_64"
-} else {
-    "aarch64"
+pub(crate) const GUEST_ARCH: &str = cfg_select! {
+    guest_arch = "x86_64" => "x86_64",
+    guest_arch = "aarch64" => "aarch64",
 };
 
 /// Open a snapshot directory and validate it against the current VM config.
@@ -2980,10 +3039,9 @@ async fn run_control_inner(
                         listener,
                         req_chan: req_tx,
                         vp_count: vm_config.processor_topology.proc_count,
-                        target_arch: if cfg!(guest_arch = "x86_64") {
-                            debug_worker_defs::TargetArch::X86_64
-                        } else {
-                            debug_worker_defs::TargetArch::Aarch64
+                        target_arch: cfg_select! {
+                            guest_arch = "x86_64" => debug_worker_defs::TargetArch::X86_64,
+                            guest_arch = "aarch64" => debug_worker_defs::TargetArch::Aarch64,
                         },
                     },
                 )
@@ -3351,6 +3409,338 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Declaring controllers alone must not create implicit device attachments.
+    #[test]
+    fn usb_cli_empty_controllers() {
+        let opt = Options::try_parse_from(["openvmm", "--usb-xhci", "usb0", "--usb-xhci", "usb1"])
+            .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        assert_eq!(controllers.len(), 2);
+        assert!(
+            controllers
+                .iter()
+                .all(|(_, config)| config.devices.is_empty())
+        );
+    }
+
+    /// A sole controller supplies omitted on values; omitted connectors are left to the resolver.
+    #[test]
+    fn usb_cli_infers_single_controller() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            "mock-hid",
+            "--usb-device",
+            "mock-loopback",
+            "--usb-device",
+            "mock-storage",
+            "--usb-device",
+            "mock-mutt",
+            "--usb-device",
+            "mock-supermutt",
+            "--usb-device",
+            r"winusb,instance_id=USB\A",
+            "--usb-device",
+            "winusb-all",
+        ])
+        .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        assert_eq!(controllers[0].0, "usb0");
+        assert_eq!(controllers[0].1.devices.len(), 7);
+        for config in controllers[0].1.devices.iter().take(6) {
+            let usb_config_resources::UsbDeviceConfig::Device { connector, .. } = config else {
+                panic!("expected a device attachment");
+            };
+            assert_eq!(*connector, None);
+        }
+        assert!(matches!(
+            controllers[0].1.devices[6],
+            usb_config_resources::UsbDeviceConfig::Discover(_)
+        ));
+    }
+
+    /// An omitted on value is ambiguous when more than one controller is declared.
+    #[test]
+    fn usb_cli_requires_explicit_controller_when_ambiguous() {
+        for selection in [
+            "mock-hid",
+            "mock-hid,connector=1",
+            r"winusb,instance_id=USB\A",
+            "winusb-all",
+        ] {
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--usb-xhci",
+                "usb0",
+                "--usb-xhci",
+                "usb1",
+                "--usb-device",
+                selection,
+            ])
+            .unwrap();
+            let error = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap_err();
+            assert!(error.to_string().contains("on=PCIE_PORT is required"));
+        }
+    }
+
+    /// Normalization preserves one-based connector numbers and explicit mock overrides.
+    #[test]
+    fn usb_cli_preserves_one_based_connectors_and_mock_overrides() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-xhci",
+            "usb1",
+            "--usb-device",
+            "mock-hid,on=usb0,connector=1,vid=0x1234,pid=65535,serial=HID001",
+            "--usb-device",
+            "mock-storage,on=usb1,connector=15,blocks=4096",
+        ])
+        .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        let usb_config_resources::UsbDeviceConfig::Device { connector, device } =
+            &controllers[0].1.devices[0]
+        else {
+            panic!("expected fixed HID attachment");
+        };
+        assert_eq!(*connector, Some(1));
+        assert_eq!(device.id(), "mock_hid_config");
+        let usb_config_resources::UsbDeviceConfig::Device { connector, .. } =
+            &controllers[1].1.devices[0]
+        else {
+            panic!("expected fixed storage attachment");
+        };
+        assert_eq!(*connector, Some(15));
+        let cli_args::UsbDeviceCli::Device {
+            backend: usb::UsbBackend::Hid(handle),
+            ..
+        } = &opt.usb_device[0]
+        else {
+            panic!("expected HID");
+        };
+        assert_eq!(
+            (handle.identity.vendor_id, handle.identity.product_id),
+            (Some(0x1234), Some(65535))
+        );
+        assert_eq!(handle.identity.serial_number.as_deref(), Some("HID001"));
+        let cli_args::UsbDeviceCli::Device {
+            backend: usb::UsbBackend::Storage(handle),
+            ..
+        } = &opt.usb_device[1]
+        else {
+            panic!("expected storage");
+        };
+        assert_eq!(handle.block_count, Some(4096));
+    }
+
+    /// Explicit host IDs are preserved and automatic discovery remains a separate request.
+    #[test]
+    fn usb_cli_preserves_winusb_ids_and_automatic_selection() {
+        let instance_id = r"USB\MS_COMP_WINUSB\A&B C";
+        let selection = format!("winusb,on=usb0,connector=3,instance_id={instance_id}");
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            &selection,
+            "--usb-device",
+            "winusb-all,on=usb0",
+        ])
+        .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        let cli_args::UsbDeviceCli::Device {
+            backend: usb::UsbBackend::WinUsb(handle),
+            ..
+        } = &opt.usb_device[0]
+        else {
+            panic!("expected WinUSB");
+        };
+        assert_eq!(handle.instance_id, instance_id);
+        let usb_config_resources::UsbDeviceConfig::Device { connector, device } =
+            &controllers[0].1.devices[0]
+        else {
+            panic!("expected fixed WinUSB attachment");
+        };
+        assert_eq!(*connector, Some(3));
+        assert_eq!(device.id(), "winusb_config");
+        let usb_config_resources::UsbDeviceConfig::Discover(discovery) =
+            &controllers[0].1.devices[1]
+        else {
+            panic!("expected WinUSB discovery");
+        };
+        assert_eq!(discovery.id(), "winusb_all_config");
+    }
+
+    /// Reject malformed backend options and missing, duplicate, or unknown controllers.
+    #[test]
+    fn usb_cli_rejects_bad_syntax_and_unknown_controllers() {
+        for selection in [
+            "usb0:hid",
+            "winusb",
+            "mock-hid,on=usb0,connector=0",
+            "mock-hid,on=usb0,connector=256",
+            "mock-hid,on=usb0,connector=1,vid=0x10000",
+            "mock-hid,on=usb0,connector=1,pid=bad",
+            "mock-hid,on=usb0,connector=1,unknown=1",
+            "mock-hid,on=usb0,connector=1,instance_id=USB",
+            "mock-hid,on=usb0,connector=1,blocks=1",
+            "mock-supermutt,on=usb0,connector=1,vid=1",
+            "mock-storage,on=usb0,connector=1,blocks=0",
+            "winusb,on=usb0,connector=1,instance_id=USB,vid=1",
+            "winusb-all,on=usb0,connector=1",
+        ] {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--usb-xhci",
+                    "usb0",
+                    "--usb-device",
+                    selection
+                ])
+                .is_err()
+            );
+        }
+        assert!(
+            Options::try_parse_from(["openvmm", "--usb-device", "mock-hid,on=usb0,connector=1"])
+                .is_err()
+        );
+        assert!(Options::try_parse_from(["openvmm", "--usb-xhci", "usb0,unknown=1"]).is_err());
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            "mock-hid,on=missing,connector=1",
+        ])
+        .unwrap();
+        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
+        let opt = Options::try_parse_from(["openvmm", "--usb-xhci", "usb0", "--usb-xhci", "usb0"])
+            .unwrap();
+        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
+    }
+
+    /// Backend defaults, capacity limits, and connector conflicts must not be
+    /// baked into the shared CLI.
+    #[test]
+    fn usb_cli_leaves_defaults_and_implementation_limits_to_resolvers() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            "mock-storage,on=usb0,connector=16,blocks=524289",
+            "--usb-device",
+            "mock-storage,on=usb0,connector=1",
+            "--usb-device",
+            "mock-hid,on=usb0,connector=1",
+        ])
+        .unwrap();
+        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_ok());
+        let cli_args::UsbDeviceCli::Device {
+            backend: usb::UsbBackend::Storage(config),
+            ..
+        } = &opt.usb_device[1]
+        else {
+            panic!("expected storage");
+        };
+        assert_eq!(config.block_count, None);
+        assert_eq!(config.identity, Default::default());
+    }
+
+    /// Discovery excludes explicit host IDs across controllers regardless of option order.
+    /// Resource resolution is async even when the test only decodes configuration.
+    #[pal_async::async_test]
+    async fn usb_cli_excludes_explicit_winusb_across_controllers() {
+        use usb_config_resources::UsbDeviceDiscoveryConfigKind;
+        use usb_config_resources::WinUsbAllConfig;
+        use vm_resource::CanResolveTo;
+        use vm_resource::ResolveResource;
+        use vm_resource::ResourceResolver;
+
+        /// Discovery settings decoded for assertions without host enumeration.
+        struct CapturedDiscoveryConfig {
+            /// The actual configuration emitted by the CLI.
+            config: WinUsbAllConfig,
+        }
+        /// Reads an opaque discovery resource without constructing USB devices.
+        struct CaptureDiscoveryConfig;
+
+        impl CanResolveTo<CapturedDiscoveryConfig> for UsbDeviceDiscoveryConfigKind {
+            type Input<'a> = ();
+        }
+
+        impl ResolveResource<UsbDeviceDiscoveryConfigKind, WinUsbAllConfig> for CaptureDiscoveryConfig {
+            type Output = CapturedDiscoveryConfig;
+            type Error = std::convert::Infallible;
+
+            fn resolve(&self, config: WinUsbAllConfig, _: ()) -> Result<Self::Output, Self::Error> {
+                Ok(CapturedDiscoveryConfig { config })
+            }
+        }
+
+        let mut resolver = ResourceResolver::new();
+        resolver.add_resolver(CaptureDiscoveryConfig);
+        for selections in [
+            [
+                "winusb-all,on=usb0",
+                r"winusb,on=usb1,instance_id=usb\z",
+                r"winusb,on=usb1,instance_id=USB\a",
+            ],
+            [
+                r"winusb,on=usb1,instance_id=usb\z",
+                r"winusb,on=usb1,instance_id=USB\a",
+                "winusb-all,on=usb0",
+            ],
+        ] {
+            let mut opt =
+                Options::try_parse_from(["openvmm", "--usb-xhci", "usb0", "--usb-xhci", "usb1"])
+                    .unwrap();
+            opt.usb_device = selections
+                .into_iter()
+                .map(|selection| selection.parse().unwrap())
+                .collect();
+            let mut controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+            assert_eq!(controllers[1].1.devices.len(), 2);
+            let usb_config_resources::UsbDeviceConfig::Discover(discovery) =
+                controllers[0].1.devices.pop().unwrap()
+            else {
+                panic!("expected discovery on usb0");
+            };
+            let captured: CapturedDiscoveryConfig = resolver.resolve(discovery, ()).await.unwrap();
+            assert_eq!(captured.config.excluded_instance_ids, [r"USB\A", r"USB\Z"]);
+        }
+    }
+
+    /// Reject duplicate host IDs and multiple automatic discovery requests across the VM.
+    #[test]
+    fn usb_cli_rejects_overlapping_host_selections() {
+        for (first, second) in [
+            (
+                "winusb,on=usb0,connector=1,instance_id=USB\\A",
+                "winusb,on=usb1,connector=1,instance_id=usb\\a",
+            ),
+            ("winusb-all,on=usb0", "winusb-all,on=usb1"),
+        ] {
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--usb-xhci",
+                "usb0",
+                "--usb-xhci",
+                "usb1",
+                "--usb-device",
+                first,
+                "--usb-device",
+                second,
+            ])
+            .unwrap();
+            assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
+        }
     }
 
     #[test]

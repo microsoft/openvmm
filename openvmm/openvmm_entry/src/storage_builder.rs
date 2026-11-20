@@ -141,6 +141,7 @@ struct VirtioBlkDisk {
     disk: Resource<DiskHandleKind>,
     read_only: bool,
     serial: Option<String>,
+    options: virtio_resources::blk::VirtioBlkOptions,
 }
 
 impl VirtioBlkDisk {
@@ -149,6 +150,7 @@ impl VirtioBlkDisk {
             disk: self.disk,
             read_only: self.read_only,
             serial: self.serial,
+            options: self.options,
         }
         .into_resource()
     }
@@ -170,6 +172,7 @@ pub enum DiskLocation {
     VirtioBlk {
         pcie_port: Option<String>,
         serial: Option<String>,
+        options: virtio_resources::blk::VirtioBlkOptions,
     },
 }
 
@@ -522,7 +525,11 @@ impl StorageBuilder {
                     anyhow::bail!("unknown controller: '{controller}'");
                 }
             },
-            DiskLocation::VirtioBlk { pcie_port, serial } => {
+            DiskLocation::VirtioBlk {
+                pcie_port,
+                serial,
+                options,
+            } => {
                 if vtl != DeviceVtl::Vtl0 {
                     anyhow::bail!("virtio-blk only supported for VTL0");
                 }
@@ -533,6 +540,7 @@ impl StorageBuilder {
                     disk,
                     read_only,
                     serial,
+                    options,
                 };
                 if let Some(port) = pcie_port {
                     self.pcie_virtio_blk_disks.push((port, vblk));

@@ -5,6 +5,7 @@ use super::AlignmentMode;
 use super::Emulator;
 use super::InternalError;
 use crate::Cpu;
+use crate::ReadKind;
 use iced_x86::Instruction;
 use iced_x86::Register;
 
@@ -15,14 +16,19 @@ impl<T: Cpu> Emulator<'_, T> {
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
         let op_size = instr.memory_size().size() * 8;
+        let alignment = if op_size == 128 {
+            AlignmentMode::Aligned(16)
+        } else {
+            AlignmentMode::Standard
+        };
 
         let left: u128 = match op_size {
             64 => {
-                self.read_memory_op::<u64>(instr, 0, AlignmentMode::Standard)
+                self.read_memory_op::<u64>(instr, 0, alignment, ReadKind::ReadModifyWrite)
                     .await? as u128
             }
             128 => {
-                self.read_memory_op(instr, 0, AlignmentMode::Standard)
+                self.read_memory_op(instr, 0, alignment, ReadKind::ReadModifyWrite)
                     .await?
             }
             _ => unreachable!(),
@@ -30,31 +36,29 @@ impl<T: Cpu> Emulator<'_, T> {
 
         let cmp_val = self.get_combined_value(op_size, RegisterPair::DxAx);
 
+        let new_val = if left == cmp_val {
+            self.get_combined_value(op_size, RegisterPair::CxBx)
+        } else {
+            left
+        };
+        match op_size {
+            64 => {
+                self.compare_if_locked_and_write_memory_op(
+                    instr,
+                    0,
+                    alignment,
+                    left as u64,
+                    new_val as u64,
+                )
+                .await
+            }
+            128 => {
+                self.compare_if_locked_and_write_memory_op(instr, 0, alignment, left, new_val)
+                    .await
+            }
+            _ => unreachable!(),
+        }?;
         if left == cmp_val {
-            let new_val = self.get_combined_value(op_size, RegisterPair::CxBx);
-            match op_size {
-                64 => {
-                    self.compare_if_locked_and_write_memory_op(
-                        instr,
-                        0,
-                        AlignmentMode::Standard,
-                        left as u64,
-                        new_val as u64,
-                    )
-                    .await
-                }
-                128 => {
-                    self.compare_if_locked_and_write_memory_op(
-                        instr,
-                        0,
-                        AlignmentMode::Standard,
-                        left,
-                        new_val,
-                    )
-                    .await
-                }
-                _ => unreachable!(),
-            }?;
             let mut rflags = self.cpu.rflags();
             rflags.set_zero(true);
             self.cpu.set_rflags(rflags);

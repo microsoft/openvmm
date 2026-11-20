@@ -17,10 +17,7 @@ cfg_select! {
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        use hv1_emulator::synic::ProcessorSynic;
-        use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
-        use virt::vp::AccessVpState;
         use virt::vp::MpState;
         use virt::x86::MsrError;
         use virt_support_apic::LocalApic;
@@ -29,14 +26,10 @@ cfg_select! {
     }
     guest_arch = "aarch64" => {
         pub mod cca;
-        use hv1_emulator::synic::ProcessorSynic;
+
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
-        use hvdef::HvRegisterCrInterceptControl;
         use virt_support_aarch64emu::translate::TranslationRegisters;
-    }
-    _ => {
-        compile_error!("unsupported guest architecture");
     }
 }
 
@@ -52,11 +45,13 @@ use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::HvError;
 use hvdef::HvMessage;
+use hvdef::HvRegisterCrInterceptControl;
 use hvdef::HvSynicSint;
 use hvdef::NUM_SINTS;
 use hvdef::Vtl;
@@ -81,6 +76,7 @@ use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::io::CpuIo;
+use virt::vp::AccessVpState;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
 
@@ -689,55 +685,53 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
     where
         Self: 'a;
 
-    #[cfg(guest_arch = "aarch64")]
-    fn set_debug_state(
-        &mut self,
-        _vtl: Vtl,
-        _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), <T::StateAccess<'p, '_> as virt::vp::AccessVpState>::Error> {
-        unimplemented!()
-    }
-
-    #[cfg(guest_arch = "x86_64")]
     fn set_debug_state(
         &mut self,
         vtl: Vtl,
         state: Option<&virt::x86::DebugState>,
     ) -> Result<(), <T::StateAccess<'p, '_> as AccessVpState>::Error> {
-        // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
-        if vtl == Vtl::Vtl0 {
-            let mut db: [u64; 4] = [0; 4];
-            let mut access_state = self.access_state(vtl);
-            let mut registers = access_state.registers()?;
-            let mut rflags = x86defs::RFlags::from(registers.rflags);
-            let mut dr7: u64 = 0;
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
+                if vtl == Vtl::Vtl0 {
+                    let mut db: [u64; 4] = [0; 4];
+                    let mut access_state = self.access_state(vtl);
+                    let mut registers = access_state.registers()?;
+                    let mut rflags = x86defs::RFlags::from(registers.rflags);
+                    let mut dr7: u64 = 0;
 
-            if let Some(state) = state {
-                rflags.set_trap(state.single_step);
-                for (i, bp) in state.breakpoints.iter().enumerate() {
-                    if let Some(bp) = bp {
-                        db[i] = bp.address;
-                        dr7 |= bp.dr7_bits(i);
+                    if let Some(state) = state {
+                        rflags.set_trap(state.single_step);
+                        for (i, bp) in state.breakpoints.iter().enumerate() {
+                            if let Some(bp) = bp {
+                                db[i] = bp.address;
+                                dr7 |= bp.dr7_bits(i);
+                            }
+                        }
                     }
+
+                    let debug_registers = virt::x86::vp::DebugRegisters {
+                        dr0: db[0],
+                        dr1: db[1],
+                        dr2: db[2],
+                        dr3: db[3],
+                        dr6: 0,
+                        dr7,
+                    };
+                    access_state.set_debug_regs(&debug_registers)?;
+
+                    registers.rflags = rflags.into();
+                    access_state.set_registers(&registers)?;
+                    return Ok(());
                 }
-            }
 
-            let debug_registers = virt::x86::vp::DebugRegisters {
-                dr0: db[0],
-                dr1: db[1],
-                dr2: db[2],
-                dr3: db[3],
-                dr6: 0,
-                dr7,
-            };
-            access_state.set_debug_regs(&debug_registers)?;
-
-            registers.rflags = rflags.into();
-            access_state.set_registers(&registers)?;
-            return Ok(());
+                panic!("unexpected set debug state in VTL {:?}", vtl);
+            }}
+            guest_arch = "aarch64" => {{
+                let _ = (vtl, state);
+                unimplemented!()
+            }}
         }
-
-        panic!("unexpected set debug state in VTL {:?}", vtl);
     }
 
     async fn run_vp(
@@ -948,12 +942,10 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         let sint_msr = if let Some(hv) = self.backing.hv(vtl).as_ref() {
                             hv.synic.sint(sint)
                         } else {
-                            #[cfg(guest_arch = "x86_64")]
-                            let sint_reg =
-                                HvX64RegisterName(HvX64RegisterName::Sint0.0 + sint as u32);
-                            #[cfg(guest_arch = "aarch64")]
-                            let sint_reg =
-                                HvArm64RegisterName(HvArm64RegisterName::Sint0.0 + sint as u32);
+                            let sint_reg = hvdef::HvAllArchRegisterName(
+                                hvdef::HvAllArchRegisterName::Sint0.0 + sint as u32,
+                            )
+                            .into();
                             self.runner.get_vp_register(vtl, sint_reg).unwrap().as_u64()
                         };
                         masked_sints |= (HvSynicSint::from(sint_msr).masked() as u16) << sint;
@@ -973,15 +965,16 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             }
 
             #[cfg(guest_arch = "x86_64")]
-            if wake_reasons.hv_start_enable_vtl_vp() {
-                T::handle_vp_start_enable_vtl_wake(self, vtl);
-            }
+            {
+                if wake_reasons.hv_start_enable_vtl_vp() {
+                    T::handle_vp_start_enable_vtl_wake(self, vtl);
+                }
 
-            #[cfg(guest_arch = "x86_64")]
-            if wake_reasons.update_proxy_irr_filter() {
-                // update `proxy_irr_blocked` filter
-                debug_assert!(self.partition.isolation.is_hardware_isolated());
-                self.update_proxy_irr_filter(vtl);
+                if wake_reasons.update_proxy_irr_filter() {
+                    // update `proxy_irr_blocked` filter
+                    debug_assert!(self.partition.isolation.is_hardware_isolated());
+                    self.update_proxy_irr_filter(vtl);
+                }
             }
         }
 
@@ -1267,29 +1260,29 @@ impl<B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'_, 
 
         let _target_vtl = self.target_vtl_no_higher(target_vtl).map_err(|e| (e, 0))?;
 
-        #[cfg(guest_arch = "aarch64")]
-        if true {
-            let _ = apic_ids;
-            let _ = vp_indices;
-            todo!("AARCH64_TODO");
-        }
+        cfg_select! {
+            guest_arch = "x86_64" => {{
+                for (i, (&apic_id, vp_index)) in apic_ids.iter().zip(vp_indices).enumerate() {
+                    *vp_index = self
+                        .vp
+                        .partition
+                        .vps
+                        .iter()
+                        .find(|vp| vp.vp_info.apic_id == apic_id)
+                        .ok_or((HvError::InvalidParameter, i))?
+                        .vp_info
+                        .base
+                        .vp_index
+                        .index()
+                }
 
-        #[cfg(guest_arch = "x86_64")]
-        for (i, (&apic_id, vp_index)) in apic_ids.iter().zip(vp_indices).enumerate() {
-            *vp_index = self
-                .vp
-                .partition
-                .vps
-                .iter()
-                .find(|vp| vp.vp_info.apic_id == apic_id)
-                .ok_or((HvError::InvalidParameter, i))?
-                .vp_info
-                .base
-                .vp_index
-                .index()
+                Ok(())
+            }}
+            guest_arch = "aarch64" => {{
+                let _ = (apic_ids, vp_indices);
+                todo!("AARCH64_TODO");
+            }}
         }
-
-        Ok(())
     }
 }
 

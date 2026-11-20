@@ -71,10 +71,9 @@ pub struct Config {
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
 // The KVM in-kernel vGICv3 requires the distributor and redistributor bases be 64KiB aligned.
-pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
-    0xEFFF_0000
-} else {
-    0xEFFE_E000
+pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = cfg_select! {
+    target_os = "linux" => 0xEFFF_0000,
+    _ => 0xEFFE_E000,
 };
 
 /// Base address of the guest-visible GIC v2m MSI frame (exposed via the MADT

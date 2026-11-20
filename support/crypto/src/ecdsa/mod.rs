@@ -5,20 +5,20 @@
 
 #![cfg(any(openssl, symcrypt, all(native, windows)))]
 
-#[cfg(openssl)]
-pub(crate) mod ossl;
-#[cfg(openssl)]
-use ossl as sys;
-
-#[cfg(all(native, windows))]
-pub(crate) mod win;
-#[cfg(all(native, windows))]
-use win as sys;
-
-#[cfg(symcrypt)]
-pub(crate) mod symcrypt;
-#[cfg(symcrypt)]
-use symcrypt as sys;
+cfg_select! {
+    openssl => {
+        pub(crate) mod ossl;
+        use ossl as sys;
+    }
+    all(native, windows) => {
+        pub(crate) mod win;
+        use win as sys;
+    }
+    symcrypt => {
+        pub(crate) mod symcrypt;
+        use symcrypt as sys;
+    }
+}
 
 use crate::HashAlgorithm;
 use thiserror::Error;

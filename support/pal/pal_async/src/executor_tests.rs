@@ -139,12 +139,11 @@ async fn pend_once() {
 /// Runs wait-related tests.
 pub async fn wait_tests(driver: impl Driver) {
     let event = Event::new();
-    #[cfg(windows)]
-    let mut poller = driver
-        .new_dyn_wait(event.as_handle().as_raw_handle())
-        .unwrap();
-    #[cfg(unix)]
-    let mut poller = driver.new_dyn_wait(event.as_fd().as_raw_fd(), 8).unwrap();
+    let mut poller = cfg_select! {
+        windows => driver.new_dyn_wait(event.as_handle().as_raw_handle()),
+        unix => driver.new_dyn_wait(event.as_fd().as_raw_fd(), 8),
+    }
+    .unwrap();
     let mut op = poll_fn(|cx| poller.poll_wait(cx));
     assert!(futures::poll!(&mut op).is_pending());
     pend_once().await;

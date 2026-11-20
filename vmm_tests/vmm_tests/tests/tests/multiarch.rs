@@ -6,6 +6,7 @@
 #[cfg(target_os = "linux")]
 use crate::aarch64_exclusive::vm_host_emu;
 use crate::nested::vm_host;
+use crate::nested::vm_host_mshv;
 use anyhow::Context;
 use futures::AsyncBufReadExt;
 use futures::AsyncWriteExt;
@@ -99,6 +100,10 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     openvmm_linux_direct_x64,
     nested(
         (vm_host, openvmm_linux_direct_x64),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "multiarch", openvmm_linux_direct_x64),
+    ),
+    nested(
+        (vm_host_mshv, openvmm_uefi_x64(mshv)),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "multiarch", openvmm_linux_direct_x64),
     ),
     openvmm_linux_direct_aarch64,
@@ -1108,6 +1113,7 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
         .with_uefi_frontpage(true)
         .with_efi_diagnostics_log_level(EfiDiagnosticsLogLevel::Info)
         .with_efi_diagnostics_rate_limit(0)
+        .with_openhcl_command_line("log_buf_len=1M")
         .run_without_agent()
         .await?;
 
