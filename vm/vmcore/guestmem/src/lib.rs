@@ -1671,7 +1671,8 @@ impl GuestMemory {
                 match f(&mut param, mapping) {
                     Ok(t) => return Ok(t),
                     Err(fault) => match fault.kind() {
-                        trycopy::MemoryErrorKind::UnalignedAtomicAccess => {
+                        trycopy::MemoryErrorKind::UnalignedAtomicAccess
+                        | trycopy::MemoryErrorKind::UnsupportedAtomicAccess => {
                             return Err(GuestMemoryBackingError::other(gpa, fault));
                         }
                         trycopy::MemoryErrorKind::AccessViolation => {
@@ -1890,6 +1891,7 @@ impl GuestMemory {
     ///
     /// Direct accesses to unaligned host addresses are supported where the
     /// platform supports them; otherwise, they return an error.
+    /// On x86_64, direct 16-byte accesses also require CMPXCHG16B support.
     pub fn compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownLayout + Copy>(
         &self,
         gpa: u64,
@@ -2876,7 +2878,23 @@ mod tests {
         gm.write_plain(addr, &OLD).unwrap();
         gm.write_plain(addr + 16, &OLD).unwrap();
 
-        assert_eq!(gm.compare_exchange(addr, OLD, NEW).unwrap(), Ok(NEW));
+        let result = gm.compare_exchange(addr, OLD, NEW);
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(target_arch = "x86_64")]
+        if !std::is_x86_feature_detected!("cmpxchg16b") {
+            let error = result.unwrap_err();
+            let source = std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<trycopy::MemoryError>()
+                .unwrap();
+            assert_eq!(
+                source.kind(),
+                trycopy::MemoryErrorKind::UnsupportedAtomicAccess
+            );
+            assert_eq!(gm.read_plain::<u128>(addr).unwrap(), OLD);
+            return;
+        }
+        assert_eq!(result.unwrap(), Ok(NEW));
         for current in [NEW ^ 1, NEW ^ (1 << 64)] {
             assert_eq!(gm.compare_exchange(addr, current, OLD).unwrap(), Err(NEW));
             assert_eq!(gm.read_plain::<u128>(addr).unwrap(), NEW);

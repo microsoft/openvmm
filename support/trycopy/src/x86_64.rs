@@ -403,6 +403,7 @@ try_cmpxchg!(pub(crate) try_cmpxchg64, u64, "rax", reg, "lock cmpxchg qword ptr 
 /// # Safety
 /// `dest` must be an address that's reserved and can be written to without
 /// violating Rust's aliasing rules.
+/// The CPU must support CMPXCHG16B.
 pub(crate) unsafe fn try_cmpxchg128(
     dest: *mut u128,
     expected: &mut u128,
