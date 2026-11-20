@@ -375,8 +375,15 @@ message DiskBackend {
         MemoryDisk memory = 2;
         // A memory-backed writable overlay over a read-only lower disk.
         MemoryDiffDisk memory_diff = 3;
-        // A host physical disk opened by the client (Windows only).
-        PhysicalDisk physical_disk = 4;
+        // A host physical disk, such as `\\.\PhysicalDriveN`, that the client
+        // opened for synchronous (non-overlapped) I/O (Windows only).
+        DiskHandle physical_disk = 4;
+        // A VHD or VHDX that the client opened with `OpenVirtualDisk` and
+        // attached for raw access with `ATTACH_VIRTUAL_DISK_FLAG_NO_LOCAL_HOST`
+        // (plus `ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY` for a read-only disk), so
+        // OpenVMM accesses the image with the client's rights rather than its
+        // own (Windows only).
+        DiskHandle virtual_disk = 5;
     }
 }
 
@@ -390,16 +397,15 @@ message MemoryDiffDisk {
     DiskBackend lower = 1;
 }
 
-// A disk backed by a host physical disk handle, such as `\\.\PhysicalDriveN`.
-//
-// The client opens the disk for synchronous (non-overlapped) I/O and
-// registers its handle using the resource-passing protocol
-// (see resource_passing.md). OpenVMM duplicates the registered handle while
-// processing the request; the name may be deregistered after the RPC succeeds.
+// A disk backed by an OS handle that the client opened and registered using
+// the resource-passing protocol (see resource_passing.md). The `DiskBackend`
+// field that holds it determines what kind of handle it must be. OpenVMM
+// duplicates the registered handle while processing the request; the name may
+// be deregistered after the RPC succeeds.
 //
 // May be used as the lower disk of a `MemoryDiffDisk`.
-message PhysicalDisk {
-    // Name of the registered physical disk handle (Windows only).
+message DiskHandle {
+    // Name of the registered handle.
     string handle_name = 1;
 }
 

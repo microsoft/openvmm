@@ -112,10 +112,12 @@ or reopen the file.
 
 Some API fields reference OS handles by name. For example,
 `VirtioFs.WindowsOptions.user_token_name` names an access token that virtio-fs
-impersonates for host file access. `PhysicalDisk.handle_name` names a host
+impersonates for host file access. `DiskBackend.physical_disk` names a host
 physical disk handle, such as `\\.\PhysicalDriveN`, opened for synchronous
-(non-overlapped) I/O. A physical disk may also be the lower disk of a memory
-diff overlay.
+(non-overlapped) I/O. `DiskBackend.virtual_disk` names a VHD or VHDX handle
+that the client opened with `OpenVirtualDisk` and attached for raw access, so
+OpenVMM accesses the image with the client's rights rather than its own. Either
+may also be the lower disk of a memory diff overlay.
 
 Clients register these handles over the same socket using the
 [resource-passing protocol]. Because Windows Unix sockets cannot carry handles,

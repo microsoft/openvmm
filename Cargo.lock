@@ -6245,6 +6245,7 @@ dependencies = [
  "dirs",
  "disk_backend_resources",
  "disk_crypt_resources",
+ "disk_vhdmp",
  "firmware_uefi_resources",
  "floppy_resources",
  "framebuffer",

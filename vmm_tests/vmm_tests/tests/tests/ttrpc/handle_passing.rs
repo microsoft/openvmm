@@ -11,10 +11,11 @@
 //! registration during `CreateVm`. How virtio-fs uses the token is covered by
 //! the virtiofs crate's tests.
 //!
-//! It also registers a host physical disk and confirms that
-//! `PhysicalDisk.handle_name` backs a virtio-blk device whose data the guest
-//! and host both observe. This requires an elevated process, so it is skipped
-//! on non-elevated hosts.
+//! It also registers a disk image's handle and confirms that it backs a
+//! virtio-blk device whose data the guest and host both observe: once as a
+//! host physical disk through `DiskBackend.physical_disk`, which requires an
+//! elevated process and is skipped on non-elevated hosts, and once as a
+//! virtual disk through `DiskBackend.virtual_disk`.
 
 use anyhow::Context;
 use futures::AsyncWriteExt as _;
@@ -47,15 +48,15 @@ const OPCODE_DEREGISTER: u8 = 2;
 
 const TOKEN_NAME: &str = "user-token";
 
-const DISK_NAME: &str = "physical-disk";
+const DISK_NAME: &str = "disk";
 const DISK_SIZE: u64 = 16 * 1024 * 1024;
 /// I/O size for raw disk access, which must be sector aligned.
 const DISK_BLOCK_SIZE: usize = 4096;
 /// The host writes `HOST_MARKER` at this block (1 MiB) before boot.
-const HOST_MARKER: &str = "ttrpc-physdisk-host";
+const HOST_MARKER: &str = "ttrpc-disk-host";
 const HOST_MARKER_BLOCK: u64 = 256;
 /// The guest writes `GUEST_MARKER` at this block (2 MiB) over virtio-blk.
-const GUEST_MARKER: &str = "ttrpc-physdisk-guest";
+const GUEST_MARKER: &str = "ttrpc-disk-guest";
 const GUEST_MARKER_BLOCK: u64 = 512;
 
 petri::test!(handle_passing_virtiofs_user_token, |resolver| {
@@ -81,8 +82,29 @@ petri::multitest!(vec![
     .requirements(TestCaseRequirements::new(TestRequirement::HostCapability(
         host_is_elevated
     )))
+    .into(),
+    petri::SimpleTest::new_async(
+        "handle_passing_virtual_disk",
+        |resolver| {
+            let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
+            let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
+            let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
+            let pipette = super::require_pipette(resolver);
+            Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
+        },
+        handle_passing_virtual_disk,
+    )
     .into()
 ]);
+
+/// How a test client exposes its disk image to OpenVMM.
+#[derive(Clone, Copy)]
+enum HostDisk {
+    /// Attached to the host and passed as `\\.\PhysicalDriveN`.
+    Physical,
+    /// Passed as a virtual disk handle attached for raw access.
+    Virtual,
+}
 
 /// Returns whether the test process is elevated. Probe failures report as
 /// elevated so that the test body surfaces the error rather than skipping.
@@ -182,7 +204,24 @@ async fn handle_passing_virtiofs_user_token(
 async fn handle_passing_physical_disk(
     params: petri::PetriTestParams<'_>,
     driver: DefaultDriver,
+    artifacts: [ResolvedArtifact; 4],
+) -> anyhow::Result<()> {
+    handle_passing_disk(params, driver, artifacts, HostDisk::Physical).await
+}
+
+async fn handle_passing_virtual_disk(
+    params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    artifacts: [ResolvedArtifact; 4],
+) -> anyhow::Result<()> {
+    handle_passing_disk(params, driver, artifacts, HostDisk::Virtual).await
+}
+
+async fn handle_passing_disk(
+    params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
+    host_disk: HostDisk,
 ) -> anyhow::Result<()> {
     let tempdir = tempfile::tempdir()?;
     let socket_path = tempdir.path().join("ttrpc.sock");
@@ -191,10 +230,9 @@ async fn handle_passing_physical_disk(
     let com1_path = tempdir.path().join("com1.sock");
     let pipette_initrd_file = super::pipette_initrd(tempdir.path(), &initrd_path, &pipette_path)?;
 
-    // Attach a fixed VHD as a host disk to get a real `\\.\PhysicalDriveN`.
     // The test reads and writes markers through the image file rather than
-    // the raw disk, so only OpenVMM accesses the disk directly.
-    let image_path = tempdir.path().join("physical-disk.vhd");
+    // the disk, so only OpenVMM accesses the disk directly.
+    let image_path = tempdir.path().join("disk.vhd");
     {
         let image = std::fs::File::create(&image_path)?;
         image.set_len(DISK_SIZE)?;
@@ -204,15 +242,30 @@ async fn handle_passing_physical_disk(
         )?;
         disk_vhd1::Vhd1Disk::make_fixed(&image)?;
     }
-    let (attached, disk_path) = disk_vhdmp::Vhd::attach_to_host(&image_path, false)
-        .context("failed to attach disk image (requires administrator)")?;
-    // OpenVMM requires a handle opened for synchronous I/O, which is how the
-    // standard library opens files.
-    let disk = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&disk_path)
-        .with_context(|| format!("failed to open {}", disk_path.display()))?;
+    // Both handles keep the image attached until they are dropped.
+    let (attached, disk) = match host_disk {
+        HostDisk::Physical => {
+            // Attach the image as a host disk to get a real `\\.\PhysicalDriveN`.
+            let (attached, disk_path) = disk_vhdmp::Vhd::attach_to_host(&image_path, false)
+                .context("failed to attach disk image (requires administrator)")?;
+            // OpenVMM requires a handle opened for synchronous I/O, which is
+            // how the standard library opens files.
+            let disk = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&disk_path)
+                .with_context(|| format!("failed to open {}", disk_path.display()))?;
+            (attached, disk.as_handle().duplicate(false, None)?)
+        }
+        HostDisk::Virtual => {
+            let vhd = disk_vhdmp::VhdmpDisk::options()
+                .read_only(false)
+                .open(&image_path)
+                .context("failed to open disk image")?;
+            let disk = vhd.as_handle().duplicate(false, None)?;
+            (vhd, disk)
+        }
+    };
 
     // As in the virtio-fs test, an inheritable duplicate stands in for one a
     // real client would `DuplicateHandle` into OpenVMM.
@@ -244,7 +297,7 @@ async fn handle_passing_physical_disk(
                     "console={} rdinit=/pipette panic=-1 initcall_blacklist=virtio_vsock_init",
                     super::linux_console()
                 ),
-                physical_disk_config(&hvsocket_path, &com1_path),
+                disk_config(host_disk, &hvsocket_path, &com1_path),
             ),
         )
         .await
@@ -326,7 +379,7 @@ async fn handle_passing_physical_disk(
         "openvmm exited abnormally: {exit_status:?}"
     );
 
-    // The guest's virtio-blk write reached the host disk.
+    // The guest's virtio-blk write reached the disk image.
     drop(attached);
     let mut block = vec![0; DISK_BLOCK_SIZE];
     std::fs::File::open(&image_path)?
@@ -348,15 +401,17 @@ fn marker_block(marker: &str) -> Vec<u8> {
     block
 }
 
-/// Returns VM configuration exposing the registered physical disk as a
-/// writable virtio-blk device, with pipette reachable over `hvsocket_path`.
-fn physical_disk_config(hvsocket_path: &Path, com1_path: &Path) -> vmservice::VmConfig {
+/// Returns VM configuration exposing the registered disk as a writable
+/// virtio-blk device, with pipette reachable over `hvsocket_path`.
+fn disk_config(host_disk: HostDisk, hvsocket_path: &Path, com1_path: &Path) -> vmservice::VmConfig {
+    let kind = match host_disk {
+        HostDisk::Physical => vmservice::disk_backend::Kind::PhysicalDisk,
+        HostDisk::Virtual => vmservice::disk_backend::Kind::VirtualDisk,
+    };
     let disk = vmservice::DiskBackend {
-        kind: Some(vmservice::disk_backend::Kind::PhysicalDisk(
-            vmservice::PhysicalDisk {
-                handle_name: DISK_NAME.to_string(),
-            },
-        )),
+        kind: Some(kind(vmservice::DiskHandle {
+            handle_name: DISK_NAME.to_string(),
+        })),
     };
     vmservice::VmConfig {
         pcie: Some(vmservice::PcieTopologyConfig {
