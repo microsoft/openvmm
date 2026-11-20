@@ -310,6 +310,10 @@ async fn vpci_relay_hot_remove(
     _: (),
     driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
+    use disk_backend_resources::LayeredDiskHandle;
+    use disk_backend_resources::layer::RamDiskLayerHandle;
+    use nvme_resources::NamespaceDefinition;
+
     let (mut vm, agent) = config
         .with_openhcl_command_line("OPENHCL_ENABLE_VPCI_RELAY=1")
         .with_vmbus_redirect(true)
@@ -333,7 +337,19 @@ async fn vpci_relay_hot_remove(
                     subsystem_id: instance_id,
                     msix_count: 1,
                     max_io_queues: 1,
-                    namespaces: Vec::new(),
+                    namespaces: if index == 1 {
+                        vec![NamespaceDefinition {
+                            nsid: 1,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(8 * 1024 * 1024),
+                                sector_size: None,
+                            })
+                            .into_resource(),
+                            read_only: false,
+                        }]
+                    } else {
+                        Vec::new()
+                    },
                     requests: None,
                 }
                 .into_resource(),
@@ -362,6 +378,45 @@ async fn vpci_relay_hot_remove(
         anyhow::ensure!(found, "NVMe device {index} did not appear after hot-add");
     }
 
+    let expected_data = [0x5a; 4096];
+    let survivor_disk = mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(30))
+        .until_cancelled(async {
+            let disk = loop {
+                let blocks = cmd!(sh, "ls /sys/block").read().await?;
+                let mut disk = None;
+                for block in blocks.lines().filter(|block| block.starts_with("nvme")) {
+                    let pci_path = cmd!(sh, "readlink -f /sys/block/{block}/device")
+                        .read()
+                        .await?;
+                    if pci_path
+                        .split('/')
+                        .any(|component| component == second_device)
+                    {
+                        disk = Some(format!("/dev/{block}"));
+                        break;
+                    }
+                }
+                if let Some(disk) = disk {
+                    break disk;
+                }
+                timer.sleep(std::time::Duration::from_millis(500)).await;
+            };
+            agent
+                .write_file("/tmp/vpci_relay_expected", &expected_data[..])
+                .await?;
+            cmd!(
+                sh,
+                "dd if=/tmp/vpci_relay_expected of={disk} bs=4096 count=1 oflag=direct conv=fsync"
+            )
+            .run()
+            .await
+            .context("failed to write known data to the surviving NVMe namespace")?;
+            anyhow::Ok(disk)
+        })
+        .await
+        .context("timed out preparing the surviving NVMe namespace")??;
+
     mesh::CancelContext::new()
         .with_timeout(std::time::Duration::from_secs(30))
         .until_cancelled(vm.backend().remove_vpci_device(instance_ids[0]))
@@ -381,10 +436,25 @@ async fn vpci_relay_hot_remove(
         removed,
         "first NVMe device did not disappear with the second device still present"
     );
-    let vendor = cmd!(sh, "cat /sys/bus/pci/devices/{second_device}/vendor")
-        .read()
-        .await?;
-    assert_eq!(vendor.trim(), "0x1414");
+    mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(30))
+        .until_cancelled(async {
+            cmd!(
+                sh,
+                "dd if={survivor_disk} of=/tmp/vpci_relay_actual bs=4096 count=1 iflag=direct,fullblock"
+            )
+            .run()
+            .await
+            .context("failed to read the surviving NVMe namespace after removal")?;
+            let actual_data = agent.read_file("/tmp/vpci_relay_actual").await?;
+            anyhow::ensure!(
+                actual_data == expected_data,
+                "surviving NVMe namespace returned incorrect data after removal"
+            );
+            anyhow::Ok(())
+        })
+        .await
+        .context("timed out reading the surviving NVMe namespace after removal")??;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
