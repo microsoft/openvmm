@@ -81,8 +81,7 @@ pub struct VirtioBlkConfig {
     /// (valid if VIRTIO_BLK_F_CONFIG_WCE, which we don't negotiate).
     pub writeback: u8,
     pub unused0: u8,
-    /// Number of request queues (valid if VIRTIO_BLK_F_MQ,
-    /// which we don't negotiate). Set to 1.
+    /// Configured number of request queues (valid if VIRTIO_BLK_F_MQ is negotiated).
     pub num_queues: u16,
     /// Maximum number of 512-byte sectors in a single discard segment
     /// (valid if VIRTIO_BLK_F_DISCARD).
