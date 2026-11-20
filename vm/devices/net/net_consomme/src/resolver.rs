@@ -72,6 +72,13 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
             }
         }
         state.allow_host_local_access = params.allow_host_local_access;
+        if let Some(secs) = params.udp_timeout_secs {
+            state.udp_timeout = if secs == 0 {
+                std::time::Duration::MAX
+            } else {
+                std::time::Duration::from_secs(secs)
+            };
+        }
         let port_forwards: Vec<PortForwardConfig> = resource
             .ports
             .into_iter()
