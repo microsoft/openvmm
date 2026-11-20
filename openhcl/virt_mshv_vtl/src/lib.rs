@@ -47,7 +47,7 @@ cfg_select! {
 }
 
 mod processor;
-use hv1_emulator::hv::ProcessorVtlHv;
+
 pub use processor::Backing;
 pub use processor::UhProcessor;
 
@@ -63,6 +63,7 @@ use hcl::GuestVtl;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::SetVsmPartitionConfigError;
 use hv1_emulator::hv::GlobalHv;
+use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_emulator::synic::GlobalSynic;
 use hv1_emulator::synic::SintProxied;
@@ -526,7 +527,7 @@ struct UhCvmPartitionState {
     proxy_interrupt_redirect: bool,
 }
 
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+#[cfg(guest_arch = "x86_64")]
 impl UhCvmPartitionState {
     fn vp_inner(&self, vp_index: u32) -> &UhCvmVpInner {
         &self.vps[vp_index as usize]
@@ -2704,7 +2705,7 @@ pub struct VtlCrash {
 
 /// Validate that flags is a valid setting for VTL memory protection when
 /// applied to VTL 1.
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+#[cfg(guest_arch = "x86_64")]
 fn validate_vtl_gpa_flags(
     flags: HvMapGpaFlags,
     mbec_enabled: bool,

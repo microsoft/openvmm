@@ -628,23 +628,23 @@ impl DiagServiceHandler {
 
     async fn handle_profile(&self, request: ProfileRequest) -> anyhow::Result<()> {
         let conn = self.take_connection(request.conn).await?;
-        #[cfg(feature = "profiler")]
-        {
-            let profiler_request = profiler_worker::ProfilerRequest {
-                profiler_args: request.profiler_args,
-                duration: request.duration,
-                conn: conn.into_inner(),
-            };
+        cfg_select! {
+            feature = "profiler" => {
+                let profiler_request = profiler_worker::ProfilerRequest {
+                    profiler_args: request.profiler_args,
+                    duration: request.duration,
+                    conn: conn.into_inner(),
+                };
 
-            self.request_send
-                .call_failable(DiagRequest::Profile, profiler_request)
-                .await?;
-        }
-        #[cfg(not(feature = "profiler"))]
-        {
-            // Profiler feature disabled, drop the connection.
-            drop(conn);
-            tracing::error!("Profiler feature disabled");
+                self.request_send
+                    .call_failable(DiagRequest::Profile, profiler_request)
+                    .await?;
+            }
+            _ => {
+                // Profiler feature disabled, drop the connection.
+                drop(conn);
+                tracing::error!("Profiler feature disabled");
+            }
         }
         Ok(())
     }

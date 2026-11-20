@@ -5,11 +5,14 @@
 
 //! Storvsc driver for use as a disk backend.
 
-#[cfg(feature = "test")]
-pub mod test_helpers;
-
-#[cfg(not(feature = "test"))]
-mod test_helpers;
+cfg_select! {
+    feature = "test" => {
+        pub mod test_helpers;
+    }
+    _ => {
+        mod test_helpers;
+    }
+}
 
 use futures::FutureExt;
 use futures_concurrency::future::Race;

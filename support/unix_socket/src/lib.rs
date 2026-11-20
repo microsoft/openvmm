@@ -14,22 +14,19 @@
     doc = "(see [`send_with_fds`] and [`ScmReceiver`])."
 )]
 
-#[cfg(windows)]
-mod windows;
+cfg_select! {
+    windows => {
+        mod windows;
 
-#[cfg(unix)]
-mod unix;
+        pub use windows::*;
+    }
+    unix => {
+        mod unix;
 
-#[cfg(windows)]
-pub use windows::*;
-
-#[cfg(unix)]
-pub use std::os::unix::net::UnixListener;
-#[cfg(unix)]
-pub use std::os::unix::net::UnixStream;
-#[cfg(unix)]
-pub use unix::ScmDrainIter;
-#[cfg(unix)]
-pub use unix::ScmReceiver;
-#[cfg(unix)]
-pub use unix::send_with_fds;
+        pub use std::os::unix::net::UnixListener;
+        pub use std::os::unix::net::UnixStream;
+        pub use unix::ScmDrainIter;
+        pub use unix::ScmReceiver;
+        pub use unix::send_with_fds;
+    }
+}

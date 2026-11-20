@@ -317,12 +317,11 @@ unsafe fn copy_loop_dest_aligned_backward<T: Chunk>(dest: *mut T, src: *const T,
     }
 }
 
-const ARCH_LARGE_COPY_THRESHOLD: usize = if cfg!(target_arch = "x86_64") {
+const ARCH_LARGE_COPY_THRESHOLD: usize = cfg_select! {
     // Use rep movsq for relatively large copies.
-    1800
-} else {
+    target_arch = "x86_64" => 1800,
     // No architecture-specific large copy implementation.
-    usize::MAX
+    _ => usize::MAX,
 };
 
 /// Copies bytes from `src` to `dest`, minus some tail portion no bigger than

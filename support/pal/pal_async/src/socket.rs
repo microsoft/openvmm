@@ -7,8 +7,16 @@
 // `&mut [MaybeUninit<u8>]` to pass to `socket2::Socket::peek`.
 #![expect(unsafe_code)]
 
-#[cfg(unix)]
-use super::fd;
+cfg_select! {
+    unix => {
+        use super::fd;
+        use std::os::unix::prelude::*;
+    }
+    windows => {
+        use std::os::windows::prelude::*;
+    }
+}
+
 use super::interest::InterestSlot;
 use super::interest::PollEvents;
 use crate::driver::Driver;
@@ -23,10 +31,6 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
-#[cfg(unix)]
-use std::os::unix::prelude::*;
-#[cfg(windows)]
-use std::os::windows::prelude::*;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;

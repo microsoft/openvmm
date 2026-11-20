@@ -306,10 +306,9 @@ impl<T: Client> Access<'_, T> {
                 // permission. But, it allows user mode DGRAM + ICMP_PROTO sockets
                 // with the 'net.ip.ping_group_range' configuration, which is more
                 // permissive.
-                let socket_type = if cfg!(windows) {
-                    Type::RAW
-                } else {
-                    Type::DGRAM
+                let socket_type = cfg_select! {
+                    windows => Type::RAW,
+                    _ => Type::DGRAM,
                 };
                 let mut socket =
                     match Socket::new(Domain::IPV4, socket_type, Some(Protocol::ICMPV4)) {

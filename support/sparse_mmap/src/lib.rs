@@ -12,6 +12,15 @@ pub mod alloc;
 pub mod unix;
 pub mod windows;
 
+cfg_select! {
+    unix => {
+        use unix as sys;
+    }
+    windows => {
+        use windows as sys;
+    }
+}
+
 pub use sys::AsMappableRef;
 pub use sys::Mappable;
 pub use sys::MappableRef;
@@ -24,14 +33,6 @@ pub use sys::new_mappable_from_file;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicU8;
 use thiserror::Error;
-cfg_select! {
-    unix => {
-        use unix as sys;
-    }
-    windows => {
-        use windows as sys;
-    }
-}
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;

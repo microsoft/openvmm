@@ -51,10 +51,10 @@ const R_ERROR_RELASZ: u64 = 2;
 const R_ERROR_REL: u64 = 3;
 const R_ERROR_RELSZ: u64 = 4;
 
-#[cfg(target_arch = "x86_64")]
-const R_RELATIVE: u32 = 8;
-#[cfg(target_arch = "aarch64")]
-const R_RELATIVE: u32 = 0x403;
+const R_RELATIVE: u32 = cfg_select! {
+    target_arch = "x86_64" => 8,
+    target_arch = "aarch64" => 0x403,
+};
 
 #[derive(Clone, Copy)]
 #[repr(C)]

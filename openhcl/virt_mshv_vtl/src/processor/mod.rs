@@ -26,6 +26,7 @@ cfg_select! {
     }
     guest_arch = "aarch64" => {
         pub mod cca;
+
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
         use virt_support_aarch64emu::translate::TranslationRegisters;
@@ -964,15 +965,16 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             }
 
             #[cfg(guest_arch = "x86_64")]
-            if wake_reasons.hv_start_enable_vtl_vp() {
-                T::handle_vp_start_enable_vtl_wake(self, vtl);
-            }
+            {
+                if wake_reasons.hv_start_enable_vtl_vp() {
+                    T::handle_vp_start_enable_vtl_wake(self, vtl);
+                }
 
-            #[cfg(guest_arch = "x86_64")]
-            if wake_reasons.update_proxy_irr_filter() {
-                // update `proxy_irr_blocked` filter
-                debug_assert!(self.partition.isolation.is_hardware_isolated());
-                self.update_proxy_irr_filter(vtl);
+                if wake_reasons.update_proxy_irr_filter() {
+                    // update `proxy_irr_blocked` filter
+                    debug_assert!(self.partition.isolation.is_hardware_isolated());
+                    self.update_proxy_irr_filter(vtl);
+                }
             }
         }
 

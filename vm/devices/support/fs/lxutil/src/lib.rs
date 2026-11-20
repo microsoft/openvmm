@@ -17,10 +17,6 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
-use std::collections::HashMap;
-use std::ffi::OsString;
-use std::path::Path;
-
 cfg_select! {
     unix => {
         use unix as sys;
@@ -29,6 +25,10 @@ cfg_select! {
         use windows as sys;
     }
 }
+
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::Path;
 
 pub use path::PathBufExt;
 pub use path::PathExt;

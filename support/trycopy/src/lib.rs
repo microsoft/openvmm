@@ -86,10 +86,14 @@ mod aarch64;
 mod memcpy;
 mod x86_64;
 
-#[cfg(target_arch = "aarch64")]
-use aarch64::*;
-#[cfg(target_arch = "x86_64")]
-use x86_64::*;
+cfg_select! {
+    target_arch = "x86_64" => {
+        use x86_64::*;
+    }
+    target_arch = "aarch64" => {
+        use aarch64::*;
+    }
+}
 
 use std::mem::MaybeUninit;
 use thiserror::Error;

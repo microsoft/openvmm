@@ -3,10 +3,6 @@
 
 //! Memory functionality that needs a refactor.
 
-use std::ops::Deref;
-use std::ops::DerefMut;
-use std::slice;
-use std::sync::atomic::AtomicU8;
 cfg_select! {
     unix => {
         use unix as sys;
@@ -15,6 +11,11 @@ cfg_select! {
         use windows as sys;
     }
 }
+
+use std::ops::Deref;
+use std::ops::DerefMut;
+use std::slice;
+use std::sync::atomic::AtomicU8;
 
 #[derive(Debug)]
 pub struct Allocation {

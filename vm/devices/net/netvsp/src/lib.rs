@@ -136,17 +136,17 @@ const NETVSP_MAX_SUBCHANNELS_PER_VNIC: u16 = 64;
 // could get the "eth0" name. In provisioning scenarios, the scripts will make
 // assumptions about which interface should be used, with eth0 being the
 // default.
-#[cfg(not(test))]
-const VF_DEVICE_DELAY: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const VF_DEVICE_DELAY: Duration = Duration::from_millis(100);
+const VF_DEVICE_DELAY: Duration = cfg_select! {
+    test => Duration::from_millis(100),
+    _ => Duration::from_secs(1),
+};
 
 // Linux guests are known to not act on link state change notifications if
 // they happen in quick succession.
-#[cfg(not(test))]
-const LINK_DELAY_DURATION: Duration = Duration::from_secs(5);
-#[cfg(test)]
-const LINK_DELAY_DURATION: Duration = Duration::from_millis(333);
+const LINK_DELAY_DURATION: Duration = cfg_select! {
+    test => Duration::from_millis(333),
+    _ => Duration::from_secs(5),
+};
 
 #[derive(Default, PartialEq)]
 struct CoordinatorMessageUpdateType {

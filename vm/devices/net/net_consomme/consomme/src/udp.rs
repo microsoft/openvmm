@@ -1,6 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+cfg_select! {
+    unix => {
+        use crate::unix as platform;
+    }
+    windows => {
+        use crate::windows as platform;
+    }
+}
+
 use super::Access;
 use super::BindError;
 use super::Client;
@@ -58,11 +67,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::DNS_PORT;
-
-#[cfg(unix)]
-use crate::unix as platform;
-#[cfg(windows)]
-use crate::windows as platform;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,

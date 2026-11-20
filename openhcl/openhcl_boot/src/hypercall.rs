@@ -516,12 +516,15 @@ impl HvCall {
     }
 }
 
-/// The "hardware ID" used for [`HvCall::get_vp_index_from_hw_id`]. This is the
-/// APIC ID on x64.
-#[cfg(target_arch = "x86_64")]
-pub type HwId = u32;
-
-/// The "hardware ID" used for [`HvCall::get_vp_index_from_hw_id`]. This is the
-/// MPIDR on ARM64.
-#[cfg(target_arch = "aarch64")]
-pub type HwId = u64;
+cfg_select! {
+    target_arch = "x86_64" => {
+        /// The "hardware ID" used for [`HvCall::get_vp_index_from_hw_id`]. This is the
+        /// APIC ID on x64.
+        pub type HwId = u32;
+    }
+    target_arch = "aarch64" => {
+        /// The "hardware ID" used for [`HvCall::get_vp_index_from_hw_id`]. This is the
+        /// MPIDR on ARM64.
+        pub type HwId = u64;
+    }
+}

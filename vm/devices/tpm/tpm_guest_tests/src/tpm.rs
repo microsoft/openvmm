@@ -4,16 +4,20 @@
 // UNSAFETY: Windows FFI
 #![cfg_attr(windows, expect(unsafe_code))]
 
+cfg_select! {
+    unix => {
+        use unix::Tpm as TpmInner;
+    }
+    windows => {
+        use windows::Tpm as TpmInner;
+    }
+}
+
 use std::io;
 
 use tpm_lib::TpmEngine;
 use tpm_lib::TpmEngineError;
 use tpm_lib::TpmEngineHelper;
-
-#[cfg(unix)]
-use unix::Tpm as TpmInner;
-#[cfg(windows)]
-use windows::Tpm as TpmInner;
 
 /// Simple cross-platform TPM access (Linux: /dev/tpmrm0|/dev/tpm0, Windows: TBS).
 /// Blocking, minimal, not thread-safe across simultaneous transmit calls (uses Mutex).
@@ -26,7 +30,7 @@ use windows::Tpm as TpmInner;
 ///   Uses TBS (TPM Base Services). Link with tbs.dll (implicit).
 ///   Requires the tbs development headers at build time only for reference; here we redefine what is needed.
 pub struct Tpm {
-    inner: Inner,
+    inner: TpmInner,
 }
 
 /// Low-level TPM transport abstraction.
@@ -34,32 +38,10 @@ pub trait RawTpm {
     fn transmit_raw(&self, command: &[u8]) -> io::Result<Vec<u8>>;
 }
 
-enum Inner {
-    #[cfg(unix)]
-    Unix(TpmInner),
-    #[cfg(windows)]
-    Windows(TpmInner),
-}
-
 impl Tpm {
     /// Open default TPM device / context.
     pub fn open() -> io::Result<Self> {
-        #[cfg(unix)]
-        {
-            TpmInner::open().map(|u| Tpm {
-                inner: Inner::Unix(u),
-            })
-        }
-        #[cfg(windows)]
-        {
-            TpmInner::open().map(|w| Tpm {
-                inner: Inner::Windows(w),
-            })
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            Err(io::Error::new(io::ErrorKind::Other, "Unsupported platform"))
-        }
+        TpmInner::open().map(|inner| Tpm { inner })
     }
 
     /// Transmit a TPM command buffer and return the full response.
@@ -72,12 +54,7 @@ impl Tpm {
             ));
         }
 
-        match &self.inner {
-            #[cfg(unix)]
-            Inner::Unix(u) => u.transmit(command),
-            #[cfg(windows)]
-            Inner::Windows(w) => w.transmit(command),
-        }
+        self.inner.transmit(command)
     }
 
     /// Consume this TPM handle and return an engine adapter implementing [`TpmEngine`].

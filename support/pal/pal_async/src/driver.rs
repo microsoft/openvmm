@@ -6,22 +6,27 @@
 // UNSAFETY: Needed to define and implement the unsafe new_dyn_overlapped_file method.
 #![cfg_attr(any(windows, target_os = "linux"), expect(unsafe_code))]
 
-#[cfg(unix)]
-use crate::fd::FdReadyDriver;
-#[cfg(unix)]
-use crate::fd::PollFdReady;
-#[cfg(target_os = "linux")]
-use crate::io_uring::IoUringDriver;
-#[cfg(target_os = "macos")]
-use crate::process::macos::PollProcessWait;
-#[cfg(target_os = "macos")]
-use crate::process::macos::ProcessWaitDriver;
+cfg_select! {
+    unix => {
+        use crate::fd::FdReadyDriver;
+        use crate::fd::PollFdReady;
+        #[cfg(target_os = "linux")]
+        use crate::io_uring::IoUringDriver;
+        #[cfg(target_os = "macos")]
+        use crate::process::macos::PollProcessWait;
+        #[cfg(target_os = "macos")]
+        use crate::process::macos::ProcessWaitDriver;
+        use std::os::unix::prelude::*;
+    }
+    windows => {
+        use crate::sys::overlapped::IoOverlapped;
+        use crate::sys::overlapped::OverlappedIoDriver;
+        use std::os::windows::prelude::*;
+    }
+}
+
 use crate::socket::PollSocketReady;
 use crate::socket::SocketReadyDriver;
-#[cfg(windows)]
-use crate::sys::overlapped::IoOverlapped;
-#[cfg(windows)]
-use crate::sys::overlapped::OverlappedIoDriver;
 use crate::task::Spawn;
 use crate::timer::PollTimer;
 use crate::timer::TimerDriver;
@@ -30,10 +35,6 @@ use crate::wait::WaitDriver;
 use smallbox::SmallBox;
 use smallbox::space::S4;
 use std::io;
-#[cfg(unix)]
-use std::os::unix::prelude::*;
-#[cfg(windows)]
-use std::os::windows::prelude::*;
 use std::sync::Arc;
 
 /// A generic `Box`-like container of one of the polled types.

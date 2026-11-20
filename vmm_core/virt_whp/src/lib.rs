@@ -1505,21 +1505,20 @@ impl VtlPartition {
             .for_op("set processor count")?;
 
         #[cfg(guest_arch = "x86_64")]
-        if nested_virt {
-            match whp_config.set_property(whp::PartitionProperty::NestedVirtualization(true)) {
-                Ok(_) => {}
-                Err(whp::WHvError::WHV_E_UNKNOWN_PROPERTY) => {
-                    return Err(Error::NestedVirtUnsupported);
-                }
-                Err(err) => {
-                    return Err(err).for_op("enable nested virtualization");
-                }
-            }
-        }
-
-        #[cfg(guest_arch = "x86_64")]
         {
             use vm_topology::processor::x86::ApicMode;
+
+            if nested_virt {
+                match whp_config.set_property(whp::PartitionProperty::NestedVirtualization(true)) {
+                    Ok(_) => {}
+                    Err(whp::WHvError::WHV_E_UNKNOWN_PROPERTY) => {
+                        return Err(Error::NestedVirtUnsupported);
+                    }
+                    Err(err) => {
+                        return Err(err).for_op("enable nested virtualization");
+                    }
+                }
+            }
 
             let apic_mode = if !user_mode_apic {
                 match config.processor_topology.apic_mode() {

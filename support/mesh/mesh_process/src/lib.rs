@@ -19,36 +19,6 @@
 // UNSAFETY: Needed to accept a raw Fd/Handle from our spawning process.
 #![expect(unsafe_code)]
 
-use anyhow::Context;
-use base64::Engine;
-use debug_ptr::DebugPtr;
-use futures::FutureExt;
-use futures::Stream;
-use futures::StreamExt;
-use futures::executor::block_on;
-use futures_concurrency::future::Race;
-use inspect::Inspect;
-use inspect::SensitivityLevel;
-use mesh::MeshPayload;
-use mesh::OneshotReceiver;
-use mesh::local_node::Port;
-use mesh::message::MeshField;
-use mesh::payload::Protobuf;
-use mesh::rpc::FailableRpc;
-use mesh::rpc::RpcSend;
-use pal_async::task::Spawn;
-use pal_async::task::Task;
-use slab::Slab;
-use std::borrow::Cow;
-use std::ffi::OsString;
-use std::fs::File;
-use std::path::Path;
-use std::path::PathBuf;
-use std::pin::Pin;
-use tracing::Instrument;
-use tracing::instrument;
-use unicycle::FuturesUnordered;
-
 cfg_select! {
     windows => {
         use pal::windows::process;
@@ -73,8 +43,37 @@ cfg_select! {
     }
 }
 
+use anyhow::Context;
+use base64::Engine;
+use debug_ptr::DebugPtr;
+use futures::FutureExt;
+use futures::Stream;
+use futures::StreamExt;
+use futures::executor::block_on;
+use futures_concurrency::future::Race;
+use inspect::Inspect;
+use inspect::SensitivityLevel;
+use mesh::MeshPayload;
+use mesh::OneshotReceiver;
+use mesh::local_node::Port;
+use mesh::message::MeshField;
+use mesh::payload::Protobuf;
+use mesh::rpc::FailableRpc;
+use mesh::rpc::RpcSend;
+use pal_async::task::Spawn;
+use pal_async::task::Task;
 use plat::IpcNode;
 use plat::IpcNodeDriver;
+use slab::Slab;
+use std::borrow::Cow;
+use std::ffi::OsString;
+use std::fs::File;
+use std::path::Path;
+use std::path::PathBuf;
+use std::pin::Pin;
+use tracing::Instrument;
+use tracing::instrument;
+use unicycle::FuturesUnordered;
 
 #[cfg(unix)]
 const IPC_FD: i32 = 3;

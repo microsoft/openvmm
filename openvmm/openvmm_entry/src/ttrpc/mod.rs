@@ -17,10 +17,14 @@ mod fd_passing;
 mod handle_passing;
 mod resource_passing;
 
-#[cfg(unix)]
-use fd_passing as resource_transport;
-#[cfg(windows)]
-use handle_passing as resource_transport;
+cfg_select! {
+    unix => {
+        use fd_passing as resource_transport;
+    }
+    windows => {
+        use handle_passing as resource_transport;
+    }
+}
 
 /// The registry of OS resources (fds or handles) passed in by clients, keyed by
 /// client-chosen name.
@@ -621,25 +625,27 @@ impl IommufdContexts {
             );
         }
 
-        #[cfg(target_os = "linux")]
-        {
-            let files = configs
-                .into_iter()
-                .map(|config| {
-                    let file = File::options()
-                        .read(true)
-                        .write(true)
-                        .open("/dev/iommu")
-                        .with_context(|| format!("failed to open /dev/iommu for {}", config.id))?;
-                    Ok((config.id, file))
-                })
-                .collect::<anyhow::Result<_>>()?;
-            Ok(Self { files })
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            anyhow::ensure!(configs.is_empty(), "iommufd is only supported on Linux");
-            Ok(Self::default())
+        cfg_select! {
+            target_os = "linux" => {{
+                let files = configs
+                    .into_iter()
+                    .map(|config| {
+                        let file = File::options()
+                            .read(true)
+                            .write(true)
+                            .open("/dev/iommu")
+                            .with_context(|| {
+                                format!("failed to open /dev/iommu for {}", config.id)
+                            })?;
+                        Ok((config.id, file))
+                    })
+                    .collect::<anyhow::Result<_>>()?;
+                Ok(Self { files })
+            }}
+            _ => {{
+                anyhow::ensure!(configs.is_empty(), "iommufd is only supported on Linux");
+                Ok(Self::default())
+            }}
         }
     }
 
@@ -685,7 +691,7 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
                     .all(|nic| nic.frontend == vmservice::NicFrontend::Virtio as i32),
                 "VMBus NICConfig requires VMBus; use the virtio frontend instead"
             );
-            if cfg!(windows) || cfg!(target_os = "macos") {
+            if cfg!(any(windows, target_os = "macos")) {
                 anyhow::ensure!(
                     devices.virtiofs_config.is_empty()
                         && devices
@@ -1493,8 +1499,7 @@ impl VmService {
                         instance_id,
                         resource,
                     } => {
-                        if !req_config.disable_vmbus && (cfg!(windows) || cfg!(target_os = "macos"))
-                        {
+                        if !req_config.disable_vmbus && cfg!(any(windows, target_os = "macos")) {
                             config.vpci_devices.push(VpciDeviceConfig {
                                 vtl: DeviceVtl::Vtl0,
                                 instance_id,
@@ -1512,7 +1517,7 @@ impl VmService {
                 let resource = build_virtio_fs(virtiofs, &registry)?.into_resource();
                 // Use VPCI when possible (currently only on Windows and macOS due
                 // to KVM backend limitations).
-                if cfg!(windows) || cfg!(target_os = "macos") {
+                if cfg!(any(windows, target_os = "macos")) {
                     config.vpci_devices.push(VpciDeviceConfig {
                         vtl: DeviceVtl::Vtl0,
                         instance_id: Guid::new_random(),
@@ -1536,7 +1541,7 @@ impl VmService {
                         })?;
                     let resource: Resource<VirtioDeviceHandle> =
                         virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
-                    if cfg!(windows) || cfg!(target_os = "macos") {
+                    if cfg!(any(windows, target_os = "macos")) {
                         // VMBus sorts VPCI offers by instance ID, comparing data1 first.
                         let instance_id = Guid {
                             data1: u32::try_from(index).unwrap(),
@@ -3139,25 +3144,25 @@ fn build_virtio_fs_windows_options(
     registry: &ResourceRegistry,
 ) -> anyhow::Result<virtio_resources::fs::VirtioFsWindowsOptions> {
     let vmservice::virtio_fs::WindowsOptions { user_token_name } = options;
-    #[cfg(windows)]
-    {
-        let user_token = (!user_token_name.is_empty())
-            .then(|| {
-                registry.resolve(&user_token_name).with_context(|| {
-                    format!("failed to resolve virtio-fs user token '{user_token_name}'")
+    cfg_select! {
+        windows => {{
+            let user_token = (!user_token_name.is_empty())
+                .then(|| {
+                    registry.resolve(&user_token_name).with_context(|| {
+                        format!("failed to resolve virtio-fs user token '{user_token_name}'")
+                    })
                 })
-            })
-            .transpose()?;
-        Ok(virtio_resources::fs::VirtioFsWindowsOptions { user_token })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = registry;
-        anyhow::ensure!(
-            user_token_name.is_empty(),
-            "virtio-fs user tokens are only supported on Windows"
-        );
-        Ok(virtio_resources::fs::VirtioFsWindowsOptions {})
+                .transpose()?;
+            Ok(virtio_resources::fs::VirtioFsWindowsOptions { user_token })
+        }}
+        _ => {{
+            let _ = registry;
+            anyhow::ensure!(
+                user_token_name.is_empty(),
+                "virtio-fs user tokens are only supported on Windows"
+            );
+            Ok(virtio_resources::fs::VirtioFsWindowsOptions {})
+        }}
     }
 }
 
