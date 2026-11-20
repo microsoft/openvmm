@@ -69,14 +69,16 @@ mod memory_manager;
 mod partition_mapper;
 mod region_manager;
 
-#[cfg(windows)]
 mod sys {
-    pub type RemoteProcess = Box<dyn 'static + std::os::windows::io::AsHandle + Send + Sync>;
-}
-
-#[cfg(unix)]
-mod sys {
-    pub enum RemoteProcess {}
+    cfg_select! {
+        windows => {
+            pub type RemoteProcess =
+                Box<dyn 'static + std::os::windows::io::AsHandle + Send + Sync>;
+        }
+        unix => {
+            pub enum RemoteProcess {}
+        }
+    }
 }
 
 /// A remote process handle.

@@ -26,7 +26,6 @@ fn panic_handler(panic: &core::panic::PanicInfo<'_>) -> ! {
         cfg_select! {
             target_arch = "x86_64" => core::arch::asm!("ud2"),
             target_arch = "aarch64" => core::arch::asm!("brk #0"),
-            _ => compile_error!("unsupported target architecture"),
         };
         core::hint::unreachable_unchecked();
     }

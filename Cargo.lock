@@ -4021,6 +4021,7 @@ dependencies = [
  "serde",
  "serde_json",
  "test_with_tracing",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
@@ -8665,10 +8666,12 @@ dependencies = [
 name = "tdcall"
 version = "0.0.0"
 dependencies = [
+ "cvm_tracing",
  "hvdef",
  "memory_range",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "x86defs",
 ]
@@ -9605,7 +9608,6 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "parking_lot",
- "pci_core",
  "product_policy",
  "profiler_worker",
  "safe_intrinsics",

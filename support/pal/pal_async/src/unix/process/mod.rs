@@ -8,7 +8,11 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
-#[cfg(target_os = "linux")]
-pub(crate) use linux::WaitInner;
-#[cfg(target_os = "macos")]
-pub(crate) use macos::WaitInner;
+cfg_select! {
+    target_os = "linux" => {
+        pub(crate) use linux::WaitInner;
+    }
+    target_os = "macos" => {
+        pub(crate) use macos::WaitInner;
+    }
+}

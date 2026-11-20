@@ -167,9 +167,10 @@ fn create_vm_request(
                 virtiofs_config: vec![vmservice::VirtioFs {
                     tag: "userfs".to_string(),
                     root_path: share_root.to_string_lossy().into_owned(),
-                    read_only: false,
+                    mount_options: String::new(),
                     windows_options: Some(vmservice::virtio_fs::WindowsOptions {
                         user_token_name: user_token_name.to_string(),
+                        shared_mem: false,
                     }),
                 }],
                 ..Default::default()

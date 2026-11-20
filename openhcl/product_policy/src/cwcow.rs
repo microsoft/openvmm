@@ -45,6 +45,12 @@ pub struct CwcowPolicy {
     /// Reserved: require Secure AVIC. Not enforced at runtime yet.
     #[mesh(6)]
     pub require_secure_avic: bool,
+
+    /// From the device policy file: the VPCI relay settings. Unset means no
+    /// allowed devices and [`crate::VpciRelayMode::DefaultOff`].
+    #[mesh(7)]
+    #[cfg_attr(feature = "manifest", serde(skip))]
+    pub vpci_relay: Option<crate::VpciRelayPolicy>,
 }
 
 impl crate::uefi_security_policy::UefiSecurityPolicyParams for CwcowPolicy {

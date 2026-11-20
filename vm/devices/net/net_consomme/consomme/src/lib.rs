@@ -853,10 +853,11 @@ impl Consomme {
         let host_has_ipv6 = if params.skip_ipv6_checks {
             true
         } else {
-            #[cfg(windows)]
-            let host_has_ipv6_result = windows::host_has_ipv6_address().map_err(|e| e.to_string());
-            #[cfg(unix)]
-            let host_has_ipv6_result = unix::host_has_ipv6_address().map_err(|e| e.to_string());
+            let host_has_ipv6_result = cfg_select! {
+                windows => windows::host_has_ipv6_address(),
+                unix => unix::host_has_ipv6_address(),
+            }
+            .map_err(|e| e.to_string());
 
             match host_has_ipv6_result {
                 Ok(has_ipv6) => has_ipv6,

@@ -6,27 +6,27 @@ use std::io;
 
 /// Clones all file extents into an independently writable destination.
 pub fn reflink(source: &File, destination: &File) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
+    cfg_select! {
+        target_os = "linux" => {
+            use std::os::fd::AsRawFd;
 
-        // SAFETY: Both arguments are live regular-file descriptors and FICLONE
-        // does not retain either descriptor after the call.
-        let result =
-            unsafe { libc::ioctl(destination.as_raw_fd(), libc::FICLONE, source.as_raw_fd()) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
+            // SAFETY: Both arguments are live regular-file descriptors and FICLONE
+            // does not retain either descriptor after the call.
+            let result =
+                unsafe { libc::ioctl(destination.as_raw_fd(), libc::FICLONE, source.as_raw_fd()) };
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
         }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (source, destination);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "file extent cloning is unsupported on this platform",
-        ))
+        _ => {
+            let _ = (source, destination);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "file extent cloning is unsupported on this platform",
+            ))
+        }
     }
 }
 

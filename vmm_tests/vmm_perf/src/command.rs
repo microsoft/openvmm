@@ -314,11 +314,7 @@ mod tests {
             .expect("test profile is valid");
         let invocation = VirtualClientCommandBuilder::new(
             runtime_dir,
-            &runtime_dir.join(if cfg!(target_os = "windows") {
-                "VirtualClient.exe"
-            } else {
-                "VirtualClient"
-            }),
+            &runtime_dir.join(crate::runtime::virtual_client_name()),
         )
         .profile(profile.clone())
         .iterations(1)

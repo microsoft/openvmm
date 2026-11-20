@@ -17,10 +17,14 @@ mod fd_passing;
 mod handle_passing;
 mod resource_passing;
 
-#[cfg(unix)]
-use fd_passing as resource_transport;
-#[cfg(windows)]
-use handle_passing as resource_transport;
+cfg_select! {
+    unix => {
+        use fd_passing as resource_transport;
+    }
+    windows => {
+        use handle_passing as resource_transport;
+    }
+}
 
 /// The registry of OS resources (fds or handles) passed in by clients, keyed by
 /// client-chosen name.
@@ -621,25 +625,27 @@ impl IommufdContexts {
             );
         }
 
-        #[cfg(target_os = "linux")]
-        {
-            let files = configs
-                .into_iter()
-                .map(|config| {
-                    let file = File::options()
-                        .read(true)
-                        .write(true)
-                        .open("/dev/iommu")
-                        .with_context(|| format!("failed to open /dev/iommu for {}", config.id))?;
-                    Ok((config.id, file))
-                })
-                .collect::<anyhow::Result<_>>()?;
-            Ok(Self { files })
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            anyhow::ensure!(configs.is_empty(), "iommufd is only supported on Linux");
-            Ok(Self::default())
+        cfg_select! {
+            target_os = "linux" => {{
+                let files = configs
+                    .into_iter()
+                    .map(|config| {
+                        let file = File::options()
+                            .read(true)
+                            .write(true)
+                            .open("/dev/iommu")
+                            .with_context(|| {
+                                format!("failed to open /dev/iommu for {}", config.id)
+                            })?;
+                        Ok((config.id, file))
+                    })
+                    .collect::<anyhow::Result<_>>()?;
+                Ok(Self { files })
+            }}
+            _ => {{
+                anyhow::ensure!(configs.is_empty(), "iommufd is only supported on Linux");
+                Ok(Self::default())
+            }}
         }
     }
 
@@ -685,7 +691,7 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
                     .all(|nic| nic.frontend == vmservice::NicFrontend::Virtio as i32),
                 "VMBus NICConfig requires VMBus; use the virtio frontend instead"
             );
-            if cfg!(windows) || cfg!(target_os = "macos") {
+            if cfg!(any(windows, target_os = "macos")) {
                 anyhow::ensure!(
                     devices.virtiofs_config.is_empty()
                         && devices
@@ -1136,7 +1142,6 @@ impl VmService {
         let arch = cfg_select! {
             guest_arch = "x86_64" => vm_manifest_builder::MachineArch::X86_64,
             guest_arch = "aarch64" => vm_manifest_builder::MachineArch::Aarch64,
-            _ => compile_error!("unsupported guest architecture"),
         };
 
         // Build SMBIOS identity for direct Linux or UEFI boot.
@@ -1494,8 +1499,7 @@ impl VmService {
                         instance_id,
                         resource,
                     } => {
-                        if !req_config.disable_vmbus && (cfg!(windows) || cfg!(target_os = "macos"))
-                        {
+                        if !req_config.disable_vmbus && cfg!(any(windows, target_os = "macos")) {
                             config.vpci_devices.push(VpciDeviceConfig {
                                 vtl: DeviceVtl::Vtl0,
                                 instance_id,
@@ -1513,7 +1517,7 @@ impl VmService {
                 let resource = build_virtio_fs(virtiofs, &registry)?.into_resource();
                 // Use VPCI when possible (currently only on Windows and macOS due
                 // to KVM backend limitations).
-                if cfg!(windows) || cfg!(target_os = "macos") {
+                if cfg!(any(windows, target_os = "macos")) {
                     config.vpci_devices.push(VpciDeviceConfig {
                         vtl: DeviceVtl::Vtl0,
                         instance_id: Guid::new_random(),
@@ -1537,7 +1541,7 @@ impl VmService {
                         })?;
                     let resource: Resource<VirtioDeviceHandle> =
                         virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
-                    if cfg!(windows) || cfg!(target_os = "macos") {
+                    if cfg!(any(windows, target_os = "macos")) {
                         // VMBus sorts VPCI offers by instance ID, comparing data1 first.
                         let instance_id = Guid {
                             data1: u32::try_from(index).unwrap(),
@@ -3045,6 +3049,7 @@ async fn build_virtio_device(
                 disk,
                 read_only,
                 serial,
+                options: Default::default(),
             }
             .into_resource()
         }
@@ -3113,7 +3118,7 @@ fn build_virtio_fs(
     let vmservice::VirtioFs {
         tag,
         root_path,
-        read_only,
+        mount_options,
         windows_options,
     } = config;
     let windows_options = windows_options
@@ -3123,11 +3128,7 @@ fn build_virtio_fs(
         tag,
         fs: virtio_resources::fs::VirtioFsBackend::HostFs {
             root_path,
-            mount_options: if read_only {
-                "ro".to_string()
-            } else {
-                String::new()
-            },
+            mount_options,
             windows_options,
         },
     })
@@ -3139,26 +3140,32 @@ fn build_virtio_fs_windows_options(
     options: vmservice::virtio_fs::WindowsOptions,
     registry: &ResourceRegistry,
 ) -> anyhow::Result<virtio_resources::fs::VirtioFsWindowsOptions> {
-    let vmservice::virtio_fs::WindowsOptions { user_token_name } = options;
-    #[cfg(windows)]
-    {
-        let user_token = (!user_token_name.is_empty())
-            .then(|| {
-                registry.resolve(&user_token_name).with_context(|| {
-                    format!("failed to resolve virtio-fs user token '{user_token_name}'")
+    let vmservice::virtio_fs::WindowsOptions {
+        user_token_name,
+        shared_mem,
+    } = options;
+    cfg_select! {
+        windows => {{
+            let user_token = (!user_token_name.is_empty())
+                .then(|| {
+                    registry.resolve(&user_token_name).with_context(|| {
+                        format!("failed to resolve virtio-fs user token '{user_token_name}'")
+                    })
                 })
+                .transpose()?;
+            Ok(virtio_resources::fs::VirtioFsWindowsOptions {
+                user_token,
+                shared_mem,
             })
-            .transpose()?;
-        Ok(virtio_resources::fs::VirtioFsWindowsOptions { user_token })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = registry;
-        anyhow::ensure!(
-            user_token_name.is_empty(),
-            "virtio-fs user tokens are only supported on Windows"
-        );
-        Ok(virtio_resources::fs::VirtioFsWindowsOptions {})
+        }}
+        _ => {{
+            let _ = registry;
+            anyhow::ensure!(
+                user_token_name.is_empty(),
+                "virtio-fs user tokens are only supported on Windows"
+            );
+            Ok(virtio_resources::fs::VirtioFsWindowsOptions { shared_mem })
+        }}
     }
 }
 
@@ -3391,6 +3398,37 @@ mod tests {
     use vfio_assigned_device_resources::BarAddressConfig;
     #[cfg(target_os = "linux")]
     use vmservice::vfio_bar_address::Source;
+
+    #[test]
+    fn virtio_fs_windows_options() {
+        for shared_mem in [None, Some(false), Some(true)] {
+            let resource = build_virtio_fs(
+                vmservice::VirtioFs {
+                    tag: "tag".into(),
+                    root_path: "root".into(),
+                    mount_options: String::new(),
+                    windows_options: shared_mem.map(|shared_mem| {
+                        vmservice::virtio_fs::WindowsOptions {
+                            user_token_name: String::new(),
+                            shared_mem,
+                        }
+                    }),
+                },
+                &ResourceRegistry::default(),
+            )
+            .unwrap();
+            let virtio_resources::fs::VirtioFsBackend::HostFs {
+                windows_options, ..
+            } = resource.fs
+            else {
+                panic!("expected host filesystem backend");
+            };
+            assert_eq!(
+                windows_options.map(|options| options.shared_mem),
+                shared_mem,
+            );
+        }
+    }
 
     #[test]
     fn virtio_vsock_reuses_socket_path() {

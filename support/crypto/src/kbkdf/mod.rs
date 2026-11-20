@@ -5,15 +5,16 @@
 
 #![cfg(any(openssl, symcrypt))]
 
-#[cfg(openssl)]
-mod ossl;
-#[cfg(openssl)]
-use ossl as sys;
-
-#[cfg(symcrypt)]
-mod symcrypt;
-#[cfg(symcrypt)]
-use symcrypt as sys;
+cfg_select! {
+    openssl => {
+        mod ossl;
+        use ossl as sys;
+    }
+    symcrypt => {
+        mod symcrypt;
+        use symcrypt as sys;
+    }
+}
 
 use crate::HashAlgorithm;
 use thiserror::Error;

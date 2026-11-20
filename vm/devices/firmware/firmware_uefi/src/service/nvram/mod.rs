@@ -49,10 +49,14 @@ use uefi_specs::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
-#[cfg(feature = "fuzzing")]
-pub mod spec_services;
-#[cfg(not(feature = "fuzzing"))]
-mod spec_services;
+cfg_select! {
+    feature = "fuzzing" => {
+        pub mod spec_services;
+    }
+    _ => {
+        mod spec_services;
+    }
+}
 
 const WIN_CERT_REVISION_2_0: u16 = 0x0200;
 const MAX_NVRAM_COMMAND_BUFFER_SIZE: u32 = 4 * 1024 * 1024;

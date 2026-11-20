@@ -113,6 +113,7 @@ use std::future::poll_fn;
 use std::ops::Deref;
 use std::pin::pin;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::Acquire;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::Ordering::Release;
 use std::sync::atomic::Ordering::SeqCst;
@@ -284,9 +285,10 @@ const SEQ_NONE: u64 = 0;
 const SEQ_MASK_BUSY: u64 = 1;
 /// The value the sequence number is incremented by each synchronize call.
 const SEQ_INCREMENT: u64 = 2;
-/// The sequence value for a quiesced thread. The thread will issue a full
-/// memory barrier when leaving this state.
-const SEQ_QUIESCED: u64 = 2;
+/// Marks a quiesced thread without losing its last observed epoch.
+/// The thread issues a full memory barrier when leaving this state.
+/// The sign bit keeps the warm entry check to one signed comparison.
+const SEQ_MASK_QUIESCED: u64 = 1 << 63;
 /// The first actual sequence number.
 const SEQ_FIRST: u64 = 4;
 
@@ -304,14 +306,34 @@ impl RcuDomain {
     /// In general, you should avoid blocking the thread in `f`, since that can
     /// slow calls to [`synchronize`](Self::synchronize) and can potentially
     /// cause deadlocks.
+    #[inline]
     pub fn run<F, R>(self, f: F) -> R
     where
         F: FnOnce() -> R,
     {
-        self.tls.with(|x| {
-            let _guard = x.enter(self.data);
-            f()
-        })
+        struct ExitOnDrop {
+            domain: RcuDomain,
+            seq: u64,
+            _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+        }
+
+        impl Drop for ExitOnDrop {
+            #[inline]
+            fn drop(&mut self) {
+                self.domain
+                    .tls
+                    .with(|thread| thread.exit(self.domain.data, self.seq));
+            }
+        }
+
+        // Keep TLS lookup independent of the user callback and its return ABI.
+        let seq = self.tls.with(|thread| thread.enter(self.data));
+        let _guard = ExitOnDrop {
+            domain: self,
+            seq,
+            _thread_bound: std::marker::PhantomData,
+        };
+        f()
     }
 
     /// Quiesce the current thread.
@@ -350,12 +372,21 @@ impl RcuDomain {
         {
             let this_seq = self.tls.with(|x| x.quiesce(self.data));
             assert!(
-                this_seq == SEQ_NONE || this_seq == SEQ_QUIESCED,
+                this_seq == SEQ_NONE
+                    || this_seq & (SEQ_MASK_QUIESCED | SEQ_MASK_BUSY) == SEQ_MASK_QUIESCED,
                 "called synchronize() inside a critical section, {this_seq:#x}",
             );
         }
         // Update the domain's sequence number.
-        let seq = self.data.seq.fetch_add(SEQ_INCREMENT, SeqCst) + SEQ_INCREMENT;
+        let seq = self
+            .data
+            .seq
+            .fetch_update(SeqCst, Relaxed, |seq| {
+                seq.checked_add(SEQ_INCREMENT)
+                    .filter(|next| next & SEQ_MASK_QUIESCED == 0)
+            })
+            .expect("RCU sequence number exhausted")
+            + SEQ_INCREMENT;
         // We need to make sure all threads are quiesced, not busy, or have
         // observed the new sequence number. To do this, we must synchronize the
         // global sequence number update with changes to each thread's local
@@ -475,12 +506,13 @@ impl RcuDomain {
         }
         let seq = thread.seq_ptr.load(Relaxed);
         assert_ne!(seq, SEQ_NONE);
-        if seq & !SEQ_MASK_BUSY < target {
+        if seq & !(SEQ_MASK_BUSY | SEQ_MASK_QUIESCED) < target {
+            // A thread leaving quiescence can temporarily have both bits set.
             if seq & SEQ_MASK_BUSY != 0 {
                 // The thread is actively running in a critical section.
                 return false;
             }
-            if seq != SEQ_QUIESCED {
+            if seq & SEQ_MASK_QUIESCED == 0 {
                 // The thread is not quiesced. If a barrier was issued, then it
                 // has observed the new sequence number. It may be busy (but
                 // this CPU has not observed the write yet), but it must be busy
@@ -503,39 +535,45 @@ impl RcuDomain {
 
 impl ThreadData {
     #[must_use]
-    fn enter(&self, data: &'static RcuData) -> impl '_ + Drop {
-        struct ExitOnDrop<'a>(&'a ThreadData, &'static RcuData, u64);
-        impl<'a> Drop for ExitOnDrop<'a> {
-            fn drop(&mut self) {
-                self.0.exit(self.1, self.2);
-            }
-        }
-
+    #[inline]
+    fn enter(&self, data: &'static RcuData) -> u64 {
+        let mut seq = self.current_seq.load(Relaxed);
         // Mark the thread as busy.
-        let seq = self.current_seq.load(Relaxed);
         self.current_seq.store(seq | SEQ_MASK_BUSY, Relaxed);
-        if seq < SEQ_FIRST {
-            self.enter_slow(data, seq);
+        if (seq as i64) < SEQ_FIRST as i64 {
+            seq = self.enter_slow(data, seq);
         }
         // Ensure the busy bit set is visible to the write side before
         // operating on any RCU data.
         sys::access_fence(SeqCst);
-        ExitOnDrop(self, data, seq)
+        seq
     }
 
     #[cold]
-    fn enter_slow(&self, data: &'static RcuData, seq: u64) {
+    fn enter_slow(&self, data: &'static RcuData, seq: u64) -> u64 {
         // The thread was quiesced or not registered. Register it now.
         if seq == SEQ_NONE {
             self.start(data, seq);
         } else {
-            debug_assert!(seq == SEQ_QUIESCED || seq & SEQ_MASK_BUSY != 0, "{seq:#x}");
+            debug_assert!(seq & (SEQ_MASK_QUIESCED | SEQ_MASK_BUSY) != 0, "{seq:#x}");
         }
         // Use a full memory barrier to ensure the write side observes that
         // the thread is no longer quiesced before calling `f`.
         fence(SeqCst);
+        // Publish an active epoch so nested readers do not repeat this fence.
+        // Acquiring the epoch also observes updates preceding its publication.
+        let current = data.seq.load(Acquire);
+        self.current_seq.store(current | SEQ_MASK_BUSY, Relaxed);
+        // Keep the old epoch as the exit cookie: a writer may have observed
+        // the transitional busy state before we acquired its new epoch.
+        if seq == SEQ_NONE {
+            SEQ_MASK_QUIESCED
+        } else {
+            seq & !SEQ_MASK_QUIESCED
+        }
     }
 
+    #[inline]
     fn exit(&self, data: &'static RcuData, seq: u64) {
         sys::access_fence(Release);
         // Clear the busy bit.
@@ -544,7 +582,8 @@ impl ThreadData {
         // new sequence number, to synchronize with the sequence update path.
         sys::access_fence(SeqCst);
         let new_seq = data.seq.load(Relaxed);
-        if new_seq != seq {
+        // A nested guard's saved busy bit is not a sequence change.
+        if new_seq != seq & !SEQ_MASK_BUSY {
             // The domain's current sequence number has changed. Update it and
             // wake up any waiters.
             self.update_seq(data, seq, new_seq);
@@ -574,7 +613,7 @@ impl ThreadData {
             return;
         }
         assert!(
-            new_seq >= SEQ_FIRST && new_seq & SEQ_MASK_BUSY == 0,
+            new_seq >= SEQ_FIRST && new_seq & (SEQ_MASK_BUSY | SEQ_MASK_QUIESCED) == 0,
             "{new_seq}"
         );
         self.current_seq.store(new_seq, Relaxed);
@@ -586,10 +625,11 @@ impl ThreadData {
 
     fn quiesce(&self, data: &'static RcuData) -> u64 {
         let seq = self.current_seq.load(Relaxed);
-        if seq >= SEQ_FIRST && seq & SEQ_MASK_BUSY == 0 {
-            self.current_seq.store(SEQ_QUIESCED, Relaxed);
+        if (seq as i64) >= SEQ_FIRST as i64 && seq & SEQ_MASK_BUSY == 0 {
+            let quiesced = seq | SEQ_MASK_QUIESCED;
+            self.current_seq.store(quiesced, Relaxed);
             data.event.notify(!0usize);
-            SEQ_QUIESCED
+            quiesced
         } else {
             seq
         }
@@ -631,6 +671,90 @@ mod tests {
             test_rcu().run(|| {});
         });
         sync(&driver, test_rcu()).await;
+    }
+
+    #[async_test]
+    async fn nested_unwind_keeps_outer_reader_busy(driver: DefaultDriver) {
+        define_rcu_domain!(test_rcu);
+
+        for quiesced in [false, true] {
+            let (entered_send, entered_recv) = std::sync::mpsc::channel();
+            let (nested_send, nested_recv) = std::sync::mpsc::channel();
+            let (nested_done_send, nested_done_recv) = std::sync::mpsc::channel();
+            let (release_send, release_recv) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                if quiesced {
+                    test_rcu().run(|| {});
+                    test_rcu().quiesce();
+                }
+                test_rcu().run(|| {
+                    entered_send.send(()).unwrap();
+                    nested_recv.recv().unwrap();
+                    let result = std::panic::catch_unwind(|| {
+                        test_rcu().run(|| panic!("nested reader unwind"));
+                    });
+                    assert!(result.is_err());
+                    nested_done_send.send(()).unwrap();
+                    release_recv.recv().unwrap();
+                });
+            });
+            entered_recv
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let mut drain = std::pin::pin!(sync(&driver, test_rcu()));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(drain.as_mut().poll(&mut cx).is_pending());
+            nested_send.send(()).unwrap();
+            nested_done_recv
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            test_rcu().data.event.notify(!0usize);
+            assert!(drain.as_mut().poll(&mut cx).is_pending());
+            release_send.send(()).unwrap();
+            drain.await;
+            reader.join().unwrap();
+            sync(&driver, test_rcu()).await;
+        }
+    }
+
+    #[async_test]
+    async fn cold_reader_exit_wakes_an_existing_synchronizer(driver: DefaultDriver) {
+        define_rcu_domain!(test_rcu);
+
+        let (entered_send, entered_recv) = std::sync::mpsc::channel();
+        let (resume_send, resume_recv) = std::sync::mpsc::channel();
+        let (exited_send, exited_recv) = std::sync::mpsc::channel();
+        let (finish_send, finish_recv) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            test_rcu().run(|| {});
+            test_rcu().quiesce();
+            test_rcu().tls.with(|thread| {
+                let seq = thread.current_seq.load(Ordering::Relaxed);
+                thread
+                    .current_seq
+                    .store(seq | super::SEQ_MASK_BUSY, Ordering::Relaxed);
+                entered_send.send(()).unwrap();
+                resume_recv.recv().unwrap();
+                let cookie = thread.enter_slow(test_rcu().data, seq);
+                thread.exit(test_rcu().data, cookie);
+            });
+            exited_send.send(()).unwrap();
+            finish_recv.recv().unwrap();
+        });
+        entered_recv
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let mut drain = std::pin::pin!(sync(&driver, test_rcu()));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(drain.as_mut().poll(&mut cx).is_pending());
+        resume_send.send(()).unwrap();
+        exited_recv
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let ready = drain.as_mut().poll(&mut cx).is_ready();
+        finish_send.send(()).unwrap();
+        reader.join().unwrap();
+        assert!(ready, "reader exit did not notify the waiting synchronizer");
     }
 
     #[async_test]

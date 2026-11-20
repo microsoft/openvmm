@@ -349,9 +349,21 @@ fn main() -> anyhow::Result<()> {
         } => {
             // Read the config from the JSON manifest path.
             let mut config: Config = serde_json::from_str(
-                &fs_err::read_to_string(manifest).context("reading manifest")?,
+                &fs_err::read_to_string(&manifest).context("reading manifest")?,
             )
             .context("parsing manifest")?;
+
+            // Device policy paths are relative to the manifest file.
+            for guest_config in &mut config.guest_configs {
+                if let Image::Openhcl {
+                    product_policy: Some(p),
+                    ..
+                } = &mut guest_config.image
+                    && let Some(path) = &mut p.device_policy
+                {
+                    *path = manifest.with_file_name(&path);
+                }
+            }
 
             if disable_secure_avic {
                 for guest_config in &mut config.guest_configs {
@@ -1474,8 +1486,12 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                     "reading underhill initrd at {}",
                     initrd_path.display()
                 ))?;
-                if let Some(policy) = product_policy {
-                    product_policy_initrd::append(&mut initrd, policy)?;
+                if let Some(config) = product_policy {
+                    product_policy_initrd::append(
+                        &mut initrd,
+                        &config.policy,
+                        config.device_policy.as_deref(),
+                    )?;
                 }
                 std::io::Cursor::new(initrd)
             };

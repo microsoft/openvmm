@@ -1,10 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::Hv1State;
-use crate::WhpProcessor;
-use crate::memory::VtlAccess;
-use crate::vtl2;
 cfg_select! {
     guest_arch = "aarch64" => {
         use aarch64 as arch;
@@ -12,10 +8,12 @@ cfg_select! {
     guest_arch = "x86_64" => {
         use x86 as arch;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
+
+use crate::Hv1State;
+use crate::WhpProcessor;
+use crate::memory::VtlAccess;
+use crate::vtl2;
 use hv1_hypercall::HvRepResult;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PARTITION_ID_SELF;

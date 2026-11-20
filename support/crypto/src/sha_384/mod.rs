@@ -11,30 +11,28 @@
     all(native, target_os = "macos")
 ))]
 
-#[cfg(openssl)]
-mod ossl;
-#[cfg(openssl)]
-use ossl as sys;
-
-#[cfg(rust)]
-mod rust;
-#[cfg(rust)]
-use rust as sys;
-
-#[cfg(symcrypt)]
-mod symcrypt;
-#[cfg(symcrypt)]
-use symcrypt as sys;
-
-#[cfg(all(native, windows))]
-mod win;
-#[cfg(all(native, windows))]
-use win as sys;
-
-#[cfg(all(native, target_os = "macos"))]
-mod mac;
-#[cfg(all(native, target_os = "macos"))]
-use mac as sys;
+cfg_select! {
+    openssl => {
+        mod ossl;
+        use ossl as sys;
+    }
+    rust => {
+        mod rust;
+        use rust as sys;
+    }
+    symcrypt => {
+        mod symcrypt;
+        use symcrypt as sys;
+    }
+    all(native, windows) => {
+        mod win;
+        use win as sys;
+    }
+    all(native, target_os = "macos") => {
+        mod mac;
+        use mac as sys;
+    }
+}
 
 /// The size of a SHA-384 digest in bytes.
 pub const SHA_384_OUTPUT_SIZE_BYTES: usize = 48;

@@ -16,6 +16,7 @@ fn sample_sivm_policy() -> SivmPolicy {
         require_secure_boot_vars: true,
         require_bcd_integrity: true,
         custom_uefi_json: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        ..Default::default()
     }
 }
 
@@ -28,6 +29,15 @@ fn product_policy_name_returns_variant_tag() {
 fn encode_decode_round_trip_nontrivial_sivm() {
     let policy = ProductPolicy::Sivm(sample_sivm_policy());
     let bytes = encode_product_policy(&policy);
+    // The encoding is measured, so it must stay the same without devices.
+    assert_eq!(
+        bytes,
+        [
+            0x08, 0x80, 0x98, 0xbd, 0x82, 0xc5, 0xe9, 0x90, 0xa4, 0x4f, 0x12, 0x12, 0x0a, 0x10,
+            0x0a, 0x0e, 0x08, 0x01, 0x10, 0x01, 0x18, 0x01, 0x20, 0x01, 0x2a, 0x04, 0xde, 0xad,
+            0xbe, 0xef,
+        ]
+    );
     let decoded = decode_product_policy(&bytes).unwrap();
     assert_eq!(decoded, policy);
 }
@@ -161,6 +171,7 @@ mod serde_tests {
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
             custom_uefi_json: alloc::vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x00, 0xFF],
+            ..Default::default()
         });
         let json = serde_json::to_string(&original).unwrap();
         let restored: ProductPolicy = from_json(&json).unwrap();
@@ -204,6 +215,12 @@ mod serde_tests {
     fn deserialize_rejects_pascal_case_variant() {
         let err = from_json(r#"{"Sivm":{}}"#);
         assert!(err.is_err(), "expected error, got: {err:?}");
+    }
+
+    /// Devices come only from the device policy file, never the manifest JSON.
+    #[test]
+    fn deserialize_rejects_devices() {
+        assert!(from_json(r#"{"azure":{"vpci_relay":{}}}"#).is_err());
     }
 }
 

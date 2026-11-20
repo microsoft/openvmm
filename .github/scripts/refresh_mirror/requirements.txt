@@ -1,2 +1,0 @@
-click==8.1.7
-azure-devops==7.1.0b4

@@ -32,10 +32,14 @@ use uefi_specs::uefi::time::EFI_TIME;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 
-#[cfg(feature = "fuzzing")]
-pub mod auth_var_crypto;
-#[cfg(not(feature = "fuzzing"))]
-mod auth_var_crypto;
+cfg_select! {
+    feature = "fuzzing" => {
+        pub mod auth_var_crypto;
+    }
+    _ => {
+        mod auth_var_crypto;
+    }
+}
 mod nvram_services_ext;
 
 #[derive(Debug, Error)]

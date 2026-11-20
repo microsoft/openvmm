@@ -41,10 +41,14 @@
 #![forbid(unsafe_code)]
 
 pub mod resolver;
-#[cfg(feature = "fuzzing")]
-pub mod service;
-#[cfg(not(feature = "fuzzing"))]
-mod service;
+cfg_select! {
+    feature = "fuzzing" => {
+        pub mod service;
+    }
+    _ => {
+        mod service;
+    }
+}
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;

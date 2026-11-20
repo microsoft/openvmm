@@ -14,7 +14,4 @@ cfg_select! {
         mod aarch64;
         pub use aarch64::*;
     }
-    _ => {
-        compile_error!("target_arch is not supported");
-    }
 }

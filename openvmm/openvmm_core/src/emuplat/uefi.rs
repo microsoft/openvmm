@@ -53,16 +53,16 @@ impl AsyncResolveResource<UefiWatchdogPlatformHandleKind, PlatformResource>
         let mut platform = BaseWatchdogPlatform::new(store)
             .await
             .context("failed to initialize UEFI watchdog platform")?;
-        #[cfg(guest_arch = "x86_64")]
-        platform.add_callback(Box::new(UefiWatchdogTimeoutNmi {
-            partition: self.partition.clone(),
-            watchdog_send,
-        }));
-        #[cfg(guest_arch = "aarch64")]
-        platform.add_callback(Box::new(UefiWatchdogTimeoutReset {
-            halt_vps: self.halt_vps.clone(),
-            watchdog_send,
-        }));
+        platform.add_callback(cfg_select! {
+            guest_arch = "x86_64" => Box::new(UefiWatchdogTimeoutNmi {
+                partition: self.partition.clone(),
+                watchdog_send,
+            }),
+            guest_arch = "aarch64" => Box::new(UefiWatchdogTimeoutReset {
+                halt_vps: self.halt_vps.clone(),
+                watchdog_send,
+            }),
+        });
         Ok(ResolvedUefiWatchdogPlatform {
             platform: Box::new(platform),
             watchdog_recv,

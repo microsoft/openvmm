@@ -16,9 +16,6 @@ cfg_select! {
         mod x86_64;
         use x86_64 as arch;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 
 // irqfd is arch-independent (MSI routing + MSHV_IRQFD), wired up on both

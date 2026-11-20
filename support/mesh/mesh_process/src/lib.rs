@@ -19,6 +19,30 @@
 // UNSAFETY: Needed to accept a raw Fd/Handle from our spawning process.
 #![expect(unsafe_code)]
 
+cfg_select! {
+    windows => {
+        use pal::windows::process;
+        use pal::windows::process::Builder as ProcessBuilder;
+        use std::os::windows::prelude::*;
+
+        mod plat {
+            pub type IpcNode = mesh_remote::windows::AlpcNode;
+            pub type IpcNodeDriver = pal_async::windows::TpPool;
+        }
+    }
+    unix => {
+        use mesh_remote::InvitationAddress;
+        use pal::unix::process::Builder as ProcessBuilder;
+        use pal_async::DefaultPool;
+        use std::os::unix::prelude::*;
+
+        mod plat {
+            pub type IpcNode = mesh_remote::unix::UnixNode;
+            pub type IpcNodeDriver = pal_async::DefaultDriver;
+        }
+    }
+}
+
 use anyhow::Context;
 use base64::Engine;
 use debug_ptr::DebugPtr;
@@ -36,47 +60,20 @@ use mesh::message::MeshField;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
-#[cfg(unix)]
-use mesh_remote::InvitationAddress;
-#[cfg(unix)]
-use pal::unix::process::Builder as ProcessBuilder;
-#[cfg(windows)]
-use pal::windows::process;
-#[cfg(windows)]
-use pal::windows::process::Builder as ProcessBuilder;
-#[cfg(unix)]
-use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use plat::IpcNode;
+use plat::IpcNodeDriver;
 use slab::Slab;
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fs::File;
-#[cfg(unix)]
-use std::os::unix::prelude::*;
-#[cfg(windows)]
-use std::os::windows::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
 use tracing::Instrument;
 use tracing::instrument;
 use unicycle::FuturesUnordered;
-
-#[cfg(windows)]
-mod plat {
-    pub type IpcNode = mesh_remote::windows::AlpcNode;
-    pub type IpcNodeDriver = pal_async::windows::TpPool;
-}
-
-#[cfg(unix)]
-mod plat {
-    pub type IpcNode = mesh_remote::unix::UnixNode;
-    pub type IpcNodeDriver = pal_async::DefaultDriver;
-}
-
-use plat::IpcNode;
-use plat::IpcNodeDriver;
 
 #[cfg(unix)]
 const IPC_FD: i32 = 3;
@@ -438,22 +435,22 @@ impl Mesh {
             job
         };
 
-        #[cfg(windows)]
-        let (node, node_driver) = {
-            let driver = pal_async::windows::TpPool::system();
-            // Use new_named so that the ALPC directory has a path in the Ob
-            // namespace. This is required for listen() — the listener handshake
-            // creates named invitations, which need a named directory.
-            let node = mesh_remote::windows::AlpcNode::new_named(driver.clone())
-                .context("AlpcNode creation failure")?;
-            (node, driver)
-        };
-        #[cfg(unix)]
-        let (node, node_driver) = {
-            // FUTURE: use pool provided by the caller.
-            let (_, driver) = DefaultPool::spawn_on_thread("mesh-worker-pool");
-            let node = mesh_remote::unix::UnixNode::new(driver.clone());
-            (node, driver)
+        let (node, node_driver) = cfg_select! {
+            windows => {{
+                let driver = pal_async::windows::TpPool::system();
+                // Use new_named so that the ALPC directory has a path in the Ob
+                // namespace. This is required for listen() — the listener handshake
+                // creates named invitations, which need a named directory.
+                let node = mesh_remote::windows::AlpcNode::new_named(driver.clone())
+                    .context("AlpcNode creation failure")?;
+                (node, driver)
+            }}
+            unix => {{
+                // FUTURE: use pool provided by the caller.
+                let (_, driver) = DefaultPool::spawn_on_thread("mesh-worker-pool");
+                let node = mesh_remote::unix::UnixNode::new(driver.clone());
+                (node, driver)
+            }}
         };
 
         let (request, requests) = mesh::channel();
@@ -608,15 +605,11 @@ pub async fn connect<T: 'static + MeshField + Send>(
 ) -> anyhow::Result<(mesh::Sender<T>, Connection)> {
     let (send, recv) = mesh::channel::<T>();
 
-    #[cfg(windows)]
-    let node = mesh_remote::windows::AlpcNode::join_by_socket(driver, path, recv.into())
-        .await
-        .context("failed to connect to mesh listener")?;
-
-    #[cfg(unix)]
-    let node = mesh_remote::unix::UnixNode::join_by_path(driver, path, recv.into())
-        .await
-        .context("failed to connect to mesh listener")?;
+    let node = cfg_select! {
+        windows => mesh_remote::windows::AlpcNode::join_by_socket(driver, path, recv.into()).await,
+        unix => mesh_remote::unix::UnixNode::join_by_path(driver, path, recv.into()).await,
+    }
+    .context("failed to connect to mesh listener")?;
 
     Ok((send, Connection { node }))
 }
@@ -801,16 +794,14 @@ impl MeshInner {
     }
 
     /// Checks whether `path` is a socket file.
-    #[cfg(unix)]
     fn is_socket(path: &Path) -> std::io::Result<bool> {
-        use std::os::unix::fs::FileTypeExt;
-        Ok(std::fs::symlink_metadata(path)?.file_type().is_socket())
-    }
-
-    /// Checks whether `path` is a socket file.
-    #[cfg(windows)]
-    fn is_socket(path: &Path) -> std::io::Result<bool> {
-        pal::windows::fs::is_unix_socket(path)
+        cfg_select! {
+            unix => {{
+                use std::os::unix::fs::FileTypeExt;
+                Ok(std::fs::symlink_metadata(path)?.file_type().is_socket())
+            }}
+            windows => pal::windows::fs::is_unix_socket(path),
+        }
     }
 
     /// Spawns a new process with a mesh channel associated with this `Mesh` instance.
@@ -839,117 +830,118 @@ impl MeshInner {
 
         let name = config.name.clone();
 
-        #[cfg(windows)]
-        let child = {
-            let (invitation, handle) = self.node.invite(recv).context("mesh node invite error")?;
-            node_id = invitation.node_id();
-            let (credentials, directory) = invitation.into_parts();
+        let child = cfg_select! {
+            windows => {{
+                let (invitation, handle) =
+                    self.node.invite(recv).context("mesh node invite error")?;
+                node_id = invitation.node_id();
+                let (credentials, directory) = invitation.into_parts();
 
-            let invitation_env = base64::engine::general_purpose::STANDARD.encode(
-                mesh::payload::encode(Invitation {
-                    node_name: name.clone(),
-                    credentials,
-                    directory_handle: directory.as_raw_handle() as usize,
-                }),
-            );
+                let invitation_env = base64::engine::general_purpose::STANDARD.encode(
+                    mesh::payload::encode(Invitation {
+                        node_name: name.clone(),
+                        credentials,
+                        directory_handle: directory.as_raw_handle() as usize,
+                    }),
+                );
 
-            let mut args = config.process_args;
-            if !config.skip_worker_arg {
-                args.push(name.clone().into());
-            }
+                let mut args = config.process_args;
+                if !config.skip_worker_arg {
+                    args.push(name.clone().into());
+                }
 
-            let mut builder = process::Builder::from_args(
-                arg0.as_ref()
-                    .map_or_else(|| process_name.as_os_str(), |x| x.as_os_str()),
-                &args,
-            );
-            if arg0.is_some() {
-                builder.application_name(process_name.as_path());
-            }
-            builder
-                .stdin(process::Stdio::Null)
-                .stdout(process::Stdio::Null)
-                .handle(&directory)
-                .env(INVITATION_ENV_NAME, invitation_env)
-                .extend_env(config.env_vars)
-                .job(self.job.as_handle());
+                let mut builder = process::Builder::from_args(
+                    arg0.as_ref()
+                        .map_or_else(|| process_name.as_os_str(), |x| x.as_os_str()),
+                    &args,
+                );
+                if arg0.is_some() {
+                    builder.application_name(process_name.as_path());
+                }
+                builder
+                    .stdin(process::Stdio::Null)
+                    .stdout(process::Stdio::Null)
+                    .handle(&directory)
+                    .env(INVITATION_ENV_NAME, invitation_env)
+                    .extend_env(config.env_vars)
+                    .job(self.job.as_handle());
 
-            if let Some(log_file) = config.stderr.as_ref() {
-                builder.stderr(process::Stdio::Handle(log_file.as_handle()));
-            }
+                if let Some(log_file) = config.stderr.as_ref() {
+                    builder.stderr(process::Stdio::Handle(log_file.as_handle()));
+                }
 
-            if let Some(mut sandbox_profile) = config.sandbox_profile {
-                sandbox_profile.apply(&mut builder);
-            }
+                if let Some(mut sandbox_profile) = config.sandbox_profile {
+                    sandbox_profile.apply(&mut builder);
+                }
 
-            // Launch the child process on a separate thread to isolate
-            // the CreateProcess call from other IO pools.
-            let child = std::thread::scope(|s| s.spawn(|| builder.spawn()).join().unwrap())
-                .context("failed to launch mesh process")?;
-            // Wait for the child to connect to the mesh. TODO: timeout
-            handle.await;
-            pid = child.id() as i32;
-            tracing::Span::current().record("pid", pid);
+                // Launch the child process on a separate thread to isolate
+                // the CreateProcess call from other IO pools.
+                let child = std::thread::scope(|s| s.spawn(|| builder.spawn()).join().unwrap())
+                    .context("failed to launch mesh process")?;
+                // Wait for the child to connect to the mesh. TODO: timeout
+                handle.await;
+                pid = child.id() as i32;
+                tracing::Span::current().record("pid", pid);
 
-            pal_async::windows::PolledProcess::new(&self.node_driver, child)
-                .expect("failed to create process wait")
-        };
-        #[cfg(unix)]
-        let child = {
-            use pal::unix::process;
+                pal_async::windows::PolledProcess::new(&self.node_driver, child)
+                    .expect("failed to create process wait")
+            }}
+            unix => {{
+                use pal::unix::process;
 
-            let invitation = self
-                .node
-                .invite(recv)
-                .await
-                .context("mesh node invite error")?;
+                let invitation = self
+                    .node
+                    .invite(recv)
+                    .await
+                    .context("mesh node invite error")?;
 
-            node_id = invitation.address.local_addr.node;
+                node_id = invitation.address.local_addr.node;
 
-            let invitation_env = base64::engine::general_purpose::STANDARD.encode(
-                mesh::payload::encode(Invitation {
-                    node_name: name.clone(),
-                    address: invitation.address,
-                    socket_fd: IPC_FD,
-                }),
-            );
+                let invitation_env = base64::engine::general_purpose::STANDARD.encode(
+                    mesh::payload::encode(Invitation {
+                        node_name: name.clone(),
+                        address: invitation.address,
+                        socket_fd: IPC_FD,
+                    }),
+                );
 
-            let mut command = process::Builder::new(process_name.into_owned());
-            if let Some(arg0) = arg0 {
-                command.arg0(arg0);
-            }
-            command
-                .args(&config.process_args)
-                .stdin(process::Stdio::Null)
-                .stdout(process::Stdio::Null)
-                .dup_fd(invitation.fd.as_fd(), IPC_FD)
-                .env(INVITATION_ENV_NAME, invitation_env);
+                let mut command = process::Builder::new(process_name.into_owned());
+                if let Some(arg0) = arg0 {
+                    command.arg0(arg0);
+                }
+                command
+                    .args(&config.process_args)
+                    .stdin(process::Stdio::Null)
+                    .stdout(process::Stdio::Null)
+                    .dup_fd(invitation.fd.as_fd(), IPC_FD)
+                    .env(INVITATION_ENV_NAME, invitation_env);
 
-            for (key, value) in &config.env_vars {
-                command.env(key, value);
-            }
+                for (key, value) in &config.env_vars {
+                    command.env(key, value);
+                }
 
-            if !config.skip_worker_arg {
-                command.arg(&name);
-            }
+                if !config.skip_worker_arg {
+                    command.arg(&name);
+                }
 
-            if let Some(log_file) = config.stderr.as_ref() {
-                command.stderr(process::Stdio::Fd(log_file.as_fd()));
-            }
+                if let Some(log_file) = config.stderr.as_ref() {
+                    command.stderr(process::Stdio::Fd(log_file.as_fd()));
+                }
 
-            if let Some(mut sandbox_profile) = config.sandbox_profile {
-                sandbox_profile.apply(&mut command);
-            }
+                if let Some(mut sandbox_profile) = config.sandbox_profile {
+                    sandbox_profile.apply(&mut command);
+                }
 
-            // Launch the child process on a separate thread to isolate
-            // the fork() call from other IO pools.
-            let child = std::thread::scope(|s| s.spawn(|| command.spawn()).join().unwrap())
-                .context("failed to launch mesh process")?;
-            pid = child.id();
-            tracing::Span::current().record("pid", pid);
+                // Launch the child process on a separate thread to isolate
+                // the fork() call from other IO pools.
+                let child = std::thread::scope(|s| s.spawn(|| command.spawn()).join().unwrap())
+                    .context("failed to launch mesh process")?;
+                pid = child.id();
+                tracing::Span::current().record("pid", pid);
 
-            pal_async::process::PolledChild::<process::Child>::new(&self.node_driver, child)
-                .expect("failed to create process wait")
+                pal_async::process::PolledChild::<process::Child>::new(&self.node_driver, child)
+                    .expect("failed to create process wait")
+            }}
         };
 
         let id = self.hosts.insert(MeshHostInner {
