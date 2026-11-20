@@ -1759,6 +1759,43 @@ mod tests {
     }
 
     #[test]
+    fn nested_hyperv_vbs_l1_keeps_automatic_instability() {
+        let auto = quote!(.unstable(#HYPERV_VBS_UNSTABLE_REASON)).to_string();
+        let expand_nested = |l2| {
+            let output = expand(quote! {
+                configs(nested(
+                    (vm_host, hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
+                    (ARCHIVE, "tests", "multiarch", #l2),
+                ))
+            })
+            .unwrap();
+            // Each generated test contains exactly one `SimpleTest`; the outer
+            // (L1) test is emitted before the inner (L2) one.
+            let tests = output
+                .split("SimpleTest")
+                .skip(1)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            assert_eq!(tests.len(), 2);
+            (tests[0].clone(), tests[1].clone())
+        };
+
+        let (outer, inner) = expand_nested(quote!(openvmm_linux_direct_x64));
+        assert!(outer.contains(&auto));
+        assert!(!inner.contains(".unstable"));
+        assert!(inner.contains(&quote!(.ignore()).to_string()));
+
+        let (outer, inner) = expand_nested(quote!(unstable(
+            reason = "explicit",
+            openvmm_linux_direct_x64
+        )));
+        assert!(outer.contains(&quote!(.unstable("explicit")).to_string()));
+        assert!(!outer.contains(&auto));
+        assert!(!inner.contains(".unstable"));
+        assert!(inner.contains(&quote!(.ignore()).to_string()));
+    }
+
+    #[test]
     fn unconditional_instability_and_ignore_keep_their_syntax() {
         let output = expand(quote! {
             openvmm, unstable(reason = "all hosts",),
