@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use super::SYNTHETIC_ROOT_FH;
+use crate::MAX_GUEST_BUFFER_SIZE;
 use crate::VirtioFs;
 use crate::inode;
 use crate::inode::VirtioFsVolume;
@@ -274,4 +275,22 @@ fn failed_synthetic_root_readdirplus_returns_entries_holding_references() {
     // root.
     fs.forget(node_id, 1);
     assert!(fs.get_inode(node_id).is_err(), "inode leaked");
+}
+
+#[test]
+fn synthetic_root_readdir_payload_is_bounded() {
+    let fs = VirtioFs::new_aggregate();
+
+    for plus in [false, true] {
+        let entries = fs
+            .read_synthetic_root_dir(0, MAX_GUEST_BUFFER_SIZE as u32, plus)
+            .unwrap();
+        assert!(!entries.is_empty());
+        // Larger directory reads are truncated rather than rejected.
+        for size in [MAX_GUEST_BUFFER_SIZE as u32 + 1, u32::MAX] {
+            let buffer = fs.read_synthetic_root_dir(0, size, plus).unwrap();
+            assert_eq!(buffer, entries);
+            assert!(buffer.capacity() <= MAX_GUEST_BUFFER_SIZE);
+        }
+    }
 }
