@@ -744,7 +744,9 @@ fn parse_str(v: &[u16], n: u32) -> anyhow::Result<String> {
 }
 
 fn write_str(v: &mut [u16], s: &str) -> anyhow::Result<u32> {
-    let s = U16CString::from_str(s).context("string contains a null character")?;
+    // `U16CString::from_str` would accept a trailing NUL as the terminator.
+    anyhow::ensure!(!s.contains('\0'), "string contains a null character");
+    let s = U16CString::from_str_truncate(s);
     let s = s.as_slice_with_nul();
     v.get_mut(..s.len())
         .context("string too long")?

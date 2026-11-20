@@ -918,7 +918,13 @@ impl<'a> Builder<'a> {
                     let mut entry = U16String::from_os_str(&key);
                     entry.push_char('=');
                     entry.push_os_str(val);
-                    block.push_slice(null_terminate(entry)?.as_slice_with_nul());
+                    // Reject every NUL, including a trailing one that
+                    // `null_terminate` would accept as the terminator.
+                    if entry.as_slice().contains(&0) {
+                        return Err(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as i32));
+                    }
+                    block.push(entry);
+                    block.push_char('\0');
                 }
                 block.push_char('\0');
                 env_block = Some(block);
@@ -1027,7 +1033,11 @@ mod tests {
 
     #[test]
     fn test_environment_rejects_interior_nul() {
-        for (key, value) in [("nul\0key", "value"), ("key", "nul\0value")] {
+        for (key, value) in [
+            ("nul\0key", "value"),
+            ("key", "nul\0value"),
+            ("key", "value\0"),
+        ] {
             let mut builder = Builder::new("unused");
             builder.env_clear().env(key, value);
             let error = builder.spawn().unwrap_err();

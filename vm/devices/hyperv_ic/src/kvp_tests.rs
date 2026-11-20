@@ -85,7 +85,9 @@ fn string_round_trip_fills_buffer_exactly() {
 #[test]
 fn malformed_strings_are_rejected() {
     let mut buf = [0; 8];
-    assert!(write_str(&mut buf, "a\0b").is_err());
+    for s in ["a\0b", "a\0", "\0"] {
+        assert!(write_str(&mut buf, s).is_err(), "{s:?}");
+    }
 
     let guest = [b'a' as u16, 0, b'b' as u16, 0];
     assert_eq!(parse_str(&guest, 4).unwrap(), "a");
