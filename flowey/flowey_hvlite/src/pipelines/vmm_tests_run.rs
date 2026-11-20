@@ -561,7 +561,7 @@ impl IntoPipeline for VmmTestsRunCli {
                         flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Default
                     },
                     petri_params: PetriParams {
-                        disable_remote_artifacts: false,
+                        disable_remote_artifacts: no_lazy_fetch,
                         reuse_prepped_vhds: !no_reuse_prepped_vhds,
                         require_2mb_hugetlb: false, // TODO
                     },
