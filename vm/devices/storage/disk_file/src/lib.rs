@@ -77,19 +77,12 @@ enum FileIoBuffer {
     Aligned(BounceBuffer),
 }
 
-impl std::ops::Deref for FileIoBuffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &[u8] {
-        match self {
-            FileIoBuffer::Unaligned(buffer) => buffer,
-            FileIoBuffer::Aligned(buffer) => buffer.as_bytes(),
-        }
-    }
-}
-
-impl std::ops::DerefMut for FileIoBuffer {
-    fn deref_mut(&mut self) -> &mut [u8] {
+impl FileIoBuffer {
+    /// Returns the buffer memory.
+    ///
+    /// This requires exclusive access because [`BounceBuffer`] also exposes
+    /// its memory as shared atomics.
+    fn as_mut_bytes(&mut self) -> &mut [u8] {
         match self {
             FileIoBuffer::Unaligned(buffer) => buffer,
             FileIoBuffer::Aligned(buffer) => buffer.as_mut_bytes(),
@@ -143,7 +136,6 @@ impl FileDisk {
 }
 
 impl FileDisk {
-
     fn io_buffer(&self, len: usize) -> FileIoBuffer {
         if self.aligned_buffers {
             FileIoBuffer::Aligned(BounceBuffer::new(len))
@@ -159,9 +151,10 @@ impl FileDisk {
         let mut buffer = self.io_buffer(buffers.len());
         let file = self.file.clone();
         let offset = sector << self.sector_shift;
-        let buffer = unblock(move || -> Result<_, std::io::Error> {
-            let count = file.read_at(&mut buffer, offset)?;
-            if count != buffer.len() {
+        let mut buffer = unblock(move || -> Result<_, std::io::Error> {
+            let bytes = buffer.as_mut_bytes();
+            let count = file.read_at(bytes, offset)?;
+            if count != bytes.len() {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "short disk read",
@@ -172,7 +165,7 @@ impl FileDisk {
         })
         .await
         .map_err(DiskError::Io)?;
-        buffers.writer().write(&buffer)?;
+        buffers.writer().write(buffer.as_mut_bytes())?;
         Ok(())
     }
 
@@ -187,11 +180,12 @@ impl FileDisk {
         }
         let mut buffer = self.io_buffer(buffers.len());
         let file = self.file.clone();
-        buffers.reader().read(&mut buffer)?;
+        buffers.reader().read(buffer.as_mut_bytes())?;
         let offset = sector << self.sector_shift;
         unblock(move || -> Result<(), std::io::Error> {
-            let count = file.write_at(&buffer, offset)?;
-            if count != buffer.len() {
+            let bytes = buffer.as_mut_bytes();
+            let count = file.write_at(bytes, offset)?;
+            if count != bytes.len() {
                 Err(std::io::Error::other("short disk write"))
             } else {
                 Ok(())
@@ -319,7 +313,6 @@ mod tests {
     async fn sector_range_conformance() {
         storage_tests::sector_range::test_disk_sector_range_conformance(&file_disk()).await;
     }
-
 
     /// Unbuffered handles round-trip guest I/O.
     #[cfg(windows)]

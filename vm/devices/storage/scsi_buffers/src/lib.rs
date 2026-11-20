@@ -210,11 +210,6 @@ impl BounceBuffer {
     }
 
     /// Returns the bounce buffer memory.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.pages.as_bytes()[..self.len()]
-    }
-
-    /// Returns the bounce buffer memory, mutably.
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
         let len = self.len();
         &mut self.pages.as_mut_bytes()[..len]
