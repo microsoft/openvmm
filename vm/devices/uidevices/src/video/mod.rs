@@ -1309,7 +1309,8 @@ mod tests {
         // same active channel, including a demand change while paused.
         for needed in [false, false, true] {
             send.send(needed);
-            {
+            StopTask::run_unstoppable(async |stop| {
+                let check = stop.check_handle().unwrap();
                 let process = std::pin::pin!(process_channel(
                     &mut host,
                     &mut state,
@@ -1318,9 +1319,11 @@ mod tests {
                     &None,
                     &mut updates_needed_recv,
                     &mut last_updates_needed,
+                    &check,
                 ));
                 assert!(futures::poll!(process).is_pending());
-            }
+            })
+            .await;
             assert_eq!(last_updates_needed, needed);
             let fc = recv_feature_change(&mut guest).now_or_never().unwrap();
             assert_eq!(fc.is_dirt_needed, needed as u8);
@@ -1359,7 +1362,8 @@ mod tests {
             }
         }
         send.send(false);
-        {
+        StopTask::run_unstoppable(async |stop| {
+            let check = stop.check_handle().unwrap();
             let process = std::pin::pin!(process_channel(
                 &mut host,
                 &mut state,
@@ -1368,9 +1372,11 @@ mod tests {
                 &None,
                 &mut updates_needed_recv,
                 &mut last_updates_needed,
+                &check,
             ));
             assert!(futures::poll!(process).is_pending());
-        }
+        })
+        .await;
         assert!(!last_updates_needed);
         assert!(matches!(
             updates_needed_recv.as_mut().unwrap().try_recv(),
