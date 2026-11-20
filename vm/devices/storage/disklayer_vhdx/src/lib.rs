@@ -9,7 +9,7 @@
 //!
 //! # Modules
 //!
-//! - [`io`] — `BlockingFile`: async file I/O via `blocking::unblock`
+//! - [`io`] — owned-buffer metadata I/O adapter
 
 #![forbid(unsafe_code)]
 
@@ -19,14 +19,13 @@ pub mod resolver;
 
 use disk_backend::DiskError;
 use disk_backend::UnmapBehavior;
+use disk_file::host_file::HostFile;
 use disk_layered::LayerIo;
 use disk_layered::SectorMarker;
-use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
-use io::BlockingFile;
+use io::MetadataFile;
 use scsi_buffers::RequestBuffers;
-use vhdx::AsyncFile;
 use vhdx::ReadRange;
 use vhdx::VhdxFile;
 use vhdx::WriteRange;
@@ -39,9 +38,9 @@ use vhdx::WriteRange;
 #[derive(Inspect)]
 pub struct VhdxLayer {
     #[inspect(skip)]
-    vhdx: VhdxFile<BlockingFile>,
+    vhdx: VhdxFile<MetadataFile>,
     #[inspect(skip)]
-    file: BlockingFile,
+    payload_file: HostFile,
     sector_size: u32,
     physical_sector_size: u32,
     sector_count: u64,
@@ -51,13 +50,8 @@ pub struct VhdxLayer {
 }
 
 impl VhdxLayer {
-    /// Create a `VhdxLayer` from an open `VhdxFile` and a clone of the
-    /// `BlockingFile` used to open it.
-    ///
-    /// `file` must be a clone of the `BlockingFile` that was passed to
-    /// `VhdxFile::open`. Both share the same `Arc<File>`, so data I/O
-    /// on resolved ranges goes to the same underlying file descriptor.
-    pub fn new(vhdx: VhdxFile<BlockingFile>, file: BlockingFile, read_only: bool) -> Self {
+    /// Creates a layer from an open VHDX and its shared payload scheduler.
+    pub fn new(vhdx: VhdxFile<MetadataFile>, payload_file: HostFile, read_only: bool) -> Self {
         let sector_size = vhdx.logical_sector_size();
         let physical_sector_size = vhdx.physical_sector_size();
         let sector_count = vhdx.disk_size() / sector_size as u64;
@@ -65,7 +59,7 @@ impl VhdxLayer {
         let has_parent = vhdx.has_parent();
         Self {
             vhdx,
-            file,
+            payload_file,
             sector_size,
             physical_sector_size,
             sector_count,
@@ -147,6 +141,7 @@ impl LayerIo for VhdxLayer {
             .resolve_read(offset, len, &mut ranges)
             .await
             .map_err(vhdx_to_disk_error)?;
+        let payload_request = self.payload_file.request(buffers.len());
 
         // Process each range.
         for range in &ranges {
@@ -157,20 +152,9 @@ impl LayerIo for VhdxLayer {
                     file_offset,
                 } => {
                     let buf_offset = (guest_offset - offset) as usize;
-
-                    // Read from the VHDX file into an owned buffer (zero-copy I/O).
-                    let buf = self.file.alloc_buffer(length as usize);
-                    let buf = self
-                        .file
-                        .read_into(file_offset, buf)
-                        .await
-                        .map_err(DiskError::Io)?;
-
-                    // Write data into the request buffers at the correct position.
-                    buffers
-                        .subrange(buf_offset, length as usize)
-                        .writer()
-                        .write(buf.as_ref())?;
+                    payload_request
+                        .read_at(&buffers.subrange(buf_offset, length as usize), file_offset)
+                        .await?;
 
                     // Mark these sectors as present.
                     let start_sector = guest_offset / self.sector_size as u64;
@@ -223,6 +207,7 @@ impl LayerIo for VhdxLayer {
             .resolve_write(offset, len, &mut ranges)
             .await
             .map_err(vhdx_to_disk_error)?;
+        let payload_request = self.payload_file.request(buffers.len());
 
         // Process each range.
         for range in &ranges {
@@ -233,30 +218,21 @@ impl LayerIo for VhdxLayer {
                     file_offset,
                 } => {
                     let buf_offset = (guest_offset - offset) as usize;
-
-                    // Read data from the request buffers into an owned buffer.
-                    let mut buf = self.file.alloc_buffer(length as usize);
-                    buffers
-                        .subrange(buf_offset, length as usize)
-                        .reader()
-                        .read(buf.as_mut())?;
-
-                    // Write to the VHDX file at the resolved offset (zero-copy I/O).
-                    self.file
-                        .write_from(file_offset, buf)
-                        .await
-                        .map_err(DiskError::Io)?;
+                    payload_request
+                        .write_at(
+                            &buffers.subrange(buf_offset, length as usize),
+                            file_offset,
+                            false,
+                        )
+                        .await?;
                 }
                 WriteRange::Zero {
                     file_offset,
                     length,
                 } => {
-                    // Write zeros to the file at the given offset
-                    // (for newly-allocated block padding).
-                    self.file
-                        .zero_range(file_offset, length as u64)
-                        .await
-                        .map_err(DiskError::Io)?;
+                    self.payload_file
+                        .zero_at(file_offset, length as u64)
+                        .await?;
                 }
             }
         }
@@ -314,7 +290,7 @@ mod tests {
     /// Create a VHDX file at the given path and return a `VhdxLayer`.
     async fn create_and_open_layer(path: &std::path::Path, driver: &DefaultDriver) -> VhdxLayer {
         // Create a 1 MiB VHDX.
-        let bf = BlockingFile::open(path, false).unwrap();
+        let bf = MetadataFile::open(path, false).unwrap();
         let mut params = vhdx::CreateParams {
             disk_size: 1024 * 1024,
             ..Default::default()
@@ -322,10 +298,18 @@ mod tests {
         vhdx::create(&bf, &mut params).await.unwrap();
 
         // Re-open and wrap as VhdxLayer.
-        let bf = BlockingFile::open(path, false).unwrap();
-        let bf2 = bf.clone();
-        let vhdx = VhdxFile::open(bf).writable(&driver).await.unwrap();
-        VhdxLayer::new(vhdx, bf2, false)
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let payload_file = HostFile::new(file, driver.clone()).unwrap();
+        let metadata_file = MetadataFile::from_owned(payload_file.owned_file());
+        let vhdx = VhdxFile::open(metadata_file)
+            .writable(driver)
+            .await
+            .unwrap();
+        VhdxLayer::new(vhdx, payload_file, false)
     }
 
     /// Wrap a VhdxLayer in a single-layer LayeredDisk.
@@ -431,17 +415,18 @@ mod tests {
     async fn write_close_reopen_read(driver: DefaultDriver) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.vhdx");
+        let len = 128 * 1024;
 
         // Create and write data
         {
             let layer = create_and_open_layer(&path, &driver).await;
             let disk = wrap_in_layered_disk(layer).await;
 
-            let mem = GuestMemory::allocate(512);
-            let pattern: Vec<u8> = (0..512u16).map(|i| (i % 251) as u8).collect();
+            let mem = GuestMemory::allocate(len);
+            let pattern: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
             mem.write_at(0, &pattern).unwrap();
-            let owned = OwnedRequestBuffers::linear(0, 512, false);
-            disk.write_vectored(&owned.buffer(&mem), 0, false)
+            let owned = OwnedRequestBuffers::linear(0, len, false);
+            disk.write_vectored(&owned.buffer(&mem), 0, true)
                 .await
                 .unwrap();
 
@@ -451,14 +436,19 @@ mod tests {
 
         // Re-open and read back
         {
-            let bf = BlockingFile::open(&path, false).unwrap();
-            let bf2 = bf.clone();
-            let vhdx = VhdxFile::open(bf)
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let payload_file = HostFile::new(file, driver.clone()).unwrap();
+            let metadata_file = MetadataFile::from_owned(payload_file.owned_file());
+            let vhdx = VhdxFile::open(metadata_file)
                 .allow_replay(true)
                 .read_only()
                 .await
                 .unwrap();
-            let layer = VhdxLayer::new(vhdx, bf2, true);
+            let layer = VhdxLayer::new(vhdx, payload_file, true);
             let disk = LayeredDisk::new(
                 true,
                 vec![LayerConfiguration {
@@ -470,13 +460,13 @@ mod tests {
             .await
             .unwrap();
 
-            let mem = GuestMemory::allocate(512);
-            let owned = OwnedRequestBuffers::linear(0, 512, true);
+            let mem = GuestMemory::allocate(len);
+            let owned = OwnedRequestBuffers::linear(0, len, true);
             disk.read_vectored(&owned.buffer(&mem), 0).await.unwrap();
 
-            let mut buf = vec![0u8; 512];
+            let mut buf = vec![0u8; len];
             mem.read_at(0, &mut buf).unwrap();
-            let expected: Vec<u8> = (0..512u16).map(|i| (i % 251) as u8).collect();
+            let expected: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
             assert_eq!(buf, expected);
         }
     }

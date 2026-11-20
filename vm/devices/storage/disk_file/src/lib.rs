@@ -2,8 +2,11 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-#![forbid(unsafe_code)]
+// UNSAFETY: Submitting io_uring operations that reference locked guest pages.
+#![cfg_attr(target_os = "linux", expect(unsafe_code))]
+#![cfg_attr(not(target_os = "linux"), forbid(unsafe_code))]
 
+pub mod host_file;
 mod readwriteat;
 
 use self::readwriteat::ReadWriteAt;
