@@ -3171,28 +3171,76 @@ fn build_virtio_fs_windows_options(
 }
 
 /// Builds a disk backend resource from the proto `DiskBackend`.
-async fn build_disk_backend(
+fn build_disk_backend<'a>(
     backend: vmservice::DiskBackend,
     read_only: bool,
+    registry: &'a ResourceRegistry,
+) -> futures::future::BoxFuture<'a, anyhow::Result<Resource<DiskHandleKind>>> {
+    Box::pin(async move {
+        match backend.kind {
+            Some(vmservice::disk_backend::Kind::PhysicalDisk(vmservice::PhysicalDisk {
+                handle_name,
+            })) => physical_disk_backend(&handle_name, registry),
+            // `disk_open` cannot open registered resources, so layer the
+            // overlay over the separately built lower disk.
+            Some(vmservice::disk_backend::Kind::MemoryDiff(diff))
+                if diff.lower.as_deref().is_some_and(has_physical_disk) =>
+            {
+                let lower = build_disk_backend(*diff.lower.unwrap(), true, registry).await?;
+                Ok(disk_backend_resources::LayeredDiskHandle {
+                    layers: vec![
+                        disk_backend_resources::layer::RamDiskLayerHandle {
+                            len: None,
+                            sector_size: None,
+                        }
+                        .into_resource()
+                        .into(),
+                        disk_backend_resources::layer::DiskLayerHandle(lower)
+                            .into_resource()
+                            .into(),
+                    ],
+                }
+                .into_resource())
+            }
+            kind => {
+                crate::disk_open(
+                    &disk_backend_from_proto(vmservice::DiskBackend { kind })?,
+                    read_only,
+                )
+                .await
+            }
+        }
+    })
+}
+
+/// Returns whether `backend` is, or is layered over, a physical disk.
+fn has_physical_disk(backend: &vmservice::DiskBackend) -> bool {
+    match &backend.kind {
+        Some(vmservice::disk_backend::Kind::PhysicalDisk(_)) => true,
+        Some(vmservice::disk_backend::Kind::MemoryDiff(diff)) => {
+            diff.lower.as_deref().is_some_and(has_physical_disk)
+        }
+        _ => false,
+    }
+}
+
+/// Resolves a registered physical disk handle.
+fn physical_disk_backend(
+    handle_name: &str,
     registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
-    if let Some(vmservice::disk_backend::Kind::Handle(vmservice::HandleDisk { handle_name })) =
-        backend.kind
+    #[cfg(windows)]
     {
-        #[cfg(windows)]
-        {
-            let handle = registry
-                .resolve(&handle_name)
-                .with_context(|| format!("failed to resolve disk handle '{handle_name}'"))?;
-            return Ok(disk_backend_resources::PhysicalDiskHandle(handle.into()).into_resource());
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (handle_name, registry);
-            anyhow::bail!("handle disk backends are only supported on Windows")
-        }
+        let handle = registry
+            .resolve(handle_name)
+            .with_context(|| format!("failed to resolve physical disk '{handle_name}'"))?;
+        Ok(disk_backend_resources::PhysicalDiskHandle(handle.into()).into_resource())
     }
-    crate::disk_open(&disk_backend_from_proto(backend)?, read_only).await
+    #[cfg(not(windows))]
+    {
+        let _ = (handle_name, registry);
+        anyhow::bail!("physical disk backends are only supported on Windows")
+    }
 }
 
 fn disk_backend_from_proto(backend: vmservice::DiskBackend) -> anyhow::Result<DiskCliKind> {
@@ -3210,8 +3258,8 @@ fn disk_backend_from_proto(backend: vmservice::DiskBackend) -> anyhow::Result<Di
         vmservice::disk_backend::Kind::Memory(vmservice::MemoryDisk { size_bytes }) => {
             DiskCliKind::Memory(size_bytes)
         }
-        vmservice::disk_backend::Kind::Handle(_) => {
-            anyhow::bail!("handle disk backends require a standalone disk")
+        vmservice::disk_backend::Kind::PhysicalDisk(_) => {
+            anyhow::bail!("physical disk backends are only supported for storage devices")
         }
         vmservice::disk_backend::Kind::MemoryDiff(overlay) => DiskCliKind::MemoryDiff(Box::new(
             disk_backend_from_proto(*overlay.lower.context("missing memory diff lower disk")?)?,
@@ -3819,32 +3867,35 @@ mod tests {
         }
     }
 
+    fn physical_disk_backend(name: &str) -> vmservice::DiskBackend {
+        vmservice::DiskBackend {
+            kind: Some(vmservice::disk_backend::Kind::PhysicalDisk(
+                vmservice::PhysicalDisk {
+                    handle_name: name.into(),
+                },
+            )),
+        }
+    }
+
     #[test]
-    fn unregistered_handle_disk_backend_is_rejected() {
+    fn unregistered_physical_disk_backend_is_rejected() {
         DefaultPool::run_with(async |_driver| {
             let registry = ResourceRegistry::default();
             for name in ["", "missing"] {
-                let backend = vmservice::DiskBackend {
-                    kind: Some(vmservice::disk_backend::Kind::Handle(
-                        vmservice::HandleDisk {
-                            handle_name: name.into(),
-                        },
-                    )),
-                };
-                let error = build_disk_backend(backend, false, &registry)
+                let error = build_disk_backend(physical_disk_backend(name), false, &registry)
                     .await
                     .unwrap_err();
                 #[cfg(windows)]
                 assert_eq!(
                     format!("{error:#}"),
                     format!(
-                        "failed to resolve disk handle '{name}': no handle registered under name '{name}'"
+                        "failed to resolve physical disk '{name}': no handle registered under name '{name}'"
                     )
                 );
                 #[cfg(not(windows))]
                 assert_eq!(
                     error.to_string(),
-                    "handle disk backends are only supported on Windows"
+                    "physical disk backends are only supported on Windows"
                 );
             }
         });
@@ -3852,18 +3903,12 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn registered_handle_disk_backends() {
+    fn registered_physical_disk_backends() {
         DefaultPool::run_with(async |_driver| {
             let registry = ResourceRegistry::default();
             let file = tempfile::tempfile().unwrap();
             registry.register("disk".into(), file.into()).unwrap();
-            let backend = || vmservice::DiskBackend {
-                kind: Some(vmservice::disk_backend::Kind::Handle(
-                    vmservice::HandleDisk {
-                        handle_name: "disk".into(),
-                    },
-                )),
-            };
+            let backend = || physical_disk_backend("disk");
 
             build_nvme_controller(
                 vmservice::NvmeConfig {
@@ -3896,6 +3941,20 @@ mod tests {
                 .unwrap();
             assert_eq!(disk.id(), "physical_disk");
 
+            // A memory diff overlay layers RAM over the physical disk, which
+            // `disk_open` alone cannot open.
+            let diff = |lower: vmservice::DiskBackend| vmservice::DiskBackend {
+                kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::new(
+                    vmservice::MemoryDiffDisk {
+                        lower: Some(Box::new(lower)),
+                    },
+                ))),
+            };
+            for backend in [diff(backend()), diff(diff(backend()))] {
+                let disk = build_disk_backend(backend, false, &registry).await.unwrap();
+                assert_eq!(disk.id(), "layered");
+            }
+
             registry.deregister("disk");
             assert!(
                 build_disk_backend(backend(), true, &registry)
@@ -3903,6 +3962,15 @@ mod tests {
                     .is_err()
             );
         });
+    }
+
+    #[test]
+    fn physical_disk_backend_is_rejected_outside_storage_devices() {
+        let error = disk_backend_from_proto(physical_disk_backend("disk")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "physical disk backends are only supported for storage devices"
+        );
     }
 
     #[test]

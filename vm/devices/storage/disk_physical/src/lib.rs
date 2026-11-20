@@ -19,7 +19,6 @@ use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::PhysicalDiskHandle;
 use disk_file::FileDisk;
 use inspect::Inspect;
-use scsi_buffers::BounceBuffer;
 use scsi_buffers::RequestBuffers;
 use std::fs::File;
 use thiserror::Error;
@@ -74,14 +73,8 @@ impl PhysicalDisk {
         // an overlapped handle.
         pal::windows::fs::ensure_synchronous(&file)?;
         let geometry = geometry::query_disk_geometry(&file)?;
-        // Unbuffered I/O requires sector-aligned buffers, which aligned
-        // buffers provide only up to their fixed alignment.
-        if geometry.sector_size as usize > BounceBuffer::ALIGNMENT {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                format!("unsupported sector size {}", geometry.sector_size),
-            ));
-        }
+        // The handle may have been opened for unbuffered I/O, which requires
+        // sector-aligned buffers.
         let file = FileDisk::with_metadata(
             file,
             disk_file::Metadata {
@@ -91,7 +84,7 @@ impl PhysicalDisk {
                 read_only,
             },
         )
-        .with_aligned_buffers();
+        .with_aligned_buffers()?;
         Ok(Self { file })
     }
 }
@@ -163,6 +156,7 @@ impl DiskIo for PhysicalDisk {
 #[cfg(test)]
 mod tests {
     use super::PhysicalDisk;
+    use pal_async::async_test;
 
     const DISK_SIZE: u64 = 1024 * 1024;
 
@@ -195,5 +189,71 @@ mod tests {
         let err = PhysicalDisk::open(file, false).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("synchronous I/O"), "{err}");
+    }
+
+    /// Geometry is queried from a real disk, and unbuffered I/O round-trips.
+    ///
+    /// Attaching a VHD as a host disk requires administrator privileges. Run
+    /// with `cargo nextest run -p disk_physical --run-ignored all`.
+    #[async_test]
+    #[ignore = "needs administrator to attach a VHD as a host disk"]
+    async fn attached_vhd_round_trips() {
+        use disk_backend::DiskIo;
+        use guestmem::GuestMemory;
+        use scsi_buffers::OwnedRequestBuffers;
+        use std::os::windows::fs::FileExt;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_NO_BUFFERING;
+
+        const IO_SIZE: usize = 4096;
+        const SECTOR: u64 = 8;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disk.vhd");
+        {
+            let image = std::fs::File::create(&path).unwrap();
+            image.set_len(DISK_SIZE).unwrap();
+            image.seek_write(&[0x5a; IO_SIZE], SECTOR * 512).unwrap();
+            disk_vhd1::Vhd1Disk::make_fixed(&image).unwrap();
+        }
+        let (_vhd, disk_path) = disk_vhdmp::Vhd::attach_to_host(&path, false).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_NO_BUFFERING)
+            .open(&disk_path)
+            .unwrap();
+        let disk = PhysicalDisk::open(file, false).unwrap();
+        assert_eq!(disk.sector_size(), 512);
+        assert!(disk.physical_sector_size() >= 512);
+        assert_eq!(disk.sector_count() * 512, DISK_SIZE);
+
+        let mem = GuestMemory::allocate(IO_SIZE * 2);
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, IO_SIZE, true).buffer(&mem),
+            SECTOR,
+        )
+        .await
+        .unwrap();
+        let mut contents = [0; IO_SIZE];
+        mem.read_at(0, &mut contents).unwrap();
+        assert_eq!(contents, [0x5a; IO_SIZE]);
+
+        mem.write_at(IO_SIZE as u64, &[0xa5; IO_SIZE]).unwrap();
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(IO_SIZE as u64, IO_SIZE, false).buffer(&mem),
+            SECTOR * 2,
+            false,
+        )
+        .await
+        .unwrap();
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, IO_SIZE, true).buffer(&mem),
+            SECTOR * 2,
+        )
+        .await
+        .unwrap();
+        mem.read_at(0, &mut contents).unwrap();
+        assert_eq!(contents, [0xa5; IO_SIZE]);
     }
 }

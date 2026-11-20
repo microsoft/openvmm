@@ -125,9 +125,25 @@ impl FileDisk {
         }
     }
 
-    pub fn with_aligned_buffers(mut self) -> Self {
+    /// Allocates I/O buffers aligned to [`BounceBuffer::ALIGNMENT`], as
+    /// required for handles opened with `FILE_FLAG_NO_BUFFERING` or
+    /// `O_DIRECT`.
+    ///
+    /// Fails if the sector size exceeds that alignment, since buffers would
+    /// then not be sector aligned.
+    pub fn with_aligned_buffers(mut self) -> Result<Self, std::io::Error> {
+        if self.metadata.sector_size as usize > BounceBuffer::ALIGNMENT {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "sector size {} exceeds the I/O buffer alignment {}",
+                    self.metadata.sector_size,
+                    BounceBuffer::ALIGNMENT
+                ),
+            ));
+        }
         self.aligned_buffers = true;
-        self
+        Ok(self)
     }
 
     pub fn into_inner(self) -> fs::File {
@@ -272,6 +288,7 @@ impl DiskIo for FileDisk {
 #[cfg(test)]
 mod tests {
     use super::FileDisk;
+    use super::Metadata;
     use disk_backend::Disk;
     use disk_backend::DiskError;
     use guestmem::GuestMemory;
@@ -338,7 +355,13 @@ mod tests {
             .custom_flags(FILE_FLAG_NO_BUFFERING)
             .open(&path)
             .unwrap();
-        let disk = Disk::new(FileDisk::open(file, false).unwrap().with_aligned_buffers()).unwrap();
+        let disk = Disk::new(
+            FileDisk::open(file, false)
+                .unwrap()
+                .with_aligned_buffers()
+                .unwrap(),
+        )
+        .unwrap();
 
         let mem = GuestMemory::allocate(IO_SIZE * 2);
         mem.write_at(0, &[0xa5; IO_SIZE]).unwrap();
@@ -359,6 +382,23 @@ mod tests {
         let mut contents = [0; IO_SIZE];
         mem.read_at(IO_SIZE as u64, &mut contents).unwrap();
         assert_eq!(contents, [0xa5; IO_SIZE]);
+    }
+
+    /// Aligned buffers cannot satisfy sectors larger than their alignment.
+    #[test]
+    fn aligned_buffers_reject_oversized_sectors() {
+        let file = tempfile::tempfile().unwrap();
+        let disk = FileDisk::with_metadata(
+            file,
+            Metadata {
+                disk_size: DISK_SIZE,
+                sector_size: (scsi_buffers::BounceBuffer::ALIGNMENT * 2) as u32,
+                physical_sector_size: (scsi_buffers::BounceBuffer::ALIGNMENT * 2) as u32,
+                read_only: false,
+            },
+        );
+        let err = disk.with_aligned_buffers().unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
 
     /// The range check here is in byte units, computing `sector << sector_shift`.

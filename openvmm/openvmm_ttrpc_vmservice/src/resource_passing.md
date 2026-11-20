@@ -232,7 +232,7 @@ the RPC. Once the RPC succeeds, the name may be deregistered.
 | Field | Host | Resource |
 |-------|------|----------|
 | `TapBackend.fd_name` | Linux | tap device fd, used instead of opening `/dev/net/tun` |
-| `HandleDisk.handle_name` | Windows | host physical disk handle opened for synchronous (non-overlapped) I/O |
+| `PhysicalDisk.handle_name` | Windows | host physical disk handle opened for synchronous (non-overlapped) I/O |
 | `VirtioFs.WindowsOptions.user_token_name` | Windows | access token that virtio-fs impersonates for host file access |
 
 ## Wire format examples
