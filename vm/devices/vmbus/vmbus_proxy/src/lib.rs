@@ -259,6 +259,12 @@ impl VmbusProxy {
 
     pub async fn set_memory(&mut self, guest_memory: &GuestMemory) -> Result<()> {
         assert!(self.guest_memory.is_none());
+        if !guest_memory.supports_kernel_lock() {
+            return Err(std::io::Error::other(
+                "vmbusproxy requires kernel-accessible guest memory",
+            )
+            .into());
+        }
         let (base, len) = guest_memory.full_mapping().ok_or_else(|| {
             std::io::Error::other("vmbusproxy not supported without mapped memory")
         })?;
@@ -527,4 +533,55 @@ pub struct Gpadl<'a> {
     pub gpadl_id: u32,
     pub range_count: u32,
     pub range_buffer: &'a [u64],
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use guestmem::GuestMemoryAccess;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::ptr::NonNull;
+    use windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+    struct UserOnlyMemory(GuestMemory);
+
+    // SAFETY: the owned heap mapping and its size remain valid for the backing's lifetime.
+    unsafe impl GuestMemoryAccess for UserOnlyMemory {
+        fn mapping(&self) -> Option<NonNull<u8>> {
+            NonNull::new(self.0.full_mapping().unwrap().0)
+        }
+
+        fn max_address(&self) -> u64 {
+            4096
+        }
+
+        fn supports_kernel_lock(&self) -> bool {
+            false
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            true
+        }
+    }
+
+    #[async_test]
+    async fn kernel_denial_precedes_memory_retention_and_ioctl(driver: DefaultDriver) {
+        let temporary = tempfile::NamedTempFile::new().unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED.0)
+            .open(temporary.path())
+            .unwrap();
+        let (send, _recv) = mesh::oneshot();
+        let mut proxy =
+            VmbusProxy::new(&driver, ProxyHandle(file), CancelContext::new(), send).unwrap();
+        let memory = GuestMemory::new("user-only", UserOnlyMemory(GuestMemory::allocate(4096)));
+        assert!(memory.supports_user_lock());
+        assert!(!memory.supports_kernel_lock());
+        assert!(memory.full_mapping().is_some());
+        assert!(proxy.set_memory(&memory).await.is_err());
+        assert!(proxy.guest_memory.is_none());
+    }
 }

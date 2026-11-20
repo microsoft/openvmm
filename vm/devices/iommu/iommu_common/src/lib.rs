@@ -518,6 +518,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
 
     /// Identity translator: GPA == IOVA, never faults. Records nothing — the
     /// `rid` validation happens in `TranslatingMemory` before `translate` is
@@ -551,6 +552,34 @@ mod tests {
         let r = AssignedBusRange::new();
         r.set_bus_range(secondary, subordinate);
         r
+    }
+
+    #[test]
+    fn translated_memory_and_subranges_cannot_lock() {
+        let inner = GuestMemory::allocate(0x2000);
+        let gm = TranslatingMemory::new_guest_memory(
+            "translated-subrange",
+            IdentityTranslator,
+            bus_range(0, 0),
+            inner.clone(),
+        );
+        for view in [gm.clone(), gm.subrange(0, 0x2000, false).unwrap()] {
+            assert!(!view.supports_kernel_lock());
+            assert!(view.full_mapping().is_none());
+            for access in [guestmem::AccessType::Read, guestmem::AccessType::Write] {
+                for kernel in [false, true] {
+                    if kernel {
+                        assert!(view.lock_kernel_gpns(access, &[0]).is_err());
+                    } else {
+                        assert!(view.lock_user_gpns(access, &[0]).is_err());
+                    }
+                }
+            }
+            view.write_at(0xffe, &[1, 2, 3, 4]).unwrap();
+            let mut bytes = [0; 4];
+            view.read_at(0xffe, &mut bytes).unwrap();
+            assert_eq!(bytes, [1, 2, 3, 4]);
+        }
     }
 
     struct ReentrantRoute {

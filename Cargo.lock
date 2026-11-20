@@ -3336,6 +3336,7 @@ dependencies = [
  "sparse_mmap",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "trycopy",
  "zerocopy",
 ]
@@ -4206,6 +4207,7 @@ dependencies = [
  "guestmem",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
 ]
 
@@ -10899,6 +10901,7 @@ dependencies = [
  "pal",
  "pal_async",
  "pal_event",
+ "tempfile",
  "tracing",
  "vmbus_core",
  "widestring",
