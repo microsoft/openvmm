@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Compose an experimental x86-64 mshv boot disk from prebuilt artifacts.
+//! Compose an experimental mshv boot disk from prebuilt artifacts.
 //!
 //! The caller supplies the development UEFI host boot application and hypervisor payloads. This
 //! module neither downloads artifacts nor invokes host image-building tools.
@@ -10,6 +10,7 @@ use anyhow::Context;
 use guid::Guid;
 use mshv_host_boot::HYPERVISOR_CMDLINE_FILE;
 use mshv_host_boot::KERNEL_CMDLINE_FILE;
+use petri_artifacts_common::tags::MachineArch;
 use std::collections::BTreeMap;
 use std::io::Seek;
 use std::io::Write;
@@ -48,7 +49,9 @@ impl fatfs::TimeProvider for ImageTimeProvider {
 /// Inputs for a disposable boot disk. No installed Linux root filesystem is
 /// required; the initramfs must supply `/init`.
 pub struct MshvImage<'a> {
-    /// x64 `mshv_host_boot.efi`, built for `x86_64-unknown-uefi`.
+    /// Architecture of every executable supplied to the image.
+    pub arch: MachineArch,
+    /// `mshv_host_boot.efi`, built for the matching UEFI target.
     pub host_boot: &'a Path,
     /// Boot payload root containing `HvLoader.efi`, `lxhvloader.dll`, and
     /// `Windows/System32`. All files under `Windows` are preserved.
@@ -69,18 +72,30 @@ impl MshvImage<'_> {
     /// Publication is no-clobber and occurs only after successful construction.
     /// Inputs are streamed into a temporary file beside the destination.
     pub fn build(&self, output: &Path) -> anyhow::Result<()> {
+        let (host_boot_path, kernel_path, hypervisors): (_, _, &[&str]) = match self.arch {
+            MachineArch::X86_64 => (
+                "EFI/BOOT/BOOTX64.EFI",
+                "bzImage",
+                &["windows/system32/hvix64.exe", "windows/system32/hvax64.exe"],
+            ),
+            MachineArch::Aarch64 => (
+                "EFI/BOOT/BOOTAA64.EFI",
+                "Image",
+                &["windows/system32/hvaa64.exe"],
+            ),
+        };
         let mut files = BTreeMap::new();
         for (destination, source) in [
-            ("EFI/BOOT/BOOTX64.EFI", self.host_boot.to_path_buf()),
+            (host_boot_path, self.host_boot.to_path_buf()),
             ("HvLoader.efi", self.payload.join("HvLoader.efi")),
             ("lxhvloader.dll", self.payload.join("lxhvloader.dll")),
-            ("bzImage", self.kernel.to_path_buf()),
+            (kernel_path, self.kernel.to_path_buf()),
             ("initramfs.cpio", self.initrd.to_path_buf()),
         ] {
             insert_file(&mut files, destination.to_owned(), source)?;
         }
         collect_files(&mut files, self.payload, Path::new("Windows"))?;
-        for required in ["windows/system32/hvix64.exe", "windows/system32/hvax64.exe"] {
+        for required in hypervisors {
             anyhow::ensure!(
                 files.keys().any(|path| path.eq_ignore_ascii_case(required)),
                 "missing hypervisor payload file {required}"
@@ -269,21 +284,42 @@ mod tests {
 
     #[test]
     fn image_contents_and_no_clobber() -> anyhow::Result<()> {
+        for arch in [MachineArch::X86_64, MachineArch::Aarch64] {
+            check_image_contents(arch)?;
+        }
+        Ok(())
+    }
+
+    fn check_image_contents(arch: MachineArch) -> anyhow::Result<()> {
+        let (boot_path, kernel_path, hypervisors): (_, _, &[&str]) = match arch {
+            MachineArch::X86_64 => (
+                "EFI/BOOT/BOOTX64.EFI",
+                "bzImage",
+                &["Windows/System32/hvix64.exe", "Windows/System32/hvax64.exe"],
+            ),
+            MachineArch::Aarch64 => (
+                "EFI/BOOT/BOOTAA64.EFI",
+                "Image",
+                &["Windows/System32/hvaa64.exe"],
+            ),
+        };
         let dir = tempfile::tempdir()?;
         let payload = dir.path().join("payload");
         fs_err::create_dir_all(payload.join("Windows/System32"))?;
         for name in [
             "HvLoader.efi",
             "lxhvloader.dll",
-            "Windows/System32/hvix64.exe",
-            "Windows/System32/hvax64.exe",
             "Windows/System32/kdstub.dll",
-        ] {
+        ]
+        .into_iter()
+        .chain(hypervisors.iter().copied())
+        {
             fs_err::write(payload.join(name), name)?;
         }
         let artifact = dir.path().join("artifact");
         fs_err::write(&artifact, b"artifact")?;
         let inputs = MshvImage {
+            arch,
             host_boot: &artifact,
             payload: &payload,
             kernel: &artifact,
@@ -305,7 +341,7 @@ mod tests {
         let fs = fatfs::FileSystem::new(partition, fatfs::FsOptions::new())?;
         assert_eq!(fs.fat_type(), fatfs::FatType::Fat32);
         assert_valid_timestamps(&fs.root_dir())?;
-        for path in ["EFI/BOOT/BOOTX64.EFI", "bzImage", "initramfs.cpio"] {
+        for path in [boot_path, kernel_path, "initramfs.cpio"] {
             let mut bytes = Vec::new();
             fs.root_dir().open_file(path)?.read_to_end(&mut bytes)?;
             assert_eq!(bytes, b"artifact");
@@ -349,7 +385,7 @@ mod tests {
         fs_err::write(&output, b"do not overwrite")?;
         assert!(inputs.build(&output).is_err());
         assert_eq!(fs_err::read(&output)?, b"do not overwrite");
-        fs_err::remove_file(payload.join("Windows/System32/hvix64.exe"))?;
+        fs_err::remove_file(payload.join(hypervisors[0]))?;
         assert!(inputs.build(&dir.path().join("missing.img")).is_err());
         assert!(!dir.path().join("missing.img").exists());
         Ok(())

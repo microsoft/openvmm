@@ -7,8 +7,8 @@
 #![expect(unsafe_code)]
 
 // xtask-fmt allow-target-arch sys-crate
-#[cfg(not(target_arch = "x86_64"))]
-compile_error!("mshv_host_boot supports only x86-64 UEFI");
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("mshv_host_boot supports only x86-64 and AArch64 UEFI");
 
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -36,34 +36,45 @@ use uefi::runtime;
 use uefi::runtime::ResetType;
 use uefi::runtime::VariableVendor;
 
-// Shim's x64 callbacks use the System V ABI, not the EFI calling convention.
-#[repr(C)]
-#[uefi::proto::unsafe_protocol("605dab50-e046-4300-abb6-3dd810dd8b23")]
-struct DevelopmentShimLock {
-    verify: extern "sysv64" fn(*const u8, u32) -> Status,
-    hash: extern "sysv64" fn(*const u8, u32, *mut c_void, *mut u8, *mut u8) -> Status,
-    context: extern "sysv64" fn(*const u8, u32, *mut c_void) -> Status,
+// Shim uses the native C ABI, which differs from EFI's ABI on x64.
+macro_rules! shim_lock {
+    ($abi:literal) => {
+        #[repr(C)]
+        #[uefi::proto::unsafe_protocol("605dab50-e046-4300-abb6-3dd810dd8b23")]
+        struct DevelopmentShimLock {
+            verify: extern $abi fn(*const u8, u32) -> Status,
+            hash: extern $abi fn(*const u8, u32, *mut c_void, *mut u8, *mut u8) -> Status,
+            context: extern $abi fn(*const u8, u32, *mut c_void) -> Status,
+        }
+
+        extern $abi fn verify(_buffer: *const u8, _size: u32) -> Status {
+            Status::SUCCESS
+        }
+
+        extern $abi fn hash(
+            _buffer: *const u8,
+            _size: u32,
+            _context: *mut c_void,
+            _sha256: *mut u8,
+            _sha1: *mut u8,
+        ) -> Status {
+            println!("mshv host boot: SHIM_LOCK hashing is unsupported");
+            Status::UNSUPPORTED
+        }
+
+        extern $abi fn context(_buffer: *const u8, _size: u32, _context: *mut c_void) -> Status {
+            println!("mshv host boot: SHIM_LOCK image context is unsupported");
+            Status::UNSUPPORTED
+        }
+    };
 }
 
-extern "sysv64" fn verify(_buffer: *const u8, _size: u32) -> Status {
-    Status::SUCCESS
-}
-
-extern "sysv64" fn hash(
-    _buffer: *const u8,
-    _size: u32,
-    _context: *mut c_void,
-    _sha256: *mut u8,
-    _sha1: *mut u8,
-) -> Status {
-    println!("mshv host boot: SHIM_LOCK hashing is unsupported");
-    Status::UNSUPPORTED
-}
-
-extern "sysv64" fn context(_buffer: *const u8, _size: u32, _context: *mut c_void) -> Status {
-    println!("mshv host boot: SHIM_LOCK image context is unsupported");
-    Status::UNSUPPORTED
-}
+// xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
+shim_lock!("sysv64");
+// xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "aarch64")]
+shim_lock!("C");
 
 static SHIM_LOCK: DevelopmentShimLock = DevelopmentShimLock {
     verify,
@@ -139,7 +150,13 @@ fn run() -> Result<(), Status> {
     boot::start_image(hvloader).map_err(|e| report("start HvLoader", e))?;
 
     println!("mshv host boot: starting Linux");
-    let linux = load_image(device, cstr16!("\\bzImage"), &linux_options)?;
+    // xtask-fmt allow-target-arch sys-crate
+    #[cfg(target_arch = "x86_64")]
+    let kernel = cstr16!("\\bzImage");
+    // xtask-fmt allow-target-arch sys-crate
+    #[cfg(target_arch = "aarch64")]
+    let kernel = cstr16!("\\Image");
+    let linux = load_image(device, kernel, &linux_options)?;
     boot::start_image(linux).map_err(|e| report("start Linux EFI stub", e))
 }
 

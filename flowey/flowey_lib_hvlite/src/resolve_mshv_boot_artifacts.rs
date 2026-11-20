@@ -41,6 +41,7 @@ impl FlowNodeWithConfig for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
+        ctx.import::<crate::resolve_mshv_support::Node>();
     }
 
     fn emit(
@@ -50,12 +51,43 @@ impl FlowNodeWithConfig for Node {
     ) -> anyhow::Result<()> {
         let Config { local_path } = config;
         let mut outputs = Vec::new();
+        let mut arm64_outputs = Vec::new();
         for Request { arch, artifacts } in requests {
-            anyhow::ensure!(
-                arch == CommonArch::X86_64,
-                "mshv payloads support only x86-64"
-            );
-            outputs.push(artifacts);
+            match arch {
+                CommonArch::X86_64 => outputs.push(artifacts),
+                CommonArch::Aarch64 => arm64_outputs.push(artifacts),
+            }
+        }
+        if !arm64_outputs.is_empty() {
+            #[cfg(not(target_os = "linux"))]
+            anyhow::bail!("ARM64 MSHV payload staging requires Linux");
+
+            #[cfg(target_os = "linux")]
+            {
+                let local = local_path.clone().context(
+                    "ARM64 MSHV requires user-provided Hyper-V and lxhvloader.dll; supply a local boot-artifacts directory"
+                )?;
+                let loader = ctx.reqv(|directory| crate::resolve_mshv_support::Request {
+                    package: crate::resolve_mshv_support::MshvSupport::Hvloader,
+                    directory,
+                });
+                let persistent_dir = ctx.persistent_dir();
+                ctx.emit_rust_step("stage user-provided ARM64 MSHV runtime", |ctx| {
+                    let local = local.claim(ctx);
+                    let loader = loader.claim(ctx);
+                    let persistent_dir = persistent_dir.claim(ctx);
+                    let outputs = arm64_outputs.claim(ctx);
+                    move |rt| {
+                        let root = persistent_dir
+                            .map(|dir| rt.read(dir))
+                            .unwrap_or_else(|| rt.sh.current_dir())
+                            .join("arm64-runtime");
+                        let path = stage_arm64(&root, &rt.read(local), &rt.read(loader))?;
+                        rt.write_all(outputs, &MshvBootArtifactsOutput { directory: path });
+                        Ok(())
+                    }
+                });
+            }
         }
         if outputs.is_empty() {
             return Ok(());
@@ -121,6 +153,133 @@ impl FlowNodeWithConfig for Node {
         });
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn validate_arm64_inputs(root: &Path) -> anyhow::Result<()> {
+    for file in ["boot/lxhvloader.dll", "boot/Windows/System32/hvaa64.exe"] {
+        validate_arm64_pe(&root.join(file)).with_context(|| format!(
+            "ARM64 MSHV requires a matching user-provided lxhvloader.dll and Hyper-V runtime in {}",
+            root.display()
+        ))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_arm64_pe(path: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        fs_err::symlink_metadata(path)?.file_type().is_file(),
+        "expected a regular ARM64 PE file: {}",
+        path.display()
+    );
+    let data = fs_err::read(path)?;
+    let offset = data.get(60..64).context("truncated DOS header")?;
+    let offset = u32::from_le_bytes(offset.try_into()?) as usize;
+    let header = data
+        .get(offset..)
+        .and_then(|bytes| bytes.get(..6))
+        .context("truncated PE header")?;
+    anyhow::ensure!(
+        data.starts_with(b"MZ")
+            && header[..4] == *b"PE\0\0"
+            && u16::from_le_bytes(header[4..6].try_into()?) == 0xaa64,
+        "expected an ARM64 PE image: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn stage_arm64(cache: &Path, source: &Path, loader: &Path) -> anyhow::Result<PathBuf> {
+    validate_arm64_inputs(source)?;
+    validate_arm64_pe(&loader.join("HvLoader.efi"))?;
+    let mut files = BTreeMap::new();
+    files.insert(
+        "boot/lxhvloader.dll".into(),
+        fs_err::read(source.join("boot/lxhvloader.dll"))?,
+    );
+    files.insert(
+        "boot/HvLoader.efi".into(),
+        fs_err::read(loader.join("HvLoader.efi"))?,
+    );
+    let mut dirs = vec![PathBuf::from("boot/Windows")];
+    while let Some(dir) = dirs.pop() {
+        anyhow::ensure!(
+            fs_err::symlink_metadata(source.join(&dir))?
+                .file_type()
+                .is_dir(),
+            "runtime directory must not be a symlink: {}",
+            source.join(&dir).display()
+        );
+        for entry in fs_err::read_dir(source.join(&dir))? {
+            let entry = entry?;
+            let relative = dir.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                dirs.push(relative);
+            } else {
+                anyhow::ensure!(
+                    entry.file_type()?.is_file(),
+                    "runtime entry is not a regular file: {}",
+                    entry.path().display()
+                );
+                let name = relative
+                    .to_str()
+                    .context("non-UTF-8 runtime filename")?
+                    .to_owned();
+                anyhow::ensure!(
+                    !files
+                        .keys()
+                        .any(|key: &String| key.eq_ignore_ascii_case(&name)),
+                    "duplicate runtime filename: {name}"
+                );
+                files.insert(name, fs_err::read(entry.path())?);
+            }
+        }
+    }
+    for name in ["LICENSE.HvLoader", "LICENSE.edk2", "manifest.txt"] {
+        files.insert(
+            format!("public-hvloader/{name}"),
+            fs_err::read(loader.join(name))?,
+        );
+    }
+    let mut hash = sha2::Sha256::new();
+    for (name, data) in &files {
+        hash.update(name.as_bytes());
+        hash.update([0]);
+        hash.update(sha2::Sha256::digest(data));
+    }
+    let key = hash
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    fs_err::create_dir_all(cache)?;
+    let output = cache.join(key);
+    if !output.exists() {
+        let scratch = tempfile::Builder::new()
+            .prefix(".arm64-stage-")
+            .tempdir_in(cache)?;
+        for (name, data) in &files {
+            let path = scratch.path().join(name);
+            fs_err::create_dir_all(path.parent().context("missing staged parent")?)?;
+            fs_err::write(path, data)?;
+        }
+        match fs_err::rename(scratch.path(), &output) {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty
+                ) =>
+            {
+                log::debug!("another writer staged ARM64 runtime {}", output.display());
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    verify_output(&output, &files)?;
+    Ok(output)
 }
 
 fn validate_artifacts(root: &Path) -> anyhow::Result<()> {
@@ -429,7 +588,7 @@ fn verify_output(root: &Path, files: &BTreeMap<String, Vec<u8>>) -> anyhow::Resu
         );
         anyhow::ensure!(
             fs_err::read(&path)? == *contents,
-            "cached mshv payload does not match its pinned RPM: {}",
+            "cached mshv payload does not match its source: {}",
             path.display()
         );
     }
@@ -464,6 +623,102 @@ fn destination(path: &str) -> anyhow::Result<Option<String>> {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[cfg(target_os = "linux")]
+    fn arm64_pe() -> Vec<u8> {
+        let mut bytes = vec![0; 70];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[60..64].copy_from_slice(&64u32.to_le_bytes());
+        bytes[64..68].copy_from_slice(b"PE\0\0");
+        bytes[68..70].copy_from_slice(&0xaa64u16.to_le_bytes());
+        bytes
+    }
+
+    #[cfg(target_os = "linux")]
+    fn arm64_inputs(source: &Path, loader: &Path) -> anyhow::Result<()> {
+        fs_err::create_dir_all(source.join("boot/Windows/System32"))?;
+        fs_err::create_dir_all(loader)?;
+        for path in [
+            source.join("boot/lxhvloader.dll"),
+            source.join("boot/Windows/System32/hvaa64.exe"),
+            loader.join("HvLoader.efi"),
+        ] {
+            fs_err::write(path, arm64_pe())?;
+        }
+        for name in ["LICENSE.HvLoader", "LICENSE.edk2", "manifest.txt"] {
+            fs_err::write(loader.join(name), name)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn arm64_rejects_missing_truncated_and_wrong_architecture_inputs() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("source");
+        let loader = root.path().join("loader");
+        assert!(validate_arm64_inputs(&source).is_err());
+        arm64_inputs(&source, &loader)?;
+        validate_arm64_inputs(&source)?;
+        let path = source.join("boot/lxhvloader.dll");
+        fs_err::write(&path, b"MZ")?;
+        assert!(validate_arm64_inputs(&source).is_err());
+        let mut bytes = arm64_pe();
+        bytes[68..70].copy_from_slice(&0x8664u16.to_le_bytes());
+        fs_err::write(path, bytes)?;
+        assert!(validate_arm64_inputs(&source).is_err());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn arm64_stages_public_loader_and_preserves_source_and_companion_files() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("source");
+        let loader = root.path().join("loader");
+        let cache = root.path().join("cache");
+        arm64_inputs(&source, &loader)?;
+        fs_err::write(source.join("boot/HvLoader.efi"), b"do not use or overwrite")?;
+        fs_err::write(
+            source.join("boot/Windows/System32/companion.dat"),
+            b"runtime data",
+        )?;
+        let staged = stage_arm64(&cache, &source, &loader)?;
+        assert_eq!(fs_err::read(staged.join("boot/HvLoader.efi"))?, arm64_pe());
+        assert_eq!(
+            fs_err::read(source.join("boot/HvLoader.efi"))?,
+            b"do not use or overwrite"
+        );
+        assert_eq!(
+            fs_err::read(staged.join("boot/Windows/System32/companion.dat"))?,
+            b"runtime data"
+        );
+        assert_eq!(
+            fs_err::read(staged.join("public-hvloader/LICENSE.HvLoader"))?,
+            b"LICENSE.HvLoader"
+        );
+        assert_eq!(stage_arm64(&cache, &source, &loader)?, staged);
+        fs_err::write(staged.join("boot/HvLoader.efi"), b"tampered")?;
+        assert!(stage_arm64(&cache, &source, &loader).is_err());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn arm64_rejects_runtime_symlinks_and_case_collisions() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("source");
+        let loader = root.path().join("loader");
+        let cache = root.path().join("cache");
+        arm64_inputs(&source, &loader)?;
+        let path = source.join("boot/Windows/System32/companion.dat");
+        std::os::unix::fs::symlink(source.join("boot/lxhvloader.dll"), &path)?;
+        assert!(stage_arm64(&cache, &source, &loader).is_err());
+        fs_err::remove_file(path)?;
+        fs_err::write(source.join("boot/Windows/System32/HVAA64.EXE"), arm64_pe())?;
+        assert!(stage_arm64(&cache, &source, &loader).is_err());
+        Ok(())
+    }
 
     #[test]
     #[ignore = "requires rpm2cpio, bsdtar, and pinned RPMs in MSHV_RPM_DIR"]

@@ -6,15 +6,15 @@ Petri, keeping builds, caches, and logs on the host.
 ## Launcher and boot selection
 
 `[incubator]` selects the launcher and VM resources; `[boot]` selects the guest
-environment and defaults to `linux-direct`. These profiles run on x64 Linux
-hosts; OpenVMM requires KVM.
+environment and defaults to `linux-direct`. OpenVMM requires x64 Linux with
+KVM. QEMU TCG can run ARM64 guests on x64 or ARM64 Linux without KVM.
 
 | Launcher | Boot environment | Current support |
 |----------|------------------|-----------------|
-| `qemu-tcg` | `linux-direct` | AArch64 guest on x64 Linux |
+| `qemu-tcg` | `linux-direct` | AArch64 guest on x64 or ARM64 Linux |
 | `openvmm` | `linux-direct` | x64 Linux guest on x64 Linux |
 | `openvmm` | `mshv` | x64 mshv root partition on x64 Linux |
-| `qemu-tcg` | `mshv` | Not implemented |
+| `qemu-tcg` | `mshv` | Experimental ARM64 mshv root on QEMU SBSA |
 
 Registered VMM tests use [Petri nested tests](vmm.md#nested-tests), not an
 Incubator Flowey target runner. Each Incubator invocation cold-boots a VM.
@@ -34,6 +34,44 @@ The kernel and static Pipette binary must match the guest architecture. Place
 Pipette and the command binary beneath the shared directory.
 Profile devices are provisioned for VFIO before the command runs.
 
+### Provision an ARM64 mshv environment
+
+Supply an authorized, matching ARM64 Hyper-V runtime and `lxhvloader.dll`:
+
+```text
+path/to/arm64-artifacts/
+  boot/lxhvloader.dll
+  boot/Windows/System32/hvaa64.exe
+  boot/Windows/System32/...       matching runtime companion files
+```
+
+```bash
+cargo xflowey incubator \
+  --profile petri/incubator/profiles/aarch64-tcg-mshv.toml \
+  --boot-artifacts path/to/arm64-artifacts -- \
+  --timeout 600 --no-pty -- /bin/sh -c 'test -c /dev/mshv && uname -a'
+```
+
+Flowey builds native Incubator, static ARM64 Pipette, and the ARM64 EFI host
+boot application. It downloads QEMU, the ARM64 root kernel and test initrd,
+and public SBSA firmware/HvLoader packages. Hyper-V and `lxhvloader.dll` are
+not downloaded: Flowey checks their PE architecture and stages the supplied
+runtime with public HvLoader and its licenses without modifying your inputs.
+These checks do not establish provenance or runtime compatibility.
+
+The `sbsa-ref` profile uses one emulated CPU, 8 GiB RAM, TF-A plus SBSA EDK2
+paired flash, and the board's AHCI/SATA boot disk. TCG supplies EL2 without
+host nested-virtualization support. Each run copies the writable flash
+template; cached firmware is not modified. Linux output uses PL011
+(`console=ttyAMA0`), and Pipette uses TCP. TCG is substantially slower than KVM.
+
+Use `--kernel path/to/Image` for a local ARM64 root kernel. Override paired
+firmware with both `--firmware path/to/SBSA_FLASH0.fd` and
+`--firmware-vars path/to/SBSA_FLASH1.fd`. For manual runs, copy the ARM64
+profile and fill in the artifact paths; build `mshv_host_boot` for
+`aarch64-unknown-uefi`. The standalone image composer accepts `--arch aarch64`.
+This extension does not register ARM64 MSHV nested VMM tests.
+
 ## OpenVMM commands
 
 ### Provision an mshv environment
@@ -46,11 +84,11 @@ cargo xflowey incubator \
   --timeout 600 --no-pty -- /bin/sh -c 'test -c /dev/mshv && uname -a'
 ```
 
-`--profile` is required. Provisioning currently supports only x64 OpenVMM
-profiles with `mshv` boot; other launcher, architecture, or boot combinations
+`--profile` is required. Provisioning supports x64 OpenVMM and ARM64 QEMU
+SBSA profiles with `mshv` boot; other launcher, architecture, or boot combinations
 are rejected. Flowey leaves the source file untouched and prepares a copy,
 preserving its VM settings and boot options while replacing `binary`,
-`host-boot`, `firmware`, and `boot-artifacts` with resolved paths. These source
+`host-boot`, `firmware`, `firmware-vars` (QEMU), and `boot-artifacts` with resolved paths. These source
 paths may be placeholders; use CLI artifact overrides to supply local inputs.
 
 This builds the native OpenVMM/Incubator pair, static x64 Pipette, and EFI host
@@ -170,7 +208,8 @@ boot/
   Windows/System32/...   complete matching runtime
 ```
 
-Both `hvix64.exe` and `hvax64.exe` must be present. Shim and GRUB are not used.
+For x64, both `hvix64.exe` and `hvax64.exe` must be present. ARM64 uses
+`hvaa64.exe` instead. Shim and GRUB are not used.
 The validated Azure Linux 3 payload recipe uses
 edk2-hvloader 20240524git3e722403cd16-20 and matching `mshv` /
 `mshv-bootloader-lx` 26100.9444.2609032029.1-1 payloads. The composer does not
@@ -180,11 +219,12 @@ The root kernel needs the mshv EFI-launch patches, `CONFIG_EFI_STUB=y`,
 `CONFIG_MSHV_ROOT=y`, and built-in PCIe, virtio-blk, virtio-net, virtio-9p,
 devtmpfs, and initramfs support. Disable modules and reuse the OpenVMM test
 initrd. A stock upstream test kernel cannot launch this environment.
-Build virtio-console and virtio-vsock into the root kernel as well. Petri
+ARM64 SBSA also requires built-in AHCI/SATA storage and PL011 console support.
+For x64, build virtio-console and virtio-vsock into the root kernel as well. Petri
 selects the matching vsock initcall blacklist for both Linux-direct and mshv
 UEFI boot, preventing the competing Hyper-V socket driver from claiming it.
 
-The `mshv-test` dependency recipe targets released
+The x64 `mshv-test` dependency recipe targets released
 `rolling-lts/kata/6.18.34.mshv4` plus the root
 [IO-APIC IRQ-lifecycle fix](https://github.com/jstarks/OHCL-Linux-Kernel/commit/4178badb4e34).
 That release already restores the two-bank partition-feature ABI; the older
