@@ -1819,7 +1819,11 @@ impl IntoPipeline for CheckinGatesCli {
                 mshv_root: false,
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
-                nextest_filter_expr: cvm_filter.clone(),
+                // - Hyper-V VBS VMs fail on AMD with recent prerelease builds
+                // TODO: re-enable once fixed.
+                nextest_filter_expr: format!(
+                    "{cvm_filter} & !(test(hyperv) & test(vbs))"
+                ),
                 downloaded_artifacts: windows_x64_cvm_test_artifacts,
                 prep_steps_variants: vec!["standard".into()],
                 external_deps: VmmTestsExternalDeps::Windows(VmmTestsExternalDepsWindows {
