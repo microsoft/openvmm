@@ -153,6 +153,11 @@ where
         Ok(())
     }
 
+    fn command_response_buffer_size(&self) -> usize {
+        // The guest cannot query which reference implementation backs the vTPM.
+        tpm_lib::TPM_V185_BUFFER_SIZE
+    }
+
     fn max_nv_index_size(&self) -> u16 {
         // The guest cannot query which reference implementation backs the vTPM,
         // so assume the largest so reads are never truncated.
