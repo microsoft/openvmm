@@ -3045,6 +3045,7 @@ async fn build_virtio_device(
                 disk,
                 read_only,
                 serial,
+                options: Default::default(),
             }
             .into_resource()
         }

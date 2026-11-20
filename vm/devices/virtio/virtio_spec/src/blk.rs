@@ -25,6 +25,8 @@ pub const VIRTIO_BLK_F_BLK_SIZE: u32 = 1 << 6;
 pub const VIRTIO_BLK_F_FLUSH: u32 = 1 << 9;
 /// Device exports information on optimal I/O alignment.
 pub const VIRTIO_BLK_F_TOPOLOGY: u32 = 1 << 10;
+/// Device supports multiple request queues.
+pub const VIRTIO_BLK_F_MQ: u32 = 1 << 12;
 /// Device can support discard command.
 pub const VIRTIO_BLK_F_DISCARD: u32 = 1 << 13;
 /// Device can support write zeroes command (not currently advertised).
@@ -79,8 +81,7 @@ pub struct VirtioBlkConfig {
     /// (valid if VIRTIO_BLK_F_CONFIG_WCE, which we don't negotiate).
     pub writeback: u8,
     pub unused0: u8,
-    /// Number of request queues (valid if VIRTIO_BLK_F_MQ,
-    /// which we don't negotiate). Set to 1.
+    /// Configured number of request queues (valid if VIRTIO_BLK_F_MQ is negotiated).
     pub num_queues: u16,
     /// Maximum number of 512-byte sectors in a single discard segment
     /// (valid if VIRTIO_BLK_F_DISCARD).

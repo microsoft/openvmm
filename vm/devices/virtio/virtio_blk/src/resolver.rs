@@ -43,11 +43,12 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioBlkHandle> for VirtioBlkReso
             )
             .await?;
 
-        let device = VirtioBlkDevice::new(
+        let device = VirtioBlkDevice::with_options(
             input.driver_source,
             disk.0,
             resource.read_only,
             resource.serial,
+            resource.options,
         )?;
         Ok(device.into())
     }
