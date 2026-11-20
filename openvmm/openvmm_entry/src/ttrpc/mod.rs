@@ -1738,6 +1738,7 @@ impl VmService {
         request: vmservice::ShutdownVmRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         use vmservice::shutdown_vm_request::Mechanism;
+        use vmservice::shutdown_vm_request::Operation;
 
         enum ShutdownSender {
             HypervIc(mesh::Sender<ShutdownRpc>),
@@ -1747,6 +1748,14 @@ impl VmService {
         let requested_mechanism = Mechanism::from_i32(request.mechanism)
             .ok_or_else(|| anyhow!(Code::InvalidArgument))
             .with_context(|| format!("unknown shutdown mechanism {}", request.mechanism))?;
+        let operation = Operation::from_i32(request.operation)
+            .ok_or_else(|| anyhow!(Code::InvalidArgument))
+            .with_context(|| format!("unknown shutdown operation {}", request.operation))?;
+        let shutdown_type = match operation {
+            Operation::Unspecified | Operation::PowerOff => ShutdownType::PowerOff,
+            Operation::Reboot => ShutdownType::Reboot,
+            Operation::Hibernate => ShutdownType::Hibernate,
+        };
         match requested_mechanism {
             Mechanism::Unspecified => {
                 return Err(
@@ -1755,6 +1764,10 @@ impl VmService {
             }
             Mechanism::HypervIc => {}
             Mechanism::Acpi => {
+                anyhow::ensure!(
+                    matches!(operation, Operation::Unspecified | Operation::PowerOff),
+                    anyhow!(Code::InvalidArgument).context("ACPI shutdown supports only power-off")
+                );
                 anyhow::ensure!(
                     !request.force,
                     anyhow!(Code::InvalidArgument).context("ACPI shutdown does not support force")
@@ -1799,7 +1812,7 @@ impl VmService {
                         .until_cancelled(send.call(
                             ShutdownRpc::Shutdown,
                             ShutdownParams {
-                                shutdown_type: ShutdownType::PowerOff,
+                                shutdown_type,
                                 force: request.force,
                             },
                         ))
@@ -3505,6 +3518,7 @@ mod tests {
         vmservice::ShutdownVmRequest {
             mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
             force: false,
+            operation: 0,
         }
     }
 
@@ -3561,6 +3575,7 @@ mod tests {
         vmservice::ShutdownVmRequest {
             mechanism: vmservice::shutdown_vm_request::Mechanism::Acpi as i32,
             force: false,
+            operation: 0,
         }
     }
 
@@ -3868,6 +3883,122 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_operations_preserve_wire_defaults_and_force() {
+        DefaultPool::run_with(async |driver| {
+            use prost::Message;
+            use vmservice::shutdown_vm_request::Operation;
+            for (operation, expected) in [
+                (Operation::Unspecified, ShutdownType::PowerOff),
+                (Operation::PowerOff, ShutdownType::PowerOff),
+                (Operation::Reboot, ShutdownType::Reboot),
+                (Operation::Hibernate, ShutdownType::Hibernate),
+            ] {
+                for force in [false, true] {
+                    let request = vmservice::ShutdownVmRequest {
+                        operation: operation as i32,
+                        force,
+                        ..shutdown_request()
+                    };
+                    let request =
+                        vmservice::ShutdownVmRequest::decode(request.encode_to_vec().as_slice())
+                            .unwrap();
+                    let (send, mut recv) = mesh::channel();
+                    let service = service(driver.clone(), Some(send));
+                    let response = service
+                        .shutdown_vm(mesh::CancelContext::new(), request)
+                        .unwrap();
+                    let (result, ()) = futures::join!(response, async {
+                        let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
+                            panic!("expected shutdown request");
+                        };
+                        assert_eq!(
+                            std::mem::discriminant(&rpc.input().shutdown_type),
+                            std::mem::discriminant(&expected)
+                        );
+                        assert_eq!(rpc.input().force, force);
+                        rpc.complete(ShutdownResult::Ok);
+                    });
+                    result.unwrap();
+                    assert!(matches!(service.lifecycle, VmLifecycle::Running));
+                }
+            }
+            let legacy =
+                vmservice::ShutdownVmRequest::decode(&[0x08, 0x01, 0x10, 0x01][..]).unwrap();
+            assert_eq!(legacy.operation, Operation::Unspecified as i32);
+            assert_eq!(
+                legacy,
+                vmservice::ShutdownVmRequest {
+                    force: true,
+                    ..shutdown_request()
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn shutdown_invalid_operations_do_not_send() {
+        DefaultPool::run_with(async |driver| {
+            use vmservice::shutdown_vm_request::{Mechanism, Operation};
+            let (send, mut recv) = mesh::channel();
+            let mut service = service(driver, Some(send));
+            let (acpi_send, mut acpi_recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .acpi_power_button_rpc = Some(acpi_send);
+            for mechanism in [Mechanism::HypervIc, Mechanism::Acpi] {
+                for operation in [
+                    -1,
+                    4,
+                    i32::MIN,
+                    i32::MAX,
+                    Operation::Reboot as i32,
+                    Operation::Hibernate as i32,
+                ] {
+                    if mechanism == Mechanism::HypervIc
+                        && matches!(
+                            Operation::from_i32(operation),
+                            Some(Operation::Reboot | Operation::Hibernate)
+                        )
+                    {
+                        continue;
+                    }
+                    for force in [false, true] {
+                        let error = service
+                            .shutdown_vm(
+                                mesh::CancelContext::new(),
+                                vmservice::ShutdownVmRequest {
+                                    mechanism: mechanism as i32,
+                                    operation,
+                                    force,
+                                },
+                            )
+                            .err()
+                            .unwrap();
+                        assert_eq!(grpc_error(error).code, Code::InvalidArgument as i32);
+                        assert!(futures::poll!(recv.next()).is_pending());
+                        assert!(futures::poll!(acpi_recv.next()).is_pending());
+                    }
+                }
+            }
+            let response = service
+                .shutdown_vm(
+                    mesh::CancelContext::new(),
+                    vmservice::ShutdownVmRequest {
+                        operation: Operation::PowerOff as i32,
+                        ..acpi_shutdown_request()
+                    },
+                )
+                .unwrap();
+            let (result, ()) = futures::join!(response, async {
+                let PowerButtonRpc::Press(rpc) = acpi_recv.next().await.unwrap();
+                rpc.complete(());
+            });
+            result.unwrap();
+            assert!(futures::poll!(recv.next()).is_pending());
+        });
+    }
+
+    #[test]
     fn acpi_shutdown_validates_force_lifecycle_and_device_without_fallback() {
         DefaultPool::run_with(async |driver| {
             let (ic_send, mut ic_recv) = mesh::channel();
@@ -3986,6 +4117,10 @@ mod tests {
             let defaults = vmservice::ShutdownVmRequest::decode(&[][..]).unwrap();
             assert_eq!(defaults.mechanism, Mechanism::Unspecified as i32);
             assert!(!defaults.force);
+            assert_eq!(
+                defaults.operation,
+                vmservice::shutdown_vm_request::Operation::Unspecified as i32
+            );
             assert_eq!(defaults, vmservice::ShutdownVmRequest::default());
 
             let (send, mut recv) = mesh::channel();
@@ -3996,7 +4131,11 @@ mod tests {
                 .acpi_power_button_rpc = Some(acpi_send);
             for mechanism in [-1, 3, i32::MIN, i32::MAX] {
                 for force in [false, true] {
-                    let request = vmservice::ShutdownVmRequest { mechanism, force };
+                    let request = vmservice::ShutdownVmRequest {
+                        mechanism,
+                        force,
+                        ..Default::default()
+                    };
                     let request =
                         vmservice::ShutdownVmRequest::decode(request.encode_to_vec().as_slice())
                             .unwrap();
@@ -4130,6 +4269,7 @@ mod tests {
                 vmservice::ShutdownVmRequest {
                     mechanism: 0,
                     force: true,
+                    operation: 0,
                 },
             ] {
                 let (response, result) = mesh::oneshot();

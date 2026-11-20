@@ -125,9 +125,17 @@ closes its copy in OpenVMM.
 
 `ShutdownVM` requests a cooperative guest power-off, non-forced by default.
 
+Set `operation` to `OPERATION_REBOOT` or `OPERATION_HIBERNATE` to request a
+different power-state change through the Hyper-V IC. Reboot requires shutdown
+protocol version 3.1 or later; hibernate requires version 3.2. Omitting
+`operation`, or setting `OPERATION_UNSPECIFIED` or `OPERATION_POWER_OFF`,
+preserves power-off behavior. ACPI supports only power-off. Unknown operations
+and non-power-off ACPI requests are rejected without issuing a command.
+
 Success means IC acknowledgement or ACPI event injection, not that the guest
-has halted. Neither mechanism falls back to the other or forcibly powers off
-the VM.
+has completed the requested power-state change. Neither mechanism falls back
+to the other or forcibly powers off the VM. For a power-off request, use
+`WaitVM` to observe a halt; it is not a reboot or hibernation completion signal.
 
 See `ShutdownVM` and `ShutdownVMRequest` in [`vmservice.proto`] for prerequisites,
 request fields, shutdown lifecycle.
