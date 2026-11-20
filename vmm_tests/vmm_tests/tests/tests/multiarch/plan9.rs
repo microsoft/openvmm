@@ -36,10 +36,10 @@ async fn plan9_file_operations(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
             b.without_save_restore()
                 .with_pcie_root_topology(1, 1, 1)
                 .with_custom_config(|c| {
-                    c.pcie_devices.push(PcieDeviceConfig {
-                        port_name: "s0rc0rp0".into(),
-                        resource: VirtioPciDeviceHandle(share).into_resource(),
-                    });
+                    c.pcie_devices.push(PcieDeviceConfig::new(
+                        "s0rc0rp0".into(),
+                        VirtioPciDeviceHandle(share).into_resource(),
+                    ));
                 })
         })
         .run()

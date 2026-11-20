@@ -978,6 +978,7 @@ async fn test_ttrpc_interface(
                     generic_initiators: vec![vmservice::PcieGenericInitiator {
                         port_name: "sw0-dp0".to_string(),
                         node: 1,
+                        ..Default::default()
                     }],
                 }),
             )

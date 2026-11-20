@@ -195,7 +195,9 @@ impl SmmuDevicesResult {
                     .devices
                     .iter()
                     .find(|device| device.rc_index == config.rc_index)
-                    .map_or(config.ats_supported, |device| device.shared_state.ats_supported()),
+                    .map_or(config.ats_supported, |device| {
+                        device.shared_state.ats_supported()
+                    }),
                 ..config.clone()
             })
             .collect()
@@ -423,6 +425,8 @@ mod tests {
                 cxl: None,
                 iommu: ssid.map(|bits| PcieIommuConfig::Smmu {
                     accel: false,
+                    ats: false,
+                    ssid_bits: 0,
                     oas: SmmuOas::Auto,
                     ssidsize: SmmuSsidSize::Fixed(bits),
                 }),
@@ -496,15 +500,18 @@ mod tests {
                 shared_states: vec![Some(state.clone())],
                 devices: vec![SmmuFirmwareDevice {
                     shared_state: state.clone(),
-                    config: vmm_core::acpi_builder::AcpiSmmuConfig {
-                        rc_index: 7,
-                        segment: 2,
-                        base: 0,
-                        event_gsiv: 35,
-                        gerr_gsiv: 36,
-                        ats_supported: false,
-                        reserved_iova_ranges: Vec::new(),
-                    },
+                    rc_index: 7,
+                }],
+                virt_iommus: Vec::new(),
+                configs: vec![vmm_core::acpi_builder::AcpiSmmuConfig {
+                    rc_index: 7,
+                    segment: 2,
+                    base: 0,
+                    event_gsiv: 35,
+                    gerr_gsiv: 36,
+                    ats_supported: false,
+                    reserved_iova_ranges: Vec::new(),
+                    device_stream_ids: Vec::new(),
                 }],
             };
             // Reading firmware configuration must not freeze discovery.

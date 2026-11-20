@@ -921,10 +921,10 @@ async fn vm_config_from_command_line(
     // (e.g., NVMe controllers on PCIe ports) are added later by storage_builder.
     let mut pcie_devices = Vec::new();
     for (pcie_port_name, config) in usb_controller_configs(&opt.usb_xhci, &opt.usb_device)? {
-        pcie_devices.push(PcieDeviceConfig {
-            port_name: pcie_port_name,
-            resource: config.into_resource(),
-        });
+        pcie_devices.push(PcieDeviceConfig::new(
+            pcie_port_name,
+            config.into_resource(),
+        ));
     }
     for (index, cli_cfg) in opt.pcie_remote.iter().enumerate() {
         tracing::info!(

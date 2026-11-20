@@ -564,6 +564,10 @@ message IommufdConfig {
     // Non-empty identifier, unique within VMConfig.iommufds. Devices using
     // the same ID share an iommufd context and its DMA address space.
     string id = 1;
+    // Use the MSHV DIRECT assignment backend instead of a Linux IOAS.
+    // Only supported for aarch64 guests on Linux. The server supplies the
+    // VM's partition FD; clients do not provide a partition or kernel ID.
+    bool direct_iommu = 2;
 }
 
 // Initial address configuration for one VFIO device BAR.
@@ -662,6 +666,11 @@ message PcieGenericInitiator {
     string port_name = 1;
     // NUMA node for which the device is an initiator.
     uint32 node = 2;
+    // Optional coherent-memory range in guest physical addresses (for
+    // example, the assigned GPU's BAR4). Both fields must be supplied
+    // together; length must be nonzero and base + length must not overflow.
+    optional uint64 memory_base = 3;
+    optional uint64 memory_length = 4;
 }
 
 // A PCIe root complex.
@@ -703,8 +712,9 @@ message PcieIommuConfig {
 // Arm SMMUv3 configuration, fixed at VM creation.
 message SmmuConfig {
     // Enable hardware-accelerated nested translation via Linux iommufd.
-    // Requires ACPI and a nesting-capable host SMMUv3. VFIO devices behind
-    // this SMMU must reference a single shared context via iommufd_id.
+    // Requires ACPI. Ordinary contexts use Linux SMMUv3 nesting; DIRECT
+    // contexts use the Hyper-V virtual SMMU. VFIO devices behind this SMMU
+    // must reference a single shared context via iommufd_id.
     // False => software emulation; VFIO assignment behind the SMMU is then
     // unsupported. Unsupported acceleration is an error, not a fallback.
     bool accel = 1;
@@ -719,6 +729,10 @@ message SmmuConfig {
     // adopt the host SMMU's width before device start freezes capabilities.
     // A fixed width must not exceed the host's width with acceleration.
     optional uint32 ssid_bits = 3;
+    // Enable guest-controlled ATS for DIRECT assignment. Requires accel
+    // and an explicit nonzero ssid_bits value. False by default; ordinary
+    // Linux nesting derives ATS support from the host IOMMU.
+    bool ats = 4;
 }
 
 // A PCIe port: a root-complex root port or a switch downstream port. Hosts at

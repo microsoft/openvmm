@@ -194,9 +194,9 @@ fn with_read_only_vmdk_disk(
         backend
             .with_pcie_root_topology(1, 1, 1)
             .with_custom_config(move |config| {
-                config.pcie_devices.push(PcieDeviceConfig {
-                    port_name: "s0rc0rp0".into(),
-                    resource: VirtioPciDeviceHandle(
+                config.pcie_devices.push(PcieDeviceConfig::new(
+                    "s0rc0rp0".into(),
+                    VirtioPciDeviceHandle(
                         VirtioBlkHandle {
                             disk,
                             read_only: true,
@@ -205,7 +205,7 @@ fn with_read_only_vmdk_disk(
                         .into_resource(),
                     )
                     .into_resource(),
-                });
+                ));
             })
     })
 }

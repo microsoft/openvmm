@@ -4098,28 +4098,58 @@ cfg_select! {
     guest_arch = "aarch64" => {
         /// CLI configuration for an SMMUv3 instance.
         ///
-        /// Syntax: `rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]`.
+        /// Syntax: `rc=<name>[,accel][,ats][,ssid-bits=N][,oas=auto|N][,ssidsize=auto|N]`.
         /// Both `oas` and `ssidsize` default to `auto`.
-        #[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
+        #[derive(Clone, Debug)]
         pub struct SmmuCli {
             /// Name of the PCIe root complex this SMMU covers.
-            #[kv(key = "rc")]
             pub rc_name: String,
             /// Enable HW-accelerated nested translation (iommufd).
-            #[kv(flag)]
             pub accel: bool,
             /// Enable DIRECT-device ATS/PASID mediation.
-            #[kv(flag)]
             pub ats: bool,
             /// DIRECT SMMUv3 substream/PASID width.
-            #[kv(default)]
             pub ssid_bits: u8,
             /// Output address size policy.
-            #[kv(default)]
             pub oas: SmmuOasCli,
             /// SubstreamID width policy.
-            #[kv(default)]
             pub ssidsize: SmmuSsidSizeCli,
+        }
+
+        #[derive(vmm_cli::KeyValueArgs)]
+        struct SmmuArgs {
+            #[kv(key = "rc")]
+            rc_name: String,
+            #[kv(flag)]
+            accel: bool,
+            #[kv(flag)]
+            ats: bool,
+            #[kv(key = "ssid-bits", default)]
+            ssid_bits: u8,
+            #[kv(default)]
+            oas: SmmuOasCli,
+            #[kv(default)]
+            ssidsize: SmmuSsidSizeCli,
+        }
+
+        impl FromStr for SmmuCli {
+            type Err = anyhow::Error;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                let args: SmmuArgs = s.parse()?;
+                anyhow::ensure!(args.ssid_bits <= 20, "--smmu: ssid-bits must be between 0 and 20");
+                anyhow::ensure!(args.ssid_bits == 0 || args.accel, "--smmu: nonzero ssid-bits requires accel");
+                anyhow::ensure!(!args.ats || args.accel, "--smmu: ats requires accel");
+                anyhow::ensure!(!args.ats || args.ssid_bits != 0, "--smmu: ats requires nonzero ssid-bits");
+                Ok(Self {
+                    rc_name: args.rc_name,
+                    accel: args.accel,
+                    ats: args.ats,
+                    ssid_bits: args.ssid_bits,
+                    oas: args.oas,
+                    ssidsize: args.ssidsize,
+                })
+            }
         }
 
         /// Output address size (OAS) policy parsed from `--smmu`.

@@ -1943,7 +1943,6 @@ mod test {
                     gerr_gsiv: 36,
                     ats_supported: false,
                     reserved_iova_ranges: Vec::new(),
-                    ats_supported: false,
                     device_stream_ids: Vec::new(),
                 }],
             },
@@ -2193,6 +2192,7 @@ mod test {
                 gerr_gsiv: 36,
                 ats_supported: false,
                 reserved_iova_ranges: Vec::new(),
+                device_stream_ids: Vec::new(),
             },
             AcpiSmmuConfig {
                 rc_index: 9,
@@ -2202,6 +2202,7 @@ mod test {
                 gerr_gsiv: 38,
                 ats_supported: true,
                 reserved_iova_ranges: Vec::new(),
+                device_stream_ids: Vec::new(),
             },
         ];
 
@@ -2292,6 +2293,7 @@ mod test {
                     gerr_gsiv: 36 + bridge.index * 2,
                     ats_supported: true,
                     reserved_iova_ranges: Vec::new(),
+                    device_stream_ids: Vec::new(),
                 })
                 .collect();
 
@@ -2377,6 +2379,7 @@ mod test {
                 gerr_gsiv: 36 + bridge.index * 2,
                 ats_supported: bridge.index == 2,
                 reserved_iova_ranges: Vec::new(),
+                device_stream_ids: Vec::new(),
             })
             .collect();
 

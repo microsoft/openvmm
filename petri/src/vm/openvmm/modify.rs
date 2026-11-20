@@ -621,7 +621,12 @@ impl PetriVmConfigOpenVmm {
             .flat_map(|rc| &rc.ports)
             .chain(self.config.pcie_switches.iter().flat_map(|s| &s.ports))
             .map(|p| p.name.clone())
-            .chain(self.config.pcie_devices.iter().map(|d| d.port_name.clone()))
+            .chain(
+                self.config
+                    .pcie_devices
+                    .iter()
+                    .map(|d| d.port_name().to_owned()),
+            )
             .collect::<std::collections::HashSet<_>>();
         let mut shares = std::mem::take(&mut self.guest_shares)
             .into_iter()
@@ -658,10 +663,10 @@ impl PetriVmConfigOpenVmm {
                     cxl: false,
                     pasid: false,
                 });
-            self.config.pcie_devices.push(PcieDeviceConfig {
+            self.config.pcie_devices.push(PcieDeviceConfig::new(
                 port_name,
-                resource: virtio_resources::VirtioPciDeviceHandle(resource).into_resource(),
-            });
+                virtio_resources::VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         }
         self
     }

@@ -114,7 +114,7 @@ impl PetriVmConfigOpenVmm {
         let has_unsupported_pcie_save_restore_device = config
             .pcie_devices
             .iter()
-            .any(|device| !pcie_device_supports_save_restore(device.resource.id()));
+            .any(|device| !pcie_device_supports_save_restore(device.resource_id()));
         let supports_save_restore = !skip_save_restore
             && !resources.properties.is_openhcl
             && !resources.properties.is_isolated
