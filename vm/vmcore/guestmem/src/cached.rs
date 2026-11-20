@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Experimental cached access to bounded guest-memory ranges.
+//! Cached access to bounded guest-memory ranges.
 //!
 //! A backing must explicitly opt in to direct access. Otherwise operations use
 //! ordinary fallible [`GuestMemory`] access. Sparse backings report range
