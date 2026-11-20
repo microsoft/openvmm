@@ -3,14 +3,18 @@
 
 //! Measured product policy: enum, per-VM value, codec.
 //!
-//! To add a product: define its body in a sibling module, then add
-//! one `N => Variant(body::Body),` line to `define_product_policy!`
-//! below. `N` is a mesh wire tag and must never be reused.
+//! To add a product: define its body in a sibling module, with the
+//! `vpci_relay` field that the device policy sets, then add one
+//! `N => Variant(body::Body),` line to
+//! `define_product_policy!` below. `N` is a mesh wire tag and must never be
+//! reused.
 
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
+/// Azure policy body.
+pub mod azure;
 /// Cwcow policy body and validation methods.
 pub mod cwcow;
 /// Shared helpers for product policy validation and serialization.
@@ -62,6 +66,80 @@ impl ProductPolicyInternal {
     const MAGIC: u64 = 0x4F48434C504F4C00;
 }
 
+/// A PCI device that OpenHCL's VPCI relay may expose to VTL0: one with every
+/// ID that is set.
+#[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq, Default)]
+#[cfg_attr(
+    feature = "manifest",
+    derive(serde::Deserialize),
+    serde(deny_unknown_fields)
+)]
+#[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
+#[mesh(package = "openhcl.product_policy")]
+pub struct AllowedPciDevice {
+    /// Vendor ID.
+    #[mesh(1)]
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub vendor_id: Option<u16>,
+    /// Device ID.
+    #[mesh(2)]
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub device_id: Option<u16>,
+    /// Revision ID.
+    #[mesh(3)]
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub revision_id: Option<u8>,
+    /// Base class code.
+    #[mesh(4)]
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub base_class: Option<u8>,
+    /// Subclass code.
+    #[mesh(5)]
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub sub_class: Option<u8>,
+    /// Programming interface.
+    #[mesh(6)]
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub prog_if: Option<u8>,
+}
+
+/// When OpenHCL runs the VPCI relay. `OPENHCL_ENABLE_VPCI_RELAY` can override
+/// the defaults, but not [`Self::MustBeOn`].
+#[derive(mesh_protobuf::Protobuf, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(
+    feature = "manifest",
+    derive(serde::Deserialize),
+    serde(rename_all = "snake_case")
+)]
+#[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
+#[mesh(package = "openhcl.product_policy")]
+pub enum VpciRelayMode {
+    /// Off unless `OPENHCL_ENABLE_VPCI_RELAY=1`.
+    #[default]
+    #[mesh(1)]
+    DefaultOff,
+    /// On unless `OPENHCL_ENABLE_VPCI_RELAY=0`.
+    #[mesh(2)]
+    DefaultOn,
+    /// Always on. OpenHCL fails to boot if it can't run the relay.
+    #[mesh(3)]
+    MustBeOn,
+}
+
+/// The VPCI relay settings from the manifest's device policy file.
+#[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
+#[mesh(package = "openhcl.product_policy")]
+pub struct VpciRelayPolicy {
+    /// The PCI devices that the VPCI relay may expose to VTL0.
+    #[mesh(1)]
+    #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
+    pub allowed_pci_devices: Vec<AllowedPciDevice>,
+    /// When OpenHCL runs the VPCI relay.
+    #[mesh(2)]
+    pub mode: VpciRelayMode,
+}
+
 /// Defines the `ProductPolicy` enum and, for each variant `Foo(Body)`,
 /// a `MeasuredProductPolicy::foo(|body| ...) -> anyhow::Result<Option<T>>`
 /// accessor (`Ok(None)` when the policy is absent or a different
@@ -102,6 +180,35 @@ macro_rules! define_product_policy {
                     }
                 }
             }
+
+            /// Sets the VPCI relay settings from the manifest's device policy
+            /// file.
+            pub fn set_vpci_relay(&mut self, vpci_relay: $crate::VpciRelayPolicy) {
+                match self {
+                    $( Self::$variant(p) => p.vpci_relay = Some(vpci_relay), )+
+                }
+            }
+        }
+
+        impl $crate::MeasuredProductPolicy {
+            fn vpci_relay_policy(&self) -> Option<&$crate::VpciRelayPolicy> {
+                match self.raw()? {
+                    $( ProductPolicy::$variant(p) => p.vpci_relay.as_ref(), )+
+                }
+            }
+
+            /// The PCI devices that OpenHCL's VPCI relay may expose to VTL0.
+            pub fn allowed_pci_devices(&self) -> &[$crate::AllowedPciDevice] {
+                self.vpci_relay_policy()
+                    .map_or(&[], |r| &r.allowed_pci_devices)
+            }
+
+            /// When OpenHCL runs the VPCI relay.
+            pub fn vpci_relay(&self) -> $crate::VpciRelayMode {
+                self.vpci_relay_policy()
+                    .map(|r| r.mode)
+                    .unwrap_or_default()
+            }
         }
 
         $crate::__paste! {
@@ -137,6 +244,9 @@ define_product_policy! {
 
     /// Cwcow.
     2 => Cwcow(cwcow::CwcowPolicy);
+
+    /// Azure.
+    3 => Azure(azure::AzurePolicy);
 }
 
 // --- Codec ---

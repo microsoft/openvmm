@@ -168,7 +168,12 @@ impl PolledPipe {
     /// Refreshes the current event state from the pipe.
     fn refresh_events(&mut self) -> io::Result<()> {
         // Capture the current event state.
-        match self.file.get_pipe_select_events(&mut self.event_control) {
+        let events = self.file.get_pipe_select_events(&mut self.event_control);
+        self.update_events(events)
+    }
+
+    fn update_events(&mut self, events: io::Result<u32>) -> io::Result<()> {
+        match events {
             Ok(events) => self.events = events,
             Err(err) if err.raw_os_error() == Some(ERROR_PIPE_NOT_CONNECTED as i32) => {
                 // The query can fail instead of reporting

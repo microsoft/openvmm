@@ -3117,7 +3117,7 @@ fn build_virtio_fs(
     let vmservice::VirtioFs {
         tag,
         root_path,
-        read_only,
+        mount_options,
         windows_options,
     } = config;
     let windows_options = windows_options
@@ -3127,11 +3127,7 @@ fn build_virtio_fs(
         tag,
         fs: virtio_resources::fs::VirtioFsBackend::HostFs {
             root_path,
-            mount_options: if read_only {
-                "ro".to_string()
-            } else {
-                String::new()
-            },
+            mount_options,
             windows_options,
         },
     })
@@ -3143,27 +3139,32 @@ fn build_virtio_fs_windows_options(
     options: vmservice::virtio_fs::WindowsOptions,
     registry: &ResourceRegistry,
 ) -> anyhow::Result<virtio_resources::fs::VirtioFsWindowsOptions> {
-    let vmservice::virtio_fs::WindowsOptions { user_token_name } = options;
+    let vmservice::virtio_fs::WindowsOptions {
+        user_token_name,
+        shared_mem,
+    } = options;
     cfg_select! {
         windows => {{
-            let user_token = (!user_token_name.is_empty())
-                .then(|| {
-                    registry.resolve(&user_token_name).with_context(|| {
-                        format!("failed to resolve virtio-fs user token '{user_token_name}'")
-                    })
-                })
-                .transpose()?;
-            Ok(virtio_resources::fs::VirtioFsWindowsOptions { user_token })
+          let user_token = (!user_token_name.is_empty())
+              .then(|| {
+                  registry.resolve(&user_token_name).with_context(|| {
+                      format!("failed to resolve virtio-fs user token '{user_token_name}'")
+                  })
+              })
+              .transpose()?;
+          Ok(virtio_resources::fs::VirtioFsWindowsOptions {
+              user_token,
+              shared_mem,
+          })
         }}
         _ => {{
-            let _ = registry;
-            anyhow::ensure!(
-                user_token_name.is_empty(),
-                "virtio-fs user tokens are only supported on Windows"
-            );
-            Ok(virtio_resources::fs::VirtioFsWindowsOptions {})
-        }}
-    }
+          let _ = registry;
+          anyhow::ensure!(
+              user_token_name.is_empty(),
+              "virtio-fs user tokens are only supported on Windows"
+          );
+          Ok(virtio_resources::fs::VirtioFsWindowsOptions { shared_mem })
+    }}
 }
 
 /// Builds a disk backend resource from the proto `DiskBackend`.
@@ -3395,6 +3396,37 @@ mod tests {
     use vfio_assigned_device_resources::BarAddressConfig;
     #[cfg(target_os = "linux")]
     use vmservice::vfio_bar_address::Source;
+
+    #[test]
+    fn virtio_fs_windows_options() {
+        for shared_mem in [None, Some(false), Some(true)] {
+            let resource = build_virtio_fs(
+                vmservice::VirtioFs {
+                    tag: "tag".into(),
+                    root_path: "root".into(),
+                    mount_options: String::new(),
+                    windows_options: shared_mem.map(|shared_mem| {
+                        vmservice::virtio_fs::WindowsOptions {
+                            user_token_name: String::new(),
+                            shared_mem,
+                        }
+                    }),
+                },
+                &ResourceRegistry::default(),
+            )
+            .unwrap();
+            let virtio_resources::fs::VirtioFsBackend::HostFs {
+                windows_options, ..
+            } = resource.fs
+            else {
+                panic!("expected host filesystem backend");
+            };
+            assert_eq!(
+                windows_options.map(|options| options.shared_mem),
+                shared_mem,
+            );
+        }
+    }
 
     #[test]
     fn virtio_vsock_reuses_socket_path() {

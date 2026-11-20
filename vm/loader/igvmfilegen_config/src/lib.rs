@@ -119,7 +119,7 @@ pub enum Image {
         /// [`product_policy`]. We don't gate this property behind a feature
         /// to avoid having multiple igvmfilegen tools with and without the feature.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        product_policy: Option<ProductPolicy>,
+        product_policy: Option<ProductPolicyConfig>,
     },
     /// Load the Linux kernel.
     /// TODO: Currently, this only works with underhill.
@@ -158,6 +158,22 @@ pub struct LinuxImage {
     pub use_initrd: bool,
     /// The command line to boot the kernel with.
     pub command_line: CString,
+}
+
+/// An OpenHCL image's product policy, and the device policy file that sets
+/// its PCI devices.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ProductPolicyConfig {
+    /// The measured product policy.
+    pub policy: ProductPolicy,
+    /// Optional device policy file, relative to the manifest: the PCI devices
+    /// that the VPCI relay may expose to VTL0, and when the relay runs.
+    /// Without one, the relay is off by default and VPCI devices reach VTL0
+    /// unfiltered; enabling it with `OPENHCL_ENABLE_VPCI_RELAY=1` fails the
+    /// boot, because no device is allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_policy: Option<PathBuf>,
 }
 
 impl Image {
@@ -634,12 +650,14 @@ mod test {
                 "memory_page_count": 10,
                 "uefi": true,
                 "product_policy": {
-                    "sivm": {
-                        "require_ephemeral_vmgs": true,
-                        "require_secure_boot": true,
-                        "require_secure_boot_vars": true,
-                        "require_bcd_integrity": true,
-                        "custom_uefi_json": "ZGVhZGJlZWY="
+                    "policy": {
+                        "sivm": {
+                            "require_ephemeral_vmgs": true,
+                            "require_secure_boot": true,
+                            "require_secure_boot_vars": true,
+                            "require_bcd_integrity": true,
+                            "custom_uefi_json": "ZGVhZGJlZWY="
+                        }
                     }
                 }
             }
@@ -647,9 +665,9 @@ mod test {
         let parsed: Image = serde_json::from_str(json).unwrap();
         match parsed {
             Image::Openhcl {
-                product_policy: Some(policy),
+                product_policy: Some(config),
                 ..
-            } => match policy {
+            } => match config.policy {
                 ProductPolicy::Sivm(p) => {
                     assert!(p.require_ephemeral_vmgs);
                     assert!(p.require_secure_boot);
@@ -658,6 +676,7 @@ mod test {
                     assert_eq!(p.custom_uefi_json, b"deadbeef");
                 }
                 ProductPolicy::Cwcow(p) => panic!("unexpected Cwcow policy: {p:?}"),
+                ProductPolicy::Azure(p) => panic!("unexpected Azure policy: {p:?}"),
             },
             other => panic!("unexpected parse: {other:?}"),
         }

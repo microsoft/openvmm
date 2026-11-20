@@ -110,6 +110,10 @@ When creating a monthly release branch:
 3. Add the branch to both `run_filters` and `test_filters` in
    `petri/logview/src/branch_quick_filters.tsx` so it appears in the Runs,
    Tests, and TestDetails quick filters.
+4. On the new release branch, update `ci/refresh-mirror.yaml`: set the push
+   trigger to the new `release/<RELEASE>` branch and `submoduleTarget` to its
+   downstream target. Azure Pipelines reads the YAML from the pushed branch,
+   so release pushes trigger mirror refreshes independently of `main`.
 
 We track the state of candidates for a given release by tagging the PRs with the following labels:
 
