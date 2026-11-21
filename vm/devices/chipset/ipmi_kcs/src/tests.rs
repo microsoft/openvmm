@@ -5,6 +5,8 @@
 
 use super::*;
 use ipmi_protocol::*;
+use pal_async::DefaultDriver;
+use pal_async::async_test;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -14,6 +16,10 @@ use test_with_tracing::test;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateBlob;
+use vmcore::vmtime::SavedState as VmTimeSavedState;
+use vmcore::vmtime::VmTime;
+use vmcore::vmtime::VmTimeAccess;
+use vmcore::vmtime::VmTimeKeeper;
 
 const APPLICATION_REQUEST: u8 = NETFN_APPLICATION << 2;
 const STORAGE_REQUEST: u8 = NETFN_STORAGE << 2;
@@ -37,10 +43,15 @@ impl WallClock for FakeClock {
     }
 }
 
-impl MonotonicClock for FakeClock {
-    fn monotonic_seconds(&mut self) -> u64 {
-        self.0.load(Ordering::Relaxed) as u64
-    }
+async fn stopped_vmtime(driver: &DefaultDriver) -> (VmTimeKeeper, VmTimeAccess) {
+    let keeper = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
+    let access = keeper
+        .builder()
+        .build(driver)
+        .await
+        .unwrap()
+        .access("ipmi_kcs");
+    (keeper, access)
 }
 
 #[derive(Default)]
@@ -684,17 +695,17 @@ fn sel_time_supports_positive_and_negative_offsets() {
     assert_eq!(u32::from_le_bytes(time[3..7].try_into().unwrap()), 0);
 }
 
-#[test]
-fn sink_results_do_not_change_committed_records() {
+#[async_test]
+async fn sink_results_do_not_change_committed_records(driver: DefaultDriver) {
     let clock = FakeClock::new(10);
+    let (_keeper, vmtime) = stopped_vmtime(&driver).await;
     let sink_state = Arc::new(Mutex::new(SinkState::default()));
     let accept = Arc::new(AtomicBool::new(true));
     let sink = SharedSink {
         state: sink_state.clone(),
         accept: accept.clone(),
     };
-    let mut device =
-        IpmiKcs::with_event_sink(Box::new(clock), Box::new(FakeClock::new(0)), Box::new(sink));
+    let mut device = IpmiKcs::with_event_sink(Box::new(clock), vmtime, Box::new(sink));
 
     add_record(&mut device, 0x11);
     accept.store(false, Ordering::Relaxed);
@@ -716,20 +727,16 @@ fn sink_results_do_not_change_committed_records() {
     assert_eq!(state.records[0].1, *device.sel_record(0).unwrap());
 }
 
-#[test]
-fn sink_forwarding_is_limited_to_256_per_monotonic_second() {
+#[async_test]
+async fn sink_forwarding_is_limited_to_256_per_vmtime_second(driver: DefaultDriver) {
     let wall_clock = FakeClock::new(10);
-    let monotonic_clock = FakeClock::new(0);
+    let (mut keeper, vmtime) = stopped_vmtime(&driver).await;
     let sink_state = Arc::new(Mutex::new(SinkState::default()));
     let sink = SharedSink {
         state: sink_state.clone(),
         accept: Arc::new(AtomicBool::new(true)),
     };
-    let mut device = IpmiKcs::with_event_sink(
-        Box::new(wall_clock.clone()),
-        Box::new(monotonic_clock.clone()),
-        Box::new(sink),
-    );
+    let mut device = IpmiKcs::with_event_sink(Box::new(wall_clock.clone()), vmtime, Box::new(sink));
 
     for _ in 0..256 {
         assert_completion(
@@ -758,7 +765,11 @@ fn sink_forwarding_is_limited_to_256_per_monotonic_second() {
     assert_eq!(device.stats().forwarded, 256);
     assert_eq!(device.stats().rate_limited, 4);
 
-    monotonic_clock.set(1);
+    keeper
+        .restore(VmTimeSavedState::from_vmtime(VmTime::from_100ns(
+            10_000_000,
+        )))
+        .await;
     for _ in 0..256 {
         clear(&mut device, 0, 0xaa);
         add_record(&mut device, 0x5d);

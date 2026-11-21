@@ -218,7 +218,7 @@ impl IpmiKcs {
         if let Some(forwarder) = self.forwarder.as_mut() {
             if forwarder
                 .rate_limiter
-                .allow(forwarder.clock.monotonic_seconds())
+                .allow(forwarder.vmtime.now().as_100ns() / 10_000_000)
             {
                 if forwarder.sink.try_send(record_id, record) {
                     self.stats.forwarded = self.stats.forwarded.saturating_add(1);

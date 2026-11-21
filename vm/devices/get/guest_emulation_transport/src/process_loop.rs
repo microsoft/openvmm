@@ -553,7 +553,6 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     // Coalesce early events without allocating an unbounded host-driven queue.
     post_live_migration_pending: bool,
     // IPMI SEL notifications queued for the host but not yet written.
-    #[inspect(skip)]
     ipmi_sel_pending: usize,
     stats: Stats,
 
@@ -647,6 +646,7 @@ enum WriteRequest {
 }
 
 /// Maximum IPMI SEL notifications queued for the host but not yet written.
+/// Matches the device's 256/s forwarding limit.
 const MAX_PENDING_IPMI_SEL: usize = 256;
 
 impl HostRequestPipeAccess {

@@ -36,6 +36,7 @@ pub use ipmi_protocol::STATUS_STATE_MASK;
 use ipmi_protocol::SelRecord;
 use sel::RateLimiter;
 use sel::SelState;
+use vmcore::vmtime::VmTimeAccess;
 
 /// Maximum KCS request or response size.
 pub const KCS_MESSAGE_MAX: usize = 64;
@@ -50,14 +51,6 @@ pub const KCS_MESSAGE_MAX: usize = 64;
 pub trait WallClock: Send {
     /// Returns the current wall-clock time in Unix seconds.
     fn unix_seconds(&mut self) -> i64;
-}
-
-/// Guest-independent monotonic time source used to rate-limit SEL forwarding.
-///
-/// Unlike [`WallClock`], this clock must never be affected by guest actions.
-pub trait MonotonicClock: Send {
-    /// Returns elapsed seconds since an arbitrary fixed origin.
-    fn monotonic_seconds(&mut self) -> u64;
 }
 
 /// Diagnostic counters for SEL additions.
@@ -132,7 +125,7 @@ impl KcsTransaction {
 /// Best-effort SEL forwarding with a per-second budget.
 struct SelForwarder {
     sink: Box<dyn SelEventSink>,
-    clock: Box<dyn MonotonicClock>,
+    vmtime: VmTimeAccess,
     rate_limiter: RateLimiter,
 }
 
@@ -153,18 +146,18 @@ impl IpmiKcs {
 
     /// Creates a virtual BMC with a best-effort SEL event sink.
     ///
-    /// `rate_limit_clock` must be guest-independent so that the guest cannot
-    /// replenish the forwarding budget by adjusting its RTC.
+    /// Forwarding is rate-limited using `vmtime` so that the guest cannot
+    /// replenish the budget by adjusting its RTC.
     pub fn with_event_sink(
         clock: Box<dyn WallClock>,
-        rate_limit_clock: Box<dyn MonotonicClock>,
+        vmtime: VmTimeAccess,
         sink: Box<dyn SelEventSink>,
     ) -> Self {
         Self::from_parts(
             clock,
             Some(SelForwarder {
                 sink,
-                clock: rate_limit_clock,
+                vmtime,
                 rate_limiter: RateLimiter::default(),
             }),
         )

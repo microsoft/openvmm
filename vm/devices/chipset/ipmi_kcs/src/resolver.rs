@@ -4,7 +4,6 @@
 //! Resource resolver for the IPMI KCS chipset device.
 
 use crate::IpmiKcs;
-use crate::MonotonicClock;
 use crate::WallClock;
 use crate::device::IpmiKcsDevice;
 use async_trait::async_trait;
@@ -57,15 +56,6 @@ impl WallClock for WallClockAdapter {
     }
 }
 
-/// VM reference time, which the guest cannot adjust.
-struct VmTimeClock(VmTimeAccess);
-
-impl MonotonicClock for VmTimeClock {
-    fn monotonic_seconds(&mut self) -> u64 {
-        self.0.now().as_100ns() / 10_000_000
-    }
-}
-
 async fn resolve_core(
     resolver: &ResourceResolver,
     event_sink: Resource<IpmiSelEventSinkHandleKind>,
@@ -83,7 +73,7 @@ async fn resolve_core(
 
     Ok(IpmiKcs::with_event_sink(
         Box::new(WallClockAdapter(time_source)),
-        Box::new(VmTimeClock(vmtime)),
+        vmtime,
         event_sink,
     ))
 }
