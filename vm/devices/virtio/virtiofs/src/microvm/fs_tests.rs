@@ -12,6 +12,7 @@ use super::profile::MICROVM_FUSE_MIN_MINOR;
 use super::profile::MicroVmVirtioFsProfile;
 use super::profile::microvm_root_identity;
 use super::saved_state::MAX_ALIASES_PER_INODE;
+use super::saved_state::MAX_DIRECTORY_ENTRIES;
 use super::saved_state::MAX_INODES;
 use super::saved_state::MAX_PATH_BYTES;
 use super::state::encode_relative_path;
@@ -30,11 +31,14 @@ use fuse::protocol::FUSE_ASYNC_READ;
 use fuse::protocol::FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
 use fuse::protocol::FUSE_INIT_EXT;
 use fuse::protocol::FUSE_ROOT_ID;
+use fuse::protocol::fuse_read_in;
+use fuse::protocol::fuse_release_in;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
 use test_with_tracing::test;
+use zerocopy::FromZeros;
 
 fn profile(root_path: &Path) -> MicroVmVirtioFsProfile {
     MicroVmVirtioFsProfile::from_attachment(
@@ -512,6 +516,137 @@ fn directory_snapshot_survives_host_mutation_after_restore() {
         .read_dir(&destination, continuation_offset, 4096, false)
         .unwrap();
     assert_eq!(continuation, expected_continuation);
+}
+
+/// The entries of each listing of the root of [`microvm_with_root_listings`],
+/// `.` and `..` included.
+const ROOT_LISTING_ENTRIES: usize = 64;
+
+/// How many listings of the root of [`microvm_with_root_listings`] a saved
+/// state holds at most: its bound on the entries of the listings of all
+/// handles.
+const ROOT_LISTINGS_AT_THE_BOUND: usize = MAX_DIRECTORY_ENTRIES / ROOT_LISTING_ENTRIES;
+
+/// Fills `root_path` with files, so that a listing of it holds
+/// [`ROOT_LISTING_ENTRIES`] entries, and returns its profile and a microVM
+/// filesystem of it.
+fn microvm_with_root_listings(root_path: &Path) -> (MicroVmVirtioFsProfile, VirtioFs) {
+    for index in 2..ROOT_LISTING_ENTRIES {
+        std::fs::write(root_path.join(index.to_string()), b"").unwrap();
+    }
+    let profile = profile(root_path);
+    let fs = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    (profile, fs)
+}
+
+/// Opens the root, as FUSE_OPENDIR does, and returns the handle.
+fn open_root(fs: &VirtioFs) -> u64 {
+    fs.open_dir(&request(FUSE_ROOT_ID), lx::O_RDONLY as u32)
+        .unwrap()
+        .fh
+}
+
+/// Reads the root through the handle `fh` from its start, as FUSE_READDIR or,
+/// with `plus`, FUSE_READDIRPLUS does. The first read of a handle lists the
+/// root.
+fn read_root(fs: &VirtioFs, fh: u64, plus: bool) -> lx::Result<()> {
+    let mut arg = fuse_read_in::new_zeroed();
+    arg.fh = fh;
+    arg.size = 4096;
+    if plus {
+        fs.read_dir_plus(&request(FUSE_ROOT_ID), &arg)?;
+    } else {
+        fs.read_dir(&request(FUSE_ROOT_ID), &arg)?;
+    }
+    Ok(())
+}
+
+/// Releases the handle `fh` of the root, as FUSE_RELEASEDIR does.
+fn release_root(fs: &VirtioFs, fh: u64) {
+    let mut arg = fuse_release_in::new_zeroed();
+    arg.fh = fh;
+    fs.release_dir(&request(FUSE_ROOT_ID), &arg).unwrap();
+}
+
+/// A saved state holds at most MAX_DIRECTORY_ENTRIES entries in the listings
+/// of all handles, so a guest that lists more directories must not fail the
+/// save: the first read of a handle, which lists its directory, fails with
+/// ENOSPC instead, and leaves the handle without a listing. Releasing a
+/// handle returns its listing, and FUSE_DESTROY returns them all.
+#[test]
+fn directory_listings_beyond_the_saved_bound_are_refused() {
+    let temporary_directory = tempdir().unwrap();
+    let (profile, fs) = microvm_with_root_listings(temporary_directory.path());
+    let handles: Vec<_> = (0..=ROOT_LISTINGS_AT_THE_BOUND)
+        .map(|_| open_root(&fs))
+        .collect();
+    let reads: Vec<_> = handles
+        .iter()
+        .map(|&fh| read_root(&fs, fh, false))
+        .collect();
+    let state = fs
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    let saved_entries: usize = state
+        .handles
+        .iter()
+        .map(|handle| handle.directory_entries.len())
+        .sum();
+    assert_eq!(saved_entries, MAX_DIRECTORY_ENTRIES);
+    let (refused, listed) = reads.split_last().unwrap();
+    assert!(listed.iter().all(Result::is_ok), "{listed:?}");
+    assert_eq!(*refused, Err(lx::Error::ENOSPC));
+    let refused = *handles.last().unwrap();
+    assert_eq!(read_root(&fs, refused, true), Err(lx::Error::ENOSPC));
+
+    release_root(&fs, handles[0]);
+    read_root(&fs, refused, false).unwrap();
+    assert_eq!(
+        read_root(&fs, open_root(&fs), false),
+        Err(lx::Error::ENOSPC)
+    );
+
+    fs.destroy();
+    for _ in 0..ROOT_LISTINGS_AT_THE_BOUND {
+        read_root(&fs, open_root(&fs), false).unwrap();
+    }
+}
+
+/// A restore charges the listings that it restores to the bound of a saved
+/// state, in place of the listings of the handles that it replaces, so the
+/// restored attachment refuses the listings that the saved one would.
+#[test]
+fn restored_directory_listings_count_toward_the_saved_bound() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    let (profile, source) = microvm_with_root_listings(root_path);
+    let handles: Vec<_> = (0..ROOT_LISTINGS_AT_THE_BOUND)
+        .map(|_| {
+            let fh = open_root(&source);
+            read_root(&source, fh, false).unwrap();
+            fh
+        })
+        .collect();
+
+    // A new attachment, and the source itself, whose handles hold listings
+    // up to the bound.
+    let destinations = [
+        VirtioFs::new_microvm(root_path, profile.clone()).unwrap(),
+        source.clone(),
+    ];
+    for destination in destinations {
+        let state = source
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+        let session = Session::new(destination.clone());
+        destination
+            .restore_microvm_state(&profile, state, &session)
+            .unwrap();
+        let fh = open_root(&destination);
+        assert_eq!(read_root(&destination, fh, false), Err(lx::Error::ENOSPC));
+        release_root(&destination, handles[0]);
+        read_root(&destination, fh, false).unwrap();
+    }
 }
 
 #[test]

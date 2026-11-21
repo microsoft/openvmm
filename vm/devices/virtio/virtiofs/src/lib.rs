@@ -32,6 +32,7 @@ use inode::DedupKey;
 use inode::VirtioFsInode;
 use inode::VirtioFsVolume;
 pub use lxutil::LxVolumeOptions;
+use microvm::file::DirectorySnapshotBudget;
 use microvm::profile::MicroVmVirtioFsProfile;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -76,6 +77,9 @@ struct FuseNegotiation {
 struct VirtioFsInner {
     inodes: RwLock<InodeMap>,
     files: RwLock<HandleMap<Arc<VirtioFsFile>>>,
+    /// The budget of the microVM directory snapshots of the handles in
+    /// `files`, which a restore replaces with them.
+    directory_snapshot_budget: RwLock<Arc<DirectorySnapshotBudget>>,
     mode: VirtioFsMode,
     microvm_profile: Option<MicroVmVirtioFsProfile>,
     /// Set when the microVM profile performs requests as their callers.
@@ -723,6 +727,7 @@ impl VirtioFs {
             inner: Arc::new(VirtioFsInner {
                 inodes: RwLock::new(inodes),
                 files: RwLock::new(HandleMap::new()),
+                directory_snapshot_budget: Default::default(),
                 mode: VirtioFsMode::Direct,
                 microvm_profile: None,
                 caller_identity: None,
@@ -743,6 +748,7 @@ impl VirtioFs {
                 // `true` enables aggregate mode: node 1 is synthetic (see `InodeMap`).
                 inodes: RwLock::new(InodeMap::new(true)),
                 files: RwLock::new(HandleMap::new()),
+                directory_snapshot_budget: Default::default(),
                 mode: VirtioFsMode::Aggregate(AggregateState::new()),
                 microvm_profile: None,
                 caller_identity: None,

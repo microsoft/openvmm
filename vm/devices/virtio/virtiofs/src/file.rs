@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 use crate::inode::VirtioFsInode;
+use crate::microvm::file::DirectorySnapshotBudget;
+use crate::microvm::file::DirectorySnapshotCharge;
 use crate::microvm::saved_state::SavedDirectoryEntry;
 use crate::util;
 use fuse::DirEntryWriter;
@@ -17,6 +19,9 @@ use std::sync::Arc;
 pub(crate) struct DirectorySnapshot {
     pub(crate) built: bool,
     pub(crate) entries: Vec<SavedDirectoryEntry>,
+    /// The share of the attachment's [`DirectorySnapshotBudget`] that
+    /// `entries` takes, once built.
+    pub(crate) _charge: Option<DirectorySnapshotCharge>,
 }
 
 /// Implements file callbacks for virtio-fs.
@@ -59,8 +64,11 @@ impl VirtioFsFile {
         self.file.read().fstat().map(Into::into)
     }
 
+    /// Restores a directory snapshot that a saved state holds, charging it to
+    /// `budget` when built.
     pub(crate) fn restore_directory_snapshot(
         &self,
+        budget: &Arc<DirectorySnapshotBudget>,
         built: bool,
         entries: Vec<SavedDirectoryEntry>,
     ) -> lx::Result<()> {
@@ -68,13 +76,20 @@ impl VirtioFsFile {
         if !built && !entries.is_empty() {
             return Err(lx::Error::EINVAL);
         }
-        if built {
+        let charge = if built {
             let stat = self.object_stat()?;
             if stat.mode & lx::S_IFMT != lx::S_IFDIR {
                 return Err(lx::Error::ENOTDIR);
             }
-        }
-        *self.directory_snapshot.write() = DirectorySnapshot { built, entries };
+            Some(budget.charge(&entries)?)
+        } else {
+            None
+        };
+        *self.directory_snapshot.write() = DirectorySnapshot {
+            built,
+            entries,
+            _charge: charge,
+        };
         Ok(())
     }
 

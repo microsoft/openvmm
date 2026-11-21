@@ -4,6 +4,7 @@
 //! microVM filesystem construction, policy hooks, and attachment restore.
 
 use super::MAX_FUSE_REQUEST_BYTES;
+use super::file::DirectorySnapshotBudget;
 use super::owner::CallerIdentity;
 use super::policy::SubtreePolicy;
 use super::profile::MicroVmOwnerMode;
@@ -256,6 +257,7 @@ impl VirtioFs {
             inner: Arc::new(VirtioFsInner {
                 inodes: RwLock::new(inodes),
                 files: RwLock::new(HandleMap::new()),
+                directory_snapshot_budget: Default::default(),
                 mode: VirtioFsMode::Direct,
                 microvm_profile: Some(profile),
                 caller_identity,
@@ -324,6 +326,7 @@ impl VirtioFs {
             inner: Arc::new(VirtioFsInner {
                 inodes: RwLock::new(InodeMap::new(true)),
                 files: RwLock::new(HandleMap::new()),
+                directory_snapshot_budget: Default::default(),
                 mode: VirtioFsMode::Aggregate(AggregateState::with_children(children)),
                 microvm_profile: Some(profile),
                 caller_identity,
@@ -705,6 +708,10 @@ impl VirtioFs {
         }
         restored_inodes.inodes_by_node_id.next_handle = state.next_node_id;
 
+        // The restored handles replace the current ones, so their directory
+        // snapshots take a budget of their own, which replaces the current
+        // handles' budget with them.
+        let directory_snapshot_budget = Arc::new(DirectorySnapshotBudget::default());
         let mut restored_files = HandleMap::starting_at(state.next_handle_id);
         let mut handle_ids = HashSet::with_capacity(state.handles.len());
         for saved in &state.handles {
@@ -735,6 +742,7 @@ impl VirtioFs {
                 "reopened handle kind does not match"
             );
             file.restore_directory_snapshot(
+                &directory_snapshot_budget,
                 saved.directory_snapshot_built,
                 saved.directory_entries.clone(),
             )
@@ -756,6 +764,7 @@ impl VirtioFs {
             volume.set_device_keys(device_keys);
         }
         *self.inner.inodes.write() = restored_inodes;
+        *self.inner.directory_snapshot_budget.write() = directory_snapshot_budget;
         *self.inner.files.write() = restored_files;
         *self.inner.negotiation.write() = fuse_negotiation_from_session(session_state);
         Ok(())

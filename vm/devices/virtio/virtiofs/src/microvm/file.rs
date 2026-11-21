@@ -3,14 +3,85 @@
 
 //! microVM directory enumeration and persisted directory snapshots.
 
+use super::saved_state::MAX_DIRECTORY_BYTES;
+use super::saved_state::MAX_DIRECTORY_ENTRIES;
 use super::saved_state::MAX_DIRECTORY_ENTRIES_PER_HANDLE;
 use super::saved_state::MAX_DIRECTORY_ENTRY_NAME_BYTES;
 use super::saved_state::MAX_DIRECTORY_SNAPSHOT_BYTES;
 use super::saved_state::SavedDirectoryEntry;
 use crate::VirtioFs;
+use crate::file::DirectorySnapshot;
 use crate::file::VirtioFsFile;
 use fuse::DirEntryWriter;
 use fuse::protocol::fuse_entry_out;
+use parking_lot::Mutex;
+use std::sync::Arc;
+
+/// The directory snapshots that the handles of a microVM attachment hold, in
+/// total. A saved state holds at most [`MAX_DIRECTORY_ENTRIES`] entries and
+/// [`MAX_DIRECTORY_BYTES`] of names in the snapshots of all its handles, so a
+/// handle takes its snapshot's share of these bounds before it keeps the
+/// snapshot, and a save never finds more.
+#[derive(Default)]
+pub(crate) struct DirectorySnapshotBudget {
+    used: Mutex<DirectorySnapshotSize>,
+}
+
+/// The entries of directory snapshots, and the bytes of their names.
+#[derive(Default)]
+struct DirectorySnapshotSize {
+    entries: usize,
+    bytes: usize,
+}
+
+/// The share of a [`DirectorySnapshotBudget`] that a directory snapshot
+/// takes, which returns to the budget when the snapshot drops with its
+/// handle.
+pub(crate) struct DirectorySnapshotCharge {
+    budget: Arc<DirectorySnapshotBudget>,
+    size: DirectorySnapshotSize,
+}
+
+impl DirectorySnapshotBudget {
+    /// Charges a snapshot of `entries` to the budget, or fails with `ENOSPC`
+    /// when the snapshots would then exceed either bound.
+    pub(crate) fn charge(
+        self: &Arc<Self>,
+        entries: &[SavedDirectoryEntry],
+    ) -> lx::Result<DirectorySnapshotCharge> {
+        let size = DirectorySnapshotSize {
+            entries: entries.len(),
+            bytes: entries
+                .iter()
+                .try_fold(0usize, |bytes, entry| bytes.checked_add(entry.name.len()))
+                .ok_or(lx::Error::ENOSPC)?,
+        };
+        let mut used = self.used.lock();
+        let entries = used
+            .entries
+            .checked_add(size.entries)
+            .filter(|&entries| entries <= MAX_DIRECTORY_ENTRIES)
+            .ok_or(lx::Error::ENOSPC)?;
+        let bytes = used
+            .bytes
+            .checked_add(size.bytes)
+            .filter(|&bytes| bytes <= MAX_DIRECTORY_BYTES)
+            .ok_or(lx::Error::ENOSPC)?;
+        *used = DirectorySnapshotSize { entries, bytes };
+        Ok(DirectorySnapshotCharge {
+            budget: Arc::clone(self),
+            size,
+        })
+    }
+}
+
+impl Drop for DirectorySnapshotCharge {
+    fn drop(&mut self) {
+        let mut used = self.budget.used.lock();
+        used.entries -= self.size.entries;
+        used.bytes -= self.size.bytes;
+    }
+}
 
 impl VirtioFsFile {
     pub(crate) fn read_dir_microvm(
@@ -30,8 +101,13 @@ impl VirtioFsFile {
                 if offset != 0 {
                     return Err(lx::Error::EINVAL);
                 }
-                snapshot.entries = self.build_microvm_directory_snapshot()?;
-                snapshot.built = true;
+                let entries = self.build_microvm_directory_snapshot()?;
+                let charge = fs.inner.directory_snapshot_budget.read().charge(&entries)?;
+                *snapshot = DirectorySnapshot {
+                    built: true,
+                    entries,
+                    _charge: Some(charge),
+                };
             }
             snapshot.entries.clone()
         };
