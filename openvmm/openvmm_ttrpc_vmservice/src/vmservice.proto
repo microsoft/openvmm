@@ -375,6 +375,8 @@ message DiskBackend {
         MemoryDisk memory = 2;
         // A memory-backed writable overlay over a read-only lower disk.
         MemoryDiffDisk memory_diff = 3;
+        // A VHD or VHDX opened by the client (Windows only).
+        VirtualDisk virtual_disk = 4;
     }
 }
 
@@ -384,8 +386,21 @@ message MemoryDisk {
 }
 
 message MemoryDiffDisk {
-    // Read-only lower disk.
+    // Read-only lower disk. Registered disk handles cannot be used here.
     DiskBackend lower = 1;
+}
+
+// A VHD or VHDX that the client opened with `OpenVirtualDisk` and attached for
+// raw access with `ATTACH_VIRTUAL_DISK_FLAG_NO_LOCAL_HOST` (plus
+// `ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY` for a read-only disk), so OpenVMM
+// accesses the image with the client's rights rather than its own.
+//
+// The client registers the handle using the resource-passing protocol (see
+// resource_passing.md). OpenVMM duplicates the registered handle while
+// processing the request; the name may be deregistered after the RPC succeeds.
+message VirtualDisk {
+    // Name of the registered virtual disk handle.
+    string handle_name = 1;
 }
 
 // A disk backed by a host file.
