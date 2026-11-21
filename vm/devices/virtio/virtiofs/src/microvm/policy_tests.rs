@@ -578,6 +578,58 @@ fn a_handle_of_a_forgotten_node_cannot_write_a_read_only_file() {
     assert_eq!(share.read("marker"), "host");
 }
 
+/// `LINK` gives the target node's object another name. Once the guest has
+/// removed every name of that object, by unlinking it or by renaming another
+/// entry over it, the node keeps its former path, where another object may
+/// now be, so a link to the node must fail with `ENOENT`, as Linux's `linkat`
+/// does for an unlinked file, rather than link that object and record the new
+/// name for the node. That object may even be a read-only file, which the
+/// guest may not link into a writable path.
+#[test]
+fn a_link_to_a_node_whose_names_are_gone_links_nothing() {
+    for overwrite in [false, true] {
+        let share = Share::new();
+        // A host hard link puts the read-only `marker` inside the writable
+        // path.
+        std::fs::hard_link(share.path("marker"), share.path("out/marker")).unwrap();
+        let fs = share.fs(&[], &[], &["out"]);
+        let out = lookup(&fs, "out").unwrap();
+        let (node, fh) = create(&fs, out, "file").unwrap();
+        let replacement = if overwrite {
+            release(&fs, node, fh);
+            let marker = lookup(&fs, "marker").unwrap();
+            assert_eq!(lookup(&fs, "out/marker").unwrap(), marker);
+            fs.rename(&request(out), name("marker"), out, name("file"), 0)
+                .unwrap();
+            assert_eq!(
+                error(fs.link(&request(out), name("link"), marker)),
+                lx::Error::EXDEV
+            );
+            marker
+        } else {
+            // The open handle keeps the host from giving the new file the
+            // unlinked file's inode number, and with it the unlinked file's
+            // node.
+            fs.unlink(&request(out), name("file")).unwrap();
+            let (new, new_fh) = create(&fs, out, "file").unwrap();
+            release(&fs, new, new_fh);
+            release(&fs, node, fh);
+            new
+        };
+        assert_ne!(node, replacement);
+
+        assert_eq!(
+            error(fs.link(&request(out), name("link"), node)),
+            lx::Error::ENOENT,
+            "overwrite={overwrite}"
+        );
+        assert!(!share.path("out/link").exists());
+        assert!(fs.get_inode(node).unwrap().aliases().is_empty());
+        assert_eq!(lookup(&fs, "out/file").unwrap(), replacement);
+        share.assert_protected_paths_unchanged();
+    }
+}
+
 #[test]
 fn allowed_paths_stay_readable_inside_a_hidden_subtree() {
     let share = Share::new();
