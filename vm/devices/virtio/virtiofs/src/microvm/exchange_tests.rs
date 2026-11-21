@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Tests for `RENAME_EXCHANGE` on microVM shares: the names that HostFs keeps
-//! for each node, the alias limits, and snapshots taken right after an
-//! exchange.
+//! Tests for renames on microVM shares that do not move one name to another:
+//! `RENAME_EXCHANGE`, which swaps two names, and a rename of a name onto
+//! itself, which changes none. They check the names that HostFs keeps for each
+//! node, the alias limits, and snapshots taken right after the rename.
 
 use super::policy_tests::error;
 use super::policy_tests::list;
@@ -33,6 +34,10 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 use tempfile::tempdir;
 use test_with_tracing::test;
+
+/// Linux's `RENAME_NOREPLACE` flag for `renameat2`, which fails a rename onto
+/// an existing name.
+const RENAME_NOREPLACE: u32 = 1;
 
 /// A read-write microVM share without an access policy.
 struct Share {
@@ -317,4 +322,80 @@ fn exchange_checks_the_alias_limits_of_both_names() {
             .next()
             .is_none()
     );
+}
+
+/// A rename of a name onto itself changes nothing on the host, so every node
+/// at or below the name keeps all of its names, and a snapshot taken right
+/// after it saves and restores them. A node whose object has another hard link
+/// still reaches the object through the renamed name once the guest removes
+/// the link. The host still fails such a rename as it fails any other.
+#[test]
+fn renaming_a_name_onto_itself_keeps_every_name() {
+    let share = Share::new(&[
+        ("directory/file", "file"),
+        ("directory/nested/leaf", "leaf"),
+        ("first", "first"),
+    ]);
+    std::fs::hard_link(share.path("first"), share.path("second")).unwrap();
+    let fs = share.fs();
+    let directory = lookup(&fs, "directory").unwrap();
+    let first = lookup(&fs, "first").unwrap();
+    assert_eq!(lookup(&fs, "second").unwrap(), first);
+    let nodes: [(u64, &[&str]); 5] = [
+        (directory, &["directory"]),
+        (lookup(&fs, "directory/file").unwrap(), &["directory/file"]),
+        (
+            lookup(&fs, "directory/nested").unwrap(),
+            &["directory/nested"],
+        ),
+        (
+            lookup(&fs, "directory/nested/leaf").unwrap(),
+            &["directory/nested/leaf"],
+        ),
+        (first, &["first", "second"]),
+    ];
+
+    for (parent, entry) in [
+        (FUSE_ROOT_ID, "directory"),
+        (directory, "file"),
+        (FUSE_ROOT_ID, "first"),
+    ] {
+        fs.rename(&request(parent), name(entry), parent, name(entry), 0)
+            .unwrap();
+    }
+    let rename_onto_itself = |entry, flags| {
+        error(fs.rename(
+            &request(FUSE_ROOT_ID),
+            name(entry),
+            FUSE_ROOT_ID,
+            name(entry),
+            flags,
+        ))
+    };
+    assert_eq!(rename_onto_itself("missing", 0), lx::Error::ENOENT);
+    // Windows hosts reject every rename flag.
+    assert_eq!(
+        rename_onto_itself("first", RENAME_NOREPLACE),
+        if cfg!(windows) {
+            lx::Error::EINVAL
+        } else {
+            lx::Error::EEXIST
+        }
+    );
+    let check = |fs: &VirtioFs| {
+        for (node, names) in nodes {
+            assert_names(fs, node, names);
+        }
+    };
+    check(&fs);
+
+    let state = share.save(&fs);
+    for (node, names) in nodes {
+        assert_eq!(saved_names(&state, node), path_set(names));
+    }
+    check(&share.restore(state));
+
+    fs.unlink(&request(FUSE_ROOT_ID), name("second")).unwrap();
+    assert_names(&fs, first, &["first"]);
+    assert_eq!(read_node(&fs, first), b"first");
 }

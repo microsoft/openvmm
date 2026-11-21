@@ -533,6 +533,14 @@ impl Fuse for VirtioFs {
         let new_path = new_inode.child_path(new_name)?;
         self.check_writable_entry(&inode, &old_path)?;
         self.check_writable_entry(&new_inode, &new_path)?;
+        // Renaming a name onto itself changes nothing on the host, which still
+        // fails it as it fails any other rename, such as with ENOENT for a
+        // missing name. Every node keeps its names: the bookkeeping of a move
+        // below would drop those at and below the name, since it first drops
+        // the destination's.
+        if old_path == new_path {
+            return inode.rename(name, &new_inode, new_name, flags);
+        }
         let exchange = flags & RENAME_EXCHANGE != 0;
         self.preflight_rename_aliases(inode.volume_id(), &old_path, &new_path, exchange)?;
         inode.rename(name, &new_inode, new_name, flags)?;
