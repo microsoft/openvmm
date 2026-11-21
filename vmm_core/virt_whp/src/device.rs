@@ -9,6 +9,7 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::pci::PciConfigSpace;
 use hv1_hypercall::HvInterruptParameters;
 use hvdef::Vtl;
@@ -17,6 +18,7 @@ use inspect::InspectMut;
 use parking_lot::Mutex;
 use pci_core::bar_mapping::BarMappings;
 use pci_core::msi::SignalMsi;
+use pci_core::spec::caps;
 use pci_core::spec::cfg_space;
 use std::os::windows::prelude::*;
 use std::sync::Arc;
@@ -31,6 +33,15 @@ use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptParameters;
 use whp::VpciInterruptTarget;
 use windows_sys::Win32::System::Power;
+
+/// Power state field of the PCI power management control/status register.
+mod pmcsr {
+    pub const POWER_STATE_MASK: u32 = 0b11;
+    pub const D0: u32 = 0;
+    pub const D1: u32 = 1;
+    pub const D2: u32 = 2;
+    pub const D3_HOT: u32 = 3;
+}
 
 pub struct Device {
     partition: Arc<WhpPartitionInner>,
@@ -180,7 +191,7 @@ fn probe_power_register(device: &whp::Device<'_>) -> Option<u32> {
     while next != 0 {
         let val = read(next.into());
         let cap = val & 0xff;
-        if cap == 1 {
+        if cap == u32::from(caps::CapabilityId::POWER_MANAGEMENT.0) {
             return Some(next + 4);
         }
         next = (val >> 16) & 0xff;
@@ -353,7 +364,7 @@ impl AssignedPciDevice {
             bar_flags,
             bars: [0; 6],
             power_reg,
-            power_state: 3,
+            power_state: pmcsr::D3_HOT,
             active_bars: Default::default(),
             mmio: Vec::new(),
             bar_intercepts,
@@ -402,11 +413,11 @@ impl AssignedPciDevice {
     }
 
     fn set_power_state(&mut self, power_state: u32) {
-        let win_power_state = match power_state & 3 {
-            0 => Power::PowerDeviceD0,
-            1 => Power::PowerDeviceD1,
-            2 => Power::PowerDeviceD2,
-            3 => Power::PowerDeviceD3,
+        let win_power_state = match power_state & pmcsr::POWER_STATE_MASK {
+            pmcsr::D0 => Power::PowerDeviceD0,
+            pmcsr::D1 => Power::PowerDeviceD1,
+            pmcsr::D2 => Power::PowerDeviceD2,
+            pmcsr::D3_HOT => Power::PowerDeviceD3,
             _ => unreachable!(),
         };
         match self.device.device().set_power_state(win_power_state) {
@@ -444,6 +455,7 @@ impl AssignedPciDevice {
                 .device()
                 .unmap_mmio()
                 .expect("unmap should not fail");
+            self.mmio_enabled = false;
         }
     }
 }
@@ -454,7 +466,16 @@ impl ChangeDeviceState for AssignedPciDevice {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        // TODO
+        // Clear the command register, which turns MMIO off, then return the
+        // power state and BARs to their initial values.
+        let _ = self.pci_cfg_write(
+            cfg_space::HeaderType00::STATUS_COMMAND.0,
+            ByteEnabledDwordWrite::new(0, PciConfigByteEnable::LOW_WORD),
+        );
+        if self.power_state != pmcsr::D3_HOT {
+            self.set_power_state(pmcsr::D3_HOT);
+        }
+        self.bars = [0; 6];
     }
 }
 
@@ -488,10 +509,9 @@ impl PciConfigSpace for AssignedPciDevice {
                 value.set(self.bars[i]);
             }
             _ => {
-                const PMCSR_POWER_STATE_MASK: u32 = 0b11;
                 self.read_phys_config(offset, value.reborrow());
-                if value.valid_mask() & PMCSR_POWER_STATE_MASK != 0 {
-                    value.set(self.power_state | (value.extract() & !PMCSR_POWER_STATE_MASK));
+                if value.valid_mask() & pmcsr::POWER_STATE_MASK != 0 {
+                    value.set(self.power_state | (value.extract() & !pmcsr::POWER_STATE_MASK));
                 }
             }
         }
@@ -505,18 +525,18 @@ impl PciConfigSpace for AssignedPciDevice {
                 // Power on/off the device if there is no power cap.
                 let command = cfg_space::Command::from_bits(value.merge_low(self.command));
                 if command.mmio_enabled() {
-                    if self.power_reg.is_none() && self.power_state != 0 {
+                    if self.power_reg.is_none() && self.power_state != pmcsr::D0 {
                         tracing::info!("implicitly transitioning to D0");
-                        self.set_power_state(0);
+                        self.set_power_state(pmcsr::D0);
                     }
-                    if self.power_state == 0 {
+                    if self.power_state == pmcsr::D0 {
                         self.enable_mmio();
                     }
                 } else {
                     self.disable_mmio();
-                    if self.power_reg.is_none() && self.power_state != 3 {
+                    if self.power_reg.is_none() && self.power_state != pmcsr::D3_HOT {
                         tracing::info!("implicitly transitioning to D3");
-                        self.set_power_state(3);
+                        self.set_power_state(pmcsr::D3_HOT);
                     }
                 }
                 self.write_phys_config(offset, value);
@@ -529,8 +549,10 @@ impl PciConfigSpace for AssignedPciDevice {
             }
             _ => {
                 if Some(offset as u32) == self.power_reg {
-                    let power_state = value.merge(self.power_state) & 3;
-                    if power_state == 0 && cfg_space::Command::from(self.command).mmio_enabled() {
+                    let power_state = value.merge(self.power_state) & pmcsr::POWER_STATE_MASK;
+                    if power_state == pmcsr::D0
+                        && cfg_space::Command::from(self.command).mmio_enabled()
+                    {
                         self.set_power_state(power_state);
                         self.enable_mmio();
                     } else {
