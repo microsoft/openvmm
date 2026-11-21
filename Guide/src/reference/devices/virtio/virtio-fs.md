@@ -222,13 +222,22 @@ backslashes, and colons are rejected. HostFs also requires every
 traverse-only path to be a directory when it attaches the share.
 
 Windows also resolves a name in another case, unless its directory is case
-sensitive. On a Windows host, HostFs therefore also matches names to the
-policy's paths ignoring case wherever that restricts the guest more: a name
-that differs from a denied or allowed path only in case is as restricted as
-that path, so it reaches no part of a denied path and cannot change a
-traverse-only directory, and a rename fails when a denied path lies below its
-source or its destination in any case. Another case never exposes an allowed
-path or makes a writable path writable.
+sensitive, and the 8.3 short name of a long name. On a Windows host, HostFs
+therefore also matches names to the policy's paths ignoring case wherever that
+restricts the guest more: a name that differs from a denied or allowed path
+only in case is as restricted as that path, so it reaches no part of a denied
+path and cannot change a traverse-only directory, and a rename fails when a
+denied path lies below its source or its destination in any case. Another
+case never exposes an allowed path or makes a writable path writable. The
+guest reaches an existing entry only by the name that Windows stores for it,
+as on Linux: another name of the entry fails with `ENOENT` when the guest
+looks it up, removes it, or renames it, and with `EACCES` when the guest opens
+it with `O_CREAT` but not `O_EXCL`, or renames another entry onto it. A node
+fails with `ENOENT` once its names reach an entry that Windows stores under
+other names, as after the host changes the case of one. Renaming an entry to
+its own name in another case changes the case of that name. Creating an entry
+exclusively under another name of an existing entry fails with `EEXIST`,
+because Windows holds the name.
 
 `--mount-deny` may name the root of the `--mount` or of a `--mount-child`
 when `--mount-allow` paths expose parts of it. The root is then
@@ -458,7 +467,9 @@ Denied paths are enforced in the server namespace rather than by guest mount
 layout. Lookup and mutation operations reject denied prefixes, directory
 enumeration omits their names, and denied root object identities reject
 hard-link, junction, and bind-mount aliases. On Windows, they also reject a
-denied prefix in another case. A traverse-only directory's object
+denied prefix in another case, and the guest reaches no entry by another name
+than the one that Windows stores, so neither a name in another case nor an
+8.3 short name reaches a denied path. A traverse-only directory's object
 is accepted only at its own path, and only as a directory, so neither a host
 rename nor another name for it exposes its hidden entries. A guest-created
 link cannot reach a denied path because the guest resolves it and every

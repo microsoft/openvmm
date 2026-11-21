@@ -1173,6 +1173,134 @@ fn renames_never_move_a_denied_path_in_another_case() {
     share.assert_protected_paths_unchanged();
 }
 
+/// The guest reaches an existing entry only by the name under which the host
+/// stores it, as on Linux, although Windows also resolves the name in another
+/// case. Such a name neither reaches nor replaces the entry, so it cannot
+/// become a name of an object that the policy checks writes through, which
+/// would make a writable directory read-only.
+#[cfg(windows)]
+#[test]
+fn the_guest_reaches_entries_only_by_their_own_names() {
+    let share = Share::new();
+    let fs = share.fs(&["logs"], &["logs/payloads"], &["out"]);
+    let out = lookup(&fs, "out").unwrap();
+    for path in ["OUT", "Out/existing", "out/EXISTING", "LOGS"] {
+        assert_eq!(error(lookup(&fs, path)), lx::Error::ENOENT, "{path}");
+    }
+    assert_eq!(
+        error(fs.unlink(&request(out), name("EXISTING"))),
+        lx::Error::ENOENT
+    );
+    assert_eq!(
+        error(fs.rename(&request(out), name("EXISTING"), out, name("moved"), 0)),
+        lx::Error::ENOENT
+    );
+    assert_eq!(
+        error(create_with_flags(
+            &fs,
+            out,
+            "EXISTING",
+            lx::O_RDWR | lx::O_TRUNC
+        )),
+        lx::Error::EACCES
+    );
+    // An exclusive create fails as the host's does.
+    assert_eq!(
+        error(create_with_flags(
+            &fs,
+            out,
+            "EXISTING",
+            lx::O_RDWR | lx::O_EXCL
+        )),
+        lx::Error::EEXIST
+    );
+    let (new, fh) = create(&fs, out, "new").unwrap();
+    release(&fs, new, fh);
+    assert_eq!(
+        error(fs.rename(&request(out), name("new"), out, name("EXISTING"), 0)),
+        lx::Error::EACCES
+    );
+    // Renaming an entry to its own name in another case changes its name.
+    fs.rename(&request(out), name("new"), out, name("NEW"), 0)
+        .unwrap();
+    assert_eq!(lookup(&fs, "out/NEW").unwrap(), new);
+    assert_eq!(error(lookup(&fs, "out/new")), lx::Error::ENOENT);
+
+    // The writable directory is still writable.
+    let (file, fh) = create(&fs, out, "file").unwrap();
+    write(&fs, file, fh, b"guest").unwrap();
+    release(&fs, file, fh);
+    assert_eq!(share.entries("out"), ["NEW", "existing", "file"]);
+    assert_eq!(share.read("out/existing"), "existing");
+    share.assert_protected_paths_unchanged();
+}
+
+/// Windows also resolves the 8.3 short name of a long name, but the guest
+/// reaches no entry by it, so it can neither see nor change a denied file
+/// through it, even one that the host created after the share was attached,
+/// whose identity is not pinned, nor through a node whose name has since
+/// become the file's short name.
+#[cfg(windows)]
+#[test]
+fn short_names_reach_no_entry() {
+    let share = Share::new();
+    std::fs::write(share.path("credentials.json"), "secret").unwrap();
+    std::fs::write(share.path("out/long-file-name.txt"), "visible").unwrap();
+    let short = "CREDEN~1.JSO";
+    if !share.path(short).exists() || !share.path("out/LONG-F~1.TXT").exists() {
+        tracing::info!("the volume does not generate 8.3 short names");
+        return;
+    }
+    let fs = share.fs(&["credentials.json"], &[], &[]);
+    let root = FUSE_ROOT_ID;
+    assert_eq!(
+        error(fs.unlink(&request(root), name(short))),
+        lx::Error::ENOENT
+    );
+    assert_eq!(
+        error(fs.rename(&request(root), name(short), root, name("moved"), 0)),
+        lx::Error::ENOENT
+    );
+    assert_eq!(
+        error(fs.rename(&request(root), name("marker"), root, name(short), 0)),
+        lx::Error::EACCES
+    );
+    assert_eq!(error(lookup(&fs, short)), lx::Error::ENOENT);
+    // A visible file is also reachable only by its own name.
+    lookup(&fs, "out/long-file-name.txt").unwrap();
+    for path in ["out/LONG-F~1.TXT", "out/long-f~1.txt"] {
+        assert_eq!(error(lookup(&fs, path)), lx::Error::ENOENT, "{path}");
+    }
+
+    // The host recreates the denied file, which pins nothing, after the guest
+    // created and removed a file whose name becomes the recreated file's short
+    // name, and whose node the guest still holds.
+    std::fs::remove_file(share.path("credentials.json")).unwrap();
+    let (own, fh) = create(&fs, root, short).unwrap();
+    release(&fs, own, fh);
+    fs.unlink(&request(root), name(short)).unwrap();
+    std::fs::write(share.path("credentials.json"), "recreated").unwrap();
+    assert!(share.path(short).exists());
+    assert_eq!(error(lookup(&fs, short)), lx::Error::ENOENT);
+    assert_eq!(error(open(&fs, own, lx::O_RDONLY)), lx::Error::ENOENT);
+    assert_eq!(error(fs.get_attr(&request(own), 0, 0)), lx::Error::ENOENT);
+    assert_eq!(
+        error(create_with_flags(
+            &fs,
+            root,
+            short,
+            lx::O_RDWR | lx::O_TRUNC
+        )),
+        lx::Error::EACCES
+    );
+    assert_eq!(
+        error(fs.unlink(&request(root), name(short))),
+        lx::Error::ENOENT
+    );
+    assert_eq!(share.read("credentials.json"), "recreated");
+    assert_eq!(share.read("marker"), "host");
+}
+
 #[test]
 fn attaching_requires_directories_on_the_way_to_allowed_paths() {
     let share = Share::new();
