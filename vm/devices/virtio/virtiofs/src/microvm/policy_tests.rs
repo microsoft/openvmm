@@ -1015,6 +1015,164 @@ fn renames_never_move_entries_into_a_denied_path() {
     share.assert_protected_paths_unchanged();
 }
 
+/// Windows resolves a name in another case to the entry of that name, unless
+/// its directory is case sensitive. Such a name of a denied file is as hidden
+/// as the file's own name, so the guest can neither see the file through it
+/// nor remove, move, replace, or create the file.
+#[cfg(windows)]
+#[test]
+fn a_denied_path_in_another_case_is_hidden() {
+    let share = Share::new();
+    let fs = share.fs(&["marker"], &[], &[]);
+    let root = FUSE_ROOT_ID;
+    let out = lookup(&fs, "out").unwrap();
+    for spelling in ["marker", "MARKER", "Marker"] {
+        assert_eq!(
+            error(fs.unlink(&request(root), name(spelling))),
+            lx::Error::EACCES,
+            "{spelling}"
+        );
+        assert_eq!(
+            error(fs.rename(&request(root), name(spelling), out, name("moved"), 0)),
+            lx::Error::EACCES,
+            "{spelling}"
+        );
+        assert_eq!(
+            error(fs.rename(&request(out), name("existing"), root, name(spelling), 0)),
+            lx::Error::EACCES,
+            "{spelling}"
+        );
+        assert_eq!(
+            error(create(&fs, root, spelling)),
+            lx::Error::EACCES,
+            "{spelling}"
+        );
+        assert_eq!(
+            error(lookup(&fs, spelling)),
+            lx::Error::EACCES,
+            "{spelling}"
+        );
+    }
+    assert_eq!(list(&fs, root), ["build.log", "logs", "out"]);
+    assert_eq!(share.read("out/existing"), "existing");
+    share.assert_protected_paths_unchanged();
+}
+
+/// A denied file that the host creates after the share is attached has no
+/// pinned identity, so only the policy keeps a name in another case from
+/// reaching it, and the guest cannot take its place under such a name.
+#[cfg(windows)]
+#[test]
+fn a_recreated_denied_path_stays_hidden_in_another_case() {
+    let share = Share::new();
+    let fs = share.fs(&["marker"], &[], &[]);
+    let root = FUSE_ROOT_ID;
+    std::fs::remove_file(share.path("marker")).unwrap();
+    assert_eq!(error(create(&fs, root, "MARKER")), lx::Error::EACCES);
+    assert_eq!(error(mkdir(&fs, root, "MARKER")), lx::Error::EACCES);
+    assert_eq!(
+        error(fs.symlink(&request(root), name("MARKER"), name("out"))),
+        lx::Error::EACCES
+    );
+    assert_eq!(share.entries(""), ["build.log", "logs", "out"]);
+
+    std::fs::write(share.path("marker"), "recreated").unwrap();
+    assert_eq!(error(lookup(&fs, "MARKER")), lx::Error::EACCES);
+    // An exclusive create fails as it does without the file, so it does not
+    // tell whether the file exists.
+    assert_eq!(
+        error(create_with_flags(
+            &fs,
+            root,
+            "MARKER",
+            lx::O_RDWR | lx::O_EXCL
+        )),
+        lx::Error::EACCES
+    );
+    assert_eq!(share.read("marker"), "recreated");
+}
+
+/// A traverse-only directory in another case is as protected as at its own
+/// name, so its writable directory can neither remove it nor move it away from
+/// its hidden entries, which a visible name would expose.
+#[cfg(windows)]
+#[test]
+fn a_traverse_only_directory_in_another_case_stays_in_place() {
+    let share = Share::new();
+    std::fs::create_dir_all(share.path("out/readonly/pub")).unwrap();
+    std::fs::write(share.path("out/readonly/secret"), "secret").unwrap();
+    let cases: [(&[&str], &[&str], &[&str], &str, &str); 2] = [
+        (&["logs"], &["logs/payloads"], &[], "", "LOGS"),
+        (
+            &["out/readonly"],
+            &["out/readonly/pub"],
+            &["out"],
+            "out",
+            "READONLY",
+        ),
+    ];
+    for (denied, allowed, writable, directory, spelling) in cases {
+        let fs = share.fs(denied, allowed, writable);
+        let directory = if directory.is_empty() {
+            FUSE_ROOT_ID
+        } else {
+            lookup(&fs, directory).unwrap()
+        };
+        assert_eq!(
+            error(fs.rename(
+                &request(directory),
+                name(spelling),
+                directory,
+                name("moved"),
+                0
+            )),
+            lx::Error::EROFS,
+            "{spelling}"
+        );
+        assert_eq!(
+            error(fs.rmdir(&request(directory), name(spelling))),
+            lx::Error::EROFS,
+            "{spelling}"
+        );
+    }
+    assert_eq!(share.entries("out/readonly"), ["pub", "secret"]);
+    share.assert_protected_paths_unchanged();
+}
+
+/// A rename moves everything below its names, so a directory that holds a
+/// denied path is protected from renames also under a name in another case,
+/// which Windows resolves to it: renaming it under that name would expose
+/// its hidden entries, and once the host has removed it, renaming a guest
+/// directory onto that name would put the guest's entries at the denied path.
+#[cfg(windows)]
+#[test]
+fn renames_never_move_a_denied_path_in_another_case() {
+    let share = Share::new();
+    let fs = share.fs(&["logs/secret"], &[], &[]);
+    let root = FUSE_ROOT_ID;
+    assert_eq!(
+        fs.rename(&request(root), name("LOGS"), root, name("moved"), 0),
+        Err(lx::Error::EROFS)
+    );
+    share.assert_protected_paths_unchanged();
+
+    std::fs::rename(share.path("logs"), share.path("host-logs")).unwrap();
+    let staging = mkdir(&fs, root, "staging").unwrap();
+    let (secret, fh) = create(&fs, staging, "secret").unwrap();
+    write(&fs, secret, fh, b"guest").unwrap();
+    release(&fs, secret, fh);
+    assert_eq!(
+        fs.rename(&request(root), name("staging"), root, name("LOGS"), 0),
+        Err(lx::Error::EROFS)
+    );
+    assert!(!share.path("logs").exists());
+    assert_eq!(share.read("staging/secret"), "guest");
+
+    std::fs::remove_dir_all(share.path("staging")).unwrap();
+    std::fs::rename(share.path("host-logs"), share.path("logs")).unwrap();
+    share.assert_protected_paths_unchanged();
+}
+
 #[test]
 fn attaching_requires_directories_on_the_way_to_allowed_paths() {
     let share = Share::new();

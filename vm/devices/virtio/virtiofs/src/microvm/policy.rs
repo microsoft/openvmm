@@ -25,13 +25,20 @@
 //! The share's root may itself be a denied path, the empty path, when allowed
 //! paths expose parts of it again. The root is then traverse-only, so the
 //! guest sees only the allowed paths, and the ways to them.
+//!
+//! A Windows host also resolves a name in another case to the entry of that
+//! name, unless its directory is case sensitive. There, a path that names a
+//! denied or allowed path in another case is as restricted as that path too,
+//! but such a name never exposes or makes writable more than its own name.
 
 use super::profile::MicroVmProfileError;
+use std::ffi::OsStr;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// How the guest can reach a share-relative path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// How the guest can reach a share-relative path, from the least to the most
+/// restricted.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum PathVisibility {
     /// The guest can reach the path, subject to the write policy.
     Visible,
@@ -47,6 +54,22 @@ enum Rule {
     Deny,
     Allow,
 }
+
+/// How a host matches a name to the entries of a directory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Names {
+    /// A name matches only an entry of exactly that name.
+    Exact,
+    /// A name also matches an entry whose name differs only in case.
+    IgnoreCase,
+}
+
+/// How the host matches names.
+const HOST_NAMES: Names = if cfg!(windows) {
+    Names::IgnoreCase
+} else {
+    Names::Exact
+};
 
 /// The validated access policy of a microVM share.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -95,7 +118,7 @@ impl SubtreePolicy {
                 .any(|(other_index, other)| other_index != index && writable.starts_with(other));
             if writable.as_os_str().is_empty()
                 || overlaps
-                || policy.visibility(writable) != PathVisibility::Visible
+                || policy.visibility_matching(writable, Names::Exact) != PathVisibility::Visible
             {
                 return Err(MicroVmProfileError::InvalidWritablePaths);
             }
@@ -122,30 +145,35 @@ impl SubtreePolicy {
     /// Returns the rule of the nearest denied or allowed path that contains
     /// `path`, other than `path` itself.
     fn enclosing_rule(&self, path: &Path) -> Option<Rule> {
-        self.nearest_rule(path, false)
+        self.nearest_rule(path, false, Names::Exact)
     }
 
     /// Returns the rule of the nearest denied or allowed path that contains
-    /// `path`, including `path` itself when `inclusive`.
-    fn nearest_rule(&self, path: &Path, inclusive: bool) -> Option<Rule> {
+    /// `path`, including `path` itself when `inclusive`, matching names as
+    /// `names` does.
+    fn nearest_rule(&self, path: &Path, inclusive: bool, names: Names) -> Option<Rule> {
         self.denied
             .iter()
             .map(|rule| (rule, Rule::Deny))
             .chain(self.allowed.iter().map(|rule| (rule, Rule::Allow)))
-            .filter(|(rule, _)| path.starts_with(rule) && (inclusive || rule.as_path() != path))
-            .max_by_key(|(rule, _)| rule.components().count())
+            .filter(|(rule, _)| {
+                starts_with(path, rule, names) && (inclusive || !same_path(rule, path, names))
+            })
+            // Only names that differ in case can make a denied and an allowed
+            // path equally near, and then the denied path decides.
+            .max_by_key(|(rule, kind)| (rule.components().count(), *kind == Rule::Deny))
             .map(|(_, kind)| kind)
     }
 
-    /// Returns how the guest can reach `path`.
-    pub(crate) fn visibility(&self, path: &Path) -> PathVisibility {
-        match self.nearest_rule(path, true) {
+    /// Returns how the guest can reach `path` when names match as `names`
+    /// does.
+    fn visibility_matching(&self, path: &Path, names: Names) -> PathVisibility {
+        match self.nearest_rule(path, true, names) {
             None | Some(Rule::Allow) => PathVisibility::Visible,
             Some(Rule::Deny)
-                if self
-                    .allowed
-                    .iter()
-                    .any(|allowed| allowed.as_path() != path && allowed.starts_with(path)) =>
+                if self.allowed.iter().any(|allowed| {
+                    starts_with(allowed, path, names) && !same_path(allowed, path, names)
+                }) =>
             {
                 PathVisibility::TraverseOnly
             }
@@ -153,9 +181,35 @@ impl SubtreePolicy {
         }
     }
 
+    /// Returns how the guest can reach `path`.
+    pub(crate) fn visibility(&self, path: &Path) -> PathVisibility {
+        self.visibility_on(path, HOST_NAMES)
+    }
+
+    /// Returns how the guest can reach `path` on a host that matches names as
+    /// `host` does: as the policy's paths decide, and when the host ignores
+    /// case, as the policy's paths that `path` names in another case decide,
+    /// if they restrict it more.
+    fn visibility_on(&self, path: &Path, host: Names) -> PathVisibility {
+        let exact = self.visibility_matching(path, Names::Exact);
+        match host {
+            Names::IgnoreCase if exact != PathVisibility::Hidden => {
+                exact.max(self.visibility_matching(path, Names::IgnoreCase))
+            }
+            Names::IgnoreCase | Names::Exact => exact,
+        }
+    }
+
     /// Returns whether the guest may modify `path` in a read-write share.
     pub(crate) fn is_writable(&self, path: &Path) -> bool {
-        self.visibility(path) == PathVisibility::Visible
+        self.is_writable_on(path, HOST_NAMES)
+    }
+
+    /// Returns whether the guest may modify `path` in a read-write share on a
+    /// host that matches names as `host` does. Only the exact names of a
+    /// writable path make it writable.
+    fn is_writable_on(&self, path: &Path, host: Names) -> bool {
+        self.visibility_on(path, host) == PathVisibility::Visible
             && (self.writable.is_empty()
                 || self
                     .writable
@@ -169,7 +223,18 @@ impl SubtreePolicy {
     /// lies inside a denied path there too, and the writable path that
     /// contains `path`, if any, contains everything below it.
     pub(crate) fn is_subtree_writable(&self, path: &Path) -> bool {
-        self.is_writable(path) && !self.denied.iter().any(|denied| denied.starts_with(path))
+        self.is_subtree_writable_on(path, HOST_NAMES)
+    }
+
+    /// Returns whether the guest may modify `path` and every path below it in
+    /// a read-write share on a host that matches names as `host` does: there,
+    /// a denied path below `path` in another case protects `path` too.
+    fn is_subtree_writable_on(&self, path: &Path, host: Names) -> bool {
+        self.is_writable_on(path, host)
+            && !self
+                .denied
+                .iter()
+                .any(|denied| starts_with(denied, path, host))
     }
 
     /// Returns whether some path that the guest can reach is not writable in a
@@ -187,7 +252,7 @@ impl SubtreePolicy {
     pub(crate) fn pinned_paths(&self) -> Vec<(PathBuf, Option<PathBuf>)> {
         let mut pinned = Vec::new();
         for denied in &self.denied {
-            let reachable_at = match self.visibility(denied) {
+            let reachable_at = match self.visibility_matching(denied, Names::Exact) {
                 PathVisibility::Hidden => None,
                 PathVisibility::Visible | PathVisibility::TraverseOnly => Some(denied.clone()),
             };
@@ -198,7 +263,8 @@ impl SubtreePolicy {
             for component in allowed.components() {
                 prefix.push(component);
                 if prefix != *allowed
-                    && self.visibility(&prefix) == PathVisibility::TraverseOnly
+                    && self.visibility_matching(&prefix, Names::Exact)
+                        == PathVisibility::TraverseOnly
                     && !pinned.iter().any(|(path, _)| *path == prefix)
                 {
                     pinned.push((prefix.clone(), Some(prefix.clone())));
@@ -207,6 +273,39 @@ impl SubtreePolicy {
         }
         pinned
     }
+}
+
+/// Returns whether the names of `path` begin with those of `prefix`, matched
+/// as `names` does.
+fn starts_with(path: &Path, prefix: &Path, names: Names) -> bool {
+    let mut components = path.components();
+    prefix.components().all(|prefix| {
+        components
+            .next()
+            .is_some_and(|component| same_name(component.as_os_str(), prefix.as_os_str(), names))
+    })
+}
+
+/// Returns whether `first` and `second` have the same names, matched as
+/// `names` does.
+fn same_path(first: &Path, second: &Path, names: Names) -> bool {
+    first.components().count() == second.components().count() && starts_with(first, second, names)
+}
+
+/// Returns whether two names match as `names` does.
+///
+/// Windows file systems match names in another case by upper-casing each
+/// UTF-16 unit with a table of Unicode's simple case mappings. Unicode's full
+/// mappings, which `str::to_uppercase` applies, make every such pair of names
+/// match, and a few more, such as `ß` and `SS`, which only restricts a path
+/// further (see [`SubtreePolicy::visibility_on`]).
+fn same_name(first: &OsStr, second: &OsStr, names: Names) -> bool {
+    first == second
+        || (names == Names::IgnoreCase
+            && match (first.to_str(), second.to_str()) {
+                (Some(first), Some(second)) => first.to_uppercase() == second.to_uppercase(),
+                _ => false,
+            })
 }
 
 #[cfg(test)]
@@ -449,6 +548,88 @@ mod tests {
             invalid(&[""], &["config.json"], &["other"], false),
             MicroVmProfileError::InvalidWritablePaths
         ));
+    }
+
+    #[test]
+    fn names_in_another_case_only_restrict_paths_on_hosts_that_ignore_case() {
+        use PathVisibility::Hidden;
+        use PathVisibility::TraverseOnly;
+        use PathVisibility::Visible;
+
+        let shared = policy(
+            &["logs", "marker", "out/readonly", "Ärger"],
+            &["logs/payloads", "out/readonly/pub"],
+            &["out"],
+        );
+        for (value, exact, ignoring_case) in [
+            ("marker", Hidden, Hidden),
+            ("MARKER", Visible, Hidden),
+            ("Marker/inside", Visible, Hidden),
+            ("ärger", Visible, Hidden),
+            ("LOGS", Visible, TraverseOnly),
+            ("LOGS/secret", Visible, Hidden),
+            ("LOGS/payloads", Visible, Visible),
+            ("out/READONLY", Visible, TraverseOnly),
+            ("OUT/readonly/secret", Visible, Hidden),
+            // Another case never exposes an allowed path.
+            ("logs/PAYLOADS", Hidden, Hidden),
+            ("markers", Visible, Visible),
+        ] {
+            assert_eq!(
+                shared.visibility_on(&path(value), Names::Exact),
+                exact,
+                "{value}"
+            );
+            assert_eq!(
+                shared.visibility_on(&path(value), Names::IgnoreCase),
+                ignoring_case,
+                "{value}"
+            );
+        }
+        // Another case never makes a path writable either.
+        for (value, exact, ignoring_case) in [
+            ("out/file", true, true),
+            ("out/READONLY", true, false),
+            ("OUT/file", false, false),
+        ] {
+            assert_eq!(
+                shared.is_writable_on(&path(value), Names::Exact),
+                exact,
+                "{value}"
+            );
+            assert_eq!(
+                shared.is_writable_on(&path(value), Names::IgnoreCase),
+                ignoring_case,
+                "{value}"
+            );
+        }
+        // A denied path below a name in another case protects the name from a
+        // rename, as below its own name.
+        let below = policy(&["logs/secret"], &[], &[]);
+        for (value, exact, ignoring_case) in [
+            ("logs", false, false),
+            ("LOGS", true, false),
+            ("Logs/SECRET", true, false),
+            ("LOGS/other", true, true),
+            ("other", true, true),
+        ] {
+            assert_eq!(
+                below.is_subtree_writable_on(&path(value), Names::Exact),
+                exact,
+                "{value}"
+            );
+            assert_eq!(
+                below.is_subtree_writable_on(&path(value), Names::IgnoreCase),
+                ignoring_case,
+                "{value}"
+            );
+        }
+
+        // Of a denied and an allowed path that differ only in case, the denied
+        // path decides.
+        let tied = policy(&["X", "x/a"], &["X/A"], &[]);
+        assert_eq!(tied.visibility_on(&path("X/A"), Names::Exact), Visible);
+        assert_eq!(tied.visibility_on(&path("X/A"), Names::IgnoreCase), Hidden);
     }
 
     #[test]

@@ -221,6 +221,15 @@ contain spaces, but it may not begin or end with one, and other whitespace,
 backslashes, and colons are rejected. HostFs also requires every
 traverse-only path to be a directory when it attaches the share.
 
+Windows also resolves a name in another case, unless its directory is case
+sensitive. On a Windows host, HostFs therefore also matches names to the
+policy's paths ignoring case wherever that restricts the guest more: a name
+that differs from a denied or allowed path only in case is as restricted as
+that path, so it reaches no part of a denied path and cannot change a
+traverse-only directory, and a rename fails when a denied path lies below its
+source or its destination in any case. Another case never exposes an allowed
+path or makes a writable path writable.
+
 `--mount-deny` may name the root of the `--mount` or of a `--mount-child`
 when `--mount-allow` paths expose parts of it. The root is then
 traverse-only: the guest sees only the allowed paths and the directories that
@@ -448,7 +457,8 @@ any ancestor that is a symbolic link or reparse point before each operation.
 Denied paths are enforced in the server namespace rather than by guest mount
 layout. Lookup and mutation operations reject denied prefixes, directory
 enumeration omits their names, and denied root object identities reject
-hard-link, junction, and bind-mount aliases. A traverse-only directory's object
+hard-link, junction, and bind-mount aliases. On Windows, they also reject a
+denied prefix in another case. A traverse-only directory's object
 is accepted only at its own path, and only as a directory, so neither a host
 rename nor another name for it exposes its hidden entries. A guest-created
 link cannot reach a denied path because the guest resolves it and every
