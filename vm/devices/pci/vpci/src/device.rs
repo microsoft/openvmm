@@ -11,6 +11,7 @@ use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigByteEnable;
+use chipset_device::pci::PciConfigSpace;
 use closeable_mutex::CloseableMutex;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
@@ -1241,25 +1242,39 @@ fn build_isolation_reply(
 }
 
 impl VpciChannel {
+    /// Runs `f` on the device's config space, or returns `None` if the channel
+    /// is closing and the device is closed.
+    ///
+    /// A VM reset can close this channel while the device's state unit holds
+    /// the device closed for its own reset, which turns the device off, so
+    /// there is nothing left for the channel to write.
+    fn with_open_device<R>(&self, f: impl FnOnce(&mut dyn PciConfigSpace) -> R) -> Option<R> {
+        let mut device = if self.closing {
+            self.device.lock_if_open()?
+        } else {
+            self.device.lock()
+        };
+        Some(f(device.supports_pci().unwrap()))
+    }
+
     fn bars(&mut self) -> [MmioResource; 6] {
         if !self.bars_set {
             // Don't return the default BAR state, which would look like
             // everything is mapped at 0.
             return [MmioResource::default(); 6];
         }
-        let bars = {
-            let mut device = self.device.lock();
+        let Some(bars) = self.with_open_device(|pci| {
             let mut buf = 0;
             [0, 1, 2, 3, 4, 5].map(|i| {
                 let value = ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf);
-                device
-                    .supports_pci()
-                    .unwrap()
-                    .pci_cfg_read(cfg_space::HeaderType00::BAR0.0 + 4 * i, value)
+                pci.pci_cfg_read(cfg_space::HeaderType00::BAR0.0 + 4 * i, value)
                     .now_or_never()
                     .map(|_| buf)
                     .unwrap_or(0)
             })
+        }) else {
+            tracing::debug!(instance_id = %self.instance_id, "device closed, no bars to read");
+            return [MmioResource::default(); 6];
         };
         let mut resources = [MmioResource::default(); 6];
         for bar in BarMappings::parse(&bars, &self.bar_masks).iter() {
@@ -1313,12 +1328,12 @@ impl VpciChannel {
         {
             for (i, bar) in bars.into_iter().enumerate() {
                 let bar = ByteEnabledDwordWrite::with_all_bytes_enabled(bar);
-                let result = self
-                    .device
-                    .lock()
-                    .supports_pci()
-                    .unwrap()
-                    .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
+                let Some(result) = self.with_open_device(|pci| {
+                    pci.pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar)
+                }) else {
+                    tracing::debug!(instance_id = %self.instance_id, "device closed, bars not written");
+                    return Ok(());
+                };
                 match result {
                     IoResult::Ok => (),
                     IoResult::Defer(token) => token
@@ -1341,9 +1356,7 @@ impl VpciChannel {
     }
 
     async fn set_power(&mut self, on: bool) {
-        let result = {
-            let mut device = self.device.lock();
-            let pci = device.supports_pci().unwrap();
+        let result = self.with_open_device(|pci| {
             let mut command = {
                 let mut value_u32 = 0;
                 let value =
@@ -1363,6 +1376,10 @@ impl VpciChannel {
             }
             let command = ByteEnabledDwordWrite::new(command, PciConfigByteEnable::LOW_WORD);
             pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
+        });
+        let Some(result) = result else {
+            tracing::debug!(instance_id = %self.instance_id, on, "device closed, power not changed");
+            return;
         };
         match result {
             IoResult::Ok => (),
@@ -1483,6 +1500,8 @@ pub struct VpciChannel {
 
     // State.
     bars_set: bool,
+    /// Set while `close` runs, the only time the device may be closed.
+    closing: bool,
     #[inspect(iter_by_index)]
     interrupts: Vec<MsiAddressData>,
     #[inspect(skip)]
@@ -1613,6 +1632,7 @@ impl VpciChannel {
             max_protocol_version: protocol::ProtocolVersion::RB,
             device: device.clone(),
             bars_set: false,
+            closing: false,
             interrupts: Vec::new(),
             eject: VpciBusEject::default(),
         })
@@ -1667,7 +1687,9 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
 
     async fn close(&mut self) {
         self.eject.disconnect();
+        self.closing = true;
         self.release_all().await;
+        self.closing = false;
 
         // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
         self.config_space.unmap();
@@ -1764,6 +1786,7 @@ mod tests {
     use vmbus_async::queue::OutgoingPacket;
     use vmbus_async::queue::Queue;
     use vmbus_async::queue::connected_queues;
+    use vmbus_channel::simple::SimpleVmbusDevice;
     use vmbus_ring as ring;
     use vmcore::vpci_msi::VpciInterruptMapper;
     use vpci_protocol as protocol;
@@ -1829,6 +1852,7 @@ mod tests {
             max_protocol_version: protocol::ProtocolVersion::RB,
             device,
             bars_set: false,
+            closing: false,
             interrupts: Vec::new(),
             eject: VpciBusEject::default(),
         };
@@ -2222,6 +2246,92 @@ mod tests {
         fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
             self.config_space.write_byte_enabled(offset, value)
         }
+    }
+
+    fn null_device() -> Arc<CloseableMutex<NullDevice>> {
+        Arc::new(CloseableMutex::new(NullDevice {
+            config_space: ConfigSpaceType0Emulator::new(
+                HardwareIds {
+                    vendor_id: 0x123,
+                    device_id: 0x789,
+                    revision_id: 1,
+                    prog_if: ProgrammingInterface::NONE,
+                    base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
+                    sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+                    type0_sub_vendor_id: 0x456,
+                    type0_sub_system_id: 0x1,
+                },
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
+        }))
+    }
+
+    fn channel_for(device: Arc<CloseableMutex<dyn ChipsetDevice>>) -> VpciChannel {
+        VpciChannel::new(
+            &device,
+            Guid::new_random(),
+            VpciConfigSpace::new(
+                ExternallyManagedMmioIntercepts.new_io_region("test", 2 * HV_PAGE_SIZE),
+                None,
+            ),
+            VpciInterruptMapper::new(TestVpciInterruptController::new()),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn mmio_enabled(device: &CloseableMutex<NullDevice>) -> bool {
+        let mut command = 0;
+        device
+            .lock()
+            .pci_cfg_read(
+                pci_core::spec::cfg_space::HeaderType00::STATUS_COMMAND.0,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut command),
+            )
+            .now_or_never()
+            .unwrap();
+        pci_core::spec::cfg_space::Command::from_bits(command as u16).mmio_enabled()
+    }
+
+    /// The channel can close while the device's state unit is resetting it.
+    #[async_test]
+    async fn close_while_the_device_is_closed_does_not_touch_it(_driver: DefaultDriver) {
+        let pci = null_device();
+        let mut channel = channel_for(pci.clone());
+        channel.set_power(true).await;
+        assert!(mmio_enabled(&pci));
+
+        let owner = pci.clone().close();
+        <VpciChannel as SimpleVmbusDevice<FlatRingMem>>::close(&mut channel).await;
+        assert!(!channel.bars_set);
+        drop(owner);
+
+        // The channel wrote nothing to the device.
+        assert!(mmio_enabled(&pci));
+    }
+
+    /// Only closing the channel skips a closed device. A guest request is
+    /// acknowledged to the guest, so it must not be dropped.
+    #[async_test]
+    #[should_panic(expected = "lock should not be closed")]
+    async fn guest_power_request_needs_the_device_open(_driver: DefaultDriver) {
+        let pci = null_device();
+        let mut channel = channel_for(pci.clone());
+        let _owner = pci.clone().close();
+        channel.set_power(false).await;
+    }
+
+    #[async_test]
+    async fn close_with_the_device_open_powers_it_off(_driver: DefaultDriver) {
+        let pci = null_device();
+        let mut channel = channel_for(pci.clone());
+        channel.set_power(true).await;
+        assert!(mmio_enabled(&pci));
+
+        <VpciChannel as SimpleVmbusDevice<FlatRingMem>>::close(&mut channel).await;
+        assert!(!mmio_enabled(&pci));
     }
 
     #[async_test]
