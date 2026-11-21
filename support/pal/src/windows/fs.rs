@@ -4,8 +4,6 @@
 pub mod relative;
 pub mod sparse;
 
-pub use relative::ensure_synchronous;
-
 use super::chk_status;
 use super::dos_to_nt_path;
 use std::ffi::c_void;

@@ -71,9 +71,7 @@ impl PendingIoStatus {
     }
 }
 
-/// Fails with [`io::ErrorKind::InvalidInput`] unless `file` was opened for
-/// synchronous I/O, that is, without `FILE_FLAG_OVERLAPPED`.
-pub fn ensure_synchronous(file: &fs::File) -> io::Result<()> {
+fn ensure_synchronous(file: &fs::File) -> io::Result<()> {
     let mut mode = ntioapi::FILE_MODE_INFORMATION::default();
     let io_status = PendingIoStatus::new();
     let mut status = unsafe {
@@ -100,7 +98,7 @@ pub fn ensure_synchronous(file: &fs::File) -> io::Result<()> {
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "handle must be opened for synchronous I/O",
+            "relative file operation requires a synchronous handle",
         ));
     }
     Ok(())

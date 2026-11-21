@@ -59,7 +59,6 @@
 //! | Backend | Crate | Description |
 //! |---------|-------|-------------|
 //! | `FileDisk` | `disk_file` | Host file, cross-platform |
-//! | `PhysicalDisk` | `disk_physical` | Windows physical disk |
 //! | `Vhd1Disk` | `disk_vhd1` | VHD1 fixed format |
 //! | `VhdmpDisk` | `disk_vhdmp` | Windows vhdmp driver |
 //! | `BlobDisk` | `disk_blob` | Read-only HTTP / Azure Blob |

@@ -1648,7 +1648,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.16",
  "vm_resource",
- "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -1718,26 +1717,6 @@ dependencies = [
  "nvme_spec",
  "pal",
  "scsi_buffers",
-]
-
-[[package]]
-name = "disk_physical"
-version = "0.0.0"
-dependencies = [
- "disk_backend",
- "disk_backend_resources",
- "disk_file",
- "disk_vhd1",
- "disk_vhdmp",
- "guestmem",
- "inspect",
- "pal",
- "pal_async",
- "scsi_buffers",
- "tempfile",
- "thiserror 2.0.16",
- "vm_resource",
- "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -6438,7 +6417,6 @@ dependencies = [
  "disk_delay",
  "disk_file",
  "disk_layered",
- "disk_physical",
  "disk_prwrap",
  "disk_vhd1",
  "disk_vhdmp",

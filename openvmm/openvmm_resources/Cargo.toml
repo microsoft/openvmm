@@ -129,7 +129,6 @@ virt_mshv = { workspace = true, optional = true }
 net_dio.workspace = true
 virt_whp = { workspace = true, optional = true }
 
-disk_physical.workspace = true
 disk_vhdmp.workspace = true
 
 [build-dependencies]

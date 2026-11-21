@@ -5,7 +5,7 @@
 
 // Tests for the resource-passing protocols, which share the TTRPC socket. The
 // UNIX fd-passing test resolves a tap `fd_name`, which is Linux-only; the
-// Windows handle-passing tests resolve a virtio-fs user token and a physical
+// Windows handle-passing tests resolve a virtio-fs user token and a virtual
 // disk.
 #[cfg(target_os = "linux")]
 mod fd_passing;
@@ -2604,6 +2604,7 @@ async fn accept_pipette(
 }
 
 /// Waits up to 20 seconds for the guest block device `/dev/{name}`.
+#[cfg(windows)]
 async fn wait_for_block_device(
     agent: &pipette_client::PipetteClient,
     name: &str,

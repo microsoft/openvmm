@@ -19,7 +19,6 @@ use scsi_buffers::RequestBuffers;
 use std::fs;
 use std::os::windows::prelude::*;
 use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use vm_resource::ResolveResource;
@@ -377,12 +376,6 @@ mod virtdisk {
             size_use: Option<&mut u32>,
         ) -> u32;
 
-        pub fn GetVirtualDiskPhysicalPath(
-            virtual_disk_handle: RawHandle,
-            disk_path_size_in_bytes: &mut u32,
-            disk_path: *mut u16,
-        ) -> u32;
-
         pub fn CreateVirtualDisk(
             virtual_storage_type: &mut VIRTUAL_STORAGE_TYPE,
             path: *const u16,
@@ -631,49 +624,6 @@ impl Vhd {
         Ok(())
     }
 
-    /// Opens the VHD at `path` and attaches it as a host disk without a drive
-    /// letter.
-    ///
-    /// Returns the open VHD and the disk's physical path, such as
-    /// `\\.\PhysicalDriveN`. The disk is detached when the returned [`Vhd`] is
-    /// dropped. Requires administrator privileges.
-    pub fn attach_to_host(path: &Path, read_only: bool) -> std::io::Result<(Self, PathBuf)> {
-        let vhd = OpenOptions {
-            flags: 0,
-            read_only,
-            attach: false,
-        }
-        .open_raw(path)?;
-        let mut flags = virtdisk::ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER;
-        if read_only {
-            flags |= virtdisk::ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY;
-        }
-        let mut disk_path = [0u16; 260];
-        let mut disk_path_size = size_of_val(&disk_path) as u32;
-        // SAFETY: The handle is open, the path buffer is valid for the
-        // specified size, and the results are validated immediately.
-        unsafe {
-            chk_win32(virtdisk::AttachVirtualDisk(
-                vhd.0.as_raw_handle(),
-                None,
-                flags,
-                0,
-                0,
-                None,
-            ))?;
-            chk_win32(virtdisk::GetVirtualDiskPhysicalPath(
-                vhd.0.as_raw_handle(),
-                &mut disk_path_size,
-                disk_path.as_mut_ptr(),
-            ))?;
-        }
-        let len = disk_path
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(disk_path.len());
-        Ok((vhd, std::ffi::OsString::from_wide(&disk_path[..len]).into()))
-    }
-
     fn info_static(&self, info_type: u32) -> std::io::Result<virtdisk::GET_VIRTUAL_DISK_INFO> {
         // SAFETY: We are guaranteed to be holding an open handle, and we
         // validate the result immediately.
@@ -809,6 +759,9 @@ pub enum Error {
     #[error("VHD is not attached for raw access")]
     /// The disk was opened without being attached for raw access.
     NotAttached,
+    #[error("VHD is attached read-only but the disk is writable")]
+    /// The disk was attached read-only, but was configured as writable.
+    AttachedReadOnly,
 }
 
 impl VhdmpDisk {
@@ -828,6 +781,12 @@ impl VhdmpDisk {
         // metadata queries would then fail with an unrelated error.
         if !vhd.is_attached().map_err(Error::Query)? {
             return Err(Error::NotAttached);
+        }
+        // Likewise, a handle attached read-only would fail every guest write.
+        if !read_only
+            && scsi::is_write_protected(vhd.0.as_handle()).map_err(Error::Query)? == Some(true)
+        {
+            return Err(Error::AttachedReadOnly);
         }
         let size = vhd.get_size().map_err(Error::Query)?;
         let disk_id = vhd.get_disk_id().map_err(Error::Query)?;
@@ -1077,6 +1036,29 @@ mod tests {
             VhdmpDisk::new(vhd, false),
             Err(super::Error::NotAttached)
         ));
+    }
+
+    /// A handle attached read-only can back a read-only disk but not a
+    /// writable one.
+    #[test]
+    fn read_only_attach_requires_read_only_disk() {
+        let path = make_test_vhd();
+        let open = || {
+            VhdmpDisk::options()
+                .read_only(true)
+                .open(path.as_ref())
+                .unwrap()
+        };
+        assert!(matches!(
+            VhdmpDisk::new(open(), false),
+            Err(super::Error::AttachedReadOnly)
+        ));
+        VhdmpDisk::new(open(), true).unwrap();
+        let vhd = VhdmpDisk::options()
+            .read_only(false)
+            .open(path.as_ref())
+            .unwrap();
+        VhdmpDisk::new(vhd, false).unwrap();
     }
 
     #[test]

@@ -16,7 +16,6 @@ use disk_backend_resources::FileDiskHandle;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
-use scsi_buffers::BounceBuffer;
 use scsi_buffers::RequestBuffers;
 use std::fs;
 use std::sync::Arc;
@@ -57,7 +56,6 @@ pub struct FileDisk {
     file: Arc<fs::File>,
     metadata: Metadata,
     sector_shift: u32,
-    aligned_buffers: bool,
 }
 
 #[derive(Debug, Inspect)]
@@ -66,28 +64,6 @@ pub struct Metadata {
     pub sector_size: u32,
     pub physical_sector_size: u32,
     pub read_only: bool,
-}
-
-/// A zeroed I/O buffer.
-enum FileIoBuffer {
-    /// A plain heap allocation.
-    Unaligned(Vec<u8>),
-    /// A buffer aligned to [`BounceBuffer::ALIGNMENT`], for handles opened for
-    /// unbuffered I/O.
-    Aligned(BounceBuffer),
-}
-
-impl FileIoBuffer {
-    /// Returns the buffer memory.
-    ///
-    /// This requires exclusive access because [`BounceBuffer`] also exposes
-    /// its memory as shared atomics.
-    fn as_mut_bytes(&mut self) -> &mut [u8] {
-        match self {
-            FileIoBuffer::Unaligned(buffer) => buffer,
-            FileIoBuffer::Aligned(buffer) => buffer.as_mut_bytes(),
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -121,29 +97,7 @@ impl FileDisk {
             file: Arc::new(file),
             metadata,
             sector_shift,
-            aligned_buffers: false,
         }
-    }
-
-    /// Allocates I/O buffers aligned to [`BounceBuffer::ALIGNMENT`], as
-    /// required for handles opened with `FILE_FLAG_NO_BUFFERING` or
-    /// `O_DIRECT`.
-    ///
-    /// Fails if the sector size exceeds that alignment, since buffers would
-    /// then not be sector aligned.
-    pub fn with_aligned_buffers(mut self) -> Result<Self, std::io::Error> {
-        if self.metadata.sector_size as usize > BounceBuffer::ALIGNMENT {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                format!(
-                    "sector size {} exceeds the I/O buffer alignment {}",
-                    self.metadata.sector_size,
-                    BounceBuffer::ALIGNMENT
-                ),
-            ));
-        }
-        self.aligned_buffers = true;
-        Ok(self)
     }
 
     pub fn into_inner(self) -> fs::File {
@@ -152,25 +106,16 @@ impl FileDisk {
 }
 
 impl FileDisk {
-    fn io_buffer(&self, len: usize) -> FileIoBuffer {
-        if self.aligned_buffers {
-            FileIoBuffer::Aligned(BounceBuffer::new(len))
-        } else {
-            FileIoBuffer::Unaligned(vec![0; len])
-        }
-    }
-
     pub async fn read(&self, buffers: &RequestBuffers<'_>, sector: u64) -> Result<(), DiskError> {
         if ((sector << self.sector_shift) + buffers.len() as u64) > self.metadata.disk_size {
             return Err(DiskError::IllegalBlock);
         }
-        let mut buffer = self.io_buffer(buffers.len());
+        let mut buffer = vec![0; buffers.len()];
         let file = self.file.clone();
         let offset = sector << self.sector_shift;
-        let mut buffer = unblock(move || -> Result<_, std::io::Error> {
-            let bytes = buffer.as_mut_bytes();
-            let count = file.read_at(bytes, offset)?;
-            if count != bytes.len() {
+        let buffer = unblock(move || -> Result<_, std::io::Error> {
+            let count = file.read_at(&mut buffer, offset)?;
+            if count != buffer.len() {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "short disk read",
@@ -181,7 +126,7 @@ impl FileDisk {
         })
         .await
         .map_err(DiskError::Io)?;
-        buffers.writer().write(buffer.as_mut_bytes())?;
+        buffers.writer().write(&buffer)?;
         Ok(())
     }
 
@@ -194,14 +139,13 @@ impl FileDisk {
         if ((sector << self.sector_shift) + buffers.len() as u64) > self.metadata.disk_size {
             return Err(DiskError::IllegalBlock);
         }
-        let mut buffer = self.io_buffer(buffers.len());
+        let mut buffer = vec![0; buffers.len()];
         let file = self.file.clone();
-        buffers.reader().read(buffer.as_mut_bytes())?;
+        buffers.reader().read(&mut buffer)?;
         let offset = sector << self.sector_shift;
         unblock(move || -> Result<(), std::io::Error> {
-            let bytes = buffer.as_mut_bytes();
-            let count = file.write_at(bytes, offset)?;
-            if count != bytes.len() {
+            let count = file.write_at(&buffer, offset)?;
+            if count != buffer.len() {
                 Err(std::io::Error::other("short disk write"))
             } else {
                 Ok(())
@@ -288,7 +232,6 @@ impl DiskIo for FileDisk {
 #[cfg(test)]
 mod tests {
     use super::FileDisk;
-    use super::Metadata;
     use disk_backend::Disk;
     use disk_backend::DiskError;
     use guestmem::GuestMemory;
@@ -329,76 +272,6 @@ mod tests {
     #[async_test]
     async fn sector_range_conformance() {
         storage_tests::sector_range::test_disk_sector_range_conformance(&file_disk()).await;
-    }
-
-    /// Unbuffered handles round-trip guest I/O.
-    #[cfg(windows)]
-    #[async_test]
-    async fn unbuffered_handle_round_trips() {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_NO_BUFFERING;
-
-        // Unbuffered transfers must also be multiples of the host volume's
-        // sector size, which may be 4 KiB.
-        const IO_SIZE: usize = 4096;
-        const SECTOR: u64 = (IO_SIZE / SECTOR_SIZE) as u64;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("disk.img");
-        std::fs::File::create(&path)
-            .unwrap()
-            .set_len(DISK_SIZE)
-            .unwrap();
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(FILE_FLAG_NO_BUFFERING)
-            .open(&path)
-            .unwrap();
-        let disk = Disk::new(
-            FileDisk::open(file, false)
-                .unwrap()
-                .with_aligned_buffers()
-                .unwrap(),
-        )
-        .unwrap();
-
-        let mem = GuestMemory::allocate(IO_SIZE * 2);
-        mem.write_at(0, &[0xa5; IO_SIZE]).unwrap();
-        disk.write_vectored(
-            &OwnedRequestBuffers::linear(0, IO_SIZE, false).buffer(&mem),
-            SECTOR,
-            false,
-        )
-        .await
-        .unwrap();
-        disk.read_vectored(
-            &OwnedRequestBuffers::linear(IO_SIZE as u64, IO_SIZE, true).buffer(&mem),
-            SECTOR,
-        )
-        .await
-        .unwrap();
-
-        let mut contents = [0; IO_SIZE];
-        mem.read_at(IO_SIZE as u64, &mut contents).unwrap();
-        assert_eq!(contents, [0xa5; IO_SIZE]);
-    }
-
-    /// Aligned buffers cannot satisfy sectors larger than their alignment.
-    #[test]
-    fn aligned_buffers_reject_oversized_sectors() {
-        let file = tempfile::tempfile().unwrap();
-        let disk = FileDisk::with_metadata(
-            file,
-            Metadata {
-                disk_size: DISK_SIZE,
-                sector_size: (scsi_buffers::BounceBuffer::ALIGNMENT * 2) as u32,
-                physical_sector_size: (scsi_buffers::BounceBuffer::ALIGNMENT * 2) as u32,
-                read_only: false,
-            },
-        );
-        let err = disk.with_aligned_buffers().unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
 
     /// The range check here is in byte units, computing `sector << sector_shift`.

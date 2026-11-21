@@ -174,6 +174,34 @@ pub(crate) fn unmap_capabilities(handle: BorrowedHandle<'_>) -> io::Result<Unmap
     Ok(UnmapCapabilities::from_vpd(&provisioning, &limits))
 }
 
+/// Returns whether the disk reports itself as write protected, as it does when
+/// attached read-only, or `None` if the driver does not support SCSI
+/// passthrough.
+pub(crate) fn is_write_protected(handle: BorrowedHandle<'_>) -> io::Result<Option<bool>> {
+    let mut header = scsi::ModeParameterHeader::new_zeroed();
+    let mut cdb = scsi::ModeSense {
+        operation_code: scsi::ScsiOp::MODE_SENSE,
+        // Disable block descriptors; only the header is needed.
+        flags1: 0x08,
+        flags2: scsi::ModeSenseFlags::new().with_page_code(scsi::MODE_PAGE_ALL),
+        sub_page_code: 0,
+        allocation_length: size_of_val(&header) as u8,
+        control: 0,
+    };
+    match command(handle, cdb.as_mut_bytes(), header.as_mut_bytes(), true, 0) {
+        // Older drivers may not implement SCSI passthrough.
+        Err(err) if err.raw_os_error() == Some(ERROR_NOT_SUPPORTED as i32) => Ok(None),
+        Err(err) => Err(err),
+        Ok(length) if length < size_of_val(&header) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated SCSI mode parameter header",
+        )),
+        Ok(_) => Ok(Some(
+            header.device_specific_parameter & scsi::MODE_DSP_WRITE_PROTECT != 0,
+        )),
+    }
+}
+
 pub(crate) fn unmap(
     handle: BorrowedHandle<'_>,
     sector: u64,
