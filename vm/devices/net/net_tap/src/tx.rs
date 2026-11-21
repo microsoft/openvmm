@@ -7,10 +7,7 @@
 //! completes all of them, including the packets that the interface drops.
 
 use crate::TapQueue;
-use crate::build_vnet_hdr;
-use crate::fixup_gso_pseudo_header;
-use crate::fixup_ipv4_header_checksum;
-use crate::fixup_ipv6_payload_length;
+use crate::prepare_tx_frame;
 use net_backend::BufferAccess;
 use net_backend::TxError;
 use net_backend::TxId;
@@ -33,40 +30,9 @@ impl TapQueue {
         if let Some(tap) = self.tap.as_mut() {
             while !segments.is_empty() {
                 let (meta, _segs, _rest) = next_packet(segments);
-                let hdr = build_vnet_hdr(meta);
-                let hdr_bytes = hdr.as_bytes();
                 let mut packet = linearize(pool, segments)?;
-
-                // Fix up the IPv4 header checksum when the frontend
-                // requested IPv4 header checksum offload.
-                //
-                // The virtio vnet header has no mechanism for IPv4 header
-                // checksum offload, so we compute it in software. This
-                // also covers NDIS/netvsp LSO packets, where the guest
-                // driver zeroes ip_check (NDIS convention). The host
-                // validates the IPv4 header when the frame enters its IP
-                // stack or a br_netfilter bridge, before segmentation, and
-                // drops the frame if the checksum is wrong.
-                // Same NDIS/LSO convention for IPv6: the guest zeroes the IPv6
-                // payload-length field on segmentation-offload frames. IPv6 has
-                // no header checksum (so the IPv4 fixup above never runs for it);
-                // fix the length here, or the host's IPv6 input validation
-                // truncates the frame to its header before segmentation.
-                if meta.flags.offload_ip_header_checksum() && meta.flags.is_ipv4() {
-                    fixup_ipv4_header_checksum(&mut packet, meta.l2_len as usize);
-                }
-                if (meta.flags.offload_tcp_segmentation() || meta.flags.offload_udp_segmentation())
-                    && meta.flags.is_ipv6()
-                {
-                    fixup_ipv6_payload_length(&mut packet, meta.l2_len as usize);
-                }
-
-                // Convert the LSO length-less pseudo-header seed to the convention the
-                // kernel's GSO path expects (pseudo-header with the full L4 length) so
-                // segmentation produces correct per-segment checksums.
-                if meta.flags.offload_tcp_segmentation() || meta.flags.offload_udp_segmentation() {
-                    fixup_gso_pseudo_header(&mut packet, meta.l2_len as usize);
-                }
+                let hdr = prepare_tx_frame(&mut packet, meta);
+                let hdr_bytes = hdr.as_bytes();
 
                 let bufs = [
                     std::io::IoSlice::new(hdr_bytes),
