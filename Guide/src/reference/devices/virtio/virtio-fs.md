@@ -293,8 +293,10 @@ an unprivileged OpenVMM process. Without them, only a caller whose UID and
 GID match OpenVMM's filesystem UID and GID can run, and only if OpenVMM has
 no other supplementary groups. In a user namespace that does not map every
 group, Linux reports each unmapped group as its overflow GID, 65534 by
-default, so there OpenVMM counts a supplementary group that reads as the
-overflow GID as another group, even for a caller with that GID. A request
+default, and a thread that drops such a group cannot regain it. There, no
+request can run as its caller while OpenVMM has a supplementary group that
+reads as the overflow GID, even one that the namespace maps, so start
+OpenVMM there without such groups. A request
 that cannot run as its caller, because a credential switch fails or the
 capabilities are missing, fails with `EPERM`; HostFs never falls back to
 OpenVMM's identity, groups, or capabilities. `caller` mode requires a Linux
