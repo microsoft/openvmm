@@ -106,6 +106,7 @@ struct BlkWorker {
 struct BlkQueueState {
     queue: VirtioQueue,
     memory: GuestMemory,
+    write_through: bool,
 }
 
 #[derive(Inspect, Default)]
@@ -219,9 +220,11 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                         let disk = self.disk.clone();
                         let mem = state.memory.clone();
                         let read_only = self.read_only;
+                        let write_through = state.write_through;
                         let serial = self.serial;
                         self.ios.push(Box::pin(async move {
-                            process_request(&disk, &mem, read_only, serial, work).await
+                            process_request(&disk, &mem, read_only, write_through, serial, work)
+                                .await
                         }));
                     }
                     Event::NewWork(Err(err)) => {
@@ -319,8 +322,7 @@ impl VirtioBlkDevice {
                 // Optimal (max) I/O size in logical blocks. 0 = no hint.
                 opt_io_size: 0,
             },
-            // We don't advertise CONFIG_WCE; set writeback=1 to indicate
-            // writeback cache semantics (driver should use FLUSH).
+            // CONFIG_WCE is not advertised, so FLUSH negotiation sets the cache mode.
             writeback: 1,
             unused0: 0,
             num_queues: options.queue_count,
@@ -478,6 +480,7 @@ impl VirtioDevice for VirtioBlkDevice {
             BlkQueueState {
                 queue,
                 memory: resources.guest_memory,
+                write_through: features.device_specific_low() & VIRTIO_BLK_F_FLUSH == 0,
             },
         );
         worker.worker.start();
@@ -516,10 +519,11 @@ async fn process_request(
     disk: &Disk,
     mem: &GuestMemory,
     read_only: bool,
+    write_through: bool,
     serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
     work: VirtioQueueCallbackWork,
 ) -> IoCompletion {
-    match process_request_inner(disk, mem, read_only, serial, &work).await {
+    match process_request_inner(disk, mem, read_only, write_through, serial, &work).await {
         Ok((bytes_written, stat, bounced)) => {
             if let Err(err) = write_status_byte(mem, &work, VIRTIO_BLK_S_OK) {
                 tracelimit::error_ratelimited!(
@@ -557,6 +561,7 @@ async fn process_request_inner(
     disk: &Disk,
     mem: &GuestMemory,
     read_only: bool,
+    write_through: bool,
     serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
     work: &VirtioQueueCallbackWork,
 ) -> Result<(u32, IoStat, bool), u8> {
@@ -579,7 +584,7 @@ async fn process_request_inner(
     match request_type {
         VIRTIO_BLK_T_IN => {
             let disk_sector = virtio_to_disk_sector(header.sector, sector_shift, sector_mask)?;
-            let (bytes, bounced) = do_io(disk, mem, work, disk_sector, true).await?;
+            let (bytes, bounced) = do_io(disk, mem, work, disk_sector, true, false).await?;
             Ok((bytes, IoStat::Read, bounced))
         }
         VIRTIO_BLK_T_OUT => {
@@ -587,7 +592,8 @@ async fn process_request_inner(
                 return Err(VIRTIO_BLK_S_IOERR);
             }
             let disk_sector = virtio_to_disk_sector(header.sector, sector_shift, sector_mask)?;
-            let (bytes, bounced) = do_io(disk, mem, work, disk_sector, false).await?;
+            let (bytes, bounced) =
+                do_io(disk, mem, work, disk_sector, false, write_through).await?;
             Ok((bytes, IoStat::Write, bounced))
         }
         VIRTIO_BLK_T_FLUSH => {
@@ -729,6 +735,7 @@ async fn do_io(
     work: &VirtioQueueCallbackWork,
     start_disk_sector: u64,
     is_read: bool,
+    write_through: bool,
 ) -> Result<(u32, bool), u8> {
     let writable = is_read;
     let total_payload = work.get_payload_length(writable);
@@ -802,9 +809,13 @@ async fn do_io(
             .await
             .map_err(|_| VIRTIO_BLK_S_IOERR)?;
     } else {
-        disk.write_vectored(&buffers, start_disk_sector, false)
+        let fua = write_through && disk.is_fua_respected();
+        disk.write_vectored(&buffers, start_disk_sector, fua)
             .await
             .map_err(|_| VIRTIO_BLK_S_IOERR)?;
+        if write_through && !fua {
+            disk.sync_cache().await.map_err(|_| VIRTIO_BLK_S_IOERR)?;
+        }
     }
 
     if bounced && is_read {
