@@ -366,6 +366,7 @@ impl Fuse for VirtioFs {
         self.check_writable(&inode)?;
         let path = inode.child_path(name)?;
         self.check_writable_entry(&inode, &path)?;
+        microvm::fs::validate_mknod_type(self, arg.mode)?;
         self.preflight_new_inode_path(&path)?;
         let reservation = self.reserve_inode()?;
         let (new_inode, attr) =
@@ -539,6 +540,7 @@ impl Fuse for VirtioFs {
         let new_path = new_inode.child_path(new_name)?;
         self.check_writable_entry(&inode, &old_path)?;
         self.check_writable_entry(&new_inode, &new_path)?;
+        microvm::fs::validate_rename_flags(self, flags)?;
         // Renaming a name onto itself changes nothing on the host, which still
         // fails it as it fails any other rename, such as with ENOENT for a
         // missing name. Every node keeps its names: the bookkeeping of a move

@@ -53,7 +53,8 @@ fixes the remaining guest-visible configuration:
 | File policy | Direct I/O |
 | Maximum write | 1 MiB payload plus protocol headers |
 | Symbolic links | `rw`: created with the exact target; `ro`: `EROFS` |
-| Rename flags | Linux host: passed to `renameat2`, so `RENAME_EXCHANGE` swaps two names; Windows host: `EINVAL` |
+| Device nodes | `rw`: `mknod` of a character or block device fails with `EPERM`; `ro`: `EROFS` |
+| Rename flags | `RENAME_NOREPLACE` or `RENAME_EXCHANGE`: passed to `renameat2` on a Linux host, so `RENAME_EXCHANGE` swaps two names, and `EINVAL` on a Windows host; other flags, such as `RENAME_WHITEOUT`: `EINVAL` |
 
 ### Several host directories
 
@@ -417,6 +418,14 @@ Guest FUSE requests, paths, and saved aliases are untrusted. HostFs rejects
 absolute and parent-relative aliases, does not follow symbolic links or
 Windows reparse points while resolving guest or saved objects, and enforces
 read-only mode before invoking a host mutation.
+
+The guest cannot make a device node in a microVM share. Linux lets even an
+unprivileged process make a whiteout, character device 0:0, which host
+overlay mounts and tools treat as a deleted file, and a privileged OpenVMM
+could make any device node. HostFs therefore refuses `mknod` of a character
+or block device with `EPERM`, and a rename with `RENAME_WHITEOUT`, which
+leaves a whiteout at the old name, with `EINVAL`, before it asks the host.
+The standard machine's HostFs passes both to the host.
 
 On Linux, every host operation opens the parent directory of its path with
 `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)` and applies the operation to

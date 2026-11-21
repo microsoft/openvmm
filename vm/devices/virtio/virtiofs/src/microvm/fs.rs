@@ -38,6 +38,7 @@ use crate::ENTRY_TIMEOUT;
 use crate::FuseNegotiation;
 use crate::HandleMap;
 use crate::InodeMap;
+use crate::RENAME_EXCHANGE;
 use crate::VirtioFs;
 use crate::VirtioFsInner;
 use crate::VirtioFsMode;
@@ -95,6 +96,10 @@ pub(crate) fn configure_session(fs: &VirtioFs, info: &mut SessionInfo) {
 /// The longest symbolic link target, in bytes, that Linux accepts.
 const MAX_SYMLINK_TARGET_BYTES: usize = 4095;
 
+/// Linux's `RENAME_NOREPLACE` flag for `renameat2`, which refuses to replace
+/// an existing name.
+const RENAME_NOREPLACE: u32 = 1;
+
 /// Validates a guest symbolic link target without rewriting it.
 pub(crate) fn validate_symlink_target(fs: &VirtioFs, target: &lx::LxStr) -> lx::Result<()> {
     // The microVM volume never follows a symbolic link while resolving a host
@@ -109,6 +114,39 @@ pub(crate) fn validate_symlink_target(fs: &VirtioFs, target: &lx::LxStr) -> lx::
         if target.len() > MAX_SYMLINK_TARGET_BYTES {
             return Err(lx::Error::ENAMETOOLONG);
         }
+    }
+    Ok(())
+}
+
+/// Validates the file type of a node that the guest makes with `mknod`.
+///
+/// A microVM guest makes only regular files, which a type of 0 also makes,
+/// FIFOs, and sockets. Linux lets a caller without `CAP_MKNOD` make a
+/// whiteout, character device 0:0, and a privileged OpenVMM could make any
+/// device node, so character and block devices fail with `EPERM`, as Linux
+/// fails a device that it denies, before the host is asked. The other types
+/// fail as `mknod(2)` fails them, so that every host reports the same errors.
+pub(crate) fn validate_mknod_type(fs: &VirtioFs, mode: u32) -> lx::Result<()> {
+    if !fs.is_microvm() {
+        return Ok(());
+    }
+    match mode & lx::S_IFMT {
+        0 | lx::S_IFREG | lx::S_IFIFO | lx::S_IFSOCK => Ok(()),
+        lx::S_IFCHR | lx::S_IFBLK | lx::S_IFDIR => Err(lx::Error::EPERM),
+        _ => Err(lx::Error::EINVAL),
+    }
+}
+
+/// Validates the flags of a guest rename.
+///
+/// `RENAME_WHITEOUT` leaves a whiteout, character device 0:0, at the old
+/// name, which [`validate_mknod_type`] refuses to make, so a microVM rename
+/// passes the host no flag, `RENAME_NOREPLACE`, or `RENAME_EXCHANGE`, and
+/// fails with `EINVAL` otherwise, as Linux fails a flag that a filesystem
+/// does not support, or those two flags together.
+pub(crate) fn validate_rename_flags(fs: &VirtioFs, flags: u32) -> lx::Result<()> {
+    if fs.is_microvm() && !matches!(flags, 0 | RENAME_NOREPLACE | RENAME_EXCHANGE) {
+        return Err(lx::Error::EINVAL);
     }
     Ok(())
 }
