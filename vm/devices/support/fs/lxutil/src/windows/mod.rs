@@ -226,6 +226,41 @@ impl LxVolume {
         )
     }
 
+    pub fn stored_path(&self, path: &Path) -> lx::Result<Option<PathBuf>> {
+        assert!(path.is_relative());
+        // An open without access neither conflicts with other opens nor
+        // breaks their oplocks, and it resolves the names as every operation
+        // does.
+        let handle = match util::open_relative_file(
+            Some(&self.root),
+            path,
+            W32Fs::FILE_ACCESS_RIGHTS(0),
+            FileSystem::FILE_OPEN,
+            util::OpenOptions {
+                create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                ..Default::default()
+            },
+        ) {
+            Ok((handle, _)) => handle,
+            Err(error) if error == lx::Error::ENOENT => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        // The normalized name is the entry's path from the root of the volume,
+        // so it ends with the stored names of the components of `path`.
+        let normalized = PathBuf::from(ffi::OsString::from_wide(&util::query_normalized_name(
+            &handle,
+        )?));
+        let names = normalized
+            .components()
+            .filter(|component| matches!(component, Component::Normal(_)))
+            .collect::<Vec<_>>();
+        let first = names
+            .len()
+            .checked_sub(path.components().count())
+            .ok_or(lx::Error::EIO)?;
+        Ok(Some(names[first..].iter().collect()))
+    }
+
     pub fn set_attr(&self, path: &Path, attr: SetAttributes) -> lx::Result<()> {
         self.set_attr_helper(path, attr, false)?;
         Ok(())
