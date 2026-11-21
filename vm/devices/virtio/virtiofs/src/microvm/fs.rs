@@ -372,17 +372,26 @@ impl VirtioFs {
         }
     }
 
+    /// Checks a create of `name` in `parent`, at `path`, with the open flags
+    /// `options`, before the host creates or opens anything: when `name`
+    /// already links to an object, that the create may open it (see
+    /// [`Self::check_create_existing`]), and that the inode table has room
+    /// for the node that the create returns.
     pub(crate) fn preflight_create_inode(
         &self,
         parent: &VirtioFsInode,
         name: &lx::LxStr,
         path: &Path,
+        options: i32,
     ) -> lx::Result<()> {
         if !self.is_microvm() {
             return Ok(());
         }
         match parent.lookup_child(name) {
-            Ok((inode, _)) => self.preflight_inode_insert(&inode),
+            Ok((inode, _)) => {
+                self.check_create_existing(&inode, options)?;
+                self.preflight_inode_insert(&inode)
+            }
             Err(error) if error == lx::Error::ENOENT => self.preflight_new_inode_path(path),
             Err(error) => Err(error),
         }
