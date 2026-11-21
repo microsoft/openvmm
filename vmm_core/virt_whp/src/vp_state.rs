@@ -406,7 +406,10 @@ mod x86 {
                 .get_state(whp::abi::WHvVirtualProcessorStateTypeNestedState, &mut data)
                 .for_op("get nested state")?;
             assert_eq!(n, data.len());
-            Ok(vp::NestedState { data })
+            Ok(vp::NestedState {
+                data,
+                svm_hsave_pa: 0,
+            })
         }
 
         fn set_nested_state(&mut self, value: &vp::NestedState) -> Result<(), Self::Error> {
