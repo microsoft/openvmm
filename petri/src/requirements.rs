@@ -358,7 +358,7 @@ fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'sta
     ) {
         capabilities.insert(capabilities::NESTED_MSHV);
     }
-  
+
     if vmm == VmmType::OpenVmm && context.nested_reset_supported {
         capabilities.insert(capabilities::NESTED_RESET);
     }
