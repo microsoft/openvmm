@@ -477,6 +477,7 @@ fn sandbox_block_option(
             underhill: None,
             pcie_port: None,
             serial: None,
+            num_queues: None,
             controller: None,
             nsid: None,
             lun: None,

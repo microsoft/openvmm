@@ -1147,6 +1147,12 @@ impl Options {
             self.virtio_blk.is_empty(),
             "microVM requires --microvm-sandbox-block instead of --virtio-blk"
         );
+        let blk_options = virtio_resources::blk::VirtioBlkOptions::default();
+        anyhow::ensure!(
+            self.virtio_blk_queues == blk_options.queue_count
+                && self.virtio_blk_io_depth == blk_options.io_depth,
+            "microVM sandbox blocks have a fixed queue shape, which --virtio-blk-queues and --virtio-blk-io-depth cannot change"
+        );
         anyhow::ensure!(
             self.microvm.microvm_sandbox_block.len() <= 2,
             "microVM permits at most one read-only distro layer and one writable scratch device"
@@ -1998,6 +2004,28 @@ mod tests {
                 "scratch:mem:1M,ro",
             ],
             vec!["openvmm", "--machine", "microvm", "--virtio-blk", "mem:1M"],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+                "--virtio-blk-queues",
+                "2",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+                "--virtio-blk-io-depth",
+                "16",
+            ],
         ] {
             let options = Options::try_parse_from(args).unwrap();
             assert!(options.validate_microvm_options().is_err());

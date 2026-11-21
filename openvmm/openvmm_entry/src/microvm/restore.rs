@@ -419,6 +419,7 @@ pub(crate) fn prepare_restore(
                             underhill: None,
                             pcie_port: None,
                             serial: None,
+                            num_queues: None,
                             controller: None,
                             nsid: None,
                             lun: None,

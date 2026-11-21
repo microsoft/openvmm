@@ -272,6 +272,7 @@ impl StorageBuilder {
                 disk: disk_open(kind, read_only).await?,
                 read_only,
                 serial: None,
+                options: virtio_resources::blk::VirtioBlkOptions::default(),
                 microvm: Some(SandboxBlock {
                     role,
                     snapshot_source: None,
@@ -428,6 +429,7 @@ impl StorageBuilder {
             disk,
             read_only,
             serial: None,
+            options: virtio_resources::blk::VirtioBlkOptions::default(),
             microvm: Some(SandboxBlock {
                 role,
                 snapshot_source: Some(MicrovmSandboxBlockSource {
@@ -455,6 +457,7 @@ impl StorageBuilder {
             disk: zero_fill_disk(None, geometry),
             read_only: role.is_read_only(),
             serial: None,
+            options: virtio_resources::blk::VirtioBlkOptions::default(),
             microvm: Some(SandboxBlock {
                 role,
                 snapshot_source: Some(MicrovmSandboxBlockSource {

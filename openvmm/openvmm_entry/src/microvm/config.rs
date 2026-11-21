@@ -398,6 +398,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     && !disk.is_dvd
                     && disk.underhill.is_none()
                     && disk.pcie_port.is_none()
+                    && disk.num_queues.is_none()
                     && disk.controller.is_none()
                     && disk.nsid.is_none()
                     && disk.lun.is_none()
