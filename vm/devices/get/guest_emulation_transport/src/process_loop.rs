@@ -554,6 +554,8 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     post_live_migration_pending: bool,
     // IPMI SEL notifications queued for the host but not yet written.
     ipmi_sel_pending: usize,
+    // IPMI SEL notifications dropped because the pending cap was reached.
+    ipmi_sel_dropped: Counter,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -771,6 +773,7 @@ impl<T: RingMem> ProcessLoop<T> {
             post_live_migration: None,
             post_live_migration_pending: false,
             ipmi_sel_pending: 0,
+            ipmi_sel_dropped: Counter::new(),
         }
     }
 
@@ -1337,6 +1340,8 @@ impl<T: RingMem> ProcessLoop<T> {
                             .as_bytes()
                             .to_vec(),
                     ));
+                } else {
+                    self.ipmi_sel_dropped.increment();
                 }
             }
             Msg::ReportRestoreResultToHost(success) => self.report_restore_result_to_host(success),
