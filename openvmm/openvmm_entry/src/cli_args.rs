@@ -59,6 +59,7 @@ fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
 
 /// Runs `f` on a thread with a 4 MiB stack, enough for clap to construct the
 /// `Command` instance for `Options` in debug builds.
+#[cfg(any(windows, feature = "ttrpc", feature = "grpc"))]
 fn with_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
     std::thread::scope(|s| {
         std::thread::Builder::new()
