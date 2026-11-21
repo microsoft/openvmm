@@ -1059,9 +1059,9 @@ impl VirtioTestGuest {
                 0
             };
             if matches!(self.info, VirtioQueueInfo::Packed(_)) {
-                // buffer id (ignored for indirect descriptors)
+                // Buffer id (ignored for indirect descriptors); nonzero so a misread fails.
                 self.test_mem
-                    .modify_memory_map(base + 12, &0_u16.to_le_bytes(), false);
+                    .modify_memory_map(base + 12, &(0xD1E0 + i).to_le_bytes(), false);
                 // flags
                 self.test_mem
                     .modify_memory_map(base + 14, &flags.to_le_bytes(), false);
