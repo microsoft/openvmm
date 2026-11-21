@@ -122,6 +122,10 @@ openvmm --machine microvm \
   file child whose host path is not a regular file, and a directory child
   whose host path is not a directory, so a directory that replaces a shared
   file is never exported in its place.
+- OpenVMM also refuses a file whose name contains a backslash or a colon, as
+  in a Windows path that names an alternate data stream, because HostFs
+  refuses such a name in every path of a share, so the guest could never
+  reach the file.
 - A read-only file rejects every modification with `EROFS`, whichever guest
   mount reaches it. A read-write file can be written and truncated, but it
   cannot be removed or renamed, because its parent is the aggregate's
