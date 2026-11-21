@@ -552,6 +552,14 @@ impl Fuse for VirtioFs {
         let exchange = flags & RENAME_EXCHANGE != 0;
         self.preflight_rename_aliases(inode.volume_id(), &old_path, &new_path, exchange)?;
         inode.rename(name, &new_inode, new_name, flags)?;
+        // A POSIX host renames nothing between two hard links of one object,
+        // so if the source still reaches the destination's object afterwards,
+        // every node keeps its names. Windows moves the name instead: it
+        // removes the source link, or changes only the case of a name, whose
+        // old spelling may still reach the object.
+        if cfg!(unix) && inode.volume.names_one_object(&old_path, &new_path) {
+            return Ok(());
+        }
         let mut inodes = self.inner.inodes.write();
         if exchange {
             inodes.exchange_alias_prefixes(inode.volume_id(), &old_path, &new_path);

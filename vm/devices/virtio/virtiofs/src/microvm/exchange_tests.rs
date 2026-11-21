@@ -3,8 +3,9 @@
 
 //! Tests for renames on microVM shares that do not move one name to another:
 //! `RENAME_EXCHANGE`, which swaps two names, and a rename of a name onto
-//! itself, which changes none. They check the names that HostFs keeps for each
-//! node, the alias limits, and snapshots taken right after the rename.
+//! itself, or on a POSIX host onto another hard link of its object, which
+//! changes none. They check the names that HostFs keeps for each node, the
+//! alias limits, and snapshots taken right after the rename.
 
 use super::policy_tests::error;
 use super::policy_tests::list;
@@ -398,4 +399,66 @@ fn renaming_a_name_onto_itself_keeps_every_name() {
     fs.unlink(&request(FUSE_ROOT_ID), name("second")).unwrap();
     assert_names(&fs, first, &["first"]);
     assert_eq!(read_node(&fs, first), b"first");
+}
+
+/// A rename of a hard link onto another link of its object, in one directory
+/// or across two, changes nothing on a POSIX host, so the object's node keeps
+/// every name, and a snapshot taken right after it saves and restores them. A
+/// Windows host removes the source link instead, and the node keeps the names
+/// that remain. Once the guest removes all of them but one, the node still
+/// reaches the object through that one. The host still fails such a rename
+/// under `RENAME_NOREPLACE`.
+#[test]
+fn renaming_a_hard_link_onto_another_link_keeps_the_remaining_names() {
+    let share = Share::new(&[("directory/first", "data")]);
+    for link in ["second", "third"] {
+        std::fs::hard_link(share.path("directory/first"), share.path(link)).unwrap();
+    }
+    let fs = share.fs();
+    let directory = lookup(&fs, "directory").unwrap();
+    let node = lookup(&fs, "directory/first").unwrap();
+    for link in ["second", "third"] {
+        assert_eq!(lookup(&fs, link).unwrap(), node);
+    }
+    let rename = |parent, entry, flags| {
+        fs.rename(
+            &request(parent),
+            name(entry),
+            FUSE_ROOT_ID,
+            name("third"),
+            flags,
+        )
+    };
+
+    // Windows hosts reject every rename flag.
+    assert_eq!(
+        error(rename(FUSE_ROOT_ID, "second", RENAME_NOREPLACE)),
+        if cfg!(windows) {
+            lx::Error::EINVAL
+        } else {
+            lx::Error::EEXIST
+        }
+    );
+    rename(FUSE_ROOT_ID, "second", 0).unwrap();
+    rename(directory, "first", 0).unwrap();
+    let names: &[&str] = if cfg!(windows) {
+        &["third"]
+    } else {
+        &["directory/first", "second", "third"]
+    };
+    for path in ["directory/first", "second", "third"] {
+        assert_eq!(share.path(path).exists(), names.contains(&path), "{path}");
+    }
+    assert_names(&fs, node, names);
+
+    let state = share.save(&fs);
+    assert_eq!(saved_names(&state, node), path_set(names));
+    assert_names(&share.restore(state), node, names);
+
+    let (kept, others) = names.split_first().unwrap();
+    for link in others {
+        fs.unlink(&request(FUSE_ROOT_ID), name(link)).unwrap();
+    }
+    assert_names(&fs, node, &[kept]);
+    assert_eq!(read_node(&fs, node), b"data");
 }

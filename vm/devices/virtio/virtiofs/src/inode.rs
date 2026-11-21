@@ -147,6 +147,18 @@ impl VirtioFsVolume {
         self.root_device_nr
     }
 
+    /// Returns whether `first` and `second` both name one host object, such as
+    /// two hard links of a file. A volume without stable file IDs cannot tell.
+    pub(crate) fn names_one_object(&self, first: &Path, second: &Path) -> bool {
+        let identity = |path: &Path| {
+            self.lstat(path)
+                .ok()
+                .map(|stat| (stat.device_nr, stat.inode_nr))
+        };
+        self.supports_stable_file_id()
+            && identity(first).is_some_and(|first| identity(second) == Some(first))
+    }
+
     /// Maps the host device and inode number of one of the volume's objects to
     /// the inode number that the guest sees.
     ///
