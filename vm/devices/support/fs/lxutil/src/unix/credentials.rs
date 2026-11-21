@@ -63,7 +63,9 @@ impl FsIdentity {
 /// than the GID of `identity`, so that it gains no access through the privileges or groups of
 /// the thread's original identity. Assuming a different identity, or dropping supplementary
 /// groups, requires `CAP_SETUID` and `CAP_SETGID`. A thread that already has `identity` and no
-/// other supplementary groups needs no privilege.
+/// other supplementary groups needs no privilege. In a user namespace that does not map every
+/// group, the kernel reports each unmapped group as its overflow GID, so there a supplementary
+/// group with the overflow GID counts as another group even if `identity` has that GID.
 ///
 /// # Errors
 ///
@@ -111,7 +113,9 @@ impl SwitchedCredentials {
         };
         // On an error below, dropping `credentials` restores whatever was already changed.
         let groups = groups()?;
-        if groups.iter().any(|&group| group != identity.gid) {
+        if groups.iter().any(|&group| group != identity.gid)
+            || (!groups.is_empty() && may_report_other_groups_as(identity.gid))
+        {
             set_groups(&[])?;
             credentials.groups = Some(groups);
         }
@@ -193,6 +197,44 @@ fn groups() -> lx::Result<Vec<lx::gid_t>> {
     Ok(groups)
 }
 
+/// Returns whether `getgroups` may report a supplementary group other than `gid` as `gid`.
+///
+/// `getgroups` reports each group that the calling thread's user namespace does not map as the
+/// kernel's overflow GID. A namespace maps only IDs that its parent maps, so one that maps every
+/// ID, as the initial user namespace does, leaves no group unmapped.
+fn may_report_other_groups_as(gid: lx::gid_t) -> bool {
+    // A map that cannot be read may leave groups unmapped, and an overflow GID that cannot be
+    // read may be any GID.
+    !std::fs::read_to_string("/proc/self/gid_map").is_ok_and(|map| maps_every_id(&map))
+        && overflow_gid().is_none_or(|overflow| overflow == gid)
+}
+
+/// Returns the kernel's overflow GID, from `/proc/sys/kernel/overflowgid`, if it can be read.
+fn overflow_gid() -> Option<lx::gid_t> {
+    std::fs::read_to_string("/proc/sys/kernel/overflowgid")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Returns whether `map`, an ID map in the format of `/proc/PID/gid_map`, maps every ID.
+///
+/// Each line maps a range of IDs, given by its first ID inside the namespace, its first ID
+/// outside, and its length. The kernel refuses overlapping ranges, so they cover every ID
+/// exactly when their lengths add up to the number of IDs, `u32::MAX`, since `u32::MAX` itself
+/// is not an ID.
+fn maps_every_id(map: &str) -> bool {
+    let mut mapped = 0u64;
+    for range in map.lines() {
+        let Some(Ok(length)) = range.split_whitespace().nth(2).map(str::parse::<u32>) else {
+            return false;
+        };
+        mapped += u64::from(length);
+    }
+    mapped == u64::from(u32::MAX)
+}
+
 /// Sets the calling thread's supplementary groups.
 fn set_groups(groups: &[lx::gid_t]) -> lx::Result<()> {
     let count = libc::c_long::try_from(groups.len()).map_err(|_| lx::Error::EINVAL)?;
@@ -232,10 +274,16 @@ fn set_capabilities(data: &Capabilities) -> lx::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    use std::path::Path;
+    use std::process::Command;
+    use std::process::Stdio;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
 
     const CAP_SETGID: u32 = 6;
     const CAP_SETUID: u32 = 7;
@@ -417,6 +465,129 @@ mod tests {
             assert!(!ran.load(Ordering::Relaxed));
             assert_eq!(FsIdentity::current(), original);
         }
+    }
+
+    #[test]
+    fn only_complete_id_maps_map_every_id() {
+        // The initial user namespace maps every ID, and a nested one may too, in several ranges.
+        assert!(maps_every_id("         0          0 4294967295\n"));
+        assert!(maps_every_id("0 0 1000\n1000 1000 4294966295\n"));
+        // Namespaces that map some IDs, or none yet.
+        assert!(!maps_every_id("     65534       1003          1\n"));
+        assert!(!maps_every_id("0 1000 1\n1 100000 65536\n"));
+        assert!(!maps_every_id(""));
+        // A map that cannot be parsed may leave IDs unmapped.
+        assert!(!maps_every_id("0 0\n"));
+    }
+
+    /// In a user namespace that maps the overflow GID to the test's GID and leaves its other
+    /// groups unmapped, every supplementary group reads as the overflow GID. A switch to that GID
+    /// cannot tell these groups apart, so without privilege it must fail rather than run the
+    /// operation with groups that it cannot drop.
+    #[test]
+    fn overflow_gid_groups_fail_closed_without_privilege() {
+        const DIRECTORY: &str = "LXUTIL_TEST_OVERFLOW_GID_DIRECTORY";
+        if let Some(directory) = std::env::var_os(DIRECTORY) {
+            // Wait until the parent has mapped this process's user namespace.
+            std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
+            switch_to_overflow_gid(Path::new(&directory));
+            return;
+        }
+
+        let groups = groups().unwrap();
+        if groups.is_empty() {
+            eprintln!("skipped: the test has no supplementary groups");
+            return;
+        }
+        let Some(overflow) = overflow_gid() else {
+            eprintln!("skipped: cannot read the overflow GID");
+            return;
+        };
+        // SAFETY: These calls have no preconditions.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        // A file of another of the test's groups shows whether the operation kept that group.
+        let directory = tempfile::tempdir().unwrap();
+        let probe = directory.path().join("probe");
+        std::fs::write(&probe, b"").unwrap();
+        let other_group = groups.iter().copied().find(|&group| group != gid);
+        if other_group
+            .is_none_or(|group| std::os::unix::fs::chown(&probe, None, Some(group)).is_err())
+        {
+            std::fs::remove_file(&probe).unwrap();
+        }
+
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "unix::credentials::tests::overflow_gid_groups_fail_closed_without_privilege",
+                "--no-capture",
+            ])
+            .env(DIRECTORY, directory.path())
+            .stdin(Stdio::piped());
+        // SAFETY: Between fork and exec, the child calls only unshare, which takes only flags and
+        // is async-signal-safe.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::unshare(libc::CLONE_NEWUSER) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                eprintln!("skipped: cannot create a user namespace: {err}");
+                return;
+            }
+        };
+        // Map the overflow GID to the test's own GID, which leaves its other groups unmapped.
+        // An unprivileged process must deny setgroups first.
+        let pid = child.id();
+        let mapped = [
+            ("setgroups", "deny".to_owned()),
+            ("uid_map", format!("{uid} {uid} 1")),
+            ("gid_map", format!("{overflow} {gid} 1")),
+        ]
+        .into_iter()
+        .try_for_each(|(file, map)| std::fs::write(format!("/proc/{pid}/{file}"), map));
+        if let Err(err) = mapped {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            eprintln!("skipped: cannot map the user namespace: {err}");
+            return;
+        }
+        drop(child.stdin.take());
+        let status = child.wait().unwrap();
+        assert!(status.success(), "{status}");
+        // The child leaves this file, so that a name that matches no test fails.
+        assert!(directory.path().join("ran").exists());
+    }
+
+    /// Switches to the overflow GID, the thread's own GID in the user namespace of
+    /// [`overflow_gid_groups_fail_closed_without_privilege`], after recording in `directory` that
+    /// it ran. `chmod` keeps the `S_ISGID` bit of the probe file there, which belongs to another
+    /// of the test's groups, only for a member of that group.
+    fn switch_to_overflow_gid(directory: &Path) {
+        std::fs::write(directory.join("ran"), b"").unwrap();
+        let probe = Some(directory.join("probe")).filter(|probe| probe.exists());
+        let identity = FsIdentity::current();
+        let groups = groups().unwrap();
+        assert_eq!(Some(identity.gid), overflow_gid());
+        assert!(
+            groups.iter().all(|&group| group == identity.gid),
+            "{groups:?}"
+        );
+        // `Ok(Some(true))` would show that the operation kept another group.
+        let kept_other_group = with_fs_identity(identity, || {
+            probe.map(|probe| {
+                std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o2755)).unwrap();
+                std::fs::metadata(&probe).unwrap().mode() & libc::S_ISGID != 0
+            })
+        });
+        assert_eq!(kept_other_group, Err(lx::Error::EPERM));
     }
 
     /// Run with `CAP_SETUID` and `CAP_SETGID`, for example as root.
