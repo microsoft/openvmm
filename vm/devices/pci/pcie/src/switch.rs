@@ -352,7 +352,7 @@ impl GenericPcieSwitch {
             .downstream_ports
             .iter_mut()
             .find(|(devfn, _, _)| *devfn == addr.devfn)?;
-        Some(downstream_port.port.cfg_space.write(addr, value))
+        Some(downstream_port.port.cfg_write(addr, value))
     }
 
     /// Attach the provided `GenericPciBusDevice` to the port identified.
@@ -1863,5 +1863,67 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    /// A guest write that turns on a downstream port's hot-plug interrupt arrives as a Type 1
+    /// access on the switch's internal bus and must go through `PcieDownstreamPort::cfg_write`,
+    /// or an add that landed while the interrupt was off is never signalled.
+    #[test]
+    fn test_type1_slot_control_write_signals_a_pending_hot_add() {
+        let controller = pci_core::test_helpers::TestPciInterruptController::new();
+        let msi_conn = MsiConnection::new();
+        msi_conn.connect(controller.signal_msi());
+        let mut switch = build(switch_def(
+            "test-switch",
+            1,
+            true,
+            PciePortSettings::default(),
+            msi_conn.target(),
+        ));
+        // Secondary bus 1 is the switch's internal bus, where its downstream ports sit.
+        switch
+            .upstream_port
+            .cfg_space_mut()
+            .write_u32(0x18, (10 << 16) | (1 << 8));
+        let devfn = switch.downstream_ports[0].0;
+        let port = &mut switch.downstream_ports[0].2.port;
+
+        // Find the MSI and PCI Express capabilities and enable MSI as a guest driver would.
+        let find_cap = |port: &mut PcieDownstreamPort, id: u32| {
+            let mut offset = (port.cfg_space.read_u32(0x34) & 0xfc) as u16;
+            while offset != 0 && port.cfg_space.read_u32(offset) & 0xff != id {
+                offset = ((port.cfg_space.read_u32(offset) >> 8) & 0xfc) as u16;
+            }
+            assert_ne!(offset, 0, "capability {id:#x} not found");
+            offset
+        };
+        let msi = find_cap(port, 0x05);
+        port.cfg_space.write_u32(msi + 4, 0xfee0_0000);
+        port.cfg_space.write_u32(msi + 8, 0);
+        port.cfg_space.write_u32(msi + 12, 0x41);
+        port.cfg_space.write_u32(msi, 1 << 16);
+        // Slot Control sits at 0x18 in the PCI Express capability.
+        let slot_control = find_cap(port, 0x10) + 0x18;
+
+        port.hotplug_add_device("dev", Box::new(TestPciDevice))
+            .unwrap();
+        assert!(
+            controller.get_next_interrupt().is_none(),
+            "no MSI while Hot-Plug Interrupt Enable is off"
+        );
+
+        // Hot-Plug Interrupt Enable and Presence Detect Changed Enable.
+        let hpie_pdce: u32 = (1 << 5) | (1 << 3);
+        let result = switch.pci_cfg_write_with_routing(
+            PciConfigAccessType::Type1,
+            PciConfigAddress::new(1, devfn, slot_control / 4).unwrap(),
+            ByteEnabledDwordWrite::with_all_bytes_enabled(hpie_pdce),
+        );
+        assert!(matches!(result, IoResult::Ok));
+        assert!(
+            controller.get_next_interrupt().is_some(),
+            "the guest's Slot Control write must send the pending add's MSI"
+        );
+        assert!(controller.get_next_interrupt().is_none());
     }
 }

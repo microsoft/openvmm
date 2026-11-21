@@ -27,7 +27,10 @@ use guid::Guid;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::PCIE_DEFAULT_EJECT_TIMEOUT;
+use openvmm_defs::config::PCIE_MAX_EJECT_TIMEOUT;
 use openvmm_defs::config::PcatBootDevice;
+use openvmm_defs::config::PcieHotplugConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::X2ApicConfig;
 use std::ffi::OsString;
@@ -1300,6 +1303,11 @@ Options:
     `addr=<dev>[.<fn>]`            device/function to place this port at (default:
                                    lowest available); dev 0-31, fn 0-7
     `hotplug`                      enable hotplug support for this root port
+    `attention_button`             enable attention button ejection (orderly removal),
+                                   requires hotplug, off by default
+    `eject_timeout_ms=<MS>`        maximum wait for the guest to power the slot off on an
+                                   orderly removal; needs attention_button (default: 15000,
+                                   at most 300000)
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `cxl`                          configure this root port as CXL-capable
     `pasid`                        configure this port to support PASID for downstream devices
@@ -3547,7 +3555,7 @@ pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
     pub devfn: Option<u8>,
-    pub hotplug: bool,
+    pub hotplug: Option<PcieHotplugConfig>,
     pub acs_capabilities_supported: Option<u16>,
     pub cxl: bool,
     pub pasid: bool,
@@ -3611,6 +3619,9 @@ struct RootPortArgs {
     addr: Option<PcieAddr>,
     #[kv(flag)]
     hotplug: bool,
+    #[kv(flag)]
+    attention_button: bool,
+    eject_timeout_ms: Option<u32>,
     acs: Option<AcsMask>,
     #[kv(flag)]
     cxl: bool,
@@ -3627,7 +3638,11 @@ impl FromStr for PcieRootPortCli {
             root_complex_name: args.names.parent,
             name: args.names.child,
             devfn: args.addr.map(|a| a.0),
-            hotplug: args.hotplug,
+            hotplug: parse_pcie_hotplug(
+                args.hotplug,
+                args.attention_button,
+                args.eject_timeout_ms,
+            )?,
             acs_capabilities_supported: args.acs.map(|a| a.0),
             cxl: args.cxl,
             pasid: args.pasid,
@@ -3670,7 +3685,7 @@ pub struct GenericPcieSwitchCli {
     pub port_name: String,
     pub name: String,
     pub num_downstream_ports: u8,
-    pub hotplug: bool,
+    pub hotplug: Option<PcieHotplugConfig>,
     pub acs_capabilities_supported: Option<u16>,
     pub pasid: bool,
 }
@@ -3684,6 +3699,9 @@ struct SwitchArgs {
     num_downstream_ports: u8,
     #[kv(flag)]
     hotplug: bool,
+    #[kv(flag)]
+    attention_button: bool,
+    eject_timeout_ms: Option<u32>,
     acs: Option<AcsMask>,
     #[kv(flag)]
     pasid: bool,
@@ -3698,11 +3716,63 @@ impl FromStr for GenericPcieSwitchCli {
             port_name: args.names.parent,
             name: args.names.child,
             num_downstream_ports: args.num_downstream_ports,
-            hotplug: args.hotplug,
+            hotplug: parse_pcie_switch_hotplug(
+                args.hotplug,
+                args.attention_button,
+                args.eject_timeout_ms,
+            )?,
             acs_capabilities_supported: args.acs.map(|a| a.0),
             pasid: args.pasid,
         })
     }
+}
+
+/// Validates PCIe hotplug flags from the command line or a ttrpc request.
+///
+/// `attention_button` needs `hotplug`, and an eject timeout needs `attention_button`. Without
+/// a timeout, [`PCIE_DEFAULT_EJECT_TIMEOUT`] applies.
+pub(crate) fn parse_pcie_hotplug(
+    hotplug: bool,
+    attention_button: bool,
+    eject_timeout_ms: Option<u32>,
+) -> anyhow::Result<Option<PcieHotplugConfig>> {
+    anyhow::ensure!(
+        !attention_button || hotplug,
+        "attention_button requires hotplug"
+    );
+    anyhow::ensure!(
+        attention_button || eject_timeout_ms.is_none(),
+        "eject_timeout_ms requires attention_button"
+    );
+    let timeout = eject_timeout_ms.map_or(PCIE_DEFAULT_EJECT_TIMEOUT, |ms| {
+        std::time::Duration::from_millis(u64::from(ms))
+    });
+    // Refused rather than clamped: a silently shortened timeout would fail removals the
+    // caller expected to wait for. Both the command line and ttrpc parse through here.
+    anyhow::ensure!(
+        timeout <= PCIE_MAX_EJECT_TIMEOUT,
+        "eject_timeout_ms must not exceed {} ms",
+        PCIE_MAX_EJECT_TIMEOUT.as_millis()
+    );
+    Ok(hotplug.then_some(PcieHotplugConfig {
+        attention_button: attention_button.then_some(timeout),
+    }))
+}
+
+/// [`parse_pcie_hotplug`] for switch downstream ports, which refuse `attention_button`:
+/// runtime hot-add and hot-remove reach root-complex ports only, so a button there could
+/// never be pressed.
+pub(crate) fn parse_pcie_switch_hotplug(
+    hotplug: bool,
+    attention_button: bool,
+    eject_timeout_ms: Option<u32>,
+) -> anyhow::Result<Option<PcieHotplugConfig>> {
+    let config = parse_pcie_hotplug(hotplug, attention_button, eject_timeout_ms)?;
+    anyhow::ensure!(
+        !attention_button,
+        "attention button ejection is not supported on switch downstream ports"
+    );
+    Ok(config)
 }
 
 /// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
@@ -5457,6 +5527,64 @@ mod tests {
     }
 
     #[test]
+    fn test_pcie_attention_button_options() {
+        let root =
+            PcieRootPortCli::from_str("rc0:rp0,hotplug,attention_button,eject_timeout_ms=15000")
+                .unwrap();
+        assert_eq!(
+            root.hotplug,
+            Some(PcieHotplugConfig {
+                attention_button: Some(std::time::Duration::from_secs(15)),
+            })
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("rc0:rp0,hotplug,attention_button")
+                .unwrap()
+                .hotplug,
+            Some(PcieHotplugConfig {
+                attention_button: Some(PCIE_DEFAULT_EJECT_TIMEOUT),
+            })
+        );
+        assert_eq!(
+            PcieRootPortCli::from_str("rc0:rp0,hotplug,attention_button,eject_timeout_ms=300000")
+                .unwrap()
+                .hotplug,
+            Some(PcieHotplugConfig {
+                attention_button: Some(PCIE_MAX_EJECT_TIMEOUT),
+            }),
+            "the cap itself is accepted"
+        );
+        let plain = PcieRootPortCli::from_str("rc0:rp0,hotplug").unwrap();
+        assert_eq!(plain.hotplug, Some(PcieHotplugConfig::default()));
+        assert_eq!(PcieRootPortCli::from_str("rc0:rp0").unwrap().hotplug, None);
+        for options in [
+            "attention_button",
+            "attention_button,eject_timeout_ms=1",
+            "hotplug,eject_timeout_ms=1",
+            "eject_timeout_ms=1",
+            "hotplug,attention_button,eject_timeout_ms=-1",
+            "hotplug,attention_button,eject_timeout_ms=4294967296",
+            "hotplug,attention_button,eject_timeout_ms=300001",
+        ] {
+            assert!(
+                PcieRootPortCli::from_str(&format!("rc0:rp0,{options}")).is_err(),
+                "{options}"
+            );
+        }
+        // Runtime hotplug reaches root ports only, so a switch port refuses the button.
+        let err =
+            GenericPcieSwitchCli::from_str("rp0:sw0,hotplug,attention_button,eject_timeout_ms=1")
+                .unwrap_err();
+        assert!(err.to_string().contains("switch downstream ports"), "{err}");
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:sw0,hotplug")
+                .unwrap()
+                .hotplug,
+            Some(PcieHotplugConfig::default())
+        );
+    }
+
+    #[test]
     fn test_pcie_root_port_from_str() {
         assert_eq!(
             PcieRootPortCli::from_str("rc0:rc0rp0").unwrap(),
@@ -5464,7 +5592,7 @@ mod tests {
                 root_complex_name: "rc0".to_string(),
                 name: "rc0rp0".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5477,7 +5605,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5491,7 +5619,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
                 devfn: None,
-                hotplug: true,
+                hotplug: Some(PcieHotplugConfig::default()),
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5504,7 +5632,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: Some(0),
                 cxl: false,
                 pasid: false,
@@ -5517,7 +5645,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: Some(0x005f),
                 cxl: false,
                 pasid: false,
@@ -5530,7 +5658,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port4".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: true,
                 pasid: false,
@@ -5544,7 +5672,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port5".to_string(),
                 devfn: Some(5 << 3),
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5556,7 +5684,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port6".to_string(),
                 devfn: Some((5 << 3) | 1),
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5568,7 +5696,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port7".to_string(),
                 devfn: Some(0xff),
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5581,7 +5709,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port8".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: true,
@@ -5639,7 +5767,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5651,7 +5779,7 @@ mod tests {
                 port_name: "port1".to_string(),
                 name: "my_switch".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5663,7 +5791,7 @@ mod tests {
                 port_name: "rp2".to_string(),
                 name: "sw".to_string(),
                 num_downstream_ports: 8,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5676,7 +5804,7 @@ mod tests {
                 port_name: "switch0-downstream-1".to_string(),
                 name: "child_switch".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5689,7 +5817,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: true,
+                hotplug: Some(PcieHotplugConfig::default()),
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5702,7 +5830,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 8,
-                hotplug: true,
+                hotplug: Some(PcieHotplugConfig::default()),
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5714,7 +5842,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: Some(0),
                 pasid: false,
             }
@@ -5726,7 +5854,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: Some(95),
                 pasid: false,
             }
@@ -5738,7 +5866,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: true,
             }

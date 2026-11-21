@@ -463,6 +463,17 @@ name:
   available devfn. Ports are assigned in order, so an explicit `addr` that
   collides with an already-assigned port is an error.
 - `hotplug`: enables hotplug support for that root port.
+- `attention_button`: on a `hotplug` port, also advertises an attention
+  button, power controller and power indicator, so a removal can ask the
+  guest to release the device before it is detached (see
+  [orderly removal](../../emulated/pcie/overview.md#orderly-removal)).
+  Guests that follow the standard hot-plug model wait about five seconds
+  after every button press, hot-add included.
+- `eject_timeout_ms=<ms>`: how long an orderly removal waits for the guest
+  to power the slot off before it fails. Needs `attention_button`. Default
+  15000 (15 s), at most 300000 (5 minutes): state changes wait for a pending
+  removal, so this also bounds how long a stuck guest can delay a stop or
+  reset.
 - `acs=<mask>`: sets the Access Control Services capability mask for the
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
   Use `acs=0` to disable ACS for a root port.
@@ -478,6 +489,8 @@ name:
 
 - `num_downstream_ports=<N>`: number of downstream ports for the switch.
 - `hotplug`: enables hotplug support on all downstream switch ports.
+  `attention_button` is refused here: runtime hot-add and hot-remove reach
+  root ports only.
 - `acs=<mask>`: ACS capability mask requested for downstream switch ports.
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.
