@@ -25,6 +25,8 @@ cfg_select! {
 pub use arch::Kvm;
 pub use memory::MemoryError;
 
+#[cfg(guest_arch = "x86_64")]
+use anyhow::Context as _;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use memory::KvmMemoryBackingMode;
@@ -41,6 +43,25 @@ pub fn is_available() -> Result<bool, KvmError> {
         Ok(_) => Ok(true),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(KvmError::AvailableCheck(err)),
+    }
+}
+
+/// Returns whether KVM supports the nested-state ioctls on this machine.
+#[cfg(guest_arch = "x86_64")]
+pub fn is_nested_state_available() -> bool {
+    let probe = || -> anyhow::Result<bool> {
+        let kvm = kvm::Kvm::new().context("open KVM for nested-state probe")?;
+        Ok(kvm
+            .check_extension(kvm::KVM_CAP_NESTED_STATE)
+            .context("query KVM_CAP_NESTED_STATE")?
+            > 0)
+    };
+    match probe() {
+        Ok(supported) => supported,
+        Err(err) => {
+            tracing::warn!(error = &*err, "KVM nested-state probe failed");
+            false
+        }
     }
 }
 
@@ -88,6 +109,9 @@ pub enum KvmError {
     #[cfg(guest_arch = "x86_64")]
     #[error("nested virtualization was requested but the host does not support it")]
     NestedVirtUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("restoring saved nested state is not supported; only reset is implemented")]
+    NestedStateRestoreUnsupported,
     #[cfg(guest_arch = "x86_64")]
     #[error("unsupported CPU vendor")]
     UnsupportedCpuVendor,

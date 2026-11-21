@@ -693,6 +693,7 @@ mod tests {
             vendor: Vendor::Intel,
             execution_environment: ExecutionEnvironment::Baremetal,
             openvmm_hypervisor: hypervisor,
+            nested_reset_supported: false,
         }
     }
 

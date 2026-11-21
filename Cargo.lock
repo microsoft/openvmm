@@ -6384,6 +6384,7 @@ dependencies = [
  "fs-err",
  "hypervisor_resources",
  "test_with_tracing",
+ "virt_kvm",
  "virt_mshv",
  "virt_whp",
  "vm_resource",

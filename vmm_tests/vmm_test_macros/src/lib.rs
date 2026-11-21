@@ -626,8 +626,11 @@ impl NestedConfig {
 impl MaybeNestedConfig {
     fn resolve(self, overrides: &ParsedOverrides) -> syn::Result<MaybeNestedResolvedConfig> {
         let mut default_overrides = ParsedOverrides::new();
-        let (l1_overrides, l2_overrides) = if self.nested_config.is_some() {
+        let (l1_overrides, l2_overrides) = if let Some(nested_config) = &self.nested_config {
             default_overrides.add_capability(self.l1_config.span, "nested_virt")?;
+            for capability in &nested_config.l1_requires {
+                default_overrides.add_capability(capability.span, capability.name)?;
+            }
             (&default_overrides, overrides)
         } else {
             (overrides, &default_overrides)
@@ -1160,6 +1163,7 @@ struct NestedConfig {
     test_module: syn::LitStr,
     inner_module: syn::LitStr,
     test_fn: Ident,
+    l1_requires: Vec<RequiredCapability>,
     l2_config: Config,
 }
 
@@ -1177,6 +1181,19 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
         ));
     }
     let _: Option<Token![,]> = parens.parse()?;
+    let l1_requires = if parens.is_empty() {
+        Vec::new()
+    } else {
+        let requires = parens.parse::<Ident>()?;
+        if requires != "requires" {
+            return Err(Error::new(requires.span(), "expected `requires(...)`"));
+        }
+        let capabilities;
+        syn::parenthesized!(capabilities in parens);
+        let capabilities = parse_required_capabilities(&capabilities)?;
+        let _: Option<Token![,]> = parens.parse()?;
+        capabilities
+    };
     if !parens.is_empty() {
         return Err(parens.error("unexpected tokens after the L1 config"));
     }
@@ -1207,6 +1224,7 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
             test_module,
             inner_module,
             test_fn,
+            l1_requires,
             l2_config,
         }),
     })
@@ -1295,6 +1313,10 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
 ///     (NEXTEST_ARCHIVE_WITH_NESTED_TEST, "test_binary", "test::module::path", l2_config),
 /// ),
 /// ```
+///
+/// The L1 tuple optionally accepts `requires(...)` after its config to require
+/// host capabilities independently of the L2 test, for example
+/// `(my_vm_host, l1_config, requires(nested_reset))`.
 ///
 #[proc_macro_attribute]
 pub fn vmm_test(

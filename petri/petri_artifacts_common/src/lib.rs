@@ -18,6 +18,9 @@ pub mod capabilities {
     /// Support for booting an mshv root partition (the Microsoft hypervisor
     /// and its Linux root) as a guest.
     pub const NESTED_MSHV: &str = "nested_mshv";
+  
+    /// Support for resetting a partition with nested virtualization enabled.
+    pub const NESTED_RESET: &str = "nested_reset";
 
     /// All capability names known to petri, including those defined by
     /// tests.
@@ -26,6 +29,7 @@ pub mod capabilities {
         WINDOWS_PARTITION_RESET,
         NESTED_VIRT,
         NESTED_MSHV,
+        NESTED_RESET,
         "test_disk",
         "edu_initiator",
         "ivshmem_target",
