@@ -27,7 +27,8 @@ use zerocopy::FromZeros;
 /// Reserved file handle `open_dir` returns for the synthetic aggregate root;
 /// `read_dir`/`read_dir_plus`/`fsync_dir`/`release_dir` recognize it and serve
 /// the root instead of the handle map. `u64::MAX` can't collide with a real
-/// handle, since `HandleMap` allocates from 1 upward.
+/// handle, since `HandleMap` allocates from 1 upward and never hands out
+/// `u64::MAX` (see [`HandleMap::can_insert`](crate::HandleMap::can_insert)).
 pub(crate) const SYNTHETIC_ROOT_FH: u64 = u64::MAX;
 
 /// A single host folder exposed as a named child of the synthetic aggregate root.
