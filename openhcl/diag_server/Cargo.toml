@@ -39,5 +39,9 @@ hvdef.workspace = true
 profiler = ["dep:profiler_worker"]
 mem-profile-tracing = []
 
+[dev-dependencies]
+tempfile.workspace = true
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true
