@@ -142,6 +142,24 @@ impl Worker {
         Ok(())
     }
 
+    pub(crate) async fn add_vpci_device(
+        &self,
+        instance_id: guid::Guid,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::AddVpciDevice, (instance_id, resource))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn remove_vpci_device(&self, instance_id: guid::Guid) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::RemoveVpciDevice, instance_id)
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn inspect(&self, path: &str) -> inspect::Node {
         let mut inspection = inspect::inspect(path, &self.handle);
         inspection.resolve().await;
