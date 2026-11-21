@@ -113,15 +113,19 @@ impl Deref for VirtioFsVolume {
 /// Key used to deduplicate inodes in the `InodeMap` so that repeated lookups of
 /// the same host file return a single, stable FUSE node id.
 ///
-/// Volumes that report stable inode numbers key by `(volume_id, inode_nr)`.
-/// Volumes that recycle inode numbers (FAT/exFAT) cannot trust the inode
-/// number as an identity, so they key by `(volume_id, path)` instead — a given
-/// path then maps to one node id across lookups while its file type is unchanged,
-/// even though the host inode number is not reliable.
+/// Volumes that report stable inode numbers key by `(volume_id, device_nr,
+/// inode_nr)`, since a host object's identity is its device and inode numbers
+/// together: a volume can span devices, such as through nested mounts or btrfs
+/// subvolumes, whose objects may share inode numbers. Volumes that recycle
+/// inode numbers (FAT/exFAT) cannot trust the inode number as an identity, so
+/// they key by `(volume_id, path)` instead — a given path then maps to one node
+/// id across lookups while its file type is unchanged, even though the host
+/// inode number is not reliable.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) enum DedupKey {
-    /// `(volume_id, host_inode_number)`, for stable-id volumes.
-    Ino(u32, lx::ino_t),
+    /// `(volume_id, host_device_number, host_inode_number)`, for stable-id
+    /// volumes.
+    Ino(u32, u64, lx::ino_t),
     /// `(volume_id, host_path)`, for volumes that recycle inode numbers.
     Path(u32, PathBuf),
 }
@@ -132,6 +136,9 @@ pub struct VirtioFsInode {
     pub(crate) path: RwLock<PathBuf>,
     pub(crate) aliases: RwLock<BTreeSet<PathBuf>>,
     pub(crate) lookup_count: AtomicU64,
+    /// The number of the host device that holds the object, which Windows
+    /// reports as 0.
+    device_nr: u64,
     inode_nr: lx::ino_t,
     file_type: lx::mode_t,
     /// This inode's number as reported to the guest: its namespaced inode
@@ -158,6 +165,7 @@ impl VirtioFsInode {
             path: RwLock::new(path),
             aliases: RwLock::new(aliases),
             lookup_count: AtomicU64::new(1),
+            device_nr: stat.device_nr,
             inode_nr: stat.inode_nr,
             file_type: stat.mode & lx::S_IFMT,
             guest_inode_nr,
@@ -557,7 +565,7 @@ impl VirtioFsInode {
     /// The key used to deduplicate this inode in the `InodeMap`, so that
     /// repeated lookups of the same host file return one stable FUSE node id.
     ///
-    /// Stable-id volumes key by `(volume_id, inode_nr)`. Volumes that recycle
+    /// Stable-id volumes key by `(volume_id, device_nr, inode_nr)`. Volumes that recycle
     /// inode numbers (FAT/exFAT) key by `(volume_id, path)` instead, so a given
     /// path maps to a stable FUSE node id while its file type is unchanged. This includes
     /// the empty path of a volume root, so an aggregate child root keeps one
@@ -565,7 +573,7 @@ impl VirtioFsInode {
     /// each time.
     pub(crate) fn dedup_key(&self) -> DedupKey {
         if self.volume.supports_stable_file_id() {
-            return DedupKey::Ino(self.volume_id(), self.inode_nr());
+            return DedupKey::Ino(self.volume_id(), self.device_nr, self.inode_nr());
         }
         DedupKey::Path(self.volume_id(), self.get_path().clone())
     }
@@ -842,6 +850,44 @@ mod tests {
             assert_eq!(old.forget(old_id, 1), 0);
             inodes.remove(old_id);
             assert!(inodes.get(current_id).is_some());
+        }
+    }
+
+    /// A host object's identity is its device and inode numbers together:
+    /// nested mounts and btrfs subvolumes give objects of one share the same
+    /// inode number on different devices, as every subvolume root has 256.
+    #[test]
+    fn stable_inode_key_separates_devices() {
+        for aggregate in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(tmp.path().join("subvolume")).unwrap();
+            std::fs::create_dir(tmp.path().join("bind")).unwrap();
+            let volume = Arc::new(VirtioFsVolume::new(
+                LxVolume::new(tmp.path()).unwrap(),
+                u32::from(aggregate),
+                false,
+            ));
+            let inode = |path: &str, device_nr, inode_nr| {
+                let mut stat = volume.lstat(path).unwrap();
+                stat.device_nr = device_nr;
+                stat.inode_nr = inode_nr;
+                VirtioFsInode::with_attr(Arc::clone(&volume), PathBuf::from(path), &stat)
+            };
+            let mut inodes = InodeMap::new(aggregate);
+            let (root, root_id) = inodes.insert(inode("", 1, 256)).unwrap();
+            assert!(matches!(root.dedup_key(), DedupKey::Ino(..)));
+
+            let (subvolume, subvolume_id) = inodes.insert(inode("subvolume", 2, 256)).unwrap();
+            assert_ne!(subvolume_id, root_id);
+            assert_eq!(&*root.get_path(), Path::new(""));
+            assert_eq!(&*subvolume.get_path(), Path::new("subvolume"));
+
+            // The same object reached again, as through a second bind mount,
+            // keeps its node.
+            let (bind, bind_id) = inodes.insert(inode("bind", 2, 256)).unwrap();
+            assert_eq!(bind_id, subvolume_id);
+            assert!(Arc::ptr_eq(&bind, &subvolume));
+            assert_eq!(&*root.get_path(), Path::new(""));
         }
     }
 

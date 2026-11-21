@@ -797,7 +797,7 @@ impl VirtioFs {
     /// Insert a new inode, and returns the assigned node ID as well as a reference to the inode.
     ///
     /// If the file system supports stable inode numbers and an inode already existed with this
-    /// number, the existing inode is returned, not the passed in one.
+    /// device and inode number, the existing inode is returned, not the passed in one.
     fn insert_inode(&self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
         let mut inodes = self.inner.inodes.write();
         microvm::fs::insert_inode(self, &mut inodes, inode)
@@ -1825,6 +1825,23 @@ mod tests {
         assert!(Arc::ptr_eq(&existing, &reused));
         assert_eq!(reused_node_id, node_id);
         assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    /// Objects with one inode number on two devices are distinct, as `/proc`
+    /// and `/sys` are, so lookups give them separate nodes, under which names
+    /// resolve on each object's own device.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lookup_separates_one_inode_number_on_two_devices() {
+        crate::test_helpers::assert_proc_and_sys_share_an_inode_number();
+        let fs = VirtioFs::new("/", None).unwrap();
+        let root = request(FUSE_ROOT_ID);
+        let proc = fs.lookup(&root, "proc".as_ref()).unwrap();
+        let sys = fs.lookup(&root, "sys".as_ref()).unwrap();
+        assert_ne!(proc.nodeid, sys.nodeid);
+
+        fs.lookup(&request(proc.nodeid), "self".as_ref()).unwrap();
+        fs.lookup(&request(sys.nodeid), "kernel".as_ref()).unwrap();
     }
 
     #[test]

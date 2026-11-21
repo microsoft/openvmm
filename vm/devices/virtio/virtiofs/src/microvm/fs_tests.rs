@@ -385,6 +385,41 @@ fn hard_link_aliases_restore_and_reject_missing_or_replaced_names() {
     );
 }
 
+/// Objects with one inode number on two devices, as `/proc` and `/sys` are,
+/// save as two inodes and restore as two.
+#[cfg(target_os = "linux")]
+#[test]
+fn one_inode_number_on_two_devices_restores_as_two_inodes() {
+    crate::test_helpers::assert_proc_and_sys_share_an_inode_number();
+    let root_path = Path::new("/");
+    let profile = profile(root_path);
+    let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let root = source.get_inode(FUSE_ROOT_ID).unwrap();
+    let names = ["proc", "sys"];
+    let node_ids = names.map(|name| {
+        source
+            .lookup_helper(&root, lx::LxStr::from_bytes(name.as_bytes()))
+            .unwrap()
+            .nodeid
+    });
+    assert_ne!(node_ids[0], node_ids[1]);
+    let state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+
+    let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+    destination
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+    for (name, node_id) in names.into_iter().zip(node_ids) {
+        assert_eq!(
+            destination.get_inode(node_id).unwrap().clone_path(),
+            Path::new(name)
+        );
+    }
+}
+
 #[test]
 fn relative_path_validation_rejects_platform_escapes() {
     assert!(validate_relative_path(Path::new("../outside"), true).is_err());
