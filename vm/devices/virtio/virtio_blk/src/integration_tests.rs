@@ -44,6 +44,7 @@ use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::blk::VirtioBlkDiscardWriteZeroes;
 use virtio::spec::blk::*;
 use virtio::spec::queue::DescriptorFlags;
+use virtio::test_helpers::ConfigInterrupt;
 use virtio::test_helpers::init_avail_ring;
 use virtio::test_helpers::init_used_ring;
 use virtio::test_helpers::make_available;
@@ -758,6 +759,24 @@ fn ram_disk(size: u64, read_only: bool) -> Disk {
     HookDisk::new(size, 512)
         .with_read_only(read_only)
         .into_disk()
+}
+
+#[async_test]
+async fn disk_resize_updates_guest_capacity(driver: DefaultDriver) {
+    let disk = disklayer_ram::ram_disk_with_sector_size(8192, false, 4096).unwrap();
+    let mut harness = TestHarness::new(&driver, disk.clone(), false);
+    assert_eq!(harness.device.read_registers_u32(0).await, 16);
+    harness.enable().await;
+    let mut config = ConfigInterrupt::new(&driver, harness.device).await;
+
+    // The first resize can race with the worker's initial capacity read.
+    // Wait for it before issuing the second resize to test runtime handling.
+    for (sector_count, capacity) in [("4", 32), ("6", 48)] {
+        inspect::update("disk/layers/0/backing/sector_count", sector_count, &disk)
+            .await
+            .unwrap();
+        assert_eq!(config.next(0).await, capacity);
+    }
 }
 
 struct RequeueResources {

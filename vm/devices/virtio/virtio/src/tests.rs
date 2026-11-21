@@ -4400,6 +4400,7 @@ impl TestTransport for MmioTestTransport {
 
 struct PciTestTransport {
     dev: VirtioPciDevice,
+    test_intc: TestPciInterruptController,
 }
 
 impl PciTestTransport {
@@ -4407,6 +4408,8 @@ impl PciTestTransport {
         let test_mem = VirtioTestMemoryAccess::new();
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem;
         let msi_conn = MsiConnection::new();
+        let test_intc = TestPciInterruptController::new();
+        msi_conn.connect(test_intc.signal_msi());
 
         let mut dev = VirtioPciDevice::new(
             device,
@@ -4503,7 +4506,7 @@ impl PciTestTransport {
         )
         .unwrap();
 
-        Self { dev }
+        Self { dev, test_intc }
     }
 }
 
@@ -4537,6 +4540,214 @@ impl TestTransport for PciTestTransport {
     async fn teardown(self) {
         self.dev.teardown().await;
     }
+}
+
+#[derive(Clone, inspect::InspectMut)]
+struct DynamicConfigTestDevice {
+    #[inspect(skip)]
+    config: Arc<Mutex<[u32; 2]>>,
+    config_generation: crate::ConfigGeneration,
+}
+
+impl DynamicConfigTestDevice {
+    fn new() -> Self {
+        Self {
+            config: Arc::new(Mutex::new([0; 2])),
+            config_generation: crate::ConfigGeneration::default(),
+        }
+    }
+
+    fn update(&self, byte: u8) {
+        self.config_generation.update(|| {
+            self.config.lock().fill(u32::from_le_bytes([byte; 4]));
+            true
+        });
+    }
+}
+
+impl VirtioDevice for DynamicConfigTestDevice {
+    fn traits(&self) -> DeviceTraits {
+        DeviceTraits {
+            device_register_length: 8,
+            ..Default::default()
+        }
+    }
+
+    fn config_generation_handle(&self) -> Option<crate::ConfigGeneration> {
+        Some(self.config_generation.clone())
+    }
+
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
+        self.config.lock()[usize::from(offset) / 4]
+    }
+
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+
+    async fn start_queue(
+        &mut self,
+        _idx: u16,
+        _resources: QueueResources,
+        _features: &VirtioDeviceFeatures,
+        _initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        unreachable!("the test device has no queues")
+    }
+
+    async fn stop_queue(&mut self, _idx: u16) -> Option<QueueState> {
+        unreachable!("the test device has no queues")
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        true
+    }
+}
+
+async fn read_dynamic_config(dev: &mut impl MmioIntercept, addr: u64) -> [u8; 4] {
+    let mut bytes = [0; 4];
+    match dev.mmio_read(addr, &mut bytes) {
+        IoResult::Defer(token) => token.read_future(&mut bytes).await.unwrap(),
+        result => result.unwrap(),
+    }
+    bytes
+}
+
+#[derive(Default)]
+struct ConfigWake(std::sync::atomic::AtomicBool);
+
+impl std::task::Wake for ConfigWake {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+#[async_test]
+async fn dynamic_config_mmio(driver: DefaultDriver) {
+    let device = DynamicConfigTestDevice::new();
+    let mut transport = MmioTestTransport::new(Box::new(device.clone()), &driver, 0);
+    let generation = transport.read_config_generation();
+    device.update(3);
+    transport.poll_once();
+    assert_eq!(transport.dev.read_u32(0x60), 0);
+    assert_eq!(transport.read_config_generation(), generation + 1);
+
+    transport.write_driver_ok();
+    yield_and_poll(&mut transport).await;
+    assert_ne!(transport.read_status() & VIRTIO_DRIVER_OK, 0);
+    assert_eq!(transport.dev.read_u32(0x60), 2);
+    transport.dev.write_u32(0x64, 2);
+    assert_eq!(transport.dev.read_u32(0x60), 0);
+
+    let wake = Arc::new(ConfigWake::default());
+    let waker = std::task::Waker::from(wake.clone());
+    transport
+        .dev
+        .poll_device(&mut std::task::Context::from_waker(&waker));
+    let generation = transport.read_config_generation();
+    assert_eq!(read_dynamic_config(&mut transport.dev, 0x100).await, [3; 4]);
+    device.update(4);
+    assert!(wake.0.load(Ordering::Relaxed));
+    assert_eq!(read_dynamic_config(&mut transport.dev, 0x104).await, [4; 4]);
+    assert_eq!(transport.read_config_generation(), generation + 1);
+    assert_eq!(transport.dev.read_u32(0x60), 0);
+    wake.0.store(false, Ordering::Relaxed);
+    let cx = &mut std::task::Context::from_waker(&waker);
+    transport.dev.poll_device(cx);
+    assert_eq!(transport.dev.read_u32(0x60), 2);
+    assert!(wake.0.swap(false, Ordering::Relaxed));
+    transport.dev.poll_device(cx);
+
+    device.update(5);
+    assert!(wake.0.load(Ordering::Relaxed));
+    transport.write_status_zero();
+    transport.stop().await;
+    assert_eq!(transport.read_config_generation(), 0);
+    transport.write_driver_ok();
+    yield_and_poll(&mut transport).await;
+    assert_ne!(transport.read_status() & VIRTIO_DRIVER_OK, 0);
+    assert_eq!(transport.dev.read_u32(0x60), 0);
+    transport.stop().await;
+    transport.teardown().await;
+}
+
+#[async_test]
+async fn dynamic_config_pci(driver: DefaultDriver) {
+    const CONFIG_BASE: u64 = 0x10000000000 + 64;
+    const MSIX_TABLE: u64 = 0x20000000000;
+    const CONFIG_MSI_ADDRESS: u64 = 0xfee00000;
+    const CONFIG_MSI_DATA: u32 = 0x40;
+
+    let device = DynamicConfigTestDevice::new();
+    let mut transport = PciTestTransport::new(Box::new(device.clone()), &driver, 0);
+    transport
+        .dev
+        .mmio_write(MSIX_TABLE, &CONFIG_MSI_ADDRESS.to_le_bytes())
+        .unwrap();
+    transport
+        .dev
+        .mmio_write(MSIX_TABLE + 8, &CONFIG_MSI_DATA.to_le_bytes())
+        .unwrap();
+    transport.write_driver_ok();
+    yield_and_poll(&mut transport).await;
+    assert_ne!(transport.read_status() & VIRTIO_DRIVER_OK, 0);
+    assert_eq!(transport.read_config_generation(), 1);
+    assert_eq!(transport.test_intc.get_next_interrupt(), None);
+
+    transport
+        .dev
+        .mmio_write(CONFIG_BASE - 64 + 22, &0x1234u16.to_le_bytes())
+        .unwrap();
+    let common = transport.dev.read_u32(20);
+    for byte in 1..=254 {
+        device.update(byte);
+    }
+    assert_eq!(transport.read_config_generation(), 255);
+    assert_eq!(
+        read_dynamic_config(&mut transport.dev, CONFIG_BASE).await,
+        [254; 4],
+    );
+    device.update(255);
+    assert_eq!(
+        read_dynamic_config(&mut transport.dev, CONFIG_BASE + 4).await,
+        [255; 4],
+    );
+    assert_eq!(transport.read_config_generation(), 0);
+    assert_eq!(transport.dev.read_u32(20) & !0xff00, common & !0xff00);
+
+    transport.poll_once();
+    assert_eq!(
+        transport.test_intc.get_next_interrupt(),
+        Some((CONFIG_MSI_ADDRESS, CONFIG_MSI_DATA)),
+    );
+    assert_eq!(transport.dev.read_u32(60) & 2, 2);
+    transport.stop().await;
+    transport.teardown().await;
+}
+
+#[async_test]
+async fn dynamic_config_restore_notifies_guest_to_reread(driver: DefaultDriver) {
+    use vmcore::save_restore::SaveRestore;
+
+    let device = DynamicConfigTestDevice::new();
+    let mut source = MmioTestTransport::new(Box::new(device.clone()), &driver, 0);
+    source.write_driver_ok();
+    yield_and_poll(&mut source).await;
+    device.update(1);
+    source.stop().await;
+    assert_eq!(source.dev.read_u32(0x60), 0);
+    let saved = source.dev.save().unwrap();
+    let generation = source.read_config_generation();
+    source.teardown().await;
+
+    let device = Box::new(DynamicConfigTestDevice::new());
+    let mut target = MmioTestTransport::new(device, &driver, 0);
+    target.dev.restore(saved).unwrap();
+    target.start();
+    yield_and_poll(&mut target).await;
+    assert_eq!(target.read_config_generation(), generation + 1);
+    assert_eq!(read_dynamic_config(&mut target.dev, 0x100).await, [0; 4]);
+    assert_eq!(target.dev.read_u32(0x60), 2);
+    target.stop().await;
+    target.teardown().await;
 }
 
 // -- Shared test logic, parameterized over transport --

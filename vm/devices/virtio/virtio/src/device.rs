@@ -4,6 +4,7 @@
 //! Per-queue virtio device trait (`VirtioDevice`) and object-safe wrapper
 //! (`DynVirtioDevice`).
 
+use crate::ConfigGeneration;
 use crate::DEFAULT_QUEUE_SIZE;
 use crate::DeviceTraits;
 use crate::QueueResources;
@@ -41,6 +42,11 @@ pub trait VirtioDevice: InspectMut + Send {
     /// returns [`DEFAULT_QUEUE_SIZE`] (256).
     fn queue_size(&self, _queue_index: u16) -> u16 {
         DEFAULT_QUEUE_SIZE
+    }
+
+    /// Supply the handle used to publish runtime config changes.
+    fn config_generation_handle(&self) -> Option<ConfigGeneration> {
+        None
     }
 
     /// Read device-specific config registers.
@@ -129,6 +135,11 @@ pub trait DynVirtioDevice: InspectMut + Send {
     /// The queue size for the given queue index.
     fn queue_size(&self, queue_index: u16) -> u16;
 
+    /// See [`VirtioDevice::config_generation_handle`].
+    fn config_generation_handle(&self) -> Option<ConfigGeneration> {
+        None
+    }
+
     /// Read device-specific config registers.
     fn read_registers_u32(&mut self, offset: u16)
     -> Pin<Box<dyn Future<Output = u32> + Send + '_>>;
@@ -175,6 +186,10 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
 
     fn queue_size(&self, queue_index: u16) -> u16 {
         VirtioDevice::queue_size(self, queue_index)
+    }
+
+    fn config_generation_handle(&self) -> Option<ConfigGeneration> {
+        VirtioDevice::config_generation_handle(self)
     }
 
     fn read_registers_u32(

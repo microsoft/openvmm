@@ -8,6 +8,9 @@
 //! and used rings in guest memory — the same operations a guest driver would
 //! perform.
 
+use crate::DynVirtioDevice;
+use crate::spec::VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE as CONFIG_CHANGE;
+use crate::spec::mmio::VirtioMmioRegister as Reg;
 use crate::spec::queue::AVAIL_ELEMENT_SIZE;
 use crate::spec::queue::AVAIL_OFFSET_FLAGS;
 use crate::spec::queue::AVAIL_OFFSET_IDX;
@@ -19,11 +22,107 @@ use crate::spec::queue::USED_OFFSET_FLAGS;
 use crate::spec::queue::USED_OFFSET_IDX;
 use crate::spec::queue::USED_OFFSET_RING;
 use crate::spec::queue::UsedElement;
+use crate::transport::VirtioMmioDevice;
+use chipset_device::io::IoResult;
+use chipset_device::mmio::MmioIntercept;
+use chipset_device::poll_device::PollDevice;
 use core::mem::offset_of;
 use guestmem::GuestMemory;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
+use std::future::poll_fn;
+use std::pin::pin;
+use std::sync::Arc;
 use std::time::Duration;
+use vmcore::line_interrupt::LineInterrupt;
+use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+
+/// Check guest config notifications from a device with queues already running.
+pub struct ConfigInterrupt {
+    mmio: VirtioMmioDevice,
+    irq: Arc<TestLineInterruptTarget>,
+    generation: u8,
+}
+
+impl ConfigInterrupt {
+    /// Attach an MMIO transport without starting any additional queues.
+    pub async fn new(
+        driver: &pal_async::DefaultDriver,
+        device: impl DynVirtioDevice + 'static,
+    ) -> Self {
+        let irq = TestLineInterruptTarget::new_arc();
+        let line = LineInterrupt::new_with_target("virtio config", irq.clone(), 0);
+        let mut mmio = VirtioMmioDevice::new(
+            Box::new(device),
+            driver,
+            GuestMemory::empty(),
+            line,
+            None,
+            0,
+            0x1000,
+        )
+        .unwrap();
+        mmio.mmio_write(Reg::DRIVER_FEATURES_SEL.0.into(), &1u32.to_le_bytes())
+            .unwrap();
+        mmio.mmio_write(Reg::DRIVER_FEATURES.0.into(), &1u32.to_le_bytes())
+            .unwrap();
+        let status = 15u32; // ACKNOWLEDGE | DRIVER | FEATURES_OK | DRIVER_OK
+        let IoResult::Defer(token) = mmio.mmio_write(Reg::STATUS.0.into(), &status.to_le_bytes())
+        else {
+            panic!("expected deferred DRIVER_OK");
+        };
+        poll_mmio(&mut mmio, token.write_future()).await.unwrap();
+        let mut actual = [0; 4];
+        mmio.mmio_read(Reg::STATUS.0.into(), &mut actual).unwrap();
+        assert_eq!(u32::from_le_bytes(actual), status);
+        let mut generation = [0];
+        mmio.mmio_read(Reg::CONFIG_GENERATION.0.into(), &mut generation)
+            .unwrap();
+        Self {
+            mmio,
+            irq,
+            generation: generation[0],
+        }
+    }
+
+    /// Verify and acknowledge a config interrupt, then read device config.
+    pub async fn next(&mut self, config_offset: u16) -> u32 {
+        poll_mmio(&mut self.mmio, poll_fn(|cx| self.irq.poll_high(cx, 0))).await;
+        let mut bytes = [0; 4];
+        self.mmio
+            .mmio_read(Reg::INTERRUPT_STATUS.0.into(), &mut bytes)
+            .unwrap();
+        assert_eq!(u32::from_le_bytes(bytes), CONFIG_CHANGE);
+        self.generation = self.generation.wrapping_add(1);
+        self.mmio
+            .mmio_read(Reg::CONFIG_GENERATION.0.into(), &mut bytes)
+            .unwrap();
+        assert_eq!(u32::from_le_bytes(bytes), u32::from(self.generation));
+        self.mmio
+            .mmio_write(Reg::INTERRUPT_ACK.0.into(), &CONFIG_CHANGE.to_le_bytes())
+            .unwrap();
+        let IoResult::Defer(token) = self
+            .mmio
+            .mmio_read(u64::from(Reg::CONFIG.0 + config_offset), &mut bytes)
+        else {
+            panic!("expected deferred config read");
+        };
+        token.read_future(&mut bytes).await.unwrap();
+        u32::from_le_bytes(bytes)
+    }
+}
+
+async fn poll_mmio<T>(mmio: &mut VirtioMmioDevice, future: impl Future<Output = T>) -> T {
+    let mut future = pin!(future);
+    mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(2))
+        .until_cancelled(poll_fn(|cx| {
+            mmio.poll_device(cx);
+            future.as_mut().poll(cx)
+        }))
+        .await
+        .expect("timed out polling virtio MMIO")
+}
 
 /// Write a split virtio descriptor at the given descriptor table base.
 pub fn write_descriptor(

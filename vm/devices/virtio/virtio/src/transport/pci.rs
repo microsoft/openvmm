@@ -414,7 +414,7 @@ impl VirtioPciDevice {
             }
             VirtioPciCommonCfg::DEVICE_STATUS => {
                 self.core.queue_select << 16
-                    | self.core.config_generation << 8
+                    | (self.core.config_generation.generation() as u32) << 8
                     | self.core.device_status.as_u32()
             }
             VirtioPciCommonCfg::QUEUE_SIZE => {
