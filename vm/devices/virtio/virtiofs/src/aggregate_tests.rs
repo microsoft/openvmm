@@ -7,14 +7,37 @@ use crate::inode;
 use crate::inode::VirtioFsVolume;
 use crate::test_helpers::decode_dir_entries;
 use fuse::Fuse;
+use fuse::protocol::FUSE_FSYNC_FDATASYNC;
+use fuse::protocol::FUSE_FSYNCDIR;
+use fuse::protocol::FUSE_LOOKUP;
+use fuse::protocol::FUSE_OPENDIR;
 use fuse::protocol::FUSE_ROOT_ID;
 use fuse::protocol::fuse_dirent;
 use fuse::protocol::fuse_dirent_align;
 use fuse::protocol::fuse_direntplus;
+use fuse::protocol::fuse_fsync_in;
+use fuse::protocol::fuse_in_header;
+use fuse::protocol::fuse_open_in;
 use lxutil::LxVolumeOptions;
 use std::sync::Arc;
 use test_with_tracing::test;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
+
+/// A guest request with `opcode` about the node `node_id`, whose argument is
+/// `arg`.
+fn request(opcode: u32, node_id: u64, arg: &[u8]) -> fuse::Request {
+    let header = fuse_in_header {
+        len: (size_of::<fuse_in_header>() + arg.len()) as u32,
+        opcode,
+        nodeid: node_id,
+        ..fuse_in_header::new_zeroed()
+    };
+    let mut bytes = header.as_bytes().to_vec();
+    bytes.extend_from_slice(arg);
+    fuse::Request::new(bytes.as_slice()).unwrap()
+}
 
 fn assert_config_errno(error: crate::CreateError, expected: lx::Error) {
     match error {
@@ -110,6 +133,63 @@ fn aggregate_operations_are_scoped_to_aggregate_mode() {
         lx::Error::EINVAL,
     );
     assert_eq!(fs.remove_child("x").unwrap_err(), lx::Error::EINVAL);
+}
+
+/// `fsync` and `fdatasync` of a descriptor of the synthetic root, which the
+/// guest sends as `FUSE_FSYNCDIR` with the root's node and the handle that
+/// `FUSE_OPENDIR` returned, succeed: the root keeps its entries only in
+/// memory, so it has nothing to write back. They must not fail with `EBADF`,
+/// as if the descriptor were not open (microsoft/nvx#1624). The handle is
+/// still the root's alone, and the root has no other.
+#[test]
+fn synthetic_root_handle_accepts_fsyncdir() {
+    let share = tempfile::tempdir().unwrap();
+    let fs = VirtioFs::new_aggregate();
+    fs.add_child("share", share.path(), None).unwrap();
+    let open = fuse_open_in {
+        flags: lx::O_RDONLY as u32,
+        ..fuse_open_in::new_zeroed()
+    };
+    let fh = fs
+        .open_dir(
+            &request(FUSE_OPENDIR, FUSE_ROOT_ID, open.as_bytes()),
+            open.flags,
+        )
+        .unwrap()
+        .fh;
+    let fsync_dir = |node_id, handle, fsync_flags| {
+        let arg = fuse_fsync_in {
+            fh: handle,
+            fsync_flags,
+            ..fuse_fsync_in::new_zeroed()
+        };
+        fs.fsync_dir(
+            &request(FUSE_FSYNCDIR, node_id, arg.as_bytes()),
+            arg.fh,
+            arg.fsync_flags,
+        )
+    };
+
+    for flags in [0, FUSE_FSYNC_FDATASYNC] {
+        assert_eq!(
+            fsync_dir(FUSE_ROOT_ID, fh, flags),
+            Ok(()),
+            "flags {flags:#x}"
+        );
+    }
+
+    // The guest has opened no other handle, so the root's handle with the
+    // node of a child, and any other handle with the root's node, name no
+    // open directory.
+    let child = fs
+        .lookup(
+            &request(FUSE_LOOKUP, FUSE_ROOT_ID, b"share\0"),
+            "share".as_ref(),
+        )
+        .unwrap()
+        .nodeid;
+    assert_eq!(fsync_dir(child, fh, 0), Err(lx::Error::EBADF));
+    assert_eq!(fsync_dir(FUSE_ROOT_ID, fh ^ 1, 0), Err(lx::Error::EBADF));
 }
 
 #[test]
