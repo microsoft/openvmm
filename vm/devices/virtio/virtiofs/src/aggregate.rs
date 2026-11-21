@@ -255,12 +255,21 @@ impl VirtioFs {
         sx
     }
 
+    /// The link count of the synthetic aggregate root directory: two, for its
+    /// `.` and the entry that names it, plus one for the `..` of each child
+    /// directory, as for any directory. A file child, which the root lists as
+    /// a regular file, adds no link.
     fn synthetic_root_nlink(&self) -> u32 {
-        let child_count = self
-            .inner
-            .aggregate()
-            .map_or(0, |aggregate| aggregate.registry.read().entries.len());
-        u32::try_from(child_count)
+        let directories = self.inner.aggregate().map_or(0, |aggregate| {
+            aggregate
+                .registry
+                .read()
+                .entries
+                .iter()
+                .filter(|entry| entry.volume.exposed_file().is_none())
+                .count()
+        });
+        u32::try_from(directories)
             .unwrap_or(u32::MAX)
             .saturating_add(2)
     }

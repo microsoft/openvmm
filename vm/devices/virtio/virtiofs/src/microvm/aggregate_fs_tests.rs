@@ -882,6 +882,58 @@ fn file_children_expose_only_their_files() {
     assert!(Roots::entries(&files.work).is_empty());
 }
 
+/// The synthetic root's link count is two, for its `.` and the entry that
+/// names it, plus one for the `..` of each subdirectory, as for any
+/// directory, so it counts only the children that a read of the root lists as
+/// directories: a file child is a regular file, which adds no link
+/// (microsoft/nvx#1632).
+#[test]
+fn synthetic_root_links_only_its_child_directories() {
+    let files = Files::new();
+    let roots = Roots::new();
+    let cases: [(Vec<Child<'_>>, u32); 3] = [
+        // Two file children and a directory child.
+        (files.children().into(), 1),
+        (
+            vec![
+                Child::file("settings", &files.settings, true),
+                Child::file("output", &files.output, false),
+            ],
+            0,
+        ),
+        (
+            vec![
+                Child::new("work", &roots.work, false),
+                Child::new("tools", &roots.tools, true),
+            ],
+            2,
+        ),
+    ];
+
+    for (children, directories) in cases {
+        let fs = aggregate(&children);
+        let listed = entry_types(&fs, FUSE_ROOT_ID)
+            .into_iter()
+            .filter(|&(_, file_type)| file_type == lx::DT_DIR as u32)
+            .count();
+        assert_eq!(listed, directories as usize);
+        let attr = fs.get_attr(&request(FUSE_ROOT_ID), 0, 0).unwrap().attr;
+        assert_eq!(attr.nlink, 2 + directories, "{directories} directories");
+        let statx = fs
+            .get_statx(
+                &request(FUSE_ROOT_ID),
+                0,
+                0,
+                fuse::protocol::StatxFlags::new(),
+                lx::StatExMask::new().with_nlink(true),
+            )
+            .unwrap()
+            .statx;
+        assert!(lx::StatExMask::from_bits(statx.mask).nlink());
+        assert_eq!(statx.nlink, 2 + directories, "{directories} directories");
+    }
+}
+
 #[test]
 fn a_file_child_follows_its_name_but_stays_a_file() {
     let files = Files::new();
