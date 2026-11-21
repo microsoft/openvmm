@@ -17,10 +17,13 @@ use fuse::Fuse;
 use fuse::Request;
 use fuse::Session;
 use fuse::SessionState;
+use fuse::protocol::FATTR_FH;
 use fuse::protocol::FATTR_MODE;
 use fuse::protocol::FATTR_SIZE;
+use fuse::protocol::FUSE_GETATTR_FH;
 use fuse::protocol::FUSE_LOOKUP;
 use fuse::protocol::FUSE_ROOT_ID;
+use fuse::protocol::StatxFlags;
 use fuse::protocol::fuse_create_in;
 use fuse::protocol::fuse_in_header;
 use fuse::protocol::fuse_mkdir_in;
@@ -431,6 +434,148 @@ fn a_create_of_an_existing_name_opens_it_as_open_does() {
     release(&fs, node, fh);
     assert_eq!(share.read("out/existing"), "");
     share.assert_protected_paths_unchanged();
+}
+
+/// Sends each request that names an open file's handle, `fh`, as a request
+/// about the node `node_id`, and returns each request's name and result.
+fn file_handle_requests(
+    fs: &VirtioFs,
+    node_id: u64,
+    fh: u64,
+) -> Vec<(&'static str, lx::Result<()>)> {
+    let node = request(node_id);
+    let mut read = fuse_read_in::new_zeroed();
+    read.fh = fh;
+    read.size = 64;
+    let truncate = setattr(FATTR_FH | FATTR_SIZE, |arg| {
+        arg.fh = fh;
+        arg.size = 1;
+    });
+    vec![
+        ("GETATTR", fs.get_attr(&node, FUSE_GETATTR_FH, fh).map(drop)),
+        (
+            "STATX",
+            fs.get_statx(
+                &node,
+                fh,
+                FUSE_GETATTR_FH,
+                StatxFlags::new(),
+                lx::StatExMask::new(),
+            )
+            .map(drop),
+        ),
+        ("SETATTR", fs.set_attr(&node, &truncate).map(drop)),
+        ("READ", fs.read(&node, &read).map(drop)),
+        ("WRITE", write(fs, node_id, fh, b"x").map(drop)),
+        ("FSYNC", fs.fsync(&node, fh, 0)),
+    ]
+}
+
+/// Sends each request that names an open directory's handle, `fh`, as a
+/// request about the node `node_id`, and returns each request's name and
+/// result.
+fn directory_handle_requests(
+    fs: &VirtioFs,
+    node_id: u64,
+    fh: u64,
+) -> Vec<(&'static str, lx::Result<()>)> {
+    let node = request(node_id);
+    let mut read = fuse_read_in::new_zeroed();
+    read.fh = fh;
+    read.size = 4096;
+    vec![
+        ("READDIR", fs.read_dir(&node, &read).map(drop)),
+        ("READDIRPLUS", fs.read_dir_plus(&node, &read).map(drop)),
+        ("FSYNCDIR", fs.fsync_dir(&node, fh, 0)),
+    ]
+}
+
+/// A request through a handle must name the node that the handle was opened
+/// on, and the guest must still hold that node: HostFs keeps the names of the
+/// nodes that the guest holds current, and they decide what a request through
+/// the handle may do, such as whether it may write. So a request with another
+/// node fails with `EBADF`, and one with a node that the guest forgot fails
+/// with `EINVAL`, as other requests about a forgotten node do. The guest can
+/// still release such a handle, which uses no name, so that it does not leak.
+#[test]
+fn a_handle_serves_only_its_node_while_the_guest_holds_it() {
+    let share = Share::new();
+    std::fs::create_dir(share.path("out/directory")).unwrap();
+    let fs = share.fs(&[], &[], &["out"]);
+    let out = lookup(&fs, "out").unwrap();
+    let file = lookup(&fs, "out/existing").unwrap();
+    let directory = lookup(&fs, "out/directory").unwrap();
+    let marker = lookup(&fs, "marker").unwrap();
+    let file_handle = open(&fs, file, lx::O_RDWR).unwrap();
+    let directory_handle = fs
+        .open_dir(&request(directory), lx::O_RDONLY as u32)
+        .unwrap()
+        .fh;
+    let requests = |file_node, directory_node| {
+        let mut sent = file_handle_requests(&fs, file_node, file_handle);
+        sent.extend(directory_handle_requests(
+            &fs,
+            directory_node,
+            directory_handle,
+        ));
+        sent
+    };
+
+    // Each request that names the handle's node succeeds, even once the file
+    // is unlinked, since the handle reaches its file without a name.
+    fs.unlink(&request(out), name("existing")).unwrap();
+    for (operation, result) in requests(file, directory) {
+        assert!(result.is_ok(), "{operation}: {result:?}");
+    }
+
+    // Another node's ID.
+    for (operation, result) in requests(marker, marker) {
+        assert_eq!(error(result), lx::Error::EBADF, "{operation}");
+    }
+
+    // The IDs of the handles' nodes, once the guest forgets them.
+    fs.forget(file, 1);
+    fs.forget(directory, 1);
+    for (operation, result) in requests(file, directory) {
+        assert_eq!(error(result), lx::Error::EINVAL, "{operation}");
+    }
+
+    release(&fs, file, file_handle);
+    let mut arg = fuse_release_in::new_zeroed();
+    arg.fh = directory_handle;
+    fs.release_dir(&request(directory), &arg).unwrap();
+    assert_eq!(error(write(&fs, file, file_handle, b"x")), lx::Error::EBADF);
+    share.assert_protected_paths_unchanged();
+}
+
+/// An object is writable only while every name that the guest has used for it
+/// is. A guest that forgets the node of an open handle and looks the object up
+/// again at a read-only name gets a new node, whose names the forgotten node
+/// never learns, so the handle must write through neither node.
+#[test]
+fn a_handle_of_a_forgotten_node_cannot_write_a_read_only_file() {
+    let share = Share::new();
+    // A host hard link puts the read-only `marker` inside the writable path.
+    std::fs::hard_link(share.path("marker"), share.path("out/link")).unwrap();
+    let fs = share.fs(&[], &[], &["out"]);
+    let link = lookup(&fs, "out/link").unwrap();
+    let fh = open(&fs, link, lx::O_RDWR).unwrap();
+
+    fs.forget(link, 1);
+    let marker = lookup(&fs, "marker").unwrap();
+    assert_ne!(marker, link);
+    assert_eq!(error(open(&fs, marker, lx::O_RDWR)), lx::Error::EROFS);
+    for (node_id, expected) in [(link, lx::Error::EINVAL), (marker, lx::Error::EBADF)] {
+        assert_eq!(error(write(&fs, node_id, fh, b"guest")), expected);
+        let truncate = setattr(FATTR_FH | FATTR_SIZE, |arg| {
+            arg.fh = fh;
+            arg.size = 0;
+        });
+        assert_eq!(error(fs.set_attr(&request(node_id), &truncate)), expected);
+    }
+
+    release(&fs, link, fh);
+    assert_eq!(share.read("marker"), "host");
 }
 
 #[test]

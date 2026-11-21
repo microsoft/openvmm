@@ -397,7 +397,7 @@ fn microvm_with_an_open_root(root_path: &Path, names: &[&str]) -> (VirtioFs, Arc
     let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
     let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
     let handle = fs.insert_file(root.open(lx::O_RDONLY).unwrap()).unwrap();
-    let directory = fs.get_file(handle).unwrap();
+    let directory = fs.get_file(FUSE_ROOT_ID, handle).unwrap();
     (fs, directory)
 }
 
@@ -593,7 +593,7 @@ fn directory_snapshot_survives_host_mutation_after_restore() {
     let handle = source
         .insert_file(Arc::clone(&root).open(lx::O_RDONLY).unwrap())
         .unwrap();
-    let file = source.get_file(handle).unwrap();
+    let file = source.get_file(FUSE_ROOT_ID, handle).unwrap();
 
     let first_page = file.read_dir(&source, 0, 32, false).unwrap();
     assert!(!first_page.is_empty());
@@ -617,7 +617,7 @@ fn directory_snapshot_survives_host_mutation_after_restore() {
         .restore_microvm_state(&profile, state, &session)
         .unwrap();
     let continuation = destination
-        .get_file(handle)
+        .get_file(FUSE_ROOT_ID, handle)
         .unwrap()
         .read_dir(&destination, continuation_offset, 4096, false)
         .unwrap();
@@ -926,7 +926,7 @@ fn snapshot_without_device_keys_restores_its_numbers() {
         .insert_file(sys_inode.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap())
         .unwrap();
     source
-        .get_file(handle)
+        .get_file(sys.nodeid, handle)
         .unwrap()
         .read_dir(&source, 0, 4096, false)
         .unwrap();
@@ -987,7 +987,7 @@ fn snapshot_without_device_keys_restores_its_numbers() {
     // except for a mount point, whose lookup reaches another device.
     let entries = crate::tests::read_directory(
         &destination,
-        &destination.get_file(handle).unwrap(),
+        &destination.get_file(sys.nodeid, handle).unwrap(),
         0,
         4096,
         true,
@@ -1044,7 +1044,13 @@ fn readdirplus_lists_mount_points() {
                 .unwrap(),
         )
         .unwrap();
-    let entries = crate::tests::read_directory(&fs, &fs.get_file(handle).unwrap(), 0, 4096, true);
+    let entries = crate::tests::read_directory(
+        &fs,
+        &fs.get_file(FUSE_ROOT_ID, handle).unwrap(),
+        0,
+        4096,
+        true,
+    );
     for name in ["proc", "sys"] {
         let lookup = fs
             .lookup_helper(&root, lx::LxStr::from_bytes(name.as_bytes()))
