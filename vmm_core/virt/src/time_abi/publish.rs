@@ -455,6 +455,63 @@ mod tests {
         assert_eq!(sample.disruption, 0);
     }
 
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn architectural_counter_rate_hook_skews_only_published_utc_and_correction() {
+        let rates = SampleRates {
+            declared_hz: 19_200_001,
+            native_hz: 19_200_001,
+            native_basis: NativeRateBasis::ArchitecturalCounter,
+        };
+        let start = 1_700_000_000_000_000_000;
+        for ppm in [-250, 250] {
+            let hooks = TimeAbiTestHooks {
+                host_rate_offset_ppm: ppm,
+                ..Default::default()
+            };
+            let mut publisher =
+                HostClockPublisher::new(HostClockKind::WindowsInterruptTime, &hooks);
+            let mut unhooked = HostClockPublisher::new(
+                HostClockKind::WindowsInterruptTime,
+                &TimeAbiTestHooks::default(),
+            );
+            for elapsed_s in [0, 100] {
+                let input = readings(
+                    start + elapsed_s * 1_000_000_000,
+                    (1 + elapsed_s) * 1_000_000_000,
+                    0,
+                );
+                let paired = PairedReadings {
+                    guest_counter: (1 << 60) + 17 + elapsed_s * rates.native_hz,
+                    counter_epoch: Some(0),
+                    time: input.time,
+                    pairing_ns: 53,
+                    discipline: input.discipline,
+                    suspended_ns: input.suspended_ns,
+                };
+                let baseline = unhooked.publish_paired(&paired, rates);
+                let sample = publisher.publish_paired(&paired, rates);
+                let skew_ns = i128::from(elapsed_s) * i128::from(ppm) * 1_000;
+                assert_eq!(
+                    i128::from(sample.utc_ns),
+                    i128::from(input.time.utc_ns) + skew_ns
+                );
+                assert_eq!(sample.correction, i64::from(ppm) * PPM);
+                assert_eq!(sample.tsc, paired.guest_counter);
+                assert_eq!(sample.correction_bound, None);
+                assert_eq!(sample.disruption, 0);
+                assert_eq!(
+                    sample,
+                    PublishedSample {
+                        utc_ns: sample.utc_ns,
+                        correction: sample.correction,
+                        ..baseline
+                    }
+                );
+            }
+        }
+    }
+
     #[test]
     fn counter_epoch_changes_disrupt_without_a_host_clock_step() {
         let input = readings(10_000_000_000, 20_000_000_000, 0);

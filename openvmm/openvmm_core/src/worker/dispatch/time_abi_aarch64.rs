@@ -36,16 +36,26 @@ pub(super) struct TimeAbiState {
     pub report: TimeAbiReport,
 }
 
+fn validate_cold_boot_test_hooks(hooks: &TimeAbiTestHooks) -> anyhow::Result<()> {
+    // CLI admission rejects unsupported names before parsing erases zero-valued hooks.
+    anyhow::ensure!(
+        *hooks
+            == TimeAbiTestHooks {
+                host_rate_offset_ppm: hooks.host_rate_offset_ppm,
+                ..Default::default()
+            },
+        "ARM CPU/time supports only the host-rate-offset-ppm test hook"
+    );
+    Ok(())
+}
+
 pub(super) fn prepare_contract(
     parameters: &openvmm_defs::time_abi::TimeAbiParameters,
     hypervisor: &str,
     restored: Option<&openvmm_defs::time_abi::SnapshotCpuProfile>,
     _topology: &vm_topology::processor::ProcessorTopology,
 ) -> anyhow::Result<(PartitionTimeAbi, virt::time_abi::TimeAbiConfig)> {
-    anyhow::ensure!(
-        !parameters.hooks.active(),
-        "ARM CPU/time test hooks are not supported"
-    );
+    validate_cold_boot_test_hooks(&parameters.hooks)?;
     anyhow::ensure!(
         restored.is_none(),
         "ARM CPU/time profiles do not support restore"
@@ -220,5 +230,60 @@ impl TimeSampleSource for TimeAbiClock {
 
     fn arm64_time_binding(&self) -> Option<[u8; ARM64_TIME_BINDING_LEN]> {
         Some(self.binding)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn cold_boot_admits_only_host_rate_hook_effects() {
+        for ppm in [-10_000, -250, 0, 250, 10_000] {
+            validate_cold_boot_test_hooks(&TimeAbiTestHooks {
+                host_rate_offset_ppm: ppm,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        for unsupported in [
+            TimeAbiTestHooks {
+                force_utc_downtime: true,
+                ..Default::default()
+            },
+            TimeAbiTestHooks {
+                boot_id_mismatch: true,
+                ..Default::default()
+            },
+            TimeAbiTestHooks {
+                dest_rate_offset_ppm: 1,
+                ..Default::default()
+            },
+            TimeAbiTestHooks {
+                downtime_add_s: 1,
+                ..Default::default()
+            },
+            TimeAbiTestHooks {
+                utc_offset_ms: 1,
+                ..Default::default()
+            },
+            TimeAbiTestHooks {
+                sample_delay_us: 1,
+                ..Default::default()
+            },
+            TimeAbiTestHooks {
+                host_cpu_unknown: true,
+                ..Default::default()
+            },
+        ] {
+            for ppm in [0, 250] {
+                let hooks = TimeAbiTestHooks {
+                    host_rate_offset_ppm: ppm,
+                    ..unsupported.clone()
+                };
+                assert!(validate_cold_boot_test_hooks(&hooks).is_err(), "{hooks:?}");
+            }
+        }
     }
 }

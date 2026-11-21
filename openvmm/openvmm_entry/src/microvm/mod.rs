@@ -264,6 +264,21 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
+    fn host_rate_hook_marks_cold_time_samples_as_test_instrumentation() {
+        for ppm in [-250, 0, 250] {
+            let hooks = virt::time_abi::TimeAbiTestHooks {
+                host_rate_offset_ppm: ppm,
+                ..Default::default()
+            };
+            let time = super::time_abi_chipset(&mut [], &hooks, None);
+            assert_eq!(time.test_hooks, ppm != 0);
+            assert_eq!(time.generation, 0);
+            assert_eq!(time.sample_delay_us, 0);
+            assert!(time.restore.is_none());
+        }
+    }
+
+    #[test]
     fn resolves_profile_owned_linux_boot_mode() {
         for requested in [
             LinuxDirectBootMode::Acpi,

@@ -675,7 +675,12 @@ describes the source definitions.
   backend address/feature-bank readbacks and completed effective CPU-register
   checks; it does not report x86 TSC, LAPIC or MSR fields. Missing or failed
   evidence fails verification. This is not a UTC synchronization or clock
-  authority check. ARM still rejects `--x-time-abi-test-hook`.
+  authority check. For cold-boot tests, ARM accepts only
+  `--x-time-abi-test-hook host-rate-offset-ppm=<PPM>`, with an integer from
+  -10000 to 10000. It skews the test VM's published UTC and matching
+  correction, not the host system clock or architectural counter frequency.
+  All other ARM hook names are rejected, including zero-valued hooks;
+  snapshot capture and restore remain unavailable.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
   `platform`, `workload-start`, or `instance-checkpoint`. The first two are
   reusable clone policies; instance checkpoints use single-use resume policy.
