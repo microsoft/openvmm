@@ -31,6 +31,8 @@ pub struct GicSoftwareDevice {
 struct GicInterrupt {
     multicast: bool,
     target_processors: Vec<u32>,
+    /// The number of live registrations of this SPI.
+    registrations: usize,
 }
 
 impl GicSoftwareDevice {
@@ -45,13 +47,11 @@ impl GicSoftwareDevice {
 #[derive(Debug, Error)]
 enum GicInterruptError {
     #[error("invalid vector count {0}")]
-    InvalidVectorCount(u32),
+    VectorCount(u32),
     #[error("invalid {count} vectors at {start}")]
-    InvalidVector { start: u32, count: u32 },
+    Vector { start: u32, count: u32 },
     #[error("invalid interrupt address {address:#x} or data {data:#x}")]
-    InvalidAddress { address: u64, data: u32 },
-    #[error("SPI {0} is already registered")]
-    InUse(u32),
+    Address { address: u64, data: u32 },
 }
 
 const SPI_RANGE: Range<u32> = 32..1020;
@@ -62,11 +62,11 @@ fn new_interrupt(
     params: &VpciInterruptParameters<'_>,
 ) -> Result<GicInterrupt, GicInterruptError> {
     if !vector_count.is_power_of_two() {
-        return Err(GicInterruptError::InvalidVectorCount(vector_count));
+        return Err(GicInterruptError::VectorCount(vector_count));
     }
     if params.vector < SPI_RANGE.start || params.vector.saturating_add(vector_count) > SPI_RANGE.end
     {
-        return Err(GicInterruptError::InvalidVector {
+        return Err(GicInterruptError::Vector {
             start: params.vector,
             count: vector_count,
         });
@@ -74,7 +74,20 @@ fn new_interrupt(
     Ok(GicInterrupt {
         multicast: params.multicast,
         target_processors: params.target_processors.to_vec(),
+        registrations: 1,
     })
+}
+
+impl GicSoftwareDevice {
+    /// Records a registration of `vector`. A later registration of the same
+    /// SPI replaces the reported parameters and adds to the count.
+    fn add(&self, vector: u32, mut interrupt: GicInterrupt) {
+        let mut interrupts = self.interrupts.lock();
+        if let Some(old) = interrupts.get(&vector) {
+            interrupt.registrations += old.registrations;
+        }
+        interrupts.insert(vector, interrupt);
+    }
 }
 
 impl MapVpciInterrupt for GicSoftwareDevice {
@@ -84,9 +97,7 @@ impl MapVpciInterrupt for GicSoftwareDevice {
         params: &VpciInterruptParameters<'_>,
     ) -> Result<MsiAddressData, RegisterInterruptError> {
         let interrupt = new_interrupt(vector_count, params).map_err(RegisterInterruptError::new)?;
-        // The SPI is the whole identity of the interrupt, so registering it
-        // again replaces the earlier registration.
-        self.interrupts.lock().insert(params.vector, interrupt);
+        self.add(params.vector, interrupt);
         Ok(MsiAddressData {
             address: 0,
             data: params.vector,
@@ -95,7 +106,12 @@ impl MapVpciInterrupt for GicSoftwareDevice {
 
     async fn unregister_interrupt(&self, address: u64, data: u32) {
         let _ = address;
-        self.interrupts.lock().remove(&data);
+        if let btree_map::Entry::Occupied(mut entry) = self.interrupts.lock().entry(data) {
+            entry.get_mut().registrations -= 1;
+            if entry.get().registrations == 0 {
+                entry.remove();
+            }
+        }
     }
 
     async fn interrupt_state(
@@ -122,22 +138,13 @@ impl MapVpciInterrupt for GicSoftwareDevice {
     ) -> Result<(), RegisterInterruptError> {
         let interrupt = new_interrupt(vector_count, params).map_err(RegisterInterruptError::new)?;
         if msi.address != 0 || msi.data != params.vector {
-            return Err(RegisterInterruptError::new(
-                GicInterruptError::InvalidAddress {
-                    address: msi.address,
-                    data: msi.data,
-                },
-            ));
+            return Err(RegisterInterruptError::new(GicInterruptError::Address {
+                address: msi.address,
+                data: msi.data,
+            }));
         }
-        match self.interrupts.lock().entry(msi.data) {
-            btree_map::Entry::Vacant(e) => {
-                e.insert(interrupt);
-                Ok(())
-            }
-            btree_map::Entry::Occupied(_) => Err(RegisterInterruptError::new(
-                GicInterruptError::InUse(msi.data),
-            )),
-        }
+        self.add(msi.data, interrupt);
+        Ok(())
     }
 
     fn supports_save_restore(&self) -> bool {
@@ -263,6 +270,33 @@ mod tests {
                 target_processors: vec![3],
             }
         );
+
+        // Each registration holds the SPI until it is unregistered.
+        dev.unregister_interrupt(0, 40).await;
+        assert!(dev.interrupt_state(spi(40)).await.is_ok());
+        dev.unregister_interrupt(0, 40).await;
+        assert!(dev.interrupt_state(spi(40)).await.is_err());
+    }
+
+    #[async_test]
+    async fn gic_duplicate_registrations_restore() {
+        let (old, _) = new_device();
+        let msi = old.register_interrupt(1, &params(40)).await.unwrap();
+        assert_eq!(old.register_interrupt(1, &params(40)).await.unwrap(), msi);
+        let state = old.interrupt_state(msi).await.unwrap();
+        let restored = VpciInterruptParameters {
+            vector: state.vector,
+            multicast: state.multicast,
+            target_processors: &state.target_processors,
+        };
+
+        let (new, _) = new_device();
+        new.restore_interrupt(msi, 1, &restored).await.unwrap();
+        new.restore_interrupt(msi, 1, &restored).await.unwrap();
+        new.unregister_interrupt(msi.address, msi.data).await;
+        assert_eq!(new.interrupt_state(msi).await.unwrap(), state);
+        new.unregister_interrupt(msi.address, msi.data).await;
+        assert!(new.interrupt_state(msi).await.is_err());
     }
 
     #[async_test]
@@ -271,8 +305,6 @@ mod tests {
         dev.register_interrupt(1, &params(40)).await.unwrap();
 
         let refused = [
-            // Occupied.
-            (spi(40), 1, params(40)),
             // Address must be zero.
             (
                 MsiAddressData {
