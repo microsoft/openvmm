@@ -431,7 +431,7 @@ fn readdirplus_returns_usable_symlink_nodes() {
         .unwrap();
 
     let entries = fs
-        .get_file(handle)
+        .get_file(FUSE_ROOT_ID, handle)
         .unwrap()
         .read_dir(&fs, 0, 4096, true)
         .unwrap();
