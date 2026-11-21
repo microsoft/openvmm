@@ -182,6 +182,11 @@ pub struct CallBuilder<'a> {
 }
 
 /// A future representing an RPC call.
+///
+/// Dropping this future abandons the result locally. The unary ttrpc protocol
+/// has no per request cancellation message, so this does not cancel a request
+/// that has already been sent. Timeouts and deadlines request cancellation on
+/// the server. Services must stop work when the request context is cancelled.
 pub struct Call<T>(mesh::OneshotReceiver<Result<T, Status>>);
 
 impl<T> std::fmt::Debug for Call<T> {

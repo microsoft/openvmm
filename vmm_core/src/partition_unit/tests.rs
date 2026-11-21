@@ -165,11 +165,13 @@ fn temporary_stops_and_debugger_halts_leave_time_running() {
         runner.resume_vps();
 
         halt.halt(HaltReason::DebugBreak { vp: None });
+        assert!(halt.is_halted());
         runner.vp_set.stop().await;
         let reason = runner.halt_request_recv.next().await.unwrap();
         runner.handle_halt(reason).await;
         assert!(!clock.lock().frozen);
         assert!(runner.clear_halt());
+        assert!(!halt.is_halted());
         assert_eq!(clock.lock().transitions, [false]);
     });
 }
@@ -202,5 +204,26 @@ fn temporary_scrub_thaws_time_before_restarting_vps() {
         assert!(clock.lock().frozen);
         runner.resume_vps();
         assert!(!clock.lock().frozen);
+    });
+}
+
+#[test]
+fn shared_halt_state_tracks_clear_and_reset() {
+    block_on(async {
+        let (mut runner, _, halt) = new_runner();
+        for reset in [false, true] {
+            StateUnit::start(&mut runner).await;
+            assert!(!halt.is_halted());
+            halt.halt(HaltReason::PowerOff);
+            assert!(halt.is_halted());
+            StateUnit::stop(&mut runner).await;
+            assert!(halt.is_halted());
+            if reset {
+                StateUnit::reset(&mut runner).await.unwrap();
+            } else {
+                assert!(runner.clear_halt());
+            }
+            assert!(!halt.is_halted());
+        }
     });
 }
