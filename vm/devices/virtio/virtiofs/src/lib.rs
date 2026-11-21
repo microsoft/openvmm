@@ -304,7 +304,7 @@ impl Fuse for VirtioFs {
         self.check_writable(&inode)?;
         let path = inode.child_path(name)?;
         self.check_writable_entry(&inode, &path)?;
-        self.preflight_create_inode(&inode, name, &path)?;
+        self.preflight_create_inode(&inode, name, &path, options)?;
         self.preflight_file_insert()?;
         let inode_reservation = self.reserve_inode()?;
         let file_reservation = self.reserve_file()?;
@@ -687,6 +687,29 @@ impl VirtioFs {
         }
     }
 
+    /// Check that a create with the open flags `options` may open `object`,
+    /// the existing object that the name it creates links to, and return
+    /// EROFS if not.
+    ///
+    /// Without `O_EXCL`, the create opens the object and hands the guest a
+    /// handle on the node that the guest holds for the object, if any (see
+    /// [`InodeMap::reused`]), so it follows the rule that
+    /// [`Self::check_open_readonly`] applies to an open of that node: it may
+    /// write or truncate the object only if that node is writable. Only the
+    /// access policy of a microVM share makes a node read-only while the
+    /// directory and the entry of a create are writable: when the guest knows
+    /// another name for the object that is not writable.
+    fn check_create_existing(&self, object: &VirtioFsInode, options: i32) -> lx::Result<()> {
+        if options & lx::O_EXCL != 0 || !opens_for_writing(options) {
+            return Ok(());
+        }
+        let node = self.inner.inodes.read().reused(object).cloned();
+        if node.is_some_and(|node| node.readonly()) {
+            return Err(lx::Error::EROFS);
+        }
+        Ok(())
+    }
+
     /// Check whether the open flags are permitted on a read-only filesystem.
     fn check_open_readonly(&self, inode: &VirtioFsInode, options: i32) -> lx::Result<()> {
         if !inode.readonly() {
@@ -712,9 +735,7 @@ impl VirtioFs {
             inode.get_attr()?;
         }
 
-        if matches!(options & lx::O_ACCESS_MASK, lx::O_WRONLY | lx::O_RDWR)
-            || options & lx::O_TRUNC != 0
-        {
+        if opens_for_writing(options) {
             return Err(lx::Error::EROFS);
         }
 
@@ -958,6 +979,12 @@ impl Drop for FileReservation<'_> {
 struct HandleReservation {
     handle: u64,
     generation: Arc<()>,
+}
+
+/// Returns whether an open with the flags `options` can change the file that
+/// it opens: it opens the file for writing, or truncates it.
+fn opens_for_writing(options: i32) -> bool {
+    matches!(options & lx::O_ACCESS_MASK, lx::O_WRONLY | lx::O_RDWR) || options & lx::O_TRUNC != 0
 }
 
 fn guest_buffer(size: u32) -> lx::Result<Vec<u8>> {
@@ -1206,6 +1233,16 @@ impl InodeMap {
     /// replaced the host object of `existing`.
     fn reuses(existing: &VirtioFsInode, inode: &VirtioFsInode) -> bool {
         existing.file_type() == inode.file_type()
+    }
+
+    /// Returns the inode that inserting `inode` reuses, if any: the inode
+    /// under its dedup key, if `inode` reuses it (see [`Self::reuses`]), which
+    /// is the node that the guest holds for the host object of `inode`.
+    fn reused(&self, inode: &VirtioFsInode) -> Option<&Arc<VirtioFsInode>> {
+        self.inodes_by_key
+            .get(&inode.dedup_key())
+            .map(|(existing, _)| existing)
+            .filter(|existing| Self::reuses(existing, inode))
     }
 
     /// Remove an inode with the specified FUSE node ID from the map.
