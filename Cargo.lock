@@ -10419,6 +10419,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chipset_device",
+ "criterion",
  "device_emulators",
  "futures",
  "guestmem",

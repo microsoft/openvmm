@@ -38,5 +38,11 @@ test_with_tracing.workspace = true
 
 futures.workspace = true
 
+criterion.workspace = true
+
+[[bench]]
+name = "queue"
+harness = false
+
 [lints]
 workspace = true

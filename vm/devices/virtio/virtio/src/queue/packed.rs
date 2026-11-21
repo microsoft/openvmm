@@ -6,11 +6,16 @@
 use crate::queue::QueueDescriptor;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
+use crate::queue::cache_queue_memory;
 use crate::queue::descriptor_offset;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::queue as spec;
 use crate::spec::queue::DescriptorFlags;
 use guestmem::GuestMemory;
+use guestmem::cached::AccessScope;
+use guestmem::cached::CachedAccess;
+use guestmem::cached::CachedRange;
+use guestmem::cached::with_access;
 use inspect::Inspect;
 use spec::EventSuppressionFlags;
 use spec::PackedDescriptor;
@@ -42,9 +47,7 @@ impl PackedQueueCompletionContext {
 #[inspect(extra = "Self::inspect_extra")]
 pub(crate) struct PackedQueueGetWork {
     #[inspect(skip)]
-    queue_desc: GuestMemory,
-    #[inspect(skip)]
-    device_event: GuestMemory,
+    device_event: CachedRange,
     queue_size: u16,
     next_avail_index: u16,
     wrapped_bit: bool,
@@ -54,7 +57,11 @@ pub(crate) struct PackedQueueGetWork {
 
 impl PackedQueueGetWork {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
-        if let Ok(event) = self.device_event.read_plain::<PackedEventSuppression>(0) {
+        if let Ok(event) = with_access(|scope| {
+            self.device_event
+                .uncached(scope)
+                .read_plain::<PackedEventSuppression>(0)
+        }) {
             resp.field("device_event_flags", event.flags());
             resp.field("device_event_offset", event.offset());
             resp.field("device_event_wrap", event.wrap());
@@ -68,18 +75,12 @@ impl PackedQueueGetWork {
         initial_index: u16,
         initial_wrap: bool,
     ) -> Result<Self, QueueError> {
-        let queue_desc = mem
-            .subrange(params.desc_addr, descriptor_offset(params.size), true)
-            .map_err(QueueError::Memory)?;
-        let device_event = mem
-            .subrange(
-                params.used_addr,
-                size_of::<PackedEventSuppression>() as u64,
-                true,
-            )
-            .map_err(QueueError::Memory)?;
+        let device_event = cache_queue_memory(
+            &mem,
+            params.used_addr,
+            size_of::<PackedEventSuppression>() as u64,
+        )?;
         Ok(Self {
-            queue_desc,
             device_event,
             queue_size: params.size,
             next_avail_index: initial_index,
@@ -100,10 +101,12 @@ impl PackedQueueGetWork {
     /// `None` is returned, the caller must call [`arm_kick`](Self::arm_kick)
     /// before sleeping to ensure the guest will send a kick when new work
     /// arrives.
-    pub fn is_available(&mut self) -> Result<Option<u16>, QueueError> {
+    pub fn is_available(
+        &mut self,
+        descriptors: &CachedAccess<'_>,
+    ) -> Result<Option<u16>, QueueError> {
         if !self.next_is_available {
-            let flags: DescriptorFlags = self
-                .queue_desc
+            let flags: DescriptorFlags = descriptors
                 .read_plain(
                     descriptor_offset(self.next_avail_index)
                         + std::mem::offset_of!(PackedDescriptor, flags_raw) as u64,
@@ -124,7 +127,11 @@ impl PackedQueueGetWork {
     /// is available. Returns `true` if armed successfully (caller should
     /// sleep), or `false` if new data arrived during arming (caller should
     /// retry).
-    pub fn arm_kick(&mut self) -> Result<bool, QueueError> {
+    pub fn arm_kick(
+        &mut self,
+        scope: &AccessScope,
+        descriptors: &CachedAccess<'_>,
+    ) -> Result<bool, QueueError> {
         let enable_event = if self.use_event_index {
             PackedEventSuppression::new()
                 .with_flags(EventSuppressionFlags::DescriptorIndex)
@@ -136,17 +143,19 @@ impl PackedQueueGetWork {
         // Publish the requested cursor before enabling index-based kicks.
         let event_bytes = enable_event.as_bytes();
         self.device_event
+            .access(scope)
             .write_at(0, &event_bytes[..2])
             .map_err(QueueError::Memory)?;
         atomic::fence(atomic::Ordering::Release);
         self.device_event
+            .access(scope)
             .write_at(2, &event_bytes[2..])
             .map_err(QueueError::Memory)?;
         // Ensure the event enable is visible before checking the descriptor.
         atomic::fence(atomic::Ordering::SeqCst);
-        if self.is_available()?.is_some() {
+        if self.is_available(descriptors)?.is_some() {
             // New data arrived during arming — suppress kicks and report.
-            self.suppress_kicks()?;
+            self.suppress_kicks(scope)?;
             return Ok(false);
         }
 
@@ -155,10 +164,11 @@ impl PackedQueueGetWork {
 
     /// Suppress kick notifications from the guest. Call this after finding
     /// work to avoid unnecessary kicks while processing.
-    pub fn suppress_kicks(&self) -> Result<(), QueueError> {
+    pub fn suppress_kicks(&mut self, scope: &AccessScope) -> Result<(), QueueError> {
         let disable_event =
             PackedEventSuppression::new().with_flags(EventSuppressionFlags::Disabled);
         self.device_event
+            .access(scope)
             .write_plain(0, &disable_event)
             .map_err(QueueError::Memory)?;
         Ok(())
@@ -183,9 +193,9 @@ impl PackedQueueGetWork {
 #[inspect(extra = "Self::inspect_extra")]
 pub(crate) struct PackedQueueCompleteWork {
     #[inspect(skip)]
-    queue_desc: GuestMemory,
+    queue_desc: CachedRange,
     #[inspect(skip)]
-    driver_event: GuestMemory,
+    driver_event: CachedRange,
     queue_size: u16,
     next_index: u16,
     wrapped_bit: bool,
@@ -194,7 +204,11 @@ pub(crate) struct PackedQueueCompleteWork {
 
 impl PackedQueueCompleteWork {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
-        if let Ok(event) = self.driver_event.read_plain::<PackedEventSuppression>(0) {
+        if let Ok(event) = with_access(|scope| {
+            self.driver_event
+                .uncached(scope)
+                .read_plain::<PackedEventSuppression>(0)
+        }) {
             resp.field("driver_event_flags", event.flags());
             resp.field("driver_event_offset", event.offset());
             resp.field("driver_event_wrap", event.wrap());
@@ -208,16 +222,13 @@ impl PackedQueueCompleteWork {
         initial_index: u16,
         initial_wrap: bool,
     ) -> Result<Self, QueueError> {
-        let queue_desc = mem
-            .subrange(params.desc_addr, descriptor_offset(params.size), true)
-            .map_err(QueueError::Memory)?;
-        let driver_event = mem
-            .subrange(
-                params.avail_addr,
-                size_of::<PackedEventSuppression>() as u64,
-                true,
-            )
-            .map_err(QueueError::Memory)?;
+        let queue_desc =
+            cache_queue_memory(&mem, params.desc_addr, descriptor_offset(params.size))?;
+        let driver_event = cache_queue_memory(
+            &mem,
+            params.avail_addr,
+            size_of::<PackedEventSuppression>() as u64,
+        )?;
         Ok(Self {
             queue_desc,
             driver_event,
@@ -237,6 +248,7 @@ impl PackedQueueCompleteWork {
         &mut self,
         context: &PackedQueueCompletionContext,
         bytes_written: u32,
+        scope: &AccessScope,
     ) -> Result<bool, QueueError> {
         let descriptor = PackedDescriptor::new()
             .with_buffer_id(context.buffer_id)
@@ -250,12 +262,14 @@ impl PackedQueueCompleteWork {
         // visible before the used descriptor becomes visible to the guest.
         atomic::fence(atomic::Ordering::Release);
         self.queue_desc
+            .access(scope)
             .write_plain(descriptor_offset(self.next_index), &descriptor)
             .map_err(QueueError::Memory)?;
         // Ensure the descriptor update is visible before checking if the guest requires notification.
         atomic::fence(atomic::Ordering::SeqCst);
         let driver_event: PackedEventSuppression = self
             .driver_event
+            .access(scope)
             .read_plain(0)
             .map_err(QueueError::Memory)?;
         let send_signal = match driver_event.flags() {
@@ -294,6 +308,9 @@ mod tests {
                     avail_addr: 4096,
                     used_addr: 4100,
                 };
+                let mut descriptors = memory
+                    .cache_range(0, descriptor_offset(params.size) as usize)
+                    .unwrap();
                 let mut queue = PackedQueueGetWork::new(
                     VirtioDeviceFeatures::new().with_ring_event_idx(use_event_index),
                     memory.clone(),
@@ -306,7 +323,10 @@ mod tests {
                     let raw_index = initial_index + step;
                     let index = raw_index % params.size;
                     let wrap = initial_wrap ^ (raw_index >= params.size);
-                    assert!(queue.arm_kick().unwrap());
+                    assert!(
+                        with_access(|scope| queue.arm_kick(scope, &descriptors.access(scope)))
+                            .unwrap()
+                    );
                     let event: PackedEventSuppression =
                         memory.read_plain(params.used_addr).unwrap();
                     if use_event_index {
@@ -333,6 +353,9 @@ mod tests {
                 avail_addr: 4096,
                 used_addr: 4100,
             };
+            let mut descriptors = memory
+                .cache_range(0, descriptor_offset(params.size) as usize)
+                .unwrap();
             let mut queue = PackedQueueGetWork::new(
                 VirtioDeviceFeatures::new().with_ring_event_idx(use_event_index),
                 memory.clone(),
@@ -341,7 +364,9 @@ mod tests {
                 true,
             )
             .unwrap();
-            assert!(queue.arm_kick().unwrap());
+            assert!(
+                with_access(|scope| queue.arm_kick(scope, &descriptors.access(scope))).unwrap()
+            );
             memory
                 .write_plain(
                     params.desc_addr,
@@ -349,8 +374,13 @@ mod tests {
                         .with_flags(DescriptorFlags::new().with_available(true)),
                 )
                 .unwrap();
-            assert!(!queue.arm_kick().unwrap());
-            assert_eq!(queue.is_available().unwrap(), Some(0));
+            assert!(
+                !with_access(|scope| queue.arm_kick(scope, &descriptors.access(scope))).unwrap()
+            );
+            assert_eq!(
+                with_access(|scope| queue.is_available(&descriptors.access(scope))).unwrap(),
+                Some(0)
+            );
             let event: PackedEventSuppression = memory.read_plain(params.used_addr).unwrap();
             assert_eq!(event.flags(), EventSuppressionFlags::Disabled);
         }
