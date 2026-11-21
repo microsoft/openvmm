@@ -14,8 +14,8 @@ async-channel.workspace = true
 bitvec = { workspace = true, features = ["std"] }
 flate2.workspace = true
 futures.workspace = true
+open_enum.workspace = true
 thiserror.workspace = true
-tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 socket2 = { workspace = true, features = [ "all" ] }
