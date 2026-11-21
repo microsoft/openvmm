@@ -29,7 +29,9 @@ use super::saved_state::SavedHandle;
 use super::saved_state::SavedObjectIdentity;
 use super::state::encode_relative_path;
 use super::state::validate_microvm_state;
+use crate::MAX_GUEST_BUFFER_SIZE;
 use crate::VirtioFs;
+use crate::test_helpers::decode_dir_entries;
 use fuse::Fuse;
 use fuse::Session;
 use fuse::SessionState;
@@ -191,6 +193,52 @@ fn synthetic_root_lists_only_the_children_and_refuses_changes() {
     ));
     assert_eq!(fs.remove_child("work").unwrap_err(), lx::Error::EINVAL);
     assert_eq!(list(&fs, root), ["tools", "work"]);
+}
+
+/// A read of the synthetic root serves a buffer of up to
+/// `MAX_GUEST_BUFFER_SIZE` bytes, the session's limit of 256 pages per
+/// request, and fails a larger one with `E2BIG`, as a read of any other
+/// directory does, rather than reserving whatever the guest asks for, up to
+/// 4 GiB (microsoft/nvx#1598).
+#[test]
+fn synthetic_root_refuses_reads_beyond_the_guest_buffer_limit() {
+    let roots = Roots::new();
+    let fs = aggregate(&[
+        Child::new("work", &roots.work, false),
+        Child::new("tools", &roots.tools, true),
+    ]);
+    let root = FUSE_ROOT_ID;
+    let fh = fs.open_dir(&request(root), lx::O_RDONLY as u32).unwrap().fh;
+    let read = |size: usize, plus: bool| {
+        let mut arg = fuse_read_in::new_zeroed();
+        arg.fh = fh;
+        arg.size = size.try_into().unwrap();
+        if plus {
+            fs.read_dir_plus(&request(root), &arg)
+        } else {
+            fs.read_dir(&request(root), &arg)
+        }
+    };
+
+    for plus in [false, true] {
+        for size in [MAX_GUEST_BUFFER_SIZE + 1, u32::MAX as usize] {
+            assert_eq!(
+                read(size, plus).map(|reply| reply.len()),
+                Err(lx::Error::E2BIG),
+                "{size} bytes, plus: {plus}"
+            );
+        }
+    }
+    // The largest buffer still lists the whole root.
+    assert_eq!(
+        read(MAX_GUEST_BUFFER_SIZE, false).unwrap(),
+        read(4096, false).unwrap()
+    );
+    let names = decode_dir_entries(&read(MAX_GUEST_BUFFER_SIZE, true).unwrap())
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, [".", "..", "work", "tools"]);
 }
 
 #[test]
