@@ -155,6 +155,13 @@ mod tests;
 /// This trait is **not** dyn-compatible due to `impl Future` return types.
 /// When dynamic dispatch is needed (e.g. `disk_backend` integration),
 /// create a separate dyn-compatible wrapper trait with a blanket impl.
+///
+/// # Cancellation
+///
+/// File I/O futures are not required to be cancellation-safe. Callers must
+/// drive submitted I/O to completion rather than dropping its future;
+/// a backend may abort the process if an in-flight operation is dropped.
+/// Cancel at boundaries where no file I/O is outstanding instead.
 pub trait AsyncFile: Send + Sync {
     /// Buffer type for owned I/O operations.
     ///
