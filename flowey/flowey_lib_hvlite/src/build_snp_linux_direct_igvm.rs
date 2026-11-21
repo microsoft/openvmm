@@ -17,6 +17,9 @@ use flowey::node::prelude::*;
 use igvmfilegen_config::ResourceType;
 use std::collections::BTreeMap;
 
+/// The in-tree manifest used to build the SNP Linux-direct test IGVM.
+pub const SNP_LINUX_DIRECT_MANIFEST: &str = "snp-linux-direct-pipette.toml";
+
 #[derive(Serialize, Deserialize)]
 pub struct SnpLinuxDirectIgvmOutput {
     #[serde(rename = "snp-linux-direct.bin")]
@@ -111,7 +114,8 @@ impl SimpleFlowNode for Node {
         });
         let repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
         let manifest = repo.map(ctx, |p| {
-            p.join("vm/loader/manifests/snp-linux-direct-pipette.json")
+            p.join(crate::build_openhcl_igvm_from_recipe::IN_TREE_MANIFESTS_DIR)
+                .join(SNP_LINUX_DIRECT_MANIFEST)
         });
 
         let resources = ctx.emit_minor_rust_stepv("enumerate SNP IGVM resources", |ctx| {

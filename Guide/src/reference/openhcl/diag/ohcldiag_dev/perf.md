@@ -17,18 +17,12 @@ cargo xflowey build-igvm [RECIPE] --release --with-perf-tools
 ### Increase VTL2 memory page count
 
 To capture and save perf data file inside VTL2, we need to increase VTL2's
-memory page count by increasing the memory_page_count value in the IGVM
-configuration file (openhcl-x64-dev.json). E.g. increase it to 524288 like:
+memory page count by increasing the `memory_page_count` value in the IGVM
+configuration file (`openhcl-x64-dev.toml`). E.g. increase it to 524288:
 
-```json
-{
-    "image": {
-        "openhcl": {
-            ....................
-            "memory_page_count": 524288
-        }
-    }
-}
+```toml
+[guest_configs.none.image.openhcl]
+memory_page_count = 524288
 ```
 
 ## Capture perf data inside VTL2
