@@ -204,10 +204,13 @@ with `--mount-write` of anything outside the writable paths, fail with
 creating, linking, renaming, or removing an entry; writing, truncating, or
 opening a file for writing; and changing attributes or extended attributes.
 Moving an entry into or out of a writable path changes a read-only directory,
-so it also fails with `EROFS`. A hard link to a read-only file from inside a
-writable path would make the file writable, so it fails with `EXDEV`, as a
-link across mounts does. An object with several names is writable only if
-every name that the guest has used for it is writable.
+so it also fails with `EROFS`. A rename moves everything below the names that
+it changes, so it fails with `EROFS` as well when a denied path lies below its
+source or its destination: it would move the hidden entries where the guest
+can reach them, or the guest's entries into the denied path. A hard link to a
+read-only file from inside a writable path would make the file writable, so it
+fails with `EXDEV`, as a link across mounts does. An object with several names
+is writable only if every name that the guest has used for it is writable.
 
 OpenVMM canonicalizes each policy path relative to its export and rejects
 paths that do not exist, paths outside the roots, a root as an allowed or

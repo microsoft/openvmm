@@ -89,6 +89,12 @@ impl VirtioFsVolume {
         !self.readonly && self.policy.is_writable(path)
     }
 
+    /// Returns whether the guest may modify `path` and every path below it, as
+    /// a rename of the entry at `path` does.
+    pub(crate) fn subtree_writable(&self, path: &Path) -> bool {
+        !self.readonly && self.policy.is_subtree_writable(path)
+    }
+
     /// Returns whether the access policy makes some visible path read-only.
     pub(crate) fn restricts_writes(&self) -> bool {
         self.policy.restricts_writes()
