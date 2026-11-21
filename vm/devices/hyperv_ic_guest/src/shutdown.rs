@@ -22,6 +22,7 @@ use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3_1;
 use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3_2;
 use hyperv_ic_resources::shutdown::ShutdownParams;
 use hyperv_ic_resources::shutdown::ShutdownResult;
+use hyperv_ic_resources::shutdown::ShutdownText;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -317,14 +318,12 @@ impl<M: RingMem + Unpin> ShutdownGuestChannel<M> {
         };
         let units: Vec<u16> = message
             .message
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
             .collect();
-        let text = units
-            .iter()
-            .position(|unit| *unit == 0)
-            .and_then(|end| String::from_utf16(&units[..end]).ok());
-        let status = if let Some(message_text) = text {
+        let status = if let Ok(message_text) = ShutdownText::from_terminated_utf16(&units) {
             let params = ShutdownParams {
                 shutdown_type,
                 force: message.flags.force(),

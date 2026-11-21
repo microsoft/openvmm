@@ -1000,7 +1000,7 @@ pub(crate) async fn run_repl(
                             hyperv_ic_resources::shutdown::ShutdownType::PowerOff
                         },
                         force,
-                        message: String::new(),
+                        message: Default::default(),
                     };
                     pending_shutdown = Some(Either::Left(
                         ic.call(hyperv_ic_resources::shutdown::ShutdownRpc::Shutdown, params),

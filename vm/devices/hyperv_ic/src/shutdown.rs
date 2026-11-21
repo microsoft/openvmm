@@ -211,15 +211,12 @@ impl<M: RingMem + Unpin> ShutdownChannel<M> {
                         return Ok(());
                     }
 
-                    if !params.has_valid_message() {
-                        if let Some(send) = self.pending_shutdown.take() {
-                            send.complete(ShutdownResult::Failed(Status::INVALID_ARGUMENT.0));
-                        }
-                        *state = ReadyState::Ready;
-                        return Ok(());
-                    }
                     let mut text = [0; 2048];
-                    for (bytes, unit) in text.chunks_exact_mut(2).zip(params.message.encode_utf16())
+                    for (bytes, unit) in text
+                        .as_chunks_mut::<2>()
+                        .0
+                        .iter_mut()
+                        .zip(params.message.as_utf16())
                     {
                         bytes.copy_from_slice(&unit.to_le_bytes());
                     }
@@ -334,6 +331,7 @@ mod save_restore {
 
     pub mod state {
         use hyperv_ic_protocol;
+        use hyperv_ic_resources::shutdown::ShutdownText;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 
@@ -372,7 +370,7 @@ mod save_restore {
             #[mesh(2)]
             pub force: bool,
             #[mesh(3)]
-            pub message: String,
+            pub message: ShutdownText,
         }
 
         impl From<&hyperv_ic_resources::shutdown::ShutdownParams> for ShutdownParams {
@@ -518,6 +516,7 @@ mod tests {
     use hyperv_ic_protocol::Header;
     use hyperv_ic_protocol::HeaderFlags;
     use hyperv_ic_protocol::MessageType;
+    use hyperv_ic_resources::shutdown::ShutdownText;
     use mesh::rpc::RpcSend;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
@@ -598,26 +597,6 @@ mod tests {
             assert!(task.start());
 
             for force in [false, true] {
-                for message in ["a".repeat(1024), "before\0after".to_owned()] {
-                    assert_eq!(
-                        with_timeout(
-                            &driver,
-                            send.call(
-                                ShutdownRpc::Shutdown,
-                                ShutdownParams {
-                                    shutdown_type: ShutdownType::PowerOff,
-                                    force,
-                                    message,
-                                }
-                            )
-                        )
-                        .await
-                        .unwrap(),
-                        ShutdownResult::Failed(Status::INVALID_ARGUMENT.0)
-                    );
-                    let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
-                    assert!(guest.recv(&mut buffer).now_or_never().is_none());
-                }
                 let text = if force {
                     String::new()
                 } else {
@@ -635,7 +614,7 @@ mod tests {
                         ShutdownParams {
                             shutdown_type,
                             force,
-                            message: text.clone(),
+                            message: ShutdownText::new(&text).unwrap(),
                         },
                     );
                     let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
@@ -727,7 +706,7 @@ mod tests {
                 ShutdownParams {
                     shutdown_type: ShutdownType::PowerOff,
                     force: false,
-                    message: String::new(),
+                    message: ShutdownText::default(),
                 },
             );
             let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
@@ -880,7 +859,7 @@ mod tests {
                 ShutdownParams {
                     shutdown_type: ShutdownType::PowerOff,
                     force: false,
-                    message: String::new(),
+                    message: ShutdownText::default(),
                 },
             );
             let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
@@ -899,7 +878,7 @@ mod tests {
                         ShutdownParams {
                             shutdown_type: ShutdownType::Reboot,
                             force: true,
-                            message: String::new(),
+                            message: ShutdownText::default(),
                         },
                     ),
                 )
@@ -946,7 +925,7 @@ mod tests {
                 ShutdownParams {
                     shutdown_type: ShutdownType::PowerOff,
                     force: false,
-                    message: String::new(),
+                    message: ShutdownText::default(),
                 },
             );
             assert!(task.start());
@@ -966,26 +945,6 @@ mod tests {
             stop_with_timeout(&mut task, &driver).await;
             assert!((&mut ready).now_or_never().is_none());
             assert!(guest.recv(&mut buffer).now_or_never().is_none());
-        }
-    }
-
-    #[test]
-    fn shutdown_message_bounds() {
-        let mut params = ShutdownParams {
-            shutdown_type: ShutdownType::PowerOff,
-            force: false,
-            message: String::new(),
-        };
-        for (message, valid) in [
-            (String::new(), true),
-            ("a".repeat(1023), true),
-            ("a".repeat(1024), false),
-            ("\u{1f680}".repeat(511) + "a", true),
-            ("\u{1f680}".repeat(512), false),
-            ("before\0after".to_owned(), false),
-        ] {
-            params.message = message;
-            assert_eq!(params.has_valid_message(), valid);
         }
     }
 
@@ -1074,7 +1033,7 @@ mod tests {
                 *state = ReadyState::SendShutdown(ShutdownParams {
                     shutdown_type: ShutdownType::PowerOff,
                     force: false,
-                    message: String::new(),
+                    message: ShutdownText::default(),
                 });
                 with_timeout(&driver, restored.process_state_machine(&mut Vec::new()))
                     .await
@@ -1149,19 +1108,19 @@ mod tests {
             force: true,
         });
         let decoded: save_restore::state::ShutdownParams = mesh::payload::decode(&legacy).unwrap();
-        assert!(decoded.message.is_empty());
+        assert_eq!(decoded.message, ShutdownText::default());
         assert!(decoded.force);
         for message in [String::new(), "maintenance \u{1f680}".to_owned()] {
             let params = ShutdownParams {
                 shutdown_type: ShutdownType::Reboot,
                 force: true,
-                message: message.clone(),
+                message: ShutdownText::new(&message).unwrap(),
             };
             let saved = save_restore::state::ShutdownParams::from(&params);
             let saved: save_restore::state::ShutdownParams =
                 mesh::payload::decode(&mesh::payload::encode(saved)).unwrap();
             let restored = ShutdownParams::from(saved);
-            assert_eq!(restored.message, message);
+            assert_eq!(restored.message.to_string(), message);
             assert!(restored.force);
             assert!(matches!(restored.shutdown_type, ShutdownType::Reboot));
             let (_send, recv) = mesh::channel();
@@ -1188,10 +1147,33 @@ mod tests {
                     state: ReadyState::SendShutdown(params),
                     ..
                 } => {
-                    assert_eq!(params.message, message);
+                    assert_eq!(params.message.to_string(), message);
                 }
                 _ => panic!("unsent shutdown was not restored"),
             }
+        }
+    }
+
+    #[test]
+    fn shutdown_saved_text_rejects_invalid_values() {
+        #[derive(mesh::payload::Protobuf)]
+        struct PreviousSavedParams {
+            #[mesh(1)]
+            shutdown_type: save_restore::state::ShutdownType,
+            #[mesh(2)]
+            force: bool,
+            #[mesh(3)]
+            message: String,
+        }
+        for message in ["a".repeat(1024), "before\0after".to_owned()] {
+            let encoded = mesh::payload::encode(PreviousSavedParams {
+                shutdown_type: save_restore::state::ShutdownType::PowerOff,
+                force: false,
+                message,
+            });
+            assert!(
+                mesh::payload::decode::<save_restore::state::ShutdownParams>(&encoded).is_err()
+            );
         }
     }
 
@@ -1301,7 +1283,7 @@ mod tests {
             ShutdownParams {
                 shutdown_type: ShutdownType::PowerOff,
                 force: false,
-                message: String::new(),
+                message: ShutdownText::default(),
             },
         );
         let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];

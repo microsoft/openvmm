@@ -1801,7 +1801,7 @@ impl VmService {
                             ShutdownParams {
                                 shutdown_type: ShutdownType::PowerOff,
                                 force: request.force,
-                                message: String::new(),
+                                message: Default::default(),
                             },
                         ))
                         .await

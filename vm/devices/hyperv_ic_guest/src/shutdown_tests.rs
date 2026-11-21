@@ -36,6 +36,9 @@ async fn shutdown_text_is_preserved_or_rejected(driver: DefaultDriver) {
         (text.encode_utf16().chain([0]).collect(), Some(text.clone())),
         (vec![b'a' as u16; 1024], None),
         (vec![0xd800, 0], None),
+        (vec![0xdc00, 0], None),
+        (vec![0, 0xd800], Some(String::new())),
+        (vec![0], Some(String::new())),
     ] {
         let header = hyperv_ic_protocol::Header {
             message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
@@ -54,7 +57,7 @@ async fn shutdown_text_is_preserved_or_rejected(driver: DefaultDriver) {
                 .with_restart(true),
             message: [0; 2048],
         };
-        for (bytes, unit) in message.message.chunks_exact_mut(2).zip(units) {
+        for (bytes, unit) in message.message.as_chunks_mut::<2>().0.iter_mut().zip(units) {
             bytes.copy_from_slice(&unit.to_le_bytes());
         }
         let valid = expected.is_some();
@@ -64,7 +67,7 @@ async fn shutdown_text_is_preserved_or_rejected(driver: DefaultDriver) {
                 async {
                     if let Some(expected) = expected {
                         let (params, completion) = notifications.next().await.unwrap().split();
-                        assert_eq!(params.message, expected);
+                        assert_eq!(params.message.to_string(), expected);
                         assert!(params.force);
                         assert!(matches!(params.shutdown_type, ShutdownType::Reboot));
                         completion.complete(ShutdownResult::Ok);
