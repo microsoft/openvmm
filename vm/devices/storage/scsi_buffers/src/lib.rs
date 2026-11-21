@@ -195,6 +195,9 @@ pub struct BounceBuffer {
 }
 
 impl BounceBuffer {
+    /// The alignment, in bytes, of every bounce buffer's memory.
+    pub const ALIGNMENT: usize = align_of::<Page>();
+
     /// Allocates a new bounce buffer of `size` bytes.
     pub fn new(size: usize) -> Self {
         let mut pages = vec![ZERO_PAGE; size.div_ceil(PAGE_SIZE)];

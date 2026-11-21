@@ -1,0 +1,25 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "disk_physical"
+edition.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+disk_backend.workspace = true
+disk_backend_resources.workspace = true
+disk_file.workspace = true
+scsi_buffers.workspace = true
+vm_resource.workspace = true
+
+inspect.workspace = true
+pal.workspace = true
+thiserror.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
