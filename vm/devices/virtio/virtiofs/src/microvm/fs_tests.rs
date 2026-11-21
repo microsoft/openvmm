@@ -124,6 +124,45 @@ fn largest_restored_lookup_count_saturates() {
     }
 }
 
+/// A saved state may hold the largest next node ID, `u64::MAX`, which no node
+/// takes: the node table is then full, so a lookup of an object that has no
+/// node yet fails with `ENOSPC`, and the state saves with the same next node
+/// ID, which a restore accepts, rather than one wrapped to zero.
+#[test]
+fn largest_restored_next_node_id_is_never_handed_out() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::write(root_path.join("file"), b"data").unwrap();
+    let profile = profile(root_path);
+    let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let mut state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    state.next_node_id = u64::MAX;
+    let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+    destination
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+
+    assert_eq!(
+        destination
+            .lookup(&request(FUSE_ROOT_ID), name("file"))
+            .map(|entry| entry.nodeid),
+        Err(lx::Error::ENOSPC)
+    );
+
+    let state = destination
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    assert_eq!(state.next_node_id, u64::MAX);
+    let restored = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(restored.clone());
+    restored
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+}
+
 #[test]
 fn initialized_microvm_negotiation_restores() {
     let temporary_directory = tempdir().unwrap();

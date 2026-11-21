@@ -1120,8 +1120,16 @@ impl<T> HandleMap<T> {
         Arc::ptr_eq(&self.generation, &reservation.generation)
     }
 
+    /// Whether the map can hand out its next handle.
+    ///
+    /// A map never hands out `u64::MAX`: it is the synthetic aggregate root's
+    /// directory handle ([`SYNTHETIC_ROOT_FH`]), and a map that handed it out
+    /// would wrap its next handle to 0, which a microVM restore rejects in a
+    /// saved state. A map whose next handle reaches `u64::MAX` is full instead.
     pub fn can_insert(&self) -> bool {
-        self.next_handle != 0 && !self.values.contains_key(&self.next_handle)
+        self.next_handle != 0
+            && self.next_handle != u64::MAX
+            && !self.values.contains_key(&self.next_handle)
     }
 
     /// Retrieves a value from the map.
@@ -1817,8 +1825,8 @@ mod tests {
     fn unused_reservations_release_on_drop() {
         let root = tempfile::tempdir().unwrap();
         let fs = VirtioFs::new(root.path(), None).unwrap();
-        fs.inner.files.write().next_handle = u64::MAX;
-        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+        fs.inner.files.write().next_handle = u64::MAX - 1;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX - 1;
 
         let file = fs.reserve_file().unwrap();
         let inode = fs.reserve_inode().unwrap();
@@ -1827,8 +1835,8 @@ mod tests {
         drop(file);
         drop(inode);
 
-        assert_eq!(fs.reserve_file().unwrap().reservation.handle, u64::MAX);
-        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+        assert_eq!(fs.reserve_file().unwrap().reservation.handle, u64::MAX - 1);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX - 1);
     }
 
     #[test]
@@ -1888,7 +1896,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let fs = VirtioFs::new(root.path(), None).unwrap();
         fs.inner.files.write().next_handle = 0;
-        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX - 1;
 
         let result = fs.create(
             &request(FUSE_ROOT_ID),
@@ -1898,7 +1906,7 @@ mod tests {
 
         assert!(matches!(result, Err(lx::Error::ENOSPC)));
         assert!(!root.path().join("file").exists());
-        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX - 1);
     }
 
     #[test]
@@ -1906,8 +1914,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("file"), b"original").unwrap();
         let fs = VirtioFs::new(root.path(), None).unwrap();
-        fs.inner.files.write().next_handle = u64::MAX;
-        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+        fs.inner.files.write().next_handle = u64::MAX - 1;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX - 1;
 
         let result = fs.create(
             &request(FUSE_ROOT_ID),
@@ -1924,8 +1932,8 @@ mod tests {
             std::fs::read(root.path().join("file")).unwrap(),
             b"original"
         );
-        assert_eq!(fs.reserve_file().unwrap().reservation.handle, u64::MAX);
-        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+        assert_eq!(fs.reserve_file().unwrap().reservation.handle, u64::MAX - 1);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX - 1);
     }
 
     #[test]
@@ -1938,7 +1946,7 @@ mod tests {
             .lookup_child(lx::LxStr::from_bytes(b"file"))
             .unwrap();
         let (existing, node_id) = fs.insert_inode(inode).unwrap();
-        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX - 1;
 
         let reservation = fs.reserve_inode().unwrap();
         let (inode, _) = root_inode
@@ -1948,7 +1956,7 @@ mod tests {
 
         assert!(Arc::ptr_eq(&existing, &reused));
         assert_eq!(reused_node_id, node_id);
-        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX - 1);
     }
 
     /// Objects with one inode number on two devices are distinct, as `/proc`
@@ -2119,13 +2127,29 @@ mod tests {
         assert_eq!(second_node_id, FUSE_ROOT_ID + 2);
     }
 
+    /// A map hands out handles up to `u64::MAX - 1` and never `u64::MAX`, the
+    /// synthetic aggregate root's directory handle: a map that reaches it,
+    /// or starts there as a restored map can, is full.
     #[test]
     fn handle_map_stops_after_max_handle() {
-        let mut handles = HandleMap::starting_at(u64::MAX);
+        let mut handles = HandleMap::starting_at(u64::MAX - 1);
 
-        assert_eq!(handles.insert("last"), Some(u64::MAX));
-        assert_eq!(handles.get(u64::MAX), Some(&"last"));
+        assert_eq!(handles.insert("last"), Some(u64::MAX - 1));
+        assert_eq!(handles.get(u64::MAX - 1), Some(&"last"));
         assert_eq!(handles.insert("overflow"), None);
+        assert_eq!(
+            handles.reserve().map(|reservation| reservation.handle),
+            None
+        );
+        assert_eq!(handles.get(u64::MAX), None);
+
+        let mut handles = HandleMap::starting_at(u64::MAX);
+        assert_eq!(
+            handles.reserve().map(|reservation| reservation.handle),
+            None
+        );
+        assert_eq!(handles.insert("reserved"), None);
+        assert_eq!(handles.get(u64::MAX), None);
     }
 
     #[test]
@@ -2164,12 +2188,12 @@ mod tests {
 
     #[test]
     fn handle_map_reuses_latest_released_reservation() {
-        let mut handles = HandleMap::starting_at(u64::MAX);
+        let mut handles = HandleMap::starting_at(u64::MAX - 1);
 
         let reservation = handles.reserve().unwrap();
-        assert_eq!(reservation.handle, u64::MAX);
+        assert_eq!(reservation.handle, u64::MAX - 1);
         handles.release_reservation(&reservation);
-        assert_eq!(handles.insert("last"), Some(u64::MAX));
+        assert_eq!(handles.insert("last"), Some(u64::MAX - 1));
     }
 
     /// On Linux, `/` reaches mounts such as `/proc`, `/sys`, and `/dev`:

@@ -31,6 +31,7 @@ use super::state::encode_relative_path;
 use super::state::validate_microvm_state;
 use crate::MAX_GUEST_BUFFER_SIZE;
 use crate::VirtioFs;
+use crate::aggregate::SYNTHETIC_ROOT_FH;
 use crate::test_helpers::decode_dir_entries;
 use fuse::Fuse;
 use fuse::Session;
@@ -638,6 +639,56 @@ fn aggregate_state_rejects_changed_children() {
     writable.next_handle_id += 1;
     let error = validate_microvm_state(&writable, &profile(&children)).unwrap_err();
     assert!(error.to_string().contains("writable handle"), "{error:#}");
+}
+
+/// No child's handle is the synthetic root's directory handle, `u64::MAX`. A
+/// restored state may hold that largest next handle ID, which no handle takes:
+/// the handle table is then full, so opening a child's file or directory, or
+/// creating a file, fails with `ENOSPC` and leaves the host unchanged, while
+/// the root's handle still lists the root, and the state saves with the same
+/// next handle ID, which a restore accepts.
+#[test]
+fn children_never_get_the_synthetic_root_handle() {
+    let roots = Roots::new();
+    let children = [
+        Child::new("work", &roots.work, false),
+        Child::new("tools", &roots.tools, true),
+    ];
+    let profile = profile(&children);
+    let source = aggregate(&children);
+    let work = lookup(&source, "work").unwrap();
+    let file = lookup(&source, "work/file").unwrap();
+    let mut state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    state.next_handle_id = u64::MAX;
+    let fs = aggregate(&children);
+    let session = Session::new(fs.clone());
+    fs.restore_microvm_state(&profile, state, &session).unwrap();
+
+    assert_eq!(open(&fs, file, lx::O_RDONLY), Err(lx::Error::ENOSPC));
+    assert_eq!(
+        fs.open_dir(&request(work), lx::O_RDONLY as u32)
+            .map(|open| open.fh),
+        Err(lx::Error::ENOSPC)
+    );
+    assert_eq!(create(&fs, work, "new"), Err(lx::Error::ENOSPC));
+    assert_eq!(Roots::entries(&roots.work), ["file"]);
+    let root = fs
+        .open_dir(&request(FUSE_ROOT_ID), lx::O_RDONLY as u32)
+        .unwrap();
+    assert_eq!(root.fh, SYNTHETIC_ROOT_FH);
+    assert_eq!(list(&fs, FUSE_ROOT_ID), ["tools", "work"]);
+
+    let state = fs
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    assert_eq!(state.next_handle_id, u64::MAX);
+    let restored = aggregate(&children);
+    let session = Session::new(restored.clone());
+    restored
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
 }
 
 #[test]
