@@ -265,8 +265,9 @@ pub struct TxMetadata {
     pub flags: TxFlags,
     /// The total length of the packet in bytes.
     pub len: u32,
-    /// The length of the Ethernet frame header. Only guaranteed to be set if
-    /// various offload flags are set.
+    /// The length of the Ethernet frame header in the segments, which does not
+    /// include a tag in [`Self::vlan`]. Only guaranteed to be set if various
+    /// offload flags are set.
     pub l2_len: u8,
     /// The length of the IP header. Only guaranteed to be set if various
     /// offload flags are set.
