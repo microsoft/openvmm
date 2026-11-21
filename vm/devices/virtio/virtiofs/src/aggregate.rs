@@ -366,6 +366,12 @@ impl VirtioFs {
                 }
             };
             if !fit {
+                // A reply without entries ends the guest's listing, so fail a
+                // buffer too small for the next entry, as
+                // `VirtioFsFile::read_dir` does.
+                if buffer.is_empty() {
+                    return Err(lx::Error::EINVAL);
+                }
                 break;
             }
             index = next;
