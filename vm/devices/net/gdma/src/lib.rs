@@ -582,8 +582,10 @@ mod tests {
         /// Establishes the HWC and registers the bnic.
         async fn new(device: &mut GdmaDevice) -> Self {
             let queues = device.queues.clone();
-            // Responses from a previous boot must not satisfy this one's waits.
+            // Responses and completions from a previous boot must not satisfy
+            // this one's checks.
             queues.gm.write_at(RESPONSES, &[0; 0x1000]).unwrap();
+            queues.gm.write_at(CQ, &[0; PAGE_SIZE64 as usize]).unwrap();
             let mut shmem = [0u8; SHMEM_LEN - 4];
             for (offset, gpa) in [(0, EQ), (6, CQ), (12, RQ), (18, SQ)] {
                 shmem[offset..offset + 6].copy_from_slice(&(gpa / PAGE_SIZE64).to_ne_bytes()[..6]);
@@ -681,6 +683,26 @@ mod tests {
                 .read_plain(RESPONSES + id as u64 * SLOT)
                 .unwrap();
             (resp.activity_id == id).then_some(resp)
+        }
+
+        /// Asserts that the device published both completions of request
+        /// `id`: its send CQE and then its receive CQE.
+        fn assert_completed(&self, id: u32) {
+            let cqes = PAGE_SIZE64 as u32 / size_of::<gdma_defs::Cqe>() as u32;
+            for (n, wq_id, is_send) in [
+                (2 * id - 2, self.sq_id, true),
+                (2 * id - 1, self.rq_id, false),
+            ] {
+                let cqe: gdma_defs::Cqe = self
+                    .queues
+                    .gm
+                    .read_plain(CQ + ((n % cqes) as usize * size_of::<gdma_defs::Cqe>()) as u64)
+                    .unwrap();
+                let owner = ((1 + n / cqes) & gdma_defs::OWNER_MASK) as u8;
+                assert_eq!(cqe.params.owner_count(), owner, "request {id} cqe {n}");
+                assert_eq!(cqe.params.wq_number(), wq_id, "request {id} cqe {n}");
+                assert_eq!(cqe.params.is_send_wq(), is_send, "request {id} cqe {n}");
+            }
         }
 
         /// Waits for the response to request `id` and checks it succeeded.
@@ -896,6 +918,7 @@ mod tests {
             hwc_stop.await;
         }
         assert_eq!(guest.response(enable).unwrap().status, 0);
+        guest.assert_completed(enable);
         assert_eq!(get_queues.get(), [1, 1, 0]);
 
         // The data path is up: disabling it stops the endpoint.
@@ -925,6 +948,7 @@ mod tests {
             hwc_stop.await;
         }
         assert_eq!(guest.response(disable).unwrap().status, 0);
+        guest.assert_completed(disable);
         assert_eq!(stop.get(), [1, 1, 0]);
 
         // The endpoint can hand out queues again.
