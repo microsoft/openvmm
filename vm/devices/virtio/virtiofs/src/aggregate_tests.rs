@@ -8,9 +8,13 @@ use crate::inode::VirtioFsVolume;
 use crate::test_helpers::decode_dir_entries;
 use fuse::Fuse;
 use fuse::protocol::FUSE_ROOT_ID;
+use fuse::protocol::fuse_dirent;
+use fuse::protocol::fuse_dirent_align;
+use fuse::protocol::fuse_direntplus;
 use lxutil::LxVolumeOptions;
 use std::sync::Arc;
 use test_with_tracing::test;
+use zerocopy::FromBytes;
 
 fn assert_config_errno(error: crate::CreateError, expected: lx::Error) {
     match error {
@@ -277,4 +281,97 @@ fn failed_synthetic_root_readdirplus_returns_entries_holding_references() {
     // root.
     fs.forget(node_id, 1);
     assert!(fs.get_inode(node_id).is_err(), "inode leaked");
+}
+
+/// Decodes the name of each entry of a READDIR or READDIRPLUS reply and the
+/// cookie of the entry after it.
+fn decode_entries(reply: &[u8], plus: bool) -> Vec<(String, u64)> {
+    if plus {
+        return decode_dir_entries(reply)
+            .into_iter()
+            .map(|entry| (entry.name, entry.offset))
+            .collect();
+    }
+    let mut entries = Vec::new();
+    let mut reply = reply;
+    while !reply.is_empty() {
+        let (dirent, _) = fuse_dirent::read_from_prefix(reply).unwrap();
+        let name_end = size_of::<fuse_dirent>() + dirent.namelen as usize;
+        let name = &reply[size_of::<fuse_dirent>()..name_end];
+        entries.push((String::from_utf8(name.to_vec()).unwrap(), dirent.off));
+        reply = &reply[fuse_dirent_align(name_end)..];
+    }
+    entries
+}
+
+/// A read of the synthetic root whose buffer cannot hold the next entry fails
+/// with `EINVAL`, as a read of any other directory does, rather than
+/// returning an empty reply, which the guest takes for the end of the root,
+/// so that it lists none of the children after that entry. A read at the end
+/// of the root still returns an empty reply, whatever the size of its buffer.
+#[test]
+fn synthetic_root_refuses_a_buffer_too_small_for_the_next_entry() {
+    let work = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    // A name whose entry is larger than those of `.`, `..`, and `work`.
+    let long = "build-tools";
+    let fs = VirtioFs::new_aggregate();
+    fs.add_child("work", work.path(), None).unwrap();
+    fs.add_child(long, tools.path(), None).unwrap();
+    let read = |offset: u64, size: usize, plus: bool| {
+        fs.read_synthetic_root_dir(offset, size.try_into().unwrap(), plus)
+            .map(|reply| decode_entries(&reply, plus))
+    };
+    // Lists the root as the guest does: each read starts at the last cookie
+    // of the read before, until a read returns no entry or fails. Returns the
+    // names listed and the error.
+    let listing = |size: usize, plus: bool| {
+        let mut names = Vec::new();
+        let mut offset = 0;
+        loop {
+            match read(offset, size, plus) {
+                Ok(entries) => {
+                    let Some(&(_, next)) = entries.last() else {
+                        return (names, None);
+                    };
+                    names.extend(entries.into_iter().map(|(name, _)| name));
+                    offset = next;
+                }
+                Err(error) => return (names, Some(error)),
+            }
+        }
+    };
+    // The size of the entry for `name` in a reply: its header and its name,
+    // padded to eight bytes.
+    let entry_size = |name: &str, plus: bool| {
+        let header = if plus {
+            size_of::<fuse_direntplus>()
+        } else {
+            size_of::<fuse_dirent>()
+        };
+        fuse_dirent_align(header + name.len())
+    };
+
+    for plus in [false, true] {
+        // A buffer that holds the largest entry lists the whole root.
+        let largest = entry_size(long, plus);
+        let (names, error) = listing(largest, plus);
+        assert_eq!(names, [".", "..", "work", long], "plus: {plus}");
+        assert_eq!(error, None, "plus: {plus}");
+        // A buffer one byte smaller lists the entries before the largest, and
+        // fails at it rather than ending the listing there.
+        let (names, error) = listing(largest - 1, plus);
+        assert_eq!(names, [".", "..", "work"], "plus: {plus}");
+        assert_eq!(error, Some(lx::Error::EINVAL), "plus: {plus}");
+        // A read from the start whose buffer cannot hold `.` fails too.
+        assert_eq!(
+            read(0, entry_size(".", plus) - 1, plus),
+            Err(lx::Error::EINVAL),
+            "plus: {plus}"
+        );
+        // A read at the end of the root returns no entry, even with a buffer
+        // too small for one.
+        let end = read(0, 4096, plus).unwrap().last().unwrap().1;
+        assert_eq!(read(end, 1, plus), Ok(Vec::new()), "plus: {plus}");
+    }
 }
