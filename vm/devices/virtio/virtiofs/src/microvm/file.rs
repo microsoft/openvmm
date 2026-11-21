@@ -127,6 +127,7 @@ impl VirtioFsFile {
             .try_reserve_exact(size as usize)
             .map_err(|_| lx::Error::ENOMEM)?;
 
+        let mut skipped = 0;
         for entry in &entries[start..] {
             let name = lx::LxStr::from_bytes(&entry.name);
             if plus {
@@ -142,6 +143,16 @@ impl VirtioFsFile {
                     match self.write_microvm_entry_plus(fs, &mut buffer, entry) {
                         Ok(true) => {}
                         Ok(false) => break,
+                        // As in `read_dir_with`, skip an entry whose name is
+                        // gone, as after an unlink or a rename since the
+                        // snapshot listed it, or reaches an object that the
+                        // access policy hides, as through a hard link to a
+                        // hidden file. Failing the read instead would fail
+                        // every later read too, since each starts at the
+                        // entry, so the guest could never list past it.
+                        Err(error) if error == lx::Error::ENOENT || error == lx::Error::EACCES => {
+                            skipped += 1;
+                        }
                         // Each entry in the reply hands the guest a lookup
                         // reference, which the guest can release only if it
                         // receives the entry. So, as in `read_dir_with`, return
@@ -157,7 +168,10 @@ impl VirtioFsFile {
             }
         }
 
-        if !entries[start..].is_empty() && buffer.is_empty() {
+        // An empty reply ends the listing. A read that returns no entry
+        // without having skipped every entry left stopped at one that the
+        // guest's buffer cannot hold.
+        if buffer.is_empty() && entries[start..].len() > skipped {
             return Err(lx::Error::EINVAL);
         }
         Ok(buffer)

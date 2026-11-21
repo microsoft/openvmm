@@ -33,6 +33,8 @@ use fuse::protocol::FUSE_ASYNC_READ;
 use fuse::protocol::FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
 use fuse::protocol::FUSE_INIT_EXT;
 use fuse::protocol::FUSE_ROOT_ID;
+use fuse::protocol::fuse_dirent_align;
+use fuse::protocol::fuse_direntplus;
 use fuse::protocol::fuse_read_in;
 use fuse::protocol::fuse_release_in;
 use std::path::Path;
@@ -490,6 +492,114 @@ fn readdirplus_of_a_replaced_entry_keeps_no_reference_the_guest_lacks() {
         }
     }
     assert_eq!(fs.inner.inodes.read().inodes_by_node_id.values.len(), 1);
+}
+
+/// Another guest process or the host may unlink entries of a directory while
+/// the guest lists it, a page at a time. READDIRPLUS looks each entry of the
+/// directory's snapshot up, which fails with ENOENT for an unlinked one, so it
+/// must skip the entry, which POSIX lets a listing omit, rather than fail:
+/// every later read would start at the entry and fail too, so the guest could
+/// never list the rest of the directory. Here the next read starts at an
+/// unlinked entry, and reaches another one later.
+#[test]
+fn readdirplus_skips_entries_unlinked_during_the_listing() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    // Enough files for several of the guest's 4 KiB pages.
+    let names: Vec<_> = (0..60).map(|index| format!("f{index:02}")).collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
+    let (fs, directory) = microvm_with_an_open_root(root_path, &names);
+
+    // Read the first page, and forget its entries, as the guest does.
+    let first_page = decode_dir_entries(&directory.read_dir(&fs, 0, 4096, true).unwrap());
+    let offset = first_page.last().unwrap().offset;
+    let mut listed = Vec::new();
+    for entry in first_page {
+        if entry.node_id != 0 {
+            fs.forget(entry.node_id, 1);
+        }
+        listed.push(entry.name);
+    }
+
+    // Unlink the first file that the next read reaches, and a later one.
+    let snapshot = directory.directory_entries();
+    let next = 1 + snapshot
+        .iter()
+        .position(|entry| entry.next_cookie == offset)
+        .unwrap();
+    let unlinked: Vec<_> = snapshot[next..]
+        .iter()
+        .map(|entry| String::from_utf8(entry.name.clone()).unwrap())
+        .filter(|name| name != "." && name != "..")
+        .step_by(5)
+        .take(2)
+        .collect();
+    assert_eq!(unlinked.len(), 2);
+    for name in &unlinked {
+        std::fs::remove_file(root_path.join(name)).unwrap();
+    }
+
+    listed.extend(crate::tests::read_directory(&fs, &directory, offset, 4096, true).into_keys());
+    listed.sort();
+    let mut expected: Vec<_> = [".", ".."]
+        .into_iter()
+        .chain(names)
+        .filter(|name| !unlinked.iter().any(|unlinked| unlinked == name))
+        .map(str::to_owned)
+        .collect();
+    expected.sort();
+    assert_eq!(listed, expected);
+    // The skipped entries hold no lookup reference.
+    assert_eq!(fs.inner.inodes.read().inodes_by_node_id.values.len(), 1);
+}
+
+/// An empty READDIRPLUS reply ends the guest's listing. A read that skips
+/// every entry left in the directory's snapshot, because each was unlinked,
+/// has reached the end of the directory, so it must return one. A read that
+/// skips some entries but stops at one that its buffer cannot hold has not,
+/// so it must fail, as a read that stops at its first entry does.
+#[test]
+fn readdirplus_ends_the_listing_only_after_skipping_every_entry_left() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    let unlinked = ["first", "second", "third"];
+    let long_name = "a-name-too-long-for-the-buffer";
+    let (fs, directory) =
+        microvm_with_an_open_root(root_path, &[&unlinked[..], &[long_name]].concat());
+    // List the directory without looking its entries up, and order its
+    // snapshot as a host may: the dots, the short names, then the long one.
+    directory.read_dir(&fs, 0, 4096, false).unwrap();
+    let mut entries = directory.directory_entries();
+    entries.sort_by_key(|entry| entry.name.len());
+    for (cookie, entry) in (1..).zip(&mut entries) {
+        entry.next_cookie = cookie;
+    }
+    directory
+        .restore_directory_snapshot(&fs.inner.directory_snapshot_budget.read(), true, entries)
+        .unwrap();
+    let after_dots = 2;
+    for name in unlinked {
+        std::fs::remove_file(root_path.join(name)).unwrap();
+    }
+
+    // A buffer that holds the entry of a short name, but not that of the long
+    // one.
+    let size = fuse_dirent_align(size_of::<fuse_direntplus>() + "second".len());
+    assert!(size < fuse_dirent_align(size_of::<fuse_direntplus>() + long_name.len()));
+    assert_eq!(
+        directory
+            .read_dir(&fs, after_dots, size as u32, true)
+            .unwrap_err(),
+        lx::Error::EINVAL
+    );
+
+    std::fs::remove_file(root_path.join(long_name)).unwrap();
+    assert!(
+        directory
+            .read_dir(&fs, after_dots, 4096, true)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

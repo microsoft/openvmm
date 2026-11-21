@@ -846,6 +846,29 @@ fn hidden_objects_stay_hidden_at_other_paths() {
     share.assert_protected_paths_unchanged();
 }
 
+/// READDIRPLUS looks up each entry that it lists, which the access policy
+/// refuses with EACCES for a name that reaches a hidden object, such as a
+/// hard link that the host makes to a hidden file. The listing must skip that
+/// entry, rather than fail at it: every later read would start at the entry
+/// and fail too, so the guest could never list the rest of the directory.
+#[test]
+fn readdirplus_skips_entries_that_reach_hidden_objects() {
+    let share = Share::new();
+    let fs = share.fs(&["marker"], &[], &[]);
+    std::fs::hard_link(share.path("marker"), share.path("alias")).unwrap();
+    assert_eq!(error(lookup(&fs, "alias")), lx::Error::EACCES);
+
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let directory = root.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap();
+    let entries = crate::tests::read_directory(&fs, &directory, 0, 4096, true);
+    assert_eq!(
+        entries.into_keys().collect::<Vec<_>>(),
+        [".", "..", "build.log", "logs", "out"]
+    );
+    // The skipped entry holds no lookup reference.
+    assert_eq!(fs.inner.inodes.read().inodes_by_node_id.values.len(), 1);
+}
+
 #[test]
 fn attaching_requires_directories_on_the_way_to_allowed_paths() {
     let share = Share::new();
