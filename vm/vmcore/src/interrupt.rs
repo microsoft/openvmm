@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use futures::task::AtomicWaker;
 use mesh::MeshPayload;
 use mesh::payload::DefaultEncoding;
 use mesh::payload::FieldDecode;
@@ -15,9 +16,13 @@ use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
+use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::Weak;
+use std::task::Context;
+use std::task::Poll;
 
 /// An object representing an interrupt-like signal to notify the guest of
 /// device activity.
@@ -138,6 +143,16 @@ pub trait InterruptTarget: Send + Sync {
     fn event(&self) -> Option<Arc<Event>> {
         None
     }
+
+    /// Registers a proxy whose wait must be cancelled before changing routes.
+    fn register_event_proxy(&self, _wait: Weak<EventProxyWait>) {}
+
+    /// Consumes and delivers a proxy notification atomically with routing.
+    fn poll_event_proxy(&self, cx: &mut Context<'_>, wait: &EventProxyWait) -> Poll<()> {
+        std::task::ready!(wait.poll_wait(cx));
+        self.deliver();
+        Poll::Ready(())
+    }
 }
 
 struct InterruptInner<T: ?Sized = dyn InterruptTarget> {
@@ -256,6 +271,48 @@ impl FieldDecode<'_, Arc<InterruptInner>, Resource> for InterruptEncoding {
 /// the `EventProxy` is dropped, the task is cancelled.
 pub struct EventProxy {
     _task: Task<()>,
+    wait: Arc<EventProxyWait>,
+}
+
+impl Drop for EventProxy {
+    fn drop(&mut self) {
+        self.wait.wait.lock().take();
+        self.wait.canceller.wake();
+    }
+}
+
+/// Shared proxy wait, closed when its owner is dropped.
+pub struct EventProxyWait {
+    wait: Mutex<Option<PolledWait<Event>>>,
+    waker: AtomicWaker,
+    canceller: AtomicWaker,
+}
+
+impl EventProxyWait {
+    /// Consumes a notification.
+    pub fn poll_wait(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut wait = self.wait.lock();
+        let Some(wait) = wait.as_mut() else {
+            return Poll::Pending;
+        };
+        wait.poll_wait(cx)
+            .map(|r| r.expect("event wait should not fail"))
+    }
+
+    /// Cancels the wait and drains pending signals while routing is paused.
+    pub fn poll_cancel_wait(&self, cx: &mut Context<'_>) -> Poll<bool> {
+        self.canceller.register(cx.waker());
+        let mut wait = self.wait.lock();
+        let Some(wait) = wait.as_mut() else {
+            return Poll::Ready(false);
+        };
+        Poll::Ready(std::task::ready!(wait.poll_cancel_wait(cx)) | wait.get().try_wait())
+    }
+
+    /// Resumes polling after routing changes.
+    pub fn wake(&self) {
+        self.waker.wake();
+    }
 }
 
 impl EventProxy {
@@ -263,17 +320,29 @@ impl EventProxy {
     /// and the [`Event`] that the caller should pass to the consumer.
     pub fn new(driver: &impl SpawnDriver, interrupt: Interrupt) -> std::io::Result<(Self, Event)> {
         let event = Event::new();
-        let wait = PolledWait::new(driver, event.clone())?;
-        let task = driver.spawn("interrupt-event-proxy", async move {
-            Self::run(wait, interrupt).await;
+        let wait = Arc::new(EventProxyWait {
+            wait: Mutex::new(Some(PolledWait::new(driver, event.clone())?)),
+            waker: AtomicWaker::new(),
+            canceller: AtomicWaker::new(),
         });
-        Ok((Self { _task: task }, event))
+        interrupt
+            .inner
+            .t
+            .register_event_proxy(Arc::downgrade(&wait));
+        let task_wait = wait.clone();
+        let task = driver.spawn("interrupt-event-proxy", async move {
+            Self::run(task_wait, interrupt).await;
+        });
+        Ok((Self { _task: task, wait }, event))
     }
 
-    async fn run(mut wait: PolledWait<Event>, interrupt: Interrupt) {
+    async fn run(wait: Arc<EventProxyWait>, interrupt: Interrupt) {
         loop {
-            wait.wait().await.expect("wait should not fail");
-            interrupt.deliver();
+            std::future::poll_fn(|cx| {
+                wait.waker.register(cx.waker());
+                interrupt.inner.t.poll_event_proxy(cx, &wait)
+            })
+            .await;
         }
     }
 }
@@ -448,5 +517,8 @@ mod tests {
                 .await;
         }
         assert_eq!(count.load(Ordering::SeqCst), 1);
+        let wait = proxy.as_ref().unwrap().wait.clone();
+        drop(proxy);
+        assert!(wait.wait.lock().is_none());
     }
 }
