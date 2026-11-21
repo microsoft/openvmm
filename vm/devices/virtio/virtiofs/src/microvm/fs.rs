@@ -187,7 +187,8 @@ pub(crate) fn validate_file_insert(
 /// root object in place of `policy`'s directory: the volume opens the file's
 /// directory, but the guest receives no node of that directory, and the
 /// volume also hides the directory's root behind the file, so the guest
-/// reaches nothing but the file.
+/// reaches nothing but the file. The volume reaches the file by its name,
+/// which must therefore be a valid path of the volume, without `\` or `:`.
 fn open_microvm_volume(
     root_path: &Path,
     read_only: bool,
@@ -206,6 +207,11 @@ fn open_microvm_volume(
                 root_path.display()
             );
         };
+        anyhow::ensure!(
+            validate_relative_path(Path::new(name), true).is_ok(),
+            "microVM virtio-fs file {} has a name with `\\` or `:`, which no microVM path may contain",
+            root_path.display()
+        );
         let exposed_file = PathBuf::from(name);
         let policy = SubtreePolicy::new(
             vec![PathBuf::new()],
@@ -309,7 +315,8 @@ impl VirtioFs {
     /// guest's root may enter, and each of `root_paths`, in the order of the
     /// profile's children, is the child of that name, with the child's own
     /// access policy: a host directory, or the regular file of a child that
-    /// exposes a file.
+    /// exposes a file. The name of such a file must not contain `\` or `:`,
+    /// which no microVM path may contain.
     ///
     /// Like [`Self::new_microvm`], the paths are consumed only while opening
     /// the attachment.
