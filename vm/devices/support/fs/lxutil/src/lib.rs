@@ -135,6 +135,20 @@ impl LxVolume {
         self.inner.lstat(path.as_ref())
     }
 
+    /// Returns the path, relative to the volume's root, under whose names the
+    /// file system stores the entry that `path` reaches, or `None` if `path`
+    /// reaches no entry. Symlinks are not followed.
+    ///
+    /// Windows reaches an entry not only by its own name but also by that name
+    /// in another case, unless the entry's directory is case sensitive, and by
+    /// the 8.3 short name of a long name, so the stored path can differ from
+    /// `path`. The stored name of an object with several hard links is the
+    /// name of the link that `path` reaches.
+    #[cfg(windows)]
+    pub fn stored_path(&self, path: impl AsRef<Path>) -> lx::Result<Option<std::path::PathBuf>> {
+        self.inner.stored_path(path.as_ref())
+    }
+
     /// Sets the attributes of a file. Symlinks are not followed.
     ///
     /// This function combines the functionality of `truncate`, `chmod`, `chown` and `utimensat`.
@@ -2540,6 +2554,47 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.value(), lx::EEXIST);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn stored_path_has_the_names_that_the_file_system_stores() {
+        let env = TestEnv::new();
+        env.create_file("Dir/File.txt", "data");
+        env.create_file("Dir/long-file-name.txt", "data");
+        fs::hard_link(
+            env.root_dir.path().join("Dir/File.txt"),
+            env.root_dir.path().join("Dir/Link.txt"),
+        )
+        .unwrap();
+        let stored = |path: &str| {
+            env.volume
+                .stored_path(Path::from_lx(path).unwrap())
+                .unwrap()
+        };
+        let expected = |path: &str| Some(PathBuf::from_lx(path).unwrap());
+
+        assert_eq!(stored("Dir/File.txt"), expected("Dir/File.txt"));
+        assert_eq!(stored("Dir/Link.txt"), expected("Dir/Link.txt"));
+        assert_eq!(stored(""), Some(PathBuf::new()));
+        assert_eq!(stored("Dir/missing"), None);
+        assert_eq!(stored("missing/File.txt"), None);
+        // Windows also resolves a name in another case, and the 8.3 short name
+        // of a long name on a volume that generates short names.
+        assert_eq!(stored("dir/FILE.TXT"), expected("Dir/File.txt"));
+        assert_eq!(stored("dir/link.txt"), expected("Dir/Link.txt"));
+        if env.root_dir.path().join("Dir/LONG-F~1.TXT").exists() {
+            assert_eq!(
+                stored("Dir/LONG-F~1.TXT"),
+                expected("Dir/long-file-name.txt")
+            );
+            assert_eq!(
+                stored("DIR/long-f~1.txt"),
+                expected("Dir/long-file-name.txt")
+            );
+        } else {
+            tracing::info!("the volume does not generate 8.3 short names");
+        }
     }
 
     #[test]

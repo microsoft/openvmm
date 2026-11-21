@@ -705,6 +705,48 @@ pub fn query_information_file<T: FileInformationClass>(handle: &OwnedHandle) -> 
     }
 }
 
+/// Returns the normalized name of an open file: its path from the root of its
+/// volume, with the long name of each component as the file system stores it.
+pub fn query_normalized_name(handle: &OwnedHandle) -> lx::Result<Vec<u16>> {
+    // FILE_NAME_INFORMATION holds the name's length in bytes and then the
+    // name, so 32-bit units keep the length aligned.
+    let mut buffer = vec![0u32; 128];
+    loop {
+        let mut iosb = Default::default();
+        let length = u32::try_from(size_of_val(buffer.as_slice())).map_err(|_| lx::Error::EIO)?;
+        // SAFETY: Calling NtQueryInformationFile as documented, with a buffer
+        // of `length` bytes.
+        let status = unsafe {
+            FileSystem::NtQueryInformationFile(
+                Foundation::HANDLE(handle.as_raw_handle()),
+                &mut iosb,
+                buffer.as_mut_ptr().cast(),
+                length,
+                FileSystem::FileNormalizedNameInformation,
+            )
+        };
+        let name_length = buffer[0] as usize;
+        let valid_length =
+            name_length <= u16::MAX as usize && name_length.is_multiple_of(size_of::<u16>());
+        // A buffer that is too small still receives the name's length.
+        let units = (size_of::<u32>() + name_length).div_ceil(size_of::<u32>());
+        if status == Foundation::STATUS_BUFFER_OVERFLOW && valid_length && units > buffer.len() {
+            buffer.resize(units, 0);
+            continue;
+        }
+        let _ = check_status(status)?;
+        let name = buffer
+            .as_bytes()
+            .get(size_of::<u32>()..size_of::<u32>() + name_length)
+            .filter(|_| valid_length)
+            .ok_or(lx::Error::EIO)?;
+        return Ok(name
+            .chunks_exact(size_of::<u16>())
+            .map(|unit| u16::from_ne_bytes([unit[0], unit[1]]))
+            .collect());
+    }
+}
+
 // Gets file information from a handle.
 pub fn query_information_file_by_name<T: FileInformationClass>(
     parent_handle: Option<&OwnedHandle>,
