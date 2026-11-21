@@ -3,6 +3,7 @@
 
 //! Tests for microVM filesystem persistence and limits.
 
+use super::policy_tests::name;
 use super::policy_tests::request;
 use super::profile::MICROVM_ATTACHMENT_ID;
 use super::profile::MICROVM_FUSE_MAJOR;
@@ -68,6 +69,59 @@ fn microvm_state_restores_against_the_same_attachment() {
         .restore_microvm_state(&profile, state, &session)
         .unwrap();
     assert!(destination.get_inode(FUSE_ROOT_ID).is_ok());
+}
+
+/// A saved state may hold the largest lookup count. Each further reference
+/// that the guest gets for the node, from a lookup or a hard link, must leave
+/// the count there rather than wrap it to zero, so that a forget cannot drop
+/// the node while the guest still references it.
+#[test]
+fn largest_restored_lookup_count_saturates() {
+    for link in [false, true] {
+        let temporary_directory = tempdir().unwrap();
+        let root_path = temporary_directory.path();
+        std::fs::write(root_path.join("file"), b"data").unwrap();
+        let profile = MicroVmVirtioFsProfile::from_attachment(
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(root_path).unwrap(),
+            false,
+            Vec::new(),
+        )
+        .unwrap();
+        let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let node_id = source
+            .lookup(&request(FUSE_ROOT_ID), name("file"))
+            .unwrap()
+            .nodeid;
+        let mut state = source
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+        state
+            .inodes
+            .iter_mut()
+            .find(|inode| inode.node_id == node_id)
+            .unwrap()
+            .lookup_count = u64::MAX;
+        let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let session = Session::new(destination.clone());
+        destination
+            .restore_microvm_state(&profile, state, &session)
+            .unwrap();
+
+        let entry = if link {
+            destination.link(&request(FUSE_ROOT_ID), name("link"), node_id)
+        } else {
+            destination.lookup(&request(FUSE_ROOT_ID), name("file"))
+        };
+        assert_eq!(entry.unwrap().nodeid, node_id);
+        destination.forget(node_id, 1);
+
+        destination.get_attr(&request(node_id), 0, 0).unwrap();
+        let state = destination
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+        assert!(state.inodes.iter().any(|inode| inode.node_id == node_id));
+    }
 }
 
 #[test]

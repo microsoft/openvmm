@@ -357,20 +357,26 @@ impl VirtioFsInode {
         sx
     }
 
-    /// Increments the lookup count.
+    /// Increments the lookup count, saturating at `u64::MAX`.
     pub fn lookup(&self, new_path: PathBuf) {
-        self.lookup_count.fetch_add(1, Ordering::AcqRel);
+        self.inc_lookup();
         self.aliases.write().insert(new_path.clone());
         let mut path = self.path.write();
         *path = new_path;
     }
 
-    /// Increments the lookup count without updating the path.
+    /// Increments the lookup count without updating the path, saturating at `u64::MAX`.
     ///
     /// This is used when returning an existing inode in a FUSE reply (e.g., for hard links)
     /// where the kernel will track the reference and later send a forget.
+    ///
+    /// A count that wrapped to zero would let the next forget evict an inode that the guest
+    /// still references, so the count stops at `u64::MAX` instead.
     pub fn inc_lookup(&self) {
-        self.lookup_count.fetch_add(1, Ordering::AcqRel);
+        self.lookup_count
+            .update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.saturating_add(1)
+            });
     }
 
     /// Decrements the lookup count, and returns the new count.
@@ -774,6 +780,24 @@ mod tests {
             inode.lookup_count.store(initial, Ordering::Release);
             assert_eq!(inode.forget(42, forgotten), expected);
             assert_eq!(inode.lookup_count.load(Ordering::Acquire), expected);
+        }
+    }
+
+    #[test]
+    fn lookup_count_increments_saturate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let volume =
+            Arc::new(VirtioFsVolume::new(LxVolume::new(tmp.path()).unwrap(), 0, false).unwrap());
+        let (inode, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
+
+        for (initial, expected) in [(1, 2), (u64::MAX - 1, u64::MAX), (u64::MAX, u64::MAX)] {
+            inode.lookup_count.store(initial, Ordering::Release);
+            inode.lookup(PathBuf::new());
+            assert_eq!(inode.lookup_count(), expected);
+
+            inode.lookup_count.store(initial, Ordering::Release);
+            inode.inc_lookup();
+            assert_eq!(inode.lookup_count(), expected);
         }
     }
 
