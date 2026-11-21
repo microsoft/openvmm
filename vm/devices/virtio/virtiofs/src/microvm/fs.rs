@@ -187,8 +187,11 @@ pub(crate) fn validate_file_insert(
 /// root object in place of `policy`'s directory: the volume opens the file's
 /// directory, but the guest receives no node of that directory, and the
 /// volume also hides the directory's root behind the file, so the guest
-/// reaches nothing but the file. The volume reaches the file by its name,
-/// which must therefore be a valid path of the volume, without `\` or `:`.
+/// reaches nothing but the file. That file is the one whose identity the
+/// child has: a relative path is relative to the current directory, and a
+/// symbolic link at the path's end leads to its final target. The volume
+/// reaches the file by its name, which must therefore be a valid path of the
+/// volume, without `\` or `:`.
 fn open_microvm_volume(
     root_path: &Path,
     read_only: bool,
@@ -196,12 +199,39 @@ fn open_microvm_volume(
     volume_id: u32,
     file: bool,
 ) -> anyhow::Result<(Arc<VirtioFsVolume>, VirtioFsInode, lx::Stat)> {
+    let resolved;
     let (directory, exposed_file, policy) = if file {
         anyhow::ensure!(
             *policy == SubtreePolicy::default(),
             "a microVM virtio-fs file child takes no denied, allowed, or writable paths"
         );
-        let (Some(directory), Some(name)) = (root_path.parent(), root_path.file_name()) else {
+        let context = || {
+            format!(
+                "failed to resolve microVM virtio-fs file {}",
+                root_path.display()
+            )
+        };
+        // The volume must find the file whose identity the child has in that
+        // file's directory, by its name: a bare name's parent is empty, and a
+        // symbolic link at the path's end names the link, so such a link is
+        // resolved to its final target. Any other path is only made
+        // absolute, so that it keeps the name that it gives, which
+        // canonicalization could change, as it turns a Windows path to the
+        // default stream of a file, `file::$DATA`, into the file's.
+        let link = std::fs::symlink_metadata(root_path)
+            .with_context(context)?
+            .is_symlink();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a link at the path's end must lead to its final target, which the child's identity names"
+        )]
+        let path = if link {
+            std::fs::canonicalize(root_path)
+        } else {
+            std::path::absolute(root_path)
+        };
+        resolved = path.with_context(context)?;
+        let (Some(directory), Some(name)) = (resolved.parent(), resolved.file_name()) else {
             anyhow::bail!(
                 "microVM virtio-fs file {} has no host directory",
                 root_path.display()
@@ -210,7 +240,7 @@ fn open_microvm_volume(
         anyhow::ensure!(
             validate_relative_path(Path::new(name), true).is_ok(),
             "microVM virtio-fs file {} has a name with `\\` or `:`, which no microVM path may contain",
-            root_path.display()
+            resolved.display()
         );
         let exposed_file = PathBuf::from(name);
         let policy = SubtreePolicy::new(
@@ -314,9 +344,11 @@ impl VirtioFs {
     /// profile. Node 1 is a synthetic, read-only directory that only the
     /// guest's root may enter, and each of `root_paths`, in the order of the
     /// profile's children, is the child of that name, with the child's own
-    /// access policy: a host directory, or the regular file of a child that
-    /// exposes a file. The name of such a file must not contain `\` or `:`,
-    /// which no microVM path may contain.
+    /// access policy: the host directory, or the regular file of a child that
+    /// exposes a file, that the path resolves to, as the child's identity
+    /// does, from the current directory and through symbolic links. The name
+    /// of such a file must not contain `\` or `:`, which no microVM path may
+    /// contain.
     ///
     /// Like [`Self::new_microvm`], the paths are consumed only while opening
     /// the attachment.

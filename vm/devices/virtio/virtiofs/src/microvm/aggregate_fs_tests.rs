@@ -960,6 +960,123 @@ fn a_file_child_with_any_other_name_is_reachable() {
     }
 }
 
+/// Attaches the host path `path` as the file child `file` of an aggregate,
+/// read-only or not.
+fn attach_file_at(path: &Path, read_only: bool) -> anyhow::Result<VirtioFs> {
+    VirtioFs::new_microvm_aggregate(&[path], profile(&[Child::file("file", path, read_only)]))
+}
+
+/// Creates the host symbolic link `link` to the file `target`.
+fn host_file_symlink(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(target, link).unwrap();
+}
+
+/// A file child's host path names the file that it resolves to, as the
+/// child's identity does, so the bare name of a file in the current
+/// directory attaches like the same name after `./`, and on Windows like the
+/// name after the current directory's drive (microsoft/nvx#1618).
+#[test]
+fn a_file_child_may_be_named_relative_to_the_current_directory() {
+    // Only a file of the current directory has a bare relative name.
+    let current = std::env::current_dir().unwrap();
+    let file = tempfile::Builder::new()
+        .tempfile_in(&current)
+        .unwrap()
+        .into_temp_path();
+    std::fs::write(&file, b"relative").unwrap();
+    let bare = Path::new(file.file_name().unwrap());
+    let mut paths = vec![bare.to_owned(), Path::new(".").join(bare)];
+    // A Windows path may also be relative to the current directory of a
+    // drive, as `C:name` is.
+    if let Some(std::path::Component::Prefix(drive)) = current.components().next()
+        && let std::path::Prefix::Disk(_) = drive.kind()
+    {
+        let mut path = drive.as_os_str().to_owned();
+        path.push(bare);
+        paths.push(PathBuf::from(path));
+    }
+    for path in paths {
+        let fs = attach_file_at(&path, true).unwrap();
+        let node = lookup(&fs, "file").unwrap();
+        assert_eq!(read_node(&fs, node), b"relative", "{}", path.display());
+    }
+}
+
+/// A file child's host path may be a symbolic link, which the child's
+/// identity resolves to its final target, so the child exposes that file,
+/// by its own name in its own directory, whatever names the links have
+/// and wherever they lie (microsoft/nvx#1618).
+#[test]
+#[cfg_attr(
+    windows,
+    ignore = "requires permission to create native Windows symlinks"
+)]
+fn a_file_child_may_be_a_symbolic_link_to_its_file() {
+    let directory = tempdir().unwrap();
+    let files = directory.path().join("files");
+    let links = directory.path().join("links");
+    std::fs::create_dir(&files).unwrap();
+    std::fs::create_dir(&links).unwrap();
+    let target = files.join("target");
+    std::fs::write(&target, b"target").unwrap();
+    // An absolute link, a link relative to its own directory, and a link to
+    // a link.
+    let absolute = links.join("absolute");
+    let relative = links.join("relative");
+    let chained = directory.path().join("chained");
+    host_file_symlink(&target, &absolute);
+    host_file_symlink(&Path::new("..").join("files").join("target"), &relative);
+    host_file_symlink(&absolute, &chained);
+    for link in [&absolute, &relative, &chained] {
+        let fs = attach_file_at(link, false).unwrap();
+        let node = lookup(&fs, "file").unwrap();
+        let attr = fs.get_attr(&request(node), 0, 0).unwrap().attr;
+        assert_eq!(attr.mode & lx::S_IFMT, lx::S_IFREG, "{}", link.display());
+        assert_eq!(read_node(&fs, node), b"target", "{}", link.display());
+        // The guest writes the target, and the link stays a link.
+        let fh = open(&fs, node, lx::O_RDWR).unwrap();
+        write(&fs, node, fh, b"TARGET").unwrap();
+        release(&fs, node, fh);
+        assert_eq!(std::fs::read(&target).unwrap(), b"TARGET");
+        assert!(std::fs::symlink_metadata(link).unwrap().is_symlink());
+        std::fs::write(&target, b"target").unwrap();
+    }
+}
+
+/// Only the name of the file that a file child's host path resolves to, which
+/// the child's volume names, must be a valid path of the volume, not the name
+/// of a link to the file (microsoft/nvx#1618). On Windows, where a name with a
+/// colon selects a stream of a file, a link to a stream is refused like a path
+/// to it, so the child never exposes another stream.
+#[test]
+#[cfg_attr(
+    windows,
+    ignore = "requires permission to create native Windows symlinks"
+)]
+fn a_file_child_link_needs_a_target_that_its_volume_can_name() {
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("target");
+    std::fs::write(&target, b"target").unwrap();
+    let unnamable = directory.path().join(if cfg!(windows) {
+        "target:stream"
+    } else {
+        "a:b"
+    });
+    std::fs::write(&unnamable, b"unnamable").unwrap();
+    let link = directory.path().join("link");
+    host_file_symlink(&unnamable, &link);
+    assert!(attach_file_at(&link, true).is_err());
+    if cfg!(unix) {
+        let link = directory.path().join("link:target");
+        host_file_symlink(&target, &link);
+        let fs = attach_file_at(&link, true).unwrap();
+        assert_eq!(read_node(&fs, lookup(&fs, "file").unwrap()), b"target");
+    }
+}
+
 #[test]
 fn file_child_state_restores_and_rejects_changes() {
     let files = Files::new();
