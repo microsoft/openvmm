@@ -168,6 +168,20 @@ impl VirtioFsInode {
         self.validate_confined_paths(true)
     }
 
+    /// Performs a lookup for a child that an enumeration of this directory
+    /// listed under `name`, which is the name under which the host stores it,
+    /// so the lookup needs no check that `name` is the child's own name (see
+    /// [`ensure_stored_names`]).
+    pub(crate) fn lookup_listed_child(
+        &self,
+        name: &lx::LxStr,
+    ) -> lx::Result<(VirtioFsInode, fuse::protocol::fuse_attr)> {
+        self.validate_confined()?;
+        let (inode, stat) = VirtioFsInode::new(Arc::clone(&self.volume), self.child_path(name)?)?;
+        let attr = inode.attr_from_stat(&stat);
+        Ok((inode, attr))
+    }
+
     /// Returns whether the volume's access policy lets the guest modify this
     /// object through every path that it knows for the object, so that no
     /// alias, such as a hard link, makes a read-only object writable.
@@ -215,6 +229,9 @@ impl VirtioFsInode {
                     self.volume.ensure_object_allowed(&path, &stat)?;
                 }
             }
+            // A name that once reached the guest's entry may since reach
+            // another entry by that entry's other name.
+            ensure_stored_names(&self.volume, &path, lx::Error::ENOENT)?;
         }
         Ok(())
     }
@@ -244,6 +261,59 @@ pub(crate) fn reject_symlink_stat(volume: &VirtioFsVolume, stat: &lx::Stat) -> l
 
 pub(crate) fn child_name_disallowed(volume: &VirtioFsVolume, name: &[u8]) -> bool {
     volume.strict_paths() && (name.contains(&b'\\') || name.contains(&b':'))
+}
+
+/// Returns the path under whose names a Windows host stores the entry that
+/// `path` reaches on a strict volume, if it reaches one.
+///
+/// The access policy and the guest's names for an object are exact names, as
+/// on Linux, but Windows also resolves a name in another case, unless its
+/// directory is case sensitive, and the 8.3 short name of a long name. Such a
+/// name could reach an entry that the policy protects under its own name, so
+/// the guest reaches an existing entry only by the names that the host stores.
+fn stored_path(volume: &VirtioFsVolume, path: &Path) -> lx::Result<Option<PathBuf>> {
+    #[cfg(windows)]
+    if volume.strict_paths() {
+        return volume.volume.stored_path(path);
+    }
+    let _ = (volume, path);
+    Ok(None)
+}
+
+/// Rejects with `error` a path that reaches an existing entry by other names
+/// than the ones under which the host stores it (see [`stored_path`]).
+pub(crate) fn ensure_stored_names(
+    volume: &VirtioFsVolume,
+    path: &Path,
+    error: lx::Error,
+) -> lx::Result<()> {
+    if stored_path(volume, path)?.is_some_and(|stored| stored != path) {
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Rejects a rename whose source or target reaches an existing entry by other
+/// names than the ones under which the host stores it (see [`stored_path`]):
+/// the source with `ENOENT`, as if nothing had its name, and the target, which
+/// the rename would replace, with `EACCES`, unless the target is the source in
+/// another case, whose name the rename then changes.
+pub(crate) fn ensure_stored_rename_names(
+    volume: &VirtioFsVolume,
+    old_path: &Path,
+    new_path: &Path,
+) -> lx::Result<()> {
+    let Some(old) = stored_path(volume, old_path)? else {
+        // Without a source, the rename fails before it reaches its target.
+        return Ok(());
+    };
+    if old != old_path {
+        return Err(lx::Error::ENOENT);
+    }
+    if stored_path(volume, new_path)?.is_some_and(|new| new != new_path && new != old) {
+        return Err(lx::Error::EACCES);
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_child_path(volume: &VirtioFsVolume, path: &Path) -> lx::Result<()> {
