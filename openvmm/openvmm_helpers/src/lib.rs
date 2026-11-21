@@ -10,4 +10,5 @@ pub mod disk;
 pub mod hypervisor;
 pub mod shared_memory;
 pub mod snapshot;
+pub mod uefi_overload;
 pub mod underhill;

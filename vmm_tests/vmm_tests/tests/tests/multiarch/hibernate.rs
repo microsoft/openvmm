@@ -16,8 +16,10 @@ use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::run_host_cmd;
+use petri_artifacts_common::tags::IsLoadable;
 use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
 use std::process::Command;
 use vmm_test_macros::vmm_test_with;
@@ -237,25 +239,42 @@ async fn hibernate_token<T: PetriVmmBackend>(
 
 /// Verify that resuming under a down-level firmware version overloads VTL0's
 /// firmware with the hibernated version and keeps that version as the token.
-///
-/// The overload needs host support; when the host rejects it, OpenHCL falls back
-/// to the current version and there is nothing to validate.
 #[vmm_test_with(
     noagent,
-    configs(openvmm_openhcl_uefi_x64(guest_test_uefi_x64)[VMGSTOOL_NATIVE])
+    configs(openvmm_openhcl_uefi_x64(guest_test_uefi_x64)[VMGSTOOL_NATIVE, UEFI_FIRMWARE_X64])
 )]
 async fn hibernate_token_overload<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    (vmgstool,): (ResolvedArtifact<impl IsVmgsTool>,),
+    (vmgstool, uefi): (
+        ResolvedArtifact<impl IsVmgsTool>,
+        ResolvedArtifact<impl IsLoadable>,
+    ),
 ) -> anyhow::Result<()> {
-    // Legacy OpenHCL 1.7 moniker.
-    const OLDER_VERSION: u64 = 0x0107;
+    // Legacy OpenHCL 1.8 moniker, which the host maps to its UEFI.
+    const OLDER_VERSION: u64 = 0x0108;
+    let config = config.with_uefi_overload_firmware(uefi);
     let token = hibernate_and_read_token(config, vmgstool, Some(OLDER_VERSION)).await?;
-    if token == HIBERNATE_TOKEN_CURRENT {
-        tracing::warn!("firmware overload failed on this host; skipping token validation");
-        return Ok(());
-    }
     expect_token(token, OLDER_VERSION)
+}
+
+/// Verify that when the host rejects the overload, OpenHCL falls back to the
+/// current firmware version.
+#[vmm_test_with(
+    noagent,
+    configs(openvmm_openhcl_uefi_x64(guest_test_uefi_x64)[VMGSTOOL_NATIVE, UEFI_FIRMWARE_X64])
+)]
+async fn hibernate_token_overload_rejected<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (vmgstool, uefi): (
+        ResolvedArtifact<impl IsVmgsTool>,
+        ResolvedArtifact<impl IsLoadable>,
+    ),
+) -> anyhow::Result<()> {
+    // Legacy OpenHCL 1.7 moniker, which the host has no UEFI for.
+    const OLDER_VERSION: u64 = 0x0107;
+    let config = config.with_uefi_overload_firmware(uefi);
+    let token = hibernate_and_read_token(config, vmgstool, Some(OLDER_VERSION)).await?;
+    expect_token(token, HIBERNATE_TOKEN_CURRENT)
 }
 
 /// Verify that an unrecognized hibernate token is ignored and the current
