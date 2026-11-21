@@ -124,6 +124,99 @@ fn largest_restored_lookup_count_saturates() {
     }
 }
 
+/// A saved state may hold the largest next node ID, `u64::MAX`, which no node
+/// takes: the node table is then full, so a lookup of an object that has no
+/// node yet fails with `ENOSPC`, and the state saves with the same next node
+/// ID, which a restore accepts, rather than one wrapped to zero.
+#[test]
+fn largest_restored_next_node_id_is_never_handed_out() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::write(root_path.join("file"), b"data").unwrap();
+    let profile = profile(root_path);
+    let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let mut state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    state.next_node_id = u64::MAX;
+    let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+    destination
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+
+    assert_eq!(
+        destination
+            .lookup(&request(FUSE_ROOT_ID), name("file"))
+            .map(|entry| entry.nodeid),
+        Err(lx::Error::ENOSPC)
+    );
+
+    let state = destination
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    assert_eq!(state.next_node_id, u64::MAX);
+    let restored = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(restored.clone());
+    restored
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+}
+
+/// A reset or `FUSE_DESTROY` ends a restored session as it ends a new one, so
+/// a remounting guest gets nodes from 2 and handles from 1 again, even after a
+/// restore whose tables were full.
+#[test]
+fn destroy_restarts_restored_ids_from_the_start() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::write(root_path.join("file"), b"data").unwrap();
+    let profile = profile(root_path);
+    let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let node_id = source
+        .lookup(&request(FUSE_ROOT_ID), name("file"))
+        .unwrap()
+        .nodeid;
+    let session_state = SessionState {
+        initialized: true,
+        info: SessionInfoState {
+            major: MICROVM_FUSE_MAJOR,
+            minor: MICROVM_FUSE_MIN_MINOR,
+            capable: FUSE_ASYNC_READ,
+            want: FUSE_ASYNC_READ,
+            max_write: MICROVM_FUSE_MAX_WRITE,
+            time_gran: 1,
+            ..Default::default()
+        },
+    };
+    *source.inner.negotiation.write() = fuse_negotiation_from_session(session_state);
+    let mut state = source.save_microvm_state(&profile, session_state).unwrap();
+    state.next_node_id = u64::MAX;
+    state.next_handle_id = u64::MAX;
+    let fs = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(fs.clone());
+    fs.restore_microvm_state(&profile, state, &session).unwrap();
+    assert_eq!(
+        fs.open(&request(node_id), lx::O_RDONLY as u32)
+            .map(|open| open.fh),
+        Err(lx::Error::ENOSPC)
+    );
+
+    // As a device reset or a `FUSE_DESTROY` does.
+    session.destroy();
+
+    let node_id = fs
+        .lookup(&request(FUSE_ROOT_ID), name("file"))
+        .unwrap()
+        .nodeid;
+    assert_eq!(node_id, FUSE_ROOT_ID + 1);
+    assert_eq!(
+        fs.open(&request(node_id), lx::O_RDONLY as u32)
+            .map(|open| open.fh),
+        Ok(1)
+    );
+}
+
 #[test]
 fn initialized_microvm_negotiation_restores() {
     let temporary_directory = tempdir().unwrap();
