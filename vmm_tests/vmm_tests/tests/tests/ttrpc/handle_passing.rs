@@ -172,11 +172,13 @@ fn create_vm_request(
                         user_token_name: user_token_name.to_string(),
                         shared_mem: false,
                     }),
+                    ..Default::default()
                 }],
                 ..Default::default()
             }),
             ..Default::default()
         }),
         log_id: String::new(),
+        microvm_snapshot: None,
     }
 }

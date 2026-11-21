@@ -60,6 +60,7 @@ pub(crate) fn resolve(
             let VirtioFsBackend::HostFs {
                 root_path,
                 mount_options,
+                windows_options,
             } = &resource.fs
             else {
                 anyhow::bail!("microVM virtio-fs requires a HostFs backend");
@@ -67,6 +68,10 @@ pub(crate) fn resolve(
             anyhow::ensure!(
                 mount_options.is_empty(),
                 "microVM virtio-fs does not accept HostFs mount options"
+            );
+            anyhow::ensure!(
+                windows_options.is_none(),
+                "microVM virtio-fs does not accept HostFs Windows options"
             );
             VirtioFsDevice::new_microvm_hostfs(
                 driver_source,
@@ -159,6 +164,7 @@ mod tests {
     use virtio::resolve::ResolvedVirtioDevice;
     use virtio::resolve::VirtioResolveInput;
     use virtio_resources::fs::VirtioFsAggregateChild;
+    use virtio_resources::fs::VirtioFsWindowsOptions;
     use vm_resource::ResolveResource;
     use vmcore::vm_task::SingleDriverBackend;
 
@@ -209,6 +215,7 @@ mod tests {
         VirtioFsBackend::HostFs {
             root_path: root.path().to_string_lossy().into_owned(),
             mount_options: String::new(),
+            windows_options: None,
         }
     }
 
@@ -398,6 +405,7 @@ mod tests {
             VirtioFsBackend::HostFs {
                 root_path: root.path().to_string_lossy().into_owned(),
                 mount_options: String::new(),
+                windows_options: None,
             },
         );
         assert!(result.is_err());
@@ -412,6 +420,22 @@ mod tests {
             VirtioFsBackend::HostFs {
                 root_path: root.path().to_string_lossy().into_owned(),
                 mount_options: "ro".to_owned(),
+                windows_options: None,
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[async_test]
+    async fn microvm_profile_rejects_windows_options(driver: DefaultDriver) {
+        let root = tempfile::tempdir().unwrap();
+        let result = resolve(
+            driver,
+            MICROVM_MOUNT_TAG,
+            VirtioFsBackend::HostFs {
+                root_path: root.path().to_string_lossy().into_owned(),
+                mount_options: String::new(),
+                windows_options: Some(VirtioFsWindowsOptions::default()),
             },
         );
         assert!(result.is_err());

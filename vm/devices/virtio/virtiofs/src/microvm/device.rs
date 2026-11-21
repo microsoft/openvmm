@@ -14,6 +14,7 @@ use super::state::validate_dormant_microvm_state;
 use super::state::validate_microvm_state;
 use crate::VirtioFs;
 use crate::virtio::VirtioFsDevice;
+use crate::virtio::VirtioFsDeviceOptions;
 use std::path::Path;
 use std::sync::Arc;
 use task_control::TaskControl;
@@ -28,6 +29,17 @@ use vmcore::vm_task::VmTaskDriverSource;
 struct DormantMicrovmFs;
 
 impl fuse::Fuse for DormantMicrovmFs {}
+
+/// The options of the fixed no-DAX microVM device shape.
+fn microvm_device_options(
+    notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
+) -> VirtioFsDeviceOptions {
+    VirtioFsDeviceOptions {
+        shared_memory_size: 0,
+        notify_corruption,
+        num_request_queues: Some(MICROVM_REQUEST_QUEUES),
+    }
+}
 
 impl VirtioFsDevice {
     /// Creates the fixed no-DAX microVM virtio-fs device.
@@ -46,13 +58,11 @@ impl VirtioFsDevice {
             "microVM device profile does not match the HostFs attachment"
         );
         let attachment_id = profile.attachment_id().to_owned();
-        let mut device = Self::with_num_request_queues(
+        let mut device = Self::new(
             driver_source,
             profile.mount_tag(),
             fs.clone(),
-            0,
-            notify_corruption,
-            MICROVM_REQUEST_QUEUES,
+            microvm_device_options(notify_corruption),
         );
         device.microvm_attachment_id = Some(attachment_id);
         device.microvm_profile = Some(profile);
@@ -71,13 +81,11 @@ impl VirtioFsDevice {
         let mount_tag = microvm_mount_tag(&stable_id).ok_or_else(|| {
             anyhow::anyhow!("microVM virtio-fs attachment ID '{stable_id}' is not a fixed slot")
         })?;
-        let mut device = Self::with_num_request_queues(
+        let mut device = Self::new(
             driver_source,
             mount_tag,
             DormantMicrovmFs,
-            0,
-            notify_corruption,
-            MICROVM_REQUEST_QUEUES,
+            microvm_device_options(notify_corruption),
         );
         device.microvm_attachment_id = Some(stable_id);
         Ok(device)

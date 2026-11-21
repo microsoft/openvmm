@@ -602,6 +602,7 @@ fn set_filesystem_options(
         tag,
         root_path,
         read_only,
+        windows_options,
         guest_mount_target,
         read_write,
         denied_paths,
@@ -620,6 +621,10 @@ fn set_filesystem_options(
     anyhow::ensure!(
         !read_only,
         "microVM virtio-fs uses read_write rather than read_only"
+    );
+    anyhow::ensure!(
+        windows_options.is_none(),
+        "microVM virtio-fs does not accept windows_options"
     );
     if aggregate_children.is_empty() {
         anyhow::ensure!(
@@ -1018,7 +1023,7 @@ mod tests {
                     restore_ready_pending: false,
                     rpc_tasks: Vec::new(),
                     transport: ResolvedTransport::Auto,
-                    registry: FdRegistry::default(),
+                    registry: ResourceRegistry::default(),
                 };
                 events.send(event);
                 let result = mesh::CancelContext::new()
@@ -1093,9 +1098,10 @@ mod tests {
             b"\xc2\x01\x04host",
         );
 
-        // `read_only` is upstream's field 3, and the microVM's mount fields
-        // follow it: the mount target and access mode take fields 4 and 5,
-        // and the access policy, owner, and aggregate children 6 to 10.
+        // `read_only` and `windows_options` are upstream's fields 3 and 4,
+        // and the microVM's mount fields follow them: the mount target and
+        // access mode take fields 5 and 6, and the access policy, owner, and
+        // aggregate children 7 to 11.
         assert_wire!(
             vmservice::VirtioFs {
                 read_only: true,
@@ -1103,7 +1109,7 @@ mod tests {
                 read_write: true,
                 ..Default::default()
             },
-            b"\x18\x01\x22\x06/share\x28\x01",
+            b"\x18\x01\x2a\x06/share\x30\x01",
         );
         assert_wire!(
             vmservice::VirtioFs {
@@ -1117,7 +1123,7 @@ mod tests {
                 }],
                 ..Default::default()
             },
-            b"\x32\x01d\x3a\x01a\x42\x01w\x48\x02\x52\x03\x0a\x01c",
+            b"\x3a\x01d\x42\x01a\x4a\x01w\x50\x02\x5a\x03\x0a\x01c",
         );
 
         // The RAM backing file follows upstream's nine `MemoryConfig` fields,
@@ -1986,6 +1992,12 @@ mod tests {
             ),
             (
                 capture(&|request| {
+                    devices(request).virtiofs_config[0].windows_options = Some(Default::default());
+                }),
+                "microVM virtio-fs does not accept windows_options",
+            ),
+            (
+                capture(&|request| {
                     request
                         .config
                         .as_mut()
@@ -2133,12 +2145,15 @@ mod tests {
     #[test]
     fn ttrpc_standard_virtio_fs_preserves_access_mode() {
         for read_only in [false, true] {
-            let handle = build_virtio_fs(vmservice::VirtioFs {
-                tag: "share".to_owned(),
-                root_path: "host-root".to_owned(),
-                read_only,
-                ..Default::default()
-            })
+            let handle = build_virtio_fs(
+                vmservice::VirtioFs {
+                    tag: "share".to_owned(),
+                    root_path: "host-root".to_owned(),
+                    read_only,
+                    ..Default::default()
+                },
+                &ResourceRegistry::default(),
+            )
             .unwrap();
             assert!(matches!(
                 handle.profile,
@@ -2147,12 +2162,14 @@ mod tests {
             let virtio_resources::fs::VirtioFsBackend::HostFs {
                 root_path,
                 mount_options,
+                windows_options,
             } = handle.fs
             else {
                 panic!("standard virtio-fs must use HostFs");
             };
             assert_eq!(root_path, "host-root");
             assert_eq!(mount_options, if read_only { "ro" } else { "" });
+            assert!(windows_options.is_none());
         }
     }
 
@@ -2189,11 +2206,14 @@ mod tests {
             },
         ];
         for fields in microvm_fields {
-            let error = build_virtio_fs(vmservice::VirtioFs {
-                tag: "share".to_owned(),
-                root_path: "host-root".to_owned(),
-                ..fields
-            })
+            let error = build_virtio_fs(
+                vmservice::VirtioFs {
+                    tag: "share".to_owned(),
+                    root_path: "host-root".to_owned(),
+                    ..fields
+                },
+                &ResourceRegistry::default(),
+            )
             .err()
             .expect("microVM mount fields must be rejected");
             assert!(

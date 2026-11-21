@@ -653,6 +653,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     virtio_resources::fs::VirtioFsBackend::HostFs {
                         root_path: filesystem.root_path.clone(),
                         mount_options: String::new(),
+                        windows_options: None,
                     },
                     virtio_resources::fs::microvm::VirtioFsProfile::Microvm {
                         stable_id: slot.stable_id.to_owned(),
