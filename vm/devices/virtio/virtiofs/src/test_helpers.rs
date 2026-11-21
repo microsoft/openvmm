@@ -33,3 +33,15 @@ pub(crate) fn decode_dir_entries(mut reply: &[u8]) -> Vec<DirEntry> {
     }
     entries
 }
+
+/// Asserts that `/proc` and `/sys`, the roots of procfs and sysfs, are two
+/// directories with one inode number on two devices.
+#[cfg(target_os = "linux")]
+pub(crate) fn assert_proc_and_sys_share_an_inode_number() {
+    use std::os::unix::fs::MetadataExt;
+
+    let proc = std::fs::symlink_metadata("/proc").unwrap();
+    let sys = std::fs::symlink_metadata("/sys").unwrap();
+    assert_eq!(proc.ino(), sys.ino());
+    assert_ne!(proc.dev(), sys.dev());
+}
