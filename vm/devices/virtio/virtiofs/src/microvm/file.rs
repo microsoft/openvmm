@@ -196,7 +196,7 @@ impl VirtioFsFile {
         if !buffer.check_dir_entry_plus(name) {
             return Ok(false);
         }
-        let (child, attr) = self.inode.lookup_child(name)?;
+        let (child, attr) = self.inode.lookup_listed_child(name)?;
         // The snapshot numbers each entry as an object of this directory's
         // host device. The host lists a mount point or a btrfs subvolume,
         // whose lookup reaches another device, by the number of another

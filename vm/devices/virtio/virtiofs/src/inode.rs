@@ -396,7 +396,10 @@ impl VirtioFsInode {
     pub fn lookup_child(&self, name: &LxStr) -> lx::Result<(VirtioFsInode, fuse_attr)> {
         self.validate_confined()?;
         let path = self.child_path(name)?;
-        let (inode, stat) = VirtioFsInode::new(Arc::clone(&self.volume), path)?;
+        let stat = self.volume.lstat(&path)?;
+        crate::microvm::inode::ensure_stored_names(&self.volume, &path, lx::Error::ENOENT)?;
+        self.volume.ensure_object_allowed(&path, &stat)?;
+        let inode = VirtioFsInode::with_attr(Arc::clone(&self.volume), path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr))
     }
@@ -465,6 +468,10 @@ impl VirtioFsInode {
     ) -> lx::Result<(VirtioFsInode, fuse_attr, lxutil::LxFile)> {
         self.validate_confined()?;
         let path = self.child_path(name)?;
+        // An exclusive create opens no existing entry.
+        if open_options & lx::O_EXCL == 0 {
+            crate::microvm::inode::ensure_stored_names(&self.volume, &path, lx::Error::EACCES)?;
+        }
         let options = LxCreateOptions::new(mode, uid, gid);
         let open_options = open_options | lx::O_CREAT;
         let file = self.volume.open(&path, open_options, Some(options))?;
@@ -566,6 +573,7 @@ impl VirtioFsInode {
     pub fn unlink(&self, name: &LxStr, flags: i32) -> lx::Result<()> {
         self.validate_confined()?;
         let path = self.child_path(name)?;
+        crate::microvm::inode::ensure_stored_names(&self.volume, &path, lx::Error::ENOENT)?;
         self.volume.unlink(path, flags)
     }
 
@@ -581,6 +589,7 @@ impl VirtioFsInode {
         new_dir.validate_confined()?;
         let path = self.child_path(name)?;
         let new_path = new_dir.child_path(new_name)?;
+        crate::microvm::inode::ensure_stored_rename_names(&self.volume, &path, &new_path)?;
         self.volume.rename(path, new_path, flags)
     }
 
