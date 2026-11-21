@@ -1543,14 +1543,14 @@ impl Server {
         !self.pending_messages.0.is_empty() && !self.state.is_paused()
     }
 
-    /// Tries to resend pending messages using the provided `send`` function.
+    /// Tries to resend pending messages, preserving custom targets.
     pub fn poll_flush_pending_messages(
         &mut self,
-        mut send: impl FnMut(&OutgoingMessage) -> Poll<()>,
+        mut send: impl FnMut(&OutgoingMessage, Option<ConnectionTarget>) -> Poll<()>,
     ) -> Poll<()> {
         if !self.state.is_paused() {
             while let Some(message) = self.pending_messages.0.front() {
-                ready!(send(message));
+                ready!(send(&message.message, message.target));
                 self.pending_messages.0.pop_front();
             }
         }
@@ -2256,6 +2256,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return;
         }
 
+        // Early failures must use the requested target before modify_connection updates the port.
+        let response_target = MessageTarget::Custom(ConnectionTarget {
+            vp: request.target_message_vp,
+            sint: request.target_sint,
+        });
+
         if request.target_sint != VMBUS_SINT {
             tracelimit::warn_ratelimited!(
                 target_vtl = request.target_vtl,
@@ -2265,13 +2271,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             );
 
             // Send an unsupported response to the requested SINT.
-            self.send_version_response_with_target(
-                None,
-                MessageTarget::Custom(ConnectionTarget {
-                    vp: request.target_message_vp,
-                    sint: request.target_sint,
-                }),
-            );
+            self.send_version_response_with_target(None, response_target);
 
             return;
         }
@@ -2291,7 +2291,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             );
 
             // Do not notify the relay in this case.
-            self.send_version_response(None);
+            self.send_version_response_with_target(None, response_target);
             return;
         };
 
@@ -2314,10 +2314,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             MonitorPageRequest::None => None,
             MonitorPageRequest::Invalid => {
                 // Do not notify the relay in this case.
-                self.send_version_response(Some(VersionResponseData::new(
-                    version,
-                    protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-                )));
+                self.send_version_response_with_target(
+                    Some(VersionResponseData::new(
+                        version,
+                        protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+                    )),
+                    response_target,
+                );
 
                 return;
             }
@@ -2349,10 +2352,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }) {
             tracelimit::error_ratelimited!(?err, "server failed to change state");
             self.inner.state = ConnectionState::Disconnected;
-            self.send_version_response(Some(VersionResponseData::new(
-                version,
-                protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-            )));
+            self.send_version_response_with_target(
+                Some(VersionResponseData::new(
+                    version,
+                    protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+                )),
+                response_target,
+            );
         }
     }
 
@@ -3908,7 +3914,12 @@ fn revoke<N: Notifier>(
     retain
 }
 
-struct PendingMessages(VecDeque<OutgoingMessage>);
+struct PendingMessage {
+    message: OutgoingMessage,
+    target: Option<ConnectionTarget>,
+}
+
+struct PendingMessages(VecDeque<PendingMessage>);
 
 impl PendingMessages {
     /// Creates a sender for the specified notifier.
@@ -3941,18 +3952,7 @@ impl<N: Notifier> MessageSender<'_, N> {
         &mut self,
         msg: &T,
     ) {
-        let message = OutgoingMessage::new(msg);
-
-        tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
-        // Don't try to send the message if there are already pending messages.
-        if !self.pending_messages.0.is_empty()
-            || self.is_paused
-            || !self.notifier.send_message(&message, MessageTarget::Default)
-        {
-            tracing::trace!("message queued");
-            // Queue the message for retry later.
-            self.pending_messages.0.push_back(message);
-        }
+        self.send_message_with_target(msg, MessageTarget::Default);
     }
 
     /// Sends a VMBus channel message to the guest via an alternate port.
@@ -3963,16 +3963,29 @@ impl<N: Notifier> MessageSender<'_, N> {
         msg: &T,
         target: MessageTarget,
     ) {
-        if target == MessageTarget::Default {
-            self.send_message(msg);
-        } else {
-            tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
-            // Messages for other targets are not queued, nor are they affected
-            // by the paused state.
-            let message = OutgoingMessage::new(msg);
-            if !self.notifier.send_message(&message, target) {
-                tracelimit::warn_ratelimited!(?target, "failed to send message");
+        tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
+        let message = OutgoingMessage::new(msg);
+        let custom_target = match target {
+            MessageTarget::Default => None,
+            MessageTarget::Custom(target) => Some(target),
+            // Reserved channel messages retain their best-effort delivery semantics.
+            MessageTarget::ReservedChannel(..) => {
+                if !self.notifier.send_message(&message, target) {
+                    tracelimit::warn_ratelimited!(?target, "failed to send message");
+                }
+                return;
             }
+        };
+
+        if !self.pending_messages.0.is_empty()
+            || self.is_paused
+            || !self.notifier.send_message(&message, target)
+        {
+            tracing::trace!("message queued");
+            self.pending_messages.0.push_back(PendingMessage {
+                message,
+                target: custom_target,
+            });
         }
     }
 
