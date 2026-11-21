@@ -3,6 +3,7 @@
 
 use crate::multiarch::OsFlavor;
 use crate::multiarch::cmd;
+use crate::utils::open_vfio_cdev;
 use anyhow::Context;
 use guid::Guid;
 use net_backend_resources::mac_address::MacAddress;
@@ -14,6 +15,9 @@ use petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WINDOWS_DRIVERS;
 use pipette_client::PipetteClient;
 use std::fmt;
 use std::time::Duration;
+use vfio_assigned_device_resources::BarAddressConfig;
+use vfio_assigned_device_resources::VfioCdevDeviceHandle;
+use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test_with;
 
@@ -159,6 +163,73 @@ async fn parse_guest_pci_devices(
     }
 
     Ok(devs)
+}
+
+/// Assign the x86_64-tcg-svm-pcie Incubator profile's disk to an OpenVMM guest
+/// through VFIO cdev/iommufd, exercising DMA and interrupt delivery.
+#[vmm_test_with(openvmm, requires(test_disk), configs(linux_direct_x64))]
+async fn vfio_device_assignment(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let vfio_bdf = std::env::var("INCUBATOR_VFIO_BDF_TEST_DISK")
+        .context("run inside Incubator with the x86_64-tcg-svm-pcie profile")?;
+    let cdev = open_vfio_cdev(&vfio_bdf)?;
+    let iommufd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/iommu")
+        .context("failed to open /dev/iommu")?;
+    tracing::info!(%vfio_bdf, "assigning Incubator virtio-blk device");
+
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 1024 * 1024 * 1024,
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            b.with_pcie_root_topology(1, 1, 3).with_custom_config(|c| {
+                c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                    port_name: "s0rc0rp1".into(),
+                    resource: VfioCdevDeviceHandle {
+                        pci_id: vfio_bdf,
+                        cdev,
+                        iommufd,
+                        iommu_id: "iommu0".into(),
+                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                    }
+                    .into_resource(),
+                });
+            })
+        })
+        .run()
+        .await?;
+
+    const DISK_SIZE: u64 = 64 * 1024 * 1024;
+    let sh = agent.unix_shell();
+    let sectors = sh
+        .read_file("/sys/block/vda/size")
+        .await
+        .context("VFIO-assigned virtio-blk device /dev/vda not found")?;
+    let sectors: u64 = sectors.trim().parse().context("invalid vda sector count")?;
+    assert_eq!(sectors, DISK_SIZE / 512, "assigned disk capacity");
+
+    // The profile uses null-co, so writes are discarded. Verify completion
+    // and transfer counts in both DMA directions, not write/readback equality.
+    let last_blocks = DISK_SIZE / 4096 - 16;
+    for script in [
+        "dd if=/dev/vda of=/dev/null bs=4096 count=16 iflag=direct".to_string(),
+        format!("dd if=/dev/zero of=/dev/vda bs=4096 count=16 seek={last_blocks} oflag=direct"),
+        format!("dd if=/dev/vda of=/dev/null bs=4096 count=16 skip={last_blocks} iflag=direct"),
+    ] {
+        let output = cmd!(sh, "sh -c {script}").read_stderr().await?;
+        anyhow::ensure!(
+            output.contains("16+0 records out"),
+            "incomplete VFIO disk transfer for {script:?}: {output}"
+        );
+    }
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
 }
 
 /// Test PCIe root complex discovery and root port enumeration by

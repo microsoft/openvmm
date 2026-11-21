@@ -214,6 +214,11 @@ pub struct QemuTcgConfig {
     pub machine: String,
     /// CPU model (e.g., "max").
     pub cpu: String,
+    /// Optional IOMMU device and properties (e.g., "amd-iommu,intremap=on,dma-remap=on").
+    /// Primarily for use on x86_64, where the IOMMU shows up as a device, aarch64 guests
+    /// configure the SMMUs via the machine property.
+    #[serde(default)]
+    pub iommu: Option<String>,
     /// Memory size (e.g., "4G").
     pub memory: String,
     /// Number of CPUs (e.g., "2").
@@ -240,10 +245,12 @@ impl IncubatorProfile {
         }
         match &self.incubator {
             IncubatorBackend::QemuTcg(config) => {
-                anyhow::ensure!(
-                    config.arch == Arch::Aarch64,
-                    "Petri QEMU currently supports only AArch64 guests"
-                );
+                if config.arch == Arch::Aarch64 {
+                    anyhow::ensure!(
+                        config.iommu.is_none(),
+                        "aarch64 qemu-tcg IOMMUs should be configured via the `machine` property"
+                    );
+                }
             }
             IncubatorBackend::Openvmm(config) => {
                 anyhow::ensure!(
@@ -312,11 +319,12 @@ mod tests {
 
     const OPENVMM: &str = include_str!("../profiles/x86_64-openvmm.toml");
     const MSHV: &str = include_str!("../profiles/x86_64-mshv.toml");
-    const QEMU: &str = include_str!("../profiles/aarch64-tcg-pcie.toml");
+    const QEMU_AARCH64: &str = include_str!("../profiles/aarch64-tcg-pcie.toml");
+    const QEMU_X64: &str = include_str!("../profiles/x86_64-tcg-svm-pcie.toml");
 
     #[test]
     fn launcher_and_boot_are_separate() -> anyhow::Result<()> {
-        for profile in [OPENVMM, MSHV, QEMU] {
+        for profile in [OPENVMM, MSHV, QEMU_AARCH64, QEMU_X64] {
             IncubatorProfile::from_toml(profile)?.validate()?;
         }
         let direct = IncubatorProfile::from_toml(OPENVMM)?;
@@ -325,7 +333,7 @@ mod tests {
         let mshv = IncubatorProfile::from_toml(MSHV)?;
         assert!(matches!(mshv.incubator, IncubatorBackend::Openvmm(_)));
         assert!(matches!(mshv.boot, IncubatorBoot::Mshv(_)));
-        let qemu = IncubatorProfile::from_toml(QEMU)?;
+        let qemu = IncubatorProfile::from_toml(QEMU_AARCH64)?;
         assert!(matches!(qemu.boot, IncubatorBoot::LinuxDirect));
         Ok(())
     }
@@ -349,7 +357,7 @@ mod tests {
     #[test]
     fn unsupported_combinations_and_misplaced_fields_fail() -> anyhow::Result<()> {
         let qemu_mshv = format!(
-            "{QEMU}\n[boot]\ntype = 'mshv'\nhost-boot = 'app.efi'\nfirmware = 'fw'\nboot-artifacts = 'boot'\nkernel-cmdline = 'test-kernel'\nhypervisor-cmdline = 'test-hypervisor'\n"
+            "{QEMU_AARCH64}\n[boot]\ntype = 'mshv'\nhost-boot = 'app.efi'\nfirmware = 'fw'\nboot-artifacts = 'boot'\nkernel-cmdline = 'test-kernel'\nhypervisor-cmdline = 'test-hypervisor'\n"
         );
         let error = IncubatorProfile::from_toml(&qemu_mshv)?
             .validate()

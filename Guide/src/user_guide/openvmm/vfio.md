@@ -330,3 +330,12 @@ grep . /sys/kernel/mm/hugepages/hugepages-1048576kB/*
 - **No save/restore** — VMs with VFIO devices cannot be saved or migrated.
 - **No hot-plug** — VFIO devices must be specified at VM creation time and cannot be added or removed while the VM is running.
 - **Linux only** — the `--vfio` flag is only available when OpenVMM is built and run on Linux. On Windows, use `--device` with WHP for device assignment.
+
+## Incubator Integration
+
+In order to test VFIO device assignment without baremetal hardware support,
+[the incubator testing environment](../../dev_guide/tests/incubator.md)
+supports launching OpenVMM within a QEMU-TCG environments. These profiles define
+emulated devices and IOMMUs that enable OpenVMM within QEMU to exercise VFIO
+without any hardware support. The extra layers of virtualization slow down
+boot time, but are otherwise functional.

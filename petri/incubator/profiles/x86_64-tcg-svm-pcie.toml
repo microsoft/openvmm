@@ -1,0 +1,39 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Incubator profile: x86-64 with PCIe (AMD SVM and AMD-Vi)
+#
+# TCG's max CPU exposes AMD SVM and nested paging so the guest can run KVM
+# without host hardware virtualization. AMD-Vi provides DMA and interrupt
+# remapping for the assignable PCIe devices.
+
+[incubator]
+type = "qemu-tcg"
+arch = "x86-64"
+binary = "qemu-system-x86_64"
+machine = "q35"
+cpu = "max,svm=on"
+iommu = "amd-iommu,intremap=on,dma-remap=on"
+memory = "4G"
+smp = "2"
+# QEMU 10.2's AMD-Vi page walker mishandles huge-page translations.
+cmdline = "console=ttyS0 iommu.passthrough=0 amd_iommu=pgtbl_v1,nohugepages"
+
+[[devices]]
+type = "virtio-blk"
+name = "test-disk"
+size = "64M"
+vfio = true
+
+# Widen the edu DMA mask so it can reach peer BARs above its default 256 MiB.
+[[devices]]
+type = "edu"
+name = "edu-initiator"
+dma-mask = "0xffffffffffff"
+vfio = true
+
+[[devices]]
+type = "ivshmem-plain"
+name = "ivshmem-target"
+size = "4M"
+vfio = true

@@ -155,7 +155,10 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
                         .unwrap_or_else(|| profile.binary.clone().into()),
                 ),
                 firmware,
-                arch: MachineArch::Aarch64,
+                arch: match profile.arch {
+                    crate::profile::Arch::X86_64 => MachineArch::X86_64,
+                    crate::profile::Arch::Aarch64 => MachineArch::Aarch64,
+                },
                 agent_image: None,
                 openhcl_agent_image: None,
                 pipette_binary: None,
@@ -178,6 +181,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
                             profile.memory,
                             profile.cmdline,
                         )
+                        .with_iommu(profile.iommu)
                 });
             execute(builder, &driver, &config, &signals, bound_command).await
         }

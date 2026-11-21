@@ -10,6 +10,29 @@ use pipette_client::PipetteClient;
 use pipette_client::cmd;
 use std::collections::HashSet;
 
+/// Open the cdev of a PCI device already bound to vfio-pci.
+pub(crate) fn open_vfio_cdev(vfio_bdf: &str) -> anyhow::Result<std::fs::File> {
+    let vfio_dev_dir = std::path::Path::new("/sys/bus/pci/devices")
+        .join(vfio_bdf)
+        .join("vfio-dev");
+    let cdev_name = std::fs::read_dir(&vfio_dev_dir)
+        .with_context(|| {
+            format!(
+                "failed to read {}: is {} bound to vfio-pci?",
+                vfio_dev_dir.display(),
+                vfio_bdf
+            )
+        })?
+        .next()
+        .context("no vfio-dev entry found")?
+        .context("failed to read vfio-dev entry")?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(std::path::Path::new("/dev/vfio/devices").join(cdev_name.file_name()))
+        .context("failed to open VFIO cdev")
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ExpectedGuestDevice {
     pub lun: u32,
