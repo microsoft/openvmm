@@ -231,12 +231,15 @@ fn abort_exposes_status_byte_then_returns_idle() {
 #[test]
 fn abort_recovers_from_read_and_error_states() {
     let (_, mut device) = device(0);
-    submit_request(&mut device, &[APPLICATION_REQUEST, COMMAND_GET_DEVICE_ID]);
-    assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
-    device.write_data(0x69);
-    assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_ERROR);
 
-    for _ in 0..2 {
+    for initial_state in [KCS_STATE_READ, KCS_STATE_ERROR] {
+        submit_request(&mut device, &[APPLICATION_REQUEST, COMMAND_GET_DEVICE_ID]);
+        assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
+        if initial_state == KCS_STATE_ERROR {
+            device.write_data(0x69);
+        }
+        assert_eq!(device.read_status() & STATUS_STATE_MASK, initial_state);
+
         device.read_data();
         device.write_command(KCS_COMMAND_GET_STATUS_ABORT);
         assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_WRITE);
