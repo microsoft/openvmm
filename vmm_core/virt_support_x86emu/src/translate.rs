@@ -689,7 +689,7 @@ mod tests {
             hvdef::HvX64PendingExceptionEvent::from(u128::from(error.event_info.unwrap().reg_0));
         assert_eq!(
             event.vector(),
-            x86defs::Exception::GENERAL_PROTECTION_FAULT.0.into()
+            u16::from(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
         );
         assert!(event.deliver_error_code());
         assert_eq!(event.error_code(), 0);
