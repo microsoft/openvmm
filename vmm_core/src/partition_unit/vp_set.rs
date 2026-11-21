@@ -1457,6 +1457,7 @@ mod vp_state {
                     privilege_check:
                         virt_support_aarch64emu::translate::TranslatePrivilegeCheck::None,
                     set_page_table_bits: false,
+                    pan: None,
                 };
                 Ok(virt_support_aarch64emu::translate::translate_gva_to_gpa(
                     guest_memory,

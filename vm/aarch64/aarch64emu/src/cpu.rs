@@ -2,23 +2,40 @@
 // Licensed under the MIT License.
 
 use std::future::Future;
+use std::sync::atomic::Ordering;
+
+/// The permission and instruction-fetch semantics of a memory read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadKind {
+    Data,
+    Instruction,
+    ReadModifyWrite,
+    Unprivileged,
+}
 
 pub trait Cpu: AccessCpuState {
     /// The error type for IO access failures.
     type Error;
 
-    /// Performs a memory read of an instruction to execute.
-    fn read_instruction(
-        &mut self,
-        gva: u64,
-        bytes: &mut [u8],
-    ) -> impl Future<Output = Result<(), Self::Error>>;
+    /// Reads the system control register used for alignment checks.
+    fn sctlr(&mut self) -> aarch64defs::SctlrEl1;
 
-    /// Performs a memory read of 1, 2, 4, or 8 bytes.
+    /// Whether a syndrome-only physical access has enough context to emulate.
+    fn supports_syndrome_decode(&self) -> bool {
+        true
+    }
+
+    /// Orders guest memory accesses according to `ordering`, including accesses
+    /// that execute natively outside the emulator.
+    fn memory_barrier(&mut self, ordering: Ordering);
+
+    /// Performs a memory read, validating the requested permissions for the
+    /// entire range before accessing memory. The core checks alignment.
     fn read_memory(
         &mut self,
         gva: u64,
         bytes: &mut [u8],
+        kind: ReadKind,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
     /// Performs a memory read of 1, 2, 4, or 8 bytes on a guest physical address.
@@ -30,11 +47,13 @@ pub trait Cpu: AccessCpuState {
         exec: bool,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
-    /// Performs a memory write of 1, 2, 4, or 8 bytes.
+    /// Performs a memory write, validating permissions before any side effects.
+    /// The core checks alignment. `unprivileged` selects EL0 permissions for STTR.
     fn write_memory(
         &mut self,
         gva: u64,
         bytes: &[u8],
+        unprivileged: bool,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
     /// Performs a memory write of 1, 2, 4, or 8 bytes on a guest physical address.
@@ -68,20 +87,25 @@ pub trait Cpu: AccessCpuState {
 impl<T: Cpu + ?Sized> Cpu for &mut T {
     type Error = T::Error;
 
-    fn read_instruction(
-        &mut self,
-        gva: u64,
-        bytes: &mut [u8],
-    ) -> impl Future<Output = Result<(), Self::Error>> {
-        (*self).read_instruction(gva, bytes)
+    fn sctlr(&mut self) -> aarch64defs::SctlrEl1 {
+        (*self).sctlr()
+    }
+
+    fn supports_syndrome_decode(&self) -> bool {
+        (**self).supports_syndrome_decode()
+    }
+
+    fn memory_barrier(&mut self, ordering: Ordering) {
+        (*self).memory_barrier(ordering)
     }
 
     fn read_memory(
         &mut self,
         gva: u64,
         bytes: &mut [u8],
+        kind: ReadKind,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        (*self).read_memory(gva, bytes)
+        (*self).read_memory(gva, bytes, kind)
     }
 
     fn read_physical_memory(
@@ -97,8 +121,9 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         &mut self,
         gva: u64,
         bytes: &[u8],
+        unprivileged: bool,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        (*self).write_memory(gva, bytes)
+        (*self).write_memory(gva, bytes, unprivileged)
     }
 
     fn write_physical_memory(
