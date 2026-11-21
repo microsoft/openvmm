@@ -19,6 +19,7 @@ use scsi_buffers::RequestBuffers;
 use std::fs;
 use std::os::windows::prelude::*;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use vm_resource::ResolveResource;
@@ -376,6 +377,12 @@ mod virtdisk {
             size_use: Option<&mut u32>,
         ) -> u32;
 
+        pub fn GetVirtualDiskPhysicalPath(
+            virtual_disk_handle: RawHandle,
+            disk_path_size_in_bytes: &mut u32,
+            disk_path: *mut u16,
+        ) -> u32;
+
         pub fn CreateVirtualDisk(
             virtual_storage_type: &mut VIRTUAL_STORAGE_TYPE,
             path: *const u16,
@@ -393,6 +400,12 @@ mod virtdisk {
 #[derive(Debug, MeshPayload)]
 /// Handle for an open VHD file.
 pub struct Vhd(fs::File);
+
+impl AsHandle for Vhd {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.0.as_handle()
+    }
+}
 
 fn chk_win32(err: u32) -> std::io::Result<()> {
     if err == 0 {
@@ -479,6 +492,15 @@ impl OpenOptions {
 }
 
 impl Vhd {
+    /// Wraps a virtual disk handle opened by another component, such as a
+    /// client that passed it to this process.
+    ///
+    /// `file` must have been opened with `OpenVirtualDisk` and attached for
+    /// raw access, as [`OpenOptions::open()`] does.
+    pub fn from_file(file: fs::File) -> Self {
+        Self(file)
+    }
+
     /// Create a new dynamic VHD
     pub fn create_dynamic(path: &Path, max_size_mb: u64, vhdx: bool) -> std::io::Result<Self> {
         let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
@@ -609,6 +631,49 @@ impl Vhd {
         Ok(())
     }
 
+    /// Opens the VHD at `path` and attaches it as a host disk without a drive
+    /// letter.
+    ///
+    /// Returns the open VHD and the disk's physical path, such as
+    /// `\\.\PhysicalDriveN`. The disk is detached when the returned [`Vhd`] is
+    /// dropped. Requires administrator privileges.
+    pub fn attach_to_host(path: &Path, read_only: bool) -> std::io::Result<(Self, PathBuf)> {
+        let vhd = OpenOptions {
+            flags: 0,
+            read_only,
+            attach: false,
+        }
+        .open_raw(path)?;
+        let mut flags = virtdisk::ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER;
+        if read_only {
+            flags |= virtdisk::ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY;
+        }
+        let mut disk_path = [0u16; 260];
+        let mut disk_path_size = size_of_val(&disk_path) as u32;
+        // SAFETY: The handle is open, the path buffer is valid for the
+        // specified size, and the results are validated immediately.
+        unsafe {
+            chk_win32(virtdisk::AttachVirtualDisk(
+                vhd.0.as_raw_handle(),
+                None,
+                flags,
+                0,
+                0,
+                None,
+            ))?;
+            chk_win32(virtdisk::GetVirtualDiskPhysicalPath(
+                vhd.0.as_raw_handle(),
+                &mut disk_path_size,
+                disk_path.as_mut_ptr(),
+            ))?;
+        }
+        let len = disk_path
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(disk_path.len());
+        Ok((vhd, std::ffi::OsString::from_wide(&disk_path[..len]).into()))
+    }
+
     fn info_static(&self, info_type: u32) -> std::io::Result<virtdisk::GET_VIRTUAL_DISK_INFO> {
         // SAFETY: We are guaranteed to be holding an open handle, and we
         // validate the result immediately.
@@ -657,6 +722,17 @@ impl Vhd {
                 .u
                 .VirtualDiskId
                 .into())
+        }
+    }
+
+    fn is_attached(&self) -> std::io::Result<bool> {
+        // SAFETY: Accessing the right union field for this call.
+        unsafe {
+            Ok(self
+                .info_static(virtdisk::GET_VIRTUAL_DISK_INFO_IS_LOADED)?
+                .u
+                .IsLoaded
+                != 0)
         }
     }
 }
@@ -730,6 +806,9 @@ pub enum Error {
     #[error("failed to query VHD metadata")]
     /// Error querying disk metadata
     Query(#[source] std::io::Error),
+    #[error("VHD is not attached for raw access")]
+    /// The disk was opened without being attached for raw access.
+    NotAttached,
 }
 
 impl VhdmpDisk {
@@ -745,6 +824,11 @@ impl VhdmpDisk {
 
     /// Creates a disk from an open VHD handle. `vhd` should have been opened via [`OpenOptions::open()`].
     pub fn new(vhd: Vhd, read_only: bool) -> Result<Self, Error> {
+        // A handle passed in by a client may not have been attached, and
+        // metadata queries would then fail with an unrelated error.
+        if !vhd.is_attached().map_err(Error::Query)? {
+            return Err(Error::NotAttached);
+        }
         let size = vhd.get_size().map_err(Error::Query)?;
         let disk_id = vhd.get_disk_id().map_err(Error::Query)?;
         let unmap_cap = scsi::unmap_capabilities(vhd.0.as_handle()).map_err(Error::Query)?;
@@ -983,6 +1067,16 @@ mod tests {
         write_bytes(&disk, 0, &[0x5a; 512]).await;
         disk.unmap(0, 1, false).await.unwrap();
         assert_eq!(read_bytes(&disk, 0, 512).await, vec![0x5a; 512]);
+    }
+
+    #[test]
+    fn unattached_handle_is_rejected() {
+        let path = make_test_vhd();
+        let vhd = VhdmpDisk::options().open_raw(path.as_ref()).unwrap();
+        assert!(matches!(
+            VhdmpDisk::new(vhd, false),
+            Err(super::Error::NotAttached)
+        ));
     }
 
     #[test]

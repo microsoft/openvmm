@@ -92,8 +92,9 @@ virt_mshv.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 der.workspace = true
+disk_vhdmp.workspace = true
 virt_whp.workspace = true
-windows-sys = { workspace = true, features = ["Win32_Security"] }
+windows-sys = { workspace = true, features = ["Win32_Security", "Win32_Storage_FileSystem"] }
 x509-cert.workspace = true
 
 [build-dependencies]
