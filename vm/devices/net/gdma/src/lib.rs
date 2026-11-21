@@ -449,3 +449,466 @@ impl PciConfigSpace for GdmaDevice {
         self.config.write_byte_enabled(offset, value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::CQ;
+    use crate::test_helpers::EQ;
+    use crate::test_helpers::RQ;
+    use crate::test_helpers::SQ;
+    use crate::test_helpers::write_wqe;
+    use chipset_device::mmio::ExternallyManagedMmioIntercepts;
+    use gdma_defs::GdmaCreateDmaRegionReq;
+    use gdma_defs::GdmaCreateDmaRegionResp;
+    use gdma_defs::GdmaDevId;
+    use gdma_defs::GdmaDevType;
+    use gdma_defs::GdmaMsgHdr;
+    use gdma_defs::GdmaQueueType;
+    use gdma_defs::GdmaReqHdr;
+    use gdma_defs::GdmaRequestType;
+    use gdma_defs::GdmaRespHdr;
+    use gdma_defs::HWC_DEV_ID;
+    use gdma_defs::HwcInitTypeData;
+    use gdma_defs::HwcTxOob;
+    use gdma_defs::bnic::ManaCfgRxSteerReq;
+    use gdma_defs::bnic::ManaCommandCode;
+    use gdma_defs::bnic::ManaCreateWqobjReq;
+    use gdma_defs::bnic::Tristate;
+    use net_backend::Queue;
+    use net_backend::QueueConfig;
+    use net_backend::RssConfig;
+    use net_backend::null::NullEndpoint;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::future::poll_fn;
+    use std::pin::pin;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Poll;
+    use test_with_tracing::test;
+    use vmcore::vm_task::SingleDriverBackend;
+    use zerocopy::FromBytes;
+    use zerocopy::Immutable;
+    use zerocopy::KnownLayout;
+
+    const BNIC_DEV_ID: GdmaDevId = GdmaDevId {
+        ty: GdmaDevType::GDMA_DEVICE_MANA,
+        instance: 1,
+    };
+    const REQUESTS: u64 = 0x5000;
+    const RESPONSES: u64 = 0x6000;
+    const SLOT: u64 = 0x100;
+
+    fn device(driver: DefaultDriver, endpoint: Box<dyn Endpoint>) -> GdmaDevice {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        GdmaDevice::new(
+            &driver_source,
+            GuestMemory::allocate(0x10000),
+            &MsiTarget::disconnected(),
+            vec![VportConfig {
+                mac_address: [0, 1, 2, 3, 4, 5].into(),
+                endpoint,
+            }],
+            &mut ExternallyManagedMmioIntercepts,
+        )
+    }
+
+    /// Asks the device to establish the HWC and returns the SMC status.
+    fn establish_hwc(device: &mut GdmaDevice) -> u8 {
+        let hdr = SmcProtoHdr::new()
+            .with_msg_type(SmcMessageType::SMC_MSG_TYPE_ESTABLISH_HWC.0)
+            .with_msg_version(SMC_MSG_TYPE_ESTABLISH_HWC_VERSION);
+        device.write_shmem(SHMEM_LEN - 4, u32::from(hdr).as_bytes());
+        SmcProtoHdr::from(device.shmem.0[SHMEM_LEN / 4 - 1]).status()
+    }
+
+    async fn yield_once() {
+        let mut yielded = false;
+        poll_fn(|cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await
+    }
+
+    async fn until(mut done: impl FnMut() -> bool) {
+        for _ in 0..1000 {
+            if done() {
+                return;
+            }
+            yield_once().await;
+        }
+        panic!("timed out");
+    }
+
+    /// Talks to the device through the HWC, as the guest driver does.
+    struct Guest {
+        queues: Arc<Queues>,
+        sq_id: u32,
+        rq_id: u32,
+        cq_id: u32,
+        sq_tail: u32,
+        rq_tail: u32,
+        requests: u32,
+    }
+
+    impl Guest {
+        /// Establishes the HWC and registers the bnic.
+        async fn new(device: &mut GdmaDevice) -> Self {
+            let mut shmem = [0u8; SHMEM_LEN - 4];
+            for (offset, gpa) in [(0, EQ), (6, CQ), (12, RQ), (18, SQ)] {
+                shmem[offset..offset + 6].copy_from_slice(&(gpa / PAGE_SIZE64).to_ne_bytes()[..6]);
+            }
+            device.write_shmem(0, &shmem);
+            assert_eq!(establish_hwc(device), 0);
+
+            let queues = device.queues.clone();
+            let mut ids = [0; 3];
+            for i in 0..16 {
+                let eqe: gdma_defs::Eqe = queues.gm.read_plain(EQ + i * 16).unwrap();
+                if eqe.params.event_type() == gdma_defs::GDMA_EQE_HWC_INIT_DATA {
+                    let data = HwcInitTypeData::read_from_prefix(&eqe.data).unwrap().0;
+                    match data.ty() {
+                        gdma_defs::HWC_INIT_DATA_SQID => ids[0] = data.value(),
+                        gdma_defs::HWC_INIT_DATA_RQID => ids[1] = data.value(),
+                        gdma_defs::HWC_INIT_DATA_CQID => ids[2] = data.value(),
+                        _ => {}
+                    }
+                }
+            }
+            let [sq_id, rq_id, cq_id] = ids;
+            let mut guest = Self {
+                queues,
+                sq_id,
+                rq_id,
+                cq_id,
+                sq_tail: 0,
+                rq_tail: 0,
+                requests: 0,
+            };
+            let register = guest.post(BNIC_DEV_ID, GdmaRequestType::GDMA_REGISTER_DEVICE.0, &[]);
+            guest.wait(register).await;
+            guest
+        }
+
+        /// Posts a request and returns its id.
+        fn post(&mut self, dev_id: GdmaDevId, msg_type: u32, body: &[u8]) -> u32 {
+            self.requests += 1;
+            let id = self.requests;
+            let request = REQUESTS + id as u64 * SLOT;
+            let hdr = GdmaReqHdr {
+                req: GdmaMsgHdr {
+                    msg_type,
+                    msg_size: (size_of::<GdmaReqHdr>() + body.len()) as u32,
+                    ..FromZeros::new_zeroed()
+                },
+                resp: GdmaMsgHdr {
+                    msg_size: SLOT as u32,
+                    ..FromZeros::new_zeroed()
+                },
+                dev_id,
+                activity_id: id,
+            };
+            let gm = &self.queues.gm;
+            gm.write_plain(request, &hdr).unwrap();
+            gm.write_at(request + size_of_val(&hdr) as u64, body)
+                .unwrap();
+            let oob = HwcTxOob {
+                flags3: gdma_defs::HwcTxOobFlags3::new().with_vscq_id(self.cq_id),
+                flags4: gdma_defs::HwcTxOobFlags4::new().with_vsq_id(self.sq_id),
+                ..FromZeros::new_zeroed()
+            };
+            self.rq_tail += write_wqe(
+                &self.queues,
+                RQ + self.rq_tail as u64,
+                &[],
+                RESPONSES + id as u64 * SLOT,
+                SLOT as u32,
+            );
+            self.sq_tail += write_wqe(
+                &self.queues,
+                SQ + self.sq_tail as u64,
+                oob.as_bytes(),
+                request,
+                hdr.req.msg_size,
+            );
+            self.queues.doorbell_rq(
+                WqDoorbellValue::new()
+                    .with_id(self.rq_id)
+                    .with_tail(self.rq_tail),
+            );
+            self.queues.doorbell_sq(
+                WqDoorbellValue::new()
+                    .with_id(self.sq_id)
+                    .with_tail(self.sq_tail),
+            );
+            id
+        }
+
+        /// Returns the response to request `id`, if the device has written it.
+        fn response(&self, id: u32) -> Option<GdmaRespHdr> {
+            let resp: GdmaRespHdr = self
+                .queues
+                .gm
+                .read_plain(RESPONSES + id as u64 * SLOT)
+                .unwrap();
+            (resp.activity_id == id).then_some(resp)
+        }
+
+        /// Waits for the response to request `id` and checks it succeeded.
+        async fn wait(&self, id: u32) {
+            until(|| self.response(id).is_some()).await;
+            assert_eq!(self.response(id).unwrap().status, 0);
+        }
+
+        /// Sends a request and returns its response payload.
+        async fn request<T: FromBytes + Immutable + KnownLayout>(
+            &mut self,
+            dev_id: GdmaDevId,
+            msg_type: u32,
+            body: &[u8],
+        ) -> T {
+            let id = self.post(dev_id, msg_type, body);
+            self.wait(id).await;
+            self.queues
+                .gm
+                .read_plain(RESPONSES + id as u64 * SLOT + size_of::<GdmaRespHdr>() as u64)
+                .unwrap()
+        }
+
+        async fn dma_region(&mut self, gpa: u64) -> u64 {
+            let req = GdmaCreateDmaRegionReq {
+                length: PAGE_SIZE64,
+                offset_in_page: 0,
+                gdma_page_type: 0,
+                page_count: 1,
+                page_addr_list_len: 1,
+            };
+            let mut body = req.as_bytes().to_vec();
+            body.extend_from_slice(gpa.as_bytes());
+            let resp: GdmaCreateDmaRegionResp = self
+                .request(HWC_DEV_ID, GdmaRequestType::GDMA_CREATE_DMA_REGION.0, &body)
+                .await;
+            resp.gdma_region
+        }
+
+        /// Creates the vport's send and receive queues.
+        async fn create_queues(&mut self) {
+            for (wq_type, gpa) in [
+                (GdmaQueueType::GDMA_SQ, 0x8000),
+                (GdmaQueueType::GDMA_RQ, 0xa000),
+            ] {
+                let req = ManaCreateWqobjReq {
+                    vport: 0,
+                    wq_type,
+                    reserved: 0,
+                    wq_gdma_region: self.dma_region(gpa).await,
+                    cq_gdma_region: self.dma_region(gpa + PAGE_SIZE64).await,
+                    wq_size: PAGE_SIZE64 as u32,
+                    cq_size: PAGE_SIZE64 as u32,
+                    cq_moderation_ctx_id: 0,
+                    cq_parent_qid: 0,
+                };
+                self.request::<[u8; 16]>(
+                    BNIC_DEV_ID,
+                    ManaCommandCode::MANA_CREATE_WQ_OBJ.0,
+                    req.as_bytes(),
+                )
+                .await;
+            }
+        }
+
+        /// Posts a request to enable or disable the vport's receive path.
+        fn post_rx(&mut self, rx_enable: Tristate) -> u32 {
+            let req = ManaCfgRxSteerReq {
+                vport: 0,
+                rx_enable,
+                ..FromZeros::new_zeroed()
+            };
+            self.post(
+                BNIC_DEV_ID,
+                ManaCommandCode::MANA_CONFIG_VPORT_RX.0,
+                req.as_bytes(),
+            )
+        }
+    }
+
+    /// Counts how the calls to one endpoint method ended.
+    #[derive(Default)]
+    struct Calls {
+        started: AtomicUsize,
+        finished: AtomicUsize,
+        dropped: AtomicUsize,
+    }
+
+    impl Calls {
+        fn get(&self) -> [usize; 3] {
+            [&self.started, &self.finished, &self.dropped].map(|n| n.load(Ordering::SeqCst))
+        }
+    }
+
+    /// Counts a call as dropped unless it finished.
+    struct Call<'a> {
+        calls: &'a Calls,
+        finished: bool,
+    }
+
+    impl<'a> Call<'a> {
+        fn new(calls: &'a Calls) -> Self {
+            calls.started.fetch_add(1, Ordering::SeqCst);
+            Self {
+                calls,
+                finished: false,
+            }
+        }
+    }
+
+    impl Drop for Call<'_> {
+        fn drop(&mut self) {
+            let n = if self.finished {
+                &self.calls.finished
+            } else {
+                &self.calls.dropped
+            };
+            n.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// A null endpoint that holds its first `get_queues` or `stop` until the
+    /// test releases it.
+    struct HeldEndpoint {
+        inner: NullEndpoint,
+        hold_get_queues: Option<mesh::OneshotReceiver<()>>,
+        hold_stop: Option<mesh::OneshotReceiver<()>>,
+        get_queues: Arc<Calls>,
+        stop: Arc<Calls>,
+    }
+
+    impl HeldEndpoint {
+        fn new(
+            hold_get_queues: Option<mesh::OneshotReceiver<()>>,
+            hold_stop: Option<mesh::OneshotReceiver<()>>,
+        ) -> Self {
+            Self {
+                inner: NullEndpoint::new(),
+                hold_get_queues,
+                hold_stop,
+                get_queues: Default::default(),
+                stop: Default::default(),
+            }
+        }
+    }
+
+    impl InspectMut for HeldEndpoint {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Endpoint for HeldEndpoint {
+        fn endpoint_type(&self) -> &'static str {
+            "held"
+        }
+
+        async fn get_queues(
+            &mut self,
+            config: Vec<QueueConfig>,
+            rss: Option<&RssConfig<'_>>,
+            queues: &mut Vec<Box<dyn Queue>>,
+        ) -> anyhow::Result<()> {
+            let calls = self.get_queues.clone();
+            let mut call = Call::new(&calls);
+            if let Some(hold) = self.hold_get_queues.take() {
+                hold.await.unwrap();
+            }
+            self.inner.get_queues(config, rss, queues).await?;
+            call.finished = true;
+            Ok(())
+        }
+
+        async fn stop(&mut self) {
+            let calls = self.stop.clone();
+            let mut call = Call::new(&calls);
+            if let Some(hold) = self.hold_stop.take() {
+                hold.await.unwrap();
+            }
+            self.inner.stop().await;
+            call.finished = true;
+        }
+
+        fn is_ordered(&self) -> bool {
+            true
+        }
+    }
+
+    /// Asserts that `stop` stays pending while the device runs.
+    async fn assert_pending(mut stop: std::pin::Pin<&mut impl Future>) {
+        for _ in 0..10 {
+            assert!(futures::poll!(stop.as_mut()).is_pending());
+            yield_once().await;
+        }
+    }
+
+    #[async_test]
+    async fn hwc_stop_waits_for_get_queues(driver: DefaultDriver) {
+        let (release, hold) = mesh::oneshot();
+        let endpoint = HeldEndpoint::new(Some(hold), None);
+        let (get_queues, stop) = (endpoint.get_queues.clone(), endpoint.stop.clone());
+        let mut device = device(driver, Box::new(endpoint));
+        let mut guest = Guest::new(&mut device).await;
+        guest.create_queues().await;
+        let enable = guest.post_rx(Tristate::TRUE);
+        until(|| get_queues.get()[0] == 1).await;
+
+        {
+            let mut hwc_stop = pin!(device.hwc.stop());
+            assert_pending(hwc_stop.as_mut()).await;
+            release.send(());
+            hwc_stop.await;
+        }
+        assert_eq!(guest.response(enable).unwrap().status, 0);
+        assert_eq!(get_queues.get(), [1, 1, 0]);
+
+        // The data path is up: disabling it stops the endpoint.
+        device.hwc.start();
+        let disable = guest.post_rx(Tristate::FALSE);
+        guest.wait(disable).await;
+        assert_eq!(stop.get(), [1, 1, 0]);
+    }
+
+    #[async_test]
+    async fn hwc_stop_waits_for_endpoint_stop(driver: DefaultDriver) {
+        let (release, hold) = mesh::oneshot();
+        let endpoint = HeldEndpoint::new(None, Some(hold));
+        let (get_queues, stop) = (endpoint.get_queues.clone(), endpoint.stop.clone());
+        let mut device = device(driver, Box::new(endpoint));
+        let mut guest = Guest::new(&mut device).await;
+        guest.create_queues().await;
+        let enable = guest.post_rx(Tristate::TRUE);
+        guest.wait(enable).await;
+        let disable = guest.post_rx(Tristate::FALSE);
+        until(|| stop.get()[0] == 1).await;
+
+        {
+            let mut hwc_stop = pin!(device.hwc.stop());
+            assert_pending(hwc_stop.as_mut()).await;
+            release.send(());
+            hwc_stop.await;
+        }
+        assert_eq!(guest.response(disable).unwrap().status, 0);
+        assert_eq!(stop.get(), [1, 1, 0]);
+
+        // The endpoint can hand out queues again.
+        device.hwc.start();
+        let enable = guest.post_rx(Tristate::TRUE);
+        guest.wait(enable).await;
+        assert_eq!(get_queues.get(), [2, 2, 0]);
+    }
+}

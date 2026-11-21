@@ -200,13 +200,16 @@ impl HwControl {
     async fn process(
         &mut self,
         devices: &mut Devices,
-        check: &task_control::StopCheck<'_>,
+        stop: &mut StopTask<'_>,
     ) -> Result<(), task_control::Cancelled> {
         tracing::info!("starting hwc");
 
         loop {
-            check.check()?;
-            if let Err(err) = self.process_request(devices).await {
+            let (sqe, rqe) = stop.until_stopped(self.next_request()).await?;
+            // A stop waits for the request instead of cancelling it, so the
+            // guest gets its completion and an endpoint call is never dropped
+            // partway. NETVSP does not cancel these endpoint calls either.
+            if let Err(err) = self.process_request(devices, sqe, rqe).await {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,
                     "hwc failure"
@@ -216,14 +219,22 @@ impl HwControl {
         }
     }
 
-    async fn process_request(&mut self, devices: &mut Devices) -> anyhow::Result<()> {
+    /// Waits for a request and a buffer for its response.
+    async fn next_request(&mut self) -> (Wqe, (u32, Wqe)) {
         // Retain accepted work if cancellation interrupts the wait for an RQE.
         if self.pending_sqe.is_none() {
             self.pending_sqe = Some(poll_fn(|cx| self.state.queues.poll_sq(self.sq_id, cx)).await);
         }
-        let (rqe_offset, rqe) = poll_fn(|cx| self.state.queues.poll_rq(self.rq_id, cx)).await;
-        let sqe = self.pending_sqe.take().unwrap();
+        let rqe = poll_fn(|cx| self.state.queues.poll_rq(self.rq_id, cx)).await;
+        (self.pending_sqe.take().unwrap(), rqe)
+    }
 
+    async fn process_request(
+        &mut self,
+        devices: &mut Devices,
+        sqe: Wqe,
+        (rqe_offset, rqe): (u32, Wqe),
+    ) -> anyhow::Result<()> {
         let queues = self.state.queues.clone();
         let tx_oob = HwcTxOob::read_from_prefix(sqe.oob())
             .map_err(|_| anyhow!("reading tx oob"))?
@@ -538,8 +549,7 @@ impl AsyncRun<HwControl> for Devices {
         stop: &mut StopTask<'_>,
         hwc: &mut HwControl,
     ) -> Result<(), task_control::Cancelled> {
-        let check = stop.check_handle()?;
-        stop.until_stopped(hwc.process(self, &check)).await?
+        hwc.process(self, stop).await
     }
 }
 
