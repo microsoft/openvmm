@@ -64,14 +64,15 @@ impl FsIdentity {
 /// the thread's original identity. Assuming a different identity, or dropping supplementary
 /// groups, requires `CAP_SETUID` and `CAP_SETGID`. A thread that already has `identity` and no
 /// other supplementary groups needs no privilege. In a user namespace that does not map every
-/// group, the kernel reports each unmapped group as its overflow GID, so there a supplementary
-/// group with the overflow GID counts as another group even if `identity` has that GID.
+/// group, the kernel reports each unmapped group as its overflow GID, and a thread that drops
+/// such a group cannot regain it, so there a thread that has a supplementary group with the
+/// overflow GID cannot run `operation` as any identity.
 ///
 /// # Errors
 ///
-/// Returns `EPERM` without running `operation` if the thread cannot assume `identity` or drop
-/// its other supplementary groups. The operation never falls back to the thread's original
-/// identity.
+/// Returns `EPERM` without running `operation` if the thread cannot assume `identity`, or cannot
+/// drop its other supplementary groups and restore them afterwards. The operation never falls
+/// back to the thread's original identity.
 ///
 /// # Panics
 ///
@@ -112,10 +113,8 @@ impl SwitchedCredentials {
             cleared_capabilities: false,
         };
         // On an error below, dropping `credentials` restores whatever was already changed.
-        let groups = groups()?;
-        if groups.iter().any(|&group| group != identity.gid)
-            || (!groups.is_empty() && may_report_other_groups_as(identity.gid))
-        {
+        let groups = mapped_groups()?;
+        if groups.iter().any(|&group| group != identity.gid) {
             set_groups(&[])?;
             credentials.groups = Some(groups);
         }
@@ -197,16 +196,31 @@ fn groups() -> lx::Result<Vec<lx::gid_t>> {
     Ok(groups)
 }
 
-/// Returns whether `getgroups` may report a supplementary group other than `gid` as `gid`.
+/// Returns the calling thread's supplementary groups, or `EPERM` if they may hide a group that
+/// its user namespace does not map.
 ///
-/// `getgroups` reports each group that the calling thread's user namespace does not map as the
-/// kernel's overflow GID. A namespace maps only IDs that its parent maps, so one that maps every
-/// ID, as the initial user namespace does, leaves no group unmapped.
-fn may_report_other_groups_as(gid: lx::gid_t) -> bool {
-    // A map that cannot be read may leave groups unmapped, and an overflow GID that cannot be
-    // read may be any GID.
-    !std::fs::read_to_string("/proc/self/gid_map").is_ok_and(|map| maps_every_id(&map))
-        && overflow_gid().is_none_or(|overflow| overflow == gid)
+/// `getgroups` reports each group that the namespace does not map as the kernel's overflow GID.
+/// Such a group may be any group, so an operation must not keep it, and `set_groups` accepts
+/// only mapped groups, so a thread that drops it cannot regain it. A namespace maps only IDs that
+/// its parent maps, so one that maps every ID, as the initial user namespace does, leaves no
+/// group unmapped.
+fn mapped_groups() -> lx::Result<Vec<lx::gid_t>> {
+    let first = groups()?;
+    // A map that cannot be read may leave groups unmapped.
+    if first.is_empty()
+        || std::fs::read_to_string("/proc/self/gid_map").is_ok_and(|map| maps_every_id(&map))
+    {
+        return Ok(first);
+    }
+    // The overflow GID may change at any time, so read the groups again between two reads of it.
+    // An overflow GID that cannot be read may be any GID.
+    let overflow = overflow_gid();
+    let groups = groups()?;
+    if overflow.is_some_and(|overflow| !groups.contains(&overflow)) && overflow_gid() == overflow {
+        Ok(groups)
+    } else {
+        Err(lx::Error::EPERM)
+    }
 }
 
 /// Returns the kernel's overflow GID, from `/proc/sys/kernel/overflowgid`, if it can be read.
@@ -705,5 +719,132 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// In a user namespace that permits `setgroups` but leaves one of a thread's groups unmapped,
+    /// the thread could drop that group, which reads as the overflow GID, but never regain it. A
+    /// switch must fail before it changes any group, whether the namespace leaves the overflow
+    /// GID unmapped, maps it to another group, or maps it to the thread's own GID.
+    ///
+    /// Run with `CAP_SETGID`, for example as root.
+    #[test]
+    #[ignore = "requires CAP_SETGID"]
+    fn unmapped_groups_fail_closed_with_privilege() {
+        const DIRECTORY: &str = "LXUTIL_TEST_UNMAPPED_GROUPS_DIRECTORY";
+        const RERUN: &str = "LXUTIL_TEST_UNMAPPED_GROUPS_RERUN";
+        // Running the binary through this link needs no search permission on its directories,
+        // which a process in the namespace lacks if they are private to an owner that the
+        // namespace does not map.
+        const EXECUTABLE: &str = "/proc/self/exe";
+        if let Some(directory) = std::env::var_os(DIRECTORY) {
+            if std::env::var_os(RERUN).is_some() {
+                switch_with_unmapped_group(Path::new(&directory));
+                return;
+            }
+            // Wait until the parent has mapped this process's user namespace, and then run again
+            // as the namespace's root, which has every capability there.
+            std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
+            let error = Command::new(EXECUTABLE)
+                .args(std::env::args_os().skip(1))
+                .env(RERUN, "1")
+                .exec();
+            panic!("cannot run again in the user namespace: {error}");
+        }
+
+        assert!(has_capability(CAP_SETGID), "this test requires CAP_SETGID");
+        let overflow = overflow_gid().expect("cannot read the overflow GID");
+        // SAFETY: These calls have no preconditions.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        // The child also has a group that its namespace does not map.
+        let unmapped_group = foreign_identity().gid;
+        let another_group = (unmapped_group + 1..).find(|&group| group != gid).unwrap();
+        // The child's own GID inside the namespace, which must differ from the overflow GID.
+        let inside = u32::from(overflow == 0);
+        let mut failures = Vec::new();
+        for gid_map in [
+            format!("{inside} {gid} 1"),
+            format!("{inside} {gid} 1\n{overflow} {another_group} 1"),
+            format!("{overflow} {gid} 1"),
+        ] {
+            // A file of the unmapped group shows whether the child still has that group. A
+            // member of that group, which CAP_SETGID lets a thread become, may give the file
+            // that group.
+            let directory = tempfile::tempdir().unwrap();
+            let probe = directory.path().join("probe");
+            std::fs::write(&probe, b"").unwrap();
+            let file = probe.clone();
+            std::thread::spawn(move || {
+                set_groups(&[gid, unmapped_group]).unwrap();
+                std::os::unix::fs::chown(file, None, Some(unmapped_group)).unwrap();
+            })
+            .join()
+            .unwrap();
+
+            let mut command = Command::new(EXECUTABLE);
+            command
+                .args([
+                    "--exact",
+                    "unix::credentials::tests::unmapped_groups_fail_closed_with_privilege",
+                    "--include-ignored",
+                    "--no-capture",
+                ])
+                .env(DIRECTORY, directory.path())
+                .stdin(Stdio::piped());
+            // SAFETY: Between fork and exec, the child only sets its groups and calls unshare,
+            // which take only integers and a pointer to a local array, and are async-signal-safe.
+            unsafe {
+                command.pre_exec(move || {
+                    set_groups(&[gid, unmapped_group])
+                        .map_err(|error| std::io::Error::from_raw_os_error(error.value()))?;
+                    if libc::unshare(libc::CLONE_NEWUSER) == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                });
+            }
+            let mut child = command.spawn().unwrap();
+            // A process with CAP_SETGID may map groups without denying setgroups.
+            let pid = child.id();
+            std::fs::write(format!("/proc/{pid}/uid_map"), format!("0 {uid} 1")).unwrap();
+            std::fs::write(format!("/proc/{pid}/gid_map"), &gid_map).unwrap();
+            drop(child.stdin.take());
+            let status = child.wait().unwrap();
+            // The child leaves this file, so that a name that matches no test fails.
+            let ran = directory.path().join("ran").exists();
+            if !status.success() || !ran {
+                failures.push(format!("{gid_map:?}: {status}, ran: {ran}"));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Switches to the thread's own identity in the user namespace of
+    /// [`unmapped_groups_fail_closed_with_privilege`], after recording in `directory` that it
+    /// ran. `chmod` keeps the `S_ISGID` bit of the probe file there, which belongs to the group
+    /// that the namespace does not map, only for a member of that group.
+    fn switch_with_unmapped_group(directory: &Path) {
+        std::fs::write(directory.join("ran"), b"").unwrap();
+        let probe = directory.join("probe");
+        let has_unmapped_group = || {
+            std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o2755)).unwrap();
+            std::fs::metadata(&probe).unwrap().mode() & libc::S_ISGID != 0
+        };
+        assert!(has_unmapped_group());
+        assert!(groups().unwrap().contains(&overflow_gid().unwrap()));
+        // Another thread, which starts with this one's credentials, shows that it could drop
+        // its groups.
+        assert_eq!(
+            std::thread::spawn(|| set_groups(&[])).join().unwrap(),
+            Ok(())
+        );
+
+        let ran = AtomicBool::new(false);
+        let result = with_fs_identity(FsIdentity::current(), || ran.store(true, Ordering::Relaxed));
+
+        assert_eq!(result, Err(lx::Error::EPERM));
+        assert!(!ran.load(Ordering::Relaxed));
+        assert!(has_unmapped_group());
     }
 }
