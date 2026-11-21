@@ -5,6 +5,8 @@
 
 use super::*;
 use ipmi_protocol::*;
+use pal_async::DefaultDriver;
+use pal_async::async_test;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -14,6 +16,10 @@ use test_with_tracing::test;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateBlob;
+use vmcore::vmtime::SavedState as VmTimeSavedState;
+use vmcore::vmtime::VmTime;
+use vmcore::vmtime::VmTimeAccess;
+use vmcore::vmtime::VmTimeKeeper;
 
 const APPLICATION_REQUEST: u8 = NETFN_APPLICATION << 2;
 const STORAGE_REQUEST: u8 = NETFN_STORAGE << 2;
@@ -31,10 +37,21 @@ impl FakeClock {
     }
 }
 
-impl TrustedClock for FakeClock {
+impl WallClock for FakeClock {
     fn unix_seconds(&mut self) -> i64 {
         self.0.load(Ordering::Relaxed)
     }
+}
+
+async fn stopped_vmtime(driver: &DefaultDriver) -> (VmTimeKeeper, VmTimeAccess) {
+    let keeper = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
+    let access = keeper
+        .builder()
+        .build(driver)
+        .await
+        .unwrap()
+        .access("ipmi_kcs");
+    (keeper, access)
 }
 
 #[derive(Default)]
@@ -184,20 +201,56 @@ fn abort_exposes_status_byte_then_returns_idle() {
     device.write_data(APPLICATION_REQUEST);
     assert_eq!(device.read_data(), 0);
 
+    // IPMI v2.0 KCS error recovery: GET_STATUS/ABORT, clear OBF, write a
+    // dummy 0x00 data byte, read the status byte, then READ_NEXT to IDLE.
     device.write_command(KCS_COMMAND_GET_STATUS_ABORT);
-    assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
+    assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_WRITE);
     assert_ne!(device.read_status() & STATUS_CD, 0);
     assert_eq!(device.read_data(), 0);
     assert_eq!(device.read_status() & STATUS_OBF, 0);
 
-    device.write_data(KCS_DATA_READ_NEXT);
+    device.write_data(0);
     assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
-    assert_eq!(device.read_data(), 0xff);
+    assert_ne!(device.read_status() & STATUS_OBF, 0);
+    assert_eq!(device.read_data(), KCS_STATUS_ABORTED_BY_COMMAND);
 
     device.write_data(KCS_DATA_READ_NEXT);
     assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_IDLE);
     assert_eq!(device.read_status() & STATUS_CD, 0);
     assert_eq!(device.read_data(), 0);
+
+    let response = transact(&mut device, &[APPLICATION_REQUEST, COMMAND_GET_DEVICE_ID]);
+    assert_completion(
+        &response,
+        APPLICATION_REQUEST,
+        COMMAND_GET_DEVICE_ID,
+        COMPLETION_SUCCESS,
+    );
+}
+
+#[test]
+fn abort_recovers_from_read_and_error_states() {
+    let (_, mut device) = device(0);
+
+    for initial_state in [KCS_STATE_READ, KCS_STATE_ERROR] {
+        submit_request(&mut device, &[APPLICATION_REQUEST, COMMAND_GET_DEVICE_ID]);
+        assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
+        if initial_state == KCS_STATE_ERROR {
+            device.write_data(0x69);
+        }
+        assert_eq!(device.read_status() & STATUS_STATE_MASK, initial_state);
+
+        device.read_data();
+        device.write_command(KCS_COMMAND_GET_STATUS_ABORT);
+        assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_WRITE);
+        assert_eq!(device.read_data(), 0);
+        device.write_data(0);
+        assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
+        assert_eq!(device.read_data(), KCS_STATUS_ABORTED_BY_COMMAND);
+        device.write_data(KCS_DATA_READ_NEXT);
+        assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_IDLE);
+        assert_eq!(device.read_data(), 0);
+    }
 }
 
 #[test]
@@ -213,10 +266,11 @@ fn malformed_kcs_sequences_are_handled_without_panicking() {
 
     device.reset();
     device.write_command(0xff);
-    assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
+    assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_WRITE);
     assert_eq!(device.read_data(), 0);
-    device.write_data(KCS_DATA_READ_NEXT);
-    assert_eq!(device.read_data(), 0xff);
+    device.write_data(0);
+    assert_eq!(device.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
+    assert_eq!(device.read_data(), KCS_STATUS_ILLEGAL_CONTROL_CODE);
 
     device.reset();
     device.write_command(KCS_COMMAND_WRITE_END);
@@ -389,6 +443,56 @@ fn sel_info_add_and_record_preservation() {
     assert_eq!(
         u32::from_le_bytes([info[8], info[9], info[10], info[11]]),
         0x0102_0304
+    );
+}
+
+#[test]
+fn oem_non_timestamped_records_preserve_payload() {
+    let (clock, mut device) = device(0x0102_0304);
+
+    let mut record = [0; 16];
+    record[2] = 0xe0;
+    for (i, byte) in record[3..].iter_mut().enumerate() {
+        *byte = 0x30 + i as u8;
+    }
+    let response = transact(
+        &mut device,
+        &storage_request(COMMAND_ADD_SEL_ENTRY, &record),
+    );
+    assert_completion(
+        &response,
+        STORAGE_REQUEST,
+        COMMAND_ADD_SEL_ENTRY,
+        COMPLETION_SUCCESS,
+    );
+
+    let stored = device.sel_record(0).unwrap();
+    assert_eq!(&stored[0..2], &1u16.to_le_bytes());
+    assert_eq!(&stored[2..], &record[2..]);
+
+    let info = transact(&mut device, &storage_request(COMMAND_GET_SEL_INFO, &[]));
+    assert_eq!(
+        u32::from_le_bytes([info[8], info[9], info[10], info[11]]),
+        0x0102_0304
+    );
+
+    clock.set(0x0102_0400);
+    let mut timestamped = [0; 16];
+    timestamped[2] = 0xdf;
+    add_record_bytes(&mut device, &timestamped);
+    assert_eq!(
+        &device.sel_record(1).unwrap()[3..7],
+        &0x0102_0400u32.to_le_bytes()
+    );
+}
+
+fn add_record_bytes(device: &mut IpmiKcs, record: &[u8; 16]) {
+    let response = transact(device, &storage_request(COMMAND_ADD_SEL_ENTRY, record));
+    assert_completion(
+        &response,
+        STORAGE_REQUEST,
+        COMMAND_ADD_SEL_ENTRY,
+        COMPLETION_SUCCESS,
     );
 }
 
@@ -594,16 +698,17 @@ fn sel_time_supports_positive_and_negative_offsets() {
     assert_eq!(u32::from_le_bytes(time[3..7].try_into().unwrap()), 0);
 }
 
-#[test]
-fn sink_results_do_not_change_committed_records() {
+#[async_test]
+async fn sink_results_do_not_change_committed_records(driver: DefaultDriver) {
     let clock = FakeClock::new(10);
+    let (_keeper, vmtime) = stopped_vmtime(&driver).await;
     let sink_state = Arc::new(Mutex::new(SinkState::default()));
     let accept = Arc::new(AtomicBool::new(true));
     let sink = SharedSink {
         state: sink_state.clone(),
         accept: accept.clone(),
     };
-    let mut device = IpmiKcs::with_event_sink(Box::new(clock), Box::new(sink));
+    let mut device = IpmiKcs::with_event_sink(Box::new(clock), vmtime, Box::new(sink));
 
     add_record(&mut device, 0x11);
     accept.store(false, Ordering::Relaxed);
@@ -625,15 +730,16 @@ fn sink_results_do_not_change_committed_records() {
     assert_eq!(state.records[0].1, *device.sel_record(0).unwrap());
 }
 
-#[test]
-fn sink_forwarding_is_limited_to_256_per_trusted_second() {
-    let clock = FakeClock::new(10);
+#[async_test]
+async fn sink_forwarding_is_limited_to_256_per_vmtime_second(driver: DefaultDriver) {
+    let wall_clock = FakeClock::new(10);
+    let (mut keeper, vmtime) = stopped_vmtime(&driver).await;
     let sink_state = Arc::new(Mutex::new(SinkState::default()));
     let sink = SharedSink {
         state: sink_state.clone(),
         accept: Arc::new(AtomicBool::new(true)),
     };
-    let mut device = IpmiKcs::with_event_sink(Box::new(clock.clone()), Box::new(sink));
+    let mut device = IpmiKcs::with_event_sink(Box::new(wall_clock.clone()), vmtime, Box::new(sink));
 
     for _ in 0..256 {
         assert_completion(
@@ -653,22 +759,29 @@ fn sink_forwarding_is_limited_to_256_per_trusted_second() {
     assert_eq!(device.stats().rate_limited, 1);
     assert_eq!(sink_state.lock().records.len(), 256);
 
-    clock.set(11);
-    clear(&mut device, 0, 0xaa);
-    add_record(&mut device, 0x5c);
-    assert_eq!(device.stats().forwarded, 257);
-    assert_eq!(device.stats().rate_limited, 1);
-    for _ in 1..256 {
+    // Guest-adjustable wall-clock changes must not replenish the budget.
+    for wall_seconds in [11, 1000, 5] {
+        wall_clock.set(wall_seconds);
         clear(&mut device, 0, 0xaa);
         add_record(&mut device, 0x5c);
     }
-    assert_eq!(device.stats().forwarded, 512);
+    assert_eq!(device.stats().forwarded, 256);
+    assert_eq!(device.stats().rate_limited, 4);
 
-    clock.set(10);
-    clear(&mut device, 0, 0xaa);
-    add_record(&mut device, 0x5d);
+    keeper
+        .restore(VmTimeSavedState::from_vmtime(VmTime::from_100ns(
+            10_000_000,
+        )))
+        .await;
+    for _ in 0..256 {
+        clear(&mut device, 0, 0xaa);
+        add_record(&mut device, 0x5d);
+    }
     assert_eq!(device.stats().forwarded, 512);
-    assert_eq!(device.stats().rate_limited, 2);
+    clear(&mut device, 0, 0xaa);
+    add_record(&mut device, 0x5e);
+    assert_eq!(device.stats().forwarded, 512);
+    assert_eq!(device.stats().rate_limited, 5);
 }
 
 #[test]
@@ -740,6 +853,25 @@ fn save_restore_idle_write_and_read_transactions() {
 }
 
 #[test]
+fn save_restore_preserves_abort_phase() {
+    let (_, mut source) = device(1);
+    source.write_command(KCS_COMMAND_GET_STATUS_ABORT);
+    assert_eq!(source.read_data(), 0);
+    let state = source.save().unwrap();
+    let state = SavedStateBlob::new(state)
+        .parse::<save_restore::SavedState>()
+        .unwrap();
+
+    let mut restored = restore_target(1, state);
+    assert_eq!(restored.read_status() & STATUS_STATE_MASK, KCS_STATE_WRITE);
+    restored.write_data(0);
+    assert_eq!(restored.read_status() & STATUS_STATE_MASK, KCS_STATE_READ);
+    assert_eq!(restored.read_data(), KCS_STATUS_ABORTED_BY_COMMAND);
+    restored.write_data(KCS_DATA_READ_NEXT);
+    assert_eq!(restored.read_status() & STATUS_STATE_MASK, KCS_STATE_IDLE);
+}
+
+#[test]
 fn save_restore_preserves_sel_and_adjusted_time() {
     let clock = FakeClock::new(1000);
     let mut source = IpmiKcs::new(Box::new(clock.clone()));
@@ -800,6 +932,10 @@ fn malformed_saved_state_is_rejected() {
     state.sel_records = vec![record.clone(), record];
     state.sel_count = 2;
     state.next_record_id = 2;
+    assert_invalid_state(state);
+
+    let mut state = valid.clone();
+    state.abort_pending = true;
     assert_invalid_state(state);
 
     let mut state = valid;

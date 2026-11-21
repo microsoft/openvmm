@@ -4222,6 +4222,7 @@ dependencies = [
  "ipmi_protocol",
  "local_clock",
  "mesh",
+ "pal_async",
  "parking_lot",
  "test_with_tracing",
  "thiserror 2.0.16",
