@@ -83,6 +83,8 @@ pub enum NvmeSpawnerError {
     DeviceInitFailed(#[source] anyhow::Error),
     #[error("failed to create dma client for device")]
     DmaClient(#[source] anyhow::Error),
+    #[error("nvme driver is not initialized")]
+    DriverNotInitialized,
     #[error("failed to get namespace {nsid}")]
     Namespace {
         nsid: u32,

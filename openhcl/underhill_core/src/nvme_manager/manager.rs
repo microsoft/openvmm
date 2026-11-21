@@ -326,16 +326,16 @@ impl NvmeManagerWorker {
             );
         }
 
-        // If the driver is already loaded, we can just return.
-        {
+        // Existing managers may still need initialization after an earlier failure.
+        let client = {
             let guard = context.devices.read();
-            if guard.contains_key(&pci_id) {
-                return Ok(());
-            }
+            guard.get(&pci_id).map(|manager| manager.client().clone())
+        };
+        if let Some(client) = client {
+            return client.load_driver().await;
         }
 
-        // Now we don't think there is a driver yet, so we need to create one. Get exclusive access
-        // to update the hash map.
+        // No manager was found, so get exclusive access to create one.
         //
         // Note: `client` exists outside of the devices write lock. This is safe:
         // the mesh client will fail appropriately if shutdown comes in between inserting
@@ -344,7 +344,7 @@ impl NvmeManagerWorker {
         let client = {
             let mut guard = context.devices.write();
 
-            // Check if another thread created the driver while we were waiting for the lock.
+            // Check if another thread created a manager while we were waiting for the lock.
             if let Some(driver) = guard.get(&pci_id) {
                 Ok::<_, anyhow::Error>(driver.client().clone())
             } else if context.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
@@ -387,7 +387,7 @@ impl NvmeManagerWorker {
         nsid: u32,
         context: NvmeWorkerContext,
     ) -> anyhow::Result<nvme_driver::NamespaceHandle> {
-        // If the driver is already created, use it.
+        // Reuse a registered manager; its driver may still need initialization.
         let mut client: Option<NvmeDriverManagerClient> = None;
         {
             let guard = context.devices.read();
@@ -411,7 +411,10 @@ impl NvmeManagerWorker {
         }
 
         match client {
-            Some(client) => client.get_namespace(nsid).await,
+            Some(client) => {
+                client.load_driver().await?;
+                client.get_namespace(nsid).await
+            }
             None => Err(anyhow::anyhow!(
                 "nvme device manager worker is shut down, can't get namespace {} for {}",
                 nsid,
@@ -997,6 +1000,100 @@ mod tests {
         ));
 
         manager.shutdown(false).await;
+    }
+
+    // Repeats namespace requests on one controller while driver initialization keeps failing.
+    // Expects each request to return the injected initialization error without panicking.
+    #[async_test]
+    async fn test_get_namespace_repeated_failed_load(driver: DefaultDriver) {
+        let driver_source = create_test_driver_source(driver);
+        let spawner = Arc::new(MockNvmeDriverSpawner::new(Duration::ZERO, Duration::ZERO));
+        spawner.set_fail_create(true);
+        let manager = NvmeManager::new(&driver_source, 4, false, None, spawner);
+
+        for _ in 0..2 {
+            let error = manager
+                .client()
+                .get_namespace("0000:00:07.0".to_string(), 1)
+                .await
+                .expect_err("each initialization attempt must return the injected failure");
+            assert!(matches!(
+                error.downcast_ref::<NvmeSpawnerError>(),
+                Some(NvmeSpawnerError::MockDriverCreationFailed(_))
+            ));
+        }
+
+        manager.shutdown(false).await;
+    }
+
+    // Retries force-load updates while initialization fails, then clears the failure.
+    // Expects failures to remain errors and the next update to succeed after the failure is cleared.
+    #[async_test]
+    async fn test_force_load_retry_after_failed_load(driver: DefaultDriver) {
+        let driver_source = create_test_driver_source(driver);
+        let spawner = Arc::new(MockNvmeDriverSpawner::new(Duration::ZERO, Duration::ZERO));
+        let manager = NvmeManager::new(&driver_source, 4, false, None, spawner.clone());
+        let pci_id = "0000:00:07.0";
+
+        spawner.set_fail_create(true);
+        for _ in 0..2 {
+            let error = inspect::update("force_load_pci_id", pci_id, &manager)
+                .await
+                .expect_err("force loading must not report success for a failed driver");
+            assert!(matches!(
+                error,
+                inspect::Error::Update(message)
+                    if message.contains("failed to create mock nvme driver")
+            ));
+        }
+
+        spawner.set_fail_create(false);
+        let value = inspect::update("force_load_pci_id", pci_id, &manager)
+            .await
+            .expect("force loading must retry initialization after the failure is cleared");
+        assert_eq!(value, inspect::Value::from(pci_id));
+
+        manager.shutdown(false).await;
+    }
+
+    // Requests a namespace and saves state before the controller's driver is initialized.
+    // Expects both operations to return DriverNotInitialized without panicking or loading a driver.
+    #[async_test]
+    async fn test_uninitialized_driver_requests(driver: DefaultDriver) {
+        let driver_source = create_test_driver_source(driver);
+        let spawner = Arc::new(MockNvmeDriverSpawner::new(Duration::ZERO, Duration::ZERO));
+        let pci_id = "0000:00:07.0";
+        let manager =
+            NvmeDriverManager::new(&driver_source, pci_id, 4, false, false, None, spawner).unwrap();
+
+        let error = manager
+            .client()
+            .get_namespace(1)
+            .await
+            .expect_err("namespace lookup must reject an uninitialized driver");
+        let error = error.downcast_ref::<NamespaceError>().unwrap();
+        assert_eq!(error.pci_id, pci_id);
+        assert!(matches!(
+            error.source,
+            NvmeSpawnerError::DriverNotInitialized
+        ));
+
+        let error = manager
+            .client()
+            .save()
+            .await
+            .expect_err("save must reject an uninitialized driver");
+        assert!(matches!(
+            error.downcast_ref::<NvmeSpawnerError>(),
+            Some(NvmeSpawnerError::DriverNotInitialized)
+        ));
+
+        manager
+            .shutdown(NvmeDriverShutdownOptions {
+                do_not_reset: false,
+                skip_device_shutdown: false,
+            })
+            .await;
     }
 
     #[async_test]

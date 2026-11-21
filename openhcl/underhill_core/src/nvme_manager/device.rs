@@ -561,9 +561,11 @@ impl NvmeDriverManagerWorker {
                 }
                 NvmeDriverRequest::GetNamespace(rpc) => {
                     rpc.handle(async |(_, nsid)| {
-                        self.driver
-                            .as_mut()
-                            .unwrap()
+                        let driver = self.driver.as_mut().ok_or_else(|| NamespaceError {
+                            pci_id: self.pci_id.clone(),
+                            source: NvmeSpawnerError::DriverNotInitialized,
+                        })?;
+                        driver
                             .namespace(nsid)
                             .await
                             .map_err(|source| NamespaceError {
@@ -574,8 +576,14 @@ impl NvmeDriverManagerWorker {
                     .await
                 }
                 NvmeDriverRequest::Save(rpc) => {
-                    rpc.handle(async |_span| self.driver.as_mut().unwrap().save().await)
-                        .await
+                    rpc.handle(async |_span| {
+                        self.driver
+                            .as_mut()
+                            .ok_or(NvmeSpawnerError::DriverNotInitialized)?
+                            .save()
+                            .await
+                    })
+                    .await
                 }
                 NvmeDriverRequest::Shutdown(rpc) => {
                     rpc.handle(async |(_span, options)| {
