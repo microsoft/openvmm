@@ -566,6 +566,7 @@ pub mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nvme_manager::NamespaceError;
     use crate::nvme_manager::NvmeDevice;
     use crate::nvme_manager::NvmeSpawnerError;
     use futures::future::join_all;
@@ -952,6 +953,48 @@ mod tests {
 
         let result = client.get_namespace("working-device".to_string(), 2).await;
         assert!(result.is_err());
+
+        manager.shutdown(false).await;
+    }
+
+    // Retries a namespace request on the same controller after a transient initialization failure.
+    // Expects driver initialization to retry and return the mock's namespace error without panicking.
+    #[async_test]
+    async fn test_get_namespace_retry_after_failed_load(driver: DefaultDriver) {
+        let driver_source = create_test_driver_source(driver);
+        let spawner = Arc::new(MockNvmeDriverSpawner::new(Duration::ZERO, Duration::ZERO));
+        let manager = NvmeManager::new(&driver_source, 4, false, None, spawner.clone());
+        let client = manager.client().clone();
+        let pci_id = "0000:00:07.0";
+
+        // Failed initialization leaves this controller registered without a driver.
+        spawner.set_fail_create(true);
+        let error = client
+            .get_namespace(pci_id.to_string(), 1)
+            .await
+            .expect_err("the injected driver initialization failure must be returned");
+        assert!(matches!(
+            error.downcast_ref::<NvmeSpawnerError>(),
+            Some(NvmeSpawnerError::MockDriverCreationFailed(_))
+        ));
+
+        // Retrying must reload the driver and reach the mock's namespace-not-found error.
+        spawner.set_fail_create(false);
+        let error = client
+            .get_namespace(pci_id.to_string(), 1)
+            .await
+            .expect_err("the mock namespace does not exist");
+        let error = error
+            .downcast_ref::<NamespaceError>()
+            .expect("retry must reach namespace lookup rather than a failed driver worker");
+        assert_eq!(error.pci_id, pci_id);
+        assert!(matches!(
+            &error.source,
+            NvmeSpawnerError::Namespace {
+                nsid: 1,
+                source: nvme_driver::NamespaceError::NotFound,
+            }
+        ));
 
         manager.shutdown(false).await;
     }
