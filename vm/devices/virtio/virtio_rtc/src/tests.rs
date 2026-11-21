@@ -218,7 +218,7 @@ async fn rtc_reports_clock_capabilities(driver: DefaultDriver) {
     assert_eq!(written, size_of::<spec::RespClockCap>() as u32);
     let response = spec::RespClockCap::read_from_bytes(&response).unwrap();
     assert_eq!(response.head.status, spec::S_OK);
-    assert_eq!(response.clock_type, spec::CLOCK_UTC_MAYBE_SMEARED);
+    assert_eq!(response.clock_type, spec::CLOCK_UTC_SMEARED);
     assert_eq!(response.leap_second_smearing, spec::SMEAR_UNSPECIFIED);
     assert_eq!(response.flags, 0);
     assert_eq!(response.reserved, [0; 5]);

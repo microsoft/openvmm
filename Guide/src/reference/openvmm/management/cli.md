@@ -285,7 +285,7 @@ describes the source definitions.
   values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
   `auto`. `--virtio-rng-pcie-port` overrides this option.
 * `--virtio-rtc [bus=BUS]`: Add a Virtio 1.4 RTC device with one read-only
-  `UTC_MAYBE_SMEARED` clock backed by host wall time. Readings use nanosecond
+  `UTC_SMEARED` clock backed by host wall time. Readings use nanosecond
   units; cross-timestamping and alarms are not supported. The guest needs a
   Virtio RTC driver. The optional `bus` accepts `auto`, `mmio`, `pci`,
   `pcie:PORT`, or `vpci`; bare `--virtio-rtc` uses `auto`. No device is added

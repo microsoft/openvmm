@@ -5,11 +5,11 @@ the [Virtio 1.4 RTC protocol][spec] (device ID 17).
 
 ## Clock and requests
 
-The device exposes clock ID 0 with type `UTC_MAYBE_SMEARED`. Readings use
-host `SystemTime` and are returned as little-endian 64-bit nanoseconds since
-the Unix epoch. The host's leap-second policy is unspecified. Nanosecond
-units do not imply nanosecond accuracy, and host clock adjustments can move
-the reported time forward or backward.
+The device exposes clock ID 0 with type `UTC_SMEARED` and an unspecified
+smearing variant. Readings use host `SystemTime` and are returned as
+little-endian 64-bit nanoseconds since the Unix epoch. No device-side
+smearing is applied. Nanosecond units do not imply nanosecond accuracy, and
+host clock adjustments can move the reported time forward or backward.
 
 Supported requests discover the clock count, query clock capabilities, and
 read the clock. Cross-timestamp capability queries succeed with no supported
@@ -42,11 +42,12 @@ topology requirements.
 
 ## Guest support
 
-The guest needs a Virtio RTC driver. Linux requires `CONFIG_VIRTIO_RTC` and
-`CONFIG_VIRTIO_RTC_PTP` for this clock, together with the PTP subsystem.
-Linux exposes it through the associated `/dev/ptpN` clock, read using
-`clock_gettime()` with the device's dynamic clock ID, not through a legacy
-CMOS RTC or the guest's system clock. Providing the device does not
-automatically synchronize guest system time.
+Linux can register an RTC-class device with `CONFIG_VIRTIO_RTC_CLASS`.
+For kernel boot-time wall-clock initialization, build in the driver with
+`CONFIG_VIRTIO_RTC=y`, enable `CONFIG_RTC_HCTOSYS`, and set
+`CONFIG_RTC_HCTOSYS_DEVICE` to the assigned RTC name (for example, `rtc0`).
+With `CONFIG_VIRTIO_RTC_PTP` and the PTP subsystem, Linux also exposes the
+clock through `/dev/ptpN`, read using `clock_gettime()` with the device's
+dynamic clock ID.
 
 [spec]: https://docs.oasis-open.org/virtio/virtio/v1.4/virtio-v1.4.html

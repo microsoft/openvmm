@@ -25,7 +25,7 @@ pub const S_ENODEV: u8 = 3;
 pub const S_EINVAL: u8 = 4;
 pub const S_EIO: u8 = 5;
 
-pub const CLOCK_UTC_MAYBE_SMEARED: u8 = 4;
+pub const CLOCK_UTC_SMEARED: u8 = 3;
 pub const SMEAR_UNSPECIFIED: u8 = 0;
 
 pub const COUNTER_ARM_VCT: u8 = 0;
