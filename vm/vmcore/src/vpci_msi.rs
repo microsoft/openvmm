@@ -215,6 +215,7 @@ mod tests {
     use super::VpciInterruptParameters;
     use pal_async::async_test;
     use std::sync::Arc;
+    use test_with_tracing::test;
 
     /// A mapper that implements only the required methods.
     struct NoSaveMapper;

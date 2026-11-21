@@ -168,6 +168,7 @@ mod tests {
     use parking_lot::Mutex;
     use pci_core::msi::SignalMsi;
     use std::sync::Arc;
+    use test_with_tracing::test;
     use vmcore::vpci_msi::MapVpciInterrupt;
     use vmcore::vpci_msi::MsiAddressData;
     use vmcore::vpci_msi::VpciInterruptParameters;
