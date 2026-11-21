@@ -601,7 +601,7 @@ fn set_filesystem_options(
     let vmservice::VirtioFs {
         tag,
         root_path,
-        read_only,
+        mount_options,
         windows_options,
         guest_mount_target,
         read_write,
@@ -619,8 +619,8 @@ fn set_filesystem_options(
         }
     };
     anyhow::ensure!(
-        !read_only,
-        "microVM virtio-fs uses read_write rather than read_only"
+        mount_options.is_empty(),
+        "microVM virtio-fs uses read_write rather than mount_options"
     );
     anyhow::ensure!(
         windows_options.is_none(),
@@ -1098,18 +1098,18 @@ mod tests {
             b"\xc2\x01\x04host",
         );
 
-        // `read_only` and `windows_options` are upstream's fields 3 and 4,
-        // and the microVM's mount fields follow them: the mount target and
+        // `mount_options` and `windows_options` are upstream's fields 3 and
+        // 4, and the microVM's mount fields follow them: the mount target and
         // access mode take fields 5 and 6, and the access policy, owner, and
         // aggregate children 7 to 11.
         assert_wire!(
             vmservice::VirtioFs {
-                read_only: true,
+                mount_options: "ro".to_owned(),
                 guest_mount_target: "/share".to_owned(),
                 read_write: true,
                 ..Default::default()
             },
-            b"\x18\x01\x2a\x06/share\x30\x01",
+            b"\x1a\x02ro\x2a\x06/share\x30\x01",
         );
         assert_wire!(
             vmservice::VirtioFs {
@@ -1987,8 +1987,10 @@ mod tests {
                 "microVM aggregate child 'data' requires a host path",
             ),
             (
-                capture(&|request| devices(request).virtiofs_config[0].read_only = true),
-                "microVM virtio-fs uses read_write rather than read_only",
+                capture(&|request| {
+                    devices(request).virtiofs_config[0].mount_options = "ro".to_owned();
+                }),
+                "microVM virtio-fs uses read_write rather than mount_options",
             ),
             (
                 capture(&|request| {
@@ -2144,12 +2146,12 @@ mod tests {
 
     #[test]
     fn ttrpc_standard_virtio_fs_preserves_access_mode() {
-        for read_only in [false, true] {
+        for options in ["", "ro"] {
             let handle = build_virtio_fs(
                 vmservice::VirtioFs {
                     tag: "share".to_owned(),
                     root_path: "host-root".to_owned(),
-                    read_only,
+                    mount_options: options.to_owned(),
                     ..Default::default()
                 },
                 &ResourceRegistry::default(),
@@ -2168,7 +2170,7 @@ mod tests {
                 panic!("standard virtio-fs must use HostFs");
             };
             assert_eq!(root_path, "host-root");
-            assert_eq!(mount_options, if read_only { "ro" } else { "" });
+            assert_eq!(mount_options, options);
             assert!(windows_options.is_none());
         }
     }

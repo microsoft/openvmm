@@ -3564,6 +3564,7 @@ mod tests {
                             shared_mem,
                         }
                     }),
+                    ..Default::default()
                 },
                 &ResourceRegistry::default(),
             )

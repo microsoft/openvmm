@@ -355,10 +355,11 @@ encode upstream's requests: `VMConfig.machine_profile` and `cpu_profile` take
 fields 23 and 24, `MemoryConfig.backing_file_path` field 10,
 `DevicesConfig.microvm_sandbox_blocks` and `microvm_network` fields 7 and 8,
 and `VirtioFs.guest_mount_target` to `aggregate_children` fields 5 to 11,
-after upstream's `read_only` and `windows_options` fields 3 and 4.
+after upstream's `mount_options` and `windows_options` fields 3 and 4.
 Standard-machine requests reject these fields, and microVM attachments reject
-`VirtioFs.read_only=true` or any `windows_options` before opening device
-resources; use `read_write` to select a microVM attachment's access mode.
+a non-empty `VirtioFs.mount_options` or any `windows_options` before opening
+device resources; use `read_write` to select a microVM attachment's access
+mode.
 
 `VMConfig.MICROVM` is numeric value 1 and accepts exactly 1, 2, 4, or 8
 processors. Snapshots record microVM ABI value 1 and boot layout value 1,
