@@ -538,8 +538,13 @@ impl Fuse for VirtioFs {
         self.check_writable(&new_inode)?;
         let old_path = inode.child_path(name)?;
         let new_path = new_inode.child_path(new_name)?;
-        self.check_writable_entry(&inode, &old_path)?;
-        self.check_writable_entry(&new_inode, &new_path)?;
+        // A rename moves everything below its source to its destination, or
+        // for an exchange swaps everything below both, so the guest must be
+        // able to modify the paths below them too. Otherwise a directory that
+        // holds a denied path would move the hidden entries where the guest
+        // can reach them, or the guest's entries into the denied path.
+        self.check_writable_subtree(&inode, &old_path)?;
+        self.check_writable_subtree(&new_inode, &new_path)?;
         microvm::fs::validate_rename_flags(self, flags)?;
         // Renaming a name onto itself changes nothing on the host, which still
         // fails it as it fails any other rename, such as with ENOENT for a
@@ -688,6 +693,18 @@ impl VirtioFs {
     /// volume's access policy protects, such as a traverse-only directory.
     fn check_writable_entry(&self, parent: &VirtioFsInode, path: &Path) -> lx::Result<()> {
         if parent.volume.path_writable(path) {
+            Ok(())
+        } else {
+            Err(lx::Error::EROFS)
+        }
+    }
+
+    /// Check that the guest may modify the entry at `path` in the directory
+    /// `parent`, which [`Self::check_writable`] accepted, and every path below
+    /// it, as a rename of the entry does, and return EROFS if not. A writable
+    /// directory can hold a path that the volume's access policy hides.
+    fn check_writable_subtree(&self, parent: &VirtioFsInode, path: &Path) -> lx::Result<()> {
+        if parent.volume.subtree_writable(path) {
             Ok(())
         } else {
             Err(lx::Error::EROFS)

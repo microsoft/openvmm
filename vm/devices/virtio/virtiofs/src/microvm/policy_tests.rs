@@ -921,6 +921,100 @@ fn readdirplus_skips_entries_that_reach_hidden_objects() {
     assert_eq!(fs.inner.inodes.read().inodes_by_node_id.values.len(), 1);
 }
 
+/// A rename moves everything below the names that it moves, so renaming a
+/// directory that holds a denied path would move the hidden entries to a path
+/// that the guest can list, open, and remove. Whichever name holds the denied
+/// path, even one inside an allowed path, the rename fails with EROFS before
+/// the host changes anything.
+#[test]
+fn renames_never_move_a_denied_path() {
+    let share = Share::new();
+    let fs = share.fs(&["logs/secret"], &[], &[]);
+    let root = FUSE_ROOT_ID;
+    let logs = lookup(&fs, "logs").unwrap();
+    let out = lookup(&fs, "out").unwrap();
+    let rename = |parent, entry, new_parent, new_entry, flags| {
+        fs.rename(
+            &request(parent),
+            name(entry),
+            new_parent,
+            name(new_entry),
+            flags,
+        )
+    };
+    for (parent, entry, new_parent, new_entry, flags) in [
+        (root, "logs", root, "moved", 0),
+        (root, "logs", out, "logs", 0),
+        (root, "logs", root, "out", RENAME_EXCHANGE),
+        (root, "out", root, "logs", RENAME_EXCHANGE),
+    ] {
+        assert_eq!(
+            rename(parent, entry, new_parent, new_entry, flags),
+            Err(lx::Error::EROFS),
+            "{entry} to {new_entry} with flags {flags}"
+        );
+    }
+    assert_eq!(list(&fs, root), ["build.log", "logs", "marker", "out"]);
+    assert_eq!(list(&fs, logs), ["gateway", "payloads"]);
+    assert_eq!(share.entries("out"), ["existing"]);
+    share.assert_protected_paths_unchanged();
+
+    // Renames that move no denied path still succeed, even in the directory
+    // that holds one.
+    rename(logs, "gateway", logs, "renamed", 0).unwrap();
+    rename(logs, "renamed", logs, "gateway", 0).unwrap();
+    rename(root, "out", root, "renamed", 0).unwrap();
+    rename(root, "renamed", root, "out", 0).unwrap();
+    assert_eq!(share.read("out/existing"), "existing");
+    share.assert_protected_paths_unchanged();
+
+    let nested = share.fs(
+        &["logs", "logs/payloads/private/key"],
+        &["logs/payloads"],
+        &[],
+    );
+    let payloads = lookup(&nested, "logs/payloads").unwrap();
+    assert_eq!(
+        nested.rename(
+            &request(payloads),
+            name("private"),
+            payloads,
+            name("moved"),
+            0
+        ),
+        Err(lx::Error::EROFS)
+    );
+    share.assert_protected_paths_unchanged();
+}
+
+/// A rename moves the entries below its source to its destination, so renaming
+/// a directory onto a name that holds a denied path would put the guest's
+/// entries at the denied path, which the guest may not modify. The host may
+/// remove the directory that holds a denied path while the share is attached,
+/// and the rename still fails with EROFS before the host changes anything.
+#[test]
+fn renames_never_move_entries_into_a_denied_path() {
+    let share = Share::new();
+    let fs = share.fs(&["logs/secret"], &[], &[]);
+    let root = FUSE_ROOT_ID;
+    std::fs::rename(share.path("logs"), share.path("host-logs")).unwrap();
+    let staging = mkdir(&fs, root, "staging").unwrap();
+    let (secret, fh) = create(&fs, staging, "secret").unwrap();
+    write(&fs, secret, fh, b"guest").unwrap();
+    release(&fs, secret, fh);
+
+    assert_eq!(
+        fs.rename(&request(root), name("staging"), root, name("logs"), 0),
+        Err(lx::Error::EROFS)
+    );
+    assert!(!share.path("logs").exists());
+    assert_eq!(share.read("staging/secret"), "guest");
+
+    std::fs::remove_dir_all(share.path("staging")).unwrap();
+    std::fs::rename(share.path("host-logs"), share.path("logs")).unwrap();
+    share.assert_protected_paths_unchanged();
+}
+
 #[test]
 fn attaching_requires_directories_on_the_way_to_allowed_paths() {
     let share = Share::new();

@@ -163,6 +163,15 @@ impl SubtreePolicy {
                     .any(|writable| path.starts_with(writable)))
     }
 
+    /// Returns whether the guest may modify `path` and every path below it in
+    /// a read-write share, as a rename of `path` does. Below a writable path,
+    /// only a denied path hides or protects anything: an allowed path there
+    /// lies inside a denied path there too, and the writable path that
+    /// contains `path`, if any, contains everything below it.
+    pub(crate) fn is_subtree_writable(&self, path: &Path) -> bool {
+        self.is_writable(path) && !self.denied.iter().any(|denied| denied.starts_with(path))
+    }
+
     /// Returns whether some path that the guest can reach is not writable in a
     /// read-write share, so that each modification must check its paths.
     pub(crate) fn restricts_writes(&self) -> bool {
@@ -234,6 +243,10 @@ mod tests {
 
     fn writable(policy: &SubtreePolicy, value: &str) -> bool {
         policy.is_writable(&path(value))
+    }
+
+    fn subtree_writable(policy: &SubtreePolicy, value: &str) -> bool {
+        policy.is_subtree_writable(&path(value))
     }
 
     #[test]
@@ -331,6 +344,39 @@ mod tests {
         let exemption = policy(&["logs"], &["logs/payloads"], &["logs/payloads"]);
         assert!(writable(&exemption, "logs/payloads/file"));
         assert!(!writable(&exemption, "workspace"));
+    }
+
+    #[test]
+    fn subtrees_that_hold_denied_paths_are_not_writable() {
+        let nested = policy(
+            &["logs/secret", "tmp", "tmp/sandbox/firewall/logs"],
+            &["tmp/sandbox"],
+            &[],
+        );
+        for (value, expected) in [
+            ("", false),
+            ("logs", false),
+            ("logs/secret", false),
+            ("logs/secret/inner", false),
+            ("logs/other", true),
+            // Names that only share a prefix with a denied path's ancestor.
+            ("log", true),
+            ("logs-old", true),
+            ("tmp", false),
+            ("tmp/other", false),
+            ("tmp/sandbox", false),
+            ("tmp/sandbox/firewall", false),
+            ("tmp/sandbox/firewall/other", true),
+            ("tmp/sandbox/other", true),
+        ] {
+            assert_eq!(subtree_writable(&nested, value), expected, "{value}");
+        }
+
+        let narrowed = policy(&["out/secrets"], &[], &["build", "out"]);
+        assert!(!subtree_writable(&narrowed, "out"));
+        assert!(subtree_writable(&narrowed, "out/nested"));
+        assert!(subtree_writable(&narrowed, "build"));
+        assert!(!subtree_writable(&narrowed, "elsewhere"));
     }
 
     #[test]
