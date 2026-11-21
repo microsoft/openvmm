@@ -81,7 +81,96 @@ pub(crate) fn reject_fingerprint_params(
 #[cfg(test)]
 mod tests {
     use super::reject_fingerprint_params;
+    use cpu_profile::fingerprint::BackendCpuFingerprint;
+    use cpu_profile::fingerprint::BackendFingerprint;
+    use hypervisor_resources::HypervisorKind;
+    use hypervisor_resources::HypervisorProbe;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use test_with_tracing::test;
+    use vm_resource::Resource;
+
+    struct LegacyProvider;
+
+    impl HypervisorProbe for LegacyProvider {
+        fn name(&self) -> &str {
+            "legacy-test"
+        }
+
+        fn try_new_resource(&self) -> anyhow::Result<Option<Resource<HypervisorKind>>> {
+            anyhow::bail!("resource construction is not part of this test")
+        }
+
+        fn new_resource(&self, _: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>> {
+            anyhow::bail!("resource construction is not part of this test")
+        }
+
+        fn cpu_fingerprint(&self, params: &[(&str, &str)]) -> anyhow::Result<BackendFingerprint> {
+            reject_fingerprint_params(self.name(), params)?;
+            Ok(BackendFingerprint::new(self.name(), "legacy", vec![]))
+        }
+    }
+
+    struct ArmProvider(AtomicUsize);
+
+    impl HypervisorProbe for ArmProvider {
+        fn name(&self) -> &str {
+            "arm-test"
+        }
+
+        fn try_new_resource(&self) -> anyhow::Result<Option<Resource<HypervisorKind>>> {
+            anyhow::bail!("resource construction is not part of this test")
+        }
+
+        fn new_resource(&self, _: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>> {
+            anyhow::bail!("resource construction is not part of this test")
+        }
+
+        fn probe_cpu(&self, params: &[(&str, &str)]) -> anyhow::Result<BackendCpuFingerprint> {
+            reject_fingerprint_params(self.name(), params)?;
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(cpu_profile::aarch64::Fingerprint {
+                midr: 0x410f_d030,
+                registers: vec![],
+                counter_hz: 24_000_000,
+                backend_usable_gpa_bits: 39,
+            }
+            .into())
+        }
+    }
+
+    #[test]
+    fn legacy_provider_uses_the_default_typed_bridge_without_api_changes() {
+        let provider: &dyn HypervisorProbe = &LegacyProvider;
+        let legacy = provider.cpu_fingerprint(&[]).unwrap();
+        assert_eq!(provider.probe_cpu(&[]).unwrap().into_x86().unwrap(), legacy);
+        assert!(provider.probe_cpu(&[]).unwrap().into_aarch64().is_err());
+        let params = &[("invalid", "true")];
+        assert_eq!(
+            provider.probe_cpu(params).unwrap_err().to_string(),
+            provider.cpu_fingerprint(params).unwrap_err().to_string()
+        );
+    }
+
+    #[test]
+    fn typed_arm_probe_does_not_change_legacy_unsupported_behavior() {
+        let arm = ArmProvider(AtomicUsize::new(0));
+        let provider: &dyn HypervisorProbe = &arm;
+        let error = provider.cpu_fingerprint(&[]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the arm-test hypervisor backend does not support CPU fingerprinting"
+        );
+        assert_eq!(arm.0.load(Ordering::SeqCst), 0);
+        let native = provider.probe_cpu(&[]).unwrap().into_aarch64().unwrap();
+        assert_eq!(native.midr, 0x410f_d030);
+        assert_eq!(native.counter_hz, 24_000_000);
+        assert_eq!(native.backend_usable_gpa_bits, 39);
+        assert_eq!(arm.0.load(Ordering::SeqCst), 1);
+        assert!(provider.probe_cpu(&[]).unwrap().into_x86().is_err());
+        assert!(provider.probe_cpu(&[("invalid", "true")]).is_err());
+        assert_eq!(arm.0.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn fingerprinting_rejects_backend_parameters() {

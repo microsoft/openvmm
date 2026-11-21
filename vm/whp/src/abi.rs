@@ -16,6 +16,10 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use windows_sys::Win32::Foundation::LUID;
 
+/// Partition-wide register scope, including ARM ID-register access.
+/// Ordinary VP indices are not valid for those ID registers.
+pub const WHV_ANY_VP: u32 = u32::MAX;
+
 macro_rules! bitops_base {
     ($t:ty) => {
         impl std::ops::BitOr for $t {

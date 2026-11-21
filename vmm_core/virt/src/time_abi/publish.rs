@@ -6,7 +6,11 @@
 //! that the guest applies the host's clock correction instead of estimating
 //! it.
 
+// xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(target_arch = "x86_64")]
 use super::TimeAbiCode;
+// xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(target_arch = "x86_64")]
 use super::TimeAbiError;
 use super::TimeAbiTestHooks;
 use super::host::HostClockBasis;
@@ -44,6 +48,10 @@ pub enum NativeRateBasis {
     KernelKhz,
     /// The hypervisor's TSC rate, to the Hz, as MSHV and WHP report it.
     Hypervisor,
+    /// An architectural counter. No host-QPC/UTC calibration relationship
+    /// is established merely by reading its frequency.
+    #[cfg(guest_arch = "aarch64")]
+    ArchitecturalCounter,
 }
 
 /// The rates to which a time sample's correction refers.
@@ -71,6 +79,23 @@ pub struct HostReadings {
     pub discipline: HostClockDiscipline,
     /// The host's suspended time, as
     /// [`host_suspended_ns`](super::host::host_suspended_ns) reports it.
+    pub suspended_ns: u64,
+}
+
+/// Readings already paired with an architecture-qualified guest counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairedReadings {
+    /// The actual guest counter at the instant of `time`.
+    pub guest_counter: u64,
+    /// The counter epoch, when the backend tracks resume/reset transitions.
+    pub counter_epoch: Option<u32>,
+    /// Host UTC and monotonic time at that instant.
+    pub time: HostTimeSample,
+    /// The maximum counter/UTC pairing error, in nanoseconds.
+    pub pairing_ns: u64,
+    /// The discipline of host UTC.
+    pub discipline: HostClockDiscipline,
+    /// The host's suspended time, in nanoseconds.
     pub suspended_ns: u64,
 }
 
@@ -142,6 +167,10 @@ pub fn correction_bound(
     native: NativeRateBasis,
     native_hz: u64,
 ) -> Option<u64> {
+    #[cfg(guest_arch = "aarch64")]
+    if native == NativeRateBasis::ArchitecturalCounter {
+        return None;
+    }
     match (host, native) {
         (HostClockBasis::KernelTsc, NativeRateBasis::KernelKhz)
         | (HostClockBasis::HypervisorTsc, NativeRateBasis::Hypervisor) => Some(CORRECTION_ROUNDING),
@@ -203,6 +232,8 @@ pub struct HostClockPublisher {
     last: Option<ClockMarks>,
     /// The disruption counter.
     disruption: u32,
+    /// The last observed backend counter epoch.
+    counter_epoch: Option<u32>,
 }
 
 impl HostClockPublisher {
@@ -216,6 +247,7 @@ impl HostClockPublisher {
             skew_origin_ns: None,
             last: None,
             disruption: 0,
+            counter_epoch: None,
         }
     }
 
@@ -233,6 +265,36 @@ impl HostClockPublisher {
         offset: GuestTscOffset,
         rates: SampleRates,
     ) -> PublishedSample {
+        self.publish_paired(
+            &PairedReadings {
+                guest_counter: offset.guest_tsc(readings.host_tsc),
+                counter_epoch: None,
+                time: readings.time,
+                pairing_ns: readings
+                    .pairing_ns
+                    .saturating_add(cycles_to_ns_ceil(offset.uncertainty, rates.native_hz)),
+                discipline: readings.discipline,
+                suspended_ns: readings.suspended_ns,
+            },
+            rates,
+        )
+    }
+
+    /// Publishes an already-paired guest counter through the same clock
+    /// correction/disruption state as the x86 offset path.
+    pub fn publish_paired(
+        &mut self,
+        readings: &PairedReadings,
+        rates: SampleRates,
+    ) -> PublishedSample {
+        if let Some(epoch) = readings.counter_epoch
+            && self
+                .counter_epoch
+                .replace(epoch)
+                .is_some_and(|last| last != epoch)
+        {
+            self.disrupt();
+        }
         let marks = ClockMarks {
             utc_ns: readings.time.utc_ns,
             monotonic_ns: readings.time.monotonic_ns,
@@ -251,10 +313,8 @@ impl HostClockPublisher {
         let utc_ns = (i128::from(utc_ns) + skew + self.utc_offset_ns).clamp(1, u64::MAX.into());
         PublishedSample {
             utc_ns: utc_ns as u64,
-            tsc: offset.guest_tsc(readings.host_tsc),
-            pairing_ns: readings
-                .pairing_ns
-                .saturating_add(cycles_to_ns_ceil(offset.uncertainty, rates.native_hz)),
+            tsc: readings.guest_counter,
+            pairing_ns: readings.pairing_ns,
             status: readings.discipline.status,
             disruption: self.disruption,
             correction: sample_correction(
@@ -294,9 +354,13 @@ impl HostClockPublisher {
 }
 
 /// Host time pairings that a sample tries.
+// xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(target_arch = "x86_64")]
 const PAIRING_ATTEMPTS: usize = 16;
 
 /// A pairing this tight, in nanoseconds, ends the attempts early.
+// xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(target_arch = "x86_64")]
 const PAIRING_TARGET_NS: u64 = 1_000;
 
 /// Pairs a host time sample with the host TSC, keeping the tightest of
@@ -333,6 +397,84 @@ fn pair_host_time(tsc_hz: u64) -> Result<(u64, HostTimeSample, u64), TimeAbiErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn paired_publication_preserves_the_x86_offset_path() {
+        let hooks = TimeAbiTestHooks::default();
+        let mut offset_publisher =
+            HostClockPublisher::new(HostClockKind::WindowsInterruptTime, &hooks);
+        let mut paired_publisher =
+            HostClockPublisher::new(HostClockKind::WindowsInterruptTime, &hooks);
+        for utc_ns in [10_000_000_000, 11_000_000_000, 12_500_000_000] {
+            let input = readings(utc_ns, utc_ns, 12 * PPM);
+            let paired = PairedReadings {
+                guest_counter: 1_000_500,
+                counter_epoch: None,
+                time: input.time,
+                pairing_ns: 1_040,
+                discipline: input.discipline,
+                suspended_ns: input.suspended_ns,
+            };
+            assert_eq!(
+                offset_publisher.publish(&input, OFFSET, RATES),
+                paired_publisher.publish_paired(&paired, RATES)
+            );
+        }
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn architectural_counter_keeps_real_units_and_unknown_calibration() {
+        let input = readings(10_000_000_000, 20_000_000_000, 8 * PPM);
+        let paired = PairedReadings {
+            guest_counter: (1 << 60) + 17,
+            counter_epoch: Some(0),
+            time: input.time,
+            pairing_ns: 53,
+            discipline: input.discipline,
+            suspended_ns: input.suspended_ns,
+        };
+        let rates = SampleRates {
+            declared_hz: 19_200_000,
+            native_hz: 19_200_000,
+            native_basis: NativeRateBasis::ArchitecturalCounter,
+        };
+        let mut publisher = HostClockPublisher::new(
+            HostClockKind::WindowsInterruptTime,
+            &TimeAbiTestHooks::default(),
+        );
+        let sample = publisher.publish_paired(&paired, rates);
+        assert_eq!(sample.utc_ns, input.time.utc_ns);
+        assert_eq!(sample.tsc, paired.guest_counter);
+        assert_eq!(sample.pairing_ns, 53);
+        assert_eq!(sample.correction, 8 * PPM);
+        assert_eq!(sample.correction_bound, None);
+        assert_eq!(sample.max_error_us, Some(1_500));
+        assert_eq!(sample.status, input.discipline.status);
+        assert_eq!(sample.disruption, 0);
+    }
+
+    #[test]
+    fn counter_epoch_changes_disrupt_without_a_host_clock_step() {
+        let input = readings(10_000_000_000, 20_000_000_000, 0);
+        let mut paired = PairedReadings {
+            guest_counter: 100,
+            counter_epoch: Some(u32::MAX),
+            time: input.time,
+            pairing_ns: 53,
+            discipline: input.discipline,
+            suspended_ns: input.suspended_ns,
+        };
+        let mut publisher = HostClockPublisher::new(
+            HostClockKind::WindowsInterruptTime,
+            &TimeAbiTestHooks::default(),
+        );
+        assert_eq!(publisher.publish_paired(&paired, RATES).disruption, 0);
+        paired.counter_epoch = Some(0);
+        assert_eq!(publisher.publish_paired(&paired, RATES).disruption, 1);
+        assert_eq!(publisher.publish_paired(&paired, RATES).disruption, 1);
+    }
 
     const PPM: i64 = SCALED_PPM;
 

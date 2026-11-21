@@ -16,6 +16,7 @@ use super::console::validate_microvm_console_attachment_namespace;
 use super::filesystem::EffectiveMicrovmFilesystem;
 use super::filesystem::MicrovmFilesystemRequest;
 use super::filesystem::effective_microvm_filesystem;
+use super::linux_direct_boot_mode;
 use super::network::EffectiveMicrovmNetwork;
 use super::network::effective_microvm_network;
 use super::network::microvm_ingress;
@@ -38,8 +39,6 @@ use crate::storage_builder::StorageBuilder;
 use anyhow::Context;
 use anyhow::bail;
 use chipset_resources::microvm::MicrovmPortbHandle;
-use chipset_resources::microvm::MicrovmShutdownHandle;
-use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
 use futures::AsyncReadExt;
 use net_backend_resources::consomme::static_ipv4::StaticIpv4Config;
 use openvmm_defs::config::Config;
@@ -47,8 +46,6 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::microvm::MicrovmSandboxBlockRole;
-use openvmm_defs::microvm::build_microvm_command_line;
-use openvmm_defs::microvm::build_microvm_control_command_line;
 use pal_async::DefaultDriver;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use std::cell::RefCell;
@@ -59,7 +56,6 @@ use virtio_resources::console::control::VirtioControlConsoleBrokerConfig;
 use vm_manifest_builder::MachineArch;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
-use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vmgs_resources::VmgsResource;
@@ -100,6 +96,12 @@ impl<'a> MicrovmConfigBuilder<'a> {
     /// filesystem, and console attachments.
     pub(crate) fn new(opt: &'a Options, restore: &'a MicrovmRestore) -> anyhow::Result<Self> {
         let active = opt.machine == MachineProfileCli::Microvm;
+        #[cfg(guest_arch = "aarch64")]
+        anyhow::ensure!(
+            !active
+                || (opt.microvm.snapshot_destination.is_none() && opt.restore_snapshot.is_none()),
+            "ARM microVM supports cold boot only; snapshot capture and restore are unavailable"
+        );
         let restore_machine_contract = restore.machine_contract.as_ref();
         if let Some(contract) = restore_machine_contract {
             openvmm_helpers::snapshot::microvm::validate_supported_microvm_contract(contract)?;
@@ -475,43 +477,35 @@ impl<'a> MicrovmConfigBuilder<'a> {
         };
         let hooks = time_abi_test_hooks(opt)?;
         let time_abi = super::time_abi_chipset(chipset_devices, &hooks, time_abi_restore);
-        chipset_devices.push(ChipsetDeviceHandle {
-            name: MicrovmPortbHandle::ID.to_owned(),
-            resource: MicrovmPortbHandle {
+        let (notify, requests) = mesh::channel();
+        self.resources.snapshot_requests = Some(requests);
+        super::add_platform_chipset_devices(
+            chipset_devices,
+            MicrovmPortbHandle {
                 io,
                 generation_id,
                 output_drain,
                 time_abi,
-            }
-            .into_resource(),
-        });
-        chipset_devices.push(ChipsetDeviceHandle {
-            name: MicrovmShutdownHandle::ID.to_owned(),
-            resource: MicrovmShutdownHandle.into_resource(),
-        });
-        chipset_devices.push(ChipsetDeviceHandle {
-            name: MicrovmSnapshotRequestHandle::ID.to_owned(),
-            resource: {
-                let (notify, requests) = mesh::channel();
-                self.resources.snapshot_requests = Some(requests);
-                MicrovmSnapshotRequestHandle {
-                    notify: Some(notify),
-                }
-                .into_resource()
             },
-        });
+            Some(notify),
+        );
         Ok(())
     }
 
-    /// Returns the MP-table Linux load mode of the microVM profile.
+    /// Returns the profile-owned Linux load mode of the microVM profile.
     pub(crate) fn load_mode(&self, arch: MachineArch) -> anyhow::Result<Option<LoadMode>> {
         if !self.active {
             return Ok(None);
         }
         let opt = self.opt;
-        if arch != MachineArch::X86_64 {
-            bail!("the microVM profile requires an x86-64 guest");
-        }
+        anyhow::ensure!(
+            arch == if cfg!(guest_arch = "aarch64") {
+                MachineArch::Aarch64
+            } else {
+                MachineArch::X86_64
+            },
+            "microVM requires the native supported guest architecture"
+        );
         if opt.igvm.is_some() || opt.pcat || opt.uefi.is_some() {
             bail!("the microVM profile requires Linux direct boot");
         }
@@ -554,7 +548,10 @@ impl<'a> MicrovmConfigBuilder<'a> {
             cmdline,
             enable_serial: false,
             isolation: openvmm_defs::config::LinuxIsolationConfig::None,
-            boot_mode: openvmm_defs::config::LinuxDirectBootMode::MpTable,
+            boot_mode: linux_direct_boot_mode(
+                MachineProfile::Microvm,
+                openvmm_defs::config::LinuxDirectBootMode::Acpi,
+            ),
             smbios: Box::default(),
         }))
     }
@@ -742,17 +739,13 @@ impl<'a> MicrovmConfigBuilder<'a> {
         let opt = self.opt;
         let restore_machine_contract = self.restore.machine_contract.as_ref();
         if self.active {
+            openvmm_defs::microvm::validate_machine_gic_msi(
+                cfg.machine_profile,
+                cfg.processor_topology.arch.as_ref(),
+            )?;
             cfg.processor_topology.vps_per_socket = Some(opt.processors);
             cfg.processor_topology.enable_smt = Some(false);
-            #[cfg(guest_arch = "x86_64")]
-            {
-                cfg.processor_topology.arch = Some(openvmm_defs::config::ArchTopologyConfig::X86(
-                    openvmm_defs::config::X86TopologyConfig {
-                        apic_id_offset: 0,
-                        x2apic: openvmm_defs::config::X2ApicConfig::Unsupported,
-                    },
-                ));
-            }
+            cfg.processor_topology.arch = Some(super::topology_arch());
         }
         cfg.microvm.network = self.network.as_ref().map(|network| network.config.clone());
         let microvm_filesystems = self
@@ -825,11 +818,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             .and_then(|spec| spec.split(':').next());
         if cfg.machine_profile == MachineProfile::Microvm && restore_machine_contract.is_none() {
             let cmdline = match &mut cfg.load_mode {
-                LoadMode::Linux {
-                    cmdline,
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::MpTable,
-                    ..
-                } => cmdline,
+                LoadMode::Linux { cmdline, .. } => cmdline,
                 _ => {
                     unreachable!("microVM configuration was constructed with a supported load mode")
                 }
@@ -863,13 +852,17 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 cmdline.push_str("nvx_snapshot_tier=");
                 cmdline.push_str(snapshot_tier.manifest_name());
             }
-            openvmm_defs::microvm::append_microvm_virtio_discovery(
+            openvmm_defs::microvm::append_microvm_virtio_discovery_for_boot(
                 cmdline,
                 network,
                 &cfg.microvm.filesystems,
                 has_console,
                 has_control_console,
                 &cfg.microvm.sandbox_blocks,
+                linux_direct_boot_mode(
+                    MachineProfile::Microvm,
+                    openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                ),
             )?;
         }
         openvmm_defs::microvm::validate_machine_config(cfg, requested_hypervisor)?;
@@ -953,11 +946,15 @@ fn build_effective_microvm_command_line(
     workload_identity: Option<cli_args::microvm::MicrovmWorkloadIdentityCli>,
     lifecycle: Option<cli_args::microvm::MicrovmLifecycleCli>,
 ) -> anyhow::Result<String> {
-    let mut cmdline = if has_control_console {
-        build_microvm_control_command_line(user_args, has_console)
-    } else {
-        build_microvm_command_line(user_args, has_console)
-    }?;
+    let mut cmdline = openvmm_defs::microvm::build_microvm_command_line_for_boot(
+        user_args,
+        has_console,
+        has_control_console,
+        linux_direct_boot_mode(
+            MachineProfile::Microvm,
+            openvmm_defs::config::LinuxDirectBootMode::Acpi,
+        ),
+    )?;
     openvmm_defs::microvm::append_microvm_processor_limit(&mut cmdline, processor_count)?;
     if let Some(identity) = workload_identity {
         openvmm_defs::microvm::append_microvm_workload_identity(
@@ -1082,14 +1079,14 @@ mod tests {
         )
         .unwrap();
         openvmm_defs::microvm::append_microvm_lifecycle(&mut profile_tokens, false).unwrap();
-        let expected = |fill: usize| {
-            format!(
-                "{MICROVM_CONSOLE_COMMAND_LINE} {}{profile_tokens}",
-                "x".repeat(fill)
-            )
+        let console_base = if cfg!(guest_arch = "aarch64") {
+            openvmm_defs::microvm::MICROVM_ARM64_CONSOLE_COMMAND_LINE
+        } else {
+            MICROVM_CONSOLE_COMMAND_LINE
         };
+        let expected = |fill: usize| format!("{console_base} {}{profile_tokens}", "x".repeat(fill));
         let fill = (MICROVM_COMMAND_LINE_MAX_SIZE - 1)
-            .checked_sub(MICROVM_CONSOLE_COMMAND_LINE.len() + 1 + profile_tokens.len())
+            .checked_sub(console_base.len() + 1 + profile_tokens.len())
             .expect("the profile's tokens leave room for the caller's argument");
         let longest = build(fill).unwrap();
         assert_eq!(longest, expected(fill));
