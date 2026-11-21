@@ -107,6 +107,22 @@ cargo run -p igvmfilegen -- dump-corim \
 `--header-type document|signature` narrows the result. Without filters, the
 command reports every supported CoRIM entry in the file.
 
+## Add a version string
+
+Add or replace a file-wide UTF-8 version label in a raw IGVM file:
+
+```bash
+cargo run -p igvmfilegen -- add-version-string \
+  --input path/to/input.bin \
+  --output path/to/output.bin \
+  --version-string "release candidate 1"
+```
+
+The label has no required version syntax and is not included in launch
+measurements. Existing CoRIM documents, signatures, and other headers are
+preserved. The output path may equal the input path for in-place updates.
+Use `dump` to inspect the label.
+
 ## Add an SNP ID block
 
 An SNP ID block binds an identity key and guest SVN to the image launch

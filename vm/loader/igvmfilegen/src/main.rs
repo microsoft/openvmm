@@ -92,6 +92,18 @@ enum Options {
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
     },
+    /// Add or replace the file-wide, unmeasured UTF-8 version label.
+    AddVersionString {
+        /// Input raw IGVM file path
+        #[clap(short, long)]
+        input: PathBuf,
+        /// Output raw IGVM file path (can be the same as input)
+        #[clap(short, long)]
+        output: PathBuf,
+        /// Version label, with no required version syntax
+        #[clap(long)]
+        version_string: String,
+    },
     /// Dump CoRIM (Concise Reference Integrity Manifest) headers and payloads from an IGVM file.
     ///
     /// This command scans the IGVM variable headers for CoRIM-related entries and prints or
@@ -339,6 +351,15 @@ fn main() -> anyhow::Result<()> {
             platform,
             output,
         } => dump_corim_headers(&file_path, header_type, platform, output),
+        Options::AddVersionString {
+            input,
+            output,
+            version_string,
+        } => {
+            let data = fs_err::read(&input).context("reading input IGVM file")?;
+            let data = add_version_string(&data, version_string)?;
+            write_igvm_file_atomic(&output, &data, "Writing IGVM file with version string")
+        }
         Options::Manifest {
             manifest,
             resources,
@@ -876,6 +897,53 @@ fn write_igvm_file_atomic(
     })?;
 
     Ok(())
+}
+
+fn add_version_string(data: &[u8], version_string: String) -> anyhow::Result<Vec<u8>> {
+    use igvm::Arch;
+    use igvm::IgvmRevision;
+    use igvm_defs::IGVM_FIXED_HEADER_V2;
+    use igvm_defs::IGVM_FORMAT_VERSION_1;
+    use igvm_defs::IGVM_FORMAT_VERSION_2;
+    use igvm_defs::IgvmArchitecture;
+
+    let file = IgvmFile::new_from_binary(data, None).context("parsing input IGVM file")?;
+    // IgvmFile does not expose its revision; preserve it from the validated header.
+    let header = IGVM_FIXED_HEADER::read_from_prefix(data)
+        .map_err(|_| anyhow::anyhow!("invalid IGVM fixed header"))?
+        .0;
+    let revision = match header.format_version {
+        IGVM_FORMAT_VERSION_1 => IgvmRevision::V1,
+        IGVM_FORMAT_VERSION_2 => {
+            let header = IGVM_FIXED_HEADER_V2::read_from_prefix(data)
+                .map_err(|_| anyhow::anyhow!("invalid IGVM v2 fixed header"))?
+                .0;
+            let arch = match header.architecture {
+                IgvmArchitecture::X64 => Arch::X64,
+                IgvmArchitecture::AARCH64 => Arch::AArch64,
+                arch => bail!("unsupported IGVM architecture: {arch:?}"),
+            };
+            IgvmRevision::V2 {
+                arch,
+                page_size: header.page_size,
+            }
+        }
+        version => bail!("unsupported IGVM format version: {version}"),
+    };
+    let mut initializations = file.initializations().to_vec();
+    initializations.retain(|header| !matches!(header, IgvmInitializationHeader::VersionString(_)));
+    initializations.push(IgvmInitializationHeader::VersionString(version_string));
+    let file = IgvmFile::new(
+        revision,
+        file.platforms().to_vec(),
+        initializations,
+        file.directives().to_vec(),
+    )
+    .context("setting IGVM version string")?;
+    let mut output = Vec::new();
+    file.serialize(&mut output)
+        .context("serializing IGVM file with version string")?;
+    Ok(output)
 }
 
 /// Add a SEV-SNP ID block to an existing IGVM file, either from an out-of-band
@@ -1655,5 +1723,130 @@ mod temporary_signing_tests {
 
         let (_, identity) = snp_temporary_signing_metadata_from_config(&config).unwrap();
         assert_eq!(identity, snp_id_block::SnpImageIdentity::OPENHCL);
+    }
+}
+
+#[cfg(test)]
+mod version_string_tests {
+    use super::*;
+    use igvm::Arch;
+    use igvm::IgvmDirectiveHeader;
+    use igvm::IgvmRevision;
+    use igvm_defs::IGVM_FIXED_HEADER_V2;
+    use igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM;
+    use igvm_defs::IGVM_VHS_VARIABLE_HEADER;
+    use igvm_defs::IGVM_VHT_OPTIONAL_BIT;
+    use igvm_defs::IgvmPageDataFlags;
+    use igvm_defs::IgvmPageDataType;
+    use igvm_defs::IgvmVariableHeaderType;
+    use test_with_tracing::test;
+
+    #[test]
+    fn adds_and_replaces_version_string_preserving_image() {
+        for revision in [
+            IgvmRevision::V1,
+            IgvmRevision::V2 {
+                arch: Arch::X64,
+                page_size: 4096,
+            },
+            IgvmRevision::V2 {
+                arch: Arch::AArch64,
+                page_size: 4096,
+            },
+        ] {
+            let file = IgvmFile::new(
+                revision,
+                vec![IgvmPlatformHeader::SupportedPlatform(
+                    IGVM_VHS_SUPPORTED_PLATFORM {
+                        compatibility_mask: 1,
+                        highest_vtl: 0,
+                        platform_type: IgvmPlatformType::VSM_ISOLATION,
+                        platform_version: 1,
+                        shared_gpa_boundary: 0,
+                    },
+                )],
+                vec![
+                    IgvmInitializationHeader::CorimDocument {
+                        compatibility_mask: 1,
+                        document: vec![1, 2, 3],
+                    },
+                    IgvmInitializationHeader::CorimSignature {
+                        compatibility_mask: 1,
+                        signature: vec![4, 5, 6],
+                    },
+                ],
+                vec![IgvmDirectiveHeader::PageData {
+                    gpa: 0,
+                    compatibility_mask: 1,
+                    flags: IgvmPageDataFlags::new(),
+                    data_type: IgvmPageDataType::NORMAL,
+                    data: vec![0x42; 4096],
+                }],
+            )
+            .unwrap();
+            let mut original = Vec::new();
+            file.serialize(&mut original).unwrap();
+            let baseline = IgvmSerializer::new(&file).unwrap().measurements()[0].clone();
+            let mut data = original.clone();
+            for value in ["build-1", "release candidate 2", "\u{e9}build", ""] {
+                data = add_version_string(&data, value.to_owned()).unwrap();
+                let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(&data).unwrap().0;
+                let start = fixed_header.variable_header_offset as usize;
+                let end = start + fixed_header.variable_header_size as usize;
+                let mut headers = &data[start..end];
+                let mut version_headers = 0;
+                while !headers.is_empty() {
+                    let (header, body) =
+                        IGVM_VHS_VARIABLE_HEADER::read_from_prefix(headers).unwrap();
+                    let length = header.length as usize;
+                    let padded_length = (length + 7) & !7;
+                    if header.typ.0 & !IGVM_VHT_OPTIONAL_BIT
+                        == IgvmVariableHeaderType::IGVM_VHT_VERSION_STRING.0
+                    {
+                        version_headers += 1;
+                        assert_eq!(
+                            header.typ.0,
+                            IgvmVariableHeaderType::IGVM_VHT_VERSION_STRING.0
+                                | IGVM_VHT_OPTIONAL_BIT
+                        );
+                        assert_eq!(&body[..length], value.as_bytes());
+                        assert!(body[length..padded_length].iter().all(|byte| *byte == 0));
+                    }
+                    headers = &body[padded_length..];
+                }
+                assert_eq!(version_headers, 1);
+                let parsed = IgvmFile::new_from_binary(&data, None).unwrap();
+                assert_eq!(parsed.version_string(), Some(value));
+                assert_eq!(parsed.platforms(), file.platforms());
+                assert_eq!(parsed.directives(), file.directives());
+                assert_eq!(&parsed.initializations()[..2], file.initializations());
+                assert_eq!(parsed.initializations().len(), 3);
+                assert_eq!(
+                    IgvmSerializer::new(&parsed).unwrap().measurements()[0].digest,
+                    baseline.digest
+                );
+                let header_size = match revision {
+                    IgvmRevision::V1 => size_of::<IGVM_FIXED_HEADER>(),
+                    IgvmRevision::V2 { .. } => size_of::<IGVM_FIXED_HEADER_V2>(),
+                };
+                // Only sizes and checksum change in the fixed header.
+                assert_eq!(&data[..8], &original[..8]);
+                assert_eq!(
+                    &data[size_of::<IGVM_FIXED_HEADER>()..header_size],
+                    &original[size_of::<IGVM_FIXED_HEADER>()..header_size]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_input_returns_error() {
+        for data in [b"".as_slice(), b"IGVM", b"not an IGVM", &[0; 64]] {
+            let error = add_version_string(data, "build".to_owned()).unwrap_err();
+            assert!(
+                error.to_string().contains("parsing input IGVM file"),
+                "{error:#}"
+            );
+        }
     }
 }

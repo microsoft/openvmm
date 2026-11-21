@@ -3964,8 +3964,8 @@ dependencies = [
 
 [[package]]
 name = "igvm"
-version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=b7e717d40653f8c2382342eb7097dcd3ec0568de#b7e717d40653f8c2382342eb7097dcd3ec0568de"
+version = "0.5.0"
+source = "git+https://github.com/microsoft/igvm?rev=7b199516736e41be326ff9a1c2d608f9b456937b#7b199516736e41be326ff9a1c2d608f9b456937b"
 dependencies = [
  "bitfield-struct 0.13.0",
  "corim",
@@ -3984,8 +3984,8 @@ dependencies = [
 
 [[package]]
 name = "igvm_defs"
-version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=b7e717d40653f8c2382342eb7097dcd3ec0568de#b7e717d40653f8c2382342eb7097dcd3ec0568de"
+version = "0.5.0"
+source = "git+https://github.com/microsoft/igvm?rev=7b199516736e41be326ff9a1c2d608f9b456937b#7b199516736e41be326ff9a1c2d608f9b456937b"
 dependencies = [
  "bitfield-struct 0.13.0",
  "open-enum",
