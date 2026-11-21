@@ -23,10 +23,16 @@ use disk_prwrap::DiskWithReservations;
 use disklayer_ram::ram_disk;
 use guestmem::GuestMemory;
 use guid::Guid;
+use mesh::CancelContext;
 use mesh::CellUpdater;
+use mesh::rpc::RpcSend;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::IoQueueFaultBehavior;
+use nvme_resources::fault::IoQueueFaultConfig;
+use nvme_resources::fault::NamespaceChange;
+use nvme_resources::fault::NamespaceFaultConfig;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use pal_async::DefaultDriver;
@@ -35,6 +41,7 @@ use pal_async::timer::PolledTimer;
 use pci_core::msi::MsiConnection;
 use pci_core::test_helpers::TestPciInterruptController;
 use std::time::Duration;
+use std::time::Instant;
 use user_driver::backoff::Backoff;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -1232,4 +1239,404 @@ async fn test_io_command_with_fuse_refused(driver: DefaultDriver) {
             assert_eq!(data, [0xa5; 512], "FUSE {fuse:#04b}: the read ran");
         }
     }
+}
+
+#[async_test]
+async fn test_aer_survives_stop_during_completion_delay(driver: DefaultDriver) {
+    let (ns_change_send, ns_change_recv) = mesh::channel();
+    let (entered_send, entered_recv) = mesh::oneshot();
+    let (release_send, release_recv) = mesh::oneshot();
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
+        .with_namespace_fault(NamespaceFaultConfig::new(ns_change_recv))
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0)
+                    .build(),
+                AdminQueueFaultBehavior::Hold {
+                    entered: Some(entered_send),
+                    release: Some(release_recv),
+                },
+            ),
+        );
+
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        fault_configuration,
+    )
+    .await;
+
+    let mut aer = Command::new_zeroed();
+    aer.cdw0
+        .set_opcode(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0);
+    aer.cdw0.set_cid(7);
+    write_command_to_queue(&gm, &asq, 0, &aer);
+    nvmec.write_bar0(0x1000, 1u32.as_bytes()).unwrap();
+
+    // Completes once the AER completion has been written.
+    let notified = ns_change_send.call(NamespaceChange::ChangeNotification, 1);
+
+    // Stop and restart the admin worker while it holds the AER completion.
+    // The hold is never released, so only the stop ends it, and the restarted
+    // worker's match on the AER passes it through.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(entered_recv)
+        .await
+        .expect("the AER completion was never held")
+        .unwrap();
+    let removed = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(nvmec.client().remove_namespace(1))
+        .await
+        .expect("stopping the admin worker did not end the hold");
+    assert!(!removed);
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(notified)
+        .await
+        .expect("AER was not completed")
+        .unwrap();
+
+    let cqe = read_completion_from_queue(&gm, &acq, 0);
+    assert!(cqe.status.phase());
+    assert_eq!(cqe.cid, 7);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    drop(release_send);
+}
+
+#[async_test]
+async fn test_io_completion_fault_matches_inline_completed_command(driver: DefaultDriver) {
+    const IO_CQ_BASE: u64 = 0x4000;
+    const IO_SQ_BASE: u64 = 0x5000;
+    const DATA_BASE: u64 = 0x6000;
+
+    let payload = vec![0xa5; 16];
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
+        .with_io_queue_fault(
+            IoQueueFaultConfig::new(CellUpdater::new(true).cell()).with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvm::NvmOpcode::READ.0)
+                    .build(),
+                IoQueueFaultBehavior::CustomPayload(payload.clone()),
+            ),
+        );
+
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let io_cq = PrpRange::new(vec![IO_CQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let io_sq = PrpRange::new(vec![IO_SQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        fault_configuration,
+    )
+    .await;
+
+    create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &acq,
+        &asq,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        IO_CQ_BASE,
+        IO_SQ_BASE,
+        /* qsize_z = */ 15,
+        /* cq_iv = */ 0,
+    )
+    .await;
+
+    // NSID 0 is invalid, so the read is completed inline without reaching a
+    // namespace.
+    let mut read = Command::new_zeroed();
+    read.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+    read.cdw0.set_cid(3);
+    read.nsid = 0;
+    read.dptr[0] = DATA_BASE;
+    write_command_to_queue(&gm, &io_sq, 0, &read);
+    nvmec.write_bar0(sq_db(1), 1u32.as_bytes()).unwrap();
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+
+    let cqe = read_completion_from_queue(&gm, &io_cq, 0);
+    assert!(cqe.status.phase());
+    assert_eq!(cqe.cid, 3);
+    assert_eq!(
+        cqe.status.status(),
+        spec::Status::INVALID_NAMESPACE_OR_FORMAT.0
+    );
+    assert!(cqe.status.dnr());
+
+    let mut data = vec![0; payload.len()];
+    gm.read_at(DATA_BASE, &mut data).unwrap();
+    assert_eq!(data, payload);
+}
+
+/// Waits until an I/O worker holds a completion back under a `Delay` fault.
+/// The whole wait, inspections included, runs under the same 10 s timeout as
+/// the other waits, so a worker that stops answering fails the test.
+async fn wait_for_delayed_io_completion(nvmec: &mut NvmeFaultController, timer: &mut PolledTimer) {
+    let entered = async {
+        loop {
+            let mut inspection = inspect::inspect("", &mut *nvmec);
+            inspection.resolve().await;
+            if format!("{:#}", inspection.results()).contains("delayed_completion: true") {
+                return;
+            }
+            timer.sleep(Duration::from_millis(10)).await;
+        }
+    };
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(entered)
+        .await
+        .expect("the I/O worker never entered the completion delay");
+}
+
+/// Submits a READ to `nsid` whose completion a `Delay` fault holds back, adds
+/// a namespace late in the delay (which stops and restarts every I/O worker),
+/// and checks that the READ completes with its original status by the
+/// original deadline rather than after a fresh delay.
+async fn delayed_io_completion_survives_worker_stop(
+    driver: DefaultDriver,
+    nsid: u32,
+    expected_status: spec::Status,
+    expected_dnr: bool,
+) {
+    const IO_CQ_BASE: u64 = 0x4000;
+    const IO_SQ_BASE: u64 = 0x5000;
+    const DATA_BASE: u64 = 0x6000;
+    const DELAY: Duration = Duration::from_secs(4);
+    // The restart lands about one second before the original deadline, and
+    // the completion must follow within `SLACK` of that deadline. A restart
+    // that started a fresh delay would complete `DELAY` after the restart,
+    // about two seconds past this bound.
+    const RESTART_AFTER: Duration = Duration::from_secs(3);
+    const SLACK: Duration = Duration::from_millis(1500);
+
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
+        .with_io_queue_fault(
+            IoQueueFaultConfig::new(CellUpdater::new(true).cell()).with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvm::NvmOpcode::READ.0)
+                    .build(),
+                IoQueueFaultBehavior::Delay(DELAY),
+            ),
+        );
+
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let io_cq = PrpRange::new(vec![IO_CQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let io_sq = PrpRange::new(vec![IO_SQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        fault_configuration,
+    )
+    .await;
+    if nsid == 1 {
+        let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+        nvmec.client().add_namespace(1, disk).await.unwrap();
+    }
+    create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &acq,
+        &asq,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        IO_CQ_BASE,
+        IO_SQ_BASE,
+        /* qsize_z = */ 15,
+        /* cq_iv = */ 0,
+    )
+    .await;
+
+    let mut read = Command::new_zeroed();
+    read.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+    read.cdw0.set_cid(3);
+    read.nsid = nsid;
+    read.dptr[0] = DATA_BASE;
+    write_command_to_queue(&gm, &io_sq, 0, &read);
+    nvmec.write_bar0(sq_db(1), 1u32.as_bytes()).unwrap();
+
+    // Wait until the worker holds the delayed completion, so the stop below
+    // lands inside the delay rather than before the command was taken.
+    let mut timer = PolledTimer::new(&driver);
+    wait_for_delayed_io_completion(&mut nvmec, &mut timer).await;
+    // The worker set its deadline before the inspection saw the delay, so
+    // the original deadline is no later than `entered + DELAY`.
+    let entered = Instant::now();
+    timer.sleep(RESTART_AFTER).await;
+    assert!(
+        !read_completion_from_queue(&gm, &io_cq, 0).status.phase(),
+        "the completion was not delayed until the restart"
+    );
+    let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(nvmec.client().add_namespace(2, disk))
+        .await
+        .expect("stopping the I/O workers did not finish")
+        .unwrap();
+
+    // Take the time after each read, so a completion counts only if it was
+    // already written while the deadline still held. A namespace update that
+    // returns late therefore fails the test instead of hiding a fresh delay.
+    let (cqe, seen_after) = loop {
+        let cqe = read_completion_from_queue(&gm, &io_cq, 0);
+        let seen_after = entered.elapsed();
+        if cqe.status.phase() || seen_after >= DELAY + SLACK {
+            break (cqe, seen_after);
+        }
+        timer.sleep(Duration::from_millis(20)).await;
+    };
+    assert!(
+        cqe.status.phase() && seen_after < DELAY + SLACK,
+        "the delayed READ was not completed by its original deadline (checked {seen_after:?} after the delay started)"
+    );
+    assert_eq!(cqe.cid, 3);
+    assert_eq!(cqe.status.status(), expected_status.0);
+    assert_eq!(cqe.status.dnr(), expected_dnr);
+}
+
+/// A delayed completion of a READ completed inline (no namespace behind the
+/// NSID) survives an I/O worker stop during the delay.
+#[async_test]
+async fn test_delayed_inline_io_completion_survives_worker_stop(driver: DefaultDriver) {
+    delayed_io_completion_survives_worker_stop(
+        driver,
+        0,
+        spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+        true,
+    )
+    .await;
+}
+
+/// A delayed completion of a READ that reached a namespace survives an I/O
+/// worker stop during the delay.
+#[async_test]
+async fn test_delayed_namespace_io_completion_survives_worker_stop(driver: DefaultDriver) {
+    delayed_io_completion_survives_worker_stop(driver, 1, spec::Status::SUCCESS, false).await;
+}
+
+/// Deleting an I/O submission queue ends a completion delay at once, so a
+/// long delay does not hold up the deletion.
+#[async_test]
+async fn test_io_queue_deletion_ends_completion_delay(driver: DefaultDriver) {
+    const IO_CQ_BASE: u64 = 0x4000;
+    const IO_SQ_BASE: u64 = 0x5000;
+    const DATA_BASE: u64 = 0x6000;
+
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
+        .with_io_queue_fault(
+            IoQueueFaultConfig::new(CellUpdater::new(true).cell()).with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvm::NvmOpcode::READ.0)
+                    .build(),
+                IoQueueFaultBehavior::Delay(Duration::from_secs(60)),
+            ),
+        );
+
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let io_sq = PrpRange::new(vec![IO_SQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        fault_configuration,
+    )
+    .await;
+    let disk = ram_disk(1 << 20, /* read_only = */ false).unwrap();
+    nvmec.client().add_namespace(1, disk).await.unwrap();
+    // The I/O queue interrupts on vector 1, so the admin completion is the
+    // only interrupt on vector 0.
+    let admin_slot = create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &acq,
+        &asq,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        IO_CQ_BASE,
+        IO_SQ_BASE,
+        /* qsize_z = */ 15,
+        /* cq_iv = */ 1,
+    )
+    .await;
+
+    let mut read = Command::new_zeroed();
+    read.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+    read.cdw0.set_cid(3);
+    read.nsid = 1;
+    read.dptr[0] = DATA_BASE;
+    write_command_to_queue(&gm, &io_sq, 0, &read);
+    nvmec.write_bar0(sq_db(1), 1u32.as_bytes()).unwrap();
+
+    let mut timer = PolledTimer::new(&driver);
+    wait_for_delayed_io_completion(&mut nvmec, &mut timer).await;
+
+    let mut delete = Command::new_zeroed();
+    delete
+        .cdw0
+        .set_opcode(spec::AdminOpcode::DELETE_IO_SUBMISSION_QUEUE.0);
+    delete.cdw0.set_cid(0xd101);
+    delete.cdw10 = spec::Cdw10DeleteIoQueue::new().with_qid(1).into();
+    // submit_admin_command fails unless the completion arrives promptly,
+    // well before the 60 s delay would end.
+    let cqe = submit_admin_command(
+        &mut nvmec,
+        &gm,
+        &asq,
+        &acq,
+        &int_controller,
+        driver.clone(),
+        admin_slot,
+        &delete,
+    )
+    .await;
+    assert_eq!(cqe.cid, 0xd101);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
 }

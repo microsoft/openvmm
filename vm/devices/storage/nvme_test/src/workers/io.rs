@@ -24,6 +24,7 @@ use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::IoQueueFaultBehavior;
 use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_spec::Command;
+use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
@@ -40,7 +41,6 @@ use thiserror::Error;
 use unicycle::FuturesUnordered;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
-use zerocopy::FromZeros;
 
 #[derive(Inspect)]
 pub struct IoHandler {
@@ -64,6 +64,18 @@ pub struct IoState {
     queue_state: IoQueueState,
     #[inspect(skip)]
     fault_configuration: Arc<IoQueueFaultConfig>,
+    #[inspect(with = "Option::is_some")]
+    delayed_completion: Option<DelayedCompletion>,
+}
+
+/// A completion a `Delay` fault is holding back.
+///
+/// It lives in `IoState`, not in the worker future, because its command has
+/// already left the SQ: a worker stop during the delay drops that future, and
+/// nothing else would ever complete the command.
+struct DelayedCompletion {
+    completion: spec::Completion,
+    deadline: Instant,
 }
 
 #[derive(Inspect)]
@@ -102,6 +114,7 @@ impl IoState {
             io_count: 0,
             queue_state: IoQueueState::Active,
             fault_configuration,
+            delayed_completion: None,
         }
     }
 
@@ -196,6 +209,17 @@ impl IoHandler {
     ) -> Result<(), HandlerError> {
         loop {
             check.check()?;
+            if let Some(delayed) = &state.delayed_completion {
+                // A queue deletion ends the delay at once, so a long fault
+                // does not hold up the teardown.
+                if matches!(state.queue_state, IoQueueState::Active) {
+                    self.timer.sleep_until(delayed.deadline).await;
+                }
+                let completion = state.delayed_completion.take().unwrap().completion;
+                let deleting = !matches!(state.queue_state, IoQueueState::Active);
+                Self::post_completion(state, completion, deleting)?;
+                continue;
+            }
             let deleting = match state.queue_state {
                 IoQueueState::Active => {
                     // Wait for a completion to be ready. This will be necessary either
@@ -308,11 +332,7 @@ impl IoHandler {
                         }
                         _ => spec::Status::INVALID_FIELD_IN_COMMAND,
                     };
-                    (
-                        cid,
-                        NvmeError::do_not_retry(status).into(),
-                        Command::new_zeroed(),
-                    )
+                    (cid, NvmeError::do_not_retry(status).into(), command)
                 }
             };
 
@@ -361,15 +381,28 @@ impl IoHandler {
                             &command,
                             &completion
                         );
-                        self.timer.sleep(duration).await;
+                        state.delayed_completion = Some(DelayedCompletion {
+                            completion,
+                            deadline: Instant::now() + duration,
+                        });
+                        continue;
                     }
                 }
             }
 
-            if !state.cq.write(completion)? {
-                assert!(deleting);
-                tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
-            }
+            Self::post_completion(state, completion, deleting)?;
+        }
+        Ok(())
+    }
+
+    fn post_completion(
+        state: &mut IoState,
+        completion: spec::Completion,
+        deleting: bool,
+    ) -> Result<(), QueueError> {
+        if !state.cq.write(completion)? {
+            assert!(deleting);
+            tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
         }
         Ok(())
     }
