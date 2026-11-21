@@ -914,6 +914,52 @@ fn a_file_child_follows_its_name_but_stays_a_file() {
     assert_eq!(read_node(&fs, lookup(&fs, "output").unwrap()), b"output");
 }
 
+/// Creates the host file `host_name` below `directory`, holding its own name,
+/// and attaches it as the read-only file child `file` of an aggregate.
+fn attach_file_named(directory: &Path, host_name: &str) -> anyhow::Result<VirtioFs> {
+    let path = directory.join(host_name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, host_name).unwrap();
+    VirtioFs::new_microvm_aggregate(&[&path], profile(&[Child::file("file", &path, true)]))
+}
+
+/// The volume of a file child reaches the file by its host name, which, like
+/// every path of a microVM share, must not contain `\` or `:`, so the guest
+/// could never reach the child: attaching it fails instead
+/// (microsoft/nvx#1614). On Windows, such a name selects a stream of a file.
+#[test]
+fn a_file_child_with_a_backslash_or_colon_in_its_name_is_refused() {
+    let directory = tempdir().unwrap();
+    let names: &[&str] = if cfg!(windows) {
+        &["file:stream", "file::$DATA"]
+    } else {
+        &[":", "a:b", "\\", "a\\b"]
+    };
+    for host_name in names {
+        assert!(
+            attach_file_named(directory.path(), host_name).is_err(),
+            "{host_name:?}"
+        );
+    }
+}
+
+/// Only the file's own name counts: a file with a name that a child's name
+/// may not have, or in a directory whose name has a colon, attaches, and the
+/// guest reads it through its child.
+#[test]
+fn a_file_child_with_any_other_name_is_reachable() {
+    let directory = tempdir().unwrap();
+    let mut names = vec!["a b", "a,b", "caf\u{e9}", ".hidden", "-x"];
+    if cfg!(unix) {
+        names.push("a:b/file");
+    }
+    for host_name in names {
+        let fs = attach_file_named(directory.path(), host_name).unwrap();
+        let file = lookup(&fs, "file").unwrap();
+        assert_eq!(read_node(&fs, file), host_name.as_bytes(), "{host_name:?}");
+    }
+}
+
 #[test]
 fn file_child_state_restores_and_rejects_changes() {
     let files = Files::new();
