@@ -44,6 +44,8 @@ use tdisp::test_helpers::new_null_tdisp_interface;
 use test_with_tracing::test;
 use virt::IsolationType;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmcore::vm_task::SingleDriverBackend;
+use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vpci::bus::VpciBusConfig;
 use vpci::bus::VpciBusDevice;
@@ -209,6 +211,7 @@ async fn connect_relay_with(
     }));
 
     let (bus, mut channel) = VpciBusDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         VpciBusConfig {
             instance_id: Guid::new_random(),
             vtom: Some(TEST_VTOM),
