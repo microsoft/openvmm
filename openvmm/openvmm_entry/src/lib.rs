@@ -836,7 +836,7 @@ async fn vm_config_from_command_line(
                 anyhow::bail!("must specify --no-alias-map to offer NICs to VTL2");
             }
             let mana = vpci_mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
-                let vpci_instance_id = Guid::new_random();
+                let vpci_instance_id = mana_vpci_instance_id(openhcl_vtl as usize);
                 underhill_nics.push(vtl2_settings_proto::NicDeviceLegacy {
                     instance_id: vpci_instance_id.to_string(),
                     subordinate_instance_id: None,
@@ -945,7 +945,10 @@ async fn vm_config_from_command_line(
             (vtl, None) => {
                 &mut vpci_mana_nics[vtl]
                     .get_or_insert_with(|| {
-                        (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() })
+                        (
+                            mana_vpci_instance_id(vtl),
+                            GdmaDeviceHandle { vports: Vec::new() },
+                        )
                     })
                     .1
                     .vports
@@ -2513,6 +2516,18 @@ fn parse_endpoint(
         enable_rx_gso: cli_cfg.enable_rx_gso,
         pcie_port: cli_cfg.pcie_port.clone(),
     })
+}
+
+/// Returns the VPCI instance ID of the MANA device for `vtl`.
+///
+/// The ID is fixed so that a guest sees the same device on every boot, rather
+/// than a new one it records alongside the old.
+fn mana_vpci_instance_id(vtl: usize) -> Guid {
+    const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-6a35-477c-a2c0-13484df4873c");
+    Guid {
+        data1: vtl as u32,
+        ..BASE_INSTANCE_ID
+    }
 }
 
 #[derive(Debug)]
