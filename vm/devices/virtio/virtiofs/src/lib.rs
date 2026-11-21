@@ -479,7 +479,7 @@ impl Fuse for VirtioFs {
         if self.is_synthetic_root(request.node_id()) {
             util::open_flags(flags)?;
             // The synthetic root has no backing handle; hand out a sentinel that
-            // read_dir/read_dir_plus/release_dir recognize.
+            // read_dir/read_dir_plus/fsync_dir/release_dir recognize.
             return Ok(fuse_open_out::new(SYNTHETIC_ROOT_FH, 0));
         }
         // There is no special handling for directories, so just call open.
@@ -585,6 +585,11 @@ impl Fuse for VirtioFs {
     }
 
     fn fsync_dir(&self, request: &Request, fh: u64, flags: u32) -> lx::Result<()> {
+        // The synthetic root keeps its entries only in memory, so it has
+        // nothing to write back.
+        if self.is_synthetic_root_handle(request.node_id(), fh) {
+            return Ok(());
+        }
         let file = self.get_file(request.node_id(), fh)?;
         let data_only = flags & FUSE_FSYNC_FDATASYNC != 0;
         file.fsync_dir(data_only)

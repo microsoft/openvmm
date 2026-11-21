@@ -25,8 +25,8 @@ use std::sync::Arc;
 use zerocopy::FromZeros;
 
 /// Reserved file handle `open_dir` returns for the synthetic aggregate root;
-/// `read_dir`/`read_dir_plus`/`release_dir` recognize it and serve the root
-/// registry instead of the handle map. `u64::MAX` can't collide with a real
+/// `read_dir`/`read_dir_plus`/`fsync_dir`/`release_dir` recognize it and serve
+/// the root instead of the handle map. `u64::MAX` can't collide with a real
 /// handle, since `HandleMap` allocates from 1 upward.
 pub(crate) const SYNTHETIC_ROOT_FH: u64 = u64::MAX;
 
