@@ -19,6 +19,7 @@ use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::PhysicalDiskHandle;
 use disk_file::FileDisk;
 use inspect::Inspect;
+use scsi_buffers::BounceBuffer;
 use scsi_buffers::RequestBuffers;
 use std::fs::File;
 use thiserror::Error;
@@ -67,12 +68,14 @@ pub struct PhysicalDisk {
 impl PhysicalDisk {
     /// Opens a physical disk, querying its size and sector sizes.
     ///
-    /// Fails if `file` is not a disk device, or was opened for overlapped I/O.
+    /// Fails if `file` is not a disk device, was opened for overlapped I/O, or
+    /// requires buffers more strictly aligned than [`BounceBuffer::ALIGNMENT`].
     pub fn open(file: File, read_only: bool) -> std::io::Result<Self> {
         // FileDisk issues blocking reads and writes, which cannot complete on
         // an overlapped handle.
         pal::windows::fs::ensure_synchronous(&file)?;
         let geometry = geometry::query_disk_geometry(&file)?;
+        check_buffer_alignment(geometry::query_buffer_alignment(&file)?)?;
         // The handle may have been opened for unbuffered I/O, which requires
         // sector-aligned buffers.
         let file = FileDisk::with_metadata(
@@ -87,6 +90,22 @@ impl PhysicalDisk {
         .with_aligned_buffers()?;
         Ok(Self { file })
     }
+}
+
+/// Fails if the device requires buffers more strictly aligned than the I/O
+/// buffers provide, so that the disk fails to open rather than failing guest
+/// I/O.
+fn check_buffer_alignment(alignment: u32) -> std::io::Result<()> {
+    if alignment as usize > BounceBuffer::ALIGNMENT {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "device requires {alignment}-byte buffer alignment, more than the supported {}",
+                BounceBuffer::ALIGNMENT
+            ),
+        ));
+    }
+    Ok(())
 }
 
 impl DiskIo for PhysicalDisk {
@@ -167,6 +186,26 @@ mod tests {
         let file = tempfile::tempfile().unwrap();
         file.set_len(DISK_SIZE).unwrap();
         PhysicalDisk::open(file, false).unwrap_err();
+    }
+
+    /// Devices requiring more buffer alignment than the I/O buffers provide
+    /// are rejected, regardless of their sector sizes.
+    #[test]
+    fn buffer_alignment_is_checked() {
+        let alignment = scsi_buffers::BounceBuffer::ALIGNMENT as u32;
+        for supported in [1, 512, alignment] {
+            super::check_buffer_alignment(supported).unwrap();
+        }
+        let err = super::check_buffer_alignment(alignment * 2).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    }
+
+    /// The device's alignment requirement is reported as a power of two.
+    #[test]
+    fn buffer_alignment_is_queried() {
+        let file = tempfile::tempfile().unwrap();
+        let alignment = super::geometry::query_buffer_alignment(&file).unwrap();
+        assert!(alignment.is_power_of_two(), "{alignment}");
     }
 
     /// I/O blocks, so overlapped handles are rejected before any device query.

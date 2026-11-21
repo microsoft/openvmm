@@ -16,7 +16,7 @@ vm_resource.workspace = true
 inspect.workspace = true
 pal.workspace = true
 thiserror.workspace = true
-windows-sys = { workspace = true, features = ["Win32_System_IO", "Win32_System_Ioctl"] }
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 disk_vhd1.workspace = true

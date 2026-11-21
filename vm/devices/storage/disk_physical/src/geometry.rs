@@ -3,7 +3,8 @@
 
 //! Windows physical disk (for example `\\.\PhysicalDriveN`) geometry queries.
 
-// UNSAFETY: Calling DeviceIoControl with properly sized input and output buffers.
+// UNSAFETY: Calling DeviceIoControl and GetFileInformationByHandleEx with
+// properly sized input and output buffers.
 #![expect(unsafe_code)]
 
 use std::fs;
@@ -12,6 +13,9 @@ use std::mem::size_of;
 use std::os::windows::io::AsRawHandle;
 use windows_sys::Win32::Foundation::ERROR_INVALID_FUNCTION;
 use windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED;
+use windows_sys::Win32::Storage::FileSystem::FILE_ALIGNMENT_INFO;
+use windows_sys::Win32::Storage::FileSystem::FileAlignmentInfo;
+use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandleEx;
 use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::Ioctl::DISK_GEOMETRY;
 use windows_sys::Win32::System::Ioctl::GET_LENGTH_INFORMATION;
@@ -104,6 +108,40 @@ pub(crate) fn query_disk_geometry(file: &fs::File) -> io::Result<DiskGeometry> {
         sector_size,
         physical_sector_size,
     })
+}
+
+/// Returns the buffer address alignment, in bytes, that the device enforces
+/// for I/O on `file`.
+///
+/// Windows recommends aligning unbuffered I/O buffers to the physical sector
+/// size, but only rejects I/O whose buffers violate the device's alignment
+/// requirement, which is often smaller.
+pub(crate) fn query_buffer_alignment(file: &fs::File) -> io::Result<u32> {
+    let mut info = FILE_ALIGNMENT_INFO::default();
+    // SAFETY: the output pointer is valid for the specified length for the
+    // duration of the call.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileAlignmentInfo,
+            std::ptr::from_mut(&mut info).cast(),
+            size_of::<FILE_ALIGNMENT_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // The requirement is reported as an address mask, such as 511 for
+    // 512-byte alignment.
+    info.AlignmentRequirement
+        .checked_add(1)
+        .filter(|alignment| alignment.is_power_of_two())
+        .ok_or_else(|| {
+            invalid_geometry(format!(
+                "invalid buffer alignment requirement {:#x}",
+                info.AlignmentRequirement
+            ))
+        })
 }
 
 fn invalid_geometry(msg: String) -> io::Error {
