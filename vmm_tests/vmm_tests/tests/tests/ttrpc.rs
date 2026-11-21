@@ -652,6 +652,9 @@ async fn test_ttrpc_interface(
     driver: DefaultDriver,
     [openvmm, kernel_path, initrd_path, pipette_path]: [ResolvedArtifact; 4],
 ) -> anyhow::Result<()> {
+    const FLAT_MEMORY_MIB: u64 = 256;
+    const FLAT_VCPUS: u32 = 2;
+
     // All temporary files for this test live under a single temp directory
     // that is cleaned up automatically when it is dropped at the end of the
     // test.
@@ -984,12 +987,12 @@ async fn test_ttrpc_interface(
         } else if i == 2 {
             (
                 Some(vmservice::MemoryConfig {
-                    memory_mb: 256,
+                    memory_mb: FLAT_MEMORY_MIB,
                     ..Default::default()
                 }),
                 None,
                 Some(vmservice::ProcessorConfig {
-                    processor_count: 2,
+                    processor_count: FLAT_VCPUS,
                     ..Default::default()
                 }),
                 Some(vmservice::PcieTopologyConfig {
@@ -1479,6 +1482,7 @@ async fn test_ttrpc_interface(
                     )
                     .await?;
                     if i == 2 {
+                        validate_guest_sizing(&agent, FLAT_VCPUS, FLAT_MEMORY_MIB).await?;
                         let sh = agent.unix_shell();
                         cmd!(sh, "sh -c 'printf ttrpc-console-file-marker > /dev/hvc0'")
                             .run()
@@ -2721,6 +2725,42 @@ const SMBIOS_SYS_SERIAL: &str = "SN-0123456789";
 const SMBIOS_SYS_SKU: &str = "SKU-CONTOSO-42";
 const SMBIOS_SYS_FAMILY: &str = "Contoso VM Family";
 const SMBIOS_SYS_UUID: &str = "12345678-9abc-def0-1234-56789abcdef0";
+
+async fn validate_guest_sizing(
+    agent: &pipette_client::PipetteClient,
+    vcpus: u32,
+    memory_mib: u64,
+) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    let online = sh.read_file("/sys/devices/system/cpu/online").await?;
+    let expected_online = format!("0-{}", vcpus - 1);
+    anyhow::ensure!(
+        online.trim() == expected_online,
+        "requested {vcpus} vCPUs, expected online set {expected_online}, got {online:?}"
+    );
+
+    let meminfo = sh.read_file("/proc/meminfo").await?;
+    let total = meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .context("missing MemTotal in guest /proc/meminfo")?;
+    let total_kib: u64 = total
+        .trim()
+        .strip_suffix(" kB")
+        .with_context(|| format!("unexpected guest MemTotal unit: {total:?}"))?
+        .trim_end()
+        .parse()
+        .with_context(|| format!("invalid guest MemTotal: {total:?}"))?;
+
+    // Linux excludes reserved pages from MemTotal. Allow up to 64 MiB in this direct-boot guest.
+    let requested_kib = memory_mib * 1024;
+    let min_kib = requested_kib - 64 * 1024;
+    anyhow::ensure!(
+        (min_kib..=requested_kib).contains(&total_kib),
+        "requested {memory_mib} MiB, expected guest MemTotal in {min_kib}..={requested_kib} KiB, got {total_kib} KiB"
+    );
+    Ok(())
+}
 
 async fn validate_smbios(agent: &pipette_client::PipetteClient) -> anyhow::Result<()> {
     for (file, expected) in [

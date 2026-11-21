@@ -143,16 +143,51 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     Ok(())
 }
 
-/// Basic boot test using virtio vsock instead of vmbus hvsocket.
+/// Verify that Pipette can exchange data over virtio-vsock at boot and, when supported, after reboot.
 /// N.B. Because this requires kernel support, it's only done for Linux direct boot since the test
 ///      kernel is guaranteed to include it.
 #[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
 async fn boot_virtio_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    let (vm, agent) = config
+    async fn probe(agent: &pipette_client::PipetteClient) -> anyhow::Result<Guid> {
+        anyhow::ensure!(
+            agent.local_vsock_cid() == Some(3),
+            "expected virtio-vsock guest CID 3, got {:?}",
+            agent.local_vsock_cid()
+        );
+        let sh = agent.unix_shell();
+        let marker = Guid::new_random().to_string();
+        let reply = cmd!(sh, "echo {marker}").read().await?;
+        anyhow::ensure!(reply.trim() == marker, "expected {marker}, got {reply:?}");
+        sh.read_file("/proc/sys/kernel/random/boot_id")
+            .await?
+            .trim()
+            .parse()
+            .context("invalid guest boot ID")
+    }
+
+    let (mut vm, mut agent) = config
         .with_virtio_vsock(true)
         .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
         .run()
         .await?;
+    let first_boot = probe(&agent).await.context("vsock before reboot")?;
+    let reset_capability = vm.inspect_vmm("partition_supports_reset").await?;
+    let inspect::Node::Value(inspect::Value {
+        kind: inspect::ValueKind::Bool(supports_reset),
+        ..
+    }) = reset_capability
+    else {
+        anyhow::bail!("unexpected VMM reset capability: {reset_capability:?}");
+    };
+    if supports_reset {
+        agent.reboot().await?;
+        // Keep the original vsock connection alive through reset.
+        agent = vm.wait_for_reset().await?;
+        let second_boot = probe(&agent).await.context("vsock after reboot")?;
+        anyhow::ensure!(first_boot != second_boot, "guest boot ID did not change");
+    } else {
+        tracing::info!("partition reset is not supported; skipping the vsock reboot check");
+    }
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
