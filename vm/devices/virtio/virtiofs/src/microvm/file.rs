@@ -13,6 +13,7 @@ use crate::VirtioFs;
 use crate::file::DirectorySnapshot;
 use crate::file::VirtioFsFile;
 use fuse::DirEntryWriter;
+use fuse::Fuse;
 use fuse::protocol::fuse_entry_out;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -138,26 +139,17 @@ impl VirtioFsFile {
                         break;
                     }
                 } else {
-                    // This check must happen before insert_lookup, because a
-                    // readdirplus lookup creates a guest lookup reference.
-                    if !buffer.check_dir_entry_plus(name) {
-                        break;
-                    }
-                    let (child, attr) = self.inode.lookup_child(name)?;
-                    // The snapshot numbers each entry as an object of this
-                    // directory's host device. The host lists a mount point or
-                    // a btrfs subvolume, whose lookup reaches another device,
-                    // by the number of another object, so only an entry on
-                    // this directory's device shows whether the name still
-                    // reaches the listed object.
-                    if child.device_nr() == self.inode.device_nr()
-                        && attr.ino != entry.guest_inode_id
-                    {
-                        return Err(lx::Error::EIO);
-                    }
-                    let fuse_entry = fs.insert_lookup(child, attr)?;
-                    if !buffer.dir_entry_plus(name, entry.next_cookie, fuse_entry) {
-                        return Err(lx::Error::EIO);
+                    match self.write_microvm_entry_plus(fs, &mut buffer, entry) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        // Each entry in the reply hands the guest a lookup
+                        // reference, which the guest can release only if it
+                        // receives the entry. So, as in `read_dir_with`, return
+                        // the entries read so far, and report the error only if
+                        // there are none; the guest's next read starts at the
+                        // failing entry.
+                        Err(error) if buffer.is_empty() => return Err(error),
+                        Err(_) => break,
                     }
                 }
             } else if !buffer.dir_entry(name, entry.guest_inode_id, entry.next_cookie, entry.kind) {
@@ -169,6 +161,44 @@ impl VirtioFsFile {
             return Err(lx::Error::EINVAL);
         }
         Ok(buffer)
+    }
+
+    /// Writes the readdirplus entry of `entry`, an entry of this directory's
+    /// snapshot other than `.` and `..`, to `buffer`, and returns whether it
+    /// fit.
+    ///
+    /// The entry's lookup takes the lookup reference that the entry hands to
+    /// the guest, so the reference is held only if the entry is written: an
+    /// entry that does not fit, or that fails, holds none.
+    fn write_microvm_entry_plus(
+        &self,
+        fs: &VirtioFs,
+        buffer: &mut Vec<u8>,
+        entry: &SavedDirectoryEntry,
+    ) -> lx::Result<bool> {
+        let name = lx::LxStr::from_bytes(&entry.name);
+        // This check must happen before insert_lookup, because a
+        // readdirplus lookup creates a guest lookup reference.
+        if !buffer.check_dir_entry_plus(name) {
+            return Ok(false);
+        }
+        let (child, attr) = self.inode.lookup_child(name)?;
+        // The snapshot numbers each entry as an object of this directory's
+        // host device. The host lists a mount point or a btrfs subvolume,
+        // whose lookup reaches another device, by the number of another
+        // object, so only an entry on this directory's device shows whether
+        // the name still reaches the listed object.
+        if child.device_nr() == self.inode.device_nr() && attr.ino != entry.guest_inode_id {
+            return Err(lx::Error::EIO);
+        }
+        let fuse_entry = fs.insert_lookup(child, attr)?;
+        let node_id = fuse_entry.nodeid;
+        if !buffer.dir_entry_plus(name, entry.next_cookie, fuse_entry) {
+            // The guest never receives the entry, so release its reference.
+            fs.forget(node_id, 1);
+            return Err(lx::Error::EIO);
+        }
+        Ok(true)
     }
 
     fn build_microvm_directory_snapshot(&self) -> lx::Result<Vec<SavedDirectoryEntry>> {

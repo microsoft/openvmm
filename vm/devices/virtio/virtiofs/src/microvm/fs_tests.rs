@@ -22,7 +22,9 @@ use super::state::validate_microvm_state;
 use super::state::validate_relative_path;
 use crate::InodeMap;
 use crate::VirtioFs;
+use crate::file::VirtioFsFile;
 use crate::inode::VirtioFsInode;
+use crate::test_helpers::decode_dir_entries;
 use fuse::Fuse;
 use fuse::Session;
 use fuse::SessionInfoState;
@@ -384,6 +386,110 @@ fn retyped_object_is_not_bound_by_the_alias_limit_of_the_tracked_inode() {
             Some(directory_node_id)
         );
     }
+}
+
+/// Returns a microVM filesystem of `root_path`, whose root holds the regular
+/// files `names`, with an open handle of the root.
+fn microvm_with_an_open_root(root_path: &Path, names: &[&str]) -> (VirtioFs, Arc<VirtioFsFile>) {
+    for name in names {
+        std::fs::write(root_path.join(name), name).unwrap();
+    }
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let handle = fs.insert_file(root.open(lx::O_RDONLY).unwrap()).unwrap();
+    let directory = fs.get_file(handle).unwrap();
+    (fs, directory)
+}
+
+/// Each READDIRPLUS entry other than `.` and `..` hands the guest a lookup
+/// reference, which the guest can release only if it receives the entry. A
+/// READDIRPLUS that fails at an entry, here because the inode limit refuses
+/// the entry's node, must therefore return the entries that it has looked up,
+/// and fail only the next read, which starts at the failing entry. Once the
+/// guest forgets those entries, the listing goes on.
+#[test]
+fn readdirplus_stopped_by_the_inode_limit_returns_the_entries_it_looked_up() {
+    let temporary_directory = tempdir().unwrap();
+    let names = ["first", "second"];
+    let (fs, directory) = microvm_with_an_open_root(temporary_directory.path(), &names);
+    // Leave room for one more node.
+    track_inodes_up_to_the_limit(&fs, directory.inode());
+    let filler = *fs
+        .inner
+        .inodes
+        .read()
+        .inodes_by_node_id
+        .values
+        .keys()
+        .max()
+        .unwrap();
+    fs.forget(filler, 1);
+
+    let entries = decode_dir_entries(&directory.read_dir(&fs, 0, 4096, true).unwrap());
+    let children: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.name != "." && entry.name != "..")
+        .collect();
+    assert_eq!(children.len(), 1);
+    let child = children[0];
+    assert_ne!(child.node_id, 0);
+    let offset = entries.last().unwrap().offset;
+    assert_eq!(
+        directory.read_dir(&fs, offset, 4096, true).unwrap_err(),
+        lx::Error::ENOSPC
+    );
+
+    fs.forget(child.node_id, 1);
+    let rest = decode_dir_entries(&directory.read_dir(&fs, offset, 4096, true).unwrap());
+    let rest: Vec<_> = rest
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .filter(|name| *name != "." && *name != "..")
+        .collect();
+    let other = names.into_iter().find(|name| *name != child.name).unwrap();
+    assert_eq!(rest, [other]);
+}
+
+/// A READDIRPLUS that fails at a listed name that no longer reaches the
+/// listed object, here because a new file replaced it, must leave the guest
+/// every lookup reference that it took: once the guest forgets each entry that
+/// it received, only the root's node remains.
+#[test]
+fn readdirplus_of_a_replaced_entry_keeps_no_reference_the_guest_lacks() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    let (fs, directory) = microvm_with_an_open_root(root_path, &["first", "second", "third"]);
+    // A plain READDIR lists the directory without looking its entries up.
+    directory.read_dir(&fs, 0, 4096, false).unwrap();
+    // Replace the last listed entry, which READDIRPLUS reaches after it looks
+    // the others up, with a file that exists alongside it until the rename,
+    // so that the host numbers the two differently.
+    let replaced = directory
+        .directory_entries()
+        .into_iter()
+        .map(|entry| entry.name)
+        .rfind(|name| name != b"." && name != b"..")
+        .unwrap();
+    let replaced = root_path.join(String::from_utf8(replaced).unwrap());
+    std::fs::write(root_path.join("replacement"), "replacement").unwrap();
+    std::fs::rename(root_path.join("replacement"), replaced).unwrap();
+
+    // Read on as the guest does, until the listing ends or fails, and forget
+    // each entry received.
+    let mut offset = 0;
+    while let Ok(reply) = directory.read_dir(&fs, offset, 4096, true) {
+        let entries = decode_dir_entries(&reply);
+        let Some(last) = entries.last() else {
+            break;
+        };
+        offset = last.offset;
+        for entry in entries {
+            if entry.node_id != 0 {
+                fs.forget(entry.node_id, 1);
+            }
+        }
+    }
+    assert_eq!(fs.inner.inodes.read().inodes_by_node_id.values.len(), 1);
 }
 
 #[test]
