@@ -377,6 +377,8 @@ message DiskBackend {
         MemoryDiffDisk memory_diff = 3;
         // A VHD or VHDX opened by the client (Windows only).
         VirtualDisk virtual_disk = 4;
+        // A host physical disk opened by the client (Windows only).
+        PhysicalDisk physical_disk = 5;
     }
 }
 
@@ -400,6 +402,17 @@ message MemoryDiffDisk {
 // processing the request; the name may be deregistered after the RPC succeeds.
 message VirtualDisk {
     // Name of the registered virtual disk handle.
+    string handle_name = 1;
+}
+
+// A host physical disk, such as `\\.\PhysicalDriveN`, that the client opened
+// for synchronous (non-overlapped) I/O.
+//
+// The client registers the handle using the resource-passing protocol (see
+// resource_passing.md). OpenVMM duplicates the registered handle while
+// processing the request; the name may be deregistered after the RPC succeeds.
+message PhysicalDisk {
+    // Name of the registered physical disk handle.
     string handle_name = 1;
 }
 

@@ -3176,29 +3176,66 @@ async fn build_disk_backend(
     read_only: bool,
     registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
-    if let Some(vmservice::disk_backend::Kind::VirtualDisk(disk)) = &backend.kind {
-        return virtual_disk_backend(&disk.handle_name, registry);
+    if let Some((disk, handle_name)) = backend.kind.as_ref().and_then(RegisteredDisk::from_proto) {
+        return disk.resolve(handle_name, registry);
     }
     crate::disk_open(&disk_backend_from_proto(backend)?, read_only).await
 }
 
-/// Resolves the VHD or VHDX handle registered as `handle_name`.
-fn virtual_disk_backend(
-    handle_name: &str,
-    registry: &ResourceRegistry,
-) -> anyhow::Result<Resource<DiskHandleKind>> {
-    #[cfg(windows)]
-    {
-        let file: File = registry
-            .resolve(handle_name)
-            .with_context(|| format!("failed to resolve virtual disk '{handle_name}'"))?
-            .into();
-        Ok(disk_vhdmp::OpenVhdmpDiskConfig(disk_vhdmp::Vhd::from_file(file)).into_resource())
+/// A kind of disk that a client passes as a registered handle.
+#[derive(Clone, Copy)]
+enum RegisteredDisk {
+    /// A host physical disk opened for synchronous I/O.
+    Physical,
+    /// A VHD or VHDX opened and attached for raw access.
+    Virtual,
+}
+
+impl RegisteredDisk {
+    /// Returns the kind of disk and the handle name if `kind` references a
+    /// registered handle.
+    fn from_proto(kind: &vmservice::disk_backend::Kind) -> Option<(Self, &str)> {
+        match kind {
+            vmservice::disk_backend::Kind::PhysicalDisk(disk) => {
+                Some((Self::Physical, &disk.handle_name))
+            }
+            vmservice::disk_backend::Kind::VirtualDisk(disk) => {
+                Some((Self::Virtual, &disk.handle_name))
+            }
+            _ => None,
+        }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = (handle_name, registry);
-        anyhow::bail!("virtual disk backends are only supported on Windows")
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Physical => "physical disk",
+            Self::Virtual => "virtual disk",
+        }
+    }
+
+    /// Resolves the handle registered as `handle_name` as this kind of disk.
+    fn resolve(
+        self,
+        handle_name: &str,
+        registry: &ResourceRegistry,
+    ) -> anyhow::Result<Resource<DiskHandleKind>> {
+        #[cfg(windows)]
+        {
+            let file: File = registry
+                .resolve(handle_name)
+                .with_context(|| format!("failed to resolve {} '{handle_name}'", self.name()))?
+                .into();
+            Ok(match self {
+                Self::Physical => disk_backend_resources::PhysicalDiskHandle(file).into_resource(),
+                Self::Virtual => disk_vhdmp::OpenVhdmpDiskConfig(disk_vhdmp::Vhd::from_file(file))
+                    .into_resource(),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (handle_name, registry);
+            anyhow::bail!("{} backends are only supported on Windows", self.name())
+        }
     }
 }
 
@@ -3217,8 +3254,9 @@ fn disk_backend_from_proto(backend: vmservice::DiskBackend) -> anyhow::Result<Di
         vmservice::disk_backend::Kind::Memory(vmservice::MemoryDisk { size_bytes }) => {
             DiskCliKind::Memory(size_bytes)
         }
-        vmservice::disk_backend::Kind::VirtualDisk(_) => {
-            anyhow::bail!("virtual disk backends must be a storage device's own backend")
+        vmservice::disk_backend::Kind::PhysicalDisk(_)
+        | vmservice::disk_backend::Kind::VirtualDisk(_) => {
+            anyhow::bail!("registered disk handles must be a storage device's own backend")
         }
         vmservice::disk_backend::Kind::MemoryDiff(overlay) => DiskCliKind::MemoryDiff(Box::new(
             disk_backend_from_proto(*overlay.lower.context("missing memory diff lower disk")?)?,
@@ -3826,24 +3864,48 @@ mod tests {
         }
     }
 
-    fn virtual_disk(name: &str) -> vmservice::DiskBackend {
+    type RegisteredDiskKind = fn(String) -> vmservice::disk_backend::Kind;
+
+    /// The disk backends that reference a registered handle, with the name
+    /// used for them in errors and the ID of the resource they resolve to.
+    const REGISTERED_DISKS: [(RegisteredDiskKind, &str, &str); 2] = [
+        (
+            |handle_name| {
+                vmservice::disk_backend::Kind::PhysicalDisk(vmservice::PhysicalDisk { handle_name })
+            },
+            "physical disk",
+            "physical_disk",
+        ),
+        (
+            |handle_name| {
+                vmservice::disk_backend::Kind::VirtualDisk(vmservice::VirtualDisk { handle_name })
+            },
+            "virtual disk",
+            "vhdmp",
+        ),
+    ];
+
+    fn registered_disk(kind: RegisteredDiskKind, name: &str) -> vmservice::DiskBackend {
         vmservice::DiskBackend {
-            kind: Some(vmservice::disk_backend::Kind::VirtualDisk(
-                vmservice::VirtualDisk {
-                    handle_name: name.into(),
-                },
-            )),
+            kind: Some(kind(name.into())),
         }
     }
 
     #[cfg(windows)]
     #[test]
-    fn registered_virtual_disk_backends() {
+    fn registered_disk_backends() {
+        for (kind, name_of_kind, id) in REGISTERED_DISKS {
+            registered_disk_backend(kind, name_of_kind, id);
+        }
+    }
+
+    #[cfg(windows)]
+    fn registered_disk_backend(kind: RegisteredDiskKind, name_of_kind: &str, id: &str) {
         DefaultPool::run_with(async |_driver| {
             let registry = ResourceRegistry::default();
             let file = tempfile::tempfile().unwrap();
             registry.register("disk".into(), file.into()).unwrap();
-            let backend = || virtual_disk("disk");
+            let backend = || registered_disk(kind, "disk");
 
             build_nvme_controller(
                 vmservice::NvmeConfig {
@@ -3870,11 +3932,11 @@ mod tests {
             )
             .await
             .unwrap();
-            // Registered handles are resolved as VHDMP disks, not files.
+            // Registered handles are resolved by their backend kind, not as files.
             let disk = build_disk_backend(backend(), true, &registry)
                 .await
                 .unwrap();
-            assert_eq!(disk.id(), "vhdmp");
+            assert_eq!(disk.id(), id);
 
             // Names are resolved when the device is built, so a deregistered
             // name no longer resolves.
@@ -3884,34 +3946,38 @@ mod tests {
                 .unwrap_err();
             assert_eq!(
                 format!("{error:#}"),
-                "failed to resolve virtual disk 'disk': no handle registered under name 'disk'"
+                format!(
+                    "failed to resolve {name_of_kind} 'disk': no handle registered under name 'disk'"
+                )
             );
         });
     }
 
-    /// Virtual disks can only be a storage device's own backend, not, for
+    /// Registered disks can only be a storage device's own backend, not, for
     /// example, a VMGS backend or the lower disk of a memory diff overlay.
     #[test]
-    fn virtual_disk_backend_must_be_used_directly() {
+    fn registered_disk_backends_must_be_used_directly() {
         DefaultPool::run_with(async |_driver| {
             let registry = ResourceRegistry::default();
-            let diff = vmservice::DiskBackend {
-                kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::new(
-                    vmservice::MemoryDiffDisk {
-                        lower: Some(Box::new(virtual_disk("disk"))),
-                    },
-                ))),
-            };
-            for error in [
-                disk_backend_from_proto(virtual_disk("disk")).unwrap_err(),
-                build_disk_backend(diff, false, &registry)
-                    .await
-                    .unwrap_err(),
-            ] {
-                assert_eq!(
-                    error.to_string(),
-                    "virtual disk backends must be a storage device's own backend"
-                );
+            for (kind, _, _) in REGISTERED_DISKS {
+                let diff = vmservice::DiskBackend {
+                    kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::new(
+                        vmservice::MemoryDiffDisk {
+                            lower: Some(Box::new(registered_disk(kind, "disk"))),
+                        },
+                    ))),
+                };
+                for error in [
+                    disk_backend_from_proto(registered_disk(kind, "disk")).unwrap_err(),
+                    build_disk_backend(diff, false, &registry)
+                        .await
+                        .unwrap_err(),
+                ] {
+                    assert_eq!(
+                        error.to_string(),
+                        "registered disk handles must be a storage device's own backend"
+                    );
+                }
             }
         });
     }
