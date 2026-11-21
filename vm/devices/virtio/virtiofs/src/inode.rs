@@ -537,7 +537,12 @@ impl VirtioFsInode {
         Ok((inode, attr))
     }
 
-    /// Creates a new hard link as a child of this inode.
+    /// Creates a new hard link to `target` as a child of this inode.
+    ///
+    /// Like Linux's `linkat`, which refuses to link an unlinked file, this
+    /// fails with `ENOENT` once the guest has removed every name of `target`'s
+    /// object, rather than link whatever object its former path now names (see
+    /// [`Self::object_path`]).
     pub fn link(&self, name: &LxStr, target: &VirtioFsInode) -> lx::Result<fuse_attr> {
         self.validate_confined()?;
         target.validate_confined_object()?;
@@ -545,7 +550,7 @@ impl VirtioFsInode {
             return Err(lx::Error::EXDEV);
         }
         let path = self.child_path(name)?;
-        let stat = self.volume.link_stat(&*target.get_path(), path)?;
+        let stat = self.volume.link_stat(&*target.object_path()?, path)?;
         // The reply describes the shared (target) inode, so namespace via the
         // target rather than this directory inode.
         Ok(target.attr_from_stat(&stat))
@@ -726,6 +731,22 @@ impl VirtioFsInode {
     /// Locks the path and returns the value.
     pub(crate) fn get_path(&self) -> parking_lot::RwLockReadGuard<'_, PathBuf> {
         self.path.read()
+    }
+
+    /// Locks and returns the path through which an operation reaches this
+    /// inode's object, while the path still names the object.
+    ///
+    /// Renames and removals keep the path one of the names that the guest
+    /// knows for the object, until the guest removes the last one, through an
+    /// unlink, an rmdir, or a rename over it. The inode then keeps that former
+    /// name, where the guest or the host may since have put another object. So
+    /// once the guest knows no name for the object, this fails with `ENOENT`,
+    /// as an operation through the former name of an unlinked file does.
+    pub(crate) fn object_path(&self) -> lx::Result<parking_lot::RwLockReadGuard<'_, PathBuf>> {
+        if self.aliases.read().is_empty() {
+            return Err(lx::Error::ENOENT);
+        }
+        Ok(self.get_path())
     }
 }
 
