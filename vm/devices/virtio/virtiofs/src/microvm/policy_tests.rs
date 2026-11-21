@@ -93,8 +93,19 @@ pub(super) fn release(fs: &VirtioFs, node_id: u64, fh: u64) {
 
 /// Creates and opens a file, and returns its node ID and handle.
 pub(super) fn create(fs: &VirtioFs, parent: u64, file_name: &str) -> lx::Result<(u64, u64)> {
+    create_with_flags(fs, parent, file_name, lx::O_RDWR)
+}
+
+/// Creates and opens a file with the open flags `flags`, and returns its node
+/// ID and handle.
+fn create_with_flags(
+    fs: &VirtioFs,
+    parent: u64,
+    file_name: &str,
+    flags: i32,
+) -> lx::Result<(u64, u64)> {
     let arg = fuse_create_in {
-        flags: lx::O_RDWR as u32,
+        flags: flags as u32,
         mode: lx::S_IFREG | 0o644,
         umask: 0,
         padding: 0,
@@ -350,6 +361,75 @@ fn writes_succeed_only_under_writable_paths() {
     assert_eq!(share.read("out/existing"), "");
     assert_eq!(share.entries("out"), ["directory", "existing", "link"]);
     assert_eq!(share.read("build.log"), "guest");
+    share.assert_protected_paths_unchanged();
+}
+
+/// Without `O_EXCL`, a create of a name that exists opens the object that the
+/// name links to, and hands the guest a handle on the object's node, so it may
+/// write or truncate the object only where an open of that node may: when
+/// every name that the guest knows for the object is writable.
+#[test]
+fn a_create_of_an_existing_name_opens_it_as_open_does() {
+    let share = Share::new();
+    std::fs::hard_link(share.path("marker"), share.path("out/twin")).unwrap();
+    // The guest knows the read-only file by its name `marker`, and in the
+    // first case by its writable second name `out/twin` too.
+    for twin_known in [true, false] {
+        let fs = share.fs(&[], &[], &["out"]);
+        let out = lookup(&fs, "out").unwrap();
+        let marker = lookup(&fs, "marker").unwrap();
+        if twin_known {
+            assert_eq!(lookup(&fs, "out/twin").unwrap(), marker);
+        }
+        for flags in [
+            lx::O_WRONLY | lx::O_TRUNC,
+            lx::O_RDONLY | lx::O_TRUNC,
+            lx::O_WRONLY,
+            lx::O_RDWR,
+        ] {
+            assert_eq!(
+                error(open(&fs, marker, flags)),
+                lx::Error::EROFS,
+                "{flags:#o}"
+            );
+            assert_eq!(
+                error(create_with_flags(&fs, out, "twin", lx::O_CREAT | flags)),
+                lx::Error::EROFS,
+                "twin_known={twin_known}, {flags:#o}"
+            );
+            assert_eq!(share.read("marker"), "host");
+        }
+        // The guest may still read the file, and an exclusive create fails
+        // because the name exists.
+        let (node, fh) = create_with_flags(&fs, out, "twin", lx::O_CREAT | lx::O_RDONLY).unwrap();
+        assert_eq!(node, marker);
+        release(&fs, node, fh);
+        assert_eq!(
+            error(create_with_flags(
+                &fs,
+                out,
+                "twin",
+                lx::O_CREAT | lx::O_EXCL | lx::O_RDWR
+            )),
+            lx::Error::EEXIST
+        );
+    }
+
+    // A create still truncates a writable file that exists, whose node the
+    // guest holds.
+    let fs = share.fs(&[], &[], &["out"]);
+    let out = lookup(&fs, "out").unwrap();
+    let existing = lookup(&fs, "out/existing").unwrap();
+    let (node, fh) = create_with_flags(
+        &fs,
+        out,
+        "existing",
+        lx::O_CREAT | lx::O_WRONLY | lx::O_TRUNC,
+    )
+    .unwrap();
+    assert_eq!(node, existing);
+    release(&fs, node, fh);
+    assert_eq!(share.read("out/existing"), "");
     share.assert_protected_paths_unchanged();
 }
 
