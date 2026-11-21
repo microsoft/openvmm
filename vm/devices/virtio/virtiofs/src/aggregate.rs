@@ -320,10 +320,16 @@ impl VirtioFs {
         plus: bool,
         mut lookup: impl FnMut(Arc<VirtioFsVolume>) -> lx::Result<fuse_entry_out>,
     ) -> lx::Result<Vec<u8>> {
+        if size as usize > crate::MAX_GUEST_BUFFER_SIZE {
+            return Err(lx::Error::E2BIG);
+        }
         let Some(aggregate) = self.inner.aggregate() else {
             return Ok(Vec::new());
         };
-        let mut buffer = Vec::with_capacity(size as usize);
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(size as usize)
+            .map_err(|_| lx::Error::ENOMEM)?;
         // `offset` is the cookie of the next entry to emit (0 at start of stream).
         // Entry 0 => ".", 1 => "..", 2.. => children[index - 2].
         let mut index = offset;
