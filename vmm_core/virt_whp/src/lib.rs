@@ -971,6 +971,12 @@ pub fn is_available() -> Result<bool, Error> {
     whp::capabilities::hypervisor_present().for_op("query hypervisor presence")
 }
 
+/// Returns whether WHP can reset partitions with nested virtualization enabled.
+#[cfg(guest_arch = "x86_64")]
+pub fn is_nested_reset_available() -> bool {
+    whp::capabilities::reset_partition()
+}
+
 /// The prototype partition.
 pub struct WhpProtoPartition<'a> {
     vtl0: VtlPartition,
