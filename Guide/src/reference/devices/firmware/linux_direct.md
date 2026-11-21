@@ -112,7 +112,7 @@ will result in an error.
 ## SEV-SNP IGVM Boot
 
 OpenVMM can also boot an SEV-SNP Linux guest from an IGVM image that
-`igvmfilegen` builds from the `snp-linux-direct*.json` manifests in
+`igvmfilegen` builds from the `snp-linux-direct*.toml` manifests in
 `vm/loader/manifests/`. Select the image with `--isolation snp` and
 `--igvm firmware=<FILE>,personality=linux-direct`. The image contains the
 kernel, the initrd, the command line, SMBIOS tables, and a small measured

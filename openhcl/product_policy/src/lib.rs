@@ -108,7 +108,7 @@ pub struct AllowedPciDevice {
 #[derive(mesh_protobuf::Protobuf, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(
     feature = "manifest",
-    derive(serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize),
     serde(rename_all = "snake_case")
 )]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
@@ -126,7 +126,7 @@ pub enum VpciRelayMode {
     MustBeOn,
 }
 
-/// The VPCI relay settings from the manifest's device policy file.
+/// The VPCI relay settings from the manifest's inline device policy.
 #[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 #[mesh(package = "openhcl.product_policy")]
@@ -138,6 +138,23 @@ pub struct VpciRelayPolicy {
     /// When OpenHCL runs the VPCI relay.
     #[mesh(2)]
     pub mode: VpciRelayMode,
+}
+
+/// One product's table in the manifest: the product's fields plus an optional
+/// `device_policy`. Unknown fields are rejected.
+#[cfg(feature = "manifest")]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(
+    deny_unknown_fields,
+    bound(deserialize = "T: serde::Deserialize<'de>, D: serde::Deserialize<'de>")
+)]
+pub struct ManifestPolicyBody<T, D> {
+    /// The product's fields.
+    #[serde(flatten)]
+    pub policy: T,
+    /// The product's device policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_policy: Option<D>,
 }
 
 /// Defines the `ProductPolicy` enum and, for each variant `Foo(Body)`,
@@ -181,11 +198,47 @@ macro_rules! define_product_policy {
                 }
             }
 
-            /// Sets the VPCI relay settings from the manifest's device policy
-            /// file.
+            /// Sets the VPCI relay settings from the manifest's device policy.
             pub fn set_vpci_relay(&mut self, vpci_relay: $crate::VpciRelayPolicy) {
                 match self {
                     $( Self::$variant(p) => p.vpci_relay = Some(vpci_relay), )+
+                }
+            }
+        }
+
+        /// Manifest form of [`ProductPolicy`]: each product's table also
+        /// accepts an optional `device_policy` of type `D`, which the build
+        /// resolves into the product's VPCI relay settings.
+        #[cfg(feature = "manifest")]
+        #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+        #[serde(rename_all = "snake_case", deny_unknown_fields)]
+        pub enum ManifestProductPolicy<D> {
+            $(
+                $(#[$vmeta])*
+                $variant($crate::ManifestPolicyBody<$body, D>),
+            )+
+        }
+
+        #[cfg(feature = "manifest")]
+        impl<D> ManifestProductPolicy<D> {
+            /// The product policy, without the device policy.
+            pub fn policy(&self) -> ProductPolicy {
+                match self {
+                    $( Self::$variant(b) => ProductPolicy::$variant(b.policy.clone()), )+
+                }
+            }
+
+            /// The product's device policy, if any.
+            pub fn device_policy(&self) -> Option<&D> {
+                match self {
+                    $( Self::$variant(b) => b.device_policy.as_ref(), )+
+                }
+            }
+
+            /// The product's device policy, if any.
+            pub fn device_policy_mut(&mut self) -> Option<&mut D> {
+                match self {
+                    $( Self::$variant(b) => b.device_policy.as_mut(), )+
                 }
             }
         }

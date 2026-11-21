@@ -217,10 +217,178 @@ mod serde_tests {
         assert!(err.is_err(), "expected error, got: {err:?}");
     }
 
-    /// Devices come only from the device policy file, never the manifest JSON.
+    /// Devices come only from the device policy, never the product-policy body.
     #[test]
     fn deserialize_rejects_devices() {
         assert!(from_json(r#"{"azure":{"vpci_relay":{}}}"#).is_err());
+    }
+
+    // Tests for the manifest form of the product policies.
+    //
+    // Each product's security rules (such as "require secure boot") are
+    // measured and enforced by OpenHCL. In a manifest, the manifest form reads
+    // them in the same table as the product's `device_policy`. That combined
+    // reading could fail silently: it could lose a rule (so the image enforces
+    // less than the manifest says), ignore a misspelled field instead of
+    // rejecting it, or accept device settings outside `device_policy`. The
+    // build would still succeed.
+    //
+    // These tests read the same input through the manifest form and through
+    // the product policy itself, which is the trusted reference, for every
+    // product, and require identical results.
+
+    /// Sample manifest tables, one per product. Every rule is turned on
+    /// (`true` or non-empty): a rule the manifest form lost would come back as
+    /// its default (off), so the comparison would catch it. Sample rules that
+    /// were already off would hide the loss.
+    fn manifest_products() -> Vec<(&'static str, serde_json::Value)> {
+        use serde_json::json;
+        vec![
+            (
+                "sivm",
+                json!({
+                    "require_ephemeral_vmgs": true,
+                    "require_secure_boot": true,
+                    "require_secure_boot_vars": true,
+                    "require_bcd_integrity": true,
+                    "custom_uefi_json": "e30=",
+                }),
+            ),
+            (
+                "cwcow",
+                json!({
+                    "require_ephemeral_vmgs": true,
+                    "require_secure_boot": true,
+                    "require_secure_boot_vars": true,
+                    "require_bcd_integrity": true,
+                    "custom_uefi_json": "e30=",
+                    "require_secure_avic": true,
+                }),
+            ),
+            ("azure", json!({})),
+        ]
+    }
+
+    // Fails to compile when a product is added, as a reminder to add it to
+    // `manifest_products`. Without this, a new product would go untested.
+    fn _all_products_listed(policy: &ProductPolicy) {
+        match policy {
+            ProductPolicy::Sivm(_) | ProductPolicy::Cwcow(_) | ProductPolicy::Azure(_) => {}
+        }
+    }
+
+    /// Stands in for the real device policy, which is defined in
+    /// `igvmfilegen_config`. These tests only need to see that it's passed
+    /// through intact.
+    #[derive(serde::Deserialize, Debug, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct TestDevicePolicy {
+        allowed: Vec<String>,
+    }
+
+    /// `{ "<product>": body }`.
+    fn product(name: &str, body: serde_json::Value) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        map.insert(name.into(), body);
+        serde_json::Value::Object(map)
+    }
+
+    fn from_manifest(
+        value: serde_json::Value,
+    ) -> Result<ManifestProductPolicy<TestDevicePolicy>, serde_json::Error> {
+        serde_json::from_value(value)
+    }
+
+    /// No rule is lost or changed: the manifest form gives exactly the policy
+    /// the product policy reads, with or without a `device_policy`, and returns
+    /// the device policy only when one is present.
+    #[test]
+    fn manifest_form_matches_product_policy_for_every_product() {
+        for (name, body) in manifest_products() {
+            let direct: ProductPolicy =
+                serde_json::from_value(product(name, body.clone())).unwrap();
+            assert_eq!(direct.name(), name);
+
+            let manifest = from_manifest(product(name, body.clone())).unwrap();
+            assert_eq!(manifest.policy(), direct, "{name}");
+            assert_eq!(manifest.device_policy(), None, "{name}");
+
+            let mut with_devices = body;
+            with_devices["device_policy"] = serde_json::json!({ "allowed": ["nvme"] });
+            let manifest = from_manifest(product(name, with_devices)).unwrap();
+            assert_eq!(manifest.policy(), direct, "{name}");
+            assert_eq!(
+                manifest.device_policy(),
+                Some(&TestDevicePolicy {
+                    allowed: vec!["nvme".into()],
+                }),
+                "{name}"
+            );
+        }
+    }
+
+    /// Mistakes aren't silently ignored: a misspelled or unknown field is an
+    /// error, and so are relay settings written directly in the product's
+    /// table, because the allowed devices may only come from `device_policy`.
+    #[test]
+    fn manifest_form_rejects_unknown_and_relay_fields_for_every_product() {
+        for (name, body) in manifest_products() {
+            for (field, value) in [
+                ("extra", serde_json::json!(1)),
+                ("vpci_relay", serde_json::json!({})),
+            ] {
+                let mut invalid = body.clone();
+                invalid[field] = value;
+                let error = from_manifest(product(name, invalid)).unwrap_err();
+                let message = alloc::format!("{error}");
+                assert!(
+                    message.contains(&alloc::format!("unknown field `{field}`")),
+                    "{name}: {message}"
+                );
+            }
+        }
+    }
+
+    /// A left-out rule is handled the same way as by the product policy: both
+    /// report a required field as missing, or both accept an optional field
+    /// with the same result. If the manifest form filled in a missing required
+    /// rule instead, a manifest that forgot a rule would build an image with
+    /// that rule off. This holds with or without a `device_policy`, and still
+    /// passes if a field is made optional on purpose.
+    #[test]
+    fn manifest_form_treats_missing_fields_like_the_product_policy() {
+        for (name, body) in manifest_products() {
+            for field in body.as_object().unwrap().keys() {
+                let mut missing = body.clone();
+                missing.as_object_mut().unwrap().remove(field);
+                let direct =
+                    serde_json::from_value::<ProductPolicy>(product(name, missing.clone()));
+                for with_devices in [false, true] {
+                    let mut missing = missing.clone();
+                    if with_devices {
+                        missing["device_policy"] = serde_json::json!({ "allowed": [] });
+                    }
+                    let manifest = from_manifest(product(name, missing));
+                    match (&direct, manifest) {
+                        (Ok(direct), Ok(manifest)) => {
+                            assert_eq!(manifest.policy(), *direct, "{name}: {field}");
+                        }
+                        (Err(_), Err(error)) => {
+                            let message = alloc::format!("{error}");
+                            assert!(
+                                message.contains(&alloc::format!("missing field `{field}`")),
+                                "{name}: {message}"
+                            );
+                        }
+                        (direct, manifest) => panic!(
+                            "{name} without {field}: product policy {:?}, manifest form {:?}",
+                            direct.as_ref().map(|_| ()),
+                            manifest.map(|_| ())
+                        ),
+                    }
+                }
+            }
+        }
     }
 }
 

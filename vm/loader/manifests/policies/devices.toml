@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# Named PCI devices that the device policies in this folder can allow. Each
+# Named PCI devices that the manifests' inline device policies can allow. Each
 # table defines one device; a field that is left out matches any value.
 
 [nvme]                            # any vendor's NVMe controller

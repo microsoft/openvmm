@@ -37,7 +37,7 @@ pub struct SivmPolicy {
     #[mesh(4)]
     pub require_bcd_integrity: bool,
 
-    /// Custom UEFI JSON bytes (base64 in manifest JSON). Required in
+    /// Custom UEFI JSON bytes (base64 in the manifest). Required in
     /// manifests and checked non-empty at build time when secure boot
     /// plus secure-boot-vars or BCD-integrity are set;
     #[mesh(5)]
@@ -48,7 +48,7 @@ pub struct SivmPolicy {
     #[cfg_attr(feature = "inspect", inspect(with = "Vec::<u8>::len"))]
     pub custom_uefi_json: Vec<u8>,
 
-    /// From the device policy file: the VPCI relay settings. Unset means no
+    /// From the inline device policy: the VPCI relay settings. Unset means no
     /// allowed devices and [`crate::VpciRelayMode::DefaultOff`].
     #[mesh(6)]
     #[cfg_attr(feature = "manifest", serde(skip))]

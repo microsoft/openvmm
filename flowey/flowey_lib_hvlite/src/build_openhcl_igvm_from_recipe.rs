@@ -294,9 +294,12 @@ pub enum Vtl0KernelType {
     LocalOnlyCustom(PathBuf),
 }
 
+/// The in-tree manifest directory, relative to the repository root.
+pub const IN_TREE_MANIFESTS_DIR: &str = "vm/loader/manifests";
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum IgvmManifestPath {
-    /// Name of an in-tree manifest (located under `vm/loader/manifests`)
+    /// Name of an in-tree manifest (located under [`IN_TREE_MANIFESTS_DIR`])
     InTree(String),
     /// An absolute path to a custom manifest (for local use only)
     LocalOnlyCustom(PathBuf),
@@ -479,12 +482,12 @@ impl OpenhclIgvmRecipe {
             Self::X64TestSivm => {
                 let mut details = Self::X64.recipe_details(release_cfg);
                 details.igvm_manifest =
-                    IgvmManifestPath::InTree("openhcl-x64-test-sivm.json".into());
+                    IgvmManifestPath::InTree("openhcl-x64-test-sivm.toml".into());
                 details
             }
             Self::X64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
-                igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
+                igvm_manifest: in_repo_template("openhcl-x64-dev.toml", "openhcl-x64-release.toml"),
                 openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
                 target: CommonTriple::X86_64_LINUX_MUSL,
@@ -496,7 +499,7 @@ impl OpenhclIgvmRecipe {
             },
             Self::X64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
-                igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
+                igvm_manifest: in_repo_template("openhcl-x64-dev.toml", "openhcl-x64-release.toml"),
                 openhcl_kernel_package: OpenhclKernelPackage::Dev,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
                 target: CommonTriple::X86_64_LINUX_MUSL,
@@ -509,8 +512,8 @@ impl OpenhclIgvmRecipe {
             Self::X64CvmDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-x64-cvm-dev.json",
-                    "openhcl-x64-cvm-release.json",
+                    "openhcl-x64-cvm-dev.toml",
+                    "openhcl-x64-cvm-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::CvmDev,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -524,8 +527,8 @@ impl OpenhclIgvmRecipe {
             Self::X64TestLinuxDirect => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-x64-direct-dev.json",
-                    "openhcl-x64-direct-release.json",
+                    "openhcl-x64-direct-dev.toml",
+                    "openhcl-x64-direct-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -539,8 +542,8 @@ impl OpenhclIgvmRecipe {
             Self::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-x64-direct-dev.json",
-                    "openhcl-x64-direct-release.json",
+                    "openhcl-x64-direct-dev.toml",
+                    "openhcl-x64-direct-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Dev,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -554,8 +557,8 @@ impl OpenhclIgvmRecipe {
             Self::X64Cvm => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-x64-cvm-dev.json",
-                    "openhcl-x64-cvm-release.json",
+                    "openhcl-x64-cvm-dev.toml",
+                    "openhcl-x64-cvm-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Cvm,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -569,8 +572,8 @@ impl OpenhclIgvmRecipe {
             Self::Aarch64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-aarch64-dev.json",
-                    "openhcl-aarch64-release.json",
+                    "openhcl-aarch64-dev.toml",
+                    "openhcl-aarch64-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -584,8 +587,8 @@ impl OpenhclIgvmRecipe {
             Self::Aarch64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-aarch64-dev.json",
-                    "openhcl-aarch64-release.json",
+                    "openhcl-aarch64-dev.toml",
+                    "openhcl-aarch64-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Dev,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -990,7 +993,7 @@ impl SimpleFlowNode for Node {
 
         let manifest = match igvm_manifest {
             IgvmManifestPath::InTree(path) => {
-                openvmm_repo_path.map(ctx, |p| p.join("vm/loader/manifests").join(path))
+                openvmm_repo_path.map(ctx, |p| p.join(IN_TREE_MANIFESTS_DIR).join(path))
             }
             IgvmManifestPath::LocalOnlyCustom(p) => ReadVar::from_static(p),
         };
@@ -1096,5 +1099,80 @@ impl Vtl0KernelResource<VarClaimed> {
         let initrd = rt.read(self.initrd);
         resources.insert(ResourceType::LinuxKernel, kernel);
         resources.insert(ResourceType::LinuxInitrd, initrd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    /// Every OpenHCL recipe. Recipes have no built-in list, so the test keeps
+    /// its own; `_all_recipes_listed` keeps it complete.
+    const ALL_RECIPES: [OpenhclIgvmRecipe; 9] = [
+        OpenhclIgvmRecipe::X64,
+        OpenhclIgvmRecipe::X64Devkern,
+        OpenhclIgvmRecipe::X64TestLinuxDirect,
+        OpenhclIgvmRecipe::X64TestSivm,
+        OpenhclIgvmRecipe::X64TestLinuxDirectDevkern,
+        OpenhclIgvmRecipe::X64Cvm,
+        OpenhclIgvmRecipe::X64CvmDevkern,
+        OpenhclIgvmRecipe::Aarch64,
+        OpenhclIgvmRecipe::Aarch64Devkern,
+    ];
+
+    // Fails to compile when a recipe is added, as a reminder to add it to
+    // `ALL_RECIPES`. Without this, a new recipe's manifest would go unchecked.
+    fn _all_recipes_listed(recipe: OpenhclIgvmRecipe) {
+        match recipe {
+            OpenhclIgvmRecipe::X64
+            | OpenhclIgvmRecipe::X64Devkern
+            | OpenhclIgvmRecipe::X64TestLinuxDirect
+            | OpenhclIgvmRecipe::X64TestSivm
+            | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
+            | OpenhclIgvmRecipe::X64Cvm
+            | OpenhclIgvmRecipe::X64CvmDevkern
+            | OpenhclIgvmRecipe::Aarch64
+            | OpenhclIgvmRecipe::Aarch64Devkern => {}
+        }
+    }
+
+    /// Parses an in-tree manifest, failing with the name of the recipe
+    /// that uses it.
+    fn parse_in_tree_manifest(name: &str, user: &str) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(IN_TREE_MANIFESTS_DIR)
+            .join(name);
+        let text = fs_err::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{user}: manifest {name} not found: {error}"));
+        toml_edit::de::from_str::<igvmfilegen_config::Config>(&text)
+            .unwrap_or_else(|error| panic!("{user}: manifest {name} doesn't parse: {error}"));
+    }
+
+    /// Recipes name their manifests as plain strings, which the compiler can't
+    /// check. A misspelled or renamed manifest, such as a recipe still naming
+    /// a `.json` file after the TOML migration, otherwise fails only when that
+    /// recipe is built, possibly in a pipeline that runs rarely. This checks
+    /// every recipe, with and without `--release-cfg`, and the SNP
+    /// Linux-direct test manifest, in seconds.
+    #[test]
+    fn recipe_manifests_exist_and_parse() {
+        for recipe in ALL_RECIPES {
+            for release_cfg in [false, true] {
+                let IgvmManifestPath::InTree(name) =
+                    recipe.recipe_details(release_cfg).igvm_manifest
+                else {
+                    panic!(
+                        "{recipe:?} (release_cfg={release_cfg}) doesn't use an in-tree manifest"
+                    );
+                };
+                parse_in_tree_manifest(&name, &format!("{recipe:?} (release_cfg={release_cfg})"));
+            }
+        }
+        parse_in_tree_manifest(
+            crate::build_snp_linux_direct_igvm::SNP_LINUX_DIRECT_MANIFEST,
+            "build_snp_linux_direct_igvm",
+        );
     }
 }

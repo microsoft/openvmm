@@ -34,17 +34,19 @@ cargo run -p igvmfilegen -- --help
 
 ## Build from a manifest
 
-The `manifest` command consumes two JSON files:
+The `manifest` command consumes a TOML manifest and a JSON resources file:
 
 - The manifest describes images, platform policies, memory layout, command
-  lines, and the relationship between components.
+  lines, and the relationship between components. It keys each guest config
+  by isolation type, for example `[guest_configs.snp]` with its settings in
+  `[guest_configs.snp.isolation]`; see `vm/loader/manifests/README.md`.
 - The resources file maps symbolic manifest resources to concrete files.
 
 Build an image with:
 
 ```bash
 cargo run -p igvmfilegen -- manifest \
-  --manifest path/to/manifest.json \
+  --manifest path/to/manifest.toml \
   --resources path/to/resources.json \
   --output path/to/openhcl.bin
 ```
@@ -77,9 +79,10 @@ mode described below.
 ### Product and device policies
 
 An `openhcl` image can name a measured product policy in
-`product_policy.policy`, and a PCI device policy file in
-`product_policy.device_policy`, relative to the manifest.
-`igvmfilegen` appends them to the OpenHCL initrd. See
+`product_policy.policy.<PRODUCT>`, with inline PCI device-policy settings in
+that product's `device_policy` table. The table's `devices` catalog path is
+relative to the manifest.
+`igvmfilegen` resolves the devices and appends the policy to the OpenHCL initrd. See
 [Measured Product Policy](../../reference/architecture/openhcl/product_policy.md)
 for the formats and what OpenHCL enforces.
 
@@ -122,7 +125,7 @@ cargo run -p igvmfilegen -- add-snp-id-block \
   --guest-svn <GUEST_SVN>
 ```
 
-Alternatively, `--manifest path/to/manifest.json` sources the guest SVN and
+Alternatively, `--manifest path/to/manifest.toml` sources the guest SVN and
 image identity from the manifest's SNP configuration.
 
 Production signing keeps the private key outside this process. Sign the exact
