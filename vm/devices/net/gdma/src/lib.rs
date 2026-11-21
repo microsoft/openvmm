@@ -384,7 +384,27 @@ impl ChangeDeviceState for GdmaDevice {
 
     async fn stop(&mut self) {}
 
-    async fn reset(&mut self) {}
+    async fn reset(&mut self) {
+        let Self {
+            config,
+            msix: _,
+            regmap: _,
+            shmem,
+            destroying_hwc,
+            queues,
+            hwc,
+        } = self;
+        hwc.stop().await;
+        let Devices { bnic } = hwc.task_mut();
+        bnic.reset().await;
+        if hwc.has_state() {
+            hwc.remove();
+        }
+        queues.reset();
+        *shmem = Shmem(FromZeros::new_zeroed());
+        *destroying_hwc = false;
+        config.reset();
+    }
 }
 
 impl ChipsetDevice for GdmaDevice {
@@ -561,6 +581,9 @@ mod tests {
     impl Guest {
         /// Establishes the HWC and registers the bnic.
         async fn new(device: &mut GdmaDevice) -> Self {
+            let queues = device.queues.clone();
+            // Responses from a previous boot must not satisfy this one's waits.
+            queues.gm.write_at(RESPONSES, &[0; 0x1000]).unwrap();
             let mut shmem = [0u8; SHMEM_LEN - 4];
             for (offset, gpa) in [(0, EQ), (6, CQ), (12, RQ), (18, SQ)] {
                 shmem[offset..offset + 6].copy_from_slice(&(gpa / PAGE_SIZE64).to_ne_bytes()[..6]);
@@ -568,7 +591,6 @@ mod tests {
             device.write_shmem(0, &shmem);
             assert_eq!(establish_hwc(device), 0);
 
-            let queues = device.queues.clone();
             let mut ids = [0; 3];
             for i in 0..16 {
                 let eqe: gdma_defs::Eqe = queues.gm.read_plain(EQ + i * 16).unwrap();
@@ -907,6 +929,68 @@ mod tests {
 
         // The endpoint can hand out queues again.
         device.hwc.start();
+        let enable = guest.post_rx(Tristate::TRUE);
+        guest.wait(enable).await;
+        assert_eq!(get_queues.get(), [2, 2, 0]);
+    }
+
+    /// More boots than the device has queues of any kind.
+    #[async_test]
+    async fn reset_lets_each_boot_establish_the_hwc(driver: DefaultDriver) {
+        let mut device = device(driver, Box::new(NullEndpoint::new()));
+        for boot in 0..129 {
+            assert_eq!(establish_hwc(&mut device), 0, "boot {boot}");
+            device.reset().await;
+        }
+    }
+
+    #[async_test]
+    async fn reset_clears_registers_and_config_space(driver: DefaultDriver) {
+        let mut device = device(driver, Box::new(NullEndpoint::new()));
+        assert_eq!(establish_hwc(&mut device), 0);
+        device.destroying_hwc = true;
+        let command = pci_core::spec::cfg_space::HeaderType00::STATUS_COMMAND.0;
+        device
+            .pci_cfg_write(command, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+            .unwrap();
+
+        device.reset().await;
+
+        assert_eq!(device.shmem.0, [0; SHMEM_LEN / 4]);
+        assert!(!device.destroying_hwc);
+        let mut value = 0;
+        device
+            .pci_cfg_read(
+                command,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
+        assert_eq!(value & 2, 0);
+    }
+
+    #[async_test]
+    async fn reset_waits_for_get_queues_and_stops_the_endpoint(driver: DefaultDriver) {
+        let (release, hold) = mesh::oneshot();
+        let endpoint = HeldEndpoint::new(Some(hold), None);
+        let (get_queues, stop) = (endpoint.get_queues.clone(), endpoint.stop.clone());
+        let mut device = device(driver, Box::new(endpoint));
+        let mut guest = Guest::new(&mut device).await;
+        guest.create_queues().await;
+        guest.post_rx(Tristate::TRUE);
+        until(|| get_queues.get()[0] == 1).await;
+
+        {
+            let mut reset = pin!(device.reset());
+            assert_pending(reset.as_mut()).await;
+            release.send(());
+            reset.await;
+        }
+        assert_eq!(get_queues.get(), [1, 1, 0]);
+        assert_eq!(stop.get(), [1, 1, 0]);
+
+        // The next boot brings the vport up from scratch.
+        let mut guest = Guest::new(&mut device).await;
+        guest.create_queues().await;
         let enable = guest.post_rx(Tristate::TRUE);
         guest.wait(enable).await;
         assert_eq!(get_queues.get(), [2, 2, 0]);
