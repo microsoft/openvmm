@@ -16,6 +16,7 @@ use fuse::DirEntryWriter;
 use fuse::Fuse;
 use fuse::protocol::fuse_entry_out;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The directory snapshots that the handles of a microVM attachment hold, in
@@ -84,6 +85,10 @@ impl Drop for DirectorySnapshotCharge {
     }
 }
 
+/// The guest inode numbers by which the host lists a directory's entries now,
+/// by name.
+type HostListing = HashMap<Vec<u8>, lx::ino_t>;
+
 impl VirtioFsFile {
     pub(crate) fn read_dir_microvm(
         &self,
@@ -128,6 +133,9 @@ impl VirtioFsFile {
             .map_err(|_| lx::Error::ENOMEM)?;
 
         let mut skipped = 0;
+        // Listed again at most once per read, for the first entry whose
+        // lookup reports another number than the snapshot.
+        let mut host_listing = None;
         for entry in &entries[start..] {
             let name = lx::LxStr::from_bytes(&entry.name);
             if plus {
@@ -140,7 +148,7 @@ impl VirtioFsFile {
                         break;
                     }
                 } else {
-                    match self.write_microvm_entry_plus(fs, &mut buffer, entry) {
+                    match self.write_microvm_entry_plus(fs, &mut buffer, entry, &mut host_listing) {
                         Ok(true) => {}
                         Ok(false) => break,
                         // As in `read_dir_with`, skip an entry whose name is
@@ -179,7 +187,8 @@ impl VirtioFsFile {
 
     /// Writes the readdirplus entry of `entry`, an entry of this directory's
     /// snapshot other than `.` and `..`, to `buffer`, and returns whether it
-    /// fit.
+    /// fit. `host_listing` is the directory as the host lists it now, if this
+    /// read has listed it already (see [`Self::check_still_listed`]).
     ///
     /// The entry's lookup takes the lookup reference that the entry hands to
     /// the guest, so the reference is held only if the entry is written: an
@@ -189,6 +198,7 @@ impl VirtioFsFile {
         fs: &VirtioFs,
         buffer: &mut Vec<u8>,
         entry: &SavedDirectoryEntry,
+        host_listing: &mut Option<HostListing>,
     ) -> lx::Result<bool> {
         let name = lx::LxStr::from_bytes(&entry.name);
         // This check must happen before insert_lookup, because a
@@ -203,7 +213,7 @@ impl VirtioFsFile {
         // object, so only an entry on this directory's device shows whether
         // the name still reaches the listed object.
         if child.device_nr() == self.inode.device_nr() && attr.ino != entry.guest_inode_id {
-            return Err(lx::Error::EIO);
+            self.check_still_listed(entry, host_listing)?;
         }
         let fuse_entry = fs.insert_lookup(child, attr)?;
         let node_id = fuse_entry.nodeid;
@@ -213,6 +223,58 @@ impl VirtioFsFile {
             return Err(lx::Error::EIO);
         }
         Ok(true)
+    }
+
+    /// Checks that `entry`, an entry of this directory's snapshot whose lookup
+    /// reached an object of the directory's host device with another number
+    /// than the snapshot's, still names the listed object.
+    ///
+    /// The host lists some entries on a directory's own device by another
+    /// number than a lookup of the entry reports: a mount point of that
+    /// device, such as a bind mount of one of its directories, by the number
+    /// of what the mount covers, and the placeholder that a btrfs snapshot
+    /// holds of a nested subvolume by the subvolume's ID, while a lookup
+    /// reaches an empty directory numbered 2. Such an entry names the listed
+    /// object as long as the host lists it by the snapshot's number, so the
+    /// directory is listed again, as a snapshot lists it, into
+    /// `host_listing`, at most once per read. An entry that the host now
+    /// lists by another number, as after a rename over it, fails with EIO,
+    /// and one that it no longer lists is gone, which fails with ENOENT. A
+    /// mount point names whatever is mounted on it when the guest looks it
+    /// up, as one of another device does. An entry that the host lists by
+    /// the number 0, as a Windows file system that reports no file IDs does,
+    /// has no number to check, so it fails with EIO too.
+    fn check_still_listed(
+        &self,
+        entry: &SavedDirectoryEntry,
+        host_listing: &mut Option<HostListing>,
+    ) -> lx::Result<()> {
+        if entry.guest_inode_id == self.inode.guest_ino(0) {
+            return Err(lx::Error::EIO);
+        }
+        // The lookup resolved the name in the directory at the inode's path,
+        // which must therefore still be the directory that this handle lists.
+        let listed_directory = self.object_stat()?;
+        let named_directory = self.inode.object_stat()?;
+        if (listed_directory.device_nr, listed_directory.inode_nr)
+            != (named_directory.device_nr, named_directory.inode_nr)
+        {
+            return Err(lx::Error::EIO);
+        }
+        let host_listing = match host_listing {
+            Some(host_listing) => host_listing,
+            None => host_listing.insert(
+                self.build_microvm_directory_snapshot()?
+                    .into_iter()
+                    .map(|listed| (listed.name, listed.guest_inode_id))
+                    .collect(),
+            ),
+        };
+        match host_listing.get(&entry.name) {
+            Some(&guest_inode_id) if guest_inode_id == entry.guest_inode_id => Ok(()),
+            Some(_) => Err(lx::Error::EIO),
+            None => Err(lx::Error::ENOENT),
+        }
     }
 
     fn build_microvm_directory_snapshot(&self) -> lx::Result<Vec<SavedDirectoryEntry>> {
