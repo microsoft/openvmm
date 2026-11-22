@@ -187,14 +187,12 @@ impl VirtioFsInode {
         if !self.volume.strict_paths() {
             return Ok(());
         }
-        // Operations use the primary path, which outlives the aliases when the
-        // object is unlinked, so it must be validated as well.
-        let mut paths = self.aliases();
-        let primary = self.clone_path();
-        if !paths.contains(&primary) {
-            paths.push(primary);
-        }
-        for path in paths {
+        // An operation reaches the object through its primary path, and only
+        // while that is one of the names that the guest knows for the object
+        // (see `VirtioFsInode::object_path`), so only those names need the
+        // check: not the former name that the primary path keeps once the
+        // guest has removed them all, where another object may since be.
+        for path in self.aliases() {
             validate_relative_path(&path, true)?;
             self.volume.ensure_path_allowed(&path)?;
             let component_count = path.components().count();
