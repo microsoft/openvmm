@@ -1813,7 +1813,7 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap_err();
                 assert_eq!(err.code, mesh_rpc::service::Code::FailedPrecondition as i32);
-                client.call().start(vmservice::Vm::Quit, ()).await.unwrap();
+                let _ = client.call().start(vmservice::Vm::Quit, ()).await;
                 waiter.await.unwrap_err();
                 assert!(child.wait().await?.success());
                 stderr_task
@@ -1939,7 +1939,7 @@ async fn test_ttrpc_interface(
                         second_snapshot_id, snapshot_id,
                         "each SaveVm should generate a new snapshot ID"
                     );
-                    client.call().start(vmservice::Vm::Quit, ()).await.unwrap();
+                    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
                     assert!(child.wait().await?.success());
                     stderr_task
                         .await
