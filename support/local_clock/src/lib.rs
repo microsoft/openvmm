@@ -40,8 +40,8 @@ pub use clock_impls::SystemTimeClock;
 pub use inspect_ext::InspectableLocalClock;
 
 use std::fmt::Debug;
-use std::task::Context;
-use std::task::Poll;
+use std::future::Future;
+use std::pin::Pin;
 
 /// A local real-time clock, hanging-off the platform's global real-time clock.
 ///
@@ -85,19 +85,20 @@ pub trait LocalClock: Send {
     /// even when the device / platform itself has shutdown / been paused.
     fn get_time(&mut self) -> LocalClockTime;
 
-    /// Poll for the current clock time, as [`Self::get_time`] returns it.
+    /// Return the current clock time as [`Self::get_time`] does, or if that
+    /// would wait, a future for the time it would return.
     ///
-    /// A clock that would have to wait in `get_time` can return
-    /// `Poll::Pending` instead, and wake the context once it can return the
-    /// time.
     /// Defaults to `get_time`.
-    fn poll_time(&mut self, _cx: &mut Context<'_>) -> Poll<LocalClockTime> {
-        Poll::Ready(self.get_time())
+    fn get_time_or_wait(&mut self) -> Result<LocalClockTime, LocalClockTimeFuture> {
+        Ok(self.get_time())
     }
 
     /// Set the current clock time.
     fn set_time(&mut self, new_time: LocalClockTime);
 }
+
+/// A future for the time, from [`LocalClock::get_time_or_wait`].
+pub type LocalClockTimeFuture = Pin<Box<dyn Future<Output = LocalClockTime> + Send>>;
 
 /// A delta between two [`LocalClockTime`] instances.
 ///

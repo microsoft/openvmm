@@ -206,15 +206,24 @@ mod tests {
     use super::*;
     use local_clock::LocalClock;
     use local_clock::LocalClockTime;
+    use local_clock::LocalClockTimeFuture;
     use local_clock::MockLocalClock;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering;
+    use std::future::Future;
     use std::task::Context;
     use std::task::Poll;
     use std::task::Waker;
 
     fn new_test_rtc() -> (
+        pal_async::DefaultPool,
+        vmcore::vmtime::VmTimeKeeper,
+        Piix4CmosRtc,
+    ) {
+        new_test_rtc_with(Box::new(MockLocalClock::new()))
+    }
+
+    fn new_test_rtc_with(
+        clock: Box<dyn InspectableLocalClock>,
+    ) -> (
         pal_async::DefaultPool,
         vmcore::vmtime::VmTimeKeeper,
         Piix4CmosRtc,
@@ -228,7 +237,7 @@ mod tests {
             .unwrap();
 
         let rtc = Piix4CmosRtc::new(
-            Box::new(MockLocalClock::new()),
+            clock,
             LineInterrupt::detached(),
             &vm_time_source,
             None,
@@ -238,24 +247,21 @@ mod tests {
         (pool, vm_time_keeper, rtc)
     }
 
-    /// A clock that only has the time once `ready` is set.
+    /// A clock whose time is only available once the test sends it.
     #[derive(Inspect)]
-    struct PendingClock {
+    struct WaitingClock {
         #[inspect(skip)]
-        ready: Arc<AtomicBool>,
+        time: Option<mesh::OneshotReceiver<LocalClockTime>>,
     }
 
-    impl LocalClock for PendingClock {
+    impl LocalClock for WaitingClock {
         fn get_time(&mut self) -> LocalClockTime {
-            LocalClockTime::from_millis_since_unix_epoch(0)
+            unreachable!("the time is waited for")
         }
 
-        fn poll_time(&mut self, _cx: &mut Context<'_>) -> Poll<LocalClockTime> {
-            if self.ready.load(Ordering::Relaxed) {
-                Poll::Ready(self.get_time())
-            } else {
-                Poll::Pending
-            }
+        fn get_time_or_wait(&mut self) -> Result<LocalClockTime, LocalClockTimeFuture> {
+            let time = self.time.take().expect("one read");
+            Err(Box::pin(async move { time.await.unwrap() }))
         }
 
         fn set_time(&mut self, _new_time: LocalClockTime) {}
@@ -263,35 +269,30 @@ mod tests {
 
     #[test]
     fn stop_completes_deferred_read() {
-        let mut pool = pal_async::DefaultPool::new();
-        let driver = pool.driver();
-        let vm_time_keeper =
-            vmcore::vmtime::VmTimeKeeper::new(&driver, vmcore::vmtime::VmTime::from_100ns(0));
-        let vm_time_source = pool
-            .run_until(vm_time_keeper.builder().build(&driver))
-            .unwrap();
-        let ready = Arc::new(AtomicBool::new(false));
-        let mut rtc = Piix4CmosRtc::new(
-            Box::new(PendingClock {
-                ready: ready.clone(),
-            }),
-            LineInterrupt::detached(),
-            &vm_time_source,
-            None,
-            false,
-        );
+        let (send, recv) = mesh::oneshot();
+        let (mut pool, _vm_time_keeper, mut rtc) =
+            new_test_rtc_with(Box::new(WaitingClock { time: Some(recv) }));
+        rtc.poll_device(&mut Context::from_waker(Waker::noop()));
         rtc.io_write(Piix4CmosRtcIoPort::ADDRESS.0, &[0]).unwrap();
         let IoResult::Defer(mut token) = rtc.io_read(Piix4CmosRtcIoPort::DATA.0, &mut [0]) else {
             panic!("read not deferred");
         };
 
-        // Stopping waits for the read to complete.
-        let mut cx = Context::from_waker(Waker::noop());
+        // Stopping waits for the read, and completes it.
         let mut stop = std::pin::pin!(rtc.stop());
-        assert!(stop.as_mut().poll(&mut cx).is_pending());
-        ready.store(true, Ordering::Relaxed);
-        assert!(stop.as_mut().poll(&mut cx).is_ready());
-        assert!(token.poll_read(&mut cx, &mut [0]).is_ready());
+        assert!(
+            stop.as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        send.send(LocalClockTime::from_millis_since_unix_epoch(30_000));
+        pool.run_until(stop);
+        let mut data = [0];
+        assert!(matches!(
+            token.poll_read(&mut Context::from_waker(Waker::noop()), &mut data),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(data, [0x30]);
     }
 
     fn get_cmos_data(rtc: &mut Piix4CmosRtc, addr: u8) -> u8 {

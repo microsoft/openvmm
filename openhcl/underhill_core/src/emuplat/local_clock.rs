@@ -7,8 +7,7 @@ use inspect::Inspect;
 use local_clock::LocalClock;
 use local_clock::LocalClockDelta;
 use local_clock::LocalClockTime;
-use std::task::Context;
-use std::task::Poll;
+use local_clock::LocalClockTimeFuture;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
 use vmcore::save_restore::SaveRestore;
@@ -127,10 +126,14 @@ impl LocalClock for UnderhillLocalClock {
         LocalClockTime::from(self.host_time.now()) + self.offset_from_host_time
     }
 
-    fn poll_time(&mut self, cx: &mut Context<'_>) -> Poll<LocalClockTime> {
-        self.host_time
-            .poll_now(cx)
-            .map(|time| LocalClockTime::from(time) + self.offset_from_host_time)
+    fn get_time_or_wait(&mut self) -> Result<LocalClockTime, LocalClockTimeFuture> {
+        let offset = self.offset_from_host_time;
+        match self.host_time.now_or_wait() {
+            Ok(time) => Ok(LocalClockTime::from(time) + offset),
+            Err(time) => Err(Box::pin(async move {
+                LocalClockTime::from(time.await) + offset
+            })),
+        }
     }
 
     fn set_time(&mut self, new_time: LocalClockTime) {
@@ -153,15 +156,14 @@ impl LocalClock for UnderhillLocalClock {
 }
 
 mod host_time {
+    use futures::FutureExt;
+    use futures::future::BoxFuture;
+    use futures::future::Shared;
     use guest_emulation_transport::api::Time;
     use inspect::Inspect;
     use jiff::Zoned;
     use parking_lot::Mutex;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::task::Context;
-    use std::task::Poll;
-    use std::task::Waker;
+    use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -169,24 +171,28 @@ mod host_time {
     /// from the Host.
     #[derive(Debug)]
     pub struct HostSystemTimeAccess {
-        get: guest_emulation_transport::GuestEmulationTransportClient,
-        pub(super) cached_host_time: Mutex<Option<(Instant, Zoned)>>,
-        pub(super) pending_query: Mutex<Option<PendingQuery>>,
+        pub(super) get: guest_emulation_transport::GuestEmulationTransportClient,
+        pub(super) state: Arc<Mutex<HostTimeState>>,
     }
 
-    /// A host time query sent by [`HostSystemTimeAccess::poll_now`].
-    pub(super) struct PendingQuery {
-        /// When the query was sent.
+    #[derive(Debug, Default)]
+    pub(super) struct HostTimeState {
+        /// The latest host time, and when the query for it was sent.
+        pub(super) cached_host_time: Option<(Instant, Zoned)>,
+        /// The query sent for the host time, until its reply is taken.
+        pub(super) query: Option<HostTimeQuery>,
+    }
+
+    /// A host time query, which any number of callers can wait for.
+    #[derive(Clone)]
+    pub(super) struct HostTimeQuery {
         pub(super) sent: Instant,
-        reply: Pin<Box<dyn Future<Output = Time> + Send>>,
-        /// The waker of the caller waiting for the reply, to wake if `now`
-        /// takes the reply instead.
-        waker: Option<Waker>,
+        pub(super) reply: Shared<BoxFuture<'static, Time>>,
     }
 
-    impl std::fmt::Debug for PendingQuery {
+    impl std::fmt::Debug for HostTimeQuery {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("PendingQuery")
+            f.debug_struct("HostTimeQuery")
                 .field("sent", &self.sent)
                 .finish_non_exhaustive()
         }
@@ -194,15 +200,11 @@ mod host_time {
 
     impl Inspect for HostSystemTimeAccess {
         fn inspect(&self, req: inspect::Request<'_>) {
-            let HostSystemTimeAccess {
-                get: _,
-                cached_host_time,
-                pending_query: _,
-            } = self;
+            let HostSystemTimeAccess { get: _, state } = self;
 
             let mut res = req.respond();
 
-            if let Some((last_query, ref cached_time)) = *cached_host_time.lock() {
+            if let Some((last_query, ref cached_time)) = state.lock().cached_host_time {
                 res.display_debug("since_last_query", &(Instant::now() - last_query))
                     .display("cached_time", cached_time);
             }
@@ -215,85 +217,107 @@ mod host_time {
         ) -> HostSystemTimeAccess {
             HostSystemTimeAccess {
                 get,
-                cached_host_time: Mutex::new(None),
-                pending_query: Mutex::new(None),
+                state: Default::default(),
             }
         }
 
         /// Return the host's current time
         pub fn now(&self) -> Zoned {
-            // The RTC only has 1s time granularity, so there's no reason to
-            // spam the GET with time requests if the previous request was less
-            // than a second ago.
-            //
-            // TODO: if the GET was updated to include a "on VTL2 resume"
-            // packet, we could hook into that notification to avoid having to
-            // constantly query the host over the GET to get current time (using
-            // VTL2 local time-keeping to maintain a delta since last host
-            // query).
-            //
-            // ...but this is fine for now.
-            let now = Instant::now();
-            let mut cached_host_time = self.cached_host_time.lock();
-
-            // Take the reply to a query `poll_now` sent, as its caller would
-            // have waited for it in `now`.
-            if let Some(PendingQuery { sent, reply, waker }) = self.pending_query.lock().take() {
-                let new_time = pal_async::local::block_with_io(|_| reply).to_jiff();
-                *cached_host_time = Some((sent, new_time));
-                if let Some(waker) = waker {
-                    waker.wake();
-                }
-            }
-
-            match &*cached_host_time {
-                Some((last_query, cached_time))
-                    if now.duration_since(*last_query) < Duration::from_secs(1) =>
-                {
-                    cached_time.clone()
-                }
-                _ => {
-                    // TODO: this block_on really ain't great, but since we're
-                    // not hammering the GET on _each_ access, it's okay for now...
-                    let new_time =
-                        pal_async::local::block_with_io(|_| self.get.host_time()).to_jiff();
-                    let result = new_time.clone();
-                    *cached_host_time = Some((now, new_time));
-                    result
-                }
+            match self.now_or_wait() {
+                Ok(time) => time,
+                // TODO: this block_on really ain't great, but since we're
+                // not hammering the GET on _each_ access, it's okay for now...
+                Err(time) => pal_async::local::block_on(time),
             }
         }
 
-        /// Poll for the host's current time, as `now` returns it, without
-        /// waiting for the host: if `now` would query the host, send the query
-        /// and return `Pending` until the reply comes in.
-        pub fn poll_now(&self, cx: &mut Context<'_>) -> Poll<Zoned> {
+        /// Return the host's current time as `now` does, or if that would wait
+        /// for the host, a future for the time it would return.
+        pub fn now_or_wait(&self) -> Result<Zoned, BoxFuture<'static, Zoned>> {
             let now = Instant::now();
-            let mut cached_host_time = self.cached_host_time.lock();
+            let query = match start(&self.get, &self.state, now) {
+                Ok(time) => return Ok(time),
+                Err(query) => query,
+            };
+            let get = self.get.clone();
+            let state = self.state.clone();
+            Err(async move { wait(&get, &state, now, query).await }.boxed())
+        }
+    }
 
-            if let Some((last_query, cached_time)) = &*cached_host_time
-                && now.duration_since(*last_query) < Duration::from_secs(1)
+    /// Return the host's time as of `now`, or the query to wait for it.
+    fn start(
+        get: &guest_emulation_transport::GuestEmulationTransportClient,
+        state: &Mutex<HostTimeState>,
+        now: Instant,
+    ) -> Result<Zoned, HostTimeQuery> {
+        // The RTC only has 1s time granularity, so there's no reason to
+        // spam the GET with time requests if the previous request was less
+        // than a second ago.
+        //
+        // TODO: if the GET was updated to include a "on VTL2 resume"
+        // packet, we could hook into that notification to avoid having to
+        // constantly query the host over the GET to get current time (using
+        // VTL2 local time-keeping to maintain a delta since last host
+        // query).
+        //
+        // ...but this is fine for now.
+        let mut state = state.lock();
+        if let Some((last_query, cached_time)) = &state.cached_host_time
+            && now.saturating_duration_since(*last_query) < Duration::from_secs(1)
+        {
+            return Ok(cached_time.clone());
+        }
+
+        // Callers that need the time while a query is out wait for it, rather
+        // than send another.
+        let query = state.query.get_or_insert_with(|| {
+            let get = get.clone();
+            HostTimeQuery {
+                sent: now,
+                reply: async move { get.host_time().await }.boxed().shared(),
+            }
+        });
+        Err(query.clone())
+    }
+
+    /// Wait for `query`, and then for the host's time as of `now`.
+    pub(super) async fn wait(
+        get: &guest_emulation_transport::GuestEmulationTransportClient,
+        state: &Mutex<HostTimeState>,
+        now: Instant,
+        mut query: HostTimeQuery,
+    ) -> Zoned {
+        loop {
+            let time = query.reply.clone().await.to_jiff();
             {
-                return Poll::Ready(cached_time.clone());
+                let mut state = state.lock();
+                if state
+                    .cached_host_time
+                    .as_ref()
+                    .is_none_or(|(last_query, _)| *last_query <= query.sent)
+                {
+                    state.cached_host_time = Some((query.sent, time.clone()));
+                }
+                if state
+                    .query
+                    .as_ref()
+                    .is_some_and(|sent| Shared::ptr_eq(&sent.reply, &query.reply))
+                {
+                    state.query = None;
+                }
             }
 
-            let mut pending_query = self.pending_query.lock();
-            let query = pending_query.get_or_insert_with(|| {
-                let get = self.get.clone();
-                PendingQuery {
-                    sent: now,
-                    reply: Box::pin(async move { get.host_time().await }),
-                    waker: None,
-                }
-            });
-            let Poll::Ready(reply) = query.reply.as_mut().poll(cx) else {
-                query.waker = Some(cx.waker().clone());
-                return Poll::Pending;
+            // The reply is the time if the query was sent less than a second
+            // before `now`, as for the query sent for `now`. Otherwise, as
+            // the query was out before, go on as if the reply had been cached.
+            if now.saturating_duration_since(query.sent) < Duration::from_secs(1) {
+                return time;
+            }
+            query = match start(get, state, now) {
+                Ok(time) => return time,
+                Err(query) => query,
             };
-            let new_time = reply.to_jiff();
-            *cached_host_time = Some((query.sent, new_time.clone()));
-            *pending_query = None;
-            Poll::Ready(new_time)
         }
     }
 }
@@ -319,11 +343,14 @@ impl ArcMutexUnderhillLocalClock {
 // required for emuplat servicing optimization
 impl LocalClock for ArcMutexUnderhillLocalClock {
     fn get_time(&mut self) -> LocalClockTime {
-        self.0.lock().get_time()
+        // Don't keep the clock locked while waiting for the host, so that
+        // others don't wait for it to start their own reads.
+        let time = self.0.lock().get_time_or_wait();
+        time.unwrap_or_else(pal_async::local::block_on)
     }
 
-    fn poll_time(&mut self, cx: &mut Context<'_>) -> Poll<LocalClockTime> {
-        self.0.lock().poll_time(cx)
+    fn get_time_or_wait(&mut self) -> Result<LocalClockTime, LocalClockTimeFuture> {
+        self.0.lock().get_time_or_wait()
     }
 
     fn set_time(&mut self, new_time: LocalClockTime) {
@@ -374,15 +401,22 @@ mod save_restore {
 mod tests {
     use super::ArcMutexUnderhillLocalClock;
     use super::UnderhillLocalClock;
+    use super::host_time::HostSystemTimeAccess;
+    use super::host_time::HostTimeQuery;
+    use futures::FutureExt;
+    use guest_emulation_transport::api::Time;
     use guest_emulation_transport::test_utilities::TestGet;
+    use jiff::Timestamp;
     use local_clock::LocalClock;
     use local_clock::LocalClockTime;
     use pal_async::DefaultDriver;
     use pal_async::DefaultPool;
     use pal_async::async_test;
     use pal_async::task::Spawn;
+    use pal_async::timer::PolledTimer;
     use std::sync::Arc;
-    use std::sync::mpsc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::task::Context;
     use std::task::Poll;
     use std::task::Wake;
@@ -392,9 +426,8 @@ mod tests {
     use test_with_tracing::test;
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
-    /// Return the clock the RTC uses, with the GET served on its own thread,
-    /// and with the cached host time a second old.
-    async fn new_rtc_clock() -> (ArcMutexUnderhillLocalClock, TestGet, DefaultDriver) {
+    /// Create a GET served on its own thread.
+    async fn new_get() -> (TestGet, DefaultDriver) {
         let (_, get_driver) = DefaultPool::spawn_on_thread("get");
         let get = guest_emulation_transport::test_utilities::new_transport_pair(
             get_driver.clone(),
@@ -404,26 +437,15 @@ mod tests {
             None,
         )
         .await;
-        let clock = UnderhillLocalClock::new(
-            get.client.clone(),
-            EphemeralNonVolatileStore::new_boxed(),
-            None,
-        )
-        .await
-        .unwrap();
-        let clock = ArcMutexUnderhillLocalClock(Arc::new(parking_lot::Mutex::new(clock)));
-        if let Some((last_query, _)) = &mut *clock.0.lock().host_time.cached_host_time.lock() {
-            *last_query -= Duration::from_secs(1);
-        }
-        (clock, get, get_driver)
+        (get, get_driver)
     }
 
-    /// Hold up the GET's thread until the returned sender is sent to, or for
-    /// ten seconds at most, so that a test that would wait for the GET fails
-    /// rather than hangs.
-    fn hold(get_driver: &DefaultDriver) -> mpsc::Sender<()> {
-        let (started, wait) = mpsc::channel();
-        let (release, held) = mpsc::channel();
+    /// Hold up the GET's thread until the returned sender is sent to or
+    /// dropped, or for ten seconds at most, so that a test that wrongly
+    /// waits for the host fails rather than hangs.
+    fn hold(get_driver: &DefaultDriver) -> std::sync::mpsc::Sender<()> {
+        let (started, wait) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel();
         get_driver
             .spawn("hold", async move {
                 started.send(()).unwrap();
@@ -434,46 +456,81 @@ mod tests {
         release
     }
 
-    /// A waker that sends on a channel when woken.
-    struct Notify(parking_lot::Mutex<mpsc::Sender<()>>);
+    /// Return a query sent at `sent`, answered with `time` once the returned
+    /// sender is sent to.
+    fn query(sent: Instant) -> (HostTimeQuery, mesh::OneshotSender<Time>) {
+        let (send, recv) = mesh::oneshot();
+        let query = HostTimeQuery {
+            sent,
+            reply: async move { recv.await.unwrap() }.boxed().shared(),
+        };
+        (query, send)
+    }
 
-    impl Wake for Notify {
-        fn wake(self: Arc<Self>) {
-            let _ = self.0.lock().send(());
+    /// A host time reply for `time`.
+    fn host_time_at(time: Timestamp) -> Time {
+        let since_windows_epoch = jiff::civil::date(1601, 1, 1)
+            .at(0, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .unwrap()
+            .timestamp()
+            .duration_until(time);
+        Time {
+            utc: (since_windows_epoch.as_nanos() / 100) as i64,
+            time_zone: 0,
         }
     }
 
-    fn notify() -> (Waker, mpsc::Receiver<()>) {
-        let (send, recv) = mpsc::channel();
-        (
-            Waker::from(Arc::new(Notify(parking_lot::Mutex::new(send)))),
-            recv,
-        )
+    /// 2026-01-01T12:00:00Z.
+    fn noon() -> Timestamp {
+        Timestamp::from_millisecond(1_767_268_800_000).unwrap()
+    }
+
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[async_test]
-    async fn poll_time_does_not_wait_for_host(_driver: DefaultDriver) {
-        let (clock, _get, get_driver) = new_rtc_clock().await;
+    async fn rtc_clock_does_not_wait_for_host(_driver: DefaultDriver) {
+        let (get, get_driver) = new_get().await;
+        let clock = UnderhillLocalClock::new(
+            get.client.clone(),
+            EphemeralNonVolatileStore::new_boxed(),
+            None,
+        )
+        .await
+        .unwrap();
+        let clock = ArcMutexUnderhillLocalClock(Arc::new(parking_lot::Mutex::new(clock)));
         let mut rtc_clock = clock.new_linked_clock();
-        let (waker, woken) = notify();
-        let mut cx = Context::from_waker(&waker);
+        if let Some((last_query, _)) = &mut clock.0.lock().host_time.state.lock().cached_host_time {
+            *last_query -= Duration::from_secs(1);
+        }
 
-        // With the host held up, polling for the time sends a query and
-        // returns without waiting for the reply.
+        // With the host held up, the clock the RTC uses returns a future for
+        // the time rather than waiting.
         let release = hold(&get_driver);
         let before = Instant::now();
-        assert!(rtc_clock.poll_time(&mut cx).is_pending());
+        let Err(time) = rtc_clock.get_time_or_wait() else {
+            panic!("the clock didn't wait");
+        };
         let after = Instant::now();
         release.send(()).unwrap();
 
-        // Once the reply comes in, the time is the host's reply, cached as of
-        // when the query was sent, as when waiting for it.
-        woken.recv_timeout(Duration::from_secs(10)).unwrap();
-        let Poll::Ready(time) = rtc_clock.poll_time(&mut cx) else {
-            panic!("time not ready");
-        };
+        // The time is the host's reply, cached as of when the query was sent.
+        let time = time.await;
         let clock = clock.0.lock();
-        let (last_query, cached_time) = clock.host_time.cached_host_time.lock().clone().unwrap();
+        let (last_query, cached_time) = clock
+            .host_time
+            .state
+            .lock()
+            .cached_host_time
+            .clone()
+            .unwrap();
         assert!(before <= last_query && last_query <= after);
         assert_eq!(
             time,
@@ -482,28 +539,142 @@ mod tests {
     }
 
     #[async_test]
-    async fn get_time_takes_the_reply_polled_for(_driver: DefaultDriver) {
-        let (clock, _get, get_driver) = new_rtc_clock().await;
-        let mut rtc_clock = clock.new_linked_clock();
-        let (waker, woken) = notify();
-        let mut cx = Context::from_waker(&waker);
-        let release = hold(&get_driver);
-        let before = Instant::now();
-        assert!(rtc_clock.poll_time(&mut cx).is_pending());
-        let after = Instant::now();
+    async fn read_keeps_the_reply_it_waited_for(driver: DefaultDriver) {
+        let (get, get_driver) = new_get().await;
+        let host_time = Arc::new(HostSystemTimeAccess::new(get.client.clone()));
 
-        // Reading the time waits for the query already sent, rather than
-        // sending another, and wakes the caller polling for it.
-        std::thread::scope(|s| {
-            let time = s.spawn(|| clock.new_linked_clock().get_time());
-            std::thread::sleep(Duration::from_millis(100));
-            release.send(()).unwrap();
-            time.join().unwrap();
+        // A read waits for a query it sent.
+        let sent = Instant::now();
+        let (first, answer) = query(sent);
+        host_time.state.lock().query = Some(first.clone());
+        let [Err(read), Err(later_read)] = [0, 1].map(|_| host_time.now_or_wait()) else {
+            panic!("the reads didn't wait");
+        };
+
+        // Another caller, more than a second later, waits for the same query,
+        // takes its reply first, and as that is too old for it, sends another,
+        // which the host holds up.
+        let release = hold(&get_driver);
+        let other = std::thread::spawn({
+            let host_time = host_time.clone();
+            move || {
+                pal_async::local::block_on(super::host_time::wait(
+                    &host_time.get,
+                    &host_time.state,
+                    sent + Duration::from_millis(1500),
+                    first,
+                ))
+            }
         });
-        woken.recv_timeout(Duration::from_secs(10)).unwrap();
-        let clock = clock.0.lock();
-        assert!(clock.host_time.pending_query.lock().is_none());
-        let (last_query, _) = clock.host_time.cached_host_time.lock().clone().unwrap();
-        assert!(before <= last_query && last_query <= after);
+        answer.send(host_time_at(noon()));
+        let mut timer = PolledTimer::new(&driver);
+        while !host_time
+            .state
+            .lock()
+            .query
+            .as_ref()
+            .is_some_and(|query| query.sent > sent)
+        {
+            timer.sleep(Duration::from_millis(1)).await;
+        }
+
+        // The read still gets the reply to its query, while the other query
+        // is out, and after its reply is in.
+        assert_eq!(read.await.timestamp(), noon());
+        release.send(()).unwrap();
+        assert_ne!(other.join().unwrap().timestamp(), noon());
+        assert_eq!(later_read.await.timestamp(), noon());
+    }
+
+    #[async_test]
+    async fn rtc_clock_does_not_wait_behind_a_blocking_read(driver: DefaultDriver) {
+        let (get, get_driver) = new_get().await;
+        let clock = ArcMutexUnderhillLocalClock(Arc::new(parking_lot::Mutex::new(
+            UnderhillLocalClock::new(
+                get.client.clone(),
+                EphemeralNonVolatileStore::new_boxed(),
+                None,
+            )
+            .await
+            .unwrap(),
+        )));
+        if let Some((last_query, _)) = &mut clock.0.lock().host_time.state.lock().cached_host_time {
+            *last_query -= Duration::from_secs(1);
+        }
+
+        // While another user of the clock waits for the host, the clock the
+        // RTC uses doesn't wait for it to start its own read.
+        let state = clock.0.lock().host_time.state.clone();
+        let release = hold(&get_driver);
+        let blocking = std::thread::spawn({
+            let mut clock = clock.new_linked_clock();
+            move || clock.get_time()
+        });
+        let mut timer = PolledTimer::new(&driver);
+        while state.lock().query.is_none() {
+            timer.sleep(Duration::from_millis(1)).await;
+        }
+        let (send, started) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn({
+            let mut clock = clock.new_linked_clock();
+            move || send.send(clock.get_time_or_wait().is_err()).unwrap()
+        });
+        let started = started.recv_timeout(Duration::from_secs(5));
+        release.send(()).unwrap();
+        blocking.join().unwrap();
+        reader.join().unwrap();
+        assert_eq!(started, Ok(true));
+    }
+
+    #[test]
+    fn everyone_waiting_for_a_query_is_woken() {
+        let (get, _) = futures::executor::block_on(new_get());
+        let host_time = HostSystemTimeAccess::new(get.client.clone());
+        let (first, answer) = query(Instant::now());
+        host_time.state.lock().query = Some(first);
+
+        // Two reads wait for the same query, with their own wakers.
+        let mut reads = [0, 1].map(|_| {
+            let Err(read) = host_time.now_or_wait() else {
+                panic!("the read didn't wait");
+            };
+            read
+        });
+        let wakes = [0, 1].map(|_| Arc::new(WakeCount::default()));
+        for (read, wakes) in reads.iter_mut().zip(&wakes) {
+            let waker = Waker::from(wakes.clone());
+            assert!(
+                read.poll_unpin(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+        }
+
+        // The reply wakes both, and both get it.
+        answer.send(host_time_at(noon()));
+        for (read, wakes) in reads.iter_mut().zip(&wakes) {
+            assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+            let Poll::Ready(time) = read.poll_unpin(&mut Context::from_waker(Waker::noop())) else {
+                panic!("the read didn't get the reply");
+            };
+            assert_eq!(time.timestamp(), noon());
+        }
+        assert!(host_time.state.lock().query.is_none());
+    }
+
+    #[test]
+    fn now_waits_for_the_query_out() {
+        let (get, _) = futures::executor::block_on(new_get());
+        let host_time = HostSystemTimeAccess::new(get.client.clone());
+        let (first, answer) = query(Instant::now());
+        host_time.state.lock().query = Some(first);
+
+        // A blocking read takes the reply to the query that is out, rather
+        // than sending another.
+        std::thread::scope(|s| {
+            let now = s.spawn(|| host_time.now());
+            answer.send(host_time_at(noon()));
+            assert_eq!(now.join().unwrap().timestamp(), noon());
+        });
+        assert!(host_time.state.lock().query.is_none());
     }
 }
