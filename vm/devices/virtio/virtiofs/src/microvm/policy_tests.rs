@@ -1301,6 +1301,30 @@ fn short_names_reach_no_entry() {
     assert_eq!(share.read("marker"), "host");
 }
 
+/// The check of a rename's names fails a missing source, as the host would,
+/// rather than pass the rename on with its target unchecked: the guest could
+/// create the source in between, and the rename would then replace the
+/// denied file through its short name.
+#[cfg(windows)]
+#[test]
+fn a_rename_without_a_source_fails_before_its_target_is_reached() {
+    let share = Share::new();
+    std::fs::write(share.path("credentials.json"), "secret").unwrap();
+    let fs = share.fs(&["credentials.json"], &[], &[]);
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    for target in ["CREDEN~1.JSO", "moved"] {
+        assert_eq!(
+            crate::microvm::inode::ensure_stored_rename_names(
+                &root.volume,
+                &PathBuf::from("staging"),
+                &PathBuf::from(target)
+            ),
+            Err(lx::Error::ENOENT),
+            "{target}"
+        );
+    }
+}
+
 #[test]
 fn attaching_requires_directories_on_the_way_to_allowed_paths() {
     let share = Share::new();

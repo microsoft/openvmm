@@ -263,19 +263,26 @@ pub(crate) fn child_name_disallowed(volume: &VirtioFsVolume, name: &[u8]) -> boo
     volume.strict_paths() && (name.contains(&b'\\') || name.contains(&b':'))
 }
 
-/// Returns the path under whose names a Windows host stores the entry that
-/// `path` reaches on a strict volume, if it reaches one.
+/// Returns whether the guest reaches an existing entry of `volume` only by the
+/// names under which the host stores it.
 ///
 /// The access policy and the guest's names for an object are exact names, as
 /// on Linux, but Windows also resolves a name in another case, unless its
 /// directory is case sensitive, and the 8.3 short name of a long name. Such a
 /// name could reach an entry that the policy protects under its own name, so
-/// the guest reaches an existing entry only by the names that the host stores.
-/// A volume that exposes a file reaches nothing else, by the name that the
-/// host gave it, not the guest, so its names go unchecked.
+/// on a strict volume on Windows, the guest reaches an existing entry only by
+/// the names that the host stores. A volume that exposes a file reaches
+/// nothing else, by the name that the host gave it, not the guest, so its
+/// names go unchecked.
+fn checks_stored_names(volume: &VirtioFsVolume) -> bool {
+    cfg!(windows) && volume.strict_paths() && volume.exposed_file().is_none()
+}
+
+/// Returns the path under whose names the host stores the entry that `path`
+/// reaches, if it reaches one and [`checks_stored_names`] holds.
 fn stored_path(volume: &VirtioFsVolume, path: &Path) -> lx::Result<Option<PathBuf>> {
     #[cfg(windows)]
-    if volume.strict_paths() && volume.exposed_file().is_none() {
+    if checks_stored_names(volume) {
         return volume.volume.stored_path(path);
     }
     let _ = (volume, path);
@@ -283,7 +290,7 @@ fn stored_path(volume: &VirtioFsVolume, path: &Path) -> lx::Result<Option<PathBu
 }
 
 /// Rejects with `error` a path that reaches an existing entry by other names
-/// than the ones under which the host stores it (see [`stored_path`]).
+/// than the ones under which the host stores it (see [`checks_stored_names`]).
 pub(crate) fn ensure_stored_names(
     volume: &VirtioFsVolume,
     path: &Path,
@@ -296,18 +303,25 @@ pub(crate) fn ensure_stored_names(
 }
 
 /// Rejects a rename whose source or target reaches an existing entry by other
-/// names than the ones under which the host stores it (see [`stored_path`]):
-/// the source with `ENOENT`, as if nothing had its name, and the target, which
-/// the rename would replace, with `EACCES`, unless the target is the source in
-/// another case, whose name the rename then changes.
+/// names than the ones under which the host stores it (see
+/// [`checks_stored_names`]): the source with `ENOENT`, as if nothing had its
+/// name, and the target, which the rename would replace, with `EACCES`, unless
+/// the target is the source in another case, whose name the rename then
+/// changes.
 pub(crate) fn ensure_stored_rename_names(
     volume: &VirtioFsVolume,
     old_path: &Path,
     new_path: &Path,
 ) -> lx::Result<()> {
-    let Some(old) = stored_path(volume, old_path)? else {
-        // Without a source, the rename fails before it reaches its target.
+    if !checks_stored_names(volume) {
         return Ok(());
+    }
+    // A missing source fails the rename here, as it would on the host, since
+    // its target goes unchecked: the guest could create the source before the
+    // host renames it, and the rename would then replace whatever another
+    // name of the target reaches.
+    let Some(old) = stored_path(volume, old_path)? else {
+        return Err(lx::Error::ENOENT);
     };
     if old != old_path {
         return Err(lx::Error::ENOENT);
