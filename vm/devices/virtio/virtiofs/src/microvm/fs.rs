@@ -798,7 +798,10 @@ impl VirtioFs {
         // snapshots take a budget of their own, which replaces the current
         // handles' budget with them.
         let directory_snapshot_budget = Arc::new(DirectorySnapshotBudget::default());
-        let mut restored_files = HandleMap::starting_at(state.next_handle_id);
+        // As the node table does, the handle table keeps a new table's first
+        // handle, so that a reset or FUSE_DESTROY numbers handles from 1 again.
+        let mut restored_files = HandleMap::new();
+        restored_files.next_handle = state.next_handle_id;
         let mut handle_ids = HashSet::with_capacity(state.handles.len());
         for saved in &state.handles {
             anyhow::ensure!(
