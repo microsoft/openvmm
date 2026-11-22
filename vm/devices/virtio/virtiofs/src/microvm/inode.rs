@@ -168,20 +168,6 @@ impl VirtioFsInode {
         self.validate_confined_paths(true)
     }
 
-    /// Performs a lookup for a child that an enumeration of this directory
-    /// listed under `name`, which is the name under which the host stores it,
-    /// so the lookup needs no check that `name` is the child's own name (see
-    /// [`ensure_stored_names`]).
-    pub(crate) fn lookup_listed_child(
-        &self,
-        name: &lx::LxStr,
-    ) -> lx::Result<(VirtioFsInode, fuse::protocol::fuse_attr)> {
-        self.validate_confined()?;
-        let (inode, stat) = VirtioFsInode::new(Arc::clone(&self.volume), self.child_path(name)?)?;
-        let attr = inode.attr_from_stat(&stat);
-        Ok((inode, attr))
-    }
-
     /// Returns whether the volume's access policy lets the guest modify this
     /// object through every path that it knows for the object, so that no
     /// alias, such as a hard link, makes a read-only object writable.
