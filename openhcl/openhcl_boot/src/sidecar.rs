@@ -50,7 +50,7 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
         // directly (all others will be managed by sidecar).
         // When per-CPU overrides are active (servicing restore with outstanding IO),
         // list every CPU that sidecar should NOT start.
-        // Otherwise, list just the base VP of each sidecar node (default behavior).
+        // Otherwise, list sidecar node base VPs and CPUs outside retained nodes.
         f.write_str("boot_cpus=")?;
         let mut comma = "";
         if self.0.per_cpu_state.per_cpu_state_specified {
@@ -64,9 +64,15 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
                 }
             }
         } else {
-            for node in self.0.node_params {
-                write!(f, "{comma}{}", node.base_vp)?;
-                comma = ",";
+            for cpu in 0..self.0.num_cpus {
+                let sidecar_starts_cpu = self.0.node_params.iter().any(|node| {
+                    let base_vp = node.base_vp as usize;
+                    cpu > base_vp && cpu - base_vp < node.vp_count as usize
+                });
+                if !sidecar_starts_cpu {
+                    write!(f, "{comma}{cpu}")?;
+                    comma = ",";
+                }
             }
         }
         Ok(())
@@ -373,6 +379,41 @@ mod tests {
         assert_eq!(
             command_line_with_two_cpu_sidecar(3, &per_cpu_state),
             "boot_cpus=0,2"
+        );
+    }
+
+    // Formats two sidecar nodes with kernel-only CPUs between and after their ranges.
+    // Expects every base and gap CPU in the Linux list, excluding both sidecar APs.
+    #[test]
+    fn test_kernel_command_line_includes_gaps_between_sidecar_nodes() {
+        let per_cpu_state = PerCpuState::new_zeroed();
+        let node_params = [
+            SidecarNodeParams {
+                base_vp: 0,
+                vp_count: 2,
+                ..SidecarNodeParams::new_zeroed()
+            },
+            SidecarNodeParams {
+                base_vp: 3,
+                vp_count: 2,
+                ..SidecarNodeParams::new_zeroed()
+            },
+        ];
+        let nodes = [
+            SidecarNodeOutput::new_zeroed(),
+            SidecarNodeOutput::new_zeroed(),
+        ];
+        let config = SidecarConfig {
+            num_cpus: 6,
+            per_cpu_state: &per_cpu_state,
+            node_params: &node_params,
+            nodes: &nodes,
+            start_reftime: 0,
+            end_reftime: 0,
+        };
+        assert_eq!(
+            config.kernel_command_line().to_string(),
+            "boot_cpus=0,2,3,5"
         );
     }
 }
