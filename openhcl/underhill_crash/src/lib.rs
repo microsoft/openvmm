@@ -40,6 +40,7 @@ use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::os::fd::AsRawFd;
+use std::path::Path;
 use std::pin::pin;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
@@ -124,7 +125,7 @@ async fn send_dump<M: RingMem>(
     mut pipe: MessagePipe<M>,
     dump_stream: &mut (impl AsyncRead + Unpin),
     os_version: &OsVersionInfo,
-    include_kmsg: bool,
+    kmsg_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let (mut reader, mut writer) = pipe.split();
 
@@ -190,8 +191,8 @@ async fn send_dump<M: RingMem>(
             max_dump_size as usize,
         );
 
-        if include_kmsg {
-            if let Err(e) = streamer.insert_kmsg_note(&mut buf).await {
+        if let Some(kmsg_path) = kmsg_path {
+            if let Err(e) = streamer.insert_kmsg_note(&mut buf, kmsg_path).await {
                 tracing::error!("Error occurred while adding kmsg note: {:?}", e);
             }
         }
@@ -325,7 +326,8 @@ pub fn main() -> ! {
             &driver,
             vmbus_user_channel::open_uio_device(&crash::CRASHDUMP_GUID)?,
         )?;
-        send_dump(pipe, &mut dump_stream, &os_version, !options.no_kmsg).await?;
+        let kmsg_path = (!options.no_kmsg).then_some(Path::new("/dev/kmsg"));
+        send_dump(pipe, &mut dump_stream, &os_version, kmsg_path).await?;
 
         Ok::<(), anyhow::Error>(())
     }) {
@@ -515,7 +517,14 @@ impl<'a, M: RingMem> DumpStreamer<'a, M> {
     }
 
     /// modify the program headers and insert the kmsg log
-    async fn insert_kmsg_note(&mut self, buf: &mut [u8]) -> anyhow::Result<()> {
+    async fn insert_kmsg_note(&mut self, buf: &mut [u8], kmsg_path: &Path) -> anyhow::Result<()> {
+        // Open the kmsg before reading or rewriting any headers, so that on
+        // failure the caller can still stream the original, unmodified dump.
+        let mut kmsg = fs_err::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NONBLOCK)
+            .open(kmsg_path)?;
+
         // elf header
         let mut ehdr: Elf64_Ehdr = Elf64_Ehdr::new_zeroed();
         self.read(ehdr.as_mut_bytes(), true).await;
@@ -579,12 +588,6 @@ impl<'a, M: RingMem> DumpStreamer<'a, M> {
 
         // save space for header, name, and length
         let max_kmsg_len = KMSG_NOTE_BYTES - header_and_name - size_of::<u32>();
-
-        // open the kmsg as a nonblocking file
-        let mut kmsg = fs_err::OpenOptions::new()
-            .read(true)
-            .custom_flags(O_NONBLOCK)
-            .open("/dev/kmsg")?;
 
         self.write(kmsg_header.as_bytes()).await?;
         self.write(name).await?;
@@ -708,6 +711,31 @@ mod tests {
         writer.send(resp.as_bytes()).await.unwrap();
     }
 
+    /// Accepts the whole dump and returns the bytes in the order received.
+    async fn host_receive_dump(host: &mut MessagePipe<FlatRingMem>) -> Vec<u8> {
+        host_negotiate(host).await;
+        let (mut reader, _writer) = host.split();
+        let mut received = Vec::new();
+        let mut buf = vec![0; crash::MAX_DUMP_PAYLOAD_SIZE];
+        loop {
+            let n = reader.recv(&mut buf).await.unwrap();
+            let header = Header::read_from_prefix(&buf[..n]).unwrap().0;
+            match header.message_type {
+                crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1 => {
+                    let rq = crash::DumpWriteRequestV1::read_from_bytes(&buf[..n]).unwrap();
+                    let (offset, size) = (rq.offset, rq.size);
+                    assert_eq!(offset as usize, received.len());
+                    let n = reader.recv(&mut buf).await.unwrap();
+                    assert_eq!(n, size as usize);
+                    received.extend_from_slice(&buf[..n]);
+                }
+                crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1 => break,
+                ty => panic!("unexpected message type {ty:?}"),
+            }
+        }
+        received
+    }
+
     /// Receives the next dump-write request header from the guest.
     async fn host_recv_write_request(
         reader: &mut MessageReadHalf<'_, FlatRingMem>,
@@ -725,32 +753,10 @@ mod tests {
         let mut source = Cursor::new(dump.clone());
         let os_version = os_version();
 
-        let host_task = async {
-            host_negotiate(&mut host).await;
-            let (mut reader, _writer) = host.split();
-            let mut received = Vec::new();
-            let mut buf = vec![0; crash::MAX_DUMP_PAYLOAD_SIZE];
-            loop {
-                let n = reader.recv(&mut buf).await.unwrap();
-                let header = Header::read_from_prefix(&buf[..n]).unwrap().0;
-                match header.message_type {
-                    crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1 => {
-                        let rq = crash::DumpWriteRequestV1::read_from_bytes(&buf[..n]).unwrap();
-                        let (offset, size) = (rq.offset, rq.size);
-                        assert_eq!(offset as usize, received.len());
-                        let n = reader.recv(&mut buf).await.unwrap();
-                        assert_eq!(n, size as usize);
-                        received.extend_from_slice(&buf[..n]);
-                    }
-                    crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1 => break,
-                    ty => panic!("unexpected message type {ty:?}"),
-                }
-            }
-            received
-        };
-
-        let (result, received) =
-            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+        let (result, received) = futures::join!(
+            send_dump(guest, &mut source, &os_version, None),
+            host_receive_dump(&mut host)
+        );
 
         result.unwrap();
         assert!(received == dump, "host received a different dump");
@@ -782,7 +788,7 @@ mod tests {
         };
 
         let (result, ()) =
-            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+            futures::join!(send_dump(guest, &mut source, &os_version, None), host_task);
 
         let err = result.expect_err("host write error was reported as success");
         assert!(
@@ -807,7 +813,7 @@ mod tests {
         };
 
         let (result, ()) =
-            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+            futures::join!(send_dump(guest, &mut source, &os_version, None), host_task);
 
         result.expect_err("closed channel was reported as success");
     }
@@ -829,7 +835,7 @@ mod tests {
         };
 
         let (result, ()) =
-            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+            futures::join!(send_dump(guest, &mut source, &os_version, None), host_task);
 
         let error = result.expect_err("failed streaming was reported as success");
         assert_eq!(error.to_string(), "failed to stream dump");
@@ -854,10 +860,158 @@ mod tests {
         };
 
         let (result, ()) =
-            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+            futures::join!(send_dump(guest, &mut source, &os_version, None), host_task);
 
         let error = result.expect_err("failed completion was reported as success");
         assert_eq!(error.to_string(), "failed to complete dump");
         assert!(error.downcast_ref::<std::io::Error>().is_some());
+    }
+
+    // Minimal ELF core: header, a PT_NOTE and a PT_LOAD program header, the
+    // notes, then one page of memory data.
+    const PT_LOAD: u32 = 1;
+    const PHDRS_END: usize = size_of::<Elf64_Ehdr>() + 2 * size_of::<Elf64_Phdr>();
+    const NOTES_SIZE: usize = 16;
+    const NOTES_END: usize = PHDRS_END + NOTES_SIZE;
+    const LOAD_OFFSET: usize = 0x1000;
+    const LOAD_SIZE: usize = 0x1000;
+
+    fn test_core() -> Vec<u8> {
+        let ehdr = Elf64_Ehdr {
+            e_ident: *b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0",
+            e_type: 4,     // ET_CORE
+            e_machine: 62, // EM_X86_64
+            e_version: 1,
+            e_entry: 0,
+            e_phoff: size_of::<Elf64_Ehdr>() as u64,
+            e_shoff: 0,
+            e_flags: 0,
+            e_ehsize: size_of::<Elf64_Ehdr>() as u16,
+            e_phentsize: size_of::<Elf64_Phdr>() as u16,
+            e_phnum: 2,
+            e_shentsize: 0,
+            e_shnum: 0,
+            e_shstrndx: 0,
+        };
+        let notes = Elf64_Phdr {
+            p_type: PT_NOTE,
+            p_flags: 0,
+            p_offset: PHDRS_END as u64,
+            p_vaddr: 0,
+            p_paddr: 0,
+            p_filesz: NOTES_SIZE as u64,
+            p_memsz: 0,
+            p_align: 4,
+        };
+        let load = Elf64_Phdr {
+            p_type: PT_LOAD,
+            p_flags: 4,
+            p_offset: LOAD_OFFSET as u64,
+            p_vaddr: 0x40_0000,
+            p_paddr: 0,
+            p_filesz: LOAD_SIZE as u64,
+            p_memsz: LOAD_SIZE as u64,
+            p_align: 0x1000,
+        };
+        let mut core = Vec::new();
+        core.extend_from_slice(ehdr.as_bytes());
+        core.extend_from_slice(notes.as_bytes());
+        core.extend_from_slice(load.as_bytes());
+        core.extend_from_slice(&[0xaa; NOTES_SIZE]);
+        core.resize(LOAD_OFFSET, 0);
+        core.extend((0..LOAD_SIZE).map(|i| (i * 7) as u8));
+        core
+    }
+
+    /// Returns (offset, file size) for each program header in `dump`.
+    fn segments(dump: &[u8]) -> Vec<(u64, u64)> {
+        <[Elf64_Phdr]>::ref_from_bytes(&dump[size_of::<Elf64_Ehdr>()..PHDRS_END])
+            .unwrap()
+            .iter()
+            .map(|phdr| (phdr.p_offset, phdr.p_filesz))
+            .collect()
+    }
+
+    fn read_u32(dump: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(dump[offset..offset + 4].try_into().unwrap())
+    }
+
+    // Test: Send an ELF core with the KMSG note enabled, but the kernel log
+    //       cannot be opened.
+    // Expected: The host receives the original core unchanged: original
+    //       segment offsets and sizes, and every byte at its original offset.
+    #[async_test]
+    async fn kmsg_open_failure_sends_original_core() {
+        let (guest, mut host) = connected_message_pipes(RING_SIZE);
+        let core = test_core();
+        let mut source = Cursor::new(core.clone());
+        let os_version = os_version();
+        let dir = tempfile::tempdir().unwrap();
+        let missing_kmsg = dir.path().join("missing-kmsg");
+
+        let (result, received) = futures::join!(
+            send_dump(guest, &mut source, &os_version, Some(&missing_kmsg)),
+            host_receive_dump(&mut host)
+        );
+
+        result.unwrap();
+        assert_eq!(
+            segments(&received),
+            segments(&core),
+            "segment headers do not match the data that was sent"
+        );
+        assert!(
+            received == core,
+            "received dump differs from the original core"
+        );
+    }
+
+    // Test: Send an ELF core with a readable kernel log.
+    // Expected: The notes segment grows by the KMSG note, later segments move
+    //       by the same amount, the note holds the log, and every original
+    //       byte is still found at its (shifted) declared offset.
+    #[async_test]
+    async fn kmsg_note_is_inserted_with_consistent_layout() {
+        let (guest, mut host) = connected_message_pipes(RING_SIZE);
+        let core = test_core();
+        let mut source = Cursor::new(core.clone());
+        let os_version = os_version();
+        let log = b"test kernel log line\n";
+        let kmsg = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(kmsg.path(), log).unwrap();
+
+        let (result, received) = futures::join!(
+            send_dump(guest, &mut source, &os_version, Some(kmsg.path())),
+            host_receive_dump(&mut host)
+        );
+
+        result.unwrap();
+        assert_eq!(received.len(), core.len() + KMSG_NOTE_BYTES);
+        assert_eq!(
+            segments(&received),
+            [
+                (PHDRS_END as u64, (NOTES_SIZE + KMSG_NOTE_BYTES) as u64),
+                ((LOAD_OFFSET + KMSG_NOTE_BYTES) as u64, LOAD_SIZE as u64),
+            ]
+        );
+        assert_eq!(
+            received[..size_of::<Elf64_Ehdr>()],
+            core[..size_of::<Elf64_Ehdr>()]
+        );
+        assert_eq!(received[PHDRS_END..NOTES_END], core[PHDRS_END..NOTES_END]);
+
+        // KMSG note: header, name, log text, padding, then the log length.
+        let note = &received[NOTES_END..NOTES_END + KMSG_NOTE_BYTES];
+        assert_eq!(read_u32(note, 0), 5);
+        assert_eq!(read_u32(note, 4) as usize, KMSG_NOTE_BYTES - 20);
+        assert_eq!(read_u32(note, 8), 0xffff_ffff);
+        assert_eq!(&note[12..20], b"KMSG\0\0\0\0");
+        assert_eq!(&note[20..20 + log.len()], log);
+        assert_eq!(read_u32(note, KMSG_NOTE_BYTES - 4) as usize, log.len());
+
+        assert!(
+            received[NOTES_END + KMSG_NOTE_BYTES..] == core[NOTES_END..],
+            "data after the KMSG note is not the original data"
+        );
     }
 }
