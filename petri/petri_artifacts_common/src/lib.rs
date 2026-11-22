@@ -15,12 +15,16 @@ pub mod capabilities {
     /// Support for nested virtualization
     pub const NESTED_VIRT: &str = "nested_virt";
 
+    /// Support for resetting a partition with nested virtualization enabled.
+    pub const NESTED_RESET: &str = "nested_reset";
+
     /// All capability names known to petri, including those defined by
     /// tests.
     pub const KNOWN_CAPABILITIES: &[&str] = &[
         VPCI,
         WINDOWS_PARTITION_RESET,
         NESTED_VIRT,
+        NESTED_RESET,
         "test_disk",
         "edu_initiator",
         "ivshmem_target",
@@ -84,15 +88,12 @@ pub mod tags {
     impl MachineArch {
         /// Returns the host's architecture.
         pub fn host() -> Self {
-            // xtask-fmt allow-target-arch oneoff-petri-host-arch
-            if cfg!(target_arch = "x86_64") {
-                Self::X86_64
-            }
-            // xtask-fmt allow-target-arch oneoff-petri-host-arch
-            else if cfg!(target_arch = "aarch64") {
-                Self::Aarch64
-            } else {
-                panic!("unsupported host architecture")
+            cfg_select! {
+                // xtask-fmt allow-target-arch oneoff-petri-host-arch
+                target_arch = "x86_64" => Self::X86_64,
+                // xtask-fmt allow-target-arch oneoff-petri-host-arch
+                target_arch = "aarch64" => Self::Aarch64,
+                _ => panic!("unsupported host architecture"),
             }
         }
     }

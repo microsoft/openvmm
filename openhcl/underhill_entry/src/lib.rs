@@ -8,12 +8,16 @@
 
 // Use mimalloc instead of the system malloc for performance.
 // For memory profiling, DHAT allocator is needed.
-#[global_allocator]
-#[cfg(not(feature = "mem-profile-tracing"))]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-#[global_allocator]
-#[cfg(feature = "mem-profile-tracing")]
-static GLOBAL: dhat::Alloc = dhat::Alloc;
+cfg_select! {
+    feature = "mem-profile-tracing" => {
+        #[global_allocator]
+        static GLOBAL: dhat::Alloc = dhat::Alloc;
+    }
+    _ => {
+        #[global_allocator]
+        static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+    }
+}
 
 // musl's memcpy implementation is slow on x86_64, so we use memcpy crate to
 // provide an optimized implementation.

@@ -14,25 +14,24 @@
 #[cfg(any(rust, symcrypt, all(native, target_os = "macos"),))]
 mod builder;
 
-#[cfg(openssl)]
-pub(crate) mod ossl;
-#[cfg(openssl)]
-use ossl as sys;
-
-#[cfg(any(rust, symcrypt))]
-pub(crate) mod symcrypt_rust;
-#[cfg(any(rust, symcrypt))]
-use symcrypt_rust as sys;
-
-#[cfg(all(native, windows))]
-pub(crate) mod win;
-#[cfg(all(native, windows))]
-use win as sys;
-
-#[cfg(all(native, target_os = "macos"))]
-pub(crate) mod mac;
-#[cfg(all(native, target_os = "macos"))]
-use mac as sys;
+cfg_select! {
+    openssl => {
+        pub(crate) mod ossl;
+        use ossl as sys;
+    }
+    any(rust, symcrypt) => {
+        pub(crate) mod symcrypt_rust;
+        use symcrypt_rust as sys;
+    }
+    all(native, windows) => {
+        pub(crate) mod win;
+        use win as sys;
+    }
+    all(native, target_os = "macos") => {
+        pub(crate) mod mac;
+        use mac as sys;
+    }
+}
 
 use thiserror::Error;
 

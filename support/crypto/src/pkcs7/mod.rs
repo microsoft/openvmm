@@ -15,25 +15,24 @@
     symcrypt
 ))]
 
-#[cfg(openssl)]
-mod ossl;
-#[cfg(openssl)]
-use ossl as sys;
-
-#[cfg(all(native, windows))]
-mod win;
-#[cfg(all(native, windows))]
-use win as sys;
-
-#[cfg(all(native, target_os = "macos"))]
-mod mac;
-#[cfg(all(native, target_os = "macos"))]
-use mac as sys;
-
-#[cfg(any(rust, symcrypt))]
-mod symcrypt_rust;
-#[cfg(any(rust, symcrypt))]
-use symcrypt_rust as sys;
+cfg_select! {
+    openssl => {
+        mod ossl;
+        use ossl as sys;
+    }
+    all(native, windows) => {
+        mod win;
+        use win as sys;
+    }
+    all(native, target_os = "macos") => {
+        mod mac;
+        use mac as sys;
+    }
+    any(rust, symcrypt) => {
+        mod symcrypt_rust;
+        use symcrypt_rust as sys;
+    }
+}
 
 use crate::x509::X509Certificate;
 use thiserror::Error;

@@ -348,6 +348,21 @@ impl PetriVmOpenVmm {
         pub async fn reset(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        /// Hot-add a VPCI device to VTL0 with the supplied instance ID.
+        pub async fn add_vpci_device(
+            &mut self,
+            instance_id: guid::Guid,
+            resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Hot-remove a dynamically added VPCI device by instance ID.
+        pub async fn remove_vpci_device(
+            &mut self,
+            instance_id: guid::Guid
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
         /// Dumps the VM's processor and memory state to a `.vmrs` file at `path`.
         pub async fn dump_state(&mut self, path: &Path) -> anyhow::Result<()>
     );
@@ -577,6 +592,19 @@ impl PetriVmInner {
     async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
         self.worker.remove_pcie_device(port_name).await
     }
+
+    async fn add_vpci_device(
+        &mut self,
+        instance_id: guid::Guid,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.worker.add_vpci_device(instance_id, resource).await
+    }
+
+    async fn remove_vpci_device(&mut self, instance_id: guid::Guid) -> anyhow::Result<()> {
+        self.worker.remove_vpci_device(instance_id).await
+    }
+
     async fn dump_state(&mut self, path: &Path) -> anyhow::Result<()> {
         self.worker.dump_state(path).await
     }

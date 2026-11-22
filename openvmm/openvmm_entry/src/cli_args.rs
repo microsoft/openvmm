@@ -50,17 +50,16 @@ pub(crate) fn parse_options() -> Options {
     // space. This is easier and more reliable than configuring the PE binary to
     // have a larger stack.
     fn on_big_stack<R: Send>(f: impl Send + FnOnce() -> R) -> R {
-        if cfg!(windows) {
-            std::thread::scope(|s| {
+        cfg_select! {
+            windows => std::thread::scope(|s| {
                 std::thread::Builder::new()
                     .stack_size(0x400000)
                     .spawn_scoped(s, f)
                     .unwrap()
                     .join()
                     .unwrap()
-            })
-        } else {
-            f()
+            }),
+            _ => f(),
         }
     }
 
@@ -4129,7 +4128,6 @@ fn default_value_from_arch_env(name: &str) -> OsString {
     let prefix = cfg_select! {
         guest_arch = "x86_64" => "X86_64",
         guest_arch = "aarch64" => "AARCH64",
-        _ => compile_error!("unsupported guest architecture"),
     };
     let prefixed = format!("{}_{}", prefix, name);
     std::env::var_os(name)

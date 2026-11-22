@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::DropReason;
 use inspect::Inspect;
 use mesh_channel_core::Receiver;
 use mesh_channel_core::Sender;
@@ -9,8 +10,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-
-use crate::DropReason;
 
 pub mod dns_tcp;
 mod static_records;
@@ -30,11 +29,14 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
-#[cfg(unix)]
-type PlatformDnsBackend = unix::UnixDnsResolverBackend;
-
-#[cfg(windows)]
-type PlatformDnsBackend = windows::WindowsDnsResolverBackend;
+cfg_select! {
+    unix => {
+        type PlatformDnsBackend = unix::UnixDnsResolverBackend;
+    }
+    windows => {
+        type PlatformDnsBackend = windows::WindowsDnsResolverBackend;
+    }
+}
 
 static DNS_HEADER_SIZE: usize = 12;
 

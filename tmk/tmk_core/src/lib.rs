@@ -10,17 +10,21 @@
 mod aarch64;
 pub mod x86_64;
 
-#[cfg(target_arch = "aarch64")]
-use aarch64 as arch;
-use tmk_protocol::TestFlags64;
-#[cfg(target_arch = "x86_64")]
-use x86_64 as arch;
+cfg_select! {
+    target_arch = "x86_64" => {
+        use x86_64 as arch;
+    }
+    target_arch = "aarch64" => {
+        use aarch64 as arch;
+    }
+}
 
 use core::ffi::c_void;
 use core::marker::PhantomData;
 use core::ptr::null_mut;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering::Relaxed;
+use tmk_protocol::TestFlags64;
 
 /// A TMK test context, passed to each test function.
 pub struct TestContext<'scope> {

@@ -11,26 +11,26 @@ pub fn pair() -> Result<(File, File)> {
     // SAFETY: calling C APIs as documented, with no special requirements.
     unsafe {
         let mut fds = [0; 2];
-        #[cfg(target_os = "linux")]
-        {
-            // Use pipe2 to set O_CLOEXEC atomically with pipe creation.
-            libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC).syscall_result()?;
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            // Create the pipes and then set O_CLOEXEC as a separate step since
-            // pipe2 is not available.
-            //
-            // N.B. There is a race window here where the pipe will be inherited
-            //      by a child process if the fork occurs right after this call
-            //      before O_CLOEXEC is set.
-            libc::pipe(fds.as_mut_ptr()).syscall_result()?;
-            libc::fcntl(fds[0], libc::F_SETFL, libc::O_CLOEXEC)
-                .syscall_result()
-                .unwrap();
-            libc::fcntl(fds[1], libc::F_SETFL, libc::O_CLOEXEC)
-                .syscall_result()
-                .unwrap();
+        cfg_select! {
+            target_os = "linux" => {
+                // Use pipe2 to set O_CLOEXEC atomically with pipe creation.
+                libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC).syscall_result()?;
+            }
+            _ => {
+                // Create the pipes and then set O_CLOEXEC as a separate step since
+                // pipe2 is not available.
+                //
+                // N.B. There is a race window here where the pipe will be inherited
+                //      by a child process if the fork occurs right after this call
+                //      before O_CLOEXEC is set.
+                libc::pipe(fds.as_mut_ptr()).syscall_result()?;
+                libc::fcntl(fds[0], libc::F_SETFL, libc::O_CLOEXEC)
+                    .syscall_result()
+                    .unwrap();
+                libc::fcntl(fds[1], libc::F_SETFL, libc::O_CLOEXEC)
+                    .syscall_result()
+                    .unwrap();
+            }
         }
         Ok((File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])))
     }

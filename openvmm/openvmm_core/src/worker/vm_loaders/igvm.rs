@@ -472,7 +472,6 @@ pub fn load_igvm(
     cfg_select! {
         guest_arch = "x86_64" => load_igvm_x86(params),
         guest_arch = "aarch64" => load_igvm_aarch64(params),
-        _ => compile_error!("unsupported guest architecture"),
     }
 }
 

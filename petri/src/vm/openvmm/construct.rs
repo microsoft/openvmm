@@ -164,10 +164,10 @@ impl PetriVmConfigOpenVmm {
                 || prebuilt_initrd.is_some(),
             "virtio-console requires an initrd-owned Linux-direct Pipette"
         );
-        #[cfg(target_os = "linux")]
-        let vhost_vsock_guest_cid = properties.vhost_vsock_guest_cid;
-        #[cfg(not(target_os = "linux"))]
-        let vhost_vsock_guest_cid: Option<u32> = None;
+        let vhost_vsock_guest_cid: Option<u32> = cfg_select! {
+            target_os = "linux" => properties.vhost_vsock_guest_cid,
+            _ => None,
+        };
 
         let mesh = Mesh::new("petri_mesh".to_string())?;
 

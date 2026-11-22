@@ -17,9 +17,6 @@ cfg_select! {
         pub use x86::X86Topology as TargetTopology;
         pub use x86::X86VpInfo as TargetVpInfo;
     }
-    _ => {
-        compile_error!("Unsupported architecture");
-    }
 }
 use thiserror::Error;
 

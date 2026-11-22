@@ -13,10 +13,14 @@
 mod unix;
 mod windows;
 
-#[cfg(unix)]
-use unix as sys;
-#[cfg(windows)]
-use windows as sys;
+cfg_select! {
+    unix => {
+        use unix as sys;
+    }
+    windows => {
+        use windows as sys;
+    }
+}
 
 /// A platform-specific synchronization event.
 #[derive(Debug)]

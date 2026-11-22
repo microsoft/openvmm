@@ -31,9 +31,6 @@ cfg_select! {
         use aarch64defs::Vendor;
         type InitialVpContext = hvdef::hypercall::InitialVpContextArm64;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 
 use crate::memory::vtl2_mapper::MappingState;
@@ -656,21 +653,21 @@ impl virt::Partition for WhpPartition {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
-        Some(self.with_vtl(minimum_vtl).clone())
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
-        let v2m = match &self.inner.gic_msi {
-            vm_topology::processor::aarch64::GicMsiController::V2m(v2m) => v2m,
-            _ => return None,
-        };
-        let irqcon = self.with_vtl(minimum_vtl).clone() as Arc<dyn virt::irqcon::ControlGic>;
-        Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
-            v2m, irqcon,
-        )))
+        cfg_select! {
+            guest_arch = "x86_64" => Some(self.with_vtl(minimum_vtl).clone()),
+            guest_arch = "aarch64" => {{
+                let v2m = match &self.inner.gic_msi {
+                    vm_topology::processor::aarch64::GicMsiController::V2m(v2m) => v2m,
+                    _ => return None,
+                };
+                let irqcon =
+                    self.with_vtl(minimum_vtl).clone() as Arc<dyn virt::irqcon::ControlGic>;
+                Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
+                    v2m, irqcon,
+                )))
+            }}
+        }
     }
 
     fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
@@ -888,7 +885,6 @@ impl virt::Hypervisor for Whp {
                 supports_its: false,
                 device_assignment_msi_iova: virt::DeviceAssignmentMsiIova::Unsupported,
             },
-            _ => compile_error!("unsupported guest architecture"),
         }
     }
 
@@ -910,13 +906,17 @@ impl virt::Hypervisor for Whp {
         let nested_virt = config.nested_virt;
 
         // Nested virt is x86-only.
-        #[cfg(guest_arch = "x86_64")]
-        if nested_virt && user_mode_apic {
-            return Err(Error::NestedVirtIncompatibleWithUserModeApic);
-        }
-        #[cfg(not(guest_arch = "x86_64"))]
-        if nested_virt {
-            return Err(Error::UnsupportedParameter("nested_virt"));
+        cfg_select! {
+            guest_arch = "x86_64" => {
+                if nested_virt && user_mode_apic {
+                    return Err(Error::NestedVirtIncompatibleWithUserModeApic);
+                }
+            }
+            _ => {
+                if nested_virt {
+                    return Err(Error::UnsupportedParameter("nested_virt"));
+                }
+            }
         }
 
         // The HV rejects the generic hypercall intercept on nested
@@ -969,6 +969,12 @@ impl virt::Hypervisor for Whp {
 /// Returns whether WHP is available on this machine.
 pub fn is_available() -> Result<bool, Error> {
     whp::capabilities::hypervisor_present().for_op("query hypervisor presence")
+}
+
+/// Returns whether WHP can reset partitions with nested virtualization enabled.
+#[cfg(guest_arch = "x86_64")]
+pub fn is_nested_reset_available() -> bool {
+    whp::capabilities::reset_partition()
 }
 
 /// The prototype partition.
@@ -1267,20 +1273,6 @@ impl WhpPartitionInner {
             })
             .collect();
 
-        #[cfg(guest_arch = "x86_64")]
-        let caps = {
-            let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(
-                proto_config.processor_topology,
-                &mut |function, index| cpuid.result(function, index, &vtl0.cpuid(function, index)),
-            )
-            .map_err(Error::Capabilities)?;
-            caps.can_freeze_time = true;
-            caps.tsc_deadline &= matches!(vtl0.lapic, LocalApicKind::Offloaded);
-            caps.xsaves_state_bv_broken = true;
-            caps.dr6_tsx_broken = true;
-            caps.nested_virt = nested_virt;
-            caps
-        };
         let processor_vendor =
             whp::capabilities::processor_vendor().for_op("get processor vendor")?;
         let vendor = cfg_select! {
@@ -1294,20 +1286,35 @@ impl WhpPartitionInner {
                 whp::abi::WHvProcessorVendorArm => Vendor::ARM,
                 _ => panic!("unsupported processor vendor"),
             },
-            _ => compile_error!("unsupported guest architecture"),
         };
 
-        #[cfg(guest_arch = "aarch64")]
-        let caps = {
-            let features =
-                whp::capabilities::processor_features().for_op("get processor features")?;
-            virt::aarch64::Aarch64PartitionCapabilities {
-                isolation: IsolationType::None,
-                supports_aarch32_el0: features
-                    .bank0
-                    .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
-                vendor,
-            }
+        let caps = cfg_select! {
+            guest_arch = "x86_64" => {{
+                let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(
+                    proto_config.processor_topology,
+                    &mut |function, index| {
+                        cpuid.result(function, index, &vtl0.cpuid(function, index))
+                    },
+                )
+                .map_err(Error::Capabilities)?;
+                caps.can_freeze_time = true;
+                caps.tsc_deadline &= matches!(vtl0.lapic, LocalApicKind::Offloaded);
+                caps.xsaves_state_bv_broken = true;
+                caps.dr6_tsx_broken = true;
+                caps.nested_virt = nested_virt;
+                caps
+            }}
+            guest_arch = "aarch64" => {{
+                let features =
+                    whp::capabilities::processor_features().for_op("get processor features")?;
+                virt::aarch64::Aarch64PartitionCapabilities {
+                    isolation: IsolationType::None,
+                    supports_aarch32_el0: features
+                        .bank0
+                        .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
+                    vendor,
+                }
+            }}
         };
 
         let hvstate = if proto_config.hv_config.is_some() {
@@ -1493,7 +1500,6 @@ impl VtlPartition {
                 }
             }
             guest_arch = "aarch64" => LocalApicKind::Offloaded,
-            _ => compile_error!("unsupported guest architecture"),
         };
 
         let mut whp_config = whp::PartitionConfig::new().for_op("create partition")?;
@@ -1505,21 +1511,20 @@ impl VtlPartition {
             .for_op("set processor count")?;
 
         #[cfg(guest_arch = "x86_64")]
-        if nested_virt {
-            match whp_config.set_property(whp::PartitionProperty::NestedVirtualization(true)) {
-                Ok(_) => {}
-                Err(whp::WHvError::WHV_E_UNKNOWN_PROPERTY) => {
-                    return Err(Error::NestedVirtUnsupported);
-                }
-                Err(err) => {
-                    return Err(err).for_op("enable nested virtualization");
-                }
-            }
-        }
-
-        #[cfg(guest_arch = "x86_64")]
         {
             use vm_topology::processor::x86::ApicMode;
+
+            if nested_virt {
+                match whp_config.set_property(whp::PartitionProperty::NestedVirtualization(true)) {
+                    Ok(_) => {}
+                    Err(whp::WHvError::WHV_E_UNKNOWN_PROPERTY) => {
+                        return Err(Error::NestedVirtUnsupported);
+                    }
+                    Err(err) => {
+                        return Err(err).for_op("enable nested virtualization");
+                    }
+                }
+            }
 
             let apic_mode = if !user_mode_apic {
                 match config.processor_topology.apic_mode() {
@@ -1647,26 +1652,26 @@ impl VtlPartition {
                         | F::SignalEvents
                         | F::RetargetDeviceInterrupt;
 
-                    #[cfg(guest_arch = "x86_64")]
-                    {
-                        features.bank0 |= F::TbFlushHypercalls
-                            | F::AccessGuestIdleReg
-                            | F::AccessFrequencyRegs
-                            | F::EnableExtendedGvaRangesForFlushVirtualAddressList;
-                    }
+                    cfg_select! {
+                        guest_arch = "x86_64" => {
+                            features.bank0 |= F::TbFlushHypercalls
+                                | F::AccessGuestIdleReg
+                                | F::AccessFrequencyRegs
+                                | F::EnableExtendedGvaRangesForFlushVirtualAddressList;
+                        }
+                        guest_arch = "aarch64" => {
+                            features.bank0 |=
+                                F::AccessVpRegs | F::SyncContext | F::TbFlushHypercalls;
 
-                    #[cfg(guest_arch = "aarch64")]
-                    {
-                        features.bank0 |= F::AccessVpRegs | F::SyncContext | F::TbFlushHypercalls;
-
-                        // Opt into delivery of the system-reset intercept family
-                        // (PSCI SYSTEM_OFF2/hibernate, SYSTEM_RESET2) when the
-                        // hypervisor advertises it.
-                        if supported_synth_features
-                            .bank0
-                            .is_set(F::InterceptSystemReset)
-                        {
-                            features.bank0 |= F::InterceptSystemReset;
+                            // Opt into delivery of the system-reset intercept family
+                            // (PSCI SYSTEM_OFF2/hibernate, SYSTEM_RESET2) when the
+                            // hypervisor advertises it.
+                            if supported_synth_features
+                                .bank0
+                                .is_set(F::InterceptSystemReset)
+                            {
+                                features.bank0 |= F::InterceptSystemReset;
+                            }
                         }
                     }
 
@@ -1846,10 +1851,9 @@ impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
     ) -> Result<guestmem::UserLockedPages, hvdef::HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
-        Ok(self
-            .0
+        self.0
             .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
-            .unwrap())
+            .map_err(|_| hvdef::HvError::OperationDenied)
     }
 
     fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), hvdef::HvError> {
@@ -1992,9 +1996,6 @@ impl virt::Hv1 for WhpPartition {
         }
         guest_arch = "aarch64" => {
             type Device = virt::aarch64::gic_software_device::GicSoftwareDevice;
-        }
-        _ => {
-            compile_error!("unsupported guest architecture");
         }
     }
 

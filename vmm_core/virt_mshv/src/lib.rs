@@ -16,15 +16,13 @@ cfg_select! {
         mod x86_64;
         use x86_64 as arch;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 
 // irqfd is arch-independent (MSI routing + MSHV_IRQFD), wired up on both
 // x86_64 and aarch64.
 pub mod irqfd;
 
+use anyhow::Context as _;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hv1_emulator::message_queues::MessageQueues;
@@ -247,6 +245,28 @@ pub fn is_available() -> Result<bool, Error> {
         Ok(_) => Ok(true),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(ErrorInner::AvailableCheck(err).into()),
+    }
+}
+
+/// Probes partition scrub support using a temporary, non-isolated partition.
+pub fn is_partition_scrub_available() -> bool {
+    let probe = || -> anyhow::Result<bool> {
+        let hv = LinuxMshv::new().context("open MSHV for partition scrub probe")?;
+        let vmfd = hv
+            .mshv
+            .create_vm()
+            .context("create scrub probe partition")?;
+        vmfd.initialize()
+            .context("initialize scrub probe partition")?;
+        let _vp = vmfd.create_vcpu(0).context("create scrub probe VP")?;
+        scrub_partition(&vmfd).context("scrub probe partition")
+    };
+    match probe() {
+        Ok(supported) => supported,
+        Err(err) => {
+            tracing::warn!(error = &*err, "MSHV partition scrub probe failed");
+            false
+        }
     }
 }
 

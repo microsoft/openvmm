@@ -147,33 +147,22 @@ pub const O_APPEND: i32 = 0x000400;
 pub const O_NONBLOCK: i32 = 0x000800;
 pub const O_DSYNC: i32 = 0x001000;
 
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub const O_DIRECT: i32 = 0x004000;
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub const O_LARGEFILE: i32 = 0x008000;
-
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
-pub const O_DIRECT: i32 = 0x010000;
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
-pub const O_LARGEFILE: i32 = 0x020000;
-
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub const O_DIRECTORY: i32 = 0x010000;
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub const O_NOFOLLOW: i32 = 0x020000;
-
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
-pub const O_DIRECTORY: i32 = 0x004000;
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
-pub const O_NOFOLLOW: i32 = 0x008000;
+cfg_select! {
+    // xtask-fmt allow-target-arch sys-crate
+    any(target_arch = "x86", target_arch = "x86_64") => {
+        pub const O_DIRECT: i32 = 0x004000;
+        pub const O_LARGEFILE: i32 = 0x008000;
+        pub const O_DIRECTORY: i32 = 0x010000;
+        pub const O_NOFOLLOW: i32 = 0x020000;
+    }
+    // xtask-fmt allow-target-arch sys-crate
+    any(target_arch = "arm", target_arch = "aarch64") => {
+        pub const O_DIRECT: i32 = 0x010000;
+        pub const O_LARGEFILE: i32 = 0x020000;
+        pub const O_DIRECTORY: i32 = 0x004000;
+        pub const O_NOFOLLOW: i32 = 0x008000;
+    }
+}
 
 pub const O_NOATIME: i32 = 0x040000;
 pub const O_CLOEXEC: i32 = 0x080000;

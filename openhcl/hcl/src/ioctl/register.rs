@@ -32,9 +32,6 @@ cfg_select! {
     guest_arch = "aarch64" => {
         type HvArchRegisterName = hvdef::HvArm64RegisterName;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 
 #[derive(Error, Debug)]
@@ -450,7 +447,6 @@ impl Hcl {
                     .as_u64(),
                 ))
             }}
-            _ => compile_error!("unsupported guest architecture"),
         }
     }
 
@@ -525,7 +521,6 @@ impl Hcl {
                 tracing::debug!(?port, "set_pm_timer_assist unimplemented on aarch64");
                 Err(SetRegError::Hypercall(HvError::UnknownRegisterName))
             }}
-            _ => compile_error!("unsupported guest architecture"),
         }
     }
 
@@ -686,9 +681,8 @@ impl MshvHvcall {
 /// HvArchRegisterName, including MSR_TSC_FREQUENCY, MSR_MCG_CAP,
 /// MSR_MCG_STATUS, MSR_RESET, MSR_GUEST_IDLE, and MSR_DEBUG_DEVICE_OPTIONS.
 fn is_vtl_shared_reg(reg: HvArchRegisterName) -> bool {
-    #[cfg(guest_arch = "x86_64")]
-    {
-        matches!(
+    cfg_select! {
+        guest_arch = "x86_64" => matches!(
             reg,
             HvArchRegisterName::VpIndex
                 | HvArchRegisterName::VpRuntime
@@ -785,12 +779,8 @@ fn is_vtl_shared_reg(reg: HvArchRegisterName) -> bool {
                 | HvArchRegisterName::MsrMtrrFix4kE8000
                 | HvArchRegisterName::MsrMtrrFix4kF0000
                 | HvArchRegisterName::MsrMtrrFix4kF8000
-        )
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    {
-        matches!(
+        ),
+        guest_arch = "aarch64" => matches!(
             reg,
             HvArchRegisterName::X0
                 | HvArchRegisterName::X1
@@ -822,6 +812,6 @@ fn is_vtl_shared_reg(reg: HvArchRegisterName) -> bool {
                 | HvArchRegisterName::X28
                 | HvArchRegisterName::XFp
                 | HvArchRegisterName::XLr
-        )
+        ),
     }
 }

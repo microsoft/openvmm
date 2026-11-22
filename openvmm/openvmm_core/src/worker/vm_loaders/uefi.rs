@@ -431,7 +431,6 @@ mod tests {
     const FIRMWARE_VOLUME_OFFSET: usize = cfg_select! {
         guest_arch = "x86_64" => 0,
         guest_arch = "aarch64" => 0x1000,
-        _ => compile_error!("unsupported guest architecture"),
     };
 
     fn size24(value: usize) -> [u8; 3] {

@@ -1957,6 +1957,8 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for SynicEventFlagsPage {
 }
 
 /// Opaque nested-virtualization state blob for save/restore.
+///
+/// An empty blob denotes architectural reset, not a serialized hardware state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
 #[inspect(skip)]

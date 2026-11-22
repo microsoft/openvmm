@@ -20,9 +20,6 @@ cfg_select! {
     guest_arch = "aarch64" => {
         use virt::Aarch64Partition as ArchPartition;
     }
-    _ => {
-        compile_error!("unsupported guest architecture");
-    }
 }
 
 use anyhow::Context as _;
@@ -199,7 +196,6 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
                 // an equivalent to HV_X64_MSR_GUEST_OS_ID.
                 0
             }
-            _ => compile_error!("unsupported guest architecture"),
         }
     }
 }

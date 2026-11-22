@@ -28,6 +28,7 @@ use tpm_protocol::tpm20proto::protocol::Tpm2bBuffer;
 use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
 use tpm_protocol::tpm20proto::protocol::TpmlPcrSelection;
 use tpm_protocol::tpm20proto::protocol::common::CmdAuth;
+use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -356,6 +357,23 @@ fn test_mixed_slot_kinds_hash_event_and_primary() {
     let mut tpm = create_tpm_engine_helper();
     tpm.initialize_tpm_engine().unwrap();
 
+    // RSA primary derivation is slow and its cost depends on the random TPM
+    // seed, so derive the key once and reload its saved context into each
+    // primary slot instead of repeating the prime search for every order.
+    let primary = tpm
+        .create_primary(TPM20_RH_OWNER, rsa_srk_template().unwrap())
+        .unwrap()
+        .object_handle;
+    let primary_public = tpm.read_public(primary).unwrap().out_public.serialize();
+    let primary_context = execute_command(
+        &mut tpm,
+        SessionTagEnum::NoSessions,
+        CommandCodeEnum::ContextSave,
+        primary.as_bytes(),
+        ResponseCode::Success,
+    );
+    tpm.flush_context(primary).unwrap();
+
     for kind_order in ORDERS {
         for op_order in ORDERS {
             tracing::debug!(?kind_order, ?op_order);
@@ -364,9 +382,14 @@ fn test_mixed_slot_kinds_hash_event_and_primary() {
                     0 => start_sequence(&mut tpm, HASHES[0].0),
                     1 => start_event_sequence(&mut tpm),
                     _ => {
-                        tpm.create_primary(TPM20_RH_OWNER, rsa_srk_template().unwrap())
-                            .unwrap()
-                            .object_handle
+                        let reply = execute_command(
+                            &mut tpm,
+                            SessionTagEnum::NoSessions,
+                            CommandCodeEnum::ContextLoad,
+                            &primary_context,
+                            ResponseCode::Success,
+                        );
+                        ReservedHandle::read_from_bytes(&reply).unwrap()
                     }
                 };
                 assert_eq!(handle, ReservedHandle::new(0x80, slot as u32));
@@ -379,9 +402,13 @@ fn test_mixed_slot_kinds_hash_event_and_primary() {
                 match kind_order[slot] {
                     0 => update_sequence(&mut tpm, handles[slot], b"ab"),
                     1 => update_sequence(&mut tpm, handles[slot], b"ev"),
-                    _ => {
-                        tpm.read_public(handles[slot]).unwrap();
-                    }
+                    _ => assert_eq!(
+                        tpm.read_public(handles[slot])
+                            .unwrap()
+                            .out_public
+                            .serialize(),
+                        primary_public
+                    ),
                 }
             }
 
