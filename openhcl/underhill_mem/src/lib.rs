@@ -423,6 +423,73 @@ struct OverlayPage {
     gpn_source: GpnSource,
 }
 
+/// Fails with [`HvError::OperationDenied`] if `gpn` is locked and is not an
+/// overlay page.
+fn check_page_not_locked(
+    locked_pages: &[Box<[u64]>],
+    overlay_pages: &[OverlayPage],
+    gpn: u64,
+) -> Result<(), HvError> {
+    // Overlay pages have special handling, being locked does not prevent that.
+    // TODO: When uh_mem implements the returning of overlay pages, rather than
+    // requiring them to also be locked through guestmem, the check for overlay
+    // pages can be removed, as locked and overlay pages will be mutually exclusive.
+    if locked_pages.iter().flatten().any(|x| *x == gpn)
+        && !overlay_pages.iter().any(|p| p.gpn == gpn)
+    {
+        return Err(HvError::OperationDenied);
+    }
+    Ok(())
+}
+
+/// Records `vtl_protections` as the default for `target_vtl` and returns the
+/// accepted RAM ranges that the new default must be applied to.
+///
+/// Fails, leaving the recorded default unchanged, if `check_not_locked`
+/// rejects an accepted page. Locked pages are not changed, so the whole update
+/// is rejected.
+fn prepare_default_vtl_protections(
+    layout: &MemoryLayout,
+    default_vtl_permissions: &mut DefaultVtlPermissions,
+    target_vtl: GuestVtl,
+    vtl_protections: HvMapGpaFlags,
+    is_accepted: impl Fn(u64) -> bool,
+    check_not_locked: impl Fn(u64) -> Result<(), HvError>,
+) -> Result<Vec<MemoryRange>, HvError> {
+    let mut ranges = Vec::new();
+    for ram_range in layout.ram().iter() {
+        let mut protect_start = ram_range.range.start();
+        let mut page_count = 0;
+
+        for gpn in
+            ram_range.range.start() / PAGE_SIZE as u64..ram_range.range.end() / PAGE_SIZE as u64
+        {
+            // Also don't attempt to change the permissions of locked pages.
+            if is_accepted(gpn) {
+                check_not_locked(gpn)?;
+                page_count += 1;
+            } else {
+                if page_count > 0 {
+                    let end_address = protect_start + (page_count * PAGE_SIZE as u64);
+                    ranges.push(MemoryRange::new(protect_start..end_address));
+                }
+                protect_start = (gpn + 1) * PAGE_SIZE as u64;
+                page_count = 0;
+            }
+        }
+
+        if page_count > 0 {
+            let end_address = protect_start + (page_count * PAGE_SIZE as u64);
+            ranges.push(MemoryRange::new(protect_start..end_address));
+        }
+    }
+
+    // Only record the new default once every page has been validated, so a
+    // rejected request does not leave a default that was never applied.
+    default_vtl_permissions.set(target_vtl, vtl_protections);
+    Ok(ranges)
+}
+
 impl HardwareIsolatedMemoryProtector {
     /// Returns a new instance.
     ///
@@ -508,16 +575,7 @@ impl HardwareIsolatedMemoryProtector {
         vtl: GuestVtl,
         gpn: u64,
     ) -> Result<(), HvError> {
-        // Overlay pages have special handling, being locked does not prevent that.
-        // TODO: When uh_mem implements the returning of overlay pages, rather than
-        // requiring them to also be locked through guestmem, the check for overlay
-        // pages can be removed, as locked and overlay pages will be mutually exclusive.
-        if inner.locked_pages[vtl].iter().flatten().any(|x| *x == gpn)
-            && !inner.overlay_pages[vtl].iter().any(|p| p.gpn == gpn)
-        {
-            return Err(HvError::OperationDenied);
-        }
-        Ok(())
+        check_page_not_locked(&inner.locked_pages[vtl], &inner.overlay_pages[vtl], gpn)
     }
 
     /// Checks whether the given GPN is present in guest RAM.
@@ -814,41 +872,24 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // finishes last will control the outcome.
         let mut inner = self.inner.lock();
 
-        inner
-            .default_vtl_permissions
-            .set(target_vtl, vtl_protections);
-
-        let mut ranges = Vec::new();
-        for ram_range in self.layout.ram().iter() {
-            let mut protect_start = ram_range.range.start();
-            let mut page_count = 0;
-
-            for gpn in
-                ram_range.range.start() / PAGE_SIZE as u64..ram_range.range.end() / PAGE_SIZE as u64
-            {
-                // TODO GUEST VSM: for now, use the encrypted mapping to
-                // find all accepted memory. When lazy acceptance exists,
-                // this should track all pages that have been accepted and
-                // should be used instead.
-                // Also don't attempt to change the permissions of locked pages.
-                if inner.valid_encrypted.check_valid(gpn) {
-                    self.check_gpn_not_locked(&inner, target_vtl, gpn)?;
-                    page_count += 1;
-                } else {
-                    if page_count > 0 {
-                        let end_address = protect_start + (page_count * PAGE_SIZE as u64);
-                        ranges.push(MemoryRange::new(protect_start..end_address));
-                    }
-                    protect_start = (gpn + 1) * PAGE_SIZE as u64;
-                    page_count = 0;
-                }
-            }
-
-            if page_count > 0 {
-                let end_address = protect_start + (page_count * PAGE_SIZE as u64);
-                ranges.push(MemoryRange::new(protect_start..end_address));
-            }
-        }
+        let HardwareIsolatedMemoryProtectorInner {
+            valid_encrypted,
+            default_vtl_permissions,
+            overlay_pages,
+            locked_pages,
+            ..
+        } = &mut *inner;
+        // TODO GUEST VSM: for now, use the encrypted mapping to find all
+        // accepted memory. When lazy acceptance exists, this should track all
+        // pages that have been accepted and should be used instead.
+        let ranges = prepare_default_vtl_protections(
+            &self.layout,
+            default_vtl_permissions,
+            target_vtl,
+            vtl_protections,
+            |gpn| valid_encrypted.check_valid(gpn),
+            |gpn| check_page_not_locked(&locked_pages[target_vtl], &overlay_pages[target_vtl], gpn),
+        )?;
 
         tracing::trace!("Applying default vtl protections.");
 
@@ -1293,5 +1334,234 @@ mod tests {
         let error = parallelize_mem_op(&[MemoryRange::new(0..0x1000)], 2, |_| Err("failed"));
 
         assert_eq!(error, Err("failed"));
+    }
+
+    /// Eight pages of RAM. Page 5 is not accepted; page 2 is accepted.
+    fn default_protection_layout() -> MemoryLayout {
+        MemoryLayout::new_from_ranges(
+            &[vm_topology::memory::MemoryRangeWithNode {
+                range: MemoryRange::new(0..8 * HV_PAGE_SIZE),
+                vnode: 0,
+            }],
+            &[],
+        )
+        .unwrap()
+    }
+
+    fn read_write() -> HvMapGpaFlags {
+        HvMapGpaFlags::new().with_readable(true).with_writable(true)
+    }
+
+    // Test: Request a read/write-only VTL0 default while an accepted page is
+    //       locked.
+    // Expected: The request is rejected and the recorded default is still the
+    //       previous one, so a later identical request is not mistaken for a
+    //       no-op.
+    #[test]
+    fn rejected_default_vtl_protection_change_keeps_previous_default() {
+        let layout = default_protection_layout();
+        let mut defaults = DefaultVtlPermissions {
+            vtl0: HV_MAP_GPA_PERMISSIONS_ALL,
+            vtl1: None,
+        };
+        let locked_pages = [vec![2].into_boxed_slice()];
+
+        let result = prepare_default_vtl_protections(
+            &layout,
+            &mut defaults,
+            GuestVtl::Vtl0,
+            read_write(),
+            |gpn| gpn != 5,
+            |gpn| check_page_not_locked(&locked_pages, &[], gpn),
+        );
+
+        assert_eq!(result, Err(HvError::OperationDenied));
+        assert_eq!(
+            defaults.vtl0, HV_MAP_GPA_PERMISSIONS_ALL,
+            "rejected request changed the recorded default"
+        );
+        assert_eq!(defaults.vtl1, None);
+    }
+
+    // Test: Request a read/write-only VTL0 default with no locked pages.
+    // Expected: The new default is recorded and the returned ranges cover
+    //       exactly the accepted pages.
+    #[test]
+    fn default_vtl_protection_change_records_default_and_accepted_ranges() {
+        let layout = default_protection_layout();
+        let mut defaults = DefaultVtlPermissions {
+            vtl0: HV_MAP_GPA_PERMISSIONS_ALL,
+            vtl1: None,
+        };
+
+        let ranges = prepare_default_vtl_protections(
+            &layout,
+            &mut defaults,
+            GuestVtl::Vtl0,
+            read_write(),
+            |gpn| gpn != 5,
+            |gpn| check_page_not_locked(&[], &[], gpn),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ranges,
+            [
+                MemoryRange::new(0..5 * HV_PAGE_SIZE),
+                MemoryRange::new(6 * HV_PAGE_SIZE..8 * HV_PAGE_SIZE),
+            ]
+        );
+        assert_eq!(defaults.vtl0, read_write());
+        assert_eq!(defaults.vtl1, None);
+    }
+
+    fn initial_defaults() -> DefaultVtlPermissions {
+        DefaultVtlPermissions {
+            vtl0: HV_MAP_GPA_PERMISSIONS_ALL,
+            vtl1: None,
+        }
+    }
+
+    // Test: Request a new VTL0 default while page 2 is locked but is also an
+    //       overlay page.
+    // Expected: The overlay exemption applies, so the request succeeds and the
+    //       new default is recorded.
+    #[test]
+    fn locked_overlay_page_does_not_block_default_vtl_protection_change() {
+        let layout = default_protection_layout();
+        let mut defaults = initial_defaults();
+        let locked_pages = [vec![2].into_boxed_slice()];
+        let overlay_pages = [OverlayPage {
+            gpn: 2,
+            previous_permissions: HV_MAP_GPA_PERMISSIONS_ALL,
+            overlay_permissions: HV_MAP_GPA_PERMISSIONS_ALL,
+            ref_count: 1,
+            gpn_source: GpnSource::GuestMemory,
+        }];
+
+        let ranges = prepare_default_vtl_protections(
+            &layout,
+            &mut defaults,
+            GuestVtl::Vtl0,
+            read_write(),
+            |gpn| gpn != 5,
+            |gpn| check_page_not_locked(&locked_pages, &overlay_pages, gpn),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ranges,
+            [
+                MemoryRange::new(0..5 * HV_PAGE_SIZE),
+                MemoryRange::new(6 * HV_PAGE_SIZE..8 * HV_PAGE_SIZE),
+            ]
+        );
+        assert_eq!(defaults.vtl0, read_write());
+    }
+
+    // Test: Request a new VTL0 default while only a non-accepted page (5) is
+    //       locked.
+    // Expected: Non-accepted pages are not protected or lock-checked, so the
+    //       request succeeds and the new default is recorded.
+    #[test]
+    fn locked_unaccepted_page_does_not_block_default_vtl_protection_change() {
+        let layout = default_protection_layout();
+        let mut defaults = initial_defaults();
+        let locked_pages = [vec![5].into_boxed_slice()];
+
+        let ranges = prepare_default_vtl_protections(
+            &layout,
+            &mut defaults,
+            GuestVtl::Vtl0,
+            read_write(),
+            |gpn| gpn != 5,
+            |gpn| check_page_not_locked(&locked_pages, &[], gpn),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ranges,
+            [
+                MemoryRange::new(0..5 * HV_PAGE_SIZE),
+                MemoryRange::new(6 * HV_PAGE_SIZE..8 * HV_PAGE_SIZE),
+            ]
+        );
+        assert_eq!(defaults.vtl0, read_write());
+    }
+
+    // Test: Collect ranges for two RAM ranges separated by a gap, where the
+    //       last page of the first range is not accepted.
+    // Expected: Ranges stay within their RAM range, never span the gap, and
+    //       skip the non-accepted page.
+    #[test]
+    fn default_vtl_protection_ranges_follow_ram_layout() {
+        let layout = MemoryLayout::new_from_ranges(
+            &[
+                vm_topology::memory::MemoryRangeWithNode {
+                    range: MemoryRange::new(0..4 * HV_PAGE_SIZE),
+                    vnode: 0,
+                },
+                vm_topology::memory::MemoryRangeWithNode {
+                    range: MemoryRange::new(8 * HV_PAGE_SIZE..12 * HV_PAGE_SIZE),
+                    vnode: 0,
+                },
+            ],
+            &[],
+        )
+        .unwrap();
+        let mut defaults = initial_defaults();
+
+        let ranges = prepare_default_vtl_protections(
+            &layout,
+            &mut defaults,
+            GuestVtl::Vtl0,
+            read_write(),
+            |gpn| gpn != 3,
+            |gpn| check_page_not_locked(&[], &[], gpn),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ranges,
+            [
+                MemoryRange::new(0..3 * HV_PAGE_SIZE),
+                MemoryRange::new(8 * HV_PAGE_SIZE..12 * HV_PAGE_SIZE),
+            ]
+        );
+    }
+
+    // Test: Request a VTL1 default, first while an accepted page is locked and
+    //       then with no locks.
+    // Expected: The rejected request leaves both defaults unchanged; the
+    //       accepted one records the VTL1 default and leaves VTL0 unchanged.
+    #[test]
+    fn vtl1_default_vtl_protection_change_leaves_vtl0_default() {
+        let layout = default_protection_layout();
+        let mut defaults = initial_defaults();
+        let locked_pages = [vec![2].into_boxed_slice()];
+
+        let result = prepare_default_vtl_protections(
+            &layout,
+            &mut defaults,
+            GuestVtl::Vtl1,
+            read_write(),
+            |gpn| gpn != 5,
+            |gpn| check_page_not_locked(&locked_pages, &[], gpn),
+        );
+        assert_eq!(result, Err(HvError::OperationDenied));
+        assert_eq!(defaults.vtl0, HV_MAP_GPA_PERMISSIONS_ALL);
+        assert_eq!(defaults.vtl1, None);
+
+        prepare_default_vtl_protections(
+            &layout,
+            &mut defaults,
+            GuestVtl::Vtl1,
+            read_write(),
+            |gpn| gpn != 5,
+            |gpn| check_page_not_locked(&[], &[], gpn),
+        )
+        .unwrap();
+        assert_eq!(defaults.vtl0, HV_MAP_GPA_PERMISSIONS_ALL);
+        assert_eq!(defaults.vtl1, Some(read_write()));
     }
 }
