@@ -9694,11 +9694,13 @@ dependencies = [
  "guid",
  "libc",
  "pal_async",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
  "vmbus_async",
+ "vmbus_ring",
  "vmbus_user_channel",
  "zerocopy",
 ]
