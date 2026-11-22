@@ -1325,6 +1325,48 @@ fn a_rename_without_a_source_fails_before_its_target_is_reached() {
     }
 }
 
+/// READDIRPLUS reads a directory's entries from the snapshot that its first
+/// read takes, so a later read can list a name whose case has changed since,
+/// or whose entry the host has replaced with another in another case. Windows
+/// still reaches an entry by that name, but stores it under another, so the
+/// read skips the name, as it skips a name that is gone, rather than hand the
+/// guest a node whose every request would fail, or fail at the name because
+/// it reaches another object than the one listed.
+#[cfg(windows)]
+#[test]
+fn readdirplus_skips_names_whose_case_changed_since_its_snapshot() {
+    let share = Share::new();
+    std::fs::create_dir(share.path("out/listing")).unwrap();
+    for name in ["a", "new", "old", "z"] {
+        std::fs::write(share.path("out/listing").join(name), name).unwrap();
+    }
+    let fs = share.fs(&["marker"], &[], &[]);
+    let listing = lookup(&fs, "out/listing").unwrap();
+    let directory = fs
+        .get_inode(listing)
+        .unwrap()
+        .open(lx::O_RDONLY | lx::O_DIRECTORY)
+        .unwrap();
+    // The first read takes the snapshot and returns only `.` and `..`.
+    let entry_size = |name: &str| {
+        (size_of::<fuse::protocol::fuse_direntplus>() + name.len()).next_multiple_of(8)
+    };
+    let page = directory
+        .read_dir(&fs, 0, (entry_size(".") + entry_size("..")) as u32, true)
+        .unwrap();
+    let (dotdot, _) = <fuse::protocol::fuse_direntplus as zerocopy::FromBytes>::read_from_prefix(
+        &page[entry_size(".")..],
+    )
+    .unwrap();
+    assert_eq!(dotdot.dirent.namelen, 2);
+
+    std::fs::rename(share.path("out/listing/new"), share.path("out/listing/NEW")).unwrap();
+    std::fs::remove_file(share.path("out/listing/old")).unwrap();
+    std::fs::write(share.path("out/listing/OLD"), "replaced").unwrap();
+    let rest = crate::tests::read_directory(&fs, &directory, dotdot.dirent.off, 4096, true);
+    assert_eq!(rest.into_keys().collect::<Vec<_>>(), ["a", "z"]);
+}
+
 #[test]
 fn attaching_requires_directories_on_the_way_to_allowed_paths() {
     let share = Share::new();
