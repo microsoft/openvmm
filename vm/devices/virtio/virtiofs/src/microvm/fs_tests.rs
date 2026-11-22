@@ -839,6 +839,154 @@ fn readdirplus_lists_an_entry_that_the_host_lists_by_another_number() {
     assert_eq!(entries["point"].0, point.attr.ino);
 }
 
+/// Returns the names of the entries of `reply`, a READDIRPLUS reply, sorted,
+/// and the node ID of the entry named `name`.
+fn names_and_node_id_of(reply: &[u8], name: &str) -> (Vec<String>, u64) {
+    let entries = decode_dir_entries(reply);
+    let node_id = entries
+        .iter()
+        .find(|entry| entry.name == name)
+        .map(|entry| entry.node_id)
+        .unwrap();
+    let mut names: Vec<_> = entries.into_iter().map(|entry| entry.name).collect();
+    names.sort();
+    (names, node_id)
+}
+
+/// A READDIRPLUS entry hands the guest the node of the object that its name
+/// reaches, and a lookup that reaches the object of a node makes the name's
+/// path the node's path. A name that a handle lists can reach the object of
+/// the handle's own node: once the host moves the node's directory into a new
+/// directory at the node's path, as here, a handle that the guest opens on
+/// the node lists that new directory, which holds the moved one, and a bind
+/// mount of a directory on one of its own subdirectories reaches the directory
+/// too. The guest cannot hold a directory below itself, and READDIRPLUS looks
+/// the handle's other names up at the node's path, which must therefore stay
+/// the path of the directory that the handle lists. So READDIRPLUS must list
+/// the entry without a node, as READDIR lists it, and leave the node as it
+/// was.
+#[test]
+fn readdirplus_lists_an_entry_that_reaches_the_listed_node_without_a_node() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::create_dir(root_path.join("listed")).unwrap();
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let node_id = fs
+        .lookup_helper(&root, lx::LxStr::from_bytes(b"listed"))
+        .unwrap()
+        .nodeid;
+    std::fs::rename(root_path.join("listed"), root_path.join("moved")).unwrap();
+    std::fs::create_dir(root_path.join("listed")).unwrap();
+    std::fs::rename(
+        root_path.join("moved"),
+        root_path.join("listed").join("moved"),
+    )
+    .unwrap();
+    std::fs::write(root_path.join("listed").join("file"), "file").unwrap();
+    let listed = fs.get_inode(node_id).unwrap();
+    let handle = fs
+        .insert_file(Arc::clone(&listed).open(lx::O_RDONLY).unwrap())
+        .unwrap();
+    let directory = fs.get_file(node_id, handle).unwrap();
+    // List the directory without looking its entries up, and order its
+    // snapshot as a host may, with the moved directory before the file.
+    directory.read_dir(&fs, 0, 4096, false).unwrap();
+    let mut entries = directory.directory_entries();
+    entries.sort_by_key(|entry| entry.name == b"file");
+    for (cookie, entry) in (1..).zip(&mut entries) {
+        entry.next_cookie = cookie;
+    }
+    directory
+        .restore_directory_snapshot(&fs.inner.directory_snapshot_budget.read(), true, entries)
+        .unwrap();
+
+    let reply = directory.read_dir(&fs, 0, 4096, true).unwrap();
+    let (names, moved) = names_and_node_id_of(&reply, "moved");
+    assert_eq!(names, [".", "..", "file", "moved"]);
+    assert_eq!(moved, 0);
+    assert_eq!(listed.clone_path(), PathBuf::from("listed"));
+    assert_eq!(listed.aliases(), [PathBuf::from("listed")]);
+    assert_eq!(listed.lookup_count(), 1);
+}
+
+/// A bind mount of a directory on one of its own subdirectories, which an
+/// unprivileged process can make in user and mount namespaces of its own,
+/// reaches the directory, which the host lists by the number of the
+/// subdirectory that the mount covers. READDIRPLUS must list it without a
+/// node, as READDIR lists it, and leave the directory's node, here the share's
+/// root, at its path; where the host allows no such namespaces, the test does
+/// nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn readdirplus_lists_a_bind_mount_of_the_listed_directory_without_a_node() {
+    use std::os::unix::fs::MetadataExt;
+    use std::process::Command;
+
+    const ROOT: &str = "VIRTIOFS_TEST_BIND_MOUNT_ROOT";
+    let namespaces = ["--user", "--map-root-user", "--mount"];
+    let Some(root_path) = std::env::var_os(ROOT) else {
+        // Only a single-threaded process can enter a new user namespace, so
+        // the test runs again in a child process in the namespaces, in a
+        // directory that this process removes once the child is done.
+        let temporary_directory = tempdir().unwrap();
+        let root_path = temporary_directory.path();
+        let bind_mount_works = Command::new("unshare")
+            .args(namespaces)
+            .args(["mount", "--bind"])
+            .args([root_path, root_path])
+            .status()
+            .is_ok_and(|status| status.success());
+        if !bind_mount_works {
+            eprintln!("skipping: no bind mount in user and mount namespaces");
+            return;
+        }
+        let status = Command::new("unshare")
+            .args(namespaces)
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "microvm::fs_tests::readdirplus_lists_a_bind_mount_of_the_listed_directory_without_a_node",
+                "--no-capture",
+            ])
+            .env(ROOT, root_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status}");
+        return;
+    };
+    let root_path = Path::new(&root_path);
+    std::fs::create_dir(root_path.join("loop")).unwrap();
+    let status = Command::new("mount")
+        .arg("--bind")
+        .arg(root_path)
+        .arg(root_path.join("loop"))
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status}");
+    let identity = |path: &Path| {
+        let metadata = std::fs::symlink_metadata(path).unwrap();
+        (metadata.dev(), metadata.ino())
+    };
+    assert_eq!(identity(&root_path.join("loop")), identity(root_path));
+
+    let (fs, directory) = microvm_with_an_open_root(root_path, &["file"]);
+    let reply = directory.read_dir(&fs, 0, 4096, true).unwrap();
+    let (names, node_id) = names_and_node_id_of(&reply, "loop");
+    assert_eq!(names, [".", "..", "file", "loop"]);
+    assert_eq!(node_id, 0);
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    assert_eq!(root.clone_path(), PathBuf::new());
+    assert_eq!(root.aliases(), [PathBuf::new()]);
+    // The guest may read the pages of one listing with either request, so
+    // READDIRPLUS lists the mount point by the number and type by which
+    // READDIR lists it.
+    assert_eq!(
+        crate::tests::read_directory(&fs, &directory, 0, 4096, true)["loop"],
+        crate::tests::read_directory(&fs, &directory, 0, 4096, false)["loop"]
+    );
+}
+
 #[test]
 fn saved_negotiation_must_match_the_exact_microvm_policy() {
     let temporary_directory = tempdir().unwrap();

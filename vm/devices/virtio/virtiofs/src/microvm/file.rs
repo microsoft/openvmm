@@ -192,7 +192,9 @@ impl VirtioFsFile {
     ///
     /// The entry's lookup takes the lookup reference that the entry hands to
     /// the guest, so the reference is held only if the entry is written: an
-    /// entry that does not fit, or that fails, holds none.
+    /// entry that does not fit, or that fails, holds none. An entry whose name
+    /// reaches the object of this handle's own node hands the guest no node,
+    /// so it holds none either.
     fn write_microvm_entry_plus(
         &self,
         fs: &VirtioFs,
@@ -214,6 +216,24 @@ impl VirtioFsFile {
         // the name still reaches the listed object.
         if child.device_nr() == self.inode.device_nr() && attr.ino != entry.guest_inode_id {
             self.check_still_listed(entry, host_listing)?;
+        }
+        // A name can reach the object of this handle's own node: a bind mount
+        // of the directory on one of its own subdirectories does, and so does
+        // the node's directory once the host moves it into a new directory at
+        // the node's path, which a handle opened on the node then lists.
+        // Inserting the object would make the name's path the node's path, at
+        // which this read looks up the directory's other names, and hand the
+        // guest a directory below itself, which the guest cannot hold. So the
+        // entry hands out no node, as `.` and `..` do, and lists the name as
+        // READDIR does.
+        if child.dedup_key() == self.inode.dedup_key()
+            && crate::InodeMap::reuses(&self.inode, &child)
+        {
+            return Ok(buffer.dir_entry_plus(
+                name,
+                entry.next_cookie,
+                fuse_entry_out::new_dot(entry.guest_inode_id, entry.kind << 12),
+            ));
         }
         let fuse_entry = fs.insert_lookup(child, attr)?;
         let node_id = fuse_entry.nodeid;
