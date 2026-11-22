@@ -4,6 +4,7 @@
 #![cfg(target_arch = "aarch64")]
 
 use super::WHV_PROCESSOR_FEATURES;
+use super::WHV_PROCESSOR_FEATURES1;
 use super::WHV_REGISTER_NAME;
 use super::WHV_RUN_VP_EXIT_REASON;
 
@@ -536,6 +537,38 @@ impl WHV_PROCESSOR_FEATURES {
 
     /// Data zero instructions permitted.
     pub const DzPermitted: Self = Self(1 << 46);
+    pub const Ssbs: Self = Self(1 << 47);
+    pub const SsbsRw: Self = Self(1 << 48);
+    pub const Csv2: Self = Self(1 << 53);
+    pub const Csv3: Self = Self(1 << 54);
+    pub const Sb: Self = Self(1 << 55);
+    pub const Idc: Self = Self(1 << 56);
+    pub const Dic: Self = Self(1 << 57);
+    pub const TlbiOs: Self = Self(1 << 58);
+    pub const TlbiOsRange: Self = Self(1 << 59);
+    pub const FlagsM: Self = Self(1 << 60);
+    pub const FlagsM2: Self = Self(1 << 61);
+    pub const Bf16: Self = Self(1 << 62);
+    pub const Ebf16: Self = Self(1 << 63);
+}
+
+impl WHV_PROCESSOR_FEATURES1 {
+    pub const I8mm: Self = Self(1 << 2);
+    pub const Frintts: Self = Self(1 << 4);
+    pub const Specres: Self = Self(1 << 5);
+    pub const Rpres: Self = Self(1 << 7);
+    pub const Exs: Self = Self(1 << 8);
+    pub const SpecSei: Self = Self(1 << 9);
+    pub const Ets: Self = Self(1 << 10);
+    pub const Afp: Self = Self(1 << 11);
+    pub const Iesb: Self = Self(1 << 12);
+    pub const Rng: Self = Self(1 << 13);
+    pub const Lse2: Self = Self(1 << 14);
+    pub const Idst: Self = Self(1 << 15);
+    pub const Ccidx: Self = Self(1 << 22);
+    pub const TtCnp: Self = Self(1 << 35);
+    pub const Hpds: Self = Self(1 << 36);
+    pub const SpecFpacc: Self = Self(1 << 40);
 }
 
 #[repr(C)]

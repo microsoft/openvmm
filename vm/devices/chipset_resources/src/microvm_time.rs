@@ -94,6 +94,8 @@ pub const STATUS_TIME_SAMPLE_AVAILABLE: u8 = 1 << 6;
 pub const TIME_SAMPLE_VERSION: u8 = 1;
 /// The length of a time sample.
 pub const TIME_SAMPLE_LEN: usize = 48;
+/// Length of the ARM time-binding identity selected by `0xa8`.
+pub const ARM64_TIME_BINDING_LEN: usize = 96;
 /// The encoding of an unknown bound in a time sample.
 pub const TIME_SAMPLE_UNKNOWN: u32 = u32::MAX;
 
@@ -655,6 +657,12 @@ pub trait TimeSampleSource: Send + Sync {
     /// host UTC, or returns `None` if the host cannot, which leaves the time
     /// window empty.
     fn sample(&self) -> Option<HostTimeFields>;
+
+    /// Returns the canonical ARM time-binding identity, if this source owns
+    /// an admitted ARM counter/profile contract. An x86 source has none.
+    fn arm64_time_binding(&self) -> Option<[u8; ARM64_TIME_BINDING_LEN]> {
+        None
+    }
 }
 
 /// The resource kind of the platform's [`TimeSampleSource`], which the

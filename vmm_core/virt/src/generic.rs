@@ -339,6 +339,11 @@ impl ProtoPartitionIsolation {
 }
 
 /// Prototype partition creation configuration.
+///
+/// CPU and time contracts share the optional [`Self::time_abi`] path. The
+/// worker selects one effective contract before partition creation; its typed
+/// payload is architecture-specific, not a second partition configuration or
+/// a standalone CPU request. Standard machines opt out with `None`.
 pub struct ProtoPartitionConfig<'a> {
     /// The set of VPs to create.
     pub processor_topology: &'a ProcessorTopology,
@@ -367,7 +372,6 @@ pub struct ProtoPartitionConfig<'a> {
     /// The NVX time ABI configuration. A backend that implements the time ABI
     /// returns `Some` from [`Partition::time_abi`] for such a partition; the
     /// worker rejects one that does not.
-    #[cfg(guest_arch = "x86_64")]
     pub time_abi: Option<crate::time_abi::TimeAbiConfig>,
 }
 
@@ -546,7 +550,6 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
 
     /// Returns the NVX time ABI primitives, if the partition was built with
     /// [`ProtoPartitionConfig::time_abi`].
-    #[cfg(guest_arch = "x86_64")]
     fn time_abi(&self) -> Option<&dyn crate::time_abi::TimeAbiBackend> {
         None
     }
