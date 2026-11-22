@@ -27,6 +27,7 @@ use fuse::protocol::StatxFlags;
 use fuse::protocol::fuse_create_in;
 use fuse::protocol::fuse_in_header;
 use fuse::protocol::fuse_mkdir_in;
+use fuse::protocol::fuse_mknod_in;
 use fuse::protocol::fuse_read_in;
 use fuse::protocol::fuse_release_in;
 use fuse::protocol::fuse_setattr_in;
@@ -664,6 +665,202 @@ fn a_link_to_a_node_whose_names_are_gone_links_nothing() {
         assert!(fs.get_inode(node).unwrap().aliases().is_empty());
         assert_eq!(lookup(&fs, "out/file").unwrap(), replacement);
         share.assert_protected_paths_unchanged();
+    }
+}
+
+/// Returns the share's filesystem: a microVM share whose only writable path is
+/// `out`, or a share without the microVM profile, which writes anywhere.
+fn stale_node_fs(share: &Share, microvm: bool) -> VirtioFs {
+    if microvm {
+        share.fs(&[], &[], &["out"])
+    } else {
+        VirtioFs::new(&share.root, None).unwrap()
+    }
+}
+
+/// Returns the requests of `requests` that do not fail with `ENOENT`, with
+/// their results.
+fn not_enoent(
+    requests: Vec<(&'static str, lx::Result<()>)>,
+) -> Vec<(&'static str, lx::Result<()>)> {
+    requests
+        .into_iter()
+        .filter(|(_, result)| *result != Err(lx::Error::ENOENT))
+        .collect()
+}
+
+/// Sends each request about the node `node_id` of a file in the directory
+/// `parent` that names no handle, and returns each request's name and result.
+fn file_node_requests(
+    fs: &VirtioFs,
+    parent: u64,
+    node_id: u64,
+) -> Vec<(&'static str, lx::Result<()>)> {
+    let node = request(node_id);
+    let xattr = name("user.nvx");
+    let truncate = setattr(FATTR_SIZE, |arg| arg.size = 0);
+    let chmod = setattr(FATTR_MODE, |arg| arg.mode = 0o600);
+    vec![
+        ("GETATTR", fs.get_attr(&node, 0, 0).map(drop)),
+        (
+            "STATX",
+            fs.get_statx(&node, 0, 0, StatxFlags::new(), lx::StatExMask::new())
+                .map(drop),
+        ),
+        ("SETATTR size", fs.set_attr(&node, &truncate).map(drop)),
+        ("SETATTR mode", fs.set_attr(&node, &chmod).map(drop)),
+        ("OPEN", open(fs, node_id, lx::O_RDONLY).map(drop)),
+        (
+            "OPEN O_TRUNC",
+            open(fs, node_id, lx::O_WRONLY | lx::O_TRUNC).map(drop),
+        ),
+        ("READLINK", fs.read_link(&node).map(drop)),
+        ("STATFS", fs.statfs(&node).map(drop)),
+        ("GETXATTR", fs.get_xattr(&node, xattr, 64).map(drop)),
+        ("GETXATTR size", fs.get_xattr_size(&node, xattr).map(drop)),
+        ("LISTXATTR", fs.list_xattr(&node, 64).map(drop)),
+        ("LISTXATTR size", fs.list_xattr_size(&node).map(drop)),
+        ("SETXATTR", fs.set_xattr(&node, xattr, b"guest", 0)),
+        ("REMOVEXATTR", fs.remove_xattr(&node, xattr)),
+        (
+            "LINK",
+            fs.link(&request(parent), name("link"), node_id).map(drop),
+        ),
+    ]
+}
+
+/// Once the guest has removed every name of a file, by unlinking it or by
+/// renaming another entry over it, the file's node keeps its former path,
+/// where another object may now be: a new file, or a read-only file that a
+/// host hard link puts inside the writable path. A request about the node
+/// that names no handle would reach that object, so each must fail with
+/// `ENOENT`, as an operation through an unlinked file's former name does,
+/// rather than read or change that object. The node's open handles still reach
+/// its own file, as Linux's do.
+#[test]
+fn a_file_whose_names_are_gone_is_reached_only_through_its_handles() {
+    for microvm in [false, true] {
+        for overwrite in [false, true] {
+            let case = format!("microvm={microvm}, overwrite={overwrite}");
+            let share = Share::new();
+            if overwrite {
+                // A host hard link puts the read-only `marker` inside the
+                // writable path.
+                std::fs::hard_link(share.path("marker"), share.path("out/marker")).unwrap();
+            }
+            let fs = stale_node_fs(&share, microvm);
+            let out = lookup(&fs, "out").unwrap();
+            let (node, fh) = create(&fs, out, "file").unwrap();
+            write(&fs, node, fh, b"guest").unwrap();
+            let replacement = if overwrite {
+                fs.rename(&request(out), name("marker"), out, name("file"), 0)
+                    .unwrap();
+                "host"
+            } else {
+                // The open handle keeps the host from giving the new file the
+                // unlinked file's inode number, and with it the unlinked
+                // file's node.
+                fs.unlink(&request(out), name("file")).unwrap();
+                let (new, new_fh) = create(&fs, out, "file").unwrap();
+                write(&fs, new, new_fh, b"new").unwrap();
+                release(&fs, new, new_fh);
+                assert_ne!(new, node, "{case}");
+                "new"
+            };
+
+            let unexpected = not_enoent(file_node_requests(&fs, out, node));
+            assert!(unexpected.is_empty(), "{case}: {unexpected:?}");
+            let attr = fs
+                .get_attr(&request(node), FUSE_GETATTR_FH, fh)
+                .unwrap()
+                .attr;
+            assert_eq!(attr.size, 5, "{case}");
+            let mut read = fuse_read_in::new_zeroed();
+            read.fh = fh;
+            read.size = 64;
+            assert_eq!(fs.read(&request(node), &read).unwrap(), b"guest", "{case}");
+            release(&fs, node, fh);
+
+            assert_eq!(share.read("out/file"), replacement, "{case}");
+            assert_eq!(share.entries("out"), ["existing", "file"], "{case}");
+            share.assert_protected_paths_unchanged();
+        }
+    }
+}
+
+/// Likewise, once the guest has removed a directory, by `RMDIR` or by renaming
+/// another directory over it, the directory's node keeps its former path,
+/// where another directory may now be. A request about the node must fail
+/// with `ENOENT`, as Linux refuses to look up, create, or remove an entry of a
+/// removed directory, rather than reach that directory or its entries.
+#[test]
+fn a_directory_whose_names_are_gone_reaches_no_entry() {
+    for microvm in [false, true] {
+        for overwrite in [false, true] {
+            let case = format!("microvm={microvm}, overwrite={overwrite}");
+            let share = Share::new();
+            let fs = stale_node_fs(&share, microvm);
+            let out = lookup(&fs, "out").unwrap();
+            let existing = lookup(&fs, "out/existing").unwrap();
+            let directory = mkdir(&fs, out, "directory").unwrap();
+            // The open handle keeps the host from giving a new directory the
+            // removed one's inode number, and with it the removed one's node.
+            let fh = fs
+                .open_dir(&request(directory), lx::O_RDONLY as u32)
+                .unwrap()
+                .fh;
+            if overwrite {
+                mkdir(&fs, out, "other").unwrap();
+                fs.rename(&request(out), name("other"), out, name("directory"), 0)
+                    .unwrap();
+            } else {
+                fs.rmdir(&request(out), name("directory")).unwrap();
+                assert_ne!(mkdir(&fs, out, "directory").unwrap(), directory, "{case}");
+            }
+            std::fs::write(share.path("out/directory/entry"), "entry").unwrap();
+            std::fs::write(share.path("out/directory/moving"), "moving").unwrap();
+            std::fs::create_dir(share.path("out/directory/subdirectory")).unwrap();
+
+            let node = request(directory);
+            let mut mknod = fuse_mknod_in::new_zeroed();
+            mknod.mode = lx::S_IFREG | 0o644;
+            let unexpected = not_enoent(vec![
+                ("GETATTR", fs.get_attr(&node, 0, 0).map(drop)),
+                ("OPENDIR", fs.open_dir(&node, lx::O_RDONLY as u32).map(drop)),
+                ("LOOKUP", fs.lookup(&node, name("entry")).map(drop)),
+                ("CREATE", create(&fs, directory, "created").map(drop)),
+                ("MKDIR", mkdir(&fs, directory, "made").map(drop)),
+                ("MKNOD", fs.mknod(&node, name("node"), &mknod).map(drop)),
+                (
+                    "SYMLINK",
+                    fs.symlink(&node, name("symlink"), name("entry")).map(drop),
+                ),
+                ("LINK", fs.link(&node, name("hard"), existing).map(drop)),
+                ("UNLINK", fs.unlink(&node, name("entry"))),
+                ("RMDIR", fs.rmdir(&node, name("subdirectory"))),
+                (
+                    "RENAME out of it",
+                    fs.rename(&node, name("moving"), out, name("moved"), 0),
+                ),
+                (
+                    "RENAME into it",
+                    fs.rename(&request(out), name("existing"), directory, name("moved"), 0),
+                ),
+            ]);
+            assert!(unexpected.is_empty(), "{case}: {unexpected:?}");
+            let mut arg = fuse_release_in::new_zeroed();
+            arg.fh = fh;
+            fs.release_dir(&node, &arg).unwrap();
+
+            assert_eq!(
+                share.entries("out/directory"),
+                ["entry", "moving", "subdirectory"],
+                "{case}"
+            );
+            assert_eq!(share.entries("out"), ["directory", "existing"], "{case}");
+            assert_eq!(share.read("out/existing"), "existing", "{case}");
+            share.assert_protected_paths_unchanged();
+        }
     }
 }
 
