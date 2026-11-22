@@ -71,7 +71,9 @@ impl Piix4CmosRtc {
 impl ChangeDeviceState for Piix4CmosRtc {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.inner.stop().await;
+    }
 
     async fn reset(&mut self) {
         self.inner.reset().await;
@@ -202,7 +204,15 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use local_clock::LocalClock;
+    use local_clock::LocalClockTime;
     use local_clock::MockLocalClock;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
 
     fn new_test_rtc() -> (
         pal_async::DefaultPool,
@@ -226,6 +236,62 @@ mod tests {
         );
 
         (pool, vm_time_keeper, rtc)
+    }
+
+    /// A clock that only has the time once `ready` is set.
+    #[derive(Inspect)]
+    struct PendingClock {
+        #[inspect(skip)]
+        ready: Arc<AtomicBool>,
+    }
+
+    impl LocalClock for PendingClock {
+        fn get_time(&mut self) -> LocalClockTime {
+            LocalClockTime::from_millis_since_unix_epoch(0)
+        }
+
+        fn poll_time(&mut self, _cx: &mut Context<'_>) -> Poll<LocalClockTime> {
+            if self.ready.load(Ordering::Relaxed) {
+                Poll::Ready(self.get_time())
+            } else {
+                Poll::Pending
+            }
+        }
+
+        fn set_time(&mut self, _new_time: LocalClockTime) {}
+    }
+
+    #[test]
+    fn stop_completes_deferred_read() {
+        let mut pool = pal_async::DefaultPool::new();
+        let driver = pool.driver();
+        let vm_time_keeper =
+            vmcore::vmtime::VmTimeKeeper::new(&driver, vmcore::vmtime::VmTime::from_100ns(0));
+        let vm_time_source = pool
+            .run_until(vm_time_keeper.builder().build(&driver))
+            .unwrap();
+        let ready = Arc::new(AtomicBool::new(false));
+        let mut rtc = Piix4CmosRtc::new(
+            Box::new(PendingClock {
+                ready: ready.clone(),
+            }),
+            LineInterrupt::detached(),
+            &vm_time_source,
+            None,
+            false,
+        );
+        rtc.io_write(Piix4CmosRtcIoPort::ADDRESS.0, &[0]).unwrap();
+        let IoResult::Defer(mut token) = rtc.io_read(Piix4CmosRtcIoPort::DATA.0, &mut [0]) else {
+            panic!("read not deferred");
+        };
+
+        // Stopping waits for the read to complete.
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut stop = std::pin::pin!(rtc.stop());
+        assert!(stop.as_mut().poll(&mut cx).is_pending());
+        ready.store(true, Ordering::Relaxed);
+        assert!(stop.as_mut().poll(&mut cx).is_ready());
+        assert!(token.poll_read(&mut cx, &mut [0]).is_ready());
     }
 
     fn get_cmos_data(rtc: &mut Piix4CmosRtc, addr: u8) -> u8 {

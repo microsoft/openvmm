@@ -15,14 +15,22 @@ use self::spec::StatusRegD;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredRead;
+use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::io::deferred::defer_read;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
 use local_clock::LocalClockTime;
+use std::collections::VecDeque;
 use std::ops::RangeInclusive;
+use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
+use std::task::ready;
 use std::time::Duration;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
@@ -185,9 +193,47 @@ pub struct Rtc {
     // Runtime book-keeping
     #[inspect(debug)]
     last_update_bit_blip: LocalClockTime,
+    /// A data port read waiting for the time.
+    #[inspect(skip)]
+    waiting: Option<WaitingRead>,
+    /// Port I/O that came in after `waiting`, which waits behind it.
+    #[inspect(skip)]
+    queued: VecDeque<QueuedIo>,
+    #[inspect(skip)]
+    waker: Option<Waker>,
 
     // Volatile state
     state: RtcState,
+}
+
+/// A guest read of a CMOS byte, which can wait for the time.
+#[derive(Debug, Copy, Clone)]
+enum CmosRead {
+    /// The byte at the address, before reading the time.
+    Byte(CmosReg),
+    /// Status A, with the update bit set at `now`, before the time registers
+    /// are updated.
+    Update {
+        now: LocalClockTime,
+        elapsed: local_clock::LocalClockDelta,
+    },
+}
+
+struct WaitingRead {
+    read: CmosRead,
+    done: DeferredRead,
+}
+
+enum QueuedIo {
+    Read {
+        io_port: u16,
+        done: DeferredRead,
+    },
+    Write {
+        io_port: u16,
+        data: u8,
+        done: DeferredWrite,
+    },
 }
 
 #[derive(Debug, Inspect)]
@@ -227,7 +273,11 @@ impl RtcState {
 impl ChangeDeviceState for Rtc {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        // Complete the port I/O waiting for the time, so that none is left
+        // once the device is stopped.
+        std::future::poll_fn(|cx| self.poll_deferred(cx)).await
+    }
 
     async fn reset(&mut self) {
         self.state = RtcState::new(self.initial_cmos);
@@ -324,6 +374,9 @@ impl Rtc {
             vmtimer_update: VmTimerPeriodic::new(vmtime_source.access("rtc-update")),
 
             last_update_bit_blip: LocalClockTime::from_millis_since_unix_epoch(0),
+            waiting: None,
+            queued: VecDeque::new(),
+            waker: None,
 
             state: RtcState::new(initial_cmos),
         }
@@ -575,13 +628,25 @@ impl Rtc {
     /// that inject platform-specific CMOS memory contents. e.g: the AMI RTC
     /// device.
     pub fn get_cmos_byte(&mut self, addr: u8) -> u8 {
-        let addr = CmosReg(addr);
+        match self.poll_cmos_byte(&mut CmosRead::Byte(CmosReg(addr)), None) {
+            Poll::Ready(data) => data,
+            Poll::Pending => unreachable!("reading the time without a context doesn't wait"),
+        }
+    }
+
+    /// Like `get_cmos_byte`, but with `cx`, return `Pending` rather than wait
+    /// for the time, with `read` updated to go on from there.
+    fn poll_cmos_byte(&mut self, read: &mut CmosRead, cx: Option<&mut Context<'_>>) -> Poll<u8> {
+        let addr = match *read {
+            CmosRead::Byte(addr) => addr,
+            CmosRead::Update { .. } => CmosReg::STATUS_A,
+        };
 
         let data = if (CmosReg::STATUS_A..=CmosReg::STATUS_D).contains(&addr) {
-            self.get_status_byte(addr)
+            ready!(self.poll_status_byte(read, cx))
         } else {
             if addr.depends_on_rtc(self.century_reg) {
-                self.sync_clock_to_cmos();
+                ready!(self.poll_sync_clock_to_cmos(cx));
             }
 
             self.state.cmos[addr]
@@ -589,7 +654,50 @@ impl Rtc {
 
         tracing::trace!(?addr, ?data, "get_cmos_byte");
 
-        data
+        Poll::Ready(data)
+    }
+
+    /// Read the data port, or return the read if it waits for the time.
+    fn read_data(&mut self, cx: &mut Context<'_>) -> Result<u8, CmosRead> {
+        let mut read = CmosRead::Byte(CmosReg(self.state.addr));
+        match self.poll_cmos_byte(&mut read, Some(cx)) {
+            Poll::Ready(data) => Ok(data),
+            Poll::Pending => Err(read),
+        }
+    }
+
+    /// Complete the port I/O waiting for the time, in order, until a read
+    /// waits for it again.
+    fn poll_deferred(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        loop {
+            if let Some(WaitingRead { mut read, done }) = self.waiting.take() {
+                match self.poll_cmos_byte(&mut read, Some(cx)) {
+                    Poll::Ready(data) => done.complete(&[data]),
+                    Poll::Pending => {
+                        self.waiting = Some(WaitingRead { read, done });
+                        return Poll::Pending;
+                    }
+                }
+            }
+            match self.queued.pop_front() {
+                None => return Poll::Ready(()),
+                Some(QueuedIo::Read { io_port, done }) => match RtcIoPort(io_port) {
+                    RtcIoPort::DATA => match self.read_data(cx) {
+                        Ok(data) => done.complete(&[data]),
+                        Err(read) => self.waiting = Some(WaitingRead { read, done }),
+                    },
+                    _ => done.complete(&[self.state.addr]),
+                },
+                Some(QueuedIo::Write {
+                    io_port,
+                    data,
+                    done,
+                }) => {
+                    self.io_write(io_port, &[data]).unwrap();
+                    done.complete();
+                }
+            }
+        }
     }
 
     fn set_status_byte(&mut self, addr: CmosReg, data: u8) {
@@ -635,8 +743,17 @@ impl Rtc {
         }
     }
 
-    fn get_status_byte(&mut self, addr: CmosReg) -> u8 {
-        match addr {
+    fn poll_status_byte(
+        &mut self,
+        read: &mut CmosRead,
+        mut cx: Option<&mut Context<'_>>,
+    ) -> Poll<u8> {
+        let addr = match *read {
+            CmosRead::Byte(addr) => addr,
+            CmosRead::Update { .. } => CmosReg::STATUS_A,
+        };
+
+        Poll::Ready(match addr {
             CmosReg::STATUS_A => {
                 let mut data = StatusRegA::from(self.state.cmos[CmosReg::STATUS_A]);
 
@@ -647,27 +764,36 @@ impl Rtc {
                 // wait for a rising or falling transition of the bit (typically rising edge),
                 // and then the guest OS will wait for another of the same transition.
                 if !StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]).set() {
-                    let now = self.real_time_source.get_time();
-                    let elapsed = now - self.last_update_bit_blip;
+                    let (now, elapsed) = match *read {
+                        CmosRead::Update { now, elapsed } => (now, elapsed),
+                        CmosRead::Byte(_) => {
+                            let now = ready!(self.read_time(cx.as_deref_mut()));
+                            let elapsed = now - self.last_update_bit_blip;
 
-                    // check if the programmed time jumped backwards
-                    if elapsed.as_millis().is_negative() {
-                        tracing::debug!("clock jumped backwards between update bit blips");
-                        self.last_update_bit_blip = LocalClockTime::from_millis_since_unix_epoch(0);
-                    }
+                            // check if the programmed time jumped backwards
+                            if elapsed.as_millis().is_negative() {
+                                tracing::debug!("clock jumped backwards between update bit blips");
+                                self.last_update_bit_blip =
+                                    LocalClockTime::from_millis_since_unix_epoch(0);
+                            }
 
-                    tracing::trace!(
-                        ?self.last_update_bit_blip,
-                        ?now,
-                        ?elapsed,
-                        "get_status_byte"
-                    );
+                            tracing::trace!(
+                                ?self.last_update_bit_blip,
+                                ?now,
+                                ?elapsed,
+                                "get_status_byte"
+                            );
+
+                            (now, elapsed)
+                        }
+                    };
 
                     let elapsed_millis = elapsed.as_millis();
                     if elapsed_millis > 1000 {
                         // Update the date/time and note that we set the update bit now.
+                        *read = CmosRead::Update { now, elapsed };
                         data.set_update(true);
-                        self.sync_clock_to_cmos();
+                        ready!(self.poll_sync_clock_to_cmos(cx));
                         self.last_update_bit_blip = now;
                         tracing::trace!(
                             ?data,
@@ -696,7 +822,7 @@ impl Rtc {
                 StatusRegD::new().with_vrt(true).into()
             }
             _ => unreachable!("passed invalid status reg"),
-        }
+        })
     }
 
     fn read_cmos_date_time(&self) -> Result<jiff::civil::DateTime, jiff::Error> {
@@ -735,6 +861,24 @@ impl Rtc {
     /// Update the CMOS RTC registers with the current time from the backing
     /// `real_time_source`.
     fn sync_clock_to_cmos(&mut self) {
+        match self.poll_sync_clock_to_cmos(None) {
+            Poll::Ready(()) => {}
+            Poll::Pending => unreachable!("reading the time without a context doesn't wait"),
+        }
+    }
+
+    /// Read the time from `real_time_source`. With `cx`, return `Pending`
+    /// rather than wait for it.
+    fn read_time(&mut self, cx: Option<&mut Context<'_>>) -> Poll<LocalClockTime> {
+        match cx {
+            Some(cx) => self.real_time_source.poll_time(cx),
+            None => Poll::Ready(self.real_time_source.get_time()),
+        }
+    }
+
+    /// Like `sync_clock_to_cmos`, but with `cx`, return `Pending` rather than
+    /// wait for the time.
+    fn poll_sync_clock_to_cmos(&mut self, cx: Option<&mut Context<'_>>) -> Poll<()> {
         if StatusRegA::from(self.state.cmos[CmosReg::STATUS_A]).oscillator_control()
             != ENABLE_OSCILLATOR_CONTROL
         {
@@ -744,16 +888,16 @@ impl Rtc {
                 "sync_clock_to_cmos: Oscillator is disabled."
             );
 
-            return;
+            return Poll::Ready(());
         }
 
-        let real_time = self.real_time_source.get_time();
+        let real_time = ready!(self.read_time(cx));
         let Ok(clock_time): Result<jiff::Timestamp, _> = real_time.try_into() else {
             tracelimit::warn_ratelimited!(
                 ?real_time,
                 "invalid date/time in real_time_source, skipping sync"
             );
-            return;
+            return Poll::Ready(());
         };
 
         let clock_time = clock_time.to_zoned(jiff::tz::TimeZone::UTC).datetime();
@@ -808,6 +952,8 @@ impl Rtc {
             cmos_date_time = ?self.read_cmos_date_time(),
             "sync_clock_to_cmos"
         );
+
+        Poll::Ready(())
     }
 
     /// Write-back the current contents of the CMOS RTC registers into the
@@ -839,8 +985,25 @@ impl PortIoIntercept for Rtc {
         // access larger sizes will return a single byte of information
         // (zero-extended to the size of the access).
         data[0] = match RtcIoPort(io_port) {
+            RtcIoPort::ADDR | RtcIoPort::DATA if self.waiting.is_some() => {
+                let (done, token) = defer_read();
+                self.queued.push_back(QueuedIo::Read { io_port, done });
+                return IoResult::Defer(token);
+            }
             RtcIoPort::ADDR => self.state.addr,
-            RtcIoPort::DATA => self.get_cmos_byte(self.state.addr),
+            RtcIoPort::DATA => {
+                // Don't wait for the time on the VP: complete the read once
+                // the time is available, from `poll_device`.
+                let waker = self.waker.clone().unwrap_or_else(|| Waker::noop().clone());
+                match self.read_data(&mut Context::from_waker(&waker)) {
+                    Ok(data) => data,
+                    Err(read) => {
+                        let (done, token) = defer_read();
+                        self.waiting = Some(WaitingRead { read, done });
+                        return IoResult::Defer(token);
+                    }
+                }
+            }
             _ => return IoResult::Err(IoError::InvalidRegister),
         };
 
@@ -852,6 +1015,15 @@ impl PortIoIntercept for Rtc {
         // access larger sizes will return a single byte of information
         // (zero-extended to the size of the access).
         match RtcIoPort(io_port) {
+            RtcIoPort::ADDR | RtcIoPort::DATA if self.waiting.is_some() => {
+                let (done, token) = defer_write();
+                self.queued.push_back(QueuedIo::Write {
+                    io_port,
+                    data: data[0],
+                    done,
+                });
+                return IoResult::Defer(token);
+            }
             RtcIoPort::ADDR => {
                 if data[0] & 0x7F != data[0] {
                     tracing::debug!("guest tried to set high-bit in CMOS addr register")
@@ -872,7 +1044,14 @@ impl PortIoIntercept for Rtc {
 }
 
 impl PollDevice for Rtc {
-    fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+    fn poll_device(&mut self, cx: &mut Context<'_>) {
+        self.waker = Some(cx.waker().clone());
+
+        // The timers wait behind port I/O waiting for the time.
+        if self.poll_deferred(cx).is_pending() {
+            return;
+        }
+
         while let Poll::Ready(now) = self.vmtime_alarm.poll_timeout(cx) {
             self.on_alarm_timer(now)
         }
@@ -938,6 +1117,7 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use local_clock::LocalClock;
     use local_clock::MockLocalClock;
     use local_clock::MockLocalClockAccessor;
     use parking_lot::Mutex;
@@ -1139,6 +1319,276 @@ mod tests {
         rtc.io_write(RtcIoPort::ADDR.0, &temp).unwrap();
         temp[0] = data;
         rtc.io_write(RtcIoPort::DATA.0, &temp).unwrap();
+    }
+
+    /// A clock that has to wait for the time: `poll_time` and `get_time`
+    /// take the times in `times` in turn, and `poll_time` returns `Pending`
+    /// while there are none, until the test adds one and wakes it.
+    #[derive(Inspect)]
+    struct SlowClock {
+        #[inspect(skip)]
+        state: Arc<Mutex<SlowClockState>>,
+    }
+
+    #[derive(Default)]
+    struct SlowClockState {
+        times: VecDeque<LocalClockTime>,
+        waker: Option<Waker>,
+        /// The number of times `get_time` was called, which would wait.
+        waits: usize,
+    }
+
+    impl SlowClockState {
+        fn add(&mut self, time: LocalClockTime) {
+            self.times.push_back(time);
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    impl LocalClock for SlowClock {
+        fn get_time(&mut self) -> LocalClockTime {
+            let mut state = self.state.lock();
+            state.waits += 1;
+            state.times.pop_front().expect("no time to wait for")
+        }
+
+        fn poll_time(&mut self, cx: &mut Context<'_>) -> Poll<LocalClockTime> {
+            let mut state = self.state.lock();
+            match state.times.pop_front() {
+                Some(time) => Poll::Ready(time),
+                None => {
+                    state.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        }
+
+        fn set_time(&mut self, _new_time: LocalClockTime) {}
+    }
+
+    /// Return 2026-01-01 at the given time, in UTC.
+    fn time_on_test_day(hour: i64, min: i64, sec: i64) -> LocalClockTime {
+        LocalClockTime::from_millis_since_unix_epoch(
+            (1_767_225_600 + hour * 3600 + min * 60 + sec) * 1000,
+        )
+    }
+
+    /// Return an RTC whose clock has to wait for the time, and has been polled
+    /// with a waker that counts its wakeups.
+    fn new_slow_rtc() -> (
+        pal_async::DefaultPool,
+        vmcore::vmtime::VmTimeKeeper,
+        Rtc,
+        Arc<Mutex<SlowClockState>>,
+        Arc<WakeCount>,
+    ) {
+        let (pool, vm_time_keeper, _, mut rtc) = new_test_rtc();
+        let state = Arc::new(Mutex::new(SlowClockState::default()));
+        rtc.real_time_source = Box::new(SlowClock {
+            state: state.clone(),
+        });
+        let wakes = Arc::new(WakeCount::default());
+        rtc.poll_device(&mut Context::from_waker(&Waker::from(wakes.clone())));
+        (pool, vm_time_keeper, rtc, state, wakes)
+    }
+
+    #[derive(Default)]
+    struct WakeCount(std::sync::atomic::AtomicUsize);
+
+    impl std::task::Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    impl WakeCount {
+        fn count(&self) -> usize {
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    fn poll_device_with(rtc: &mut Rtc, wakes: &Arc<WakeCount>) {
+        rtc.poll_device(&mut Context::from_waker(&Waker::from(wakes.clone())));
+    }
+
+    /// Return the byte a deferred read completed with, if it has.
+    fn deferred_read(token: &mut chipset_device::io::deferred::DeferredToken) -> Option<u8> {
+        let mut data = [0];
+        match token.poll_read(&mut Context::from_waker(Waker::noop()), &mut data) {
+            Poll::Ready(result) => {
+                result.unwrap();
+                Some(data[0])
+            }
+            Poll::Pending => None,
+        }
+    }
+
+    fn read_deferred(
+        rtc: &mut Rtc,
+        io_port: RtcIoPort,
+    ) -> chipset_device::io::deferred::DeferredToken {
+        match rtc.io_read(io_port.0, &mut [0]) {
+            IoResult::Defer(token) => token,
+            result => panic!("read not deferred: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn read_waits_for_time_without_blocking() {
+        let (_pool, _vm_time_keeper, mut rtc, clock, wakes) = new_slow_rtc();
+        rtc.io_write(RtcIoPort::ADDR.0, &[CmosReg::SECOND.0])
+            .unwrap();
+
+        // The read is deferred rather than waiting for the time, and is
+        // completed once the time is available.
+        let mut token = read_deferred(&mut rtc, RtcIoPort::DATA);
+        assert_eq!(clock.lock().waits, 0);
+        assert_eq!(deferred_read(&mut token), None);
+        clock.lock().add(time_on_test_day(13, 0, 30));
+        assert_eq!(wakes.count(), 1);
+        poll_device_with(&mut rtc, &wakes);
+        assert_eq!(deferred_read(&mut token), Some(0x30));
+        assert_eq!(clock.lock().waits, 0);
+
+        // That is what reading the time before completing would have given.
+        clock.lock().times.push_back(time_on_test_day(13, 0, 30));
+        assert_eq!(rtc.get_cmos_byte(CmosReg::SECOND.0), 0x30);
+    }
+
+    #[test]
+    fn io_after_a_deferred_read_waits_behind_it() {
+        let (_pool, _vm_time_keeper, mut rtc, clock, wakes) = new_slow_rtc();
+        rtc.io_write(RtcIoPort::ADDR.0, &[CmosReg::SECOND.0])
+            .unwrap();
+        let mut seconds = read_deferred(&mut rtc, RtcIoPort::DATA);
+
+        // Another VP selects the hour and reads it, and stops the
+        // oscillator. These wait behind the first read, which still reads
+        // the seconds.
+        let write =
+            |rtc: &mut Rtc, io_port: RtcIoPort, data: u8| match rtc.io_write(io_port.0, &[data]) {
+                IoResult::Defer(token) => token,
+                result => panic!("write not deferred: {result:?}"),
+            };
+        let select = write(&mut rtc, RtcIoPort::ADDR, CmosReg::HOUR.0);
+        let mut hours = read_deferred(&mut rtc, RtcIoPort::DATA);
+        let select_a = write(&mut rtc, RtcIoPort::ADDR, CmosReg::STATUS_A.0);
+        let stop = write(&mut rtc, RtcIoPort::DATA, 0x66);
+        assert_eq!(rtc.state.addr, CmosReg::SECOND.0);
+
+        // Once the time is available, they complete in order.
+        {
+            let mut clock = clock.lock();
+            clock.add(time_on_test_day(13, 0, 30));
+            clock.add(time_on_test_day(13, 0, 31));
+        }
+        poll_device_with(&mut rtc, &wakes);
+        assert_eq!(deferred_read(&mut seconds), Some(0x30));
+        assert_eq!(deferred_read(&mut hours), Some(0x13));
+        for token in [select, select_a, stop] {
+            let mut token = token;
+            assert!(
+                token
+                    .poll_write(&mut Context::from_waker(Waker::noop()))
+                    .is_ready()
+            );
+        }
+        assert_eq!(rtc.state.cmos[CmosReg::STATUS_A] & 0x70, 0x60);
+        assert_eq!(clock.lock().waits, 0);
+    }
+
+    #[test]
+    fn update_read_goes_on_from_where_it_waited() {
+        let (_pool, _vm_time_keeper, mut rtc, clock, wakes) = new_slow_rtc();
+        rtc.io_write(RtcIoPort::ADDR.0, &[CmosReg::STATUS_A.0])
+            .unwrap();
+        let mut token = read_deferred(&mut rtc, RtcIoPort::DATA);
+
+        // The update bit is set from the first time, and the time registers
+        // are updated from the second. The read waits for each without
+        // reading the first time again.
+        clock.lock().add(time_on_test_day(13, 0, 30));
+        poll_device_with(&mut rtc, &wakes);
+        assert_eq!(deferred_read(&mut token), None);
+        clock.lock().add(time_on_test_day(13, 0, 31));
+        poll_device_with(&mut rtc, &wakes);
+        let deferred = deferred_read(&mut token).unwrap();
+        let (deferred_seconds, deferred_blip) =
+            (rtc.state.cmos[CmosReg::SECOND], rtc.last_update_bit_blip);
+
+        assert_eq!(clock.lock().waits, 0);
+
+        // Reading it without deferring, with the same two times, gives the
+        // same.
+        let (_pool, _vm_time_keeper, mut rtc, clock, _) = new_slow_rtc();
+        {
+            let mut clock = clock.lock();
+            clock.times.push_back(time_on_test_day(13, 0, 30));
+            clock.times.push_back(time_on_test_day(13, 0, 31));
+        }
+        assert_eq!(rtc.get_cmos_byte(CmosReg::STATUS_A.0), deferred);
+        assert_eq!(deferred & 0x80, 0x80);
+        assert_eq!(rtc.state.cmos[CmosReg::SECOND], deferred_seconds);
+        assert_eq!(rtc.last_update_bit_blip, deferred_blip);
+        assert_eq!(deferred_blip, time_on_test_day(13, 0, 30));
+    }
+
+    #[test]
+    fn alarm_waits_behind_a_deferred_read() {
+        let (mut pool, mut vm_time_keeper, mut rtc, clock, wakes) = new_slow_rtc();
+
+        // Enable the alarm, and make it due by moving the stopped VM time
+        // past it.
+        clock.lock().times.push_back(time_on_test_day(13, 0, 0));
+        rtc.io_write(RtcIoPort::ADDR.0, &[CmosReg::STATUS_B.0])
+            .unwrap();
+        rtc.io_write(RtcIoPort::DATA.0, &[0x22]).unwrap();
+        rtc.vmtime_alarm.set_timeout(VmTime::from_100ns(0));
+        pool.run_until(
+            vm_time_keeper.restore(vmcore::vmtime::SavedState::from_vmtime(VmTime::from_100ns(
+                10_000_000,
+            ))),
+        );
+
+        // While a read waits for the time, the alarm doesn't fire.
+        rtc.io_write(RtcIoPort::ADDR.0, &[CmosReg::SECOND.0])
+            .unwrap();
+        let mut token = read_deferred(&mut rtc, RtcIoPort::DATA);
+        poll_device_with(&mut rtc, &wakes);
+        assert!(!StatusRegC::from(rtc.state.cmos[CmosReg::STATUS_C]).irq_alarm());
+
+        // Once the read completes, it does.
+        {
+            let mut clock = clock.lock();
+            clock.add(time_on_test_day(13, 0, 30));
+            clock.times.push_back(time_on_test_day(13, 0, 30));
+        }
+        poll_device_with(&mut rtc, &wakes);
+        assert_eq!(deferred_read(&mut token), Some(0x30));
+        assert!(StatusRegC::from(rtc.state.cmos[CmosReg::STATUS_C]).irq_alarm());
+    }
+
+    #[test]
+    fn stop_completes_deferred_io() {
+        let (mut pool, _vm_time_keeper, mut rtc, clock, _wakes) = new_slow_rtc();
+        rtc.io_write(RtcIoPort::ADDR.0, &[CmosReg::SECOND.0])
+            .unwrap();
+        let mut token = read_deferred(&mut rtc, RtcIoPort::DATA);
+        let mut later = read_deferred(&mut rtc, RtcIoPort::ADDR);
+
+        // Stopping the device waits for the time, and completes the I/O.
+        let clock_for_stop = clock.clone();
+        pool.run_until(async {
+            let mut stop = std::pin::pin!(rtc.stop());
+            assert!(futures::poll!(stop.as_mut()).is_pending());
+            clock_for_stop.lock().add(time_on_test_day(13, 0, 30));
+            stop.await;
+        });
+        assert_eq!(deferred_read(&mut token), Some(0x30));
+        assert_eq!(deferred_read(&mut later), Some(CmosReg::SECOND.0));
+        assert!(rtc.waiting.is_none() && rtc.queued.is_empty());
     }
 
     fn get_rtc_data(rtc: &mut Rtc, addr: CmosReg, bcd: bool, hour24: bool) -> u8 {

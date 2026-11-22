@@ -40,6 +40,8 @@ pub use clock_impls::SystemTimeClock;
 pub use inspect_ext::InspectableLocalClock;
 
 use std::fmt::Debug;
+use std::task::Context;
+use std::task::Poll;
 
 /// A local real-time clock, hanging-off the platform's global real-time clock.
 ///
@@ -82,6 +84,16 @@ pub trait LocalClock: Send {
     /// NOTE: implementations SHOULD ensure that real time continues to tick
     /// even when the device / platform itself has shutdown / been paused.
     fn get_time(&mut self) -> LocalClockTime;
+
+    /// Poll for the current clock time, as [`Self::get_time`] returns it.
+    ///
+    /// A clock that would have to wait in `get_time` can return
+    /// `Poll::Pending` instead, and wake the context once it can return the
+    /// time.
+    /// Defaults to `get_time`.
+    fn poll_time(&mut self, _cx: &mut Context<'_>) -> Poll<LocalClockTime> {
+        Poll::Ready(self.get_time())
+    }
 
     /// Set the current clock time.
     fn set_time(&mut self, new_time: LocalClockTime);
