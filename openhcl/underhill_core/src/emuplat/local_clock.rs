@@ -576,7 +576,8 @@ mod tests {
 
     #[test]
     fn reads_the_host() {
-        // Through the GET, the first read waits, and the next uses the reply.
+        // Through the GET, the first read waits for a reply, and the next uses
+        // it unless it's a second old by then.
         let (_, get_driver) = pal_async::DefaultPool::spawn_on_thread("get");
         let get = futures::executor::block_on(
             guest_emulation_transport::test_utilities::new_transport_pair(
@@ -589,6 +590,11 @@ mod tests {
         );
         let host_time = HostSystemTimeAccess::new(get.client.clone());
         let time = pal_async::local::block_on(wait(&host_time));
-        assert_eq!(cached(&host_time), time);
+        match host_time.now_or_wait() {
+            Ok(cached) => assert_eq!(cached, time),
+            Err(next) => {
+                pal_async::local::block_on(next);
+            }
+        }
     }
 }

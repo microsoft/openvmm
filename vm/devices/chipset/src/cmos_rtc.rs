@@ -1547,8 +1547,11 @@ mod tests {
         let clock = slow.clock.clone();
         std::thread::scope(|s| {
             s.spawn(|| {
-                clock.lock().answer(time_on_test_day(13, 0, 30));
-                clock.lock().times.push_back(time_on_test_day(13, 0, 31));
+                // Have the second time ready before the first read completes,
+                // so that the second read takes it rather than waiting.
+                let mut clock = clock.lock();
+                clock.times.push_back(time_on_test_day(13, 0, 31));
+                clock.answer(time_on_test_day(13, 0, 30));
             });
             slow.select(CmosReg::HOUR);
         });
