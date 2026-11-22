@@ -1453,6 +1453,62 @@ mod tests {
     }
 
     #[test]
+    fn truncating_open_keeps_the_access_mode() {
+        // Linux truncates a file that O_TRUNC opens even when the access mode does not allow
+        // writing, but the descriptor keeps that access mode, so it can neither write nor
+        // truncate the file. Windows truncates only through a handle with write access, which
+        // the descriptor must not keep.
+        let env = TestEnv::new();
+        for flags in [lx::O_RDONLY, lx::O_NOACCESS] {
+            env.create_file("testfile", "hello");
+            let file = env
+                .volume
+                .open("testfile", flags | lx::O_TRUNC, None)
+                .unwrap();
+            assert_eq!(file.fstat().unwrap().file_size, 0);
+            assert_eq!(file.pwrite(b"guest", 0, 0).unwrap_err().value(), lx::EBADF);
+            assert_eq!(file.truncate(5, 0).unwrap_err().value(), lx::EINVAL);
+            assert_eq!(fs::read(env.root_dir.path().join("testfile")).unwrap(), b"");
+        }
+
+        // The same holds when the open creates the file, which needs no truncation.
+        let file = env
+            .volume
+            .open(
+                "created",
+                lx::O_RDONLY | lx::O_CREAT | lx::O_TRUNC,
+                Some(LxCreateOptions::new(0o666, 0, 0)),
+            )
+            .unwrap();
+        assert_eq!(file.pwrite(b"guest", 0, 0).unwrap_err().value(), lx::EBADF);
+        assert_eq!(file.truncate(5, 0).unwrap_err().value(), lx::EINVAL);
+        assert_eq!(fs::read(env.root_dir.path().join("created")).unwrap(), b"");
+    }
+
+    #[test]
+    fn truncating_append_open_stays_append_only() {
+        // Linux writes through a descriptor opened with O_APPEND at the end of the file,
+        // whatever the offset, including after O_TRUNC truncated the file at open.
+        let env = TestEnv::new();
+        for (flags, expected) in [
+            (lx::O_WRONLY | lx::O_APPEND, b"helloabcd".as_slice()),
+            (
+                lx::O_WRONLY | lx::O_APPEND | lx::O_TRUNC,
+                b"abcd".as_slice(),
+            ),
+        ] {
+            env.create_file("testfile", "hello");
+            let file = env.volume.open("testfile", flags, None).unwrap();
+            assert_eq!(file.pwrite(b"ab", 0, 0).unwrap(), 2);
+            assert_eq!(file.pwrite(b"cd", 0, 0).unwrap(), 2);
+            assert_eq!(
+                fs::read(env.root_dir.path().join("testfile")).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn read_dir() {
         let env = TestEnv::new();
         let mut map = HashMap::new();

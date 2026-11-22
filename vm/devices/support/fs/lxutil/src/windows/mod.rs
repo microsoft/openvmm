@@ -322,9 +322,15 @@ impl LxVolume {
                 Err(err) => return Err(err),
             };
         // O_TRUNC can't be handled with FILE_OVERWRITE because that clears metadata, so handle
-        // it here.
+        // it here. Linux truncates even when the access mode does not allow writing, while Windows
+        // needs a handle with write access; use one only for the truncation, so that the file,
+        // like a Linux descriptor, keeps the access of its access mode.
         if flags & lx::O_TRUNC != 0 && create_result != WindowsProgramming::FILE_CREATED as usize {
-            fs::truncate(&file, 0)?;
+            if desired_access.contains(W32Fs::FILE_WRITE_DATA) {
+                fs::truncate(&file, 0)?;
+            } else {
+                fs::truncate(&util::reopen_file(&file, W32Fs::FILE_WRITE_DATA)?, 0)?;
+            }
         }
 
         Ok(LxFile {
