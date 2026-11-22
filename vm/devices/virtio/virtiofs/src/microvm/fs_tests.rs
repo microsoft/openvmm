@@ -695,6 +695,150 @@ fn readdirplus_ends_the_listing_only_after_skipping_every_entry_left() {
     );
 }
 
+/// Returns the offset at which a read of `directory`, whose snapshot lists
+/// `name`, starts at that entry.
+fn offset_of(directory: &VirtioFsFile, name: &[u8]) -> u64 {
+    let entries = directory.directory_entries();
+    let index = entries.iter().position(|entry| entry.name == name).unwrap();
+    index
+        .checked_sub(1)
+        .map_or(0, |index| entries[index].next_cookie)
+}
+
+/// A listed name that a rename replaced since the listing no longer names the
+/// listed object, which the host now lists by another number, so READDIRPLUS
+/// must fail at it rather than list the object that replaced it.
+#[test]
+fn readdirplus_fails_at_an_entry_replaced_since_the_listing() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    let (fs, directory) = microvm_with_an_open_root(root_path, &["entry"]);
+    // A plain READDIR lists the directory without looking its entries up.
+    directory.read_dir(&fs, 0, 4096, false).unwrap();
+    std::fs::write(root_path.join("replacement"), "replacement").unwrap();
+    std::fs::rename(root_path.join("replacement"), root_path.join("entry")).unwrap();
+
+    let offset = offset_of(&directory, b"entry");
+    assert_eq!(
+        directory.read_dir(&fs, offset, 4096, true).unwrap_err(),
+        lx::Error::EIO
+    );
+}
+
+/// READDIRPLUS looks a listed name up in the directory at its inode's path,
+/// which the host may have replaced since the guest opened the listed one, as
+/// by renaming the listed one away and creating another in its place. A name
+/// that reaches an object of that other directory does not name the listed
+/// object, even though the listed directory still lists the name as it did,
+/// so READDIRPLUS must fail at it.
+#[test]
+fn readdirplus_fails_at_an_entry_of_another_directory_at_the_listed_path() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::create_dir(root_path.join("listed")).unwrap();
+    std::fs::write(root_path.join("listed").join("entry"), "listed").unwrap();
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let listed = fs
+        .lookup_helper(&root, lx::LxStr::from_bytes(b"listed"))
+        .unwrap()
+        .nodeid;
+    let handle = fs
+        .insert_file(fs.get_inode(listed).unwrap().open(lx::O_RDONLY).unwrap())
+        .unwrap();
+    let directory = fs.get_file(listed, handle).unwrap();
+    directory.read_dir(&fs, 0, 4096, false).unwrap();
+    std::fs::rename(root_path.join("listed"), root_path.join("moved")).unwrap();
+    std::fs::create_dir(root_path.join("listed")).unwrap();
+    std::fs::write(root_path.join("listed").join("entry"), "replacement").unwrap();
+
+    let offset = offset_of(&directory, b"entry");
+    assert_eq!(
+        directory.read_dir(&fs, offset, 4096, true).unwrap_err(),
+        lx::Error::EIO
+    );
+}
+
+/// The host lists some entries of a directory by another inode number than a
+/// lookup of the entry reports on the directory's own device: a btrfs
+/// snapshot lists the placeholder of a nested subvolume by the subvolume's ID,
+/// while a lookup reaches an empty directory numbered 2, and a directory lists
+/// a mount point of its own filesystem by the number of the directory that the
+/// mount covers, while a lookup reaches the mounted one. Such an entry still
+/// names the listed object, so READDIRPLUS must list it, with the number that
+/// its lookup reports. A bind mount, which an unprivileged process can make in
+/// user and mount namespaces of its own, gives such an entry here; where the
+/// host allows no such namespaces, the test does nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn readdirplus_lists_an_entry_that_the_host_lists_by_another_number() {
+    use std::os::unix::fs::DirEntryExt;
+    use std::os::unix::fs::MetadataExt;
+    use std::process::Command;
+
+    const ROOT: &str = "VIRTIOFS_TEST_BIND_MOUNT_ROOT";
+    let namespaces = ["--user", "--map-root-user", "--mount"];
+    let Some(root_path) = std::env::var_os(ROOT) else {
+        // Only a single-threaded process can enter a new user namespace, so
+        // the test runs again in a child process in the namespaces, in a
+        // directory that this process removes once the child is done.
+        let temporary_directory = tempdir().unwrap();
+        let root_path = temporary_directory.path();
+        let bind_mount_works = Command::new("unshare")
+            .args(namespaces)
+            .args(["mount", "--bind"])
+            .args([root_path, root_path])
+            .status()
+            .is_ok_and(|status| status.success());
+        if !bind_mount_works {
+            eprintln!("skipping: no bind mount in user and mount namespaces");
+            return;
+        }
+        let status = Command::new("unshare")
+            .args(namespaces)
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "microvm::fs_tests::readdirplus_lists_an_entry_that_the_host_lists_by_another_number",
+                "--no-capture",
+            ])
+            .env(ROOT, root_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status}");
+        return;
+    };
+    let root_path = Path::new(&root_path);
+    std::fs::create_dir(root_path.join("mounted")).unwrap();
+    std::fs::create_dir(root_path.join("point")).unwrap();
+    let status = Command::new("mount")
+        .arg("--bind")
+        .args([root_path.join("mounted"), root_path.join("point")])
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status}");
+    let listed = std::fs::read_dir(root_path)
+        .unwrap()
+        .map(Result::unwrap)
+        .find(|entry| entry.file_name() == "point")
+        .unwrap()
+        .ino();
+    let point = std::fs::symlink_metadata(root_path.join("point")).unwrap();
+    assert_ne!(point.ino(), listed);
+    assert_eq!(
+        point.dev(),
+        std::fs::symlink_metadata(root_path).unwrap().dev()
+    );
+
+    let (fs, directory) = microvm_with_an_open_root(root_path, &[]);
+    let entries = crate::tests::read_directory(&fs, &directory, 0, 4096, true);
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let point = fs
+        .lookup_helper(&root, lx::LxStr::from_bytes(b"point"))
+        .unwrap();
+    assert_eq!(entries["point"].0, point.attr.ino);
+}
+
 #[test]
 fn saved_negotiation_must_match_the_exact_microvm_policy() {
     let temporary_directory = tempdir().unwrap();
