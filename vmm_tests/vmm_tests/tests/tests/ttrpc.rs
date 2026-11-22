@@ -676,15 +676,17 @@ async fn test_ttrpc_interface(
         petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
     };
 
-    let (mut child, client, stderr_task) =
+    let (mut child, mut client, mut stderr_task) =
         launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
-    let query_props = || {
-        client.call().start(
-            vmservice::Vm::PropertiesVm,
-            vmservice::PropertiesVmRequest { types: Vec::new() },
-        )
-    };
+    macro_rules! query_props {
+        () => {
+            client.call().start(
+                vmservice::Vm::PropertiesVm,
+                vmservice::PropertiesVmRequest { types: Vec::new() },
+            )
+        };
+    }
 
     let caps = client
         .call()
@@ -711,7 +713,7 @@ async fn test_ttrpc_interface(
         "only Linux direct boot is supported"
     );
 
-    let props = query_props().await.unwrap();
+    let props = query_props!().await.unwrap();
     assert_eq!(
         props.state,
         vmservice::VmState::Uninitialized as i32,
@@ -729,7 +731,7 @@ async fn test_ttrpc_interface(
         )
         .await
         .unwrap_err();
-    let props = query_props().await.unwrap();
+    let props = query_props!().await.unwrap();
     assert_eq!(
         props.state,
         vmservice::VmState::Uninitialized as i32,
@@ -1185,7 +1187,7 @@ async fn test_ttrpc_interface(
             );
         }
 
-        let props = query_props().await.unwrap();
+        let props = query_props!().await.unwrap();
         assert_eq!(
             props.state,
             vmservice::VmState::Paused as i32,
@@ -1492,7 +1494,7 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap();
 
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Running as i32,
@@ -1550,7 +1552,7 @@ async fn test_ttrpc_interface(
 
                 waiter.await.unwrap();
 
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Halted as i32,
@@ -1589,7 +1591,7 @@ async fn test_ttrpc_interface(
                         .await
                         .context("timed out reading virtio console output")??;
 
-                    let props = query_props().await.unwrap();
+                    let props = query_props!().await.unwrap();
                     assert_eq!(
                         props.state,
                         vmservice::VmState::Uninitialized as i32,
@@ -1616,7 +1618,7 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap();
 
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Running as i32,
@@ -1665,7 +1667,7 @@ async fn test_ttrpc_interface(
                     .start(vmservice::Vm::PauseVm, ())
                     .await
                     .unwrap();
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Paused as i32,
@@ -1676,7 +1678,7 @@ async fn test_ttrpc_interface(
                     .start(vmservice::Vm::ResumeVm, ())
                     .await
                     .unwrap();
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Running as i32,
@@ -1706,7 +1708,7 @@ async fn test_ttrpc_interface(
                     std::fs::read_dir(&snapshot_path).unwrap().next().is_none(),
                     "a rejected SaveVm must not write into the existing directory"
                 );
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Running as i32,
@@ -1738,11 +1740,16 @@ async fn test_ttrpc_interface(
                         "SaveVm should create {name}"
                     );
                 }
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
-                    vmservice::VmState::Paused as i32,
-                    "SaveVm should leave the VM paused"
+                    vmservice::VmState::Halted as i32,
+                    "SaveVm should leave the VM terminal"
+                );
+                assert_eq!(
+                    props.halt_reason.as_deref(),
+                    Some("snapshot saved"),
+                    "SaveVm should report why the VM is terminal"
                 );
                 client
                     .call()
@@ -1779,9 +1786,8 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap_err();
 
-                // The VM is paused after the save, so a port change fails fast
-                // instead of waiting on the stopped NIC, and can't block the
-                // teardown below.
+                // The VM is terminal after the save, so changes fail at the
+                // lifecycle gate rather than waiting on device state.
                 let err = client
                     .call()
                     .start(
@@ -1801,13 +1807,20 @@ async fn test_ttrpc_interface(
                     err.message
                 );
 
-                client
+                let err = client
                     .call()
                     .start(vmservice::Vm::TeardownVm, ())
                     .await
-                    .unwrap();
-
+                    .unwrap_err();
+                assert_eq!(err.code, mesh_rpc::service::Code::FailedPrecondition as i32);
+                client.call().start(vmservice::Vm::Quit, ()).await.unwrap();
                 waiter.await.unwrap_err();
+                assert!(child.wait().await?.success());
+                stderr_task
+                    .await
+                    .context("failed to drain OpenVMM stderr after saved-source Quit")?;
+                (child, client, stderr_task) =
+                    launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
                 let err = client
                     .call()
@@ -1868,7 +1881,7 @@ async fn test_ttrpc_interface(
                     restore_result.snapshot_id, snapshot_id,
                     "RestoreVm should return the snapshot ID from the manifest"
                 );
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Paused as i32,
@@ -1894,7 +1907,7 @@ async fn test_ttrpc_interface(
                         .start(vmservice::Vm::ResumeVm, ())
                         .await
                         .unwrap();
-                    let props = query_props().await.unwrap();
+                    let props = query_props!().await.unwrap();
                     assert_eq!(
                         props.state,
                         vmservice::VmState::Running as i32,
@@ -1926,12 +1939,15 @@ async fn test_ttrpc_interface(
                         second_snapshot_id, snapshot_id,
                         "each SaveVm should generate a new snapshot ID"
                     );
-                    client
-                        .call()
-                        .start(vmservice::Vm::TeardownVm, ())
+                    client.call().start(vmservice::Vm::Quit, ()).await.unwrap();
+                    assert!(child.wait().await?.success());
+                    stderr_task
                         .await
-                        .unwrap();
+                        .context("failed to drain OpenVMM stderr after second SaveVm Quit")?;
                     drop(shell);
+                    (child, client, stderr_task) =
+                        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path)
+                            .await?;
 
                     let restore_result = client
                         .call()
@@ -1947,7 +1963,7 @@ async fn test_ttrpc_interface(
                         .await
                         .unwrap();
                     assert_eq!(restore_result.snapshot_id, second_snapshot_id);
-                    let props = query_props().await.unwrap();
+                    let props = query_props!().await.unwrap();
                     assert_eq!(
                         props.state,
                         vmservice::VmState::Running as i32,
