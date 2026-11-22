@@ -28,7 +28,6 @@ use hcl::ioctl::MshvVtl;
 use hv1_structs::VtlArray;
 use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
 use hvdef::HV_MAP_GPA_PERMISSIONS_NONE;
-use hvdef::HV_PAGE_SHIFT;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -487,7 +486,7 @@ impl HardwareIsolatedMemoryProtector {
         vtl: GuestVtl,
         gpn: u64,
     ) -> Result<HvMapGpaFlags, HvError> {
-        if !self.is_in_guest_memory(gpn) {
+        if !Self::is_in_guest_memory(&self.layout, gpn) {
             return Err(HvError::OperationDenied);
         }
 
@@ -521,9 +520,12 @@ impl HardwareIsolatedMemoryProtector {
     }
 
     /// Checks whether the given GPN is present in guest RAM.
-    fn is_in_guest_memory(&self, gpn: u64) -> bool {
-        let gpa = gpn << HV_PAGE_SHIFT;
-        self.layout.ram().iter().any(|r| r.range.contains_addr(gpa))
+    fn is_in_guest_memory(layout: &MemoryLayout, gpn: u64) -> bool {
+        let Some(gpa) = gpn.checked_mul(HV_PAGE_SIZE) else {
+            return false;
+        };
+
+        layout.ram().iter().any(|r| r.range.contains_addr(gpa))
     }
 }
 
@@ -539,7 +541,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         for &gpn in gpns {
             // Validate the ranges are RAM.
-            if !self.is_in_guest_memory(gpn) {
+            if !Self::is_in_guest_memory(&self.layout, gpn) {
                 return Err((HvError::OperationDenied, 0));
             }
 
@@ -778,7 +780,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     ) -> Result<(), (HvError, usize)> {
         // Validate the ranges are RAM.
         for (i, &gpn) in gpns.iter().enumerate() {
-            if !self.is_in_guest_memory(gpn) {
+            if !Self::is_in_guest_memory(&self.layout, gpn) {
                 return Err((HvError::OperationDenied, i));
             }
         }
@@ -929,7 +931,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         // Validate the ranges are RAM.
         for &gpn in gpns {
-            if !self.is_in_guest_memory(gpn) {
+            if !Self::is_in_guest_memory(&self.layout, gpn) {
                 return Err((HvError::OperationDenied, 0));
             }
 
@@ -1017,7 +1019,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 current_perms
             }
             GpnSource::Dma => {
-                if self.is_in_guest_memory(gpn) {
+                if Self::is_in_guest_memory(&self.layout, gpn) {
                     // DMA memory must not be in guest RAM.
                     return Err(HvError::OperationDenied);
                 }
@@ -1218,6 +1220,37 @@ where
 mod tests {
     use super::*;
     use std::convert::Infallible;
+    use test_with_tracing::test;
+    use vm_topology::memory::MemoryRangeWithNode;
+
+    // Test: Validate RAM boundaries and a GPN whose byte address overflows.
+    // Expected: Valid RAM passes; out-of-RAM and overflowing GPNs are rejected.
+    #[test]
+    fn is_in_guest_memory_rejects_overflowing_gpn() {
+        let layout = MemoryLayout::new_from_ranges(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::new(0x4000..0x8000),
+                vnode: 0,
+            }],
+            &[],
+        )
+        .unwrap();
+
+        assert!(HardwareIsolatedMemoryProtector::is_in_guest_memory(
+            &layout, 4
+        ));
+        for gpn in [3, 8] {
+            assert!(!HardwareIsolatedMemoryProtector::is_in_guest_memory(
+                &layout, gpn
+            ));
+        }
+
+        let malformed_gpn = (1_u64 << 52) | 4;
+        assert!(
+            !HardwareIsolatedMemoryProtector::is_in_guest_memory(&layout, malformed_gpn),
+            "oversized GPN {malformed_gpn:#x} must not alias guest RAM"
+        );
+    }
 
     #[test]
     fn parallelize_mem_op_covers_source_ranges() {

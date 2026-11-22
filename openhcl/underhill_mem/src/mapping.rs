@@ -816,12 +816,225 @@ impl GuestMemoryMapping {
 #[cfg(test)]
 mod tests {
     use crate::mapping::GuestMemoryBitmap;
+    use crate::mapping::GuestMemoryMapping;
+    use crate::mapping::GuestMemoryView;
+    use crate::mapping::GuestMemoryViewReadType;
     use crate::mapping::GuestValidMemory;
     use crate::mapping::GuestValidMemoryType;
+    use crate::mapping::PermissionBitmaps;
+    use guestmem::GuestMemory;
+    use guestmem::GuestMemoryErrorKind;
     use guestmem::PAGE_SIZE;
+    use hcl::GuestVtl;
+    use hvdef::HvMapGpaFlags;
     use memory_range::MemoryRange;
+    use sparse_mmap::SparseMapping;
+    use std::sync::Arc;
+    use test_with_tracing::test;
     use vm_topology::memory::MemoryLayout;
     use vm_topology::memory::MemoryRangeWithNode;
+
+    fn test_mapping(
+        memory_type: GuestValidMemoryType,
+        valid: bool,
+        permissions: Option<HvMapGpaFlags>,
+    ) -> Arc<GuestMemoryMapping> {
+        let range = MemoryRange::from_4k_gpn_range(0..8);
+        let layout =
+            MemoryLayout::new_from_ranges(&[MemoryRangeWithNode { range, vnode: 0 }], &[]).unwrap();
+        let mapping = SparseMapping::new(8 * PAGE_SIZE).unwrap();
+        mapping.alloc(0, mapping.len()).unwrap();
+
+        let permission_bitmaps = permissions.map(|flags| {
+            let bitmap = |enabled| {
+                let mut bitmap = GuestMemoryBitmap::new(8 * PAGE_SIZE).unwrap();
+                bitmap.init(range, enabled).unwrap();
+                bitmap
+            };
+            PermissionBitmaps {
+                permission_update_lock: Default::default(),
+                read_bitmap: bitmap(flags.readable()),
+                write_bitmap: bitmap(flags.writable()),
+                kernel_execute_bitmap: bitmap(flags.kernel_executable()),
+                user_execute_bitmap: bitmap(flags.user_executable()),
+            }
+        });
+
+        Arc::new(GuestMemoryMapping {
+            mapping,
+            iova_offset: None,
+            valid_memory: Some(Arc::new(
+                GuestValidMemory::new(&layout, memory_type, valid).unwrap(),
+            )),
+            permission_bitmaps,
+            registrar: None,
+        })
+    }
+
+    fn test_view(
+        mapping: &Arc<GuestMemoryMapping>,
+        view_type: GuestMemoryViewReadType,
+    ) -> GuestMemory {
+        GuestMemory::new(
+            "test",
+            GuestMemoryView::new(None, Arc::clone(mapping), view_type, GuestVtl::Vtl0),
+        )
+    }
+
+    // Test: Read and write pages while granting and revoking permissions.
+    // Expected: Denials return VtlProtected; data and neighbors remain unchanged.
+    #[test]
+    fn memory_access_enforces_read_write_permissions() {
+        let mapping = test_mapping(
+            GuestValidMemoryType::Encrypted,
+            true,
+            Some(HvMapGpaFlags::new().with_readable(true)),
+        );
+        mapping.mapping.write_at(0, b"original").unwrap();
+        mapping.mapping.write_at(PAGE_SIZE, b"neighbor").unwrap();
+        let memory = test_view(&mapping, GuestMemoryViewReadType::Read);
+        let mut data = [0; 8];
+
+        memory.read_at(0, &mut data).unwrap();
+        assert_eq!(&data, b"original");
+        assert_eq!(
+            memory.write_at(0, b"modified").unwrap_err().kind(),
+            GuestMemoryErrorKind::VtlProtected
+        );
+        memory.read_at(0, &mut data).unwrap();
+        assert_eq!(&data, b"original");
+
+        let page = MemoryRange::from_4k_gpn_range(0..1);
+        mapping.update_permission_bitmaps(
+            page,
+            HvMapGpaFlags::new().with_readable(true).with_writable(true),
+        );
+        memory.write_at(0, b"modified").unwrap();
+        memory.read_at(0, &mut data).unwrap();
+        assert_eq!(&data, b"modified");
+
+        assert_eq!(
+            memory
+                .write_at(PAGE_SIZE as u64, b"modified")
+                .unwrap_err()
+                .kind(),
+            GuestMemoryErrorKind::VtlProtected
+        );
+        memory.read_at(PAGE_SIZE as u64, &mut data).unwrap();
+        assert_eq!(&data, b"neighbor");
+
+        mapping.update_permission_bitmaps(page, HvMapGpaFlags::new());
+        assert_eq!(
+            memory.read_at(0, &mut data).unwrap_err().kind(),
+            GuestMemoryErrorKind::VtlProtected
+        );
+        assert_eq!(
+            memory.write_at(0, b"original").unwrap_err().kind(),
+            GuestMemoryErrorKind::VtlProtected
+        );
+        memory.read_at(PAGE_SIZE as u64, &mut data).unwrap();
+        assert_eq!(&data, b"neighbor");
+
+        mapping.update_permission_bitmaps(page, HvMapGpaFlags::new().with_readable(true));
+        memory.read_at(0, &mut data).unwrap();
+        assert_eq!(&data, b"modified");
+    }
+
+    // Test: Read through normal, kernel-execute, and user-execute views.
+    // Expected: Only permitted execute views succeed; normal reads stay allowed.
+    #[test]
+    fn memory_views_distinguish_kernel_and_user_execute_permissions() {
+        let mapping = test_mapping(
+            GuestValidMemoryType::Encrypted,
+            true,
+            Some(
+                HvMapGpaFlags::new()
+                    .with_readable(true)
+                    .with_kernel_executable(true),
+            ),
+        );
+        mapping.mapping.write_at(0, b"original").unwrap();
+        let read = test_view(&mapping, GuestMemoryViewReadType::Read);
+        let kernel = test_view(&mapping, GuestMemoryViewReadType::KernelExecute);
+        let user = test_view(&mapping, GuestMemoryViewReadType::UserExecute);
+        let mut data = [0; 8];
+
+        for memory in [&read, &kernel] {
+            memory.read_at(0, &mut data).unwrap();
+            assert_eq!(&data, b"original");
+        }
+        assert_eq!(
+            user.read_at(0, &mut data).unwrap_err().kind(),
+            GuestMemoryErrorKind::VtlProtected
+        );
+
+        mapping.update_permission_bitmaps(
+            MemoryRange::from_4k_gpn_range(0..1),
+            HvMapGpaFlags::new()
+                .with_readable(true)
+                .with_user_executable(true),
+        );
+        for memory in [&read, &user] {
+            memory.read_at(0, &mut data).unwrap();
+            assert_eq!(&data, b"original");
+        }
+        assert_eq!(
+            kernel.read_at(0, &mut data).unwrap_err().kind(),
+            GuestMemoryErrorKind::VtlProtected
+        );
+    }
+
+    // Test: Read and write through both incorrect visibility mappings.
+    // Expected: NotShared/NotPrivate errors; denied writes leave data unchanged.
+    #[test]
+    fn memory_access_reports_wrong_visibility_without_modifying_data() {
+        for (memory_type, expected_error) in [
+            (
+                GuestValidMemoryType::Shared,
+                GuestMemoryErrorKind::NotShared,
+            ),
+            (
+                GuestValidMemoryType::Encrypted,
+                GuestMemoryErrorKind::NotPrivate,
+            ),
+        ] {
+            let mapping = test_mapping(memory_type, false, None);
+            mapping.mapping.write_at(0, b"original").unwrap();
+            let memory = test_view(&mapping, GuestMemoryViewReadType::Read);
+            let mut data = [0; 8];
+
+            assert_eq!(
+                memory.read_at(0, &mut data).unwrap_err().kind(),
+                expected_error
+            );
+            assert_eq!(
+                memory.write_at(0, b"modified").unwrap_err().kind(),
+                expected_error
+            );
+
+            let page = MemoryRange::from_4k_gpn_range(0..1);
+            mapping
+                .valid_memory
+                .as_ref()
+                .unwrap()
+                .update_valid(page, true);
+            memory.read_at(0, &mut data).unwrap();
+            assert_eq!(&data, b"original");
+            memory.write_at(0, b"modified").unwrap();
+            memory.read_at(0, &mut data).unwrap();
+            assert_eq!(&data, b"modified");
+
+            mapping
+                .valid_memory
+                .as_ref()
+                .unwrap()
+                .update_valid(page, false);
+            assert_eq!(
+                memory.read_at(0, &mut data).unwrap_err().kind(),
+                expected_error
+            );
+        }
+    }
 
     // Ensure a bitmap initialized with ranges whose bitmap backings overlap
     // does not cause any issues.

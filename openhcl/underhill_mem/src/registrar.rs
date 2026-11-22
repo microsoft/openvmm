@@ -317,13 +317,110 @@ mod tests {
     use super::MemoryRegistrar;
     use super::RegisterAllError;
     use memory_range::MemoryRange;
+    use parking_lot::Mutex;
     use std::cell::Cell;
     use std::cell::RefCell;
     use std::convert::Infallible;
+    use std::sync::Barrier;
+    use test_with_tracing::test;
     use vm_topology::memory::MemoryLayout;
     use vm_topology::memory::MemoryRangeWithNode;
 
     const GRANULARITY: u64 = 1 << 30;
+
+    // Test: Fail one region's registration, then request it and unrelated RAM.
+    // Expected: Unrelated requests succeed; the failed region keeps returning errors.
+    #[test]
+    fn registration_failure_does_not_block_other_ram() {
+        let layout = MemoryLayout::new_from_ranges(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::new(0..3 * GRANULARITY),
+                vnode: 0,
+            }],
+            &[],
+        )
+        .unwrap();
+        let failed_range = MemoryRange::new(GRANULARITY..2 * GRANULARITY);
+        let registered = RefCell::new(Vec::new());
+        let registrar = MemoryRegistrar::new(&layout, 0, GRANULARITY, |range: MemoryRange| {
+            if range.overlaps(&failed_range) {
+                return Err(std::io::Error::other("registration failure"));
+            }
+            registered.borrow_mut().push(range);
+            Ok(())
+        });
+
+        assert_eq!(registrar.register(GRANULARITY, 1), Err(GRANULARITY));
+        for address in [0, 2 * GRANULARITY] {
+            assert_eq!(registrar.register(address, 1), Ok(()));
+            assert!(
+                registered
+                    .borrow()
+                    .iter()
+                    .any(|range| range.contains_addr(address))
+            );
+        }
+        assert_eq!(registrar.register(GRANULARITY, 1), Err(GRANULARITY));
+    }
+
+    // Test: Make eight concurrent, overlapping registration requests.
+    // Expected: All requests are covered without duplicates, regardless of ordering.
+    #[test]
+    fn concurrent_registration_covers_overlapping_requests_without_duplicates() {
+        let layout = MemoryLayout::new_from_ranges(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::new(0..4 * GRANULARITY),
+                vnode: 0,
+            }],
+            &[],
+        )
+        .unwrap();
+        let registered = Mutex::new(Vec::<MemoryRange>::new());
+        let registrar = MemoryRegistrar::new(&layout, 0, GRANULARITY, |range: MemoryRange| {
+            std::thread::yield_now();
+            let mut registered = registered.lock();
+            if registered.iter().any(|previous| previous.overlaps(&range)) {
+                return Err(std::io::Error::other("duplicate registration"));
+            }
+            registered.push(range);
+            Ok(())
+        });
+        let requests = [
+            0x1000..GRANULARITY + 0x1000,
+            GRANULARITY + 0x2000..2 * GRANULARITY + 0x2000,
+            2 * GRANULARITY + 0x3000..3 * GRANULARITY + 0x3000,
+            0x4000..3 * GRANULARITY + 0x4000,
+        ];
+        let start = Barrier::new(8);
+
+        std::thread::scope(|scope| {
+            let handles = (0..8)
+                .map(|i| {
+                    let request = &requests[i % requests.len()];
+                    let registrar = &registrar;
+                    let start = &start;
+                    scope.spawn(move || {
+                        start.wait();
+                        registrar.register(request.start, request.end - request.start)
+                    })
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                assert_eq!(handle.join().unwrap(), Ok(()));
+            }
+        });
+
+        let mut registered = registered.lock().clone();
+        registered.sort_by_key(|range| range.start());
+        let coverage = memory_range::flatten_ranges(registered).collect::<Vec<_>>();
+        for request in requests {
+            assert!(
+                coverage
+                    .iter()
+                    .any(|range| range.start() <= request.start && range.end() >= request.end)
+            );
+        }
+    }
 
     #[test]
     fn test_registrar() {
