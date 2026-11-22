@@ -501,7 +501,7 @@ pub fn dos_to_nt_path(
     Ok(path)
 }
 
-// Convert Linux open flags to a Windows access mask.
+// Convert Linux open flags to the Windows access mask of the open file.
 pub fn open_flags_to_access_mask(flags: i32) -> W32Fs::FILE_ACCESS_RIGHTS {
     let mut mask = MINIMUM_PERMISSIONS;
     mask |= match flags & lx::O_ACCESS_MASK {
@@ -514,11 +514,6 @@ pub fn open_flags_to_access_mask(flags: i32) -> W32Fs::FILE_ACCESS_RIGHTS {
     if flags & lx::O_APPEND != 0 {
         // Remove the write permission; the generic permission already includes FILE_APPEND_DATA.
         mask &= !W32Fs::FILE_WRITE_DATA;
-    }
-
-    if flags & lx::O_TRUNC != 0 {
-        // Truncate on Linux is allowed with O_RDONLY, but requires write access on Windows.
-        mask |= W32Fs::FILE_WRITE_DATA;
     }
 
     mask
