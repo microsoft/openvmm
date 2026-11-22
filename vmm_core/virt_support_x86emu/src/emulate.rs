@@ -541,6 +541,11 @@ async fn emulate_core<T: EmulatorSupport>(
 /// "As if it had been performed by an emulated instruction" means that the given
 /// GVA will be translated to a GPA, subject to applicable segmentation, permission,
 /// and alignment checks, may be determined to be MMIO instead of RAM, etc.
+///
+/// Architectural exceptions raised by the access (such as page faults) are
+/// injected into the guest and reported as [`MemoryOpOutcome::FaultInjected`].
+/// In that case the caller must not complete the instruction: it must not
+/// update guest state or advance the instruction pointer.
 pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
     support: &mut T,
     gm: &GuestMemory,
@@ -549,14 +554,14 @@ pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
     segment: Segment,
     alignment: AlignmentMode,
     op: EmulatedMemoryOperation<'_>,
-) -> Result<(), VpHaltReason> {
+) -> Result<MemoryOpOutcome, VpHaltReason> {
     assert!(!support.interruption_pending());
 
     let vendor = support.vendor();
     let mut cpu = EmulatorCpu::new(gm, dev, support);
     let mut emu = x86emu::Emulator::new(&mut cpu, vendor, &[]);
 
-    match op {
+    let result = match op {
         EmulatedMemoryOperation::Read(data) => {
             emu.read_memory(segment, gva, alignment, data, ReadKind::ReadOnly)
                 .await
@@ -564,15 +569,47 @@ pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
         EmulatedMemoryOperation::Write(data) => {
             emu.write_memory(segment, gva, alignment, data).await
         }
-    }
-    .map_err(|e| dev.fatal_error(e.into()))
+    };
 
     // No need to flush the cache, we have not modified any registers.
+
+    match result {
+        Ok(()) => Ok(MemoryOpOutcome::Completed),
+        Err(x86emu::Error::InstructionException(exception, error_code, cause)) => {
+            tracing::trace!(
+                ?exception,
+                ?error_code,
+                ?cause,
+                "emulated memory operation caused exception"
+            );
+            support.inject_pending_event(make_exception_event(exception, error_code, None));
+            Ok(MemoryOpOutcome::FaultInjected)
+        }
+        Err(x86emu::Error::MemoryAccess(addr, kind, err)) => {
+            if inject_memory_access_fault(&err, support) {
+                Ok(MemoryOpOutcome::FaultInjected)
+            } else {
+                Err(dev.fatal_error(x86emu::Error::MemoryAccess(addr, kind, err).into()))
+            }
+        }
+        Err(err) => Err(dev.fatal_error(err.into())),
+    }
 }
 
 pub enum EmulatedMemoryOperation<'a> {
     Read(&'a mut [u8]),
     Write(&'a [u8]),
+}
+
+/// The result of a successful [`emulate_insn_memory_op`] call.
+#[must_use]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum MemoryOpOutcome {
+    /// The memory operation completed.
+    Completed,
+    /// The memory operation faulted and the exception was injected into the
+    /// guest. The instruction must not be completed.
+    FaultInjected,
 }
 
 /// For storing gva to gpa translations in a cache in [`EmulatorCpu`]
