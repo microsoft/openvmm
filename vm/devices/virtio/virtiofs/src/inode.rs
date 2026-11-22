@@ -321,7 +321,7 @@ impl VirtioFsInode {
 
     pub(crate) fn object_stat(&self) -> lx::Result<lx::Stat> {
         self.validate_confined_object()?;
-        self.volume.lstat(&*self.get_path())
+        self.volume.lstat(&*self.object_path()?)
     }
 
     /// Maps the raw host inode number of an entry of this directory, as an
@@ -407,13 +407,13 @@ impl VirtioFsInode {
     /// Retrieves the attributes of this inode.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
         self.validate_confined_object()?;
-        let stat = self.volume.lstat(&*self.get_path())?;
+        let stat = self.volume.lstat(&*self.object_path()?)?;
         Ok(self.attr_from_stat(&stat))
     }
 
     /// Validates directory policy against the object being enumerated.
     pub(crate) fn check_directory_handle(&self, file: &lxutil::LxFile) -> lx::Result<()> {
-        let path = self.get_path();
+        let path = self.object_path()?;
         let stat = self.volume.lstat(&*path)?;
         // The share root is captured by the volume, not resolved by a mutable pathname.
         if path.as_os_str().is_empty() {
@@ -433,7 +433,7 @@ impl VirtioFsInode {
     /// Retrieves the extended attributes of this inode.
     pub fn get_statx(&self) -> lx::Result<fuse_statx> {
         self.validate_confined_object()?;
-        let statx = self.volume.statx(&*self.get_path())?;
+        let statx = self.volume.statx(&*self.object_path()?)?;
         Ok(self.statx_from(&statx))
     }
 
@@ -445,14 +445,14 @@ impl VirtioFsInode {
         // Because FUSE_HANDLE_KILLPRIV is set, set-user-ID and set-group-ID must be cleared
         // depending on the attributes being set. Lxutil takes care of that on Windows (and Linux
         // does it naturally).
-        let stat = self.volume.set_attr_stat(&*self.get_path(), attr)?;
+        let stat = self.volume.set_attr_stat(&*self.object_path()?, attr)?;
         Ok(self.attr_from_stat(&stat))
     }
 
     /// Opens the inode, creating a file object.
     pub fn open(self: Arc<VirtioFsInode>, options: i32) -> lx::Result<VirtioFsFile> {
         self.validate_confined_object()?;
-        let file = self.volume.open(&*self.get_path(), options, None)?;
+        let file = self.volume.open(&*self.object_path()?, options, None)?;
         crate::microvm::inode::reject_opened_symlink(&self.volume, &file)?;
         Ok(VirtioFsFile::new(file, self, options as u32))
     }
@@ -566,7 +566,7 @@ impl VirtioFsInode {
     /// Reads the target of the symbolic link, if this inode is a symbolic link.
     pub fn read_link(&self) -> lx::Result<LxString> {
         self.validate_confined_object()?;
-        self.volume.read_link(&*self.get_path())
+        self.volume.read_link(&*self.object_path()?)
     }
 
     /// Removes a file or directory child of this inode.
@@ -596,7 +596,7 @@ impl VirtioFsInode {
     /// Gets the attributes of the file system that the inode resides on.
     pub fn stat_fs(&self) -> lx::Result<fuse_kstatfs> {
         self.validate_confined_object()?;
-        let stat_fs = self.volume.stat_fs(&*self.get_path())?;
+        let stat_fs = self.volume.stat_fs(&*self.object_path()?)?;
         Ok(fuse_kstatfs::new(
             stat_fs.block_count,
             stat_fs.free_block_count,
@@ -612,26 +612,26 @@ impl VirtioFsInode {
     /// Gets the value or the size of an extended attribute on this inode.
     pub fn get_xattr(&self, name: &LxStr, value: Option<&mut [u8]>) -> lx::Result<usize> {
         self.validate_confined_object()?;
-        self.volume.get_xattr(&*self.get_path(), name, value)
+        self.volume.get_xattr(&*self.object_path()?, name, value)
     }
 
     /// Sets an extended attribute on this inode.
     pub fn set_xattr(&self, name: &LxStr, value: &[u8], flags: u32) -> lx::Result<()> {
         self.validate_confined_object()?;
         self.volume
-            .set_xattr(&*self.get_path(), name, value, flags as i32)
+            .set_xattr(&*self.object_path()?, name, value, flags as i32)
     }
 
     /// Lists the extended attributes on this inode.
     pub fn list_xattr(&self, list: Option<&mut [u8]>) -> lx::Result<usize> {
         self.validate_confined_object()?;
-        self.volume.list_xattr(&*self.get_path(), list)
+        self.volume.list_xattr(&*self.object_path()?, list)
     }
 
     /// Removes an extended attribute from this inode.
     pub fn remove_xattr(&self, name: &LxStr) -> lx::Result<()> {
         self.validate_confined_object()?;
-        self.volume.remove_xattr(&*self.get_path(), name)
+        self.volume.remove_xattr(&*self.object_path()?, name)
     }
 
     /// Gets a clone of the stored path.
@@ -645,8 +645,17 @@ impl VirtioFsInode {
     }
 
     /// Adds an alias after a successful hard link.
+    ///
+    /// A request on another queue may have removed the primary path's name
+    /// since the link reached the object through it; the new name then
+    /// becomes the primary path (see [`Self::object_path`]).
     pub(crate) fn add_alias(&self, path: PathBuf) {
-        self.aliases.write().insert(path);
+        let mut aliases = self.aliases.write();
+        aliases.insert(path.clone());
+        let mut primary = self.path.write();
+        if !aliases.contains(&*primary) {
+            *primary = path;
+        }
     }
 
     /// Removes all aliases at or below an unlinked directory path.
@@ -716,6 +725,10 @@ impl VirtioFsInode {
     }
 
     /// Appends a child name to this inode's path.
+    ///
+    /// Like Linux, which refuses to look up or create an entry in a removed
+    /// directory, this fails with `ENOENT` once the guest has removed every
+    /// name of the directory (see [`Self::object_path`]).
     pub(crate) fn child_path(&self, name: &LxStr) -> lx::Result<PathBuf> {
         if !lx::s_isdir(self.file_type) {
             return Err(lx::Error::ENOTDIR);
@@ -731,7 +744,7 @@ impl VirtioFsInode {
             return Err(lx::Error::EINVAL);
         }
 
-        let mut path = self.clone_path();
+        let mut path = self.object_path()?.clone();
         path.push_lx(LxStr::from_bytes(name))?;
         crate::microvm::inode::validate_child_path(&self.volume, &path)?;
         Ok(path)
@@ -743,19 +756,23 @@ impl VirtioFsInode {
     }
 
     /// Locks and returns the path through which an operation reaches this
-    /// inode's object, while the path still names the object.
+    /// inode's object, or an entry of it (see [`Self::child_path`]), while the
+    /// path still names the object.
     ///
     /// Renames and removals keep the path one of the names that the guest
     /// knows for the object, until the guest removes the last one, through an
     /// unlink, an rmdir, or a rename over it. The inode then keeps that former
     /// name, where the guest or the host may since have put another object. So
-    /// once the guest knows no name for the object, this fails with `ENOENT`,
-    /// as an operation through the former name of an unlinked file does.
+    /// once the path is not one of those names, this fails with `ENOENT`, as
+    /// an operation through the former name of an unlinked file does, and only
+    /// the object's open handles still reach it.
     pub(crate) fn object_path(&self) -> lx::Result<parking_lot::RwLockReadGuard<'_, PathBuf>> {
-        if self.aliases.read().is_empty() {
+        let aliases = self.aliases.read();
+        let path = self.get_path();
+        if !aliases.contains(&*path) {
             return Err(lx::Error::ENOENT);
         }
-        Ok(self.get_path())
+        Ok(path)
     }
 }
 
@@ -829,6 +846,27 @@ mod tests {
             inode.inc_lookup();
             assert_eq!(inode.lookup_count(), expected);
         }
+    }
+
+    /// `LINK` records its new name after the host link, so an `UNLINK` of the
+    /// node's last other name on another queue can record its removal first.
+    /// The node must then reach its object through the new name.
+    #[test]
+    fn a_link_that_an_unlink_of_the_other_name_overtakes_keeps_the_new_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("old"), b"data").unwrap();
+        let volume =
+            Arc::new(VirtioFsVolume::new(LxVolume::new(tmp.path()).unwrap(), 0, false).unwrap());
+        let (root, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
+        let (file, _) = root.lookup_child("old".as_ref()).unwrap();
+
+        root.link("new".as_ref(), &file).unwrap();
+        root.unlink("old".as_ref(), 0).unwrap();
+        file.remove_alias_prefix(Path::new("old"));
+        file.add_alias(PathBuf::from("new"));
+
+        assert_eq!(&*file.object_path().unwrap(), Path::new("new"));
+        assert_eq!(file.get_attr().unwrap().size, 4);
     }
 
     #[test]
