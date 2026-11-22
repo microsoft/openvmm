@@ -311,3 +311,68 @@ pub fn start_sidecar<'a>(
     );
     Some(config)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sidecar_defs::PerCpuState;
+    use test_with_tracing::test;
+    use zerocopy::FromZeros;
+
+    fn command_line_with_two_cpu_sidecar(num_cpus: usize, per_cpu_state: &PerCpuState) -> String {
+        let node_params = [SidecarNodeParams {
+            base_vp: 0,
+            vp_count: 2,
+            ..SidecarNodeParams::new_zeroed()
+        }];
+        let nodes = [SidecarNodeOutput::new_zeroed()];
+        let config = SidecarConfig {
+            num_cpus,
+            per_cpu_state,
+            node_params: &node_params,
+            nodes: &nodes,
+            start_reftime: 0,
+            end_reftime: 0,
+        };
+        config.kernel_command_line().to_string()
+    }
+
+    // Formats cold-boot assignment for sidecar CPUs 0-1 and a skipped singleton CPU 2.
+    // Expects Linux to start CPUs 0 and 2 while sidecar retains application processor 1.
+    #[test]
+    fn test_kernel_command_line_includes_singleton_cpu() {
+        let per_cpu_state = PerCpuState::new_zeroed();
+        assert!(sidecar_node_is_empty(&per_cpu_state, 2, 1));
+
+        assert_eq!(
+            command_line_with_two_cpu_sidecar(3, &per_cpu_state),
+            "boot_cpus=0,2"
+        );
+    }
+
+    // Formats cold-boot assignment when both CPUs belong to the same sidecar node.
+    // Expects only the base CPU in the Linux list, leaving its AP to sidecar.
+    #[test]
+    fn test_kernel_command_line_keeps_sidecar_application_processor() {
+        let per_cpu_state = PerCpuState::new_zeroed();
+        assert_eq!(
+            command_line_with_two_cpu_sidecar(2, &per_cpu_state),
+            "boot_cpus=0"
+        );
+    }
+
+    // Formats the same mixed topology with explicit per-CPU startup overrides.
+    // Expects Linux CPUs 0 and 2 and excludes the sidecar-started CPU 1.
+    #[test]
+    fn test_kernel_command_line_respects_per_cpu_overrides() {
+        let mut per_cpu_state = PerCpuState {
+            per_cpu_state_specified: true,
+            ..PerCpuState::new_zeroed()
+        };
+        per_cpu_state.sidecar_starts_cpu[1] = true;
+        assert_eq!(
+            command_line_with_two_cpu_sidecar(3, &per_cpu_state),
+            "boot_cpus=0,2"
+        );
+    }
+}
