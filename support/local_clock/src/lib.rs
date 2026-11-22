@@ -88,7 +88,9 @@ pub trait LocalClock: Send {
     /// Return the current clock time as [`Self::get_time`] does, or if that
     /// would wait, a future for the time it would return.
     ///
-    /// Defaults to `get_time`.
+    /// The future must complete without the caller doing anything else, so
+    /// that it can be waited for while holding the caller's locks. Defaults
+    /// to `get_time`.
     fn get_time_or_wait(&mut self) -> Result<LocalClockTime, LocalClockTimeFuture> {
         Ok(self.get_time())
     }
