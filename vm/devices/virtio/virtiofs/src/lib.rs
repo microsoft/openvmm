@@ -464,6 +464,14 @@ impl Fuse for VirtioFs {
             return Err(lx::Error::E2BIG);
         }
         let file = self.get_file(request.node_id(), arg.fh)?;
+        // Like Linux's write(2), refuse a handle that the guest did not open
+        // for writing, before refusing a file that it may not write.
+        if !matches!(
+            file.open_flags() as i32 & lx::O_ACCESS_MASK,
+            lx::O_WRONLY | lx::O_RDWR
+        ) {
+            return Err(lx::Error::EBADF);
+        }
         self.check_writable(file.inode())?;
         file.write(data, arg.offset, request.uid())
     }

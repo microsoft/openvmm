@@ -264,6 +264,43 @@ impl Share {
 }
 
 #[test]
+fn writes_need_a_handle_open_for_writing() {
+    let share = Share::new();
+    let fs = share.fs(&[], &[], &["out"]);
+    let out = lookup(&fs, "out").unwrap();
+    let existing = lookup(&fs, "out/existing").unwrap();
+
+    // Like Linux's write(2), a write through a handle that the guest did not
+    // open for writing fails with EBADF, whether FUSE_OPEN or FUSE_CREATE
+    // opened it, even with O_TRUNC, for which a Windows host needs write
+    // access.
+    for flags in [lx::O_RDONLY, lx::O_RDONLY | lx::O_TRUNC] {
+        let fh = open(&fs, existing, flags).unwrap();
+        assert_eq!(error(write(&fs, existing, fh, b"guest")), lx::Error::EBADF);
+        release(&fs, existing, fh);
+    }
+    let flags = lx::O_RDONLY | lx::O_CREAT | lx::O_TRUNC;
+    let (file, fh) = create_with_flags(&fs, out, "created", flags).unwrap();
+    assert_eq!(error(write(&fs, file, fh, b"guest")), lx::Error::EBADF);
+    release(&fs, file, fh);
+
+    // That error comes before the policy's EROFS outside the writable paths.
+    let log = lookup(&fs, "build.log").unwrap();
+    let fh = open(&fs, log, lx::O_RDONLY).unwrap();
+    assert_eq!(error(write(&fs, log, fh, b"guest")), lx::Error::EBADF);
+    release(&fs, log, fh);
+
+    let fh = open(&fs, existing, lx::O_WRONLY).unwrap();
+    assert_eq!(write(&fs, existing, fh, b"guest").unwrap(), 5);
+    release(&fs, existing, fh);
+
+    assert_eq!(share.read("out/existing"), "guest");
+    assert_eq!(share.read("out/created"), "");
+    assert_eq!(share.read("build.log"), "log");
+    share.assert_protected_paths_unchanged();
+}
+
+#[test]
 fn writes_succeed_only_under_writable_paths() {
     let share = Share::new();
     let fs = share.fs(&[], &[], &["build.log", "out"]);
