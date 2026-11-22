@@ -271,9 +271,11 @@ pub(crate) fn child_name_disallowed(volume: &VirtioFsVolume, name: &[u8]) -> boo
 /// directory is case sensitive, and the 8.3 short name of a long name. Such a
 /// name could reach an entry that the policy protects under its own name, so
 /// the guest reaches an existing entry only by the names that the host stores.
+/// A volume that exposes a file reaches nothing else, by the name that the
+/// host gave it, not the guest, so its names go unchecked.
 fn stored_path(volume: &VirtioFsVolume, path: &Path) -> lx::Result<Option<PathBuf>> {
     #[cfg(windows)]
-    if volume.strict_paths() {
+    if volume.strict_paths() && volume.exposed_file().is_none() {
         return volume.volume.stored_path(path);
     }
     let _ = (volume, path);

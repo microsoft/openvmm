@@ -1129,6 +1129,37 @@ fn a_file_child_link_needs_a_target_that_its_volume_can_name() {
     }
 }
 
+/// On Windows, a file child's host path may name its file in another case or
+/// by its 8.3 short name, which Windows resolves to the file, as the child's
+/// identity does. The guest reaches the file only through its child, by no
+/// name of its own, so the child's volume reaches the file by the name that
+/// the path gives, although it is not the one that Windows stores
+/// (microsoft/nvx#1603).
+#[cfg(windows)]
+#[test]
+fn a_file_child_may_name_its_file_by_another_of_its_names() {
+    let directory = tempdir().unwrap();
+    let file = directory.path().join("long-file-name.txt");
+    std::fs::write(&file, b"long").unwrap();
+    let mut paths = vec![directory.path().join("LONG-FILE-NAME.TXT")];
+    let short = directory.path().join("LONG-F~1.TXT");
+    if short.exists() {
+        paths.push(short);
+    } else {
+        tracing::info!("the volume does not generate 8.3 short names");
+    }
+    for path in paths {
+        let fs = attach_file_at(&path, false).unwrap();
+        let node = lookup(&fs, "file").unwrap();
+        assert_eq!(read_node(&fs, node), b"long", "{}", path.display());
+        let fh = open(&fs, node, lx::O_RDWR).unwrap();
+        write(&fs, node, fh, b"LONG").unwrap();
+        release(&fs, node, fh);
+        assert_eq!(std::fs::read(&file).unwrap(), b"LONG", "{}", path.display());
+        std::fs::write(&file, b"long").unwrap();
+    }
+}
+
 #[test]
 fn file_child_state_restores_and_rejects_changes() {
     let files = Files::new();
