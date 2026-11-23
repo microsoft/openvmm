@@ -489,10 +489,11 @@ macro_rules! impl_intercept {
 
             fn offset_of(&self, addr: $usize) -> Option<$usize> {
                 let base = self.addr?;
-
-                (base..(base + self.len))
-                    .contains(&addr)
-                    .then(|| addr - base)
+                // Compare the offset with the length: the exclusive end of a
+                // region that ends at the top of the address space does not
+                // fit in the address type.
+                let offset = addr.checked_sub(base)?;
+                (offset < self.len).then_some(offset)
             }
         }
     };
@@ -626,5 +627,57 @@ impl PollDeviceServices for FuzzChipsetServicesImpl<'_> {
 
     fn is_being_used(&self) -> bool {
         self.took_poll.get()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    enum NoDevice {}
+
+    impl ChipsetDevice for NoDevice {}
+
+    fn mapper<U: PartialOrd + Clone>() -> FuzzRegisterIntercept<U> {
+        FuzzRegisterIntercept {
+            dev: Weak::<CloseableMutex<NoDevice>>::new(),
+            map: Default::default(),
+        }
+    }
+
+    #[test]
+    fn pio_region_ending_at_the_top_finds_its_offsets() {
+        let mut region = mapper::<u16>().new_io_region("top", 2);
+        assert_eq!(region.offset_of(0xffff), None);
+        region.map(0xfffe);
+        assert_eq!(region.addr(), Some(0xfffe));
+        assert_eq!(region.offset_of(0xfffd), None);
+        assert_eq!(region.offset_of(0xfffe), Some(0));
+        assert_eq!(region.offset_of(0xffff), Some(1));
+        region.map(0xfffd);
+        assert_eq!(region.offset_of(0xfffd), Some(0));
+        assert_eq!(region.offset_of(0xfffe), Some(1));
+        assert_eq!(region.offset_of(0xffff), None);
+        region.unmap();
+        assert_eq!(region.offset_of(0xfffe), None);
+    }
+
+    #[test]
+    fn mmio_region_ending_at_the_top_finds_its_offsets() {
+        let mut region = mapper::<u64>().new_io_region("top", 0x1000);
+        let base = u64::MAX - 0xfff;
+        assert_eq!(region.offset_of(u64::MAX), None);
+        region.map(base);
+        assert_eq!(region.addr(), Some(base));
+        assert_eq!(region.offset_of(base - 1), None);
+        assert_eq!(region.offset_of(base), Some(0));
+        assert_eq!(region.offset_of(u64::MAX), Some(0xfff));
+        region.map(base - 1);
+        assert_eq!(region.offset_of(base - 1), Some(0));
+        assert_eq!(region.offset_of(u64::MAX - 1), Some(0xfff));
+        assert_eq!(region.offset_of(u64::MAX), None);
+        region.unmap();
+        assert_eq!(region.offset_of(base), None);
     }
 }
