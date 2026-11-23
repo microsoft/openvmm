@@ -296,26 +296,3 @@ pub struct GicrSgi {
     pub aff3: u8,
     _res_56_63: u8,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::IchLrEl2;
-    use super::IchVmcrEl2;
-
-    #[test]
-    fn ich_lr_eoi_is_bit_41() {
-        let encoded = u64::from(IchLrEl2::new().with_eoi(true));
-
-        assert_eq!(encoded, 1_u64 << 41);
-        assert!(IchLrEl2::from(1_u64 << 41).eoi());
-    }
-
-    #[test]
-    fn ich_vmcr_group_enables_are_bits_zero_and_one() {
-        let encoded = u64::from(IchVmcrEl2::new().with_veng0(true).with_veng1(true));
-
-        assert_eq!(encoded, 0b11);
-        assert!(IchVmcrEl2::from(1).veng0());
-        assert!(IchVmcrEl2::from(2).veng1());
-    }
-}

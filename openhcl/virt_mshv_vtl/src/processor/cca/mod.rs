@@ -1436,6 +1436,27 @@ impl TlbFlushLockAccess for CcaTlbLockFlushAccess<'_> {
     }
 }
 
+mod save_restore {
+    use super::CcaBacked;
+    use super::UhProcessor;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::SavedStateNotSupported;
+
+    impl SaveRestore for UhProcessor<'_, CcaBacked> {
+        type SavedState = SavedStateNotSupported;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            Err(SaveError::NotSupported)
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            match state {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1739,26 +1760,5 @@ mod tests {
             IchLrState::PENDING_AND_ACTIVE
         );
         assert!(overflow.is_empty());
-    }
-}
-
-mod save_restore {
-    use super::CcaBacked;
-    use super::UhProcessor;
-    use vmcore::save_restore::RestoreError;
-    use vmcore::save_restore::SaveError;
-    use vmcore::save_restore::SaveRestore;
-    use vmcore::save_restore::SavedStateNotSupported;
-
-    impl SaveRestore for UhProcessor<'_, CcaBacked> {
-        type SavedState = SavedStateNotSupported;
-
-        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
-        }
-
-        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            match state {}
-        }
     }
 }
