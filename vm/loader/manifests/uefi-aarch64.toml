@@ -1,0 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+guest_arch = "aarch64"
+
+# ----------------------------------------------------------------------------
+# No isolation
+# ----------------------------------------------------------------------------
+[guest_configs.none]
+guest_svn = 1
+max_vtl = 0
+
+[guest_configs.none.image.uefi]
+config_type = "none"

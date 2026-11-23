@@ -4038,7 +4038,9 @@ dependencies = [
  "product_policy",
  "serde",
  "serde_json",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "toml_edit",
 ]
 
 [[package]]

@@ -1,13 +1,27 @@
-This folder contains manifest recipes for building IGVM files. Create the
-resource file and run `igvmfilegen manifest` directly.
+This folder contains TOML manifest recipes for building IGVM files. Create the
+JSON resource file and run `igvmfilegen manifest` directly. JSON manifests are
+not supported.
+
+Each manifest names its guest configs by isolation type, so every section header
+shows which platform it belongs to: `[guest_configs.none]`,
+`[guest_configs.vbs]`, `[guest_configs.snp]`, or `[guest_configs.tdx]`. An
+isolated platform's settings go in its `isolation` table, for example
+`[guest_configs.snp.isolation]`. Each type may appear once, and the guest
+configs are built in the order they appear in the file.
+
+Device-policy settings are inline in each product's table, as
+`product_policy.policy.<product>.device_policy`; their `devices` catalog paths
+are relative to the manifest. The shared PCI device
+catalog is `policies/devices.toml`. Omit optional fields instead of using JSON
+`null`.
 
 ## SNP Linux-direct profile
 
-Flowey builds `snp-linux-direct-pipette.json` for the `linux_direct_x64[snp]`
+Flowey builds `snp-linux-direct-pipette.toml` for the `linux_direct_x64[snp]`
 VMM test configuration. It injects the statically linked Linux pipette into the shared test
 initrd from `openvmm-deps`, then runs it as PID 1 with `rdinit=/pipette`. The
 test also uses the SNP guest kernel from `openvmm-deps` and the in-tree
-`snp_bootshim`. The manual `snp-linux-direct.json` bring-up profile instead
+`snp_bootshim`. The manual `snp-linux-direct.toml` bring-up profile instead
 starts the initrd shell. These profiles have these assumptions:
 
 - x64 and one VTL0 SEV-SNP guest that boots Linux directly
@@ -30,7 +44,7 @@ to boot on KVM and MSHV. Its `SnpVpContext` uses the SNP initial-VMSA GPA
 maps and imports the file-provided VMSA there. Both backends use the policy
 encoded in the file, but only MSHV submits its SNP ID block.
 
-The `snp-linux-direct-restricted.json` profile encodes restricted interrupt
+The `snp-linux-direct-restricted.toml` profile encodes restricted interrupt
 injection in its IGVM VMSA. It is intended only for MSHV bring-up.
 
 Every SNP Linux-direct image requests the host's device tree through an
@@ -130,7 +144,7 @@ Then generate the image:
 ```bash
 repo=/absolute/path/to/openvmm
 cargo run -p igvmfilegen -- manifest \
-  --manifest "$repo/vm/loader/manifests/snp-linux-direct.json" \
+  --manifest "$repo/vm/loader/manifests/snp-linux-direct.toml" \
   --resources /absolute/path/to/snp-linux-direct-resources.json \
   --output /absolute/path/to/snp-linux-direct.bin
 ```

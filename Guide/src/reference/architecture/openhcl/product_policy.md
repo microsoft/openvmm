@@ -6,18 +6,16 @@ covers it.
 
 Three parts of the build and boot share this contract:
 
-1. The `openhcl` image in the IGVM manifest names a product policy in
-   `product_policy.policy` and, optionally, a PCI device policy file in
-   `product_policy.device_policy`, relative to the manifest:
+1. The `openhcl` image in the TOML IGVM manifest names a product policy in
+   `product_policy.policy.<PRODUCT>` and, optionally, inline PCI device-policy
+   settings in that product's `device_policy` table. The device catalog path
+   is relative to the manifest:
 
-   ```json
-   "openhcl": {
-       "product_policy": {
-           "policy": { "azure": {} },
-           "device_policy": "policies/azure-cvm.toml"
-       },
-       ...
-   }
+   ```toml
+   [guest_configs.snp.image.openhcl.product_policy.policy.azure.device_policy]
+   devices = "policies/devices.toml"
+   allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm"]
+   vpci_relay = "default_on"
    ```
 
 2. [`igvmfilegen`](../../../dev_guide/dev_tools/igvmfilegen.md) adds the
@@ -52,18 +50,19 @@ fails to boot. The products' other fields are reserved and aren't enforced yet.
 
 ## PCI device policy
 
-Every product carries the settings from the image's device policy file: the
+Every product carries the settings from the image's inline device policy: the
 PCI devices that OpenHCL's VPCI relay may offer to the guest, and when the
-relay runs. Only the device policy file can set them; the product policy in the
-manifest can't.
+relay runs. Only the product's `device_policy` table can set them; the
+product's other fields can't.
 
-### Device policy file
+### Inline device policy
 
-A device policy names a device catalog, relative to the policy file, and the
+A device policy names a device catalog, relative to the manifest, and the
 devices it allows. `"*"` allows every device.
 
 ```toml
-devices = "devices.toml"
+[guest_configs.snp.image.openhcl.product_policy.policy.azure.device_policy]
+devices = "policies/devices.toml"
 allowed_pci_devices = ["nvme", "mana"]
 vpci_relay = "default_on"
 ```
@@ -73,7 +72,7 @@ vpci_relay = "default_on"
 
 | `vpci_relay` | Relay by default | `OPENHCL_ENABLE_VPCI_RELAY` |
 |---|---|---|
-| `"default_off"`, used if the file doesn't set `vpci_relay` | Off | `1` turns it on |
+| `"default_off"`, used if the table doesn't set `vpci_relay` | Off | `1` turns it on |
 | `"default_on"` | On | `0` turns it off |
 | `"must_be_on"` | On | Ignored |
 
@@ -113,11 +112,12 @@ When the relay runs, it offers the guest only the allowed devices:
 
 ## In-tree images
 
-The policies are in `vm/loader/manifests/policies`:
+The policies are inline in `vm/loader/manifests/*.toml`. They share the catalog
+in `vm/loader/manifests/policies/devices.toml`:
 
 | Manifests | Product | Device policy |
 |---|---|---|
-| `openhcl-x64-cvm-{dev,release}.json` | `azure` | `azure-cvm.toml`: NVMe, MANA, and the Azure Integrated HSM; `default_on` |
-| `openhcl-x64-{dev,release}.json`, `openhcl-x64-direct-{dev,release}.json`, `openhcl-aarch64-{dev,release}.json` | `azure` | `azure.toml`: the same devices; `default_off` |
-| `openhcl-x64-cvm-sivm-{dev,release}.json` | `sivm` | `sivm.toml`: a GPU; `must_be_on` |
-| `openhcl-x64-test-sivm.json` | `sivm` | None |
+| `openhcl-x64-cvm-{dev,release}.toml` | `azure` | NVMe, MANA, and the Azure Integrated HSM; `default_on` |
+| `openhcl-x64-{dev,release}.toml`, `openhcl-x64-direct-{dev,release}.toml`, `openhcl-aarch64-{dev,release}.toml` | `azure` | The same devices; `default_off` |
+| `openhcl-x64-cvm-sivm-{dev,release}.toml` | `sivm` | A GPU; `must_be_on` |
+| `openhcl-x64-test-sivm.toml` | `sivm` | None |

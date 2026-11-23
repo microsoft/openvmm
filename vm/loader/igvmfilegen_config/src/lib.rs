@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Configuration for generating IGVM files. These are deserialized from a JSON
+//! Configuration for generating IGVM files. These are deserialized from a TOML
 //! manifest file used by the file builder.
 
 #![expect(missing_docs)]
@@ -10,6 +10,8 @@
 use igvm_defs::PAGE_SIZE_4K;
 use page_table::IdentityMapSize;
 use page_table::x64::X64_PTE_ADDRESS_BIT_RANGE;
+use product_policy::ManifestProductPolicy;
+#[cfg(test)]
 use product_policy::ProductPolicy;
 use serde::Deserialize;
 use serde::Serialize;
@@ -28,7 +30,7 @@ pub enum UefiConfigType {
 }
 
 /// The interrupt injection type that should be used for VMPL0 on SNP.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SnpInjectionType {
     /// Normal injection.
@@ -38,7 +40,7 @@ pub enum SnpInjectionType {
 }
 
 /// Secure AVIC type.
-#[derive(Serialize, Default, Deserialize, Debug)]
+#[derive(Serialize, Default, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SecureAvicType {
     /// Offload AVIC to the hardware.
@@ -48,41 +50,57 @@ pub enum SecureAvicType {
     Disabled,
 }
 
-/// The isolation type that should be used for the loader.
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
+/// The isolation type that should be used for the loader. In a manifest, the
+/// key of each `guest_configs` entry selects the type, and the entry's
+/// `isolation` table holds its settings.
+#[derive(Debug)]
 pub enum ConfigIsolationType {
     /// No isolation is present.
     None,
     /// Hypervisor based isolation (VBS) is present.
-    Vbs {
-        /// Boolean representing if the guest allows debugging
-        enable_debug: bool,
-    },
+    Vbs(VbsIsolation),
     /// AMD SEV-SNP.
-    Snp {
-        /// The optional shared GPA boundary to configure for the guest. A
-        /// `None` value represents a guest that no shared GPA boundary is to be
-        /// configured.
-        shared_gpa_boundary_bits: Option<u8>,
-        /// The SEV-SNP policy for the guest.
-        policy: u64,
-        /// Boolean representing if the guest allows debugging
-        enable_debug: bool,
-        /// The interrupt injection type to use for the highest vmpl.
-        injection_type: SnpInjectionType,
-        /// Secure AVIC
-        #[serde(default)]
-        secure_avic: SecureAvicType,
-    },
+    Snp(SnpIsolation),
     /// Intel TDX.
-    Tdx {
-        /// Boolean representing if the guest allows debugging
-        enable_debug: bool,
-        /// Boolean representing if the guest is disallowed from handling
-        /// virtualization exceptions
-        sept_ve_disable: bool,
-    },
+    Tdx(TdxIsolation),
+}
+
+/// VBS isolation settings.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct VbsIsolation {
+    /// Boolean representing if the guest allows debugging
+    pub enable_debug: bool,
+}
+
+/// AMD SEV-SNP isolation settings.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SnpIsolation {
+    /// The optional shared GPA boundary to configure for the guest. A
+    /// `None` value represents a guest that no shared GPA boundary is to be
+    /// configured.
+    pub shared_gpa_boundary_bits: Option<u8>,
+    /// The SEV-SNP policy for the guest.
+    pub policy: u64,
+    /// Boolean representing if the guest allows debugging
+    pub enable_debug: bool,
+    /// The interrupt injection type to use for the highest vmpl.
+    pub injection_type: SnpInjectionType,
+    /// Secure AVIC
+    #[serde(default)]
+    pub secure_avic: SecureAvicType,
+}
+
+/// Intel TDX isolation settings.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TdxIsolation {
+    /// Boolean representing if the guest allows debugging
+    pub enable_debug: bool,
+    /// Boolean representing if the guest is disallowed from handling
+    /// virtualization exceptions
+    pub sept_ve_disable: bool,
 }
 
 /// Configuration on what to load.
@@ -160,20 +178,31 @@ pub struct LinuxImage {
     pub command_line: CString,
 }
 
-/// An OpenHCL image's product policy, and the device policy file that sets
-/// its PCI devices.
+/// An OpenHCL image's product policy. The product's table may include a
+/// `device_policy` that sets its PCI devices.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ProductPolicyConfig {
-    /// The measured product policy.
-    pub policy: ProductPolicy,
-    /// Optional device policy file, relative to the manifest: the PCI devices
-    /// that the VPCI relay may expose to VTL0, and when the relay runs.
-    /// Without one, the relay is off by default and VPCI devices reach VTL0
-    /// unfiltered; enabling it with `OPENHCL_ENABLE_VPCI_RELAY=1` fails the
-    /// boot, because no device is allowed.
+    /// The measured product policy and its optional device policy: the PCI
+    /// devices that the VPCI relay may expose to VTL0, and when the relay
+    /// runs. Without a device policy, the relay is off by default and VPCI
+    /// devices reach VTL0 unfiltered; enabling it with
+    /// `OPENHCL_ENABLE_VPCI_RELAY=1` fails the boot, because no device is
+    /// allowed.
+    pub policy: ManifestProductPolicy<DevicePolicyConfig>,
+}
+
+/// Device catalog and VPCI relay settings for an OpenHCL image.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DevicePolicyConfig {
+    /// Device catalog path, relative to the manifest.
+    pub devices: PathBuf,
+    /// Names in the catalog that the relay may expose. `"*"` allows every device.
+    pub allowed_pci_devices: Vec<String>,
+    /// When the relay runs. Defaults to off when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_policy: Option<PathBuf>,
+    pub vpci_relay: Option<product_policy::VpciRelayMode>,
 }
 
 impl Image {
@@ -275,7 +304,7 @@ impl LinuxImage {
 
 /// The config used to describe an initial guest context to be generated by the
 /// tool.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 pub struct GuestConfig {
     /// The SVN of this guest.
     pub guest_svn: u32,
@@ -288,7 +317,7 @@ pub struct GuestConfig {
 }
 
 /// The architecture of the igvm file.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GuestArch {
     /// x64
@@ -299,12 +328,15 @@ pub enum GuestArch {
 
 /// The config used to describe a multi-architecture IGVM file containing
 /// multiple guests.
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Config {
     /// The architecture of the igvm file.
     pub guest_arch: GuestArch,
-    /// The array of guest configs to be used to generate a single IGVM file.
+    /// The guest configs to be used to generate a single IGVM file, in
+    /// manifest order. The manifest keys each one by its isolation type:
+    /// `none`, `vbs`, `snp`, or `tdx`.
+    #[serde(deserialize_with = "parse::guest_configs")]
     pub guest_configs: Vec<GuestConfig>,
 }
 
@@ -347,7 +379,95 @@ mod parse {
     use super::*;
     use serde::Deserialize;
     use serde::Deserializer;
+    use serde::de::Error as _;
+    use serde::de::MapAccess;
     use std::collections::HashMap;
+
+    #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+    #[serde(rename_all = "snake_case")]
+    enum IsolationKey {
+        None,
+        Vbs,
+        Snp,
+        Tdx,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct NonIsolatedGuest {
+        guest_svn: u32,
+        max_vtl: u8,
+        image: Image,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct IsolatedGuest<I> {
+        guest_svn: u32,
+        max_vtl: u8,
+        isolation: I,
+        image: Image,
+    }
+
+    impl<I> IsolatedGuest<I> {
+        fn into_config(self, isolation_type: impl FnOnce(I) -> ConfigIsolationType) -> GuestConfig {
+            GuestConfig {
+                guest_svn: self.guest_svn,
+                max_vtl: self.max_vtl,
+                isolation_type: isolation_type(self.isolation),
+                image: self.image,
+            }
+        }
+    }
+
+    /// Reads the guest configs, keyed by isolation type, in manifest order.
+    pub fn guest_configs<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<GuestConfig>, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Vec<GuestConfig>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a table of guest configs keyed by `none`, `vbs`, `snp`, or `tdx`")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut keys = Vec::new();
+                let mut configs = Vec::new();
+                while let Some(key) = map.next_key::<IsolationKey>()? {
+                    if keys.contains(&key) {
+                        return Err(A::Error::custom(format_args!(
+                            "duplicate guest config for {key:?}"
+                        )));
+                    }
+                    keys.push(key);
+                    configs.push(match key {
+                        IsolationKey::None => {
+                            let guest: NonIsolatedGuest = map.next_value()?;
+                            GuestConfig {
+                                guest_svn: guest.guest_svn,
+                                max_vtl: guest.max_vtl,
+                                isolation_type: ConfigIsolationType::None,
+                                image: guest.image,
+                            }
+                        }
+                        IsolationKey::Vbs => map
+                            .next_value::<IsolatedGuest<VbsIsolation>>()?
+                            .into_config(ConfigIsolationType::Vbs),
+                        IsolationKey::Snp => map
+                            .next_value::<IsolatedGuest<SnpIsolation>>()?
+                            .into_config(ConfigIsolationType::Snp),
+                        IsolationKey::Tdx => map
+                            .next_value::<IsolatedGuest<TdxIsolation>>()?
+                            .into_config(ConfigIsolationType::Tdx),
+                    });
+                }
+                Ok(configs)
+            }
+        }
+
+        d.deserialize_map(Visitor)
+    }
 
     pub fn resources<'de, D: Deserializer<'de>>(
         d: D,
@@ -439,6 +559,7 @@ impl Resources {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_with_tracing::test;
 
     fn snp_linux_direct_image(
         use_initrd: bool,
@@ -459,7 +580,7 @@ mod test {
     #[test]
     fn parse_snp_linux_direct_manifest() {
         let config: Config =
-            serde_json::from_str(include_str!("../../manifests/snp-linux-direct.json")).unwrap();
+            toml_edit::de::from_str(include_str!("../../manifests/snp-linux-direct.toml")).unwrap();
 
         assert!(matches!(config.guest_arch, GuestArch::X64));
         let [guest] = config.guest_configs.as_slice() else {
@@ -468,13 +589,13 @@ mod test {
         assert_eq!(guest.guest_svn, 1);
         assert_eq!(guest.max_vtl, 0);
         match &guest.isolation_type {
-            ConfigIsolationType::Snp {
+            ConfigIsolationType::Snp(SnpIsolation {
                 shared_gpa_boundary_bits,
                 policy,
                 enable_debug,
                 injection_type,
                 secure_avic,
-            } => {
+            }) => {
                 assert_eq!(*shared_gpa_boundary_bits, None);
                 assert_eq!(*policy, 196608);
                 assert!(*enable_debug);
@@ -507,8 +628,8 @@ mod test {
 
     #[test]
     fn parse_restricted_snp_linux_direct_manifest() {
-        let config: Config = serde_json::from_str(include_str!(
-            "../../manifests/snp-linux-direct-restricted.json"
+        let config: Config = toml_edit::de::from_str(include_str!(
+            "../../manifests/snp-linux-direct-restricted.toml"
         ))
         .unwrap();
         let [guest] = config.guest_configs.as_slice() else {
@@ -516,10 +637,10 @@ mod test {
         };
         assert!(matches!(
             guest.isolation_type,
-            ConfigIsolationType::Snp {
+            ConfigIsolationType::Snp(SnpIsolation {
                 injection_type: SnpInjectionType::Restricted,
                 ..
-            }
+            })
         ));
         guest.image.validate().unwrap();
     }
@@ -626,76 +747,414 @@ mod test {
         assert!(result.is_err());
     }
 
+    /// A manifest without a product policy builds an image with no policy
+    /// file in the initrd. Reading such a manifest must not invent a policy,
+    /// and writing the image config back out must leave the field out rather
+    /// than emit an empty one.
     #[test]
     fn openhcl_image_without_product_policy_round_trips() {
-        // Older manifests omit the field; serialization must too.
-        let json = r#"{"openhcl":{"command_line":"","memory_page_count":10,"uefi":true}}"#;
-        let parsed: Image = serde_json::from_str(json).unwrap();
+        let toml = r#"
+            [openhcl]
+            command_line = ""
+            memory_page_count = 10
+            uefi = true
+        "#;
+        let parsed: Image = toml_edit::de::from_str(toml).unwrap();
         match &parsed {
             Image::Openhcl { product_policy, .. } => assert!(product_policy.is_none()),
             other => panic!("unexpected parse: {other:?}"),
         }
-        let reserialized = serde_json::to_string(&parsed).unwrap();
+        let reserialized = toml_edit::ser::to_string(&parsed).unwrap();
         assert!(
             !reserialized.contains("product_policy"),
             "policy field should be omitted when None: {reserialized}"
         );
     }
 
+    /// The SIVM product policy and its device policy are measured and
+    /// enforced by OpenHCL. Every rule written in the manifest, including the
+    /// base64 custom UEFI data and the relay mode, must reach the parsed
+    /// config unchanged; a lost or misread rule would build an image that
+    /// enforces less than the manifest says, with no build error.
     #[test]
     fn openhcl_image_with_sivm_product_policy_deserializes() {
-        let json = r#"{
-            "openhcl": {
-                "command_line": "",
-                "memory_page_count": 10,
-                "uefi": true,
-                "product_policy": {
-                    "policy": {
-                        "sivm": {
-                            "require_ephemeral_vmgs": true,
-                            "require_secure_boot": true,
-                            "require_secure_boot_vars": true,
-                            "require_bcd_integrity": true,
-                            "custom_uefi_json": "ZGVhZGJlZWY="
-                        }
-                    }
-                }
-            }
-        }"#;
-        let parsed: Image = serde_json::from_str(json).unwrap();
+        let toml = r#"
+            [openhcl]
+            command_line = ""
+            memory_page_count = 10
+            uefi = true
+
+            [openhcl.product_policy.policy.sivm]
+            require_ephemeral_vmgs = true
+            require_secure_boot = true
+            require_secure_boot_vars = true
+            require_bcd_integrity = true
+            custom_uefi_json = "ZGVhZGJlZWY="
+
+            [openhcl.product_policy.policy.sivm.device_policy]
+            devices = "policies/devices.toml"
+            allowed_pci_devices = ["nvidia-gpu"]
+            vpci_relay = "must_be_on"
+        "#;
+        let parsed: Image = toml_edit::de::from_str(toml).unwrap();
         match parsed {
             Image::Openhcl {
                 product_policy: Some(config),
                 ..
-            } => match config.policy {
-                ProductPolicy::Sivm(p) => {
-                    assert!(p.require_ephemeral_vmgs);
-                    assert!(p.require_secure_boot);
-                    assert!(p.require_secure_boot_vars);
-                    assert!(p.require_bcd_integrity);
-                    assert_eq!(p.custom_uefi_json, b"deadbeef");
+            } => {
+                match config.policy.policy() {
+                    ProductPolicy::Sivm(p) => {
+                        assert!(p.require_ephemeral_vmgs);
+                        assert!(p.require_secure_boot);
+                        assert!(p.require_secure_boot_vars);
+                        assert!(p.require_bcd_integrity);
+                        assert_eq!(p.custom_uefi_json, b"deadbeef");
+                    }
+                    ProductPolicy::Cwcow(p) => panic!("unexpected Cwcow policy: {p:?}"),
+                    ProductPolicy::Azure(p) => panic!("unexpected Azure policy: {p:?}"),
                 }
-                ProductPolicy::Cwcow(p) => panic!("unexpected Cwcow policy: {p:?}"),
-                ProductPolicy::Azure(p) => panic!("unexpected Azure policy: {p:?}"),
-            },
+                let device_policy = config.policy.device_policy().unwrap();
+                assert_eq!(device_policy.allowed_pci_devices, ["nvidia-gpu"]);
+                assert_eq!(
+                    device_policy.vpci_relay,
+                    Some(product_policy::VpciRelayMode::MustBeOn)
+                );
+            }
             other => panic!("unexpected parse: {other:?}"),
         }
     }
 
+    /// A device policy in the wrong place, or a misspelled field, must be an
+    /// error. Otherwise it would be silently ignored, and the image would be
+    /// built without the device restrictions its author intended.
     #[test]
-    fn openhcl_image_with_null_product_policy_is_absent() {
-        let json = r#"{
-            "openhcl": {
-                "command_line": "",
-                "memory_page_count": 10,
-                "uefi": true,
-                "product_policy": null
-            }
-        }"#;
-        let parsed: Image = serde_json::from_str(json).unwrap();
-        match parsed {
-            Image::Openhcl { product_policy, .. } => assert!(product_policy.is_none()),
-            other => panic!("unexpected parse: {other:?}"),
+    fn product_policy_rejects_misplaced_or_unknown_fields() {
+        let device_policy = r#"
+            devices = "policies/devices.toml"
+            allowed_pci_devices = ["nvme"]
+        "#;
+        for (toml, unknown) in [
+            // The old location, beside `policy`, is no longer accepted.
+            (
+                format!("policy = {{ azure = {{}} }}\n[device_policy]\n{device_policy}"),
+                "device_policy",
+            ),
+            (
+                format!("[policy.azure]\nextra = 1\n[policy.azure.device_policy]\n{device_policy}"),
+                "extra",
+            ),
+            // Only the device policy may set the relay settings.
+            (
+                "[policy.azure.vpci_relay]\nmode = \"must_be_on\"".to_owned(),
+                "vpci_relay",
+            ),
+        ] {
+            let error = toml_edit::de::from_str::<ProductPolicyConfig>(&toml).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{unknown}`")),
+                "{toml}: {error}"
+            );
         }
+    }
+
+    /// Every in-tree manifest, keyed by file stem. The rule tests below load
+    /// the real manifests, so they check exactly what the build uses.
+    fn in_tree_manifests() -> std::collections::BTreeMap<String, Config> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests");
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "toml")
+            })
+            .map(|path| {
+                let config = toml_edit::de::from_str(&std::fs::read_to_string(&path).unwrap())
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                (
+                    path.file_stem().unwrap().to_str().unwrap().to_owned(),
+                    config,
+                )
+            })
+            .collect()
+    }
+
+    /// Every in-tree manifest must load and pass image validation. A broken
+    /// manifest otherwise fails only when an image is built from it, which
+    /// may be much later, in a CI or release build. The count catches a
+    /// manifest that was deleted or renamed by mistake.
+    #[test]
+    fn in_tree_manifests_parse() {
+        let manifests = in_tree_manifests();
+        for (name, config) in &manifests {
+            assert!(!config.guest_configs.is_empty(), "{name}");
+            for guest in &config.guest_configs {
+                guest.image.validate().unwrap();
+            }
+        }
+        assert_eq!(manifests.len(), 16);
+    }
+
+    fn isolation_names(config: &Config) -> Vec<&'static str> {
+        config
+            .guest_configs
+            .iter()
+            .map(|guest| match guest.isolation_type {
+                ConfigIsolationType::None => "none",
+                ConfigIsolationType::Vbs(_) => "vbs",
+                ConfigIsolationType::Snp(_) => "snp",
+                ConfigIsolationType::Tdx(_) => "tdx",
+            })
+            .collect()
+    }
+
+    /// Guest configs are built in the order the manifest lists them, and that
+    /// order affects the IGVM file's layout. If the parser reordered them,
+    /// for example alphabetically, images such as `uefi-x64` (TDX before SNP)
+    /// would change silently. This checks a manifest whose order isn't
+    /// alphabetical.
+    #[test]
+    fn guest_configs_keep_manifest_order() {
+        let uefi: Config =
+            toml_edit::de::from_str(include_str!("../../manifests/uefi-x64.toml")).unwrap();
+        assert_eq!(isolation_names(&uefi), ["tdx", "snp"]);
+        let cvm: Config =
+            toml_edit::de::from_str(include_str!("../../manifests/openhcl-x64-cvm-release.toml"))
+                .unwrap();
+        assert_eq!(isolation_names(&cvm), ["snp", "tdx", "vbs"]);
+    }
+
+    /// Isolation settings decide how a confidential guest is protected and
+    /// measured. A mistake in them must be an error, not silently ignored or
+    /// filled in: an isolation table on a non-isolated guest, a missing one on
+    /// an isolated guest, a misspelled setting, an unknown platform, or a
+    /// manifest still in the old `[[guest_configs]]` layout.
+    #[test]
+    fn guest_configs_reject_invalid_entries() {
+        let image = "[guest_configs.{key}.image.uefi]\nconfig_type = \"none\"";
+        let guest = |key: &str, extra: &str| {
+            format!(
+                "guest_arch = \"x64\"\n[guest_configs.{key}]\nguest_svn = 1\nmax_vtl = 0\n{extra}\n{}",
+                image.replace("{key}", key)
+            )
+        };
+        for (toml, message) in [
+            // The isolation table belongs only to isolated platforms.
+            (
+                guest("none", "isolation = { enable_debug = false }"),
+                "unknown field `isolation`",
+            ),
+            (guest("vbs", ""), "missing field `isolation`"),
+            (
+                guest("vbs", "isolation = { enable_debug = false, extra = 1 }"),
+                "unknown field `extra`",
+            ),
+            (
+                guest("tdx", "isolation_type = \"none\""),
+                "unknown field `isolation_type`",
+            ),
+            (guest("sev", ""), "unknown variant `sev`"),
+            // The previous array layout is not accepted.
+            (
+                "guest_arch = \"x64\"\n[[guest_configs]]\nguest_svn = 1".to_owned(),
+                "invalid type",
+            ),
+        ] {
+            let error = toml_edit::de::from_str::<Config>(&toml).unwrap_err();
+            assert!(error.to_string().contains(message), "{toml}\n{error}");
+        }
+    }
+
+    /// Whether the loader will measure a debuggable SNP policy. The loader
+    /// replaces the policy's debug bit with `enable_debug`.
+    fn snp_debug(snp: &SnpIsolation) -> bool {
+        igvm_defs::SnpPolicy::from(snp.policy)
+            .with_debug(snp.enable_debug as u8)
+            .debug()
+            == 1
+    }
+
+    /// Isolation settings other than debugging.
+    #[derive(Debug, PartialEq)]
+    enum IsolationWithoutDebug<'a> {
+        None,
+        Vbs,
+        Snp {
+            shared_gpa_boundary_bits: Option<u8>,
+            policy: u64,
+            injection_type: &'a SnpInjectionType,
+            secure_avic: &'a SecureAvicType,
+        },
+        Tdx {
+            sept_ve_disable: bool,
+        },
+    }
+
+    fn isolation_without_debug(isolation: &ConfigIsolationType) -> IsolationWithoutDebug<'_> {
+        match isolation {
+            ConfigIsolationType::None => IsolationWithoutDebug::None,
+            ConfigIsolationType::Vbs(_) => IsolationWithoutDebug::Vbs,
+            ConfigIsolationType::Snp(snp) => IsolationWithoutDebug::Snp {
+                shared_gpa_boundary_bits: snp.shared_gpa_boundary_bits,
+                policy: igvm_defs::SnpPolicy::from(snp.policy).with_debug(0).into(),
+                injection_type: &snp.injection_type,
+                secure_avic: &snp.secure_avic,
+            },
+            ConfigIsolationType::Tdx(tdx) => IsolationWithoutDebug::Tdx {
+                sept_ve_disable: tdx.sept_ve_disable,
+            },
+        }
+    }
+
+    /// What an image loads, without sizes or command lines.
+    fn image_kind(image: &Image) -> String {
+        match image {
+            Image::None => "none".into(),
+            Image::Uefi { config_type } => format!("uefi {config_type:?}"),
+            Image::Openhcl { uefi, linux, .. } => {
+                format!("openhcl uefi={uefi} linux={}", linux.is_some())
+            }
+            Image::Linux(_) => "linux".into(),
+            Image::SnpLinuxDirect { .. } => "snp_linux_direct".into(),
+        }
+    }
+
+    /// An OpenHCL image's product policy and device policy.
+    fn openhcl_policies(image: &Image) -> Option<(ProductPolicy, Option<&DevicePolicyConfig>)> {
+        match image {
+            Image::Openhcl {
+                product_policy: Some(config),
+                ..
+            } => Some((config.policy.policy(), config.policy.device_policy())),
+            _ => None,
+        }
+    }
+
+    /// A debuggable confidential image lets the host inspect or change the
+    /// guest, so shipping one would undo its isolation. Release images must
+    /// never be debuggable: the measured VBS, SNP, and TDX policies must have
+    /// debugging off, and OpenHCL's measured command line must not enable
+    /// confidential debugging. This catches a debug setting copied from a dev
+    /// manifest into a release one.
+    #[test]
+    fn release_manifests_are_not_debuggable() {
+        let mut checked = 0;
+        for (name, config) in in_tree_manifests() {
+            if !name.ends_with("-release") {
+                continue;
+            }
+            for guest in &config.guest_configs {
+                let debug = match &guest.isolation_type {
+                    ConfigIsolationType::None => false,
+                    ConfigIsolationType::Vbs(vbs) => vbs.enable_debug,
+                    ConfigIsolationType::Snp(snp) => snp_debug(snp),
+                    ConfigIsolationType::Tdx(tdx) => tdx.enable_debug,
+                };
+                assert!(!debug, "{name}: {:?} is debuggable", guest.isolation_type);
+                if let Image::Openhcl { command_line, .. } = &guest.image {
+                    assert!(
+                        !command_line.contains("OPENHCL_CONFIDENTIAL_DEBUG"),
+                        "{name}: {command_line}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+    }
+
+    /// Developers test with the dev manifest, but the release manifest is what
+    /// ships. If a change is made to only one of the pair, such as a new
+    /// allowed device or a different SNP or TDX setting, the shipped image
+    /// would differ from the tested one without anyone noticing. Each pair
+    /// must build the same image: only debugging, SVNs, command lines, and
+    /// memory sizes may differ.
+    #[test]
+    fn dev_and_release_manifests_match() {
+        let manifests = in_tree_manifests();
+        let mut pairs = 0;
+        for (name, dev) in &manifests {
+            if let Some(base) = name.strip_suffix("-release") {
+                assert!(
+                    manifests.contains_key(&format!("{base}-dev")),
+                    "{name} has no dev manifest"
+                );
+            }
+            let Some(base) = name.strip_suffix("-dev") else {
+                continue;
+            };
+            let release = manifests
+                .get(&format!("{base}-release"))
+                .unwrap_or_else(|| panic!("{name} has no release manifest"));
+            assert_eq!(dev.guest_arch, release.guest_arch, "{base}");
+            assert_eq!(isolation_names(dev), isolation_names(release), "{base}");
+            for (dev, release) in dev.guest_configs.iter().zip(&release.guest_configs) {
+                assert_eq!(dev.max_vtl, release.max_vtl, "{base}");
+                assert_eq!(
+                    isolation_without_debug(&dev.isolation_type),
+                    isolation_without_debug(&release.isolation_type),
+                    "{base}"
+                );
+                assert_eq!(image_kind(&dev.image), image_kind(&release.image), "{base}");
+                assert_eq!(
+                    openhcl_policies(&dev.image),
+                    openhcl_policies(&release.image),
+                    "{base}"
+                );
+            }
+            pairs += 1;
+        }
+        assert!(pairs > 0);
+    }
+
+    /// The SNP, TDX, and VBS entries in one manifest describe the same image
+    /// on different hardware, and each repeats the shared settings. An edit
+    /// applied to only one platform, such as a bumped SVN or a removed device,
+    /// would make that platform behave or attest differently from the others.
+    /// They must share their SVN, what they load, and their product and
+    /// device policies.
+    #[test]
+    fn platforms_in_a_manifest_match() {
+        let mut checked = 0;
+        for (name, config) in in_tree_manifests() {
+            let [first, rest @ ..] = config.guest_configs.as_slice() else {
+                panic!("{name} has no guest configs");
+            };
+            for guest in rest {
+                assert_eq!(guest.guest_svn, first.guest_svn, "{name}");
+                assert_eq!(image_kind(&guest.image), image_kind(&first.image), "{name}");
+                assert_eq!(
+                    openhcl_policies(&guest.image),
+                    openhcl_policies(&first.image),
+                    "{name}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+    }
+
+    /// A device policy that leaves out `vpci_relay` must get the documented
+    /// default, `default_off`, rather than some other mode. A misspelled
+    /// setting, such as `vpci_realy` for `vpci_relay`, must be an error: if
+    /// it were ignored, a policy meant to require the relay would silently
+    /// fall back to the default.
+    #[test]
+    fn inline_device_policy_defaults_and_rejects_unknown_fields() {
+        let toml = r#"
+            devices = "policies/devices.toml"
+            allowed_pci_devices = ["nvme"]
+        "#;
+        let policy: DevicePolicyConfig = toml_edit::de::from_str(toml).unwrap();
+        assert_eq!(policy.devices, PathBuf::from("policies/devices.toml"));
+        assert_eq!(policy.allowed_pci_devices, ["nvme"]);
+        assert_eq!(policy.vpci_relay, None);
+        let error = toml_edit::de::from_str::<DevicePolicyConfig>(&format!(
+            "{toml}\nvpci_realy = \"must_be_on\""
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
     }
 }

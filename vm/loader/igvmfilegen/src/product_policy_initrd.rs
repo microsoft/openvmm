@@ -4,6 +4,7 @@
 //! Append measured product policy and allowed PCI devices to the OpenHCL initrd.
 
 use anyhow::Context as _;
+use igvmfilegen_config::DevicePolicyConfig;
 use product_policy::ProductPolicy;
 
 /// Appends `policy` to the OpenHCL initrd, with the devices from
@@ -11,11 +12,11 @@ use product_policy::ProductPolicy;
 pub fn append(
     initrd: &mut Vec<u8>,
     policy: &ProductPolicy,
-    device_policy: Option<&std::path::Path>,
+    device_policy: Option<&DevicePolicyConfig>,
 ) -> anyhow::Result<()> {
     let mut policy = policy.clone();
-    if let Some(path) = device_policy {
-        load_device_policy(path, &mut policy)?;
+    if let Some(device_policy) = device_policy {
+        load_device_policy(device_policy, &mut policy)?;
     }
     let (require_secure_boot, require_vars, require_bcd, custom_uefi_json) = match &policy {
         ProductPolicy::Sivm(p) => (
@@ -47,22 +48,19 @@ pub fn append(
     .context("failed to append product policy to OpenHCL initrd")
 }
 
-/// Loads a device policy (see `vm/loader/manifests/policies`) into `policy`.
+/// Resolves an inline device policy's catalog entries into `policy`.
 /// `"*"` allows every device.
-fn load_device_policy(path: &std::path::Path, policy: &mut ProductPolicy) -> anyhow::Result<()> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct DevicePolicy {
-        devices: std::path::PathBuf,
-        allowed_pci_devices: Vec<String>,
-        vpci_relay: Option<product_policy::VpciRelayMode>,
-    }
-    let device_policy: DevicePolicy = toml_edit::de::from_str(&fs_err::read_to_string(path)?)
-        .with_context(|| format!("parsing {}", path.display()))?;
-    let devices_path = path.with_file_name(&device_policy.devices);
+fn load_device_policy(
+    device_policy: &DevicePolicyConfig,
+    policy: &mut ProductPolicy,
+) -> anyhow::Result<()> {
+    let devices_path = &device_policy.devices;
     let devices: std::collections::BTreeMap<String, product_policy::AllowedPciDevice> =
-        toml_edit::de::from_str(&fs_err::read_to_string(&devices_path)?)
-            .with_context(|| format!("parsing {}", devices_path.display()))?;
+        toml_edit::de::from_str(
+            &fs_err::read_to_string(devices_path)
+                .with_context(|| format!("reading {}", devices_path.display()))?,
+        )
+        .with_context(|| format!("parsing {}", devices_path.display()))?;
     // An entry with no IDs matches every device; only "*" may produce one.
     let any = product_policy::AllowedPciDevice::default();
     let device = |name: &String| match devices.get(name) {
@@ -165,23 +163,17 @@ mod tests {
         );
     }
 
-    /// The Azure device policies must allow exactly the devices that OpenHCL
-    /// used to allow unconditionally, and the SIVM policy only the GPU. Only
-    /// CVMs run the VPCI relay by default, and only SIVMs require it.
+    /// The device policy decides which PCI devices OpenHCL may pass to the
+    /// guest, and the encoded policy is part of the measured initrd. For each
+    /// in-tree policy, resolving the manifest's device names through the
+    /// catalog and encoding the result must give exactly the expected devices
+    /// and relay mode, and bytes that decode back to the same policy. The
+    /// Azure policies must allow the same devices OpenHCL allowed before
+    /// device policies existed, the SIVM policy only the GPU; only CVMs run
+    /// the relay by default, and only SIVMs require it.
     #[test]
     fn device_policy_round_trips_through_initrd() {
-        let policies =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests/policies");
-        let append_devices = |policy: ProductPolicy, file: &str| {
-            let mut initrd = Vec::new();
-            append(&mut initrd, &policy, Some(&policies.join(file))).unwrap();
-            let files = extract_files(&initrd);
-            let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
-            let decoded = product_policy::decode_product_policy(bytes).unwrap();
-            assert_eq!(decoded.name(), policy.name());
-            let decoded = product_policy::MeasuredProductPolicy::new(Some(decoded));
-            (decoded.allowed_pci_devices().to_vec(), decoded.vpci_relay())
-        };
+        let manifests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests");
         let class = |base_class, sub_class, prog_if| product_policy::AllowedPciDevice {
             base_class: Some(base_class),
             sub_class: Some(sub_class),
@@ -199,19 +191,103 @@ mod tests {
             revision_id: Some(0xa1),
             ..Default::default()
         };
-        assert_eq!(
-            append_devices(ProductPolicy::Sivm(Default::default()), "sivm.toml"),
-            (vec![gpu], VpciRelayMode::MustBeOn)
-        );
         let azure = vec![class(1, 8, 2), microsoft(0xba, 2), microsoft(0xc003, 0x10)];
-        for (file, mode) in [
-            ("azure-cvm.toml", VpciRelayMode::DefaultOn),
-            ("azure.toml", VpciRelayMode::DefaultOff),
+        for (file, devices, mode) in [
+            (
+                "openhcl-x64-cvm-release.toml",
+                azure.clone(),
+                VpciRelayMode::DefaultOn,
+            ),
+            ("openhcl-x64-release.toml", azure, VpciRelayMode::DefaultOff),
+            (
+                "openhcl-x64-cvm-sivm-release.toml",
+                vec![gpu],
+                VpciRelayMode::MustBeOn,
+            ),
         ] {
-            assert_eq!(
-                append_devices(ProductPolicy::Azure(Default::default()), file),
-                (azure.clone(), mode)
-            );
+            let config: igvmfilegen_config::Config =
+                toml_edit::de::from_str(&fs_err::read_to_string(manifests.join(file)).unwrap())
+                    .unwrap();
+            for guest in config.guest_configs {
+                let igvmfilegen_config::Image::Openhcl {
+                    product_policy: Some(config),
+                    ..
+                } = guest.image
+                else {
+                    panic!("expected OpenHCL product policy");
+                };
+                let mut device_policy = config.policy.device_policy().unwrap().clone();
+                device_policy.devices = manifests.join(&device_policy.devices);
+                let policy = config.policy.policy();
+                let mut initrd = Vec::new();
+                append(&mut initrd, &policy, Some(&device_policy)).unwrap();
+                let files = extract_files(&initrd);
+                let bytes = &files[product_policy::PRODUCT_POLICY_PATH.trim_start_matches('/')];
+                let mut expected = policy;
+                expected.set_vpci_relay(product_policy::VpciRelayPolicy {
+                    allowed_pci_devices: devices.clone(),
+                    mode,
+                });
+                assert_eq!(*bytes, product_policy::encode_product_policy(&expected));
+                assert_eq!(
+                    product_policy::decode_product_policy(bytes).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    /// `"*"` is the one way to allow every device; it must become a single
+    /// match-anything entry, not a lookup in the catalog. A policy without
+    /// `vpci_relay` must get the documented default, `default_off`.
+    #[test]
+    fn inline_device_policy_wildcard_and_default_mode() {
+        let device_policy = DevicePolicyConfig {
+            devices: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../manifests/policies/devices.toml"),
+            allowed_pci_devices: vec!["*".into()],
+            vpci_relay: None,
+        };
+        let mut policy = ProductPolicy::Azure(Default::default());
+        load_device_policy(&device_policy, &mut policy).unwrap();
+        let policy = product_policy::MeasuredProductPolicy::new(Some(policy));
+        assert_eq!(
+            policy.allowed_pci_devices(),
+            [product_policy::AllowedPciDevice::default()]
+        );
+        assert_eq!(policy.vpci_relay(), VpciRelayMode::DefaultOff);
+    }
+
+    /// A device name missing from the catalog, or a missing catalog file,
+    /// must fail the build with a clear error and leave the initrd untouched.
+    /// Skipping the bad entry instead would build an image whose device list
+    /// differs from what the manifest says.
+    #[test]
+    fn invalid_inline_device_policy_does_not_modify_initrd() {
+        let catalog = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../manifests/policies/devices.toml");
+        for (devices, name, message) in [
+            (catalog.clone(), "undefined-device", "isn't defined"),
+            (
+                catalog.with_file_name("missing-devices.toml"),
+                "nvme",
+                "reading",
+            ),
+        ] {
+            let device_policy = DevicePolicyConfig {
+                devices,
+                allowed_pci_devices: vec![name.into()],
+                vpci_relay: Some(VpciRelayMode::MustBeOn),
+            };
+            let mut initrd = vec![1, 2, 3];
+            let error = append(
+                &mut initrd,
+                &ProductPolicy::Azure(Default::default()),
+                Some(&device_policy),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(message), "{error:#}");
+            assert_eq!(initrd, [1, 2, 3]);
         }
     }
 
