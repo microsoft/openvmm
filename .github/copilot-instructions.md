@@ -17,6 +17,20 @@ For cross-compilation from WSL2 to Windows, see
 `Guide/src/dev_guide/getting_started/cross_compile.md` and source
 `. ./build_support/setup_windows_cross.sh`.
 
+## API Design
+
+- Avoid multiple positional `bool` parameters in functions and constructors.
+  Call sites should show what each choice means without requiring the reader
+  to inspect the signature.
+- Prefer small, named constructors for distinct creation modes, such as
+  `new_primary(...)` and `new_secondary(...)`, rather than one constructor
+  controlled by flags. Each constructor should take only the inputs its mode
+  needs. Share implementation internally where useful.
+- Use a descriptive enum when a value selects a mode at runtime. Keep booleans
+  for independent on/off properties, not for encoding modes.
+- Do not replace flag lists with a general-purpose builder or configuration
+  framework when a few named constructors suffice.
+
 ## Protocol Buffers Enums
 
 For `.proto` changes (including gRPC/ttrpc), read and follow the
