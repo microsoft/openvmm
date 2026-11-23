@@ -337,7 +337,7 @@ async fn sidecar_wait_loop(
     state: Arc<SidecarClientState>,
     base_cpu: u32,
 ) {
-    let err = loop {
+    loop {
         poll_fn(|cx| fd_ready.poll_fd_ready(cx, InterestSlot::Read, PollEvents::IN)).await;
         let mut cpu = 0u32;
         let n = match (&state.file).read(cpu.as_mut_bytes()) {
@@ -346,7 +346,10 @@ async fn sidecar_wait_loop(
                 fd_ready.clear_fd_ready(InterestSlot::Read);
                 continue;
             }
-            Err(err) => break err,
+            // This reader is the only source of VP completions, so exiting
+            // would leave every running VP waiting forever. The driver does
+            // not return other read errors, so treat one as fatal.
+            Err(err) => panic!("failed to read sidecar completions: {err}"),
         };
         assert_eq!(n, 4, "unexpected read size");
         tracing::trace!(cpu, "sidecar stop");
@@ -359,11 +362,7 @@ async fn sidecar_wait_loop(
         if let Some(waker) = waker {
             waker.wake();
         }
-    };
-    tracing::error!(
-        error = &err as &dyn std::error::Error,
-        "sidecar wait failed"
-    );
+    }
 }
 
 impl Drop for Mapping {
@@ -700,8 +699,11 @@ impl Drop for SidecarRun<'_, '_> {
 mod tests {
     use super::*;
     use pal_async::DefaultDriver;
+    use pal_async::DefaultPool;
     use pal_async::async_test;
+    use pal_async::driver::Driver;
     use pal_async::task::Spawn;
+    use std::os::fd::FromRawFd;
     use test_with_tracing::test;
 
     /// A one-VP node backed by anonymous memory and `/dev/null`, which
@@ -804,5 +806,44 @@ mod tests {
             .unwrap();
 
         assert!(matches!(*state.vps[0].lock(), VpState::Running(None)));
+    }
+
+    // Test: Run the completion reader on a device whose read fails with an
+    //       error other than "would block" (an eventfd, which rejects 4-byte
+    //       reads with EINVAL), while a VP is waiting for a completion.
+    // Expected: The reader panics instead of exiting silently and leaving the
+    //       VP waiting forever.
+    #[test]
+    fn completion_reader_read_error_panics() {
+        let result = std::panic::catch_unwind(|| {
+            DefaultPool::run_with(async |driver| {
+                // SAFETY: eventfd has no preconditions; the result is checked.
+                let fd = unsafe { libc::eventfd(1, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+                assert!(fd >= 0, "eventfd failed");
+                // SAFETY: `fd` is a newly created descriptor owned by nothing
+                // else.
+                let file = unsafe { File::from_raw_fd(fd) };
+                let fd_ready = driver.new_dyn_fd_ready(file.as_raw_fd()).unwrap();
+                let state = Arc::new(SidecarClientState {
+                    file,
+                    vps: vec![Mutex::new(VpState::Running(None))],
+                });
+                // Keep the device open after the reader returns, as the
+                // owning node does.
+                let _node_state = state.clone();
+                sidecar_wait_loop(fd_ready, state, 0).await;
+            })
+        });
+
+        let payload = result.expect_err("completion reader exited without panicking");
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(
+            message.contains("failed to read sidecar completions"),
+            "unexpected panic: {message}"
+        );
     }
 }
