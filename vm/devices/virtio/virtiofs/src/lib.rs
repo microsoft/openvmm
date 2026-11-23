@@ -882,10 +882,19 @@ impl VirtioFs {
         Ok(inode)
     }
 
-    /// Insert a new inode, and returns the assigned node ID as well as a reference to the inode.
+    /// Inserts `inode`, and returns the inode that the map holds for its host
+    /// object, with that inode's node ID.
     ///
-    /// If the file system supports stable inode numbers and an inode already existed with this
-    /// device and inode number, the existing inode is returned, not the passed in one.
+    /// An inode already in the map is a candidate for the object only if it
+    /// belongs to the volume of `inode` (see [`DedupKey`]). On a volume with
+    /// stable file IDs, the host device and inode numbers of `inode` identify
+    /// a candidate within that volume; the pair is not a key across volumes,
+    /// so a host object that two children of an aggregate reach gets a node
+    /// in each. On a volume without stable file IDs, the path of `inode`
+    /// identifies a candidate instead. A candidate of the same file type takes
+    /// the new name and one more lookup, and is returned, not the passed in
+    /// one; one of another file type held an object that the host has since
+    /// replaced, so `inode` gets a node of its own.
     fn insert_inode(&self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
         let mut inodes = self.inner.inodes.write();
         microvm::fs::insert_inode(self, &mut inodes, inode)
@@ -1164,7 +1173,7 @@ impl<T> HandleMap<T> {
     }
 }
 
-/// Assigns node IDs to inodes, and keeps track of in-use inodes by their actual inode number.
+/// Assigns node IDs to inodes, and indexes the inodes that insertions may reuse by [`DedupKey`].
 ///
 /// We cannot use the real inode number as the FUSE node ID:
 /// - FUSE node ID 1 is reserved for the root, so this would break if a file system used that inode
