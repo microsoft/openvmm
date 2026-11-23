@@ -78,6 +78,10 @@ mod vmdk;
 mod vmgs;
 /// Virtio-vsock save/restore and reconnect behavior.
 mod vsock;
+/// Opt-in upstream Linux vsock_perf workloads using native AF_VSOCK.
+mod vsock_perf;
+/// Shared setup and process helpers for opt-in vsock workloads.
+mod vsock_workload;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
 #[vmm_test_with(

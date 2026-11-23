@@ -102,6 +102,74 @@ engineers' local machines and in CI. Put these special words in your test to opt
 - `heavy` - if your test is heavier than the typical vmm_test. E.g., your test explicitly requests 16 virtual processors.
 - `very_heavy` if your test is heavier than a `heavy` test. E.g., your test explicitly requests 32 virtual processors.
 
+### Native AF_VSOCK workloads with vsock_perf
+
+The opt-in `vsock_perf_pci` and `vsock_perf_mmio` tests run the upstream
+Linux `vsock_perf` utility directly inside an x64 Linux guest. Guest traffic
+uses AF_VSOCK, with native Unix-relay peers on the host: there is no guest
+NIC, TCP bridge, host Python process, or modified benchmark implementation.
+This tests the userspace vsock backend, not kernel `vhost-vsock`.
+
+Set `PETRI_VSOCK_PERF_BIN` to a **statically linked Linux x86_64 executable**
+to enable the tests. The binary is copied into the guest by Pipette.
+For example, build the unmodified utility from Linux v6.18.33 with a Linux
+C compiler, development headers, `make`, and `curl`:
+
+```bash
+revision=83657f4189612e5cbcabc3058acd36c0bd120729
+source_url="https://raw.githubusercontent.com/gregkh/linux/$revision/tools/testing/vsock"
+mkdir -p target/vsock-perf-tool
+for source in vsock_perf.c msg_zerocopy_common.c msg_zerocopy_common.h Makefile; do
+    curl --fail --location "$source_url/$source" -o "target/vsock-perf-tool/$source"
+done
+make -C target/vsock-perf-tool vsock_perf CC=cc LDFLAGS=-static
+file target/vsock-perf-tool/vsock_perf
+export PETRI_VSOCK_PERF_BIN="$(realpath target/vsock-perf-tool/vsock_perf)"
+cargo xflowey vmm-tests-run --filter 'test(vsock_perf_)'
+```
+
+The source files and executable stay in the local build directory; they are
+not vendored into OpenVMM. The utility has no version flag, so retain the
+source revision when comparing results.
+
+For Windows/WHP execution from WSL, also propagate the executable path:
+
+```bash
+. build_support/setup_windows_cross.sh
+export WSLENV="${WSLENV:+$WSLENV:}PETRI_VSOCK_PERF_BIN/p:PETRI_VSOCK_PERF_MIB"
+cargo xflowey vmm-tests-run --target windows-x64 \
+  --dir /mnt/c/path/to/vsock-perf-results \
+  --filter 'test(vsock_perf_)'
+```
+
+Each bus completes four transfers: guest TX and RX through ordinary
+pause/resume, then fresh TX and RX connections after deliberately interrupting
+each direction with in-place save/reset/restore. Both completed endpoints
+must report **exactly 1 GiB** by default. `PETRI_VSOCK_PERF_MIB` accepts
+16–4096; use 64 for a smoke run. The two interrupted transfers have a larger
+budget and must end with connection failure, not successful completion.
+The guest boot identity and RAM marker must survive, and fresh transfers
+reuse the same service ports. Unset `PETRI_VSOCK_PERF_BIN` to disable these
+VM tests.
+
+The receiver uses the utility's standard 1 MiB read buffer and 256 KiB socket
+buffer options so a final read can drain queued data when readability and
+hangup are reported together. No sender headroom or drain-delay assumption
+is used to relax byte-count validation.
+
+Results include raw utility stdout/stderr and `vsock-perf-summary.json`
+with both endpoint counts, utility throughput, host elapsed time, and restore
+outcomes. Host elapsed time includes the deliberate pauses. The utility has
+its own timing scope; for example, its sender rate measures time in `send()`
+calls rather than host wall time. This is a functional load test with relay
+overhead, not an isolated raw-vsock performance result.
+`vsock_perf` does not provide end-to-end checksums; these counts do not
+establish cryptographic payload integrity. The artifact-free
+`vsock_perf_report_validation` test checks malformed, missing, duplicate,
+non-finite, and incorrect-byte-count reports without booting a VM.
+`vsock_perf_peer_validation` checks the native peer's payload validation,
+byte counting, and stream shutdown using local Unix sockets.
+
 ### "unstable" tests
 
 If a test is not yet reliable enough to gate PRs, mark it `unstable`. Every
