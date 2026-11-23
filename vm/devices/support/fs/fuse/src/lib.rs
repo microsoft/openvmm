@@ -267,6 +267,12 @@ pub trait Fuse {
     /// Each `FUSE_INIT` negotiates afresh, from the session's defaults and the client's offer, and
     /// the session adopts the negotiation only once it has sent its reply: when the reply cannot
     /// be sent, the session stays uninitialized, without a negotiation.
+    ///
+    /// The session calls `destroy` once for each call to `init`, before it calls `init` again.
+    /// When it does not adopt the negotiation, because it refuses it, as above, or cannot send its
+    /// reply, it calls `destroy` right away, and not again when the session ends. Otherwise, it
+    /// calls `destroy` when the session ends, on `FUSE_DESTROY` or [`Session::destroy`], which an
+    /// owner must call before it drops the session to have the file system cleaned up.
     fn init(&self, _info: &mut SessionInfo) {}
 
     /// Opens a directory.
@@ -345,6 +351,10 @@ pub trait Fuse {
     ///
     /// For virtio-fs, the client will call this when the file system is unmounted. After receiving
     /// destroy, another `init` call can be received if the file system is mounted again.
+    ///
+    /// The session calls this once for each call to `init`, also right after an `init` whose
+    /// negotiation it does not adopt (see [`Fuse::init`]), and when a session that
+    /// [`Session::restore_state`] restored as initialized ends.
     fn destroy(&self) {}
 
     /// Submit an ioctl.

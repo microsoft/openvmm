@@ -528,7 +528,10 @@ impl Session {
                 unoffered2 = format_args!("{unoffered2:#x}"),
                 "File system wants FUSE flags that the client did not offer",
             );
-            // Leave the session uninitialized, without a negotiation.
+            // Leave the session uninitialized, without a negotiation, and let
+            // the file system undo its `init` while the session is still
+            // locked, so that no retry calls `init` first.
+            self.fs.destroy();
             return Err(lx::Error::EIO.into());
         }
 
@@ -547,8 +550,12 @@ impl Session {
         }
 
         // A reply that cannot be sent leaves the session uninitialized, without a negotiation,
-        // since the client never received it.
-        sender.send_arg(request.unique(), out)?;
+        // since the client never received it, so the file system undoes its `init`, as for a
+        // refused negotiation.
+        if let Err(e) = sender.send_arg(request.unique(), out) {
+            self.fs.destroy();
+            return Err(e.into());
+        }
 
         // Publish the negotiation, and indicate other requests can be received now.
         *session_info = info;
