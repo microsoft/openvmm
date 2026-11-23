@@ -32,7 +32,6 @@ use super::state::validate_identity;
 use super::state::validate_microvm_state;
 use super::state::validate_relative_path;
 use super::state::validate_reopenable_alias;
-use super::state::validate_saved_identity;
 use crate::ATTRIBUTE_TIMEOUT;
 use crate::ENTRY_TIMEOUT;
 use crate::FuseNegotiation;
@@ -532,21 +531,26 @@ impl VirtioFs {
                     .context("saved alias count overflow")?;
                 anyhow::ensure!(alias_count <= MAX_ALIASES, "saved alias table is too large");
                 let volume = inode.volume();
+                // A restore binds the node only to its own object, which the
+                // node's guest inode number numbers, so every name must still
+                // reach that object rather than one that the host has put in
+                // its place.
+                let object_identity = inode.object_identity();
                 let mut relative_aliases = Vec::with_capacity(aliases.len());
-                let mut object_identity = None;
                 for alias in aliases {
                     validate_relative_path(&alias, true)
                         .map_err(anyhow::Error::from)
                         .context("inode has an unsafe relative alias")?;
                     let stat = validate_reopenable_alias(&volume, &alias)
                         .context("inode alias cannot be revalidated for save")?;
-                    let identity = saved_identity(&stat);
-                    if let Some(expected) = &object_identity {
-                        validate_saved_identity(&identity, expected)
-                            .context("inode aliases identify different objects")?;
-                    } else {
-                        object_identity = Some(identity);
-                    }
+                    validate_identity(&stat, &object_identity).with_context(|| {
+                        format!(
+                            "node {node_id} (guest inode {}) has a name that reaches another \
+                             host object, as after the host replaced an object that the \
+                             guest holds; the guest must release the object before a save",
+                            inode.guest_inode_nr()
+                        )
+                    })?;
                     let alias = encode_relative_path(&alias)?;
                     alias_bytes = alias_bytes
                         .checked_add(alias.len())
@@ -563,7 +567,7 @@ impl VirtioFs {
                     relative_aliases,
                     lookup_count: inode.lookup_count(),
                     guest_inode_id: inode.guest_inode_nr(),
-                    object_identity: object_identity.context("inode has no aliases")?,
+                    object_identity,
                 });
                 anyhow::ensure!(
                     node_ids

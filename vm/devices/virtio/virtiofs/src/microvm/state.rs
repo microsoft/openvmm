@@ -163,19 +163,6 @@ pub(crate) fn validate_identity(
     Ok(())
 }
 
-pub(crate) fn validate_saved_identity(
-    actual: &SavedObjectIdentity,
-    expected: &SavedObjectIdentity,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        actual.kind == expected.kind
-            && actual.device_id == expected.device_id
-            && actual.inode_id == expected.inode_id,
-        "object identity changed between aliases"
-    );
-    Ok(())
-}
-
 pub(crate) fn validate_reopenable_alias(
     volume: &VirtioFsVolume,
     path: &Path,

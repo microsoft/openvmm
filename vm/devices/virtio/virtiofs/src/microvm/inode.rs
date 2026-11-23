@@ -6,6 +6,7 @@
 use super::policy::PathVisibility;
 use super::policy::SubtreePolicy;
 use super::saved_state::MAX_PATH_BYTES;
+use super::saved_state::SavedObjectIdentity;
 use super::state::relative_path_encoded_len;
 use super::state::validate_relative_path;
 use crate::inode::VirtioFsInode;
@@ -145,6 +146,18 @@ impl VirtioFsInode {
         }
         *inode.aliases.write() = aliases;
         Ok(inode)
+    }
+
+    /// Returns the identity of this inode's own object, which a snapshot
+    /// records for the inode: the object that the guest reached when it got
+    /// the node, or that a restore bound the node to, which the node's guest
+    /// inode number numbers.
+    pub(crate) fn object_identity(&self) -> SavedObjectIdentity {
+        SavedObjectIdentity {
+            device_id: self.device_nr(),
+            inode_id: self.inode_nr(),
+            kind: self.file_type(),
+        }
     }
 
     /// Checks that a microVM inode used as a directory is reached without

@@ -377,6 +377,12 @@ without being followed, and an alias whose ancestor has become a link fails
 restore. A handle that the guest held open for writing must still be on a
 writable path.
 
+Capture checks those identities first, rather than save a snapshot that
+cannot restore: it fails while the guest holds an object whose name the host
+has given to another object, as host software does when it renames a new file
+over a file that the guest holds open, until the guest kernel releases that
+object, as it does once the guest closes the file.
+
 A snapshot of an aggregate records each child's name, canonical host path,
 root identity, access mode, and denied, allowed, and writable paths, and the
 attachment's identity is the SHA-256 of the children's names and root
