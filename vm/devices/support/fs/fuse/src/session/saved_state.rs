@@ -120,7 +120,9 @@ impl Session {
     /// Restores a previously validated FUSE negotiation.
     ///
     /// The caller must ensure no request dispatch is active while invoking
-    /// this method.
+    /// this method, and that the session holds no negotiation, as a new
+    /// session or one that has ended does: restoring over a negotiation
+    /// replaces it without the file system's `destroy`.
     pub fn restore_state(&self, state: SessionState) -> Result<(), SessionStateError> {
         state.validate()?;
         *self.info.write() = state.info.into();

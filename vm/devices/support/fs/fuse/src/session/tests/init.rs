@@ -5,6 +5,7 @@
 //! and of the `destroy` that follows each `init`.
 
 use super::harness::dispatch_request;
+use super::harness::make_request;
 use super::*;
 use crate::session::saved_state::SessionInfoState;
 use crate::session::saved_state::SessionState;
@@ -265,4 +266,117 @@ fn init_waits_for_the_end_of_the_session() {
     let saved = session.save_state();
     assert!(saved.initialized);
     saved.validate().unwrap();
+}
+
+/// A file system that records its calls to `init` and `destroy`, in order,
+/// and whose `init` wants `want` whether or not the client offered it.
+struct RecordingFs {
+    calls: Arc<Mutex<Vec<&'static str>>>,
+    want: u32,
+}
+
+impl Fuse for RecordingFs {
+    fn init(&self, info: &mut SessionInfo) {
+        self.calls.lock().push("init");
+        info.want |= self.want;
+    }
+
+    fn destroy(&self) {
+        self.calls.lock().push("destroy");
+    }
+}
+
+/// Returns a session of a [`RecordingFs`] that wants `want`, and the calls
+/// that the file system records.
+fn recording_session(want: u32) -> (Session, Arc<Mutex<Vec<&'static str>>>) {
+    let calls = Arc::default();
+    let session = Session::new(RecordingFs {
+        calls: Arc::clone(&calls),
+        want,
+    });
+    (session, calls)
+}
+
+/// A session that refuses the negotiation of an `init` calls `destroy` before
+/// the client can retry `FUSE_INIT`, so the retry's `init` starts from a
+/// file system with nothing set up, and the session that the retry completes
+/// calls `destroy` once when it ends.
+#[test]
+fn refused_init_is_destroyed_before_a_retry() {
+    let (session, calls) = recording_session(FUSE_DO_READDIRPLUS);
+
+    let request = make_init_request(7, 39, 131072, FUSE_ASYNC_READ, 0);
+    let (header, _) = dispatch_request(&session, &request);
+    assert_eq!(header.error, -lx::EIO);
+    assert_eq!(*calls.lock(), ["init", "destroy"]);
+
+    let request = make_init_request(7, 39, 131072, FUSE_ASYNC_READ | FUSE_DO_READDIRPLUS, 0);
+    let (header, _) = dispatch_request(&session, &request);
+    assert_eq!(header.error, 0);
+    assert!(session.is_initialized());
+    assert_eq!(*calls.lock(), ["init", "destroy", "init"]);
+
+    session.destroy();
+    assert_eq!(*calls.lock(), ["init", "destroy", "init", "destroy"]);
+}
+
+/// A session that refused the negotiation of an `init` has already called
+/// `destroy` for it, so ending the session does not call it again.
+#[test]
+fn refused_init_is_not_destroyed_again_when_the_session_ends() {
+    let (session, calls) = recording_session(FUSE_DO_READDIRPLUS);
+
+    let request = make_init_request(7, 39, 131072, FUSE_ASYNC_READ, 0);
+    let (header, _) = dispatch_request(&session, &request);
+    assert_eq!(header.error, -lx::EIO);
+    assert_eq!(*calls.lock(), ["init", "destroy"]);
+
+    session.destroy();
+    drop(session);
+    assert_eq!(*calls.lock(), ["init", "destroy"]);
+}
+
+/// A session that cannot send its reply to `FUSE_INIT` does not adopt the
+/// negotiation, as when it refuses it, so it calls `destroy` before the
+/// client can retry `FUSE_INIT`.
+#[test]
+fn init_whose_reply_fails_is_destroyed_before_a_retry() {
+    let (session, calls) = recording_session(0);
+
+    let request = make_init_request(7, 39, 131072, FUSE_ASYNC_READ, 0);
+    dispatch_request_failing_reply(&session, &request);
+    assert!(!session.is_initialized());
+    assert_eq!(*calls.lock(), ["init", "destroy"]);
+
+    let (header, _) = dispatch_request(&session, &request);
+    assert_eq!(header.error, 0);
+    assert!(session.is_initialized());
+    assert_eq!(*calls.lock(), ["init", "destroy", "init"]);
+}
+
+/// A session that adopts the negotiation of an `init` calls `destroy` once
+/// when it ends, whether on `FUSE_DESTROY` or when its owner ends it, however
+/// often its owner then ends it.
+#[test]
+fn adopted_init_is_destroyed_once_when_the_session_ends() {
+    for fuse_destroy in [false, true] {
+        let (session, calls) = recording_session(0);
+
+        let request = make_init_request(7, 39, 131072, FUSE_ASYNC_READ, 0);
+        let (header, _) = dispatch_request(&session, &request);
+        assert_eq!(header.error, 0);
+        assert_eq!(*calls.lock(), ["init"]);
+
+        if fuse_destroy {
+            let (header, reply) =
+                dispatch_request(&session, &make_request(FUSE_DESTROY, 2, &(), &[]));
+            assert_eq!(header.error, 0);
+            assert!(reply.is_empty());
+            assert!(!session.is_initialized());
+        }
+        session.destroy();
+        session.destroy();
+        drop(session);
+        assert_eq!(*calls.lock(), ["init", "destroy"]);
+    }
 }

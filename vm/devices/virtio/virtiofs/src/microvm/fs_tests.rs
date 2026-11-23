@@ -22,6 +22,7 @@ use super::saved_state::MAX_PATH_BYTES;
 use super::state::encode_relative_path;
 use super::state::fuse_negotiation_from_session;
 use super::state::reopen_flags;
+use super::state::session_state_from_saved;
 use super::state::validate_microvm_state;
 use super::state::validate_relative_path;
 use crate::InodeMap;
@@ -30,15 +31,19 @@ use crate::file::VirtioFsFile;
 use crate::inode::VirtioFsInode;
 use crate::test_helpers::decode_dir_entries;
 use fuse::Fuse;
+use fuse::Request;
 use fuse::Session;
 use fuse::SessionInfoState;
 use fuse::SessionState;
 use fuse::protocol::FUSE_ASYNC_READ;
 use fuse::protocol::FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
+use fuse::protocol::FUSE_INIT;
 use fuse::protocol::FUSE_INIT_EXT;
 use fuse::protocol::FUSE_ROOT_ID;
 use fuse::protocol::fuse_dirent_align;
 use fuse::protocol::fuse_direntplus;
+use fuse::protocol::fuse_in_header;
+use fuse::protocol::fuse_init_in;
 use fuse::protocol::fuse_read_in;
 use fuse::protocol::fuse_release_in;
 use std::path::Path;
@@ -47,6 +52,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 use test_with_tracing::test;
 use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 fn profile(root_path: &Path) -> MicroVmVirtioFsProfile {
     MicroVmVirtioFsProfile::from_attachment(
@@ -248,6 +254,56 @@ fn initialized_microvm_negotiation_restores() {
         .unwrap();
     assert_eq!(session.save_state(), session_state);
     assert!(session.is_initialized());
+}
+
+/// A sender that cannot send a reply, as the device's sender fails when the
+/// guest's buffers cannot hold the reply.
+struct FailingSender;
+
+impl fuse::ReplySender for FailingSender {
+    fn send(&mut self, _bufs: &[std::io::IoSlice<'_>]) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::WriteZero.into())
+    }
+}
+
+/// A `FUSE_INIT` whose reply the device cannot send leaves a negotiation on
+/// neither side: the session does not adopt it, and the file system's
+/// `destroy` undoes what its `init` recorded. The device then saves a state
+/// without a session, as before any `FUSE_INIT`, which a restore accepts.
+#[test]
+fn init_whose_reply_fails_leaves_no_negotiation_to_save() {
+    let temporary_directory = tempdir().unwrap();
+    let profile = profile(temporary_directory.path());
+    let fs = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let session = Session::new(fs.clone());
+    let header = fuse_in_header {
+        len: (size_of::<fuse_in_header>() + size_of::<fuse_init_in>()) as u32,
+        opcode: FUSE_INIT,
+        unique: 1,
+        ..FromZeros::new_zeroed()
+    };
+    let init = fuse_init_in {
+        major: MICROVM_FUSE_MAJOR,
+        minor: MICROVM_FUSE_MIN_MINOR,
+        flags: FUSE_ASYNC_READ,
+        ..FromZeros::new_zeroed()
+    };
+    let request = [header.as_bytes(), init.as_bytes()].concat();
+    session.dispatch(
+        Request::new(request.as_slice()).unwrap(),
+        &mut FailingSender,
+        None,
+    );
+    assert!(!session.is_initialized());
+
+    let state = fs
+        .save_microvm_state(&profile, session.save_state())
+        .unwrap();
+    validate_microvm_state(&state, &profile).unwrap();
+    assert_eq!(
+        session_state_from_saved(&state.negotiation).unwrap(),
+        SessionState::default()
+    );
 }
 
 #[test]
