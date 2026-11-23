@@ -84,10 +84,11 @@ impl ControlMmioIntercept for TestDeviceRange {
 
     fn offset_of(&self, addr: u64) -> Option<u64> {
         let base = self.addr?;
-
-        (base..(base + self.len))
-            .contains(&addr)
-            .then(|| addr - base)
+        // Compare the offset with the length: the exclusive end of a region
+        // that ends at the top of the address space does not fit in the
+        // address type.
+        let offset = addr.checked_sub(base)?;
+        (offset < self.len).then_some(offset)
     }
 }
 
@@ -190,6 +191,7 @@ impl MmioInterceptServices for TestChipsetServicesImpl<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     mod sample_dev {
         use super::*;
@@ -261,5 +263,27 @@ mod tests {
         assert_eq!(sample_dev.lock().mmio_read_log, [10, 11]);
 
         Ok(())
+    }
+
+    #[test]
+    fn mmio_region_ending_at_the_top_finds_its_offsets() {
+        let mut mapper = TestMmioRangeMapper {
+            dev: Weak::<CloseableMutex<sample_dev::SampleDevice>>::new(),
+            map: Default::default(),
+        };
+        let mut region = mapper.new_io_region("top", 0x1000);
+        let base = u64::MAX - 0xfff;
+        assert_eq!(region.offset_of(u64::MAX), None);
+        region.map(base);
+        assert_eq!(region.addr(), Some(base));
+        assert_eq!(region.offset_of(base - 1), None);
+        assert_eq!(region.offset_of(base), Some(0));
+        assert_eq!(region.offset_of(u64::MAX), Some(0xfff));
+        region.map(base - 1);
+        assert_eq!(region.offset_of(base - 1), Some(0));
+        assert_eq!(region.offset_of(u64::MAX - 1), Some(0xfff));
+        assert_eq!(region.offset_of(u64::MAX), None);
+        region.unmap();
+        assert_eq!(region.offset_of(base), None);
     }
 }
