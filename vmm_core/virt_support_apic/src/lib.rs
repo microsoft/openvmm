@@ -163,11 +163,13 @@ fn bank_mask(vector: u8) -> (usize, u32) {
     (vector as usize / 32, 1 << (vector % 32))
 }
 
-fn cluster_mode(value: u32) -> bool {
+/// Returns whether a DFR value selects cluster mode, or `None` if its model
+/// field is reserved.
+fn cluster_mode(value: u32) -> Option<bool> {
     match Dfr(value | 0x0fff_ffff) {
-        Dfr::CLUSTERED_MODE => true,
-        Dfr::FLAT_MODE => false,
-        _ => unreachable!("Unknown DFR value {value}"),
+        Dfr::CLUSTERED_MODE => Some(true),
+        Dfr::FLAT_MODE => Some(false),
+        _ => None,
     }
 }
 
@@ -924,8 +926,12 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
                 self.apic.update_slot();
             }
             ApicRegister::DFR if !self.apic.x2apic_enabled() => {
-                self.apic.cluster_mode = cluster_mode(value);
-                self.apic.update_slot();
+                if let Some(cluster) = cluster_mode(value) {
+                    self.apic.cluster_mode = cluster;
+                    self.apic.update_slot();
+                } else {
+                    tracelimit::warn_ratelimited!(value, "ignoring dfr write with reserved model");
+                }
             }
             ApicRegister::SVR => {
                 // The APIC may be disabled by this, so we need to reevaluate
@@ -1908,7 +1914,14 @@ impl LocalApic {
         if !self.x2apic_enabled() {
             self.ldr = ldr & 0xff000000;
         }
-        self.cluster_mode = cluster_mode(dfr);
+        // `save` only produces flat, cluster, or (in x2APIC mode) zero, which
+        // decodes as cluster, so a reserved model means the saved state is
+        // malformed. Use flat, the architectural reset value, rather than
+        // failing the whole restore over this one register.
+        self.cluster_mode = cluster_mode(dfr).unwrap_or_else(|| {
+            tracelimit::warn_ratelimited!(dfr, "restoring dfr with reserved model as flat");
+            false
+        });
         self.svr = svr;
         self.irr = irr;
         self.tmr = tmr;
@@ -3216,15 +3229,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known bug: DFR writes with an unknown model panic (unreachable!)"]
     fn dfr_write_with_unknown_model_does_not_panic() {
         // Test: a guest writes the DFR with a model value other than flat
         // (0xF) or cluster (0x0), then keeps using the APIC.
         // Expected: the write does not panic and the APIC keeps delivering
         // interrupts.
-        // Known bug: `cluster_mode()` hits `unreachable!` for these values, so
-        // a single guest MMIO write crashes the VMM or paravisor. `restore()`
-        // with such a DFR panics the same way.
         let set = LocalApicSet::builder().build();
         let mut client = TestClient::default();
         let mut apic = add_enabled(&set, 0, 0, &mut client);
@@ -3680,5 +3689,38 @@ mod tests {
         target.enable_offload();
         fixed_msi(&set, 1, 0x80, false);
         assert_eq!(target.scan(&mut vmtime, true).interrupt, None);
+    }
+
+    #[test]
+    fn dfr_with_reserved_model_is_ignored() {
+        // Test: a guest writes the DFR with a reserved model value in flat and
+        // in cluster mode, and a saved state with such a DFR is restored.
+        // Expected: nothing panics; the guest write leaves the current mode in
+        // place, and the restore falls back to flat mode.
+        const DFR_ADDR: u64 = ((APIC_BASE_PAGE as u64) << 12) | 0xe0;
+        fn read_dfr(apic: &mut LocalApic, client: &mut TestClient) -> u32 {
+            let mut data = [0; 4];
+            apic.access(client).mmio_read(DFR_ADDR, &mut data);
+            u32::from_ne_bytes(data)
+        }
+
+        let (_set, mut apic) = new_apic();
+        let mut client = TestClient::default();
+        for mode in [Dfr::FLAT_MODE, Dfr::CLUSTERED_MODE] {
+            apic.access(&mut client)
+                .mmio_write(DFR_ADDR, &mode.0.to_ne_bytes());
+            apic.access(&mut client)
+                .mmio_write(DFR_ADDR, &0x5fff_ffffu32.to_ne_bytes());
+            assert_eq!(read_dfr(&mut apic, &mut client), mode.0);
+            // A high-byte write reaches the model field too.
+            apic.access(&mut client).mmio_write(DFR_ADDR + 3, &[0x70]);
+            assert_eq!(read_dfr(&mut apic, &mut client), mode.0);
+        }
+
+        let mut state = apic.save();
+        state.registers[ApicRegister::DFR.0 as usize] = 0x5fff_ffff;
+        let (_set, mut restored) = new_apic();
+        restored.restore(&state).unwrap();
+        assert_eq!(read_dfr(&mut restored, &mut client), Dfr::FLAT_MODE.0);
     }
 }
