@@ -933,11 +933,9 @@ message SaveVMResponse {
 enum RestoreKind {
     // Rejected: the caller must choose.
     RESTORE_KIND_UNSPECIFIED = 0;
-    // The same VM that was saved, continuing where it left off (for example,
-    // guest-transparent hibernation).
+    // The same VM that was saved, continuing where it left off.
     RESTORE_KIND_SAME_VM = 1;
-    // A new copy of the saved VM (for example, a VM created from a template
-    // snapshot, or a rollback to an earlier snapshot).
+    // A new copy of the saved VM.
     RESTORE_KIND_CLONE = 2;
 }
 
