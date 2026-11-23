@@ -1,12 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Tests of the flags that a file system's `init` negotiates in `FUSE_INIT`.
+//! Tests of the flags that a file system's `init` negotiates in `FUSE_INIT`,
+//! and of the `destroy` that follows each `init`.
 
 use super::harness::dispatch_request;
 use super::*;
 use crate::session::saved_state::SessionInfoState;
 use crate::session::saved_state::SessionState;
+use std::sync::Barrier;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 use test_with_tracing::test;
 
 /// A file system whose `init` wants flags whether or not the client offered
@@ -193,4 +198,71 @@ fn init_after_a_failed_reply_negotiates_afresh() {
     assert_eq!(received.lock()[1..], fresh_received.lock()[..]);
     assert!(session.is_initialized());
     assert_eq!(session.save_state(), fresh.save_state());
+}
+
+/// A file system that records its calls to `init` and `destroy`, in order,
+/// and whose `destroy` waits at `barrier` when it starts, and again before it
+/// returns, which it records too.
+struct BlockingDestroyFs {
+    calls: Arc<Mutex<Vec<&'static str>>>,
+    barrier: Arc<Barrier>,
+}
+
+impl Fuse for BlockingDestroyFs {
+    fn init(&self, _info: &mut SessionInfo) {
+        self.calls.lock().push("init");
+    }
+
+    fn destroy(&self) {
+        self.calls.lock().push("destroy");
+        self.barrier.wait();
+        self.barrier.wait();
+        self.calls.lock().push("destroyed");
+    }
+}
+
+/// A `FUSE_INIT` that arrives while the session ends, as from another queue
+/// while the session handles `FUSE_DESTROY`, waits until the session has
+/// ended: `init` runs only once `destroy` has returned, and the session keeps
+/// the negotiation that it then completes.
+#[test]
+fn init_waits_for_the_end_of_the_session() {
+    let calls = Arc::default();
+    let barrier = Arc::new(Barrier::new(2));
+    let session = Session::new(BlockingDestroyFs {
+        calls: Arc::clone(&calls),
+        barrier: Arc::clone(&barrier),
+    });
+    let request = make_init_request(7, 39, 131072, FUSE_ASYNC_READ, 0);
+    let (header, _) = dispatch_request(&session, &request);
+    assert_eq!(header.error, 0);
+
+    let (done, finished) = mpsc::channel();
+    let (locked, finished_early, error) = thread::scope(|scope| {
+        scope.spawn(|| session.destroy());
+        // Wait until `destroy` has started.
+        barrier.wait();
+        // FUSE_INIT negotiates under this lock, which the session must hold
+        // until it has ended.
+        let locked = session.info.try_read().is_none();
+        let init = scope.spawn(|| {
+            let (header, _) = dispatch_request(&session, &request);
+            done.send(()).unwrap();
+            header.error
+        });
+        let finished_early = finished.recv_timeout(Duration::from_millis(50)).is_ok();
+        // Let `destroy` return.
+        barrier.wait();
+        (locked, finished_early, init.join().unwrap())
+    });
+    assert!(locked, "the session was not locked while it was ending");
+    assert!(
+        !finished_early,
+        "FUSE_INIT completed while the session was ending"
+    );
+    assert_eq!(error, 0);
+    assert_eq!(*calls.lock(), ["init", "destroy", "destroyed", "init"]);
+    let saved = session.save_state();
+    assert!(saved.initialized);
+    saved.validate().unwrap();
 }
