@@ -393,6 +393,9 @@ pub trait Fuse {
     /// Returns the number of bytes copied, which the reply carries as a `u32`; a larger count
     /// fails the request with `EIO`, so copy at most `u32::MAX` bytes even when `arg.len` is
     /// larger.
+    ///
+    /// This answers `FUSE_COPY_FILE_RANGE` only: the session fails its 64-bit variant,
+    /// `FUSE_COPY_FILE_RANGE_64`, with `ENOSYS`, after which Linux sends `FUSE_COPY_FILE_RANGE`.
     fn copy_file_range(
         &self,
         _request: &Request,

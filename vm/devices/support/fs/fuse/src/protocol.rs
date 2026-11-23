@@ -365,6 +365,8 @@ pub const FUSE_REMOVEMAPPING: u32 = 49;
 pub const FUSE_SYNCFS: u32 = 50;
 pub const FUSE_TMPFILE: u32 = 51;
 pub const FUSE_STATX: u32 = 52;
+/* Protocol 7.45: Linux 6.18 sends it whatever minor version the session negotiated */
+pub const FUSE_COPY_FILE_RANGE_64: u32 = 53;
 /* Special Android FUSE operation */
 pub const FUSE_CANONICAL_PATH: u32 = 2016;
 
