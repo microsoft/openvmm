@@ -201,6 +201,21 @@ impl HookDisk {
         }
         Ok(())
     }
+
+    /// Refuses a mutation on a read-only disk. The range is checked first, so
+    /// an out-of-range request still fails with `IllegalBlock`.
+    fn check_writable(&self, sector: u64, count: u64) -> Result<(), DiskError> {
+        if sector
+            .checked_add(count)
+            .is_none_or(|end| end > self.disk.sector_count())
+        {
+            return Err(DiskError::IllegalBlock);
+        }
+        if self.read_only {
+            return Err(DiskError::ReadOnly);
+        }
+        Ok(())
+    }
 }
 
 impl DiskIo for HookDisk {
@@ -269,9 +284,8 @@ impl DiskIo for HookDisk {
             fua,
         })
         .await?;
-        if self.read_only {
-            return Err(DiskError::ReadOnly);
-        }
+        let count = buffers.len() as u64 >> self.sector_size.trailing_zeros();
+        self.check_writable(sector, count)?;
         self.disk.write_vectored(buffers, sector, fua).await
     }
 
@@ -292,9 +306,7 @@ impl DiskIo for HookDisk {
             block_level_only,
         })
         .await?;
-        if self.read_only {
-            return Err(DiskError::ReadOnly);
-        }
+        self.check_writable(sector, count)?;
         self.disk.unmap(sector, count, block_level_only).await
     }
 

@@ -455,6 +455,40 @@ async fn read_only_override_prevents_mutation() {
     ));
 }
 
+/// A read-only disk still rejects out-of-range requests with `IllegalBlock`.
+#[async_test]
+async fn read_only_override_checks_range_first() {
+    let disk = HookDisk::new(1024, 512).with_read_only(true).into_disk();
+    assert_ne!(disk.unmap_behavior(), UnmapBehavior::Ignored);
+    let mem = GuestMemory::allocate(1024);
+    let one = OwnedRequestBuffers::linear(0, 512, false);
+    let two = OwnedRequestBuffers::linear(0, 1024, false);
+    assert!(matches!(
+        disk.write_vectored(&one.buffer(&mem), 2, false).await,
+        Err(DiskError::IllegalBlock)
+    ));
+    assert!(matches!(
+        disk.write_vectored(&two.buffer(&mem), 1, false).await,
+        Err(DiskError::IllegalBlock)
+    ));
+    assert!(matches!(
+        disk.unmap(2, 1, false).await,
+        Err(DiskError::IllegalBlock)
+    ));
+    assert!(matches!(
+        disk.unmap(1, 2, false).await,
+        Err(DiskError::IllegalBlock)
+    ));
+    assert!(matches!(
+        disk.write_vectored(&two.buffer(&mem), 0, false).await,
+        Err(DiskError::ReadOnly)
+    ));
+    assert!(matches!(
+        disk.unmap(0, 2, false).await,
+        Err(DiskError::ReadOnly)
+    ));
+}
+
 #[async_test]
 async fn wrapper_forwards_metadata_and_reservations() {
     let backing = HookDisk::new(8192, 512)
