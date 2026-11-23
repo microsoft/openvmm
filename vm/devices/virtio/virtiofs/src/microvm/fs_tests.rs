@@ -3,7 +3,11 @@
 
 //! Tests for microVM filesystem persistence and limits.
 
+use super::policy_tests::lookup;
 use super::policy_tests::name;
+use super::policy_tests::open;
+use super::policy_tests::read_node;
+use super::policy_tests::release;
 use super::policy_tests::request;
 use super::profile::MICROVM_ATTACHMENT_ID;
 use super::profile::MICROVM_FUSE_MAJOR;
@@ -1311,6 +1315,89 @@ fn hard_link_aliases_restore_and_reject_missing_or_replaced_names() {
             .restore_microvm_state(&profile, replaced_state, &session)
             .is_err()
     );
+}
+
+/// Host software often replaces a file by renaming a new file over its name.
+/// When the guest holds the old file open, the file's node keeps the name,
+/// which now reaches the new file, and a lookup of the name gives the new file
+/// a node of its own. A restore could reopen the held file by none of its
+/// names, and must not bind its node to the new file, so a save must fail,
+/// and say why, rather than save a snapshot that cannot restore, whether or
+/// not the guest has looked the new file up. The guest's handle still reads
+/// the old file. Once the guest releases the old file, a save succeeds, and
+/// its restore binds the name to the new file, at the new file's node if the
+/// guest has one. A snapshot saved before the replacement no longer restores,
+/// since the held node's name reaches another object.
+#[test]
+fn a_held_file_that_the_host_replaces_fails_the_save_until_released() {
+    for look_up_replacement in [false, true] {
+        let case = format!("look_up_replacement={look_up_replacement}");
+        let temporary_directory = tempdir().unwrap();
+        let root_path = temporary_directory.path();
+        std::fs::write(root_path.join("file"), b"old").unwrap();
+        let profile = profile(root_path);
+        let fs = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let held = lookup(&fs, "file").unwrap();
+        let fh = open(&fs, held, lx::O_RDONLY).unwrap();
+        let saved_before = fs
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+        let restore = |state| {
+            let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+            let session = Session::new(destination.clone());
+            destination
+                .restore_microvm_state(&profile, state, &session)
+                .map(|()| destination)
+        };
+
+        std::fs::write(root_path.join("new"), b"new").unwrap();
+        std::fs::rename(root_path.join("new"), root_path.join("file")).unwrap();
+        let replacement = look_up_replacement.then(|| lookup(&fs, "file").unwrap());
+        assert_ne!(replacement, Some(held), "{case}");
+
+        let Err(error) = fs.save_microvm_state(&profile, SessionState::default()) else {
+            panic!("{case}: a save succeeded while the guest held a replaced file");
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&format!("node {held} "))
+                && message.contains("has a name that reaches another host object"),
+            "{case}: {message}"
+        );
+        let mut read = fuse_read_in::new_zeroed();
+        read.fh = fh;
+        read.size = 64;
+        assert_eq!(fs.read(&request(held), &read).unwrap(), b"old", "{case}");
+        let Err(error) = restore(saved_before) else {
+            panic!("{case}: a restore bound the held node to the new file");
+        };
+        assert!(
+            format!("{error:#}").contains("saved inode identity does not match the attachment"),
+            "{case}: {error:#}"
+        );
+
+        release(&fs, held, fh);
+        fs.forget(held, 1);
+        let state = fs
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+        let destination = restore(state).unwrap();
+        assert_eq!(
+            destination.get_attr(&request(held), 0, 0).err(),
+            Some(lx::Error::EINVAL),
+            "{case}"
+        );
+        let node = lookup(&destination, "file").unwrap();
+        if let Some(replacement) = replacement {
+            assert_eq!(node, replacement, "{case}");
+            assert_eq!(
+                destination.get_attr(&request(node), 0, 0).unwrap().attr.ino,
+                fs.get_attr(&request(replacement), 0, 0).unwrap().attr.ino,
+                "{case}"
+            );
+        }
+        assert_eq!(read_node(&destination, node), b"new", "{case}");
+    }
 }
 
 /// Objects with one inode number on two devices, as `/proc` and `/sys` are,
