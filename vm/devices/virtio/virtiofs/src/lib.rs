@@ -268,13 +268,7 @@ impl Fuse for VirtioFs {
         }
         // This must be done under lock so an inode can't be resurrected between the lookup count
         // reaching zero and removing it from the list.
-        let mut inodes = self.inner.inodes.write();
-        if let Some(inode) = inodes.get(node_id) {
-            if inode.forget(node_id, lookup_count) == 0 {
-                tracing::trace!(node_id, "Removing inode");
-                inodes.remove(node_id);
-            }
-        }
+        self.inner.inodes.write().forget(node_id, lookup_count);
     }
 
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
@@ -413,7 +407,12 @@ impl Fuse for VirtioFs {
             return Err(lx::Error::EROFS);
         }
         let inode = self.get_inode(request.node_id())?;
-        let target_inode = self.get_inode(target)?;
+        // The reply hands the guest a lookup reference to the target node.
+        // Take it now, while the inode map holds the node, so that a FORGET
+        // on another queue cannot remove the node before the reply returns
+        // it. A link that fails releases the reference.
+        let target_reference = self.reference_inode(target)?;
+        let target_inode = target_reference.inode();
         // Like Linux's linkat, which reports a read-only destination before a
         // link across filesystems, check where the link would go first.
         self.check_writable(&inode)?;
@@ -429,13 +428,11 @@ impl Fuse for VirtioFs {
         if target_inode.readonly() {
             return Err(lx::Error::EXDEV);
         }
-        self.preflight_alias_add(&target_inode, &alias)?;
-        let attr = inode.link(name, &target_inode)?;
+        self.preflight_alias_add(target_inode, &alias)?;
+        let attr = inode.link(name, target_inode)?;
         target_inode.add_alias(alias);
-
-        // Increment the lookup count since we're returning an entry for this inode.
-        // The kernel will send a forget for this entry later.
-        target_inode.inc_lookup();
+        // The kernel will send a forget for the reply's reference later.
+        target_reference.keep();
 
         // Use the target inode as the reply, with refreshed attributes.
         Ok(fuse_entry_out::new(
@@ -916,6 +913,40 @@ impl VirtioFs {
         })
     }
 
+    /// Takes a lookup reference to the node `node_id` for a reply that
+    /// returns the node to the guest, as [`Self::insert_inode`] takes one when
+    /// a lookup finds a node that the inode map holds.
+    ///
+    /// A FORGET removes a node under the inode map's lock once the guest holds
+    /// no reference to it, so this takes the reference under that lock too:
+    /// either the FORGET removed the node first, and this fails with `EINVAL`,
+    /// as a request about any unknown node does, or the node stays in the map
+    /// until the guest forgets this reference as well. Dropping the reference
+    /// releases it, as a FORGET of it would, unless the request keeps it for
+    /// its reply (see [`LookupReference::keep`]). Like a lookup's, the
+    /// reference adds nothing to a count that stopped at `u64::MAX` (see
+    /// [`VirtioFsInode::inc_lookup`]), so dropping it then releases nothing.
+    fn reference_inode(&self, node_id: u64) -> lx::Result<LookupReference<'_>> {
+        let reference = {
+            let inodes = self.inner.inodes.read();
+            let inode = inodes.get(node_id).ok_or_else(|| {
+                tracelimit::warn_ratelimited!(node_id, "request for unknown inode");
+                lx::Error::EINVAL
+            })?;
+            // A FORGET takes the write lock, so the read lock keeps it out
+            // while the count, which changes atomically, goes up.
+            let release = inode.inc_lookup();
+            LookupReference {
+                inodes: &self.inner.inodes,
+                node_id,
+                inode,
+                release,
+            }
+        };
+        reference.inode.validate_confined_object()?;
+        Ok(reference)
+    }
+
     /// Retrieves the open file `fh` of a request about the node `node_id`.
     ///
     /// The handle must have been opened on that node, and the guest must still
@@ -998,6 +1029,48 @@ impl Drop for InodeReservation<'_> {
     fn drop(&mut self) {
         if !self.committed {
             self.inodes.write().release_reservation(&self.reservation);
+        }
+    }
+}
+
+/// A lookup reference to a node that a request takes for a reply that
+/// returns the node to the guest (see [`VirtioFs::reference_inode`]).
+struct LookupReference<'a> {
+    inodes: &'a RwLock<InodeMap>,
+    node_id: u64,
+    inode: Arc<VirtioFsInode>,
+    /// Whether dropping the reference releases it: taking it added to the
+    /// node's lookup count, which stops at `u64::MAX`, and the request has
+    /// not kept it.
+    release: bool,
+}
+
+impl LookupReference<'_> {
+    /// Returns the node's inode.
+    fn inode(&self) -> &Arc<VirtioFsInode> {
+        &self.inode
+    }
+
+    /// Keeps the reference for the reply, which hands it to the guest.
+    fn keep(mut self) {
+        self.release = false;
+    }
+}
+
+impl Drop for LookupReference<'_> {
+    fn drop(&mut self) {
+        if !self.release {
+            return;
+        }
+        let mut inodes = self.inodes.write();
+        // Since the reference was taken, a FUSE_DESTROY may have emptied the
+        // map, or a FORGET of more references than the guest held may have
+        // removed the node.
+        if inodes
+            .get(self.node_id)
+            .is_some_and(|inode| Arc::ptr_eq(&inode, &self.inode))
+        {
+            inodes.forget(self.node_id, 1);
         }
     }
 }
@@ -1313,6 +1386,21 @@ impl InodeMap {
             .filter(|existing| Self::reuses(existing, inode))
     }
 
+    /// Drops `lookup_count` of the guest's lookup references to the node
+    /// `node_id`, and removes the node once it has none left.
+    ///
+    /// The caller holds the map's lock, so no request can take another
+    /// reference to the node between its count reaching zero and its removal.
+    pub fn forget(&mut self, node_id: u64, lookup_count: u64) {
+        let Some(inode) = self.get(node_id) else {
+            return;
+        };
+        if inode.forget(node_id, lookup_count) == 0 {
+            tracing::trace!(node_id, "Removing inode");
+            self.remove(node_id);
+        }
+    }
+
     /// Remove an inode with the specified FUSE node ID from the map.
     pub fn remove(&mut self, node_id: u64) {
         let Some(inode) = self.inodes_by_node_id.remove(node_id) else {
@@ -1420,6 +1508,9 @@ impl InodeMap {
 mod tests {
     use super::HandleMap;
     use super::VirtioFs;
+    use super::profile::MICROVM_ATTACHMENT_ID;
+    use super::profile::MicroVmVirtioFsProfile;
+    use super::profile::microvm_root_identity;
     use fuse::Fuse;
     use fuse::Request;
     use fuse::protocol::*;
@@ -2065,6 +2156,117 @@ mod tests {
         fs.destroy();
 
         assert!(fs.get_inode(FUSE_ROOT_ID).is_ok());
+    }
+
+    /// Returns a direct file system of `root`, or a writable microVM one if
+    /// `microvm`, whose root holds the regular file `file`, which the guest
+    /// has looked up once, with the file's node ID.
+    fn fs_with_a_looked_up_file(root: &Path, microvm: bool) -> (VirtioFs, u64) {
+        std::fs::write(root.join("file"), b"data").unwrap();
+        let fs = if microvm {
+            let profile = MicroVmVirtioFsProfile::from_attachment(
+                MICROVM_ATTACHMENT_ID.to_owned(),
+                microvm_root_identity(root).unwrap(),
+                false,
+                Vec::new(),
+            )
+            .unwrap();
+            VirtioFs::new_microvm(root, profile).unwrap()
+        } else {
+            VirtioFs::new(root, None).unwrap()
+        };
+        let node_id = fs
+            .lookup(&request(FUSE_ROOT_ID), "file".as_ref())
+            .unwrap()
+            .nodeid;
+        (fs, node_id)
+    }
+
+    /// A successful LINK hands the guest a lookup reference to its target
+    /// node, so the node must stay in the inode table until the guest forgets
+    /// that reference too, even when a FORGET, which the guest sends on
+    /// another queue, drops every other reference while the LINK runs.
+    #[test]
+    fn link_keeps_its_node_through_a_concurrent_forget() {
+        for microvm in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let (fs, node_id) = fs_with_a_looked_up_file(root.path(), microvm);
+            let target = fs.get_inode(node_id).unwrap();
+            // The FORGET below finds the node by its inode number, without
+            // the path that the test holds.
+            assert!(target.volume.supports_stable_file_id());
+
+            // A LINK records the new name after its host link, under the
+            // target's alias lock and then its path lock, so while the test
+            // holds the path, the LINK stops there, before it replies.
+            let path = target.path.read();
+            std::thread::scope(|scope| {
+                let link =
+                    scope.spawn(|| fs.link(&request(FUSE_ROOT_ID), "link".as_ref(), node_id));
+                while !target.aliases.is_locked_exclusive() && !link.is_finished() {
+                    std::thread::yield_now();
+                }
+                fs.forget(node_id, 1);
+                drop(path);
+                assert_eq!(link.join().unwrap().unwrap().nodeid, node_id);
+            });
+
+            fs.get_attr(&request(node_id), 0, 0).unwrap();
+            fs.forget(node_id, 1);
+            assert_eq!(
+                fs.get_attr(&request(node_id), 0, 0).unwrap_err(),
+                lx::Error::EINVAL
+            );
+        }
+    }
+
+    /// A LINK that fails, whether before or at its host link, hands the guest
+    /// no reference to its target node, so the node leaves the inode table
+    /// once the guest forgets the references that it holds.
+    #[test]
+    fn failed_link_retains_no_reference() {
+        for microvm in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let (fs, node_id) = fs_with_a_looked_up_file(root.path(), microvm);
+            std::fs::write(root.path().join("existing"), b"other").unwrap();
+
+            assert_eq!(
+                fs.link(&request(node_id), "link".as_ref(), node_id)
+                    .unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                fs.link(&request(FUSE_ROOT_ID), "existing".as_ref(), node_id)
+                    .unwrap_err(),
+                lx::Error::EEXIST
+            );
+
+            fs.forget(node_id, 1);
+            assert_eq!(
+                fs.get_attr(&request(node_id), 0, 0).unwrap_err(),
+                lx::Error::EINVAL
+            );
+        }
+    }
+
+    /// A LINK takes the reference that its reply hands the guest before it
+    /// links on the host, so a FORGET of the guest's other references to the
+    /// target node meanwhile leaves the node in the inode table. A LINK that
+    /// then fails releases the reference as a FORGET of it would, which
+    /// removes the node, since the guest holds no reference to it.
+    #[test]
+    fn released_link_reference_removes_a_forgotten_node() {
+        let root = tempfile::tempdir().unwrap();
+        let (fs, node_id) = fs_with_a_looked_up_file(root.path(), false);
+
+        let reference = fs.reference_inode(node_id).unwrap();
+        fs.forget(node_id, 1);
+        fs.get_attr(&request(node_id), 0, 0).unwrap();
+        drop(reference);
+        assert_eq!(
+            fs.get_attr(&request(node_id), 0, 0).unwrap_err(),
+            lx::Error::EINVAL
+        );
     }
 
     #[test]
