@@ -650,6 +650,7 @@ dependencies = [
  "closeable_mutex",
  "parking_lot",
  "range_map_vec",
+ "test_with_tracing",
  "tracing",
 ]
 
