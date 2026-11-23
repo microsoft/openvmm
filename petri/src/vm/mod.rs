@@ -2699,7 +2699,24 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         client: &PipetteClient,
         env: BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
+        self.run_nested_test_with_suffix(client, env, "").await
+    }
+
+    /// Run the nested test with separate results for each invocation.
+    ///
+    /// Use a unique suffix when running the same nested test more than once.
+    pub async fn run_nested_test_with_suffix(
+        &self,
+        client: &PipetteClient,
+        env: BTreeMap<String, String>,
+        suffix: &str,
+    ) -> anyhow::Result<()> {
         let nested_test = self.nested_test.as_ref().context("no nested test")?;
+        let results_dir = if self.guest_shares.contains_key(NESTED_CONTENT_TAG) {
+            NESTED_RESULTS_DIR.to_owned()
+        } else {
+            format!("{NESTED_RESULTS_DIR}{suffix}")
+        };
 
         let test_binary_path =
             if let Some(test_content_dir) = self.guest_shares.get(NESTED_CONTENT_TAG) {
@@ -2730,7 +2747,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             )
             .env(
                 TEST_OUTPUT_PATH,
-                self.agent_disk_path(&[NESTED_TEST_CONTENT_DIR.into(), NESTED_RESULTS_DIR.into()]),
+                self.agent_disk_path(&[NESTED_TEST_CONTENT_DIR.into(), results_dir.clone()]),
             )
             .stdout(crate::pipette::process::Stdio::piped())
             .stderr(crate::pipette::process::Stdio::piped());
@@ -2740,7 +2757,9 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         }
 
         if self.guest_shares.contains_key(NESTED_CONTENT_TAG) {
-            cmd.env(PETRI_NESTED_TEST_PARENT, &self.name);
+            // Keep shared results under the normal results directory so the
+            // host collects them, but give each invocation its own test name.
+            cmd.env(PETRI_NESTED_TEST_PARENT, format!("{}{suffix}", self.name));
         }
 
         if let Ok(v) = std::env::var(PETRI_REMOTE_ARTIFACTS) {
@@ -2755,7 +2774,9 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             .spawn(
                 "log_nested",
                 crate::log_task(
-                    self.resources.log_source.log_file("stdout")?,
+                    self.resources
+                        .log_source
+                        .log_file(&format!("stdout{suffix}"))?,
                     child.stdout.take().unwrap(),
                     "nested stdout",
                 ),
@@ -2768,7 +2789,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         if !self.guest_shares.contains_key(NESTED_CONTENT_TAG) {
             let test_results_dir = self.agent_disk_path(&[
                 NESTED_TEST_CONTENT_DIR.into(),
-                NESTED_RESULTS_DIR.into(),
+                results_dir,
                 nested_test.test_name.replace("::", "__"),
             ]);
 
@@ -2779,7 +2800,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
                 let mut output = self
                     .resources
                     .log_source
-                    .create_attachment_no_prefix(&file)?;
+                    .create_attachment_no_prefix(&format!("{suffix}{file}"))?;
                 output.write_all(&data)?;
             }
         }

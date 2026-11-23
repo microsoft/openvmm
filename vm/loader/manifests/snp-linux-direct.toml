@@ -1,0 +1,26 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+guest_arch = "x64"
+
+# ----------------------------------------------------------------------------
+# AMD SEV-SNP isolation
+# ----------------------------------------------------------------------------
+[guest_configs.snp]
+guest_svn = 1
+max_vtl = 0
+
+[guest_configs.snp.isolation]
+policy = 0x30000
+enable_debug = true
+injection_type = "normal"
+secure_avic = "disabled"
+
+[guest_configs.snp.image.snp_linux_direct]
+memory_page_count = 40960
+c_bit_position = 51
+memory_acceptance = "lazy"
+
+[guest_configs.snp.image.snp_linux_direct.linux]
+use_initrd = true
+command_line = "console=ttyS0 earlyprintk=serial earlycon panic=-1"

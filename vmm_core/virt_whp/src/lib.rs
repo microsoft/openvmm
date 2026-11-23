@@ -971,6 +971,12 @@ pub fn is_available() -> Result<bool, Error> {
     whp::capabilities::hypervisor_present().for_op("query hypervisor presence")
 }
 
+/// Returns whether WHP can reset partitions with nested virtualization enabled.
+#[cfg(guest_arch = "x86_64")]
+pub fn is_nested_reset_available() -> bool {
+    whp::capabilities::reset_partition()
+}
+
 /// The prototype partition.
 pub struct WhpProtoPartition<'a> {
     vtl0: VtlPartition,
@@ -1845,10 +1851,9 @@ impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
     ) -> Result<guestmem::UserLockedPages, hvdef::HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
-        Ok(self
-            .0
+        self.0
             .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
-            .unwrap())
+            .map_err(|_| hvdef::HvError::OperationDenied)
     }
 
     fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), hvdef::HvError> {

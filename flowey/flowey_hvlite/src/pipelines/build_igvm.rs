@@ -59,7 +59,7 @@ where
     #[clap(long)]
     pub release: bool,
 
-    /// Configure the IGVM file with the appropriate `-release.json`
+    /// Configure the IGVM file with the appropriate `-release.toml`
     /// manifest variant, and disable debug-only features.
     #[clap(long)]
     pub release_cfg: bool,
@@ -102,7 +102,7 @@ pub struct BuildIgvmCliCustomizations {
     #[clap(long)]
     pub override_arch: Option<CommonArchCli>,
 
-    /// Override the json manifest passed to igvmfilegen, none means the
+    /// Override the TOML manifest passed to igvmfilegen, none means the
     /// debug/release manifest from the base recipe will be used.
     #[clap(long)]
     pub override_manifest: Option<PathBuf>,

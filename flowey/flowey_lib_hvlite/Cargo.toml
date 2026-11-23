@@ -32,6 +32,7 @@ which.workspace = true
 
 [dev-dependencies]
 test_with_tracing.workspace = true
+toml_edit = { workspace = true, features = ["serde"] }
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["windows"] }

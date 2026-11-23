@@ -54,7 +54,7 @@ cargo xflowey build-igvm aarch64 --release --release-cfg
 
 `--release` selects the binary profile. `--release-cfg` selects the
 release manifest. That command reads
-`vm/loader/manifests/openhcl-aarch64-release.json`: 12288 pages (48 MiB),
+`vm/loader/manifests/openhcl-aarch64-release.toml`: 12288 pages (48 MiB),
 with command line `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=release`.
 
 ```bash
@@ -62,7 +62,7 @@ cargo xflowey build-igvm aarch64
 ```
 
 Without `--release-cfg`, the same recipe reads
-`vm/loader/manifests/openhcl-aarch64-dev.json`: 131072 pages (512 MiB),
+`vm/loader/manifests/openhcl-aarch64-dev.toml`: 131072 pages (512 MiB),
 with command line `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=debug`. The x64
 release manifest is a separate budget, 17920 pages (70 MiB).
 

@@ -108,6 +108,8 @@ pub struct HostContext {
     pub execution_environment: ExecutionEnvironment,
     /// Hypervisor backend that OpenVMM will select on this host.
     pub openvmm_hypervisor: Option<OpenVmmHypervisor>,
+    /// Whether the selected OpenVMM backend supports nested partition reset.
+    pub nested_reset_supported: bool,
 }
 
 impl HostContext {
@@ -153,6 +155,13 @@ impl HostContext {
             _ => None,
         };
 
+        let nested_reset_supported = match openvmm_hypervisor {
+            Some(OpenVmmHypervisor::Kvm) => openvmm_hypervisors::kvm_nested_state_available(),
+            Some(OpenVmmHypervisor::Mshv) => openvmm_hypervisors::mshv_partition_scrub_available(),
+            Some(OpenVmmHypervisor::Whp) => openvmm_hypervisors::whp_nested_reset_available(),
+            _ => false,
+        };
+
         let vm_host_info = cfg_select! {
             windows => crate::vm::hyperv::powershell::run_get_vm_host()
                 .await
@@ -186,6 +195,7 @@ impl HostContext {
                 ExecutionEnvironment::Baremetal
             },
             openvmm_hypervisor,
+            nested_reset_supported,
         }
     }
 }
@@ -337,6 +347,10 @@ fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'sta
         capabilities.insert(capabilities::NESTED_VIRT);
     }
 
+    if vmm == VmmType::OpenVmm && context.nested_reset_supported {
+        capabilities.insert(capabilities::NESTED_RESET);
+    }
+
     match std::env::var("PETRI_CAPABILITIES") {
         Ok(env_capabilities) => {
             for capability in env_capabilities.split(',').map(str::trim) {
@@ -391,6 +405,7 @@ mod tests {
             vendor: Vendor::Intel,
             execution_environment: ExecutionEnvironment::Baremetal,
             openvmm_hypervisor: Some(openvmm_hypervisor),
+            nested_reset_supported: false,
         }
     }
 

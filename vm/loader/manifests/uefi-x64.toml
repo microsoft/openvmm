@@ -1,0 +1,35 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+guest_arch = "x64"
+
+# ----------------------------------------------------------------------------
+# Intel TDX isolation
+# ----------------------------------------------------------------------------
+[guest_configs.tdx]
+guest_svn = 1
+max_vtl = 0
+
+[guest_configs.tdx.isolation]
+enable_debug = false
+sept_ve_disable = true
+
+[guest_configs.tdx.image.uefi]
+config_type = "igvm"
+
+# ----------------------------------------------------------------------------
+# AMD SEV-SNP isolation
+# ----------------------------------------------------------------------------
+[guest_configs.snp]
+guest_svn = 1
+max_vtl = 0
+
+[guest_configs.snp.isolation]
+shared_gpa_boundary_bits = 39
+policy = 0x3001f
+enable_debug = true
+injection_type = "restricted"
+secure_avic = "enabled"
+
+[guest_configs.snp.image.uefi]
+config_type = "igvm"

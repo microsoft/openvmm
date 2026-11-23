@@ -112,7 +112,10 @@ or reopen the file.
 
 Some API fields reference OS handles by name. For example,
 `VirtioFs.WindowsOptions.user_token_name` names an access token that virtio-fs
-impersonates for host file access.
+impersonates for host file access. `DiskBackend.virtual_disk` names a VHD or
+VHDX handle that the client opened with `OpenVirtualDisk` and attached for raw
+access, so OpenVMM accesses the image with the client's rights rather than its
+own.
 
 Clients register these handles over the same socket using the
 [resource-passing protocol]. Because Windows Unix sockets cannot carry handles,

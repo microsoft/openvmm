@@ -303,6 +303,164 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
     Ok(())
 }
 
+/// Removing the first relay device must leave the second device usable.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn vpci_relay_hot_remove(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    use disk_backend_resources::LayeredDiskHandle;
+    use disk_backend_resources::layer::RamDiskLayerHandle;
+    use nvme_resources::NamespaceDefinition;
+
+    let (mut vm, agent) = config
+        .with_openhcl_command_line("OPENHCL_ENABLE_VPCI_RELAY=1")
+        .with_vmbus_redirect(true)
+        .run()
+        .await?;
+    let sh = agent.unix_shell();
+    let mut timer = pal_async::timer::PolledTimer::new(&driver);
+    let instance_ids = [
+        guid::guid!("78fc4861-29bf-408d-88b7-24199de560d1"),
+        guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3"),
+    ];
+    let mut first_device = String::new();
+    let mut second_device = String::new();
+
+    // Wait after each add so the first device gets the lower relay slab key.
+    for (index, instance_id) in instance_ids.into_iter().enumerate() {
+        vm.backend()
+            .add_vpci_device(
+                instance_id,
+                NvmeControllerHandle {
+                    subsystem_id: instance_id,
+                    msix_count: 1,
+                    max_io_queues: 1,
+                    namespaces: if index == 1 {
+                        vec![NamespaceDefinition {
+                            nsid: 1,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(8 * 1024 * 1024),
+                                sector_size: None,
+                            })
+                            .into_resource(),
+                            read_only: false,
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    requests: None,
+                }
+                .into_resource(),
+            )
+            .await?;
+
+        let mut found = false;
+        for _ in 0..60 {
+            let output = cmd!(sh, "ls /sys/bus/pci/devices").read().await?;
+            let devices: Vec<_> = output.lines().collect();
+            if devices.len() == index + 1 {
+                if index == 0 {
+                    first_device = devices[0].to_owned();
+                } else {
+                    second_device = devices
+                        .into_iter()
+                        .find(|device| *device != first_device)
+                        .context("second NVMe device has no distinct PCI address")?
+                        .to_owned();
+                }
+                found = true;
+                break;
+            }
+            timer.sleep(std::time::Duration::from_millis(500)).await;
+        }
+        anyhow::ensure!(found, "NVMe device {index} did not appear after hot-add");
+    }
+
+    let expected_data = [0x5a; 4096];
+    let survivor_disk = mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(30))
+        .until_cancelled(async {
+            let disk = loop {
+                let blocks = cmd!(sh, "ls /sys/block").read().await?;
+                let mut disk = None;
+                for block in blocks.lines().filter(|block| block.starts_with("nvme")) {
+                    let pci_path = cmd!(sh, "readlink -f /sys/block/{block}/device")
+                        .read()
+                        .await?;
+                    if pci_path
+                        .split('/')
+                        .any(|component| component == second_device)
+                    {
+                        disk = Some(format!("/dev/{block}"));
+                        break;
+                    }
+                }
+                if let Some(disk) = disk {
+                    break disk;
+                }
+                timer.sleep(std::time::Duration::from_millis(500)).await;
+            };
+            agent
+                .write_file("/tmp/vpci_relay_expected", &expected_data[..])
+                .await?;
+            cmd!(
+                sh,
+                "dd if=/tmp/vpci_relay_expected of={disk} bs=4096 count=1 oflag=direct conv=fsync"
+            )
+            .run()
+            .await
+            .context("failed to write known data to the surviving NVMe namespace")?;
+            anyhow::Ok(disk)
+        })
+        .await
+        .context("timed out preparing the surviving NVMe namespace")??;
+
+    mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(30))
+        .until_cancelled(vm.backend().remove_vpci_device(instance_ids[0]))
+        .await
+        .context("timed out hot-removing the first NVMe device")??;
+
+    let mut removed = false;
+    for _ in 0..60 {
+        let output = cmd!(sh, "ls /sys/bus/pci/devices").read().await?;
+        if output.lines().collect::<Vec<_>>() == vec![second_device.as_str()] {
+            removed = true;
+            break;
+        }
+        timer.sleep(std::time::Duration::from_millis(500)).await;
+    }
+    anyhow::ensure!(
+        removed,
+        "first NVMe device did not disappear with the second device still present"
+    );
+    mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(30))
+        .until_cancelled(async {
+            cmd!(
+                sh,
+                "dd if={survivor_disk} of=/tmp/vpci_relay_actual bs=4096 count=1 iflag=direct,fullblock"
+            )
+            .run()
+            .await
+            .context("failed to read the surviving NVMe namespace after removal")?;
+            let actual_data = agent.read_file("/tmp/vpci_relay_actual").await?;
+            anyhow::ensure!(
+                actual_data == expected_data,
+                "surviving NVMe namespace returned incorrect data after removal"
+            );
+            anyhow::Ok(())
+        })
+        .await
+        .context("timed out reading the surviving NVMe namespace after removal")??;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn vpci_relay_tdisp_device(
     config: PetriVmBuilder<OpenVmmPetriBackend>,

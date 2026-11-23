@@ -147,7 +147,7 @@ Some examples of potentially useful customization include:
     `x64-cvm` recipe:
 
     ```bash
-    cargo xflowey build-igvm x64-cvm --override-manifest vm/loader/manifests/openhcl-x64-cvm-sivm-dev.json
+    cargo xflowey build-igvm x64-cvm --override-manifest vm/loader/manifests/openhcl-x64-cvm-sivm-dev.toml
     ```
 
 - `--custom-openvmm-hcl`: Specify a pre-built `openvmm_hcl` binary. This is
