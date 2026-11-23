@@ -1071,12 +1071,12 @@ impl VmService {
                 self.start_rpc(response, r);
             }
             vmservice::Vm::WaitVm((), response) => {
-                if self.vm.is_none() {
+                if matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+                    response.send(Ok(()));
+                } else if self.vm.is_none() {
                     response.send(Err(grpc_error(anyhow!("VM not created yet"))));
                 } else if self.wait_vm_response.is_some() {
                     response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
-                } else if matches!(self.lifecycle, VmLifecycle::Halted(_)) {
-                    response.send(Ok(()));
                 } else {
                     self.wait_vm_response = Some((ctx.clone(), response));
                 }
@@ -4052,6 +4052,16 @@ mod tests {
             );
             assert_eq!(status.code, i32::from(Code::FailedPrecondition));
             assert!(matches!(svc.lifecycle, VmLifecycle::Halted(_)));
+            let (response, result) = mesh::oneshot();
+            assert!(matches!(
+                svc.handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::WaitVm((), response),
+                )
+                .await,
+                HandleAction::None
+            ));
+            result.await.unwrap().unwrap();
         });
     }
 
