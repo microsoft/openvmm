@@ -169,6 +169,16 @@ impl DiskIo for DiskWithReservations {
         self.inner.write_vectored(buffers, sector, fua).await
     }
 
+    async fn write_same(
+        &self,
+        buffer: &RequestBuffers<'_>,
+        sector: u64,
+        count: u64,
+        fua: bool,
+    ) -> Result<(), DiskError> {
+        self.inner.write_same(buffer, sector, count, fua).await
+    }
+
     fn sync_cache(&self) -> impl Future<Output = Result<(), DiskError>> + Send {
         self.inner.sync_cache()
     }
@@ -300,12 +310,38 @@ impl pr::PersistentReservation for DiskWithReservations {
 mod tests {
     use crate::DiskWithReservations;
     use disk_backend::Disk;
+    use disk_backend_resources::ZoneEmulationParameters;
+    use disk_zone_emu::ZoneEmulationDisk;
+    use guestmem::GuestMemory;
     use pal_async::async_test;
+    use scsi_buffers::OwnedRequestBuffers;
 
     #[async_test]
     async fn sector_range_conformance() {
         let inner = disklayer_ram::ram_disk(1024 * 1024, false).unwrap();
         let disk = Disk::new(DiskWithReservations::new(inner)).unwrap();
         storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
+    #[async_test]
+    async fn forwards_zoned_write_same_as_one_operation() {
+        let inner = disklayer_ram::ram_disk(128 * 512, false).unwrap();
+        let zoned = ZoneEmulationDisk::new(
+            inner,
+            ZoneEmulationParameters {
+                zone_size_bytes: 4096,
+                conventional_zone_count: 1,
+                max_open_zones: 2,
+                unrestricted_read: true,
+            },
+        )
+        .unwrap();
+        let disk = Disk::new(DiskWithReservations::new(Disk::new(zoned).unwrap())).unwrap();
+        let memory = GuestMemory::allocate(512);
+        let buffers = OwnedRequestBuffers::linear(0, 512, true);
+
+        disk.write_same(&buffers.buffer(&memory), 8, 8, false)
+            .await
+            .unwrap();
     }
 }

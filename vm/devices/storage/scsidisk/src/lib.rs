@@ -89,6 +89,10 @@ const VHDMP_MAX_WRITE_SAME_LENGTH_BYTES: u64 = 8 * 1024 * 1024; // bytes
 
 impl ScsiSaveRestore for SimpleScsiDisk {
     fn save(&self) -> Result<Option<ScsiSavedState>, SaveError> {
+        if self.disk.zoned().is_some() {
+            return Err(SaveError::NotSupported);
+        }
+
         let sense = self.sense_data.get();
         let sense_data = sense.map(|sense| SavedSenseData {
             sense_key: sense.header.sense_key.0,

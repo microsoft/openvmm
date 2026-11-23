@@ -34,11 +34,17 @@ pub struct TestDiskStorageState {
     pub sector_count: u64,
     pub operations: Vec<TestDiskOperation>,
     pub fail_next_write_once: bool,
+    pub fail_next_sync_once: bool,
+    pub fail_sync_on_count: Option<u64>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TestDiskOperation {
-    Write { sector: u64, fua: bool },
+    Write {
+        sector: u64,
+        bytes: usize,
+        fua: bool,
+    },
     Sync,
 }
 
@@ -83,6 +89,8 @@ impl TestDisk {
             sector_count,
             operations: Vec::new(),
             fail_next_write_once: false,
+            fail_next_sync_once: false,
+            fail_sync_on_count: None,
         }));
         (
             TestDisk {
@@ -176,9 +184,11 @@ impl DiskIo for TestDisk {
             .reader()
             .read(&mut state.storage[offset..end_point])?;
         state.is_fua_set = fua;
-        state
-            .operations
-            .push(TestDiskOperation::Write { sector, fua });
+        state.operations.push(TestDiskOperation::Write {
+            sector,
+            bytes: buffers.len(),
+            fua,
+        });
         Ok(())
     }
 
@@ -186,6 +196,13 @@ impl DiskIo for TestDisk {
         let mut state = self.state.lock();
         state.sync_count += 1;
         state.operations.push(TestDiskOperation::Sync);
+        if state.fail_next_sync_once || state.fail_sync_on_count == Some(state.sync_count) {
+            state.fail_next_sync_once = false;
+            state.fail_sync_on_count = None;
+            return Err(DiskError::Io(std::io::Error::other(
+                "injected sync failure",
+            )));
+        }
         Ok(())
     }
 

@@ -217,12 +217,15 @@ conventional_zones=524,max_open_zones=128
 
   The `zoned` option wraps the ordinary backing disk with the
   `disk_zone_emu` backend. That backend enforces zoned-media I/O rules and
-  stores versioned zone state in a hidden metadata area at the end of the
-  backing disk. Guest-visible capacity is limited to complete zones before
-  that metadata area. The SCSI disk layer translates ZBC commands and
-  discovery data to the protocol-neutral zoned backend interface; a physical
-  zoned disk backend can implement the same interface without using emulated
-  metadata.
+  stores a fixed metadata locator at the start of the backing disk and
+  versioned checkpoints plus a bounded delta journal at the end. Guest-visible
+  capacity is limited to complete zones between those hidden regions. The
+  locator records the original backing geometry, so resizing an initialized
+  zoned image is rejected rather than silently losing zone state. Images
+  created by the earlier end-only draft metadata format must be recreated. The
+  SCSI disk layer translates ZBC commands and discovery data to the
+  protocol-neutral zoned backend interface; a physical zoned disk backend can
+  implement the same interface without using emulated metadata.
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to

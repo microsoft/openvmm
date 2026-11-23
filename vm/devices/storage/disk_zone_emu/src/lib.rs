@@ -41,6 +41,15 @@ const METADATA_HEADER_SIZE: usize = 64;
 const METADATA_RECORD_SIZE: usize = 16;
 const METADATA_CHECKSUM_OFFSET: usize = 60;
 const METADATA_FLAG_UNRESTRICTED_READ: u32 = 1;
+const LOCATOR_MAGIC: &[u8; 8] = b"OVSMRL01";
+const LOCATOR_VERSION: u32 = 1;
+const LOCATOR_HEADER_SIZE: usize = 128;
+const LOCATOR_CHECKSUM_OFFSET: usize = 124;
+const DELTA_MAGIC: &[u8; 8] = b"OVSMRD01";
+const DELTA_VERSION: u32 = 1;
+const DELTA_HEADER_SIZE: usize = 32;
+const DELTA_RECORD_SIZE: usize = 16;
+const DELTA_CHECKSUM_OFFSET: usize = 28;
 const ZONE_INSPECT_LIMIT: usize = 256;
 const ZONE_INSPECT_EDGE_COUNT: usize = 32;
 /// Maximum practical zone count supported by the emulator.
@@ -216,6 +225,8 @@ impl Zone {
 pub struct ZoneEmulationDisk {
     inner: Disk,
     parameters: ZoneEmulationParameters,
+    backing_sector_count: u64,
+    data_start_lba: u64,
     sector_count: u64,
     zone_size_sectors: u64,
     physical_sector_count: u64,
@@ -231,8 +242,10 @@ pub struct ZoneEmulationDisk {
 #[derive(Copy, Clone, Debug)]
 struct MetadataState {
     loaded: bool,
+    failed: bool,
     generation: u64,
     active_slot: usize,
+    log_sectors_used: u64,
 }
 
 #[derive(Copy, Clone)]
@@ -248,6 +261,20 @@ enum DecodedMetadata {
         generation: u64,
         states: Vec<ZoneState>,
     },
+}
+
+#[derive(Copy, Clone)]
+enum DecodedLocator {
+    Empty,
+    Invalid,
+    Valid,
+}
+
+struct RecoveredMetadata {
+    generation: u64,
+    states: Vec<ZoneState>,
+    active_slot: usize,
+    log_sectors_used: u64,
 }
 
 #[derive(Copy, Clone)]
@@ -409,16 +436,20 @@ impl ZoneEmulationDisk {
 
         let zone_size_sectors = parameters.zone_size_bytes / u64::from(sector_size);
         let physical_sector_count = u64::from(physical_sector_size / sector_size);
+        let data_start_lba = physical_sector_count;
         let metadata_end_lba = backing_sector_count / physical_sector_count * physical_sector_count;
         let mut metadata_slot_sectors = physical_sector_count;
         let (sector_count, zone_count, metadata_start_lba) = loop {
             let metadata_sectors = metadata_slot_sectors
-                .checked_mul(2)
+                .checked_mul(4)
                 .ok_or(InvalidZonedConfiguration::NoMetadataSpace)?;
             let metadata_start_lba = metadata_end_lba
                 .checked_sub(metadata_sectors)
                 .ok_or(InvalidZonedConfiguration::NoMetadataSpace)?;
-            let sector_count = metadata_start_lba / zone_size_sectors * zone_size_sectors;
+            let data_sectors = metadata_start_lba
+                .checked_sub(data_start_lba)
+                .ok_or(InvalidZonedConfiguration::NoMetadataSpace)?;
+            let sector_count = data_sectors / zone_size_sectors * zone_size_sectors;
             let zone_count = sector_count / zone_size_sectors;
             let metadata_bytes = METADATA_HEADER_SIZE
                 .checked_add(
@@ -474,6 +505,8 @@ impl ZoneEmulationDisk {
         Ok(Self {
             inner,
             parameters,
+            backing_sector_count,
+            data_start_lba,
             sector_count,
             zone_size_sectors,
             physical_sector_count,
@@ -483,8 +516,10 @@ impl ZoneEmulationDisk {
             mutation_lock: AsyncMutex::new(()),
             metadata: AsyncMutex::new(MetadataState {
                 loaded: false,
+                failed: false,
                 generation: 0,
                 active_slot: 1,
+                log_sectors_used: 0,
             }),
             open_zone_count: Mutex::new(0),
             telemetry: ZonedTelemetry::new(),
@@ -566,21 +601,165 @@ impl ZoneEmulationDisk {
     }
 
     fn metadata_slot_lba(&self, slot: usize) -> u64 {
-        self.metadata_start_lba + slot as u64 * self.metadata_slot_sectors
+        self.metadata_start_lba + slot as u64 * self.metadata_slot_sectors * 2
+    }
+
+    fn metadata_log_lba(&self, slot: usize) -> u64 {
+        self.metadata_slot_lba(slot) + self.metadata_slot_sectors
+    }
+
+    fn inner_lba(&self, lba: u64) -> u64 {
+        self.data_start_lba + lba
+    }
+
+    async fn read_sectors(&self, lba: u64, sector_count: u64) -> Result<Vec<u8>, DiskError> {
+        let bytes = usize::try_from(sector_count)
+            .ok()
+            .and_then(|sectors| sectors.checked_mul(self.inner.sector_size() as usize))
+            .ok_or(DiskError::InvalidInput)?;
+        let memory = GuestMemory::allocate(bytes);
+        let buffers = OwnedRequestBuffers::linear(0, bytes, true);
+        self.inner
+            .read_vectored(&buffers.buffer(&memory), lba)
+            .await?;
+        let mut data = vec![0; bytes];
+        memory
+            .read_at(0, &mut data)
+            .map_err(|_| DiskError::InvalidInput)?;
+        Ok(data)
+    }
+
+    async fn write_sectors(&self, lba: u64, bytes: &[u8]) -> Result<(), DiskError> {
+        let memory = GuestMemory::allocate(bytes.len());
+        memory
+            .write_at(0, bytes)
+            .map_err(|_| DiskError::InvalidInput)?;
+        let buffers = OwnedRequestBuffers::linear(0, bytes.len(), true);
+        self.inner
+            .write_vectored(&buffers.buffer(&memory), lba, false)
+            .await
     }
 
     async fn read_metadata_slot(&self, slot: usize) -> Result<Vec<u8>, DiskError> {
-        let slot_bytes = self.metadata_slot_bytes(self.inner.sector_size())?;
-        let memory = GuestMemory::allocate(slot_bytes);
-        let buffers = OwnedRequestBuffers::linear(0, slot_bytes, true);
-        self.inner
-            .read_vectored(&buffers.buffer(&memory), self.metadata_slot_lba(slot))
-            .await?;
-        let mut bytes = vec![0; slot_bytes];
-        memory
-            .read_at(0, &mut bytes)
-            .map_err(|_| DiskError::InvalidInput)?;
+        self.read_sectors(self.metadata_slot_lba(slot), self.metadata_slot_sectors)
+            .await
+    }
+
+    fn encode_locator(&self) -> Result<Vec<u8>, DiskError> {
+        let locator_bytes = usize::try_from(self.data_start_lba)
+            .ok()
+            .and_then(|sectors| sectors.checked_mul(self.inner.sector_size() as usize))
+            .ok_or(DiskError::InvalidInput)?;
+        if locator_bytes < LOCATOR_HEADER_SIZE {
+            return Err(DiskError::InvalidInput);
+        }
+
+        let mut bytes = vec![0; locator_bytes];
+        bytes[0..8].copy_from_slice(LOCATOR_MAGIC);
+        bytes[8..12].copy_from_slice(&LOCATOR_VERSION.to_le_bytes());
+        bytes[12..16].copy_from_slice(&(LOCATOR_HEADER_SIZE as u32).to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.backing_sector_count.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.data_start_lba.to_le_bytes());
+        bytes[32..40].copy_from_slice(&self.sector_count.to_le_bytes());
+        bytes[40..48].copy_from_slice(&self.metadata_start_lba.to_le_bytes());
+        bytes[48..56].copy_from_slice(&self.metadata_slot_sectors.to_le_bytes());
+        bytes[56..64].copy_from_slice(&self.zone_size_sectors.to_le_bytes());
+        bytes[64..68].copy_from_slice(&(self.zones.len() as u32).to_le_bytes());
+        bytes[68..72].copy_from_slice(&self.parameters.conventional_zone_count.to_le_bytes());
+        bytes[72..76].copy_from_slice(&self.parameters.max_open_zones.to_le_bytes());
+        let flags = if self.parameters.unrestricted_read {
+            METADATA_FLAG_UNRESTRICTED_READ
+        } else {
+            0
+        };
+        bytes[76..80].copy_from_slice(&flags.to_le_bytes());
+        bytes[80..84].copy_from_slice(&self.inner.sector_size().to_le_bytes());
+        bytes[84..88].copy_from_slice(&self.inner.physical_sector_size().to_le_bytes());
+
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[..LOCATOR_CHECKSUM_OFFSET]);
+        hasher.update(&[0; 4]);
+        hasher.update(&bytes[LOCATOR_HEADER_SIZE..]);
+        bytes[LOCATOR_CHECKSUM_OFFSET..LOCATOR_HEADER_SIZE]
+            .copy_from_slice(&hasher.finalize().to_le_bytes());
         Ok(bytes)
+    }
+
+    fn decode_locator(&self, bytes: &[u8]) -> DecodedLocator {
+        if bytes.iter().all(|byte| *byte == 0) {
+            return DecodedLocator::Empty;
+        }
+        if bytes.len() < LOCATOR_HEADER_SIZE
+            || &bytes[0..8] != LOCATOR_MAGIC
+            || u32::from_le_bytes(bytes[8..12].try_into().unwrap()) != LOCATOR_VERSION
+            || u32::from_le_bytes(bytes[12..16].try_into().unwrap()) != LOCATOR_HEADER_SIZE as u32
+            || u64::from_le_bytes(bytes[16..24].try_into().unwrap()) != self.backing_sector_count
+            || u64::from_le_bytes(bytes[24..32].try_into().unwrap()) != self.data_start_lba
+            || u64::from_le_bytes(bytes[32..40].try_into().unwrap()) != self.sector_count
+            || u64::from_le_bytes(bytes[40..48].try_into().unwrap()) != self.metadata_start_lba
+            || u64::from_le_bytes(bytes[48..56].try_into().unwrap()) != self.metadata_slot_sectors
+            || u64::from_le_bytes(bytes[56..64].try_into().unwrap()) != self.zone_size_sectors
+            || u32::from_le_bytes(bytes[64..68].try_into().unwrap()) as usize != self.zones.len()
+            || u32::from_le_bytes(bytes[68..72].try_into().unwrap())
+                != self.parameters.conventional_zone_count
+            || u32::from_le_bytes(bytes[72..76].try_into().unwrap())
+                != self.parameters.max_open_zones
+            || u32::from_le_bytes(bytes[76..80].try_into().unwrap())
+                != if self.parameters.unrestricted_read {
+                    METADATA_FLAG_UNRESTRICTED_READ
+                } else {
+                    0
+                }
+            || u32::from_le_bytes(bytes[80..84].try_into().unwrap()) != self.inner.sector_size()
+            || u32::from_le_bytes(bytes[84..88].try_into().unwrap())
+                != self.inner.physical_sector_size()
+        {
+            return DecodedLocator::Invalid;
+        }
+
+        let expected_checksum = u32::from_le_bytes(
+            bytes[LOCATOR_CHECKSUM_OFFSET..LOCATOR_HEADER_SIZE]
+                .try_into()
+                .unwrap(),
+        );
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[..LOCATOR_CHECKSUM_OFFSET]);
+        hasher.update(&[0; 4]);
+        hasher.update(&bytes[LOCATOR_HEADER_SIZE..]);
+        if hasher.finalize() != expected_checksum {
+            return DecodedLocator::Invalid;
+        }
+
+        DecodedLocator::Valid
+    }
+
+    async fn read_locator(&self) -> Result<DecodedLocator, DiskError> {
+        let bytes = self.read_sectors(0, self.data_start_lba).await?;
+        Ok(self.decode_locator(&bytes))
+    }
+
+    async fn write_locator(&self) -> Result<(), DiskError> {
+        let bytes = self.encode_locator()?;
+        self.write_sectors(0, &bytes).await?;
+        self.inner.sync_cache().await
+    }
+
+    fn decode_zone_state(&self, index: usize, record: &[u8]) -> Option<ZoneState> {
+        let zone = &self.zones[index];
+        let condition = ZoneCondition::from_value(record[0])?;
+        let write_pointer = u64::from_le_bytes(record[8..16].try_into().unwrap());
+        if (zone.zone_type == ZoneType::Conventional && condition != ZoneCondition::NotWritePointer)
+            || (zone.zone_type == ZoneType::SequentialWriteRequired
+                && condition == ZoneCondition::NotWritePointer)
+            || write_pointer < zone.start_lba
+            || write_pointer > zone.start_lba + zone.length
+        {
+            return None;
+        }
+        Some(ZoneState {
+            condition,
+            write_pointer,
+        })
     }
 
     fn decode_metadata(&self, bytes: &[u8]) -> DecodedMetadata {
@@ -622,29 +801,16 @@ impl ZoneEmulationDisk {
 
         let mut states = Vec::with_capacity(self.zones.len());
         let mut open_zone_count = 0u32;
-        for (index, zone) in self.zones.iter().enumerate() {
+        for index in 0..self.zones.len() {
             let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
             let record = &bytes[offset..offset + METADATA_RECORD_SIZE];
-            let Some(condition) = ZoneCondition::from_value(record[0]) else {
+            let Some(state) = self.decode_zone_state(index, record) else {
                 return DecodedMetadata::Invalid;
             };
-            let write_pointer = u64::from_le_bytes(record[8..16].try_into().unwrap());
-            if (zone.zone_type == ZoneType::Conventional
-                && condition != ZoneCondition::NotWritePointer)
-                || (zone.zone_type == ZoneType::SequentialWriteRequired
-                    && condition == ZoneCondition::NotWritePointer)
-                || write_pointer < zone.start_lba
-                || write_pointer > zone.start_lba + zone.length
-            {
-                return DecodedMetadata::Invalid;
-            }
-            if condition.is_open() {
+            if state.condition.is_open() {
                 open_zone_count += 1;
             }
-            states.push(ZoneState {
-                condition,
-                write_pointer,
-            });
+            states.push(state);
         }
         if open_zone_count > self.parameters.max_open_zones {
             return DecodedMetadata::Invalid;
@@ -686,8 +852,142 @@ impl ZoneEmulationDisk {
         self.inner.sync_cache().await
     }
 
+    fn metadata_chain_valid(&self, states: &[ZoneState]) -> bool {
+        states
+            .iter()
+            .filter(|state| state.condition.is_open())
+            .count()
+            <= self.parameters.max_open_zones as usize
+    }
+
+    fn recover_metadata_log(
+        &self,
+        bytes: &[u8],
+        mut generation: u64,
+        states: &mut [ZoneState],
+    ) -> (u64, u64) {
+        let sector_size = self.inner.sector_size() as usize;
+        let physical_bytes = self.inner.physical_sector_size() as usize;
+        let mut offset = 0usize;
+
+        while offset + DELTA_HEADER_SIZE <= bytes.len() {
+            let remaining = &bytes[offset..];
+            if remaining[..physical_bytes.min(remaining.len())]
+                .iter()
+                .all(|byte| *byte == 0)
+            {
+                break;
+            }
+            if &remaining[0..8] != DELTA_MAGIC
+                || u32::from_le_bytes(remaining[8..12].try_into().unwrap()) != DELTA_VERSION
+                || u32::from_le_bytes(remaining[12..16].try_into().unwrap())
+                    != DELTA_HEADER_SIZE as u32
+            {
+                break;
+            }
+
+            let record_generation = u64::from_le_bytes(remaining[16..24].try_into().unwrap());
+            let record_count = u32::from_le_bytes(remaining[24..28].try_into().unwrap()) as usize;
+            let Some(raw_bytes) = record_count
+                .checked_mul(DELTA_RECORD_SIZE)
+                .and_then(|bytes| bytes.checked_add(DELTA_HEADER_SIZE))
+            else {
+                break;
+            };
+            let record_bytes = raw_bytes.div_ceil(physical_bytes) * physical_bytes;
+            if record_count == 0
+                || record_bytes > remaining.len()
+                || record_generation != generation.wrapping_add(1)
+            {
+                break;
+            }
+
+            let record = &remaining[..record_bytes];
+            let expected_checksum = u32::from_le_bytes(
+                record[DELTA_CHECKSUM_OFFSET..DELTA_HEADER_SIZE]
+                    .try_into()
+                    .unwrap(),
+            );
+            let mut hasher = crc32fast::Hasher::new();
+            hasher.update(&record[..DELTA_CHECKSUM_OFFSET]);
+            hasher.update(&[0; 4]);
+            hasher.update(&record[DELTA_HEADER_SIZE..]);
+            if hasher.finalize() != expected_checksum {
+                break;
+            }
+
+            let mut updated = states.to_vec();
+            let mut valid = true;
+            for record_index in 0..record_count {
+                let record_offset = DELTA_HEADER_SIZE + record_index * DELTA_RECORD_SIZE;
+                let zone_index = u32::from_le_bytes(
+                    record[record_offset..record_offset + 4].try_into().unwrap(),
+                ) as usize;
+                if zone_index >= updated.len() {
+                    valid = false;
+                    break;
+                }
+                let mut state_record = [0; METADATA_RECORD_SIZE];
+                state_record[0] = record[record_offset + 4];
+                state_record[8..16].copy_from_slice(&record[record_offset + 8..record_offset + 16]);
+                let Some(state) = self.decode_zone_state(zone_index, &state_record) else {
+                    valid = false;
+                    break;
+                };
+                updated[zone_index] = state;
+            }
+            if !valid || !self.metadata_chain_valid(&updated) {
+                break;
+            }
+
+            states.copy_from_slice(&updated);
+            generation = record_generation;
+            offset += record_bytes;
+        }
+
+        (generation, (offset / sector_size) as u64)
+    }
+
+    async fn recover_metadata(&self) -> Result<(Option<RecoveredMetadata>, bool), DiskError> {
+        let mut newest = None;
+        let mut any_metadata = false;
+        for slot in 0..2 {
+            let checkpoint = self.read_metadata_slot(slot).await?;
+            let log = self
+                .read_sectors(self.metadata_log_lba(slot), self.metadata_slot_sectors)
+                .await?;
+            any_metadata |=
+                checkpoint.iter().any(|byte| *byte != 0) || log.iter().any(|byte| *byte != 0);
+
+            let DecodedMetadata::Valid {
+                generation,
+                mut states,
+            } = self.decode_metadata(&checkpoint)
+            else {
+                continue;
+            };
+            let (generation, log_sectors_used) =
+                self.recover_metadata_log(&log, generation, &mut states);
+            if newest
+                .as_ref()
+                .is_none_or(|current: &RecoveredMetadata| generation > current.generation)
+            {
+                newest = Some(RecoveredMetadata {
+                    generation,
+                    states,
+                    active_slot: slot,
+                    log_sectors_used,
+                });
+            }
+        }
+        Ok((newest, any_metadata))
+    }
+
     async fn ensure_metadata_loaded(&self) -> Result<(), DiskError> {
         let mut metadata = self.metadata.lock().await;
+        if metadata.failed {
+            return Err(Self::metadata_error());
+        }
         if metadata.loaded {
             return Ok(());
         }
@@ -695,63 +995,77 @@ impl ZoneEmulationDisk {
         self.telemetry
             .metadata_load_attempts
             .fetch_add(1, Ordering::Relaxed);
-        let first = self.read_metadata_slot(0).await.inspect_err(|_| {
+
+        let locator = self.read_locator().await.inspect_err(|_| {
             self.telemetry
                 .metadata_failures
                 .fetch_add(1, Ordering::Relaxed);
         })?;
-        let second = self.read_metadata_slot(1).await.inspect_err(|_| {
+        let (recovered, any_metadata) = self.recover_metadata().await.inspect_err(|_| {
             self.telemetry
                 .metadata_failures
                 .fetch_add(1, Ordering::Relaxed);
         })?;
-        let decoded = [self.decode_metadata(&first), self.decode_metadata(&second)];
-        let mut newest: Option<(usize, u64, Vec<ZoneState>)> = None;
-        let mut all_empty = true;
-        for (slot, decoded) in decoded.into_iter().enumerate() {
-            match decoded {
-                DecodedMetadata::Empty => {}
-                DecodedMetadata::Invalid => all_empty = false,
-                DecodedMetadata::Valid { generation, states } => {
-                    all_empty = false;
-                    if newest
-                        .as_ref()
-                        .is_none_or(|(_, current_generation, _)| generation > *current_generation)
-                    {
-                        newest = Some((slot, generation, states));
-                    }
-                }
+
+        let locator_missing = matches!(locator, DecodedLocator::Empty);
+        match locator {
+            DecodedLocator::Invalid => {
+                self.telemetry
+                    .metadata_corruptions
+                    .fetch_add(1, Ordering::Relaxed);
+                self.telemetry
+                    .metadata_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(Self::metadata_error());
             }
+            DecodedLocator::Empty if any_metadata && recovered.is_none() => {
+                // Reject the old end-only format instead of silently remapping its data.
+                self.telemetry
+                    .metadata_corruptions
+                    .fetch_add(1, Ordering::Relaxed);
+                self.telemetry
+                    .metadata_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(Self::metadata_error());
+            }
+            DecodedLocator::Empty => {}
+            DecodedLocator::Valid => {}
         }
 
-        if let Some((slot, generation, states)) = newest {
-            self.apply_metadata_states(&states);
-            metadata.generation = generation;
-            metadata.active_slot = slot;
+        if let Some(recovered) = recovered {
+            self.apply_metadata_states(&recovered.states);
+            metadata.generation = recovered.generation;
+            metadata.active_slot = recovered.active_slot;
+            metadata.log_sectors_used = recovered.log_sectors_used;
             self.telemetry
                 .metadata_recoveries
                 .fetch_add(1, Ordering::Relaxed);
             self.telemetry
                 .metadata_recovery_source
-                .store(slot as u8 + 2, Ordering::Relaxed);
-        } else if !all_empty {
+                .store(recovered.active_slot as u8 + 2, Ordering::Relaxed);
+        } else if any_metadata {
             self.telemetry
                 .metadata_corruptions
                 .fetch_add(1, Ordering::Relaxed);
             self.telemetry
                 .metadata_failures
                 .fetch_add(1, Ordering::Relaxed);
-            self.telemetry
-                .metadata_recovery_source
-                .store(4, Ordering::Relaxed);
             return Err(Self::metadata_error());
         } else {
+            self.write_metadata_checkpoint(&mut metadata, 0, 1).await?;
             self.telemetry
                 .metadata_fresh_initializations
                 .fetch_add(1, Ordering::Relaxed);
             self.telemetry
                 .metadata_recovery_source
                 .store(1, Ordering::Relaxed);
+        }
+        if locator_missing {
+            self.write_locator().await.inspect_err(|_| {
+                self.telemetry
+                    .metadata_failures
+                    .fetch_add(1, Ordering::Relaxed);
+            })?;
         }
         metadata.loaded = true;
         self.telemetry
@@ -801,26 +1115,15 @@ impl ZoneEmulationDisk {
         bytes
     }
 
-    async fn persist_metadata(&self) -> Result<(), DiskError> {
-        let mut metadata = self.metadata.lock().await;
-        let generation = metadata.generation.wrapping_add(1);
-        let slot = metadata.active_slot ^ 1;
+    async fn write_metadata_checkpoint(
+        &self,
+        metadata: &mut MetadataState,
+        slot: usize,
+        generation: u64,
+    ) -> Result<(), DiskError> {
         let slot_bytes = self.metadata_slot_bytes(self.inner.sector_size())?;
         let bytes = self.encode_metadata(generation, slot_bytes);
-        let memory = GuestMemory::allocate(slot_bytes);
-        memory.write_at(0, &bytes).map_err(|_| {
-            self.telemetry
-                .metadata_failures
-                .fetch_add(1, Ordering::Relaxed);
-            DiskError::InvalidInput
-        })?;
-        let buffers = OwnedRequestBuffers::linear(0, slot_bytes, true);
-        self.inner
-            .write_vectored(
-                &buffers.buffer(&memory),
-                self.metadata_slot_lba(slot),
-                false,
-            )
+        self.write_sectors(self.metadata_slot_lba(slot), &bytes)
             .await
             .inspect_err(|_| {
                 self.telemetry
@@ -831,6 +1134,7 @@ impl ZoneEmulationDisk {
             .metadata_writes
             .fetch_add(1, Ordering::Relaxed);
         self.inner.sync_cache().await.inspect_err(|_| {
+            metadata.failed = true;
             self.telemetry
                 .metadata_failures
                 .fetch_add(1, Ordering::Relaxed);
@@ -840,6 +1144,7 @@ impl ZoneEmulationDisk {
             .fetch_add(1, Ordering::Relaxed);
         metadata.generation = generation;
         metadata.active_slot = slot;
+        metadata.log_sectors_used = 0;
         self.telemetry
             .metadata_generation
             .store(generation, Ordering::Relaxed);
@@ -847,6 +1152,87 @@ impl ZoneEmulationDisk {
             .metadata_active_slot
             .store(slot as u8, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn encode_metadata_delta(
+        &self,
+        generation: u64,
+        mutations: &[ZoneMutation],
+    ) -> Result<Vec<u8>, DiskError> {
+        let mut indices = Vec::with_capacity(mutations.len());
+        for mutation in mutations {
+            if !indices.contains(&mutation.index) {
+                indices.push(mutation.index);
+            }
+        }
+        let physical_bytes = self.inner.physical_sector_size() as usize;
+        let raw_bytes = indices
+            .len()
+            .checked_mul(DELTA_RECORD_SIZE)
+            .and_then(|bytes| bytes.checked_add(DELTA_HEADER_SIZE))
+            .ok_or(DiskError::InvalidInput)?;
+        let record_bytes = raw_bytes.div_ceil(physical_bytes) * physical_bytes;
+        let mut bytes = vec![0; record_bytes];
+        bytes[0..8].copy_from_slice(DELTA_MAGIC);
+        bytes[8..12].copy_from_slice(&DELTA_VERSION.to_le_bytes());
+        bytes[12..16].copy_from_slice(&(DELTA_HEADER_SIZE as u32).to_le_bytes());
+        bytes[16..24].copy_from_slice(&generation.to_le_bytes());
+        bytes[24..28].copy_from_slice(&(indices.len() as u32).to_le_bytes());
+        for (record_index, zone_index) in indices.into_iter().enumerate() {
+            let offset = DELTA_HEADER_SIZE + record_index * DELTA_RECORD_SIZE;
+            let state = *self.zones[zone_index].state.lock();
+            bytes[offset..offset + 4].copy_from_slice(&(zone_index as u32).to_le_bytes());
+            bytes[offset + 4] = state.condition.value();
+            bytes[offset + 8..offset + 16].copy_from_slice(&state.write_pointer.to_le_bytes());
+        }
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[..DELTA_CHECKSUM_OFFSET]);
+        hasher.update(&[0; 4]);
+        hasher.update(&bytes[DELTA_HEADER_SIZE..]);
+        bytes[DELTA_CHECKSUM_OFFSET..DELTA_HEADER_SIZE]
+            .copy_from_slice(&hasher.finalize().to_le_bytes());
+        Ok(bytes)
+    }
+
+    async fn persist_metadata(&self, mutations: &[ZoneMutation]) -> Result<(), DiskError> {
+        let mut metadata = self.metadata.lock().await;
+        if metadata.failed {
+            return Err(Self::metadata_error());
+        }
+
+        let generation = metadata.generation.wrapping_add(1);
+        let delta = self.encode_metadata_delta(generation, mutations)?;
+        let delta_sectors = (delta.len() / self.inner.sector_size() as usize) as u64;
+        if delta_sectors <= self.metadata_slot_sectors - metadata.log_sectors_used {
+            let lba = self.metadata_log_lba(metadata.active_slot) + metadata.log_sectors_used;
+            self.write_sectors(lba, &delta).await.inspect_err(|_| {
+                self.telemetry
+                    .metadata_failures
+                    .fetch_add(1, Ordering::Relaxed);
+            })?;
+            self.telemetry
+                .metadata_writes
+                .fetch_add(1, Ordering::Relaxed);
+            self.inner.sync_cache().await.inspect_err(|_| {
+                metadata.failed = true;
+                self.telemetry
+                    .metadata_failures
+                    .fetch_add(1, Ordering::Relaxed);
+            })?;
+            self.telemetry
+                .metadata_flushes
+                .fetch_add(1, Ordering::Relaxed);
+            metadata.generation = generation;
+            metadata.log_sectors_used += delta_sectors;
+            self.telemetry
+                .metadata_generation
+                .store(generation, Ordering::Relaxed);
+            return Ok(());
+        }
+
+        let slot = metadata.active_slot ^ 1;
+        self.write_metadata_checkpoint(&mut metadata, slot, generation)
+            .await
     }
 
     fn zone_index(&self, lba: u64) -> Option<usize> {
@@ -1039,7 +1425,10 @@ impl ZoneEmulationDisk {
                 return Err(ZoneError::WriteBoundaryViolation.into());
             }
             let _outstanding = zone.begin_io();
-            return self.inner.write_vectored(buffers, start_lba, fua).await;
+            return self
+                .inner
+                .write_vectored(buffers, self.inner_lba(start_lba), fua)
+                .await;
         }
 
         // Keep the data write, zone transition, and journal commit in one
@@ -1048,14 +1437,18 @@ impl ZoneEmulationDisk {
         let _guard = zone.lock_io().await;
         let mut mutations = Vec::with_capacity(2);
         let old_state = self.begin_write(index, start_lba, sector_count, &mut mutations)?;
-        match self.inner.write_vectored(buffers, start_lba, fua).await {
+        match self
+            .inner
+            .write_vectored(buffers, self.inner_lba(start_lba), fua)
+            .await
+        {
             Ok(()) => {
                 if let Err(err) = self.make_data_durable(fua).await {
                     self.rollback_mutations(&mutations);
                     return Err(err);
                 }
                 self.complete_write(zone, old_state, sector_count);
-                if let Err(err) = self.persist_metadata().await {
+                if let Err(err) = self.persist_metadata(&mutations).await {
                     self.rollback_mutations(&mutations);
                     return Err(err);
                 }
@@ -1114,7 +1507,9 @@ impl ZoneEmulationDisk {
             }
             let _outstanding = zone.begin_io();
             for lba in start_lba..end_lba {
-                self.inner.write_vectored(buffer, lba, fua).await?;
+                self.inner
+                    .write_vectored(buffer, self.inner_lba(lba), fua)
+                    .await?;
             }
             return Ok(());
         }
@@ -1125,7 +1520,11 @@ impl ZoneEmulationDisk {
         let old_state = self.begin_write(index, start_lba, sector_count, &mut mutations)?;
         let end_lba = start_lba + sector_count;
         for lba in start_lba..end_lba {
-            if let Err(err) = self.inner.write_vectored(buffer, lba, fua).await {
+            if let Err(err) = self
+                .inner
+                .write_vectored(buffer, self.inner_lba(lba), fua)
+                .await
+            {
                 self.rollback_mutations(&mutations);
                 return Err(err);
             }
@@ -1135,7 +1534,7 @@ impl ZoneEmulationDisk {
             return Err(err);
         }
         self.complete_write(zone, old_state, sector_count);
-        if let Err(err) = self.persist_metadata().await {
+        if let Err(err) = self.persist_metadata(&mutations).await {
             self.rollback_mutations(&mutations);
             return Err(err);
         }
@@ -1187,7 +1586,9 @@ impl ZoneEmulationDisk {
                     .conventional_read_segments
                     .fetch_add(1, Ordering::Relaxed);
                 let _outstanding = zone.begin_io();
-                self.inner.read_vectored(&segment, lba).await?;
+                self.inner
+                    .read_vectored(&segment, self.inner_lba(lba))
+                    .await?;
             } else {
                 self.telemetry
                     .sequential_read_segments
@@ -1207,7 +1608,7 @@ impl ZoneEmulationDisk {
                     let written_sectors = written_end - lba;
                     let written_bytes = written_sectors as usize * sector_size;
                     self.inner
-                        .read_vectored(&segment.subrange(0, written_bytes), lba)
+                        .read_vectored(&segment.subrange(0, written_bytes), self.inner_lba(lba))
                         .await?;
                 }
 
@@ -1381,43 +1782,46 @@ impl ZoneEmulationDisk {
         let _mutation_guard = self.mutation_lock.lock().await;
         let mut mutations = Vec::new();
         let mut changed = false;
-        if zone_id.is_none() {
-            for index in 0..self.zones.len() {
-                let zone = &self.zones[index];
-                if zone.zone_type == ZoneType::SequentialWriteRequired {
-                    match self
-                        .apply_action(index, operation, true, &mut mutations)
-                        .await
-                    {
-                        Ok(zone_changed) => changed |= zone_changed,
-                        Err(err) => {
-                            self.rollback_mutations(&mutations);
-                            return Err(err);
+        match zone_id {
+            None => {
+                for index in 0..self.zones.len() {
+                    let zone = &self.zones[index];
+                    if zone.zone_type == ZoneType::SequentialWriteRequired {
+                        match self
+                            .apply_action(index, operation, true, &mut mutations)
+                            .await
+                        {
+                            Ok(zone_changed) => changed |= zone_changed,
+                            Err(err) => {
+                                self.rollback_mutations(&mutations);
+                                return Err(err);
+                            }
                         }
                     }
                 }
             }
-        } else {
-            let index = self
-                .zone_index_for_start(zone_id.unwrap())
-                .ok_or(ZoneError::InvalidOperation)?;
-            let zone = &self.zones[index];
-            if zone.zone_type != ZoneType::SequentialWriteRequired {
-                return Err(ZoneError::InvalidOperation.into());
-            }
-            changed = match self
-                .apply_action(index, operation, false, &mut mutations)
-                .await
-            {
-                Ok(changed) => changed,
-                Err(err) => {
-                    self.rollback_mutations(&mutations);
-                    return Err(err);
+            Some(zone_id) => {
+                let index = self
+                    .zone_index_for_start(zone_id)
+                    .ok_or(ZoneError::InvalidOperation)?;
+                let zone = &self.zones[index];
+                if zone.zone_type != ZoneType::SequentialWriteRequired {
+                    return Err(ZoneError::InvalidOperation.into());
                 }
-            };
+                changed = match self
+                    .apply_action(index, operation, false, &mut mutations)
+                    .await
+                {
+                    Ok(changed) => changed,
+                    Err(err) => {
+                        self.rollback_mutations(&mutations);
+                        return Err(err);
+                    }
+                };
+            }
         }
         if changed {
-            if let Err(err) = self.persist_metadata().await {
+            if let Err(err) = self.persist_metadata(&mutations).await {
                 self.rollback_mutations(&mutations);
                 return Err(err);
             }
@@ -1682,7 +2086,9 @@ impl Inspect for ZoneEmulationDisk {
             bounded_zone_indices(self.zones.len(), interesting_zone_indices);
 
         let mut resp = req.respond();
-        resp.field("sector_count", self.sector_count)
+        resp.field("backing_sector_count", self.backing_sector_count)
+            .field("data_start_lba", self.data_start_lba)
+            .field("sector_count", self.sector_count)
             .field("zone_size_sectors", self.zone_size_sectors)
             .field("zone_count", self.zones.len())
             .field(
@@ -1694,7 +2100,7 @@ impl Inspect for ZoneEmulationDisk {
             .field("metadata_start_lba", self.metadata_start_lba)
             .field(
                 "hidden_padding_sectors",
-                self.metadata_start_lba - self.sector_count,
+                self.metadata_start_lba - self.data_start_lba - self.sector_count,
             )
             .field("open_zone_count", *self.open_zone_count.lock())
             .field("observed_open_zone_count", open)

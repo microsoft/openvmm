@@ -106,6 +106,18 @@ impl DiskIo for DelayDisk {
         self.inner.write_vectored(buffers, sector, fua).await
     }
 
+    /// Delay once and then passthrough the complete operation.
+    async fn write_same(
+        &self,
+        buffer: &RequestBuffers<'_>,
+        sector: u64,
+        count: u64,
+        fua: bool,
+    ) -> Result<(), DiskError> {
+        PolledTimer::new(&self.driver).sleep(self.delay.get()).await;
+        self.inner.write_same(buffer, sector, count, fua).await
+    }
+
     /// Passthrough
     async fn sync_cache(&self) -> Result<(), DiskError> {
         self.inner.sync_cache().await
@@ -141,8 +153,12 @@ impl DiskIo for DelayDisk {
 mod tests {
     use crate::DelayDisk;
     use disk_backend::Disk;
+    use disk_backend_resources::ZoneEmulationParameters;
+    use disk_zone_emu::ZoneEmulationDisk;
+    use guestmem::GuestMemory;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use scsi_buffers::OwnedRequestBuffers;
     use std::time::Duration;
     use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vm_task::VmTaskDriverSource;
@@ -156,5 +172,29 @@ mod tests {
         let inner = disklayer_ram::ram_disk(1024 * 1024, false).unwrap();
         let disk = Disk::new(DelayDisk::new(cell, inner, &source)).unwrap();
         storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
+    #[async_test]
+    async fn forwards_zoned_write_same_as_one_operation(driver: DefaultDriver) {
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let cell = mesh::CellUpdater::new(Duration::ZERO).cell();
+        let inner = disklayer_ram::ram_disk(128 * 512, false).unwrap();
+        let zoned = ZoneEmulationDisk::new(
+            inner,
+            ZoneEmulationParameters {
+                zone_size_bytes: 4096,
+                conventional_zone_count: 1,
+                max_open_zones: 2,
+                unrestricted_read: true,
+            },
+        )
+        .unwrap();
+        let disk = Disk::new(DelayDisk::new(cell, Disk::new(zoned).unwrap(), &source)).unwrap();
+        let memory = GuestMemory::allocate(512);
+        let buffers = OwnedRequestBuffers::linear(0, 512, true);
+
+        disk.write_same(&buffers.buffer(&memory), 8, 8, false)
+            .await
+            .unwrap();
     }
 }
