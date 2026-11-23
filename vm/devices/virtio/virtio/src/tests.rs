@@ -548,6 +548,7 @@ impl VirtioTestGuest {
         dev: &mut VirtioMmioDevice,
         driver_features: VirtioDeviceFeatures,
     ) {
+        ChangeDeviceState::start(dev);
         dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
         dev.write_u32(112, VIRTIO_DRIVER);
         dev.write_u32(36, 0);
@@ -586,6 +587,7 @@ impl VirtioTestGuest {
         dev: &mut VirtioPciTestDevice,
         driver_features: VirtioDeviceFeatures,
     ) {
+        ChangeDeviceState::start(&mut dev.pci_device);
         let bar_address1: u64 = 0x10000000000;
         dev.pci_device
             .pci_cfg_write(
@@ -1435,6 +1437,21 @@ impl VirtioDevice for TestDevice {
         self.workers.clear();
     }
 
+    async fn pause(&mut self) -> Option<Vec<Option<QueueState>>> {
+        let mut states = vec![None; self.traits.max_queues as usize];
+        for (index, worker) in self.workers.iter_mut().enumerate() {
+            worker.stop().await;
+            states[index] = worker.state().map(|state| state.queue.queue_state());
+        }
+        Some(states)
+    }
+
+    async fn resume(&mut self) {
+        for worker in &mut self.workers {
+            worker.start();
+        }
+    }
+
     fn supports_save_restore(&self) -> bool {
         true
     }
@@ -1498,7 +1515,7 @@ impl VirtioPciTestDevice {
         let msi_conn = MsiConnection::new();
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
 
-        let dev = VirtioPciDevice::new(
+        let mut dev = VirtioPciDevice::new(
             Box::new(TestDevice::new(
                 &driver_source,
                 DeviceTraits {
@@ -1523,6 +1540,7 @@ impl VirtioPciTestDevice {
 
         let test_intc = Arc::new(TestPciInterruptController::new());
         msi_conn.connect(test_intc.signal_msi());
+        ChangeDeviceState::start(&mut dev);
 
         Self {
             pci_device: dev,
@@ -1574,6 +1592,7 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     )
     .unwrap();
     // magic value
+    ChangeDeviceState::start(&mut dev);
     assert_eq!(dev.read_u32(0), u32::from_le_bytes(*b"virt"));
     // version
     assert_eq!(dev.read_u32(4), 2);
@@ -3514,6 +3533,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
     .unwrap();
 
     // Drive through ACKNOWLEDGE -> DRIVER -> FEATURES_OK -> DRIVER_OK
+    ChangeDeviceState::start(&mut dev);
     dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
     dev.write_u32(112, VIRTIO_DRIVER);
     dev.write_u32(36, 0);
@@ -3650,6 +3670,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     .unwrap();
 
     // Attempt DRIVER_OK — enable() will fail (use write_u32 to bypass deferred IO)
+    ChangeDeviceState::start(&mut dev);
     let current = dev.read_u32(20);
     dev.write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
     yield_and_poll_device(&mut dev).await;
@@ -4500,6 +4521,7 @@ impl MmioTestTransport {
             dev.write_u32(68, 1); // queue enable
         }
 
+        ChangeDeviceState::start(&mut dev);
         Self { dev }
     }
 }
@@ -4638,6 +4660,7 @@ impl PciTestTransport {
         )
         .unwrap();
 
+        ChangeDeviceState::start(&mut dev);
         Self { dev }
     }
 }
@@ -4903,6 +4926,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
         .unwrap();
 
     // DRIVER_OK — starts the queue worker (use write_u32 to bypass deferred IO)
+    ChangeDeviceState::start(&mut dev);
     let current = dev.read_u32(20);
     dev.write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
 
@@ -4940,6 +4964,409 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
 }
 
 // ==================== Save/Restore Tests ====================
+
+#[derive(Default)]
+struct LifecycleProbe {
+    calls: Mutex<Vec<&'static str>>,
+    value: AtomicU64,
+    fail_queue: std::sync::atomic::AtomicBool,
+}
+
+#[derive(InspectMut)]
+#[inspect(skip)]
+struct LifecycleDevice {
+    probe: Arc<LifecycleProbe>,
+    retained: bool,
+    queue: Option<QueueState>,
+    staged: Option<u64>,
+}
+
+impl VirtioDevice for LifecycleDevice {
+    fn traits(&self) -> DeviceTraits {
+        DeviceTraits {
+            device_id: VirtioDeviceType::CONSOLE,
+            max_queues: 1,
+            ..Default::default()
+        }
+    }
+
+    async fn read_registers_u32(&mut self, _: u16) -> u32 {
+        0
+    }
+    async fn write_registers_u32(&mut self, _: u16, _: u32) {}
+
+    async fn start_queue(
+        &mut self,
+        _: u16,
+        _: QueueResources,
+        _: &VirtioDeviceFeatures,
+        state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        assert!(
+            self.staged.is_none(),
+            "metadata must be installed before queue start"
+        );
+        self.probe.calls.lock().push("start");
+        self.queue = Some(state.unwrap_or_default());
+        Ok(())
+    }
+
+    async fn stop_queue(&mut self, _: u16) -> Option<QueueState> {
+        self.probe.calls.lock().push("stop_queue");
+        self.queue.take()
+    }
+
+    async fn pause(&mut self) -> Option<Vec<Option<QueueState>>> {
+        if !self.retained {
+            return None;
+        }
+        self.probe.calls.lock().push("pause");
+        Some(vec![self.queue])
+    }
+
+    async fn resume(&mut self) {
+        assert!(self.queue.is_some());
+        self.probe.calls.lock().push("resume");
+    }
+
+    async fn reset(&mut self) {
+        self.probe.calls.lock().push("reset");
+        self.queue = None;
+        self.staged = None;
+        self.probe.value.store(0, Ordering::Relaxed);
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        true
+    }
+
+    async fn save_device_state(
+        &mut self,
+    ) -> Result<Option<vmcore::save_restore::SavedStateBlob>, vmcore::save_restore::SaveError> {
+        self.probe.calls.lock().push("save");
+        Ok(Some(vmcore::save_restore::SavedStateBlob::new(
+            TestDeviceSavedState {
+                value: self
+                    .staged
+                    .unwrap_or_else(|| self.probe.value.load(Ordering::Relaxed)),
+            },
+        )))
+    }
+
+    async fn restore_device_state(
+        &mut self,
+        state: Option<vmcore::save_restore::SavedStateBlob>,
+    ) -> Result<(), vmcore::save_restore::RestoreError> {
+        use vmcore::save_restore::RestoreError;
+        self.probe.calls.lock().push("stage");
+        self.staged = None;
+        let value = state
+            .ok_or(RestoreError::SavedStateNotSupported)?
+            .parse::<TestDeviceSavedState>()?
+            .value;
+        if value == u64::MAX {
+            return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                "invalid test metadata"
+            )));
+        }
+        self.staged = Some(value);
+        Ok(())
+    }
+
+    fn restore_queue(
+        &mut self,
+        _: u16,
+        resources: QueueResources,
+        _: &VirtioDeviceFeatures,
+        state: QueueState,
+    ) -> Result<QueueState, vmcore::save_restore::RestoreError> {
+        self.probe.calls.lock().push("restore_queue");
+        assert!(self.staged.is_some());
+        resources.notify.deliver();
+        if self.probe.fail_queue.load(Ordering::Relaxed) {
+            return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
+                anyhow::anyhow!("test queue reconstruction failed"),
+            ));
+        }
+        Ok(state)
+    }
+
+    async fn finish_restore(&mut self) {
+        let value = self.staged.take().expect("restore metadata was staged");
+        VirtioDevice::reset(self).await;
+        self.probe.calls.lock().push("install");
+        self.probe.value.store(value, Ordering::Relaxed);
+    }
+}
+
+#[derive(Default)]
+struct LifecycleOps(Arc<AtomicUsize>);
+
+impl crate::transport::core::TransportOps for LifecycleOps {
+    fn create_queue_interrupt(&mut self, _: usize, _: u16) -> Interrupt {
+        let count = self.0.clone();
+        Interrupt::from_fn(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        })
+    }
+    fn signal_config_change(&mut self) {}
+    fn reset_interrupts(&mut self) {}
+    fn queue_doorbell(&mut self, _: u16) -> Option<crate::transport::core::QueueDoorbell> {
+        None
+    }
+}
+
+fn lifecycle_core(
+    driver: &DefaultDriver,
+    probe: Arc<LifecycleProbe>,
+    retained: bool,
+) -> crate::transport::core::VirtioTransportCore {
+    let mut core = crate::transport::core::VirtioTransportCore::new(
+        Box::new(LifecycleDevice {
+            probe,
+            retained,
+            queue: None,
+            staged: None,
+        }),
+        driver,
+        GuestMemory::empty(),
+        None,
+    )
+    .unwrap();
+    core.device_status.set_driver_ok(true);
+    core.queues[0].params.enable = true;
+    core
+}
+
+#[async_test]
+async fn lifecycle_retained_pause_and_metadata_activation(driver: DefaultDriver) {
+    for retained in [false, true] {
+        let probe = Arc::new(LifecycleProbe::default());
+        probe.value.store(42, Ordering::Relaxed);
+        let mut core = lifecycle_core(&driver, probe.clone(), retained);
+        let mut ops = LifecycleOps::default();
+        core.start(&mut ops);
+        assert!(
+            core.save_common().await.is_err(),
+            "running owner cannot be snapshotted"
+        );
+        core.stop(&mut ops).await;
+        let running_restore = core.save_common().await.unwrap();
+        let running_queue = core.save_queue_common(0);
+        probe.calls.lock().clear();
+        core.start(&mut ops);
+        assert!(
+            core.restore_common(
+                &mut ops,
+                running_restore,
+                std::iter::once((running_queue, 0)),
+                1,
+            )
+            .await
+            .is_err(),
+            "restore must reject a running owner"
+        );
+        assert!(core.device_task.is_running());
+        core.stop(&mut ops).await;
+        assert_eq!(
+            *probe.calls.lock(),
+            if retained {
+                vec!["resume", "pause"]
+            } else {
+                vec!["start", "stop_queue"]
+            }
+        );
+        let saved = core.save_common().await.unwrap();
+        let queue = core.save_queue_common(0);
+        probe.calls.lock().clear();
+        probe.value.store(99, Ordering::Relaxed);
+        core.restore_common(&mut ops, saved, std::iter::once((queue, 0)), 1)
+            .await
+            .unwrap();
+        assert_eq!(*probe.calls.lock(), ["stage", "restore_queue"]);
+        assert_eq!(
+            probe.value.load(Ordering::Relaxed),
+            99,
+            "restore must only stage metadata"
+        );
+        assert_eq!(
+            ops.0.load(Ordering::Relaxed),
+            0,
+            "restore notifications must be deferred"
+        );
+        let staged = core.save_common().await.unwrap();
+        assert_eq!(
+            staged
+                .device_state
+                .unwrap()
+                .parse::<TestDeviceSavedState>()
+                .unwrap()
+                .value,
+            42
+        );
+        assert!(core.save_queue_common(0).pending_interrupt);
+        probe.calls.lock().clear();
+        core.start(&mut ops);
+        core.stop(&mut ops).await;
+        assert_eq!(
+            *probe.calls.lock(),
+            if retained {
+                vec!["reset", "install", "start", "pause"]
+            } else {
+                vec!["reset", "install", "start", "stop_queue"]
+            }
+        );
+        assert_eq!(probe.value.load(Ordering::Relaxed), 42);
+        assert_eq!(ops.0.load(Ordering::Relaxed), 1);
+        assert!(!core.save_queue_common(0).pending_interrupt);
+        core.teardown().await;
+    }
+}
+
+#[async_test]
+async fn lifecycle_resave_preserves_staging_and_deferred_notification(driver: DefaultDriver) {
+    let probe = Arc::new(LifecycleProbe::default());
+    probe.value.store(42, Ordering::Relaxed);
+    let mut source = lifecycle_core(&driver, probe.clone(), true);
+    let mut source_ops = LifecycleOps::default();
+    source.start(&mut source_ops);
+    source.stop(&mut source_ops).await;
+    let saved = source.save_common().await.unwrap();
+    let queue = source.save_queue_common(0);
+    source
+        .restore_common(&mut source_ops, saved, std::iter::once((queue, 0)), 1)
+        .await
+        .unwrap();
+    let saved = source.save_common().await.unwrap();
+    let queue = source.save_queue_common(0);
+    assert!(queue.pending_interrupt);
+    let target_probe = Arc::new(LifecycleProbe::default());
+    let mut target = lifecycle_core(&driver, target_probe.clone(), true);
+    let mut target_ops = LifecycleOps::default();
+    target
+        .restore_common(&mut target_ops, saved, std::iter::once((queue, 0)), 1)
+        .await
+        .unwrap();
+    assert_eq!(target_probe.value.load(Ordering::Relaxed), 0);
+    assert_eq!(source_ops.0.load(Ordering::Relaxed), 0);
+    assert_eq!(target_ops.0.load(Ordering::Relaxed), 0);
+    target.start(&mut target_ops);
+    target.stop(&mut target_ops).await;
+    assert_eq!(target_probe.value.load(Ordering::Relaxed), 42);
+    assert_eq!(
+        target_ops.0.load(Ordering::Relaxed),
+        1,
+        "coalesce restore notifications"
+    );
+    source.teardown().await;
+    target.teardown().await;
+}
+
+#[async_test]
+async fn lifecycle_failed_restore_blocks_activation_until_reset(driver: DefaultDriver) {
+    for queue_failure in [false, true] {
+        let probe = Arc::new(LifecycleProbe::default());
+        let mut core = lifecycle_core(&driver, probe.clone(), true);
+        let mut ops = LifecycleOps::default();
+        core.start(&mut ops);
+        core.stop(&mut ops).await;
+        let mut saved = core.save_common().await.unwrap();
+        let queue = core.save_queue_common(0);
+        saved.device_state = Some(vmcore::save_restore::SavedStateBlob::new(
+            TestDeviceSavedState {
+                value: if queue_failure { 42 } else { u64::MAX },
+            },
+        ));
+        probe.fail_queue.store(queue_failure, Ordering::Relaxed);
+        probe.calls.lock().clear();
+        assert!(
+            core.restore_common(&mut ops, saved, std::iter::once((queue, 0)), 1)
+                .await
+                .is_err()
+        );
+        assert!(core.save_common().await.is_err());
+        let before_start = probe.calls.lock().clone();
+        core.start(&mut ops);
+        assert!(!core.device_task.is_running());
+        assert_eq!(*probe.calls.lock(), before_start);
+        assert_eq!(ops.0.load(Ordering::Relaxed), 0);
+        core.reset(&mut ops).await;
+        assert_eq!(probe.calls.lock().last(), Some(&"reset"));
+        assert!(!probe.calls.lock().contains(&"stop_queue"));
+        let saved = core.save_common().await.unwrap();
+        assert_eq!(
+            saved
+                .device_state
+                .unwrap()
+                .parse::<TestDeviceSavedState>()
+                .unwrap()
+                .value,
+            0
+        );
+        core.teardown().await;
+    }
+}
+
+#[async_test]
+async fn lifecycle_cancelled_restore_requires_reset(driver: DefaultDriver) {
+    let value = Arc::new(AtomicU64::new(99));
+    let (entered_send, entered_recv) = mesh::oneshot();
+    let (_release_send, release_recv) = mesh::oneshot();
+    let mut core = crate::transport::core::VirtioTransportCore::new(
+        Box::new(SavedStateTestDevice {
+            restore_entered: Some(entered_send),
+            restore_release: Some(release_recv),
+            ..SavedStateTestDevice::new(value.clone())
+        }),
+        &driver,
+        GuestMemory::empty(),
+        None,
+    )
+    .unwrap();
+    let mut ops = LifecycleOps::default();
+    let mut saved = core.save_common().await.unwrap();
+    saved.device_state = Some(vmcore::save_restore::SavedStateBlob::new(
+        TestDeviceSavedState { value: 42 },
+    ));
+    let queue = core.save_queue_common(0);
+    assert!(
+        futures::FutureExt::now_or_never(core.restore_common(
+            &mut ops,
+            saved,
+            std::iter::once((queue, 0)),
+            1
+        ))
+        .is_none()
+    );
+    entered_recv.await.unwrap();
+    assert_eq!(value.load(Ordering::Relaxed), 99);
+    assert!(core.save_common().await.is_err());
+    core.start(&mut ops);
+    assert!(!core.device_task.is_running());
+    core.reset(&mut ops).await;
+    assert!(core.save_common().await.is_ok());
+    core.teardown().await;
+}
+
+#[async_test]
+async fn lifecycle_staged_reset_does_not_install_metadata(driver: DefaultDriver) {
+    let probe = Arc::new(LifecycleProbe::default());
+    let mut core = lifecycle_core(&driver, probe.clone(), true);
+    let mut ops = LifecycleOps::default();
+    core.start(&mut ops);
+    core.stop(&mut ops).await;
+    let saved = core.save_common().await.unwrap();
+    let queue = core.save_queue_common(0);
+    core.restore_common(&mut ops, saved, std::iter::once((queue, 0)), 1)
+        .await
+        .unwrap();
+    probe.calls.lock().clear();
+    core.reset(&mut ops).await;
+    assert_eq!(*probe.calls.lock(), ["reset"]);
+    assert_eq!(ops.0.load(Ordering::Relaxed), 0);
+    assert!(!core.save_queue_common(0).pending_interrupt);
+    core.teardown().await;
+}
 
 #[async_test]
 async fn queue_completion_failure_is_returned(driver: DefaultDriver) {
@@ -4988,6 +5415,7 @@ struct TestDeviceSavedState {
 #[inspect(skip)]
 struct SavedStateTestDevice {
     value: Arc<AtomicU64>,
+    staged: Option<u64>,
     fail: bool,
     restore_entered: Option<mesh::OneshotSender<()>>,
     restore_release: Option<mesh::OneshotReceiver<()>>,
@@ -4997,6 +5425,7 @@ impl SavedStateTestDevice {
     fn new(value: Arc<AtomicU64>) -> Self {
         Self {
             value,
+            staged: None,
             fail: false,
             restore_entered: None,
             restore_release: None,
@@ -5047,7 +5476,9 @@ impl VirtioDevice for SavedStateTestDevice {
         }
         Ok(Some(vmcore::save_restore::SavedStateBlob::new(
             TestDeviceSavedState {
-                value: self.value.load(Ordering::Relaxed),
+                value: self
+                    .staged
+                    .unwrap_or_else(|| self.value.load(Ordering::Relaxed)),
             },
         )))
     }
@@ -5073,8 +5504,21 @@ impl VirtioDevice for SavedStateTestDevice {
                 .await
                 .map_err(|err| RestoreError::Other(err.into()))?;
         }
-        self.value.store(state.value, Ordering::Relaxed);
+        self.staged = Some(state.value);
         Ok(())
+    }
+
+    async fn finish_restore(&mut self) {
+        let value = self.staged.take();
+        VirtioDevice::reset(self).await;
+        if let Some(value) = value {
+            self.value.store(value, Ordering::Relaxed);
+        }
+    }
+
+    async fn reset(&mut self) {
+        self.staged = None;
+        self.value.store(0, Ordering::Relaxed);
     }
 }
 
@@ -5145,7 +5589,8 @@ async fn device_state_save_restore_round_trip_waits_for_device(driver: DefaultDr
         })
         .await;
         result.unwrap();
-        assert_eq!(restored.load(Ordering::Relaxed), 42);
+        assert_eq!(restored.load(Ordering::Relaxed), 0);
+        assert_eq!(mesh::payload::encode(target.save().await.unwrap()), bytes);
     }
 }
 
@@ -5214,7 +5659,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
 
     let test_mem = VirtioTestMemoryAccess::new();
 
-    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
 
     let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
     guest
@@ -5242,13 +5687,24 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     assert!(saved.queues[0].common.enable);
 
     // Create a new device and restore into it.
-    let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+    let (completed_send, mut completed_recv) = mesh::channel();
+    let callback: TestDeviceQueueWorkFn = Arc::new(move |_, queue, work| {
+        queue.complete(work, 4);
+        completed_send.send(());
+    });
+    let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, Some(callback));
+    dev2.pci_device.stop().await;
     dev2.pci_device
         .restore(saved)
         .await
         .expect("restore should succeed");
 
     // Verify stop is a no-op — restore must not start queues.
+    dev2.pci_device.stop().await;
+    guest.add_to_avail_queue(0);
+    dev2.pci_device.start();
+    must_recv_in_timeout(&mut completed_recv, Duration::from_secs(5)).await;
+    assert_eq!(guest.get_next_completed(0), Some((0, 4)));
     dev2.pci_device.stop().await;
 }
 
@@ -5263,7 +5719,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
     let mem = GuestMemory::new("test", test_mem.clone());
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
 
-    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
 
     let interrupt = LineInterrupt::detached();
     let mut dev = VirtioMmioDevice::new(
@@ -5302,6 +5758,11 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
 
     // Create a new device and restore into it.
     let interrupt2 = LineInterrupt::detached();
+    let (completed_send, mut completed_recv) = mesh::channel();
+    let callback: TestDeviceQueueWorkFn = Arc::new(move |_, queue, work| {
+        queue.complete(work, 4);
+        completed_send.send(());
+    });
     let mut dev2 = VirtioMmioDevice::new(
         Box::new(TestDevice::new(
             &driver_source,
@@ -5313,7 +5774,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
                 device_register_length: 0,
                 ..Default::default()
             },
-            None,
+            Some(callback),
         )),
         &driver_source.simple(),
         mem.clone(),
@@ -5331,7 +5792,10 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
         0
     );
 
-    // Stop and clean up.
+    guest.add_to_avail_queue(0);
+    dev2.start();
+    must_recv_in_timeout(&mut completed_recv, Duration::from_secs(5)).await;
+    assert_eq!(guest.get_next_completed(0), Some((0, 4)));
     dev2.stop().await;
 }
 
@@ -5366,6 +5830,7 @@ async fn pci_restore_validates_supplied_queue_progress(driver: DefaultDriver) {
             let mut saved = source.pci_device.save().await.unwrap();
             saved.queues[0].common.queue_state = state;
             let mut target = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+            target.pci_device.stop().await;
             if state.is_none() {
                 target.pci_device.restore(saved).await.unwrap();
                 continue;
@@ -5375,10 +5840,8 @@ async fn pci_restore_validates_supplied_queue_progress(driver: DefaultDriver) {
                 panic!("unexpected restore error: {err}");
             };
             assert!(err.to_string().contains("invalid saved state"));
-            assert_eq!(
-                target.pci_device.save().await.unwrap().common.device_status,
-                0
-            );
+            assert_eq!(target.pci_device.read_u32(20) & 0xff, 0);
+            assert!(target.pci_device.save().await.is_err());
         }
     }
 }
@@ -5448,7 +5911,8 @@ async fn mmio_restore_validates_supplied_queue_progress(driver: DefaultDriver) {
                 panic!("unexpected restore error: {err}");
             };
             assert!(err.to_string().contains("invalid saved state"));
-            assert_eq!(target.save().await.unwrap().common.device_status, 0);
+            assert_eq!(target.read_u32(112), 0);
+            assert!(target.save().await.is_err());
         }
     }
 }
@@ -5620,6 +6084,7 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     // point, so the assertion held while every restored VM ran without a single
     // doorbell.
     let mut dev2 = VirtioPciTestDevice::new(&driver, QUEUE_COUNT, &test_mem, None);
+    dev2.pci_device.stop().await;
     dev2.pci_device
         .restore(saved)
         .await

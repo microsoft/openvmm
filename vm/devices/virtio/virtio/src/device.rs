@@ -93,6 +93,8 @@ pub trait VirtioDevice: InspectMut + Send {
     ///
     /// Returns the queue's `QueueState` on completion, or `None` if the
     /// queue was not active.
+    /// Release backend ownership before returning. Retained internal VM
+    /// execution belongs to [`Self::pause`], not this path.
     ///
     /// This must be idempotent: calling it on a queue that was never
     /// started (or has already been stopped) must return `None`
@@ -100,9 +102,46 @@ pub trait VirtioDevice: InspectMut + Send {
     /// iterating all queue indices, not just active ones.
     fn stop_queue(&mut self, idx: u16) -> impl Future<Output = Option<QueueState>> + Send;
 
+    /// Parks internal VM execution without releasing queues or publishing
+    /// further completions. Return one entry per queue, or `None` to use the
+    /// ordinary stop/start fallback. This is not a vhost-user queue stop.
+    fn pause(&mut self) -> impl Future<Output = Option<Vec<Option<QueueState>>>> + Send {
+        async { None }
+    }
+
+    /// Resumes the same execution after a successful retained pause.
+    fn resume(&mut self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+
+    /// Validates and reconstructs saved queue progress while parked.
+    ///
+    /// Do not start workers or create backend queues. Notifications through
+    /// `resources.notify` are retained until VM start, after interrupt restore.
+    fn restore_queue(
+        &mut self,
+        _idx: u16,
+        _resources: QueueResources,
+        _features: &VirtioDeviceFeatures,
+        state: QueueState,
+    ) -> Result<QueueState, RestoreError> {
+        Ok(state)
+    }
+
+    /// Completes a staged restore during activation, before queues start.
+    ///
+    /// The default discards old execution. Devices with staged metadata must
+    /// preserve it across that teardown and install it afterward. Validation
+    /// belongs in `restore_device_state` / `restore_queue`, not this step.
+    fn finish_restore(&mut self) -> impl Future<Output = ()> + Send {
+        async { self.reset().await }
+    }
+
     /// Reset device-internal state to initial values.
     ///
-    /// Called after all queues have been stopped on guest-initiated reset.
+    /// Called after queues stop on guest reset, or while paused to abandon old
+    /// execution. Do not publish old completions into restored guest memory.
+    /// Discard any staged metadata as well as the old runtime.
     /// Default: no-op.
     fn reset(&mut self) -> impl Future<Output = ()> + Send {
         async {}
@@ -118,20 +157,23 @@ pub trait VirtioDevice: InspectMut + Send {
         false
     }
 
-    /// Save device-specific state after all queues have been stopped.
+    /// Save device-specific state while execution is quiescent.
     ///
     /// Queue and transport state are saved separately. The default is suitable
-    /// for devices with no additional state.
+    /// for devices with no additional state. After restore but before activation,
+    /// capture the staged restored state rather than the old runtime.
     fn save_device_state(
         &mut self,
     ) -> impl Future<Output = Result<Option<SavedStateBlob>, SaveError>> + Send {
         async { Ok(None) }
     }
 
-    /// Restore device-specific state while stopped, before restarting queues.
+    /// Validate and stage device-specific state while execution is parked.
     ///
     /// This is not called for ordinary stop/start. The default accepts only
     /// an absent payload, including snapshots from before this hook existed.
+    /// Do not start I/O or discard the old runtime here. Install staged state
+    /// in `finish_restore` after old execution has been discarded.
     fn restore_device_state(
         &mut self,
         state: Option<SavedStateBlob>,
@@ -189,6 +231,26 @@ pub trait DynVirtioDevice: InspectMut + Send {
         &mut self,
         idx: u16,
     ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>>;
+
+    /// Optionally retains queue execution across internal VM pause.
+    fn pause(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Option<Vec<Option<QueueState>>>> + Send + '_>>;
+
+    /// Resumes retained execution.
+    fn resume(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Reconstructs a queue without starting execution.
+    fn restore_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        state: QueueState,
+    ) -> Result<QueueState, RestoreError>;
+
+    /// Discards old execution and installs staged metadata before queue start.
+    fn finish_restore(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 
     /// Reset device-internal state.
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
@@ -260,6 +322,30 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
         idx: u16,
     ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>> {
         Box::pin(VirtioDevice::stop_queue(self, idx))
+    }
+
+    fn pause(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Option<Vec<Option<QueueState>>>> + Send + '_>> {
+        Box::pin(VirtioDevice::pause(self))
+    }
+
+    fn resume(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(VirtioDevice::resume(self))
+    }
+
+    fn restore_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        state: QueueState,
+    ) -> Result<QueueState, RestoreError> {
+        VirtioDevice::restore_queue(self, idx, resources, features, state)
+    }
+
+    fn finish_restore(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(VirtioDevice::finish_restore(self))
     }
 
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {

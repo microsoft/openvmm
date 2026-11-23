@@ -199,6 +199,12 @@ applications must reconnect. The guest CID must still match the saved
 configuration. Ordinary pause/resume, including saving without restoring,
 does not send this event.
 
+Pause retains the queue execution and live connections. Restore validates and
+stages device metadata and reconstructs queue progress while stopped; the old
+runtime is discarded and staged metadata is installed only on activation.
+Saving a restored-but-not-started VM preserves that staged state. Invalid queue
+state is reported during restore, before any worker is started.
+
 This requires a guest driver that handles and replenishes event-queue buffers.
 Host sockets and buffered stream data are not preserved. Individual connection
 errors still use targeted reset packets rather than resetting the transport.

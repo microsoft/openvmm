@@ -201,75 +201,55 @@ impl TestHarness {
     }
 
     async fn start_queues(&mut self, states: [Option<QueueState>; 3]) {
-        let features = self.features;
+        if self.device.pending_restore.is_some() {
+            self.device.finish_restore().await;
+        }
+        for (index, state) in states.into_iter().enumerate() {
+            let resources = self.queue_resources(index);
+            self.device
+                .start_queue(index as u16, resources, &self.features, state)
+                .await
+                .unwrap();
+        }
+    }
 
-        // Start rx queue (index 0)
-        let rx_interrupt = Interrupt::from_event(self.rx_interrupt_event.clone());
-        self.device
-            .start_queue(
-                0,
-                QueueResources {
-                    params: QueueParams {
-                        size: QUEUE_SIZE,
-                        enable: true,
-                        desc_addr: RX_DESC_ADDR,
-                        avail_addr: RX_AVAIL_ADDR,
-                        used_addr: RX_USED_ADDR,
-                    },
-                    notify: rx_interrupt,
-                    event: self.rx_queue_event.clone(),
-                    guest_memory: self.mem.clone(),
-                },
-                &features,
-                states[0],
-            )
-            .await
-            .unwrap();
-
-        // Start tx queue (index 1)
-        let tx_interrupt = Interrupt::from_event(self.tx_interrupt_event.clone());
-        self.device
-            .start_queue(
-                1,
-                QueueResources {
-                    params: QueueParams {
-                        size: QUEUE_SIZE,
-                        enable: true,
-                        desc_addr: TX_DESC_ADDR,
-                        avail_addr: TX_AVAIL_ADDR,
-                        used_addr: TX_USED_ADDR,
-                    },
-                    notify: tx_interrupt,
-                    event: self.tx_queue_event.clone(),
-                    guest_memory: self.mem.clone(),
-                },
-                &features,
-                states[1],
-            )
-            .await
-            .unwrap();
-
-        let event_interrupt = Interrupt::from_event(self.event_interrupt_event.clone());
-        self.device
-            .start_queue(
-                2,
-                QueueResources {
-                    params: QueueParams {
-                        size: QUEUE_SIZE,
-                        enable: true,
-                        desc_addr: EVENT_DESC_ADDR,
-                        avail_addr: EVENT_AVAIL_ADDR,
-                        used_addr: EVENT_USED_ADDR,
-                    },
-                    notify: event_interrupt,
-                    event: self.event_queue_event.clone(),
-                    guest_memory: self.mem.clone(),
-                },
-                &features,
-                states[2],
-            )
-            .await
-            .unwrap();
+    fn queue_resources(&self, index: usize) -> QueueResources {
+        let (desc_addr, avail_addr, used_addr, kick, interrupt) = match index {
+            0 => (
+                RX_DESC_ADDR,
+                RX_AVAIL_ADDR,
+                RX_USED_ADDR,
+                &self.rx_queue_event,
+                &self.rx_interrupt_event,
+            ),
+            1 => (
+                TX_DESC_ADDR,
+                TX_AVAIL_ADDR,
+                TX_USED_ADDR,
+                &self.tx_queue_event,
+                &self.tx_interrupt_event,
+            ),
+            2 => (
+                EVENT_DESC_ADDR,
+                EVENT_AVAIL_ADDR,
+                EVENT_USED_ADDR,
+                &self.event_queue_event,
+                &self.event_interrupt_event,
+            ),
+            _ => panic!("invalid test queue index"),
+        };
+        QueueResources {
+            params: QueueParams {
+                size: QUEUE_SIZE,
+                enable: true,
+                desc_addr,
+                avail_addr,
+                used_addr,
+            },
+            notify: Interrupt::from_event(interrupt.clone()),
+            event: kick.clone(),
+            guest_memory: self.mem.clone(),
+        }
     }
 
     async fn stop_queues(&mut self) -> [Option<QueueState>; 3] {
@@ -686,16 +666,20 @@ async fn vsock_pause_resume_and_save_continue_preserve_streams(driver: DefaultDr
         .exchange(&mut stream, 1024, 5000, b"before pause")
         .await;
     for capture in [false, true] {
-        let queues = harness.stop_queues().await;
+        let queues = harness.device.pause().await.unwrap();
         assert!(queues.iter().all(Option::is_some));
-        assert_eq!(harness.stop_queues().await, [None; 3]);
+        assert!(
+            harness.device.worker.has_state(),
+            "pause must retain queues"
+        );
+        assert_eq!(harness.device.pause().await.unwrap(), queues);
         if capture {
             let state = harness.device.save_device_state().await.unwrap().unwrap();
             let state = state.parse::<SavedState>().unwrap();
             assert!(state.connections_to_reset.is_empty());
             assert_eq!(state.pending_event_ack, None);
         }
-        harness.start_queues(queues).await;
+        harness.device.resume().await;
         harness
             .exchange(&mut stream, 1024, 5000, b"same live stream")
             .await;
@@ -708,6 +692,324 @@ async fn vsock_pause_resume_and_save_continue_preserve_streams(driver: DefaultDr
             )
             .is_none()
         );
+    }
+}
+
+#[async_test]
+async fn vsock_lifecycle_inactive_pause_can_be_saved(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    assert_eq!(harness.device.pause().await.unwrap(), vec![None; 3]);
+    let saved = harness
+        .device
+        .save_device_state()
+        .await
+        .unwrap()
+        .unwrap()
+        .parse::<SavedState>()
+        .unwrap();
+    assert_eq!(saved.guest_cid, GUEST_CID);
+    assert!(saved.connections_to_reset.is_empty());
+    assert_eq!(saved.pending_event_ack, None);
+    harness.device.resume().await;
+    assert!(!harness.device.worker.is_running());
+    assert!(!harness.device.worker.has_state());
+}
+
+#[async_test]
+async fn vsock_lifecycle_stages_metadata_until_activation(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    let mut listener = harness.create_port_listener(5000);
+    harness.enable().await;
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5000)
+        .await;
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+    harness.post_event_buffer(4);
+    let queues: [Option<QueueState>; 3] = harness.device.pause().await.unwrap().try_into().unwrap();
+    assert!(harness.device.worker.has_state());
+    let saved = harness.device.save_device_state().await.unwrap().unwrap();
+    let encoded = mesh::payload::encode(saved);
+    let restored = mesh::payload::decode(&encoded).unwrap();
+    harness
+        .device
+        .restore_device_state(Some(restored))
+        .await
+        .unwrap();
+    assert!(harness.device.pending_restore.is_some());
+    assert!(
+        harness.device.worker.has_state(),
+        "staging must not discard old runtime"
+    );
+    let mut byte = [0];
+    assert!(futures::FutureExt::now_or_never(stream.read(&mut byte)).is_none());
+    assert_eq!(
+        mesh::payload::encode(harness.device.save_device_state().await.unwrap().unwrap()),
+        encoded,
+        "re-save before activation must preserve staged metadata",
+    );
+    for (index, state) in queues.iter().enumerate() {
+        let resources = harness.queue_resources(index);
+        assert_eq!(
+            harness
+                .device
+                .restore_queue(index as u16, resources, &harness.features, state.unwrap())
+                .unwrap(),
+            state.unwrap(),
+        );
+    }
+    assert!(
+        read_used(
+            &harness.mem,
+            EVENT_USED_ADDR,
+            QUEUE_SIZE,
+            &mut harness.event_used_idx
+        )
+        .is_none(),
+        "reconstructing queues must not publish the transport reset",
+    );
+    harness.start_queues(queues).await;
+    assert!(harness.device.pending_restore.is_none());
+    harness.acknowledge_transport_reset().await;
+    let (_, gpa) = harness.post_rx_buffer(HDR_SIZE);
+    harness.wait_for_rx_used().await;
+    harness.assert_reset(gpa, 5000, 1024);
+    let closed = CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(stream.read(&mut byte))
+        .await
+        .unwrap();
+    assert!(matches!(closed, Ok(0) | Err(_)));
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5000)
+        .await;
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+    harness
+        .exchange(&mut stream, 1024, 5000, b"activated restored metadata")
+        .await;
+}
+
+#[async_test]
+async fn vsock_lifecycle_reset_discards_staged_event(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    let mut listener = harness.create_port_listener(5000);
+    let mut state = reset_state(1).parse::<SavedState>().unwrap();
+    state.pending_event_ack = Some(7);
+    harness
+        .device
+        .restore_device_state(Some(SavedStateBlob::new(state)))
+        .await
+        .unwrap();
+    let saved = harness
+        .device
+        .save_device_state()
+        .await
+        .unwrap()
+        .unwrap()
+        .parse::<SavedState>()
+        .unwrap();
+    assert_eq!(saved.pending_event_ack, Some(7));
+    assert_eq!(saved.connections_to_reset.len(), 1);
+    harness.device.reset().await;
+    assert!(harness.device.pending_restore.is_none());
+    let saved = harness
+        .device
+        .save_device_state()
+        .await
+        .unwrap()
+        .unwrap()
+        .parse::<SavedState>()
+        .unwrap();
+    assert!(saved.connections_to_reset.is_empty());
+    assert_eq!(saved.pending_event_ack, None);
+    harness.post_event_buffer(4);
+    harness.enable().await;
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5000)
+        .await;
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+    harness
+        .exchange(&mut stream, 1024, 5000, b"fresh after abandoned restore")
+        .await;
+    assert!(
+        read_used(
+            &harness.mem,
+            EVENT_USED_ADDR,
+            QUEUE_SIZE,
+            &mut harness.event_used_idx
+        )
+        .is_none()
+    );
+}
+
+#[async_test]
+async fn vsock_lifecycle_queue_restore_rejects_uncompleted_work(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    for index in 0..3 {
+        let resources = harness.queue_resources(index);
+        let error = harness
+            .device
+            .restore_queue(
+                index as u16,
+                resources,
+                &harness.features,
+                QueueState {
+                    avail_index: 1,
+                    used_index: 0,
+                },
+            )
+            .unwrap_err();
+        let vmcore::save_restore::RestoreError::InvalidSavedState(error) = error else {
+            panic!("unexpected restore error: {error}");
+        };
+        assert!(format!("{error:#}").contains("uncompleted descriptor"));
+        let resources = harness.queue_resources(index);
+        assert_eq!(
+            harness
+                .device
+                .restore_queue(
+                    index as u16,
+                    resources,
+                    &harness.features,
+                    QueueState {
+                        avail_index: u16::MAX,
+                        used_index: u16::MAX
+                    },
+                )
+                .unwrap(),
+            QueueState {
+                avail_index: u16::MAX,
+                used_index: u16::MAX
+            },
+        );
+    }
+    assert!(!harness.device.worker.has_state());
+}
+
+#[async_test]
+async fn vsock_queue_creation_checks_stream_features_on_restore_and_start(driver: DefaultDriver) {
+    for stream in [false, true] {
+        for seqpacket in [false, true] {
+            for no_implied_stream in [false, true] {
+                let features = VirtioDeviceFeatures::new().with_device_specific_low(
+                    VsockFeaturesBank0::new()
+                        .with_stream(stream)
+                        .with_seqpacket(seqpacket)
+                        .with_no_implied_stream(no_implied_stream)
+                        .into_bits(),
+                );
+                let supported = stream || !no_implied_stream;
+                for index in 0..3 {
+                    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+                    let resources = harness.queue_resources(index);
+                    let restored = harness.device.restore_queue(
+                        index as u16,
+                        resources,
+                        &features,
+                        QueueState::default(),
+                    );
+                    assert!(harness.device.started_queues.iter().all(Option::is_none));
+                    assert!(!harness.device.worker.has_state());
+                    let resources = harness.queue_resources(index);
+                    let started = harness
+                        .device
+                        .start_queue(index as u16, resources, &features, None)
+                        .await;
+                    assert_eq!(started.is_ok(), supported, "startup features: {features:?}");
+                    assert_eq!(
+                        restored.is_ok(),
+                        supported,
+                        "restore features: {features:?}"
+                    );
+                    if supported {
+                        assert_eq!(restored.unwrap(), QueueState::default());
+                        assert_eq!(
+                            harness.device.stop_queue(index as u16).await,
+                            Some(QueueState::default())
+                        );
+                    } else {
+                        let vmcore::save_restore::RestoreError::InvalidSavedState(error) =
+                            restored.unwrap_err()
+                        else {
+                            panic!("expected invalid saved state");
+                        };
+                        assert!(
+                            error
+                                .to_string()
+                                .contains("guest does not support stream sockets")
+                        );
+                        assert!(
+                            started
+                                .unwrap_err()
+                                .to_string()
+                                .contains("guest does not support stream sockets")
+                        );
+                        assert!(harness.device.started_queues.iter().all(Option::is_none));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[async_test]
+async fn vsock_queue_creation_preserves_progress_and_errors(driver: DefaultDriver) {
+    for index in 0..3 {
+        for cursor in [0, 17, u16::MAX] {
+            let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+            let state = QueueState {
+                avail_index: cursor,
+                used_index: cursor,
+            };
+            let resources = harness.queue_resources(index);
+            assert_eq!(
+                harness
+                    .device
+                    .restore_queue(index as u16, resources, &harness.features, state)
+                    .unwrap(),
+                state,
+            );
+            let resources = harness.queue_resources(index);
+            harness
+                .device
+                .start_queue(index as u16, resources, &harness.features, Some(state))
+                .await
+                .unwrap();
+            assert_eq!(harness.device.stop_queue(index as u16).await, Some(state));
+        }
+        for size in [0, 3] {
+            let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+            let mut resources = harness.queue_resources(index);
+            resources.params.size = size;
+            let restored = harness
+                .device
+                .restore_queue(
+                    index as u16,
+                    resources,
+                    &harness.features,
+                    QueueState::default(),
+                )
+                .unwrap_err();
+            let vmcore::save_restore::RestoreError::InvalidSavedState(error) = restored else {
+                panic!("expected invalid saved state");
+            };
+            assert!(matches!(
+                error.downcast_ref::<virtio::queue::QueueError>(),
+                Some(virtio::queue::QueueError::InvalidQueueSize(actual)) if *actual == size,
+            ));
+            let mut resources = harness.queue_resources(index);
+            resources.params.size = size;
+            let error = harness
+                .device
+                .start_queue(index as u16, resources, &harness.features, None)
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<virtio::queue::QueueError>(),
+                Some(virtio::queue::QueueError::InvalidQueueSize(actual)) if *actual == size,
+            ));
+            assert!(harness.device.started_queues.iter().all(Option::is_none));
+            assert!(!harness.device.worker.has_state());
+        }
     }
 }
 

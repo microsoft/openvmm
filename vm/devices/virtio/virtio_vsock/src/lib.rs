@@ -89,6 +89,8 @@ pub struct VirtioVsockDevice {
     #[inspect(skip)]
     started_queues: [Option<VirtioQueue>; QUEUE_COUNT],
     #[inspect(skip)]
+    pending_restore: Option<saved_state::SavedState>,
+    #[inspect(skip)]
     base_path: PathBuf,
 }
 
@@ -130,12 +132,39 @@ impl VirtioVsockDevice {
                 failed: false,
             }),
             started_queues: [const { None }; QUEUE_COUNT],
+            pending_restore: None,
             base_path,
         })
     }
 
     fn queues_stopped(&self) -> bool {
-        !self.worker.has_state() && self.started_queues.iter().all(Option::is_none)
+        !self.worker.is_running()
+    }
+
+    fn create_queue(
+        &self,
+        resources: virtio::QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<virtio::queue::QueueState>,
+    ) -> anyhow::Result<VirtioQueue> {
+        // Spec 5.10.3.2: stream support is implied unless NO_IMPLIED_STREAM
+        // was negotiated, including when only SEQPACKET was negotiated.
+        let negotiated_features = VsockFeaturesBank0::from_bits(features.bank(0));
+        if negotiated_features.no_implied_stream() && !negotiated_features.stream() {
+            anyhow::bail!("guest does not support stream sockets");
+        }
+
+        let event = PolledWait::new(&self.driver, resources.event)
+            .context("failed to create queue event")?;
+        VirtioQueue::new(
+            *features,
+            resources.params,
+            resources.guest_memory,
+            resources.notify,
+            event,
+            initial_state,
+        )
+        .context("failed to create virtio queue")
     }
 
     fn reset_connections(&mut self) {
@@ -146,6 +175,25 @@ impl VirtioVsockDevice {
         worker.pending_resets.clear();
         worker.transport_reset = None;
         worker.failed = false;
+    }
+
+    fn install_restored_state(&mut self, state: saved_state::SavedState) {
+        let worker = self.worker.task_mut();
+        worker.pending_resets = state
+            .connections_to_reset
+            .into_iter()
+            .map(|connection| ConnectionKey {
+                local_port: connection.local_port,
+                peer_port: connection.peer_port,
+            })
+            .collect();
+        worker.transport_reset = Some(match state.pending_event_ack {
+            Some(available_cursor) => TransportReset::AwaitingAck {
+                available_cursor,
+                reset_again: true,
+            },
+            None => TransportReset::Pending,
+        });
     }
 }
 
@@ -191,6 +239,10 @@ impl VirtioDevice for VirtioVsockDevice {
         initial_state: Option<virtio::queue::QueueState>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
+            self.pending_restore.is_none(),
+            "virtio-vsock restored metadata must be installed before queue start"
+        );
+        anyhow::ensure!(
             !self.worker.has_state(),
             "virtio-vsock worker already started"
         );
@@ -203,29 +255,8 @@ impl VirtioDevice for VirtioVsockDevice {
             anyhow::bail!("virtio queue already started");
         }
 
-        // Spec 5.10.3.2: If no feature bit has been negotiated, the device SHOULD act as if
-        // VIRTIO_VSOCK_F_STREAM has been negotiated.
-        //
-        // If VIRTIO_VSOCK_F_SEQPACKET has been negotiated, but not
-        // VIRTIO_VSOCK_F_NO_IMPLIED_STREAM, the device MAY act as if VIRTIO_VSOCK_F_STREAM has also
-        // been negotiated.
-        let negotiated_features = VsockFeaturesBank0::from_bits(features.bank(0));
-        if negotiated_features.no_implied_stream() && !negotiated_features.stream() {
-            anyhow::bail!("guest does not support stream sockets");
-        }
-
-        let queue_event = PolledWait::new(&self.driver, resources.event)
-            .context("failed to create queue event")?;
-
-        let queue = VirtioQueue::new(
-            *features,
-            resources.params,
-            resources.guest_memory.clone(),
-            resources.notify,
-            queue_event,
-            initial_state,
-        )
-        .context("failed to create virtio queue")?;
+        let memory = resources.guest_memory.clone();
+        let queue = self.create_queue(resources, features, initial_state)?;
 
         self.started_queues[idx as usize] = Some(queue);
 
@@ -235,7 +266,7 @@ impl VirtioDevice for VirtioVsockDevice {
                 rx_queue: self.started_queues[RX_QUEUE_INDEX].take().unwrap(),
                 tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap().fuse(),
                 event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
-                memory: resources.guest_memory.clone(),
+                memory,
             };
 
             if matches!(
@@ -271,12 +302,61 @@ impl VirtioDevice for VirtioVsockDevice {
             .map(|queue| queue.queue_state())
     }
 
+    async fn pause(&mut self) -> Option<Vec<Option<virtio::queue::QueueState>>> {
+        self.worker.stop().await;
+        Some(if let Some(state) = self.worker.state() {
+            vec![
+                Some(state.rx_queue.queue_state()),
+                Some(state.tx_queue.get_ref().queue_state()),
+                Some(state.event_queue.queue_state()),
+            ]
+        } else {
+            self.started_queues
+                .iter()
+                .map(|queue| queue.as_ref().map(VirtioQueue::queue_state))
+                .collect()
+        })
+    }
+
+    async fn resume(&mut self) {
+        if self.worker.has_state() {
+            self.worker.start();
+        }
+    }
+
+    fn restore_queue(
+        &mut self,
+        _idx: u16,
+        resources: virtio::QueueResources,
+        features: &VirtioDeviceFeatures,
+        state: virtio::queue::QueueState,
+    ) -> Result<virtio::queue::QueueState, RestoreError> {
+        let restore = || -> anyhow::Result<virtio::queue::QueueState> {
+            let queue = self.create_queue(resources, features, Some(state))?;
+            anyhow::ensure!(
+                state.avail_index == state.used_index,
+                "saved vsock queue contains an uncompleted descriptor"
+            );
+            Ok(queue.queue_state())
+        };
+        restore().map_err(RestoreError::InvalidSavedState)
+    }
+
+    async fn finish_restore(&mut self) {
+        let state = self.pending_restore.take();
+        self.reset().await;
+        if let Some(state) = state {
+            self.install_restored_state(state);
+        }
+    }
+
     async fn reset(&mut self) {
         self.worker.stop().await;
         if self.worker.has_state() {
             self.worker.remove();
         }
         self.started_queues = [const { None }; QUEUE_COUNT];
+        self.pending_restore = None;
         self.reset_connections();
     }
 
@@ -305,7 +385,7 @@ mod saved_state {
     use mesh::payload::Protobuf;
     use vmcore::save_restore::SavedStateRoot;
 
-    #[derive(Protobuf, SavedStateRoot)]
+    #[derive(Clone, Protobuf, SavedStateRoot)]
     #[mesh(package = "virtio.vsock")]
     pub struct SavedState {
         #[mesh(1)]
@@ -319,7 +399,7 @@ mod saved_state {
         pub pending_event_ack: Option<u16>,
     }
 
-    #[derive(Protobuf)]
+    #[derive(Clone, Protobuf)]
     #[mesh(package = "virtio.vsock")]
     pub struct SavedConnection {
         #[mesh(1)]
@@ -331,7 +411,7 @@ mod saved_state {
 
 #[derive(Debug, thiserror::Error)]
 enum VsockStateError {
-    #[error("virtio-vsock queues must be stopped before saving or restoring")]
+    #[error("virtio-vsock execution must be stopped before saving or restoring")]
     QueuesActive,
     #[error("virtio-vsock worker stopped with a queue error")]
     QueueFailed,
@@ -349,6 +429,9 @@ impl AsyncSaveRestore for VirtioVsockDevice {
     async fn save(&mut self) -> Result<Self::SavedState, SaveError> {
         if !self.queues_stopped() {
             return Err(SaveError::Other(VsockStateError::QueuesActive.into()));
+        }
+        if let Some(state) = &self.pending_restore {
+            return Ok(state.clone());
         }
         let worker = self.worker.task();
         if worker.failed {
@@ -386,6 +469,7 @@ impl AsyncSaveRestore for VirtioVsockDevice {
         if !self.queues_stopped() {
             return Err(RestoreError::Other(VsockStateError::QueuesActive.into()));
         }
+        self.pending_restore = None;
         if state.guest_cid != self.guest_cid {
             return Err(RestoreError::InvalidSavedState(
                 VsockStateError::GuestCid {
@@ -400,24 +484,7 @@ impl AsyncSaveRestore for VirtioVsockDevice {
                 VsockStateError::TooManyConnections(state.connections_to_reset.len()).into(),
             ));
         }
-        let pending_resets = state
-            .connections_to_reset
-            .into_iter()
-            .map(|connection| ConnectionKey {
-                local_port: connection.local_port,
-                peer_port: connection.peer_port,
-            })
-            .collect();
-        self.reset_connections();
-        let worker = self.worker.task_mut();
-        worker.pending_resets = pending_resets;
-        worker.transport_reset = Some(match state.pending_event_ack {
-            Some(available_cursor) => TransportReset::AwaitingAck {
-                available_cursor,
-                reset_again: true,
-            },
-            None => TransportReset::Pending,
-        });
+        self.pending_restore = Some(state);
         Ok(())
     }
 }

@@ -212,7 +212,7 @@ impl TransportOps for PciTransport {
 /// Run a virtio device over PCI
 #[derive(InspectMut)]
 pub struct VirtioPciDevice {
-    #[inspect(flatten)]
+    #[inspect(flatten, mut)]
     core: VirtioTransportCore,
     #[inspect(flatten)]
     pci: PciTransport,

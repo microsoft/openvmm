@@ -4,11 +4,13 @@
 //! Shared virtio transport core — state and logic common to PCI and MMIO.
 
 use super::StalledIo;
+use super::saved_state::VirtioRestoreError;
 use super::task::DeviceCommand;
+use super::task::DeviceRunner;
+use super::task::DeviceTask;
 use super::task::StartParams;
 use super::task::TransportState;
 use super::task::TransportStateResult;
-use super::task::run_device_task;
 use crate::DynVirtioDevice;
 use crate::QueueResources;
 use crate::VirtioDoorbells;
@@ -20,12 +22,15 @@ use chipset_device::io::deferred::DeferredWrite;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use inspect::InspectMut;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
-use pal_async::task::Task;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
+use task_control::TaskControl;
 use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -42,6 +47,7 @@ pub(crate) struct QueueData {
     pub event: pal_event::Event,
     #[inspect(skip)]
     pub saved_state: Option<QueueState>,
+    pub pending_interrupt: bool,
 }
 
 pub(crate) struct QueueDoorbell {
@@ -69,12 +75,12 @@ pub(crate) trait TransportOps: Send {
 }
 
 /// State shared by both the PCI and MMIO virtio transports.
-#[derive(Inspect)]
+#[derive(InspectMut)]
 pub(crate) struct VirtioTransportCore {
-    #[inspect(rename = "device", send = "DeviceCommand::Inspect")]
-    pub device_sender: mesh::Sender<DeviceCommand>,
     #[inspect(skip)]
-    pub device_task: Task<()>,
+    pub device_sender: mesh::Sender<DeviceCommand>,
+    #[inspect(rename = "device", mut)]
+    pub device_task: TaskControl<DeviceRunner, DeviceTask>,
     pub state: TransportState,
     pub device_feature: VirtioDeviceFeatures,
     #[inspect(hex)]
@@ -123,6 +129,7 @@ impl VirtioTransportCore {
                     msix_vector: 0,
                     event: pal_event::Event::new(),
                     saved_state: None,
+                    pending_interrupt: false,
                 })
             })
             .collect::<std::io::Result<Vec<_>>>()?;
@@ -137,9 +144,8 @@ impl VirtioTransportCore {
         let supports_save_restore = device.supports_save_restore();
 
         let (sender, receiver) = mesh::channel();
-        let device_task = driver.spawn("virtio-device-task", async move {
-            run_device_task(device, receiver).await;
-        });
+        let mut device_task = TaskControl::new(DeviceRunner::new(receiver));
+        device_task.insert(driver, "virtio-device-task", DeviceTask::new(device));
 
         Ok(Self {
             device_sender: sender,
@@ -238,8 +244,10 @@ impl VirtioTransportCore {
                 // signal during stop_queue before reset_status runs.
                 event: _,
                 saved_state,
+                pending_interrupt,
             } = qd;
             *saved_state = None;
+            *pending_interrupt = false;
             *params = QueueParams {
                 size: *initial_size,
                 ..Default::default()
@@ -364,6 +372,21 @@ impl VirtioTransportCore {
 
     /// `ChangeDeviceState::start()` implementation.
     pub fn start(&mut self, ops: &mut dyn TransportOps) {
+        if self.device_task.is_running() {
+            return;
+        }
+        if let Err(err) = self
+            .device_task
+            .state()
+            .expect("device state exists")
+            .activation_ready()
+        {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "virtio start rejected after incomplete restore"
+            );
+            return;
+        }
         if self.device_status.driver_ok() {
             let features = self.driver_feature;
             let mut queues = Vec::new();
@@ -378,23 +401,29 @@ impl VirtioTransportCore {
                     qd.msix_vector,
                     qd.event.clone(),
                     initial_state,
+                    std::mem::take(&mut qd.pending_interrupt),
                 ));
             }
             let queues: Vec<_> = queues
                 .into_iter()
-                .map(|(i, params, msix_vector, event, initial_state)| {
-                    let notify = ops.create_queue_interrupt(i, msix_vector);
-                    (
-                        i as u16,
-                        QueueResources {
-                            params,
-                            notify,
-                            event,
-                            guest_memory: self.guest_memory.clone(),
-                        },
-                        initial_state,
-                    )
-                })
+                .map(
+                    |(i, params, msix_vector, event, initial_state, pending_interrupt)| {
+                        let notify = ops.create_queue_interrupt(i, msix_vector);
+                        if pending_interrupt {
+                            notify.deliver();
+                        }
+                        (
+                            i as u16,
+                            QueueResources {
+                                params,
+                                notify,
+                                event,
+                                guest_memory: self.guest_memory.clone(),
+                            },
+                            initial_state,
+                        )
+                    },
+                )
                 .collect();
 
             let params = StartParams { queues, features };
@@ -403,10 +432,14 @@ impl VirtioTransportCore {
             self.device_sender
                 .send(DeviceCommand::Start(Rpc::detached(params)));
         }
+        self.device_task.start();
     }
 
     /// `ChangeDeviceState::stop()` implementation.
     pub async fn stop(&mut self, ops: &mut dyn TransportOps) {
+        if !self.device_task.is_running() {
+            return;
+        }
         if let Some(result) = self.state.drain().await {
             self.apply_transport_result(ops, result);
         }
@@ -418,6 +451,8 @@ impl VirtioTransportCore {
             .call(DeviceCommand::Stop, ())
             .await
             .expect("device task is gone");
+        // Complete queued Start/config commands before parking the owner.
+        self.device_task.stop().await;
         for (i, state) in states.into_iter().enumerate() {
             self.queues[i].saved_state = state;
         }
@@ -425,23 +460,24 @@ impl VirtioTransportCore {
 
     /// `ChangeDeviceState::reset()` implementation.
     pub async fn reset(&mut self, ops: &mut dyn TransportOps) {
-        let _ = self.state.drain().await;
-        let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
+        self.stop(ops).await;
+        self.device_task
+            .state_mut()
+            .expect("device state exists")
+            .reset()
+            .await;
         self.reset_status(ops);
     }
 
-    pub async fn teardown(self) {
+    pub async fn teardown(mut self) {
         assert!(
             !self.state.is_busy(),
             "device must be stopped before teardown"
         );
-        // Dropping the task handle only schedules cancellation; await backend
-        // destruction and task exit before acknowledging device removal.
-        self.device_sender
-            .call(DeviceCommand::Teardown, ())
-            .await
-            .expect("device task is gone");
-        self.device_task.await;
+        // Await accepted commands, then destroy the backend before acknowledging
+        // removal. Dropping only the task handle would defer its destruction.
+        self.device_task.stop().await;
+        drop(self.device_task.remove());
     }
 
     /// Signal a queue notification by index.
@@ -458,11 +494,15 @@ impl VirtioTransportCore {
         if !self.supports_save_restore {
             return Err(SaveError::NotSupported);
         }
+        if self.device_task.is_running() {
+            return Err(SaveError::Other(VirtioRestoreError::DeviceRunning.into()));
+        }
         let device_state = self
-            .device_sender
-            .call(DeviceCommand::Save, ())
-            .await
-            .map_err(|err| SaveError::Other(err.into()))??;
+            .device_task
+            .state_mut()
+            .expect("device state exists")
+            .save_device_state()
+            .await?;
         Ok(super::saved_state::state::CommonSavedState {
             device_status: self.device_status.into(),
             driver_feature_banks: (0..2usize).map(|i| self.driver_feature.bank(i)).collect(),
@@ -484,6 +524,7 @@ impl VirtioTransportCore {
             avail_addr: qd.params.avail_addr,
             used_addr: qd.params.used_addr,
             queue_state: qd.saved_state,
+            pending_interrupt: qd.pending_interrupt,
         }
     }
 
@@ -503,6 +544,16 @@ impl VirtioTransportCore {
         if !self.supports_save_restore {
             return Err(RestoreError::SavedStateNotSupported);
         }
+        if self.device_task.is_running() {
+            return Err(RestoreError::Other(
+                VirtioRestoreError::DeviceRunning.into(),
+            ));
+        }
+        let device = self
+            .device_task
+            .state_mut()
+            .expect("device state exists")
+            .prepare_restore();
 
         let queue_items: Vec<_> = queue_states.collect();
 
@@ -515,10 +566,7 @@ impl VirtioTransportCore {
             crate::MAX_QUEUE_SIZE,
         )?;
 
-        self.device_sender
-            .call(DeviceCommand::Restore, common.device_state)
-            .await
-            .map_err(|err| RestoreError::Other(err.into()))??;
+        device.restore_device_state(common.device_state).await?;
 
         // Restore feature negotiation.
         self.driver_feature = VirtioDeviceFeatures::new();
@@ -542,6 +590,29 @@ impl VirtioTransportCore {
             };
             qd.msix_vector = msix_vector;
             qd.saved_state = q.queue_state;
+            qd.pending_interrupt = q.pending_interrupt;
+            if VirtioDeviceStatus::from(common.device_status).driver_ok()
+                && q.enable
+                && let Some(state) = q.queue_state
+            {
+                let pending = Arc::new(AtomicBool::new(false));
+                let notify = Interrupt::from_fn({
+                    let pending = pending.clone();
+                    move || pending.store(true, Ordering::Relaxed)
+                });
+                qd.saved_state = Some(device.restore_queue(
+                    i as u16,
+                    QueueResources {
+                        params: qd.params,
+                        guest_memory: self.guest_memory.clone(),
+                        event: qd.event.clone(),
+                        notify,
+                    },
+                    &self.driver_feature,
+                    state,
+                )?);
+                qd.pending_interrupt |= pending.load(Ordering::Relaxed);
+            }
         }
 
         self.device_status = VirtioDeviceStatus::from(common.device_status);
@@ -556,6 +627,10 @@ impl VirtioTransportCore {
             self.install_doorbells(ops);
         }
 
+        self.device_task
+            .state_mut()
+            .expect("device state exists")
+            .complete_restore();
         Ok(())
     }
 }

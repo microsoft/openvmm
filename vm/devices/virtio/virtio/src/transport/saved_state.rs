@@ -29,6 +29,9 @@ pub mod state {
         pub used_addr: u64,
         #[mesh(6)]
         pub queue_state: Option<QueueState>,
+        /// Notification produced during restore, delivered after interrupt restoration.
+        #[mesh(7)]
+        pub pending_interrupt: bool,
     }
 
     /// Transport-agnostic saved state for the virtio common configuration.
@@ -63,6 +66,10 @@ use vmcore::save_restore::RestoreError;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum VirtioRestoreError {
+    #[error("virtio execution must be stopped before saving or restoring")]
+    DeviceRunning,
+    #[error("virtio restore did not complete successfully; reset the device before proceeding")]
+    IncompleteRestore,
     #[error("driver feature bank {bank}: saved {saved:#x} has bits not in device {device:#x}")]
     IncompatibleFeatures {
         bank: usize,
@@ -194,6 +201,7 @@ mod tests {
             avail_addr: 0x1000,
             used_addr: 0x2000,
             queue_state,
+            pending_interrupt: false,
         };
         validate_restore(
             &common,
