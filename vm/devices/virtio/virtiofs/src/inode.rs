@@ -365,18 +365,20 @@ impl VirtioFsInode {
         *path = new_path;
     }
 
-    /// Increments the lookup count without updating the path, saturating at `u64::MAX`.
+    /// Increments the lookup count without updating the path, saturating at `u64::MAX`, and
+    /// returns whether the count changed.
     ///
     /// This is used when returning an existing inode in a FUSE reply (e.g., for hard links)
     /// where the kernel will track the reference and later send a forget.
     ///
     /// A count that wrapped to zero would let the next forget evict an inode that the guest
     /// still references, so the count stops at `u64::MAX` instead.
-    pub fn inc_lookup(&self) {
+    pub fn inc_lookup(&self) -> bool {
         self.lookup_count
             .update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.saturating_add(1)
-            });
+            })
+            != u64::MAX
     }
 
     /// Decrements the lookup count, and returns the new count.
