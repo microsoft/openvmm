@@ -96,7 +96,7 @@ impl<const N: usize> Histogram<N> {
 
     /// Adds a sample to the histogram.
     pub fn add_sample(&mut self, n: impl Into<u64>) {
-        self.0[(64 - n.into().leading_zeros() as usize).min(N - 1)] += 1;
+        self.0[(n.into().bit_width() as usize).min(N - 1)] += 1;
     }
 }
 
@@ -129,5 +129,20 @@ impl<const N: usize> Inspect for Histogram<N> {
             resp.counter(BUCKETS[i], n);
         }
         resp.counter(&BUCKETS[N - 1][..WIDTH[N - 1] + 1], self.0[N - 1]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn histogram_bit_width_buckets() {
+        let mut histogram = Histogram::<6>::new();
+        for sample in [0, 1, 2, 3, 7, 8, 1 << 63, u64::MAX] {
+            histogram.add_sample(sample);
+        }
+        assert_eq!(histogram.0, [1, 1, 2, 1, 1, 2]);
     }
 }

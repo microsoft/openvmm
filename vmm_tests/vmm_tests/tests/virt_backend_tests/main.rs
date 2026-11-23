@@ -5,24 +5,18 @@
 
 #![forbid(unsafe_code)]
 
-#[cfg(all(
-    guest_arch = "x86_64",
-    guest_is_native,
-    any(target_os = "linux", windows)
-))]
-mod fixture;
-#[cfg(all(
-    guest_arch = "x86_64",
-    guest_is_native,
-    any(target_os = "linux", windows)
-))]
-mod native;
-#[cfg(all(
-    guest_arch = "x86_64",
-    guest_is_native,
-    any(target_os = "linux", windows)
-))]
-mod time;
+cfg_select! {
+    all(
+        guest_arch = "x86_64",
+        guest_is_native,
+        any(target_os = "linux", windows)
+    ) => {
+        mod fixture;
+        mod native;
+        mod time;
+    }
+    _ => {}
+}
 
 fn main() {
     petri::test_main(|name, requirements| {

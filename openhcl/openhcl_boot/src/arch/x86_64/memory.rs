@@ -39,6 +39,8 @@ use zerocopy::FromZeros;
 // This is a temporary debugging aid intended for local investigation of a rare
 // mismatch seen on SNP boots. It computes SHA-384 hashes at three points to
 // isolate which phase corruption occurs in:
+//   Preflight (SNP only): compare all shared imported pages with the measured
+//            hashes and report corruption before converting any imported page.
 //   Phase A: bytes captured out of the shared (host-visible) page into
 //            `ram_buffer` just before the shared -> private transition.
 //   Phase B: bytes as read from the same GPA immediately after the
@@ -121,15 +123,14 @@ const DIAG_EMPTY_SAVED_PAGE: DiagSavedBadPage = DiagSavedBadPage {
     contents: [0; DIAG_PAGE_SIZE],
 };
 
-/// Per-page expected-hash tracking state. Populated during Phase A capture
-/// as each 4 KB shared page is compared against the loader's per-page
-/// SHA-384 baked into the measured expected-page-hashes region.
+/// Per-page expected-hash tracking state. Populated during SNP preflight
+/// (or TDX Phase A) against the measured loader-emitted SHA-384 hashes.
 struct DiagPerPageState {
     /// Cached slice from `ShimParams::expected_page_hashes()`. `None` if
     /// the IGVM has no expected-page-hashes region (older loader) or the
     /// region magic/version mismatched -- per-page compare is disabled.
     expected: Option<&'static [loader_defs::paravisor::ExpectedPageHash]>,
-    /// Number of 4 KB pages Phase A has processed so far.
+    /// Number of 4 KB shared pages processed so far.
     seen: u32,
     /// Number of pages whose Phase A hash did not match `expected[i]`.
     bad: u32,
@@ -175,7 +176,7 @@ static DIAG_RUNNING_A: SingleThreaded<RefCell<Option<Sha384>>> = SingleThreaded(
 static DIAG_FULL_PAGE_DUMPED: SingleThreaded<core::cell::Cell<bool>> =
     SingleThreaded(core::cell::Cell::new(false));
 
-/// Per-page expected-hash tracking (populated in `diag_record_phase_a` and
+/// Per-page expected-hash tracking (populated in `DiagPerPageState::record` and
 /// reported in `diag_report_per_page_expected`).
 static DIAG_PER_PAGE: SingleThreaded<RefCell<DiagPerPageState>> =
     SingleThreaded(RefCell::new(DiagPerPageState::new_const()));
@@ -277,12 +278,8 @@ impl core::fmt::Display for RleRanges<'_> {
 /// Record the Phase-A hash of a chunk that was just copied out of a shared
 /// page into `ram_buffer`. Also feeds the bytes into a running combined
 /// Phase-A hasher so it can be compared against `imported_regions_hash()`
-/// on final mismatch. Additionally walks the chunk at 4 KB page
-/// granularity and compares each page's SHA-384 against the loader-emitted
-/// per-page expected hash (if `diag_init_expected_hashes` cached one) --
-/// mismatches are recorded in a bitmap plus a small buffer of the first N
-/// bad pages' full contents so `diag_report_per_page_expected` can dump
-/// them on final panic.
+/// on final mismatch. Per-page expected hashes are checked separately so SNP
+/// can report all corrupt shared pages before any imported page is converted.
 fn diag_record_phase_a(gpa: u64, data: &[u8]) {
     {
         let mut running = DIAG_RUNNING_A.0.borrow_mut();
@@ -311,54 +308,49 @@ fn diag_record_phase_a(gpa: u64, data: &[u8]) {
             data.len(),
         );
     }
-    drop(chunks);
+}
 
-    // Per-page comparison against the loader-emitted expected hashes.
-    // Each 4 KB page in the chunk gets its own SHA-384; on mismatch we
-    // set a bit in the bitmap and, for the first N cases, snapshot the
-    // full 4 KB of host-loaded bytes so we can hex-dump them at report
-    // time. Skips silently if `diag_init_expected_hashes` did not cache
-    // a slice (older IGVM or region magic/version mismatch).
-    let mut state = DIAG_PER_PAGE.0.borrow_mut();
-    let expected_opt = state.expected;
-    if let Some(expected) = expected_opt {
-        for (page_off, page) in data.chunks(DIAG_PAGE_SIZE).enumerate() {
-            if page.len() < DIAG_PAGE_SIZE {
-                // Runt tail (shouldn't happen for page-aligned shared
-                // regions, but be defensive).
-                break;
-            }
-            let idx = state.seen as usize;
-            let page_gpa = gpa + (page_off * DIAG_PAGE_SIZE) as u64;
+impl DiagPerPageState {
+    /// Compare shared pages and retain the first few corrupt pages for the host.
+    fn record(&mut self, gpa: u64, data: &[u8]) {
+        if let Some(expected) = self.expected {
+            for (page_off, page) in data.chunks_exact(DIAG_PAGE_SIZE).enumerate() {
+                let idx = self.seen as usize;
+                let page_gpa = gpa + (page_off * DIAG_PAGE_SIZE) as u64;
 
-            let mut ph = Sha384::new();
-            ph.update(page);
-            let shim_hash: [u8; 48] = ph.finalize().into();
+                let shim_hash: [u8; 48] = Sha384::digest(page).into();
 
-            if idx >= expected.len() {
-                state.overflow = true;
-            } else {
-                let expected_hash = expected[idx].sha384_hash;
-                if shim_hash != expected_hash {
-                    state.bad = state.bad.saturating_add(1);
-                    if idx < DIAG_MAX_HASH_PAGES {
-                        let word = idx / 64;
-                        let bit = idx % 64;
-                        state.bitmap[word] |= 1u64 << bit;
-                    }
-                    let slot_idx = state.saved_count as usize;
-                    if slot_idx < DIAG_MAX_SAVED_BAD_PAGES {
-                        let slot = &mut state.saved[slot_idx];
-                        slot.page_idx = idx as u32;
-                        slot.gpa = page_gpa;
-                        slot.shim_hash = shim_hash;
-                        slot.expected_hash = expected_hash;
-                        slot.contents.copy_from_slice(page);
-                        state.saved_count += 1;
+                if idx >= expected.len() {
+                    self.overflow = true;
+                } else {
+                    let expected_hash = expected[idx].sha384_hash;
+                    if shim_hash != expected_hash {
+                        self.bad = self.bad.saturating_add(1);
+                        log::error!(
+                            "DIAG_PAGE_HASH_BAD_GPA idx={} gpa={:#x} bad_page_number={}",
+                            idx,
+                            page_gpa,
+                            self.bad,
+                        );
+                        if idx < DIAG_MAX_HASH_PAGES {
+                            let word = idx / 64;
+                            let bit = idx % 64;
+                            self.bitmap[word] |= 1u64 << bit;
+                        }
+                        let slot_idx = self.saved_count as usize;
+                        if slot_idx < DIAG_MAX_SAVED_BAD_PAGES {
+                            let slot = &mut self.saved[slot_idx];
+                            slot.page_idx = idx as u32;
+                            slot.gpa = page_gpa;
+                            slot.shim_hash = shim_hash;
+                            slot.expected_hash = expected_hash;
+                            slot.contents.copy_from_slice(page);
+                            self.saved_count += 1;
+                        }
                     }
                 }
+                self.seen = self.seen.saturating_add(1);
             }
-            state.seen = state.seen.saturating_add(1);
         }
     }
 }
@@ -413,37 +405,36 @@ fn diag_dump_full_page_single(page_gpa: u64, phase: &str, data: &[u8]) {
 
 /// Emit a saved corrupt page (captured in Phase A) as hex, one log line
 /// per 64-byte cache line, along with the shim vs loader hashes.
-fn diag_dump_saved_page(saved: &DiagSavedBadPage) {
-    log::error!(
+fn diag_dump_saved_page(saved: &DiagSavedBadPage, emit: &mut impl FnMut(core::fmt::Arguments<'_>)) {
+    emit(format_args!(
         "DIAG_PAGE_HASH_BAD_BEGIN idx={} gpa={:#x} shim_hash={} expected_hash={} len={:#x}",
         saved.page_idx,
         saved.gpa,
         HexBytes(&saved.shim_hash),
         HexBytes(&saved.expected_hash),
         DIAG_PAGE_SIZE,
-    );
+    ));
     for (line_idx, line) in saved.contents.chunks(64).enumerate() {
         let offset = line_idx * 64;
-        log::error!(
+        emit(format_args!(
             "DIAG_PAGE_HASH_BAD_LINE idx={} gpa={:#x} offset={:#06x} bytes={}",
             saved.page_idx,
             saved.gpa,
             offset,
             HexBytes(line),
-        );
+        ));
     }
-    log::error!(
+    emit(format_args!(
         "DIAG_PAGE_HASH_BAD_END idx={} gpa={:#x}",
-        saved.page_idx,
-        saved.gpa,
-    );
+        saved.page_idx, saved.gpa,
+    ));
 }
 
-/// Cache the loader-emitted per-page expected hashes so `diag_record_phase_a`
+/// Cache the loader-emitted per-page expected hashes so `DiagPerPageState::record`
 /// can compare each 4 KB page against them. Must be called once, before the
 /// acceptance loop in `setup_vtl2_memory`. If the IGVM doesn't have the
 /// expected-page-hashes region (older loader) or the region magic/version
-/// mismatched, per-page compare is left disabled and `diag_record_phase_a`
+/// mismatched, per-page compare is left disabled and `DiagPerPageState::record`
 /// silently skips the per-page work.
 fn diag_init_expected_hashes(shim_params: &ShimParams) {
     let expected = shim_params.expected_page_hashes();
@@ -460,24 +451,29 @@ fn diag_init_expected_hashes(shim_params: &ShimParams) {
 
 /// Emit the per-page expected-hash comparison summary, corrupt-page bitmap,
 /// RLE ranges, and full 4 KB dumps of the first `DIAG_MAX_SAVED_BAD_PAGES`
-/// corrupt pages. Called from `diag_report_phase_c` (i.e. after the
-/// combined hash mismatch has been detected and just before panic).
+/// corrupt pages. On SNP, also called during preflight, before conversion.
+/// Keep RANGES -> BAD_BEGIN -> BAD_LINE (64 lines) -> BAD_END unchanged:
+/// the host's GHCB COM3 parser breaks at the first BAD_END.
 fn diag_report_per_page_expected() {
     let state = DIAG_PER_PAGE.0.borrow();
+    diag_emit_per_page_expected(&state, |message| log::error!("{}", message));
+}
+
+fn diag_emit_per_page_expected(
+    state: &DiagPerPageState,
+    mut emit: impl FnMut(core::fmt::Arguments<'_>),
+) {
     let loader_count = state.expected.map(|s| s.len()).unwrap_or(0);
-    log::error!(
+    emit(format_args!(
         "DIAG_PAGE_HASH_SUMMARY shim_seen={} bad={} loader_count={} overflow={}",
-        state.seen,
-        state.bad,
-        loader_count,
-        state.overflow,
-    );
+        state.seen, state.bad, loader_count, state.overflow,
+    ));
     if state.expected.is_none() {
         // Per-page compare was disabled; nothing more to report.
         return;
     }
     let bitmap_total = (state.seen as usize).min(DIAG_MAX_HASH_PAGES);
-    log::error!(
+    emit(format_args!(
         "DIAG_PAGE_HASH_BITMAP total_pages={} bad={} bitmap={}",
         bitmap_total,
         state.bad,
@@ -485,8 +481,8 @@ fn diag_report_per_page_expected() {
             bitmap: &state.bitmap,
             total_pages: bitmap_total,
         },
-    );
-    log::error!(
+    ));
+    emit(format_args!(
         "DIAG_PAGE_HASH_RANGES total_pages={} bad={} ranges={}",
         bitmap_total,
         state.bad,
@@ -494,10 +490,63 @@ fn diag_report_per_page_expected() {
             bitmap: &state.bitmap,
             total_pages: bitmap_total,
         },
-    );
+    ));
     for i in 0..(state.saved_count as usize) {
-        diag_dump_saved_page(&state.saved[i]);
+        diag_dump_saved_page(&state.saved[i], &mut emit);
     }
+}
+
+/// Inspect every pending SNP imported page through a C=0 mapping before any
+/// imported page changes visibility. Do not read these GPAs through the private
+/// identity map, and do not call the post-accept diagnostic reporter here.
+fn diag_verify_shared_imported_regions(shim_params: &ShimParams, local_map: &mut LocalMap<'_>) {
+    let mut hasher = Sha384::new();
+    let mut total_pages = 0;
+    for (range, already_accepted) in shim_params.imported_regions() {
+        if already_accepted {
+            continue;
+        }
+        for chunk in pending_import_chunks(range) {
+            let mapping = local_map.map_pages(chunk, false);
+            hasher.update(&*mapping.data);
+            DIAG_PER_PAGE
+                .0
+                .borrow_mut()
+                .record(chunk.start(), mapping.data);
+            total_pages += chunk.len() / hvdef::HV_PAGE_SIZE;
+        }
+    }
+    if total_pages == 0 {
+        return;
+    }
+
+    let hash: [u8; 48] = hasher.finalize().into();
+    let expected = shim_params.imported_regions_hash();
+    if hash.as_slice() != expected || DIAG_PER_PAGE.0.borrow().bad != 0 {
+        log::error!(
+            "DIAG_SHARED_PREFLIGHT_MISMATCH total_pages={} combined_shared={} expected={}",
+            total_pages,
+            HexBytes(&hash),
+            HexBytes(expected),
+        );
+        diag_report_per_page_expected();
+        panic!("Imported regions hash mismatch");
+    }
+}
+
+/// Split a pending imported range at the local map's 2 MB boundaries.
+fn pending_import_chunks(mut remaining: MemoryRange) -> impl Iterator<Item = MemoryRange> {
+    core::iter::from_fn(move || {
+        if remaining.is_empty() {
+            return None;
+        }
+        let end = remaining
+            .end()
+            .min((remaining.start() + X64_LARGE_PAGE_SIZE) & !(X64_LARGE_PAGE_SIZE - 1));
+        let chunk = MemoryRange::new(remaining.start()..end);
+        remaining = MemoryRange::new(end..remaining.end());
+        Some(chunk)
+    })
 }
 
 /// Immediately after the shared -> private transition and copy-back, compare
@@ -743,10 +792,7 @@ pub fn setup_vtl2_memory(
         return;
     }
 
-    // DIAG: cache the loader-emitted per-page expected hashes (from the
-    // measured expected-page-hashes region) so that as Phase A captures
-    // each 4 KB shared page we can compare it against the loader's
-    // baseline. Silently no-ops on older IGVMs without the region.
+    // SNP compares these before conversion; TDX compares during Phase A.
     diag_init_expected_hashes(shim_params);
 
     if let IsolationType::Vbs = shim_params.isolation_type {
@@ -797,6 +843,10 @@ pub fn setup_vtl2_memory(
     for (imported_range, _) in shim_params.imported_regions() {
         assert!(last_range_end.is_none() || imported_range.start() > last_range_end.unwrap());
         last_range_end = Some(imported_range.end() - hvdef::HV_PAGE_SIZE);
+    }
+
+    if shim_params.isolation_type == IsolationType::Snp {
+        diag_verify_shared_imported_regions(shim_params, local_map.as_mut().unwrap());
     }
 
     // Iterate over all VTL2 RAM that is not part of an imported region and
@@ -980,17 +1030,7 @@ fn accept_pending_vtl2_memory(
             // Instead their contents must be copied out to a private region, then copied back once
             // the pages have been accepted. Additionally, the access to the unencrypted pages must
             // happen with the C-bit cleared.
-            let mut remaining = range;
-            while !remaining.is_empty() {
-                // Copy up to the next 2MB boundary.
-                let range = MemoryRange::new(
-                    remaining.start()
-                        ..remaining.end().min(
-                            (remaining.start() + X64_LARGE_PAGE_SIZE) & !(X64_LARGE_PAGE_SIZE - 1),
-                        ),
-                );
-                remaining = MemoryRange::new(range.end()..remaining.end());
-
+            for range in pending_import_chunks(range) {
                 let ram_buffer = &mut ram_buffer[..range.len() as usize];
 
                 // Map the pages as shared and copy the necessary number to the buffer.
@@ -1025,6 +1065,12 @@ fn accept_pending_vtl2_memory(
                 // combined Phase-A hash for later comparison against the
                 // measured expected hash.
                 diag_record_phase_a(range.start(), &ram_buffer[..]);
+                if isolation_type == IsolationType::Tdx {
+                    DIAG_PER_PAGE
+                        .0
+                        .borrow_mut()
+                        .record(range.start(), ram_buffer);
+                }
 
                 // Change visibility on the pages for this iteration.
                 match isolation_type {
@@ -1125,5 +1171,151 @@ pub fn verify_imported_regions_hash(shim_params: &ShimParams) {
         );
         diag_report_phase_c(expected);
         panic!("Imported regions hash mismatch");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loader_defs::paravisor::ExpectedPageHash;
+    use test_with_tracing::test;
+
+    fn expected_zero_pages(count: usize) -> DiagPerPageState {
+        let expected = vec![
+            ExpectedPageHash {
+                sha384_hash: Sha384::digest([0; DIAG_PAGE_SIZE]).into(),
+            };
+            count
+        ];
+        DiagPerPageState {
+            expected: Some(Box::leak(expected.into_boxed_slice())),
+            ..DiagPerPageState::new_const()
+        }
+    }
+
+    #[test]
+    fn shared_scan_tracks_noncontiguous_gpas_and_host_message_order() {
+        let mut state = expected_zero_pages(5);
+        let good = [0; DIAG_PAGE_SIZE];
+        let bad = [0xab; DIAG_PAGE_SIZE];
+        state.record(0x1ff000, &good);
+        state.record(0x200000, &bad);
+        state.record(0x800000, &good);
+        state.record(0x801000, &bad);
+        state.record(0x802000, &bad);
+
+        assert_eq!(state.seen, 5);
+        assert_eq!(state.bad, 3);
+        assert!(!state.overflow);
+        assert_eq!(state.bitmap[0], 0b11010);
+        assert_eq!(state.saved_count, 3);
+        for (saved, (idx, gpa)) in
+            state
+                .saved
+                .iter()
+                .zip([(1, 0x200000), (3, 0x801000), (4, 0x802000)])
+        {
+            assert_eq!(saved.page_idx, idx);
+            assert_eq!(saved.gpa, gpa);
+            assert_eq!(saved.contents, bad);
+            assert_eq!(saved.shim_hash, <[u8; 48]>::from(Sha384::digest(bad)));
+            assert_eq!(saved.expected_hash, state.expected.unwrap()[0].sha384_hash);
+        }
+
+        let mut messages = Vec::new();
+        diag_emit_per_page_expected(&state, |message| {
+            messages.push(format!("[ERROR] {message}"));
+        });
+        assert_eq!(
+            messages[0],
+            "[ERROR] DIAG_PAGE_HASH_SUMMARY shim_seen=5 bad=3 loader_count=5 overflow=false"
+        );
+        assert_eq!(
+            messages[1],
+            "[ERROR] DIAG_PAGE_HASH_BITMAP total_pages=5 bad=3 bitmap=1a"
+        );
+        assert_eq!(
+            messages[2],
+            "[ERROR] DIAG_PAGE_HASH_RANGES total_pages=5 bad=3 ranges=0x1,0x3-0x4"
+        );
+        assert_eq!(messages.len(), 3 + 3 * 66);
+        for (saved, dump) in state.saved.iter().zip(messages[3..].chunks_exact(66)) {
+            assert_eq!(
+                dump[0],
+                format!(
+                    "[ERROR] DIAG_PAGE_HASH_BAD_BEGIN idx={} gpa={:#x} shim_hash={} expected_hash={} len=0x1000",
+                    saved.page_idx,
+                    saved.gpa,
+                    HexBytes(&saved.shim_hash),
+                    HexBytes(&saved.expected_hash),
+                )
+            );
+            for (line_idx, line) in dump[1..65].iter().enumerate() {
+                assert_eq!(
+                    *line,
+                    format!(
+                        "[ERROR] DIAG_PAGE_HASH_BAD_LINE idx={} gpa={:#x} offset={:#06x} bytes={}",
+                        saved.page_idx,
+                        saved.gpa,
+                        line_idx * 64,
+                        "ab".repeat(64),
+                    )
+                );
+            }
+            assert_eq!(
+                dump[65],
+                format!(
+                    "[ERROR] DIAG_PAGE_HASH_BAD_END idx={} gpa={:#x}",
+                    saved.page_idx, saved.gpa,
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn shared_scan_counts_corruption_beyond_bitmap_and_dump_limits() {
+        let mut state = expected_zero_pages(DIAG_MAX_HASH_PAGES + 4);
+        state.seen = (DIAG_MAX_HASH_PAGES - 1) as u32;
+        state.record(0x1000000, &[1; 4 * DIAG_PAGE_SIZE]);
+        assert_eq!(state.seen as usize, DIAG_MAX_HASH_PAGES + 3);
+        assert_eq!(state.bad, 4);
+        assert_eq!(state.saved_count as usize, DIAG_MAX_SAVED_BAD_PAGES);
+        assert_eq!(state.bitmap[DIAG_HASH_BITMAP_WORDS - 1], 1 << 63);
+        assert!(!state.overflow);
+    }
+
+    #[test]
+    fn shared_scan_handles_missing_or_short_expected_hashes() {
+        let mut state = DiagPerPageState::new_const();
+        state.record(0x1000, &[0; DIAG_PAGE_SIZE]);
+        assert_eq!(state.bad, 0);
+        assert_eq!(state.saved_count, 0);
+
+        let mut state = expected_zero_pages(1);
+        state.record(0x1000, &[0; 2 * DIAG_PAGE_SIZE]);
+        assert_eq!(state.seen, 2);
+        assert_eq!(state.bad, 0);
+        assert_eq!(state.saved_count, 0);
+        assert!(state.overflow);
+    }
+
+    #[test]
+    fn pending_chunks_match_conversion_boundaries() {
+        let range = MemoryRange::new(0x1ff000..0x601000);
+        let chunks: Vec<_> = pending_import_chunks(range).collect();
+        assert_eq!(
+            chunks,
+            [
+                MemoryRange::new(0x1ff000..0x200000),
+                MemoryRange::new(0x200000..0x400000),
+                MemoryRange::new(0x400000..0x600000),
+                MemoryRange::new(0x600000..0x601000),
+            ]
+        );
+        assert_eq!(chunks.iter().map(|r| r.len()).sum::<u64>(), range.len());
+        assert_eq!(
+            pending_import_chunks(MemoryRange::new(0x1000..0x1000)).count(),
+            0
+        );
     }
 }

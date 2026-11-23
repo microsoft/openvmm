@@ -71,6 +71,28 @@ cargo run -p openvmm-img -- replay path/to/disk.vhdx --dry-run
 cargo run -p openvmm-img -- replay path/to/disk.vhdx
 ```
 
+## Updating Parent Paths
+
+After moving a differencing image's parent, use `set-parent` to update the
+existing child's locator paths:
+
+```bash
+cargo run -p openvmm-img -- set-parent path/to/child.vhdx \
+    --parent path/to/moved-parent.vhdx
+cargo run -p openvmm-img -- check path/to/child.vhdx
+```
+
+The `--parent` option also accepts the short form `-p`.
+
+The child must be offline. The parent at the new location must have the same
+data-write GUID recorded in the child and a matching logical sector size;
+this command does not allow switching to an unrelated or modified parent.
+The old parent path need not exist. Relative paths and, on Windows, absolute
+paths are regenerated for the new location. The child's payload and
+data-write GUID are preserved, so existing descendants remain valid.
+
+Both images must have clean logs. If a log needs replay, run `replay` first.
+
 ## Converting Images
 
 Convert between raw and VHDX images by specifying the output format:

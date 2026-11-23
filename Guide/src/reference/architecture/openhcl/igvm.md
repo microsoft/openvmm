@@ -34,7 +34,8 @@ See
 [`ParavisorMeasuredVtl0Config`](https://openvmm.dev/rustdoc/linux/loader_defs/paravisor/struct.ParavisorMeasuredVtl0Config.html)
 and
 [`ParavisorMeasuredVtl2Config`](https://openvmm.dev/rustdoc/linux/loader_defs/paravisor/struct.ParavisorMeasuredVtl2Config.html)
-for examples of measured configuration.
+for examples of measured configuration. The initrd also carries the
+[measured product policy](./product_policy.md), which OpenHCL enforces at boot.
 
 ## Build Process
 

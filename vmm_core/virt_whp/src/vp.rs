@@ -307,11 +307,9 @@ impl<'a> WhpProcessor<'a> {
                             if let Some(next_ref_time) = next_ref_time {
                                 // Convert from reference timer basis to vmtime basis via
                                 // difference of programmed timer and current reference time.
-                                const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
                                 let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                                let ref_duration = std::time::Duration::new(
-                                    ref_diff / NUM_100NS_IN_SEC,
-                                    (ref_diff % NUM_100NS_IN_SEC) as u32 * 100,
+                                let ref_duration = std::time::Duration::from_nanos_u128(
+                                    u128::from(ref_diff) * 100,
                                 );
                                 let timeout = self.state.vmtime.now().wrapping_add(ref_duration);
                                 self.state.vmtime.set_timeout_if_before(timeout);
@@ -1113,13 +1111,9 @@ mod x86 {
                             match self.vp.partition.isolation {
                                 virt::IsolationType::None => {}
                                 virt::IsolationType::Vbs => {
-                                    // Eax report paravisor present if VTL2 enabled.
-                                    // TODO: Should Underhill be handling this?
-                                    if self.vp.partition.vtl2.is_some()
-                                        && self.state.active_vtl != Vtl::Vtl2
-                                    {
-                                        default[0] |= 1;
-                                    }
+                                    // Paravisor-present selects GHCB/TDVMCALL interfaces,
+                                    // which VBS does not implement. Match Hyper-V.
+                                    default[0] &= !1;
 
                                     // Ebx report vbs isolated type.
                                     default[1] |= 1;
@@ -1673,7 +1667,6 @@ mod x86 {
         /// https://docs.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/vsm#virtual-processor-state-isolation
         ///
         /// TODO: Not not the full list, but cribbed from what previous Microsoft HCL versions used.
-        #[cfg(guest_arch = "x86_64")]
         pub(super) const VTL_SHARED_REGISTERS: &'static [whp::abi::WHV_REGISTER_NAME] = &[
             whp::abi::WHV_REGISTER_NAME(whp::Register64::MsrMtrrDefType as u32),
             whp::abi::WHV_REGISTER_NAME(whp::Register64::MsrMtrrPhysBase0 as u32),
@@ -1845,7 +1838,6 @@ mod aarch64 {
             Ok(())
         }
 
-        #[cfg(guest_arch = "aarch64")]
         fn handle_sint_deliverable(&mut self, message: &hvdef::HvArm64SynicSintDeliverableMessage) {
             tracing::trace!(sints = message.deliverable_sints, "sints deliverable");
             self.sints_deliverable(self.state.active_vtl, message.deliverable_sints);

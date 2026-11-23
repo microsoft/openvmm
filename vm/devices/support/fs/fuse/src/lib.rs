@@ -156,6 +156,9 @@ pub trait Fuse {
 
     /// Opens a file.
     ///
+    /// Flags are Linux `O_*` values from [`lx`], using the platform's Linux ABI,
+    /// not FUSE `FOPEN_*` reply flags.
+    ///
     /// If not implemented, this call will succeed, which can be used if the file system doesn't
     /// need any state for open files, since the inode number is also provided to functions
     /// such as `read` and `write`.
@@ -287,6 +290,9 @@ pub trait Fuse {
 
     /// Create and open a file.
     ///
+    /// The request retains its wire representation, including Linux `O_*` flags
+    /// from [`lx`], using the platform's Linux ABI.
+    ///
     /// If not implemented, the client will use `mknod` followed by `open`.
     fn create(
         &self,
@@ -399,10 +405,14 @@ pub trait Fuse {
     }
 }
 
-#[cfg(windows)]
-pub type FileRef<'a> = std::os::windows::io::BorrowedHandle<'a>;
-#[cfg(unix)]
-pub type FileRef<'a> = std::os::unix::io::BorrowedFd<'a>;
+cfg_select! {
+    windows => {
+        pub type FileRef<'a> = std::os::windows::io::BorrowedHandle<'a>;
+    }
+    unix => {
+        pub type FileRef<'a> = std::os::unix::io::BorrowedFd<'a>;
+    }
+}
 
 /// Trait for mapping files into a shared memory region.
 ///

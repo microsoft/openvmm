@@ -104,21 +104,24 @@ struct KvmGuestMemfdRange {
     file_offset: u64,
 }
 
-#[cfg(guest_arch = "x86_64")]
-#[derive(Debug)]
-enum KvmMemoryBacking<'a> {
-    Userspace,
-    GuestMemfd {
-        file: &'a File,
-        file_offset: u64,
-        initial_private: bool,
-    },
-}
-
-#[cfg(guest_arch = "aarch64")]
-#[derive(Debug)]
-enum KvmMemoryBacking {
-    Userspace,
+cfg_select! {
+    guest_arch = "x86_64" => {
+        #[derive(Debug)]
+        enum KvmMemoryBacking<'a> {
+            Userspace,
+            GuestMemfd {
+                file: &'a File,
+                file_offset: u64,
+                initial_private: bool,
+            },
+        }
+    }
+    guest_arch = "aarch64" => {
+        #[derive(Debug)]
+        enum KvmMemoryBacking {
+            Userspace,
+        }
+    }
 }
 
 impl KvmMemoryBackingMode {
@@ -266,26 +269,32 @@ impl KvmPartitionInner {
         Ok(())
     }
 
-    #[cfg(guest_arch = "x86_64")]
-    fn memory_backing(&self, range: MemoryRange) -> Result<KvmMemoryBacking<'_>, MemoryError> {
-        match &self.memory_backing_mode {
-            KvmMemoryBackingMode::Userspace => Ok(KvmMemoryBacking::Userspace),
-            KvmMemoryBackingMode::GuestMemfd(backing) => {
-                match classify_guest_memfd_backing(range, &backing.ranges)? {
-                    Some(file_offset) => Ok(KvmMemoryBacking::GuestMemfd {
-                        file: &backing.file,
-                        file_offset,
-                        initial_private: backing.initial_private,
-                    }),
-                    None => Ok(KvmMemoryBacking::Userspace),
+    cfg_select! {
+        guest_arch = "x86_64" => {
+            fn memory_backing(
+                &self,
+                range: MemoryRange,
+            ) -> Result<KvmMemoryBacking<'_>, MemoryError> {
+                match &self.memory_backing_mode {
+                    KvmMemoryBackingMode::Userspace => Ok(KvmMemoryBacking::Userspace),
+                    KvmMemoryBackingMode::GuestMemfd(backing) => {
+                        match classify_guest_memfd_backing(range, &backing.ranges)? {
+                            Some(file_offset) => Ok(KvmMemoryBacking::GuestMemfd {
+                                file: &backing.file,
+                                file_offset,
+                                initial_private: backing.initial_private,
+                            }),
+                            None => Ok(KvmMemoryBacking::Userspace),
+                        }
+                    }
                 }
             }
         }
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    fn memory_backing(&self, _range: MemoryRange) -> Result<KvmMemoryBacking, MemoryError> {
-        Ok(KvmMemoryBacking::Userspace)
+        guest_arch = "aarch64" => {
+            fn memory_backing(&self, _range: MemoryRange) -> Result<KvmMemoryBacking, MemoryError> {
+                Ok(KvmMemoryBacking::Userspace)
+            }
+        }
     }
 
     /// # Safety
@@ -656,19 +665,6 @@ mod tests {
         MemoryRange::new(start..end)
     }
 
-    #[cfg(guest_arch = "x86_64")]
-    fn guest_memfd_ranges(ranges: &[MemoryRange]) -> Vec<KvmGuestMemfdRange> {
-        let mut file_offset = 0;
-        ranges
-            .iter()
-            .map(|&range| {
-                let guest_memfd_range = KvmGuestMemfdRange { range, file_offset };
-                file_offset += range.len();
-                guest_memfd_range
-            })
-            .collect()
-    }
-
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
     struct KvmPrivateMemoryRange {
         gpa: MemoryRange,
@@ -694,65 +690,6 @@ mod tests {
             gpa: range,
             hva: slot.host_addr.wrapping_add(offset as usize),
         })
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    #[test]
-    fn guest_memfd_classifier_selects_contained_ram() {
-        let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x9000), range(0x1_0000, 0x2_0000)]);
-
-        assert_eq!(
-            classify_guest_memfd_backing(range(0x2000, 0x4000), &ram_ranges).unwrap(),
-            Some(0x1000)
-        );
-        assert_eq!(
-            classify_guest_memfd_backing(range(0x1_1000, 0x1_3000), &ram_ranges).unwrap(),
-            Some(0x9000)
-        );
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    #[test]
-    fn guest_memfd_classifier_keeps_non_ram_userspace() {
-        let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x9000), range(0x1_0000, 0x2_0000)]);
-
-        assert_eq!(
-            classify_guest_memfd_backing(range(0xa000, 0xc000), &ram_ranges).unwrap(),
-            None
-        );
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    #[test]
-    fn guest_memfd_classifier_rejects_partial_ram_overlap() {
-        let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x9000), range(0x1_0000, 0x2_0000)]);
-
-        assert!(matches!(
-            classify_guest_memfd_backing(range(0x8000, 0xa000), &ram_ranges),
-            Err(MemoryError::UnsupportedIsolationConfiguration(_))
-        ));
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    #[test]
-    fn guest_memfd_classifier_does_not_merge_adjacent_ram_ranges() {
-        let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x3000), range(0x3000, 0x5000)]);
-
-        assert!(matches!(
-            classify_guest_memfd_backing(range(0x2000, 0x4000), &ram_ranges),
-            Err(MemoryError::UnsupportedIsolationConfiguration(_))
-        ));
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    #[test]
-    fn guest_memfd_classifier_rejects_ambiguous_ram_containment() {
-        let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x5000), range(0x2000, 0x4000)]);
-
-        assert!(matches!(
-            classify_guest_memfd_backing(range(0x2000, 0x4000), &ram_ranges),
-            Err(MemoryError::UnsupportedIsolationConfiguration(_))
-        ));
     }
 
     #[test]
@@ -799,106 +736,177 @@ mod tests {
         ));
     }
 
-    #[test]
     #[cfg(guest_arch = "x86_64")]
-    fn guest_memfd_segments_cover_adjacent_unordered_slots() {
-        let mut first_backing = vec![0u8; 0x2000];
-        let mut second_backing = vec![0u8; 0x2000];
-        let first_host_addr = first_backing.as_mut_ptr();
-        let second_host_addr = second_backing.as_mut_ptr();
-        let slots = [
-            Some(KvmMemoryRange {
-                host_addr: second_host_addr,
-                range: range(0x3000, 0x5000),
-                guest_memfd_offset: Some(0x8000),
-                private_attributes_set: false,
-            }),
-            Some(KvmMemoryRange {
-                host_addr: first_host_addr,
-                range: range(0x1000, 0x3000),
-                guest_memfd_offset: Some(0x4000),
-                private_attributes_set: true,
-            }),
-        ];
+    mod guest_memfd {
+        use super::*;
 
-        let segments = guest_memfd_range_segments(range(0x2000, 0x4000), &slots).unwrap();
+        fn guest_memfd_ranges(ranges: &[MemoryRange]) -> Vec<KvmGuestMemfdRange> {
+            let mut file_offset = 0;
+            ranges
+                .iter()
+                .map(|&range| {
+                    let guest_memfd_range = KvmGuestMemfdRange { range, file_offset };
+                    file_offset += range.len();
+                    guest_memfd_range
+                })
+                .collect()
+        }
 
-        assert_eq!(
-            segments,
-            [
-                KvmMemoryRangeSegment {
-                    range: range(0x2000, 0x3000),
-                    host_addr: first_host_addr.wrapping_add(0x1000),
-                    guest_memfd_offset: 0x5000,
-                },
-                KvmMemoryRangeSegment {
-                    range: range(0x3000, 0x4000),
+        #[test]
+        fn guest_memfd_classifier_selects_contained_ram() {
+            let ram_ranges =
+                guest_memfd_ranges(&[range(0x1000, 0x9000), range(0x1_0000, 0x2_0000)]);
+
+            assert_eq!(
+                classify_guest_memfd_backing(range(0x2000, 0x4000), &ram_ranges).unwrap(),
+                Some(0x1000)
+            );
+            assert_eq!(
+                classify_guest_memfd_backing(range(0x1_1000, 0x1_3000), &ram_ranges).unwrap(),
+                Some(0x9000)
+            );
+        }
+
+        #[test]
+        fn guest_memfd_classifier_keeps_non_ram_userspace() {
+            let ram_ranges =
+                guest_memfd_ranges(&[range(0x1000, 0x9000), range(0x1_0000, 0x2_0000)]);
+
+            assert_eq!(
+                classify_guest_memfd_backing(range(0xa000, 0xc000), &ram_ranges).unwrap(),
+                None
+            );
+        }
+
+        #[test]
+        fn guest_memfd_classifier_rejects_partial_ram_overlap() {
+            let ram_ranges =
+                guest_memfd_ranges(&[range(0x1000, 0x9000), range(0x1_0000, 0x2_0000)]);
+
+            assert!(matches!(
+                classify_guest_memfd_backing(range(0x8000, 0xa000), &ram_ranges),
+                Err(MemoryError::UnsupportedIsolationConfiguration(_))
+            ));
+        }
+
+        #[test]
+        fn guest_memfd_classifier_does_not_merge_adjacent_ram_ranges() {
+            let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x3000), range(0x3000, 0x5000)]);
+
+            assert!(matches!(
+                classify_guest_memfd_backing(range(0x2000, 0x4000), &ram_ranges),
+                Err(MemoryError::UnsupportedIsolationConfiguration(_))
+            ));
+        }
+
+        #[test]
+        fn guest_memfd_classifier_rejects_ambiguous_ram_containment() {
+            let ram_ranges = guest_memfd_ranges(&[range(0x1000, 0x5000), range(0x2000, 0x4000)]);
+
+            assert!(matches!(
+                classify_guest_memfd_backing(range(0x2000, 0x4000), &ram_ranges),
+                Err(MemoryError::UnsupportedIsolationConfiguration(_))
+            ));
+        }
+
+        #[test]
+        fn guest_memfd_segments_cover_adjacent_unordered_slots() {
+            let mut first_backing = vec![0u8; 0x2000];
+            let mut second_backing = vec![0u8; 0x2000];
+            let first_host_addr = first_backing.as_mut_ptr();
+            let second_host_addr = second_backing.as_mut_ptr();
+            let slots = [
+                Some(KvmMemoryRange {
                     host_addr: second_host_addr,
-                    guest_memfd_offset: 0x8000,
-                },
-            ]
-        );
-    }
+                    range: range(0x3000, 0x5000),
+                    guest_memfd_offset: Some(0x8000),
+                    private_attributes_set: false,
+                }),
+                Some(KvmMemoryRange {
+                    host_addr: first_host_addr,
+                    range: range(0x1000, 0x3000),
+                    guest_memfd_offset: Some(0x4000),
+                    private_attributes_set: true,
+                }),
+            ];
 
-    #[test]
-    #[cfg(guest_arch = "x86_64")]
-    fn guest_memfd_segments_reject_incomplete_coverage() {
-        let mut backing = vec![0u8; 0x4000];
-        let host_addr = backing.as_mut_ptr();
-        let gapped_slots = [
-            Some(KvmMemoryRange {
+            let segments = guest_memfd_range_segments(range(0x2000, 0x4000), &slots).unwrap();
+
+            assert_eq!(
+                segments,
+                [
+                    KvmMemoryRangeSegment {
+                        range: range(0x2000, 0x3000),
+                        host_addr: first_host_addr.wrapping_add(0x1000),
+                        guest_memfd_offset: 0x5000,
+                    },
+                    KvmMemoryRangeSegment {
+                        range: range(0x3000, 0x4000),
+                        host_addr: second_host_addr,
+                        guest_memfd_offset: 0x8000,
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn guest_memfd_segments_reject_incomplete_coverage() {
+            let mut backing = vec![0u8; 0x4000];
+            let host_addr = backing.as_mut_ptr();
+            let gapped_slots = [
+                Some(KvmMemoryRange {
+                    host_addr,
+                    range: range(0x1000, 0x2000),
+                    guest_memfd_offset: Some(0),
+                    private_attributes_set: true,
+                }),
+                Some(KvmMemoryRange {
+                    host_addr: host_addr.wrapping_add(0x2000),
+                    range: range(0x3000, 0x4000),
+                    guest_memfd_offset: Some(0x2000),
+                    private_attributes_set: true,
+                }),
+            ];
+            assert!(matches!(
+                guest_memfd_range_segments(range(0x1000, 0x4000), &gapped_slots),
+                Err(MemoryError::InvalidMapGpaRange)
+            ));
+
+            let userspace_slot = [Some(KvmMemoryRange {
                 host_addr,
-                range: range(0x1000, 0x2000),
-                guest_memfd_offset: Some(0),
-                private_attributes_set: true,
-            }),
-            Some(KvmMemoryRange {
-                host_addr: host_addr.wrapping_add(0x2000),
-                range: range(0x3000, 0x4000),
-                guest_memfd_offset: Some(0x2000),
-                private_attributes_set: true,
-            }),
-        ];
-        assert!(matches!(
-            guest_memfd_range_segments(range(0x1000, 0x4000), &gapped_slots),
-            Err(MemoryError::InvalidMapGpaRange)
-        ));
+                range: range(0x1000, 0x4000),
+                guest_memfd_offset: None,
+                private_attributes_set: false,
+            })];
+            assert!(matches!(
+                guest_memfd_range_segments(range(0x1000, 0x4000), &userspace_slot),
+                Err(MemoryError::InvalidMapGpaRange)
+            ));
+        }
 
-        let userspace_slot = [Some(KvmMemoryRange {
-            host_addr,
-            range: range(0x1000, 0x4000),
-            guest_memfd_offset: None,
-            private_attributes_set: false,
-        })];
-        assert!(matches!(
-            guest_memfd_range_segments(range(0x1000, 0x4000), &userspace_slot),
-            Err(MemoryError::InvalidMapGpaRange)
-        ));
-    }
+        #[test]
+        fn guest_memfd_segments_reject_overlapping_slots() {
+            let mut backing = vec![0u8; 0x4000];
+            let host_addr = backing.as_mut_ptr();
+            let slots = [
+                Some(KvmMemoryRange {
+                    host_addr,
+                    range: range(0x1000, 0x3000),
+                    guest_memfd_offset: Some(0),
+                    private_attributes_set: true,
+                }),
+                Some(KvmMemoryRange {
+                    host_addr: host_addr.wrapping_add(0x1000),
+                    range: range(0x2000, 0x4000),
+                    guest_memfd_offset: Some(0x1000),
+                    private_attributes_set: true,
+                }),
+            ];
 
-    #[test]
-    #[cfg(guest_arch = "x86_64")]
-    fn guest_memfd_segments_reject_overlapping_slots() {
-        let mut backing = vec![0u8; 0x4000];
-        let host_addr = backing.as_mut_ptr();
-        let slots = [
-            Some(KvmMemoryRange {
-                host_addr,
-                range: range(0x1000, 0x3000),
-                guest_memfd_offset: Some(0),
-                private_attributes_set: true,
-            }),
-            Some(KvmMemoryRange {
-                host_addr: host_addr.wrapping_add(0x1000),
-                range: range(0x2000, 0x4000),
-                guest_memfd_offset: Some(0x1000),
-                private_attributes_set: true,
-            }),
-        ];
-
-        assert!(matches!(
-            guest_memfd_range_segments(range(0x1000, 0x4000), &slots),
-            Err(MemoryError::InvalidMapGpaRange)
-        ));
+            assert!(matches!(
+                guest_memfd_range_segments(range(0x1000, 0x4000), &slots),
+                Err(MemoryError::InvalidMapGpaRange)
+            ));
+        }
     }
 }

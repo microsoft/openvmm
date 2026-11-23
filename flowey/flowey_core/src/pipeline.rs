@@ -86,6 +86,12 @@ fn linux_distro() -> FlowPlatformLinuxDistro {
             FlowPlatformLinuxDistro::AzureLinux
         } else if etc_os_release.contains("ID=arch") {
             FlowPlatformLinuxDistro::Arch
+        } else if etc_os_release
+            .lines()
+            .find_map(|line| line.strip_prefix("ID="))
+            .is_some_and(|id| id.trim_matches(['"', '\'']).starts_with("opensuse"))
+        {
+            FlowPlatformLinuxDistro::OpenSuse
         } else {
             FlowPlatformLinuxDistro::Unknown
         }
@@ -136,7 +142,6 @@ impl HostExt for FlowArch {
             target_arch = "x86_64" => Self::X86_64,
             // xtask-fmt allow-target-arch oneoff-flowey
             target_arch = "aarch64" => Self::Aarch64,
-            _ => compile_error!("unsupported target architecture"),
         }
     }
 }

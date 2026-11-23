@@ -433,15 +433,13 @@ mod windows {
                     let exit = runner.run().unwrap();
                     match exit.reason {
                         whp::ExitReason::Canceled => break,
-                        whp::ExitReason::MemoryAccess(_) if event.is_some() => {
+                        whp::ExitReason::MemoryAccess(_) if let Some(event) = event => {
                             vp.set_register(
                                 whp::Register64::Rip,
                                 exit.vp_context.Rip.wrapping_add(2) & 0xffffffff,
                             )
                             .unwrap();
-                            assert!(
-                                unsafe { SetEvent(event.unwrap() as *mut std::ffi::c_void) } != 0
-                            );
+                            assert!(unsafe { SetEvent(event as *mut std::ffi::c_void) } != 0);
                         }
                         _ => panic!("{:#x?}", exit),
                     }

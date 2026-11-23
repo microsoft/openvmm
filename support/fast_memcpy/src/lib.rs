@@ -140,12 +140,17 @@ struct U128x2(U128, U128);
 struct U128x4(U128, U128, U128, U128);
 
 // Use a SIMD type when possible to encourage better register use.
-#[cfg(target_arch = "x86_64")]
-type U128 = core::arch::x86_64::__m128i;
-#[cfg(target_arch = "aarch64")]
-type U128 = core::arch::aarch64::uint8x16_t;
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-type U128 = u128;
+cfg_select! {
+    target_arch = "x86_64" => {
+        type U128 = core::arch::x86_64::__m128i;
+    }
+    target_arch = "aarch64" => {
+        type U128 = core::arch::aarch64::uint8x16_t;
+    }
+    _ => {
+        type U128 = u128;
+    }
+}
 
 // Read/write in pieces to discourage the compiler from copying to the stack.
 impl Chunk for U128x2 {
@@ -312,12 +317,11 @@ unsafe fn copy_loop_dest_aligned_backward<T: Chunk>(dest: *mut T, src: *const T,
     }
 }
 
-const ARCH_LARGE_COPY_THRESHOLD: usize = if cfg!(target_arch = "x86_64") {
+const ARCH_LARGE_COPY_THRESHOLD: usize = cfg_select! {
     // Use rep movsq for relatively large copies.
-    1800
-} else {
+    target_arch = "x86_64" => 1800,
     // No architecture-specific large copy implementation.
-    usize::MAX
+    _ => usize::MAX,
 };
 
 /// Copies bytes from `src` to `dest`, minus some tail portion no bigger than

@@ -5,6 +5,7 @@ use super::Emulator;
 use super::InternalError;
 use super::rflags::update_flags_szp;
 use crate::Cpu;
+use crate::ReadKind;
 use iced_x86::Instruction;
 use x86defs::RFlags;
 
@@ -16,7 +17,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let left = self.op_value(instr, 0).await?;
+        let left = self.op_value(instr, 0, ReadKind::ReadModifyWrite).await?;
         self.shift::<Op>(instr, left, 1).await
     }
 
@@ -25,7 +26,9 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let left = self.op_value_sign_extend(instr, 0).await?;
+        let value = self.op_value(instr, 0, ReadKind::ReadModifyWrite).await?;
+        let shift = 64 - instr.memory_size().size() * 8;
+        let left = ((value as i64) << shift) >> shift;
         self.shift::<SarOp>(instr, left as u64, 1).await
     }
 
@@ -34,7 +37,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let left = self.op_value(instr, 0).await?;
+        let left = self.op_value(instr, 0, ReadKind::ReadModifyWrite).await?;
         self.shift::<ShldOp>(instr, left, 2).await
     }
 
@@ -43,7 +46,7 @@ impl<T: Cpu> Emulator<'_, T> {
         &mut self,
         instr: &Instruction,
     ) -> Result<(), InternalError<T::Error>> {
-        let left = self.op_value(instr, 0).await?;
+        let left = self.op_value(instr, 0, ReadKind::ReadModifyWrite).await?;
         self.shift::<ShrdOp>(instr, left, 2).await
     }
 
@@ -57,10 +60,13 @@ impl<T: Cpu> Emulator<'_, T> {
         let operand_size = instr.memory_size().size();
         let operand_bit_size = operand_size as u32 * 8;
 
-        let masked_count = shift_count(self.op_value(instr, count_op).await?, operand_bit_size);
+        let masked_count = shift_count(
+            self.op_value(instr, count_op, ReadKind::ReadOnly).await?,
+            operand_bit_size,
+        );
         let count = Op::mod_count(masked_count, operand_bit_size);
 
-        let right = self.op_value(instr, 1).await?;
+        let right = self.op_value(instr, 1, ReadKind::ReadOnly).await?;
         let mut rflags = self.cpu.rflags();
 
         if count == 0 {

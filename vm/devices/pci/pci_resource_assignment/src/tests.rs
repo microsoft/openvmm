@@ -2680,8 +2680,8 @@ async fn ari_function_list_walk() {
     }
     let mut addrs = [f0, f1, f8, f9];
     addrs.sort_unstable();
-    for w in addrs.windows(2) {
-        assert_ne!(w[0], w[1], "ARI function BARs must be distinct");
+    for [left, right] in addrs.array_windows() {
+        assert_ne!(left, right, "ARI function BARs must be distinct");
     }
 }
 

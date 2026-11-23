@@ -40,15 +40,10 @@ pub fn open_memory_backing_file(
 
 /// Convert a `std::fs::File` to the platform-appropriate shared memory handle.
 pub fn file_to_shared_memory_fd(file: std::fs::File) -> anyhow::Result<SharedMemoryFd> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::OwnedFd;
-        Ok(OwnedFd::from(file))
-    }
-    #[cfg(windows)]
-    {
+    Ok(cfg_select! {
+        unix => std::os::unix::io::OwnedFd::from(file),
         // On Windows, MapViewOfFile needs a section handle, not a raw file
         // handle. sparse_mmap has a helper that calls CreateFileMappingW.
-        Ok(sparse_mmap::new_mappable_from_file(&file, true, false)?)
-    }
+        windows => sparse_mmap::new_mappable_from_file(&file, true, false)?,
+    })
 }

@@ -32,9 +32,9 @@ pub(crate) enum HardwareKeySealingError {
     #[error("invalid egress key encryption size {0}, expected {1}")]
     InvalidEgressKeyEncryptionSize(usize, usize),
     #[error("HMAC-SHA-256 after encryption failed")]
-    HmacAfterEncrypt(#[source] crypto::hmac_sha_256::HmacSha256Error),
+    HmacAfterEncrypt(#[source] crypto::hmac::HmacError),
     #[error("HMAC-SHA-256 before decryption failed")]
-    HmacBeforeDecrypt(#[source] crypto::hmac_sha_256::HmacSha256Error),
+    HmacBeforeDecrypt(#[source] crypto::hmac::HmacError),
     #[error("Hardware key protector HMAC verification failed")]
     HardwareKeyProtectorHmacVerificationFailed,
     #[error("failed to decrypt the ingress key")]
@@ -179,10 +179,14 @@ fn unseal_key_bytes(
     iv: &[u8; vmgs::AES_CBC_IV_LENGTH],
     ciphertext: &[u8; vmgs::AES_GCM_KEY_LENGTH],
 ) -> Result<[u8; vmgs::AES_GCM_KEY_LENGTH], HardwareKeySealingError> {
-    let hmac = crypto::hmac_sha_256::hmac_sha_256(&hardware_derived_keys.hmac_key, signed_bytes)
-        .map_err(HardwareKeySealingError::HmacBeforeDecrypt)?;
-
-    if !constant_time_eq::constant_time_eq_32(&hmac, stored_hmac) {
+    if !crypto::hmac::verify(
+        &hardware_derived_keys.hmac_key,
+        signed_bytes,
+        stored_hmac,
+        crypto::HashAlgorithm::Sha256,
+    )
+    .map_err(HardwareKeySealingError::HmacBeforeDecrypt)?
+    {
         Err(HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed)?
     }
 
@@ -306,11 +310,14 @@ pub fn seal_key(
         hmac: [0u8; vmgs::HMAC_SHA_256_KEY_LENGTH],
     };
     let offset = std::mem::offset_of!(HardwareKeyProtectorV3, hmac);
-    hardware_key_protector.hmac = crypto::hmac_sha_256::hmac_sha_256(
+    hardware_key_protector.hmac = crypto::hmac::hmac(
         &hardware_derived_keys.hmac_key,
         &hardware_key_protector.as_bytes()[..offset],
+        crypto::HashAlgorithm::Sha256,
     )
-    .map_err(HardwareKeySealingError::HmacAfterEncrypt)?;
+    .map_err(HardwareKeySealingError::HmacAfterEncrypt)?
+    .try_into()
+    .unwrap();
 
     tracelimit::info_ratelimited!(CVM_ALLOWED, "encrypt egress_key using hardware derived key");
 

@@ -431,8 +431,8 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
         f: impl FnOnce(&mut PortControl<'_, 'a>, &mut T) -> R,
     ) -> R {
         let mut pending_events = PendingEvents::new();
-        let mut state = self.raw.inner.state.lock();
-        let state = &mut *state;
+        let mut guard = self.raw.inner.state.lock();
+        let state = &mut *guard;
         let peer_and_seq = match &state.activity {
             PortActivity::Peered(peer) => Some((peer, &mut state.next_local_seq)),
             _ => None,
@@ -443,6 +443,7 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
         };
         let handler = state.handler.as_mut().unwrap().as_mut() as &mut dyn Any;
         let r = f(&mut control, handler.downcast_mut().unwrap());
+        drop(guard);
         pending_events.process();
         r
     }
@@ -575,7 +576,7 @@ impl Debug for RemoteNode {
 enum RemoteNodeState {
     Queuing(Mutex<Vec<DeferredEvent>>),
     Failed,
-    Active(Box<dyn SendEvent>),
+    Active(Arc<dyn SendEvent>),
 }
 
 /// A node event that has been pended, waiting for a remote node connection to
@@ -605,7 +606,7 @@ impl RemoteNode {
     }
 
     /// Provides a connection for the remote node, flushing any deferred events.
-    fn connect(self: &Arc<Self>, conn: Box<dyn SendEvent>) -> bool {
+    fn connect(self: &Arc<Self>, conn: Arc<dyn SendEvent>) -> bool {
         let events = {
             let mut state = self.state.write();
             match &mut *state {
@@ -644,18 +645,24 @@ impl RemoteNode {
 
     /// Sends an event to the remote node.
     fn event(self: &Arc<Self>, port_id: PortId, seq: Seq, event: PortEvent<'_>) {
-        match &*self.state.read() {
+        let send = match &*self.state.read() {
             RemoteNodeState::Queuing(v) => {
                 v.lock().push(DeferredEvent {
                     port_id,
                     seq,
                     event: event.into_owned(),
                 });
+                None
             }
-            RemoteNodeState::Failed => (),
+            RemoteNodeState::Failed => None,
             RemoteNodeState::Active(conn) => {
-                conn.event(OutgoingEvent::new(port_id, seq, event, self))
+                Some((conn.clone(), OutgoingEvent::new(port_id, seq, event, self)))
             }
+        };
+        // Send outside the lock, since the connection may log, and the log may
+        // be sent back through this node.
+        if let Some((conn, event)) = send {
+            conn.event(event);
         }
         self.check_failed();
     }
@@ -1591,7 +1598,7 @@ impl RemoteNodeHandle {
     /// Establishes the remote node connection.
     pub fn connect<T: 'static + SendEvent>(&self, conn: T) -> bool {
         if let Some(remote_node) = self.remote_node.upgrade() {
-            remote_node.connect(Box::new(conn))
+            remote_node.connect(Arc::new(conn))
         } else {
             false
         }
@@ -2310,6 +2317,7 @@ pub mod tests {
     use std::marker::PhantomData;
     use std::pin::Pin;
     use std::pin::pin;
+    use std::sync::OnceLock;
     use std::task::Context;
     use std::task::Poll;
     use test_with_tracing::test;
@@ -2636,6 +2644,53 @@ pub mod tests {
         yield_once().await;
         assert!(node.node.is_empty());
         assert!(node2.node.is_empty());
+    }
+
+    #[async_test]
+    async fn test_send_from_send_event(driver: DefaultDriver) {
+        // A connection that sends on a port while handling an event, as
+        // happens when the connection logs and the log is sent over the mesh.
+        struct ReentrantEventsFrom {
+            inner: EventsFrom,
+            port: Arc<OnceLock<PortWithHandler<Queue>>>,
+            reentered: AtomicBool,
+        }
+
+        impl SendEvent for ReentrantEventsFrom {
+            fn event(&self, event: OutgoingEvent<'_>) {
+                if !self.reentered.swap(true, Ordering::SeqCst) {
+                    // Neither the port nor the node may be locked while sending.
+                    assert!(event.remote_node.state.try_write().is_some());
+                    let port = self.port.get().unwrap();
+                    assert!(port.raw.inner.state.try_lock().is_some());
+                    port.with_port_and_handler(|control, _| {
+                        control.respond(Message::new((bmsg(b"def"),)));
+                    });
+                }
+                self.inner.event(event);
+            }
+        }
+
+        let node = Arc::new(RemoteLocalNode::new(&driver));
+        let node2 = Arc::new(RemoteLocalNode::new(&driver));
+        let port = Arc::new(OnceLock::new());
+        let handle = node.node.add_remote(node2.node.id());
+        handle.connect(ReentrantEventsFrom {
+            inner: EventsFrom {
+                node_id: node.node.id(),
+                send: node2.send.clone(),
+            },
+            port: port.clone(),
+            reentered: AtomicBool::new(false),
+        });
+        let _handle2 = node2.connect(&node);
+        let (left, mut right) = new_remote_port_pair(&node.node, &node2.node);
+        let left = port.get_or_init(|| left.port);
+        left.with_port_and_handler(|control, _| {
+            control.respond(Message::new((bmsg(b"abc"),)));
+        });
+        assert_eq!(right.recv().await.unwrap().data, b"abc");
+        assert_eq!(right.recv().await.unwrap().data, b"def");
     }
 
     #[async_test]

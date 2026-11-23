@@ -28,7 +28,7 @@ mod addr_space {
     use super::VpGlobals;
     use memory_range::MemoryRange;
 
-    // These must match their use in entry.S.
+    // These must match the bootstrap page tables in the global assembly below.
     const PTE_SELF: usize = 0;
     const PTE_HYPERCALL_INPUT: usize = 1;
     const PTE_HYPERCALL_OUTPUT: usize = 2;
@@ -336,11 +336,157 @@ extern "C" fn exception_handler(exception: Exception, rsp: u64) -> ! {
     panic!("unexpected exception {exception:?} cr2 = {cr2:#x} rsp = {rsp:#x}");
 }
 
+/// Relocates the sidecar, switches to its page tables and stack, and restores the caller on return.
+///
+/// # Safety
+/// Must be entered with the sidecar parameter-page GPA in RDI, the output-page GPA in RSI,
+/// identity mappings, and a valid caller stack. Returns the initialization result in AL.
 #[cfg(minimal_rt)]
-core::arch::global_asm! {
-    include_str!("entry.S"),
-    start = sym init::start,
-    relocate = sym minimal_rt::reloc::relocate,
-    irq_handler = sym irq_handler,
-    exception_handler = sym exception_handler,
+// SAFETY: This is the sole `_start` exported by the minimal_rt sidecar image.
+#[unsafe(no_mangle)]
+// SAFETY: Assembly implements the entire C ABI entry and return path, preserving
+// the caller's nonvolatile registers, stack, and address space across initialization.
+#[unsafe(naked)]
+unsafe extern "C" fn _start() -> bool {
+    core::arch::naked_asm!(
+        "BASE = 0xffffff8000000000",
+        "PML4_INDEX = 511",
+        "STACK_TOP = 0x400000",
+        "push rbp",
+        "push rbx",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        "push rax", // align the caller's stack
+        "mov r14, rdi",
+        "mov r15, rsi",
+        "lea rdi, __bss_start[rip]",
+        "lea rcx, _end[rip]",
+        "sub rcx, rdi",
+        "xor eax, eax",
+        "cld",
+        "rep stosb",
+        "mov r12, cr3",
+        "mov rbx, BASE",
+        "lea rax, __ehdr_start[rip]",
+        "sub rbx, rax",
+        "lea rdx, _DYNAMIC[rip]",
+        "mov rsi, BASE",
+        "lea rdi, __ehdr_start[rip]",
+        "call {relocate}",
+        // Relocation produced VAs in the page tables; convert them back to PAs.
+        "lea rdi, pt_start[rip]",
+        "lea rcx, pt_end[rip]",
+        "2:",
+        "sub [rdi], rbx",
+        "add rdi, 8",
+        "cmp rdi, rcx",
+        "jne 2b",
+        // Splice the sidecar mapping into the caller's page tables.
+        "mov r13, [r12 + PML4_INDEX * 8]",
+        "lea rax, 3 + pdpt[rip]",
+        "mov [r12 + PML4_INDEX * 8], rax",
+        "mov cr3, r12",
+        "lea rax, 2f[rip]",
+        "add rax, rbx",
+        "jmp rax",
+        "2:",
+        "mov rbp, rsp",
+        "lea rsp, STACK_TOP + __ehdr_start[rip]",
+        "lea rax, pml4[rip]",
+        "sub rax, rbx",
+        "mov cr3, rax",
+        "mov rdi, r14",
+        "mov rsi, r15",
+        "call {start}",
+        // Restore the caller's physical stack, address space, and registers.
+        "mov cr3, r12",
+        "mov rsp, rbp",
+        "lea rcx, 3f[rip]",
+        "sub rcx, rbx",
+        "jmp rcx",
+        "3:",
+        "mov [r12 + PML4_INDEX * 8], r13",
+        "mov cr3, r12",
+        "out:",
+        "pop r15",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbx",
+        "pop rbp",
+        "ret",
+        start = sym init::start,
+        relocate = sym minimal_rt::reloc::relocate,
+    );
 }
+
+#[cfg(minimal_rt)]
+core::arch::global_asm!(
+    r#"
+    STACK_PAGES = 4
+
+    PTE_PRESENT = 1
+    PTE_RW = 2
+    PTE_LARGE = 0x80
+    PTE_NX = 0x8000000000000000
+    PTE_TABLE = PTE_PRESENT | PTE_RW
+    # The image uses a single RWX 2MB mapping.
+    # FUTURE: split the sections to apply W/X permissions appropriately.
+    PTE_IMAGE = PTE_PRESENT | PTE_LARGE | PTE_RW
+    PTE_DATA = PTE_PRESENT | PTE_RW | PTE_NX
+
+    .pushsection .data
+    .align 4096
+    .globl pt_start, pml4
+    pt_start:
+    pml4:
+    .fill 511, 8, 0
+    .quad pdpt + PTE_TABLE
+
+    .align 4096
+    .globl pdpt
+    pdpt:
+    .quad pd + PTE_TABLE
+
+    .align 4096
+    pd:
+    .global IMAGE_PDE
+    IMAGE_PDE:
+    .quad __ehdr_start + PTE_IMAGE
+    .quad pt + PTE_TABLE
+
+    .align 4096
+    # The data page table layout must match addr_space.
+    pt:
+    .quad pt + PTE_DATA
+    .quad hypercall_input + PTE_DATA
+    .quad hypercall_output + PTE_DATA
+    .fill 509 - STACK_PAGES, 8, 0
+    .set OFFSET, 0
+    .rept STACK_PAGES
+    .quad stack + OFFSET + PTE_DATA
+    .set OFFSET, OFFSET + 0x1000
+    .endr
+
+    .align 4096
+    .globl pt_end
+    pt_end:
+
+    .align 4096
+    hypercall_input:
+    .fill 4096, 1, 0
+    hypercall_output:
+    .fill 4096, 1, 0
+
+    .popsection
+
+    .pushsection .bss
+    .align 4096
+    stack:
+    .fill STACK_PAGES * 0x1000, 1, 0
+    .popsection
+    "#,
+);

@@ -6,6 +6,7 @@
 use crate::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
 use crate::uefi::time::EFI_TIME;
 use bitfield_struct::bitfield;
+#[cfg(feature = "std")]
 use guid::Guid;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -162,6 +163,7 @@ pub mod signature_list {
 /// Check if the specified variable is a secure boot policy variable, as
 /// specified by the UEFI spec in section 3.3 Globally Defined Variables, under
 /// the details of `SetupMode`.
+#[cfg(feature = "std")]
 pub fn is_secure_boot_policy_var(vendor: Guid, name: &ucs2::Ucs2LeSlice) -> bool {
     let secure_boot_policy_vars = [
         vars::PK(),
@@ -182,6 +184,7 @@ pub fn is_secure_boot_policy_var(vendor: Guid, name: &ucs2::Ucs2LeSlice) -> bool
 /// wide-string literals, and me not wanting to yak-shave a proc macro
 /// implementation that emits valid Utf16LeSlices at compile time, these
 /// "constants" are actually methods that can only be called at runtime.
+#[cfg(feature = "std")]
 pub mod vars {
     use guid::Guid;
 

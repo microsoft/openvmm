@@ -34,18 +34,66 @@ hypervisor_resources::register_hypervisor_probes! {
 /// Returns whether OpenVMM can create SEV-SNP partitions with MSHV on this
 /// machine. See `virt_mshv::is_snp_available` for why this is a probe.
 pub fn mshv_snp_available() -> bool {
+    cfg_select! {
+        all(
+            target_os = "linux",
+            feature = "virt_mshv",
+            guest_is_native,
+            guest_arch = "x86_64"
+        ) => virt_mshv::is_snp_available(),
+        _ => false,
+    }
+}
+
+/// Returns whether KVM supports the nested-state ioctls on this machine.
+pub fn kvm_nested_state_available() -> bool {
     #[cfg(all(
         target_os = "linux",
-        feature = "virt_mshv",
+        feature = "virt_kvm",
         guest_is_native,
         guest_arch = "x86_64"
     ))]
     {
-        virt_mshv::is_snp_available()
+        virt_kvm::is_nested_state_available()
     }
     #[cfg(not(all(
         target_os = "linux",
-        feature = "virt_mshv",
+        feature = "virt_kvm",
+        guest_is_native,
+        guest_arch = "x86_64"
+    )))]
+    {
+        false
+    }
+}
+
+/// Returns whether MSHV supports partition scrub on this machine.
+/// TODO: Remove when dom0 Kernel ships with this IOCTL
+pub fn mshv_partition_scrub_available() -> bool {
+    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native))]
+    {
+        virt_mshv::is_partition_scrub_available()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "virt_mshv", guest_is_native)))]
+    {
+        false
+    }
+}
+
+/// Returns whether WHP supports nested partition reset on this machine.
+pub fn whp_nested_reset_available() -> bool {
+    #[cfg(all(
+        target_os = "windows",
+        feature = "virt_whp",
+        guest_is_native,
+        guest_arch = "x86_64"
+    ))]
+    {
+        virt_whp::is_nested_reset_available()
+    }
+    #[cfg(not(all(
+        target_os = "windows",
+        feature = "virt_whp",
         guest_is_native,
         guest_arch = "x86_64"
     )))]

@@ -602,10 +602,10 @@ impl SnpBackedShared {
             SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
         tracing::info!(CVM_ALLOWED, ?sev_status, "SEV status");
 
-        #[cfg(feature = "disable_secure_avic")]
-        let secure_avic = false;
-        #[cfg(not(feature = "disable_secure_avic"))]
-        let secure_avic = sev_status.secure_avic();
+        let secure_avic = cfg_select! {
+            feature = "disable_secure_avic" => false,
+            _ => sev_status.secure_avic(),
+        };
         tracing::info!(CVM_ALLOWED, ?secure_avic, "Secure AVIC status");
 
         // Configure timer interface for lower VTLs.
@@ -1674,6 +1674,9 @@ impl UhProcessor<'_, SnpBacked> {
             .run()
             .map_err(|e| dev.fatal_error(SnpRunVpError::RunVpError(e).into()))?;
 
+        // A successful run can return VMSA state without a SynIC message.
+        has_intercept &= self.runner.exit_message().header.typ != HvMessageType::HvMessageTypeNone;
+
         let entered_from_vtl = next_vtl;
 
         self.shared
@@ -2261,7 +2264,8 @@ impl UhProcessor<'_, SnpBacked> {
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
                     self.handle_synic_deliverable_exit();
                 }
-                HvMessageType::HvMessageTypeX64Halt
+                HvMessageType::HvMessageTypeNone
+                | HvMessageType::HvMessageTypeX64Halt
                 | HvMessageType::HvMessageTypeExceptionIntercept => {
                     // Ignore. Note: it is possible to get the ExceptionIntercept
                     // message for reflect #VC.
@@ -2461,6 +2465,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
     fn cr0(&mut self) -> u64 {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         vmsa.cr0()
+    }
+
+    fn cr4(&mut self) -> u64 {
+        self.vp.runner.vmsa(self.vtl).cr4()
     }
 
     fn rflags(&mut self) -> RFlags {

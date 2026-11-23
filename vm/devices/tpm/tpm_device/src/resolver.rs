@@ -110,9 +110,8 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
         let monotonic_timer = Box::new({
             let vmtime = input.vmtime.access("tpm");
             move || {
-                const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
                 let n = vmtime.now().as_100ns();
-                std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
+                std::time::Duration::from_nanos_u128(u128::from(n) * 100)
             }
         });
 

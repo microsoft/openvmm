@@ -6,17 +6,17 @@ let
          else if system == "aarch64-linux" then "aarch64"
          else "x86_64";
   hash = {
-    "aarch64" = "sha256-/znoCyFLgeFlJkxphJ6378/tMZsbqe6Q/PJspbfJRak=";
-    "x86_64" = "sha256-7YuDXbOIN/71dHdnUqwVcc8LO6mkcP9DArtgetX8ABs=";
+    "aarch64" = "sha256-V12ucvo42kegHvJ3uhurNlMozC4Lj5Zu/e0TvhppuD4=";
+    "x86_64" = "sha256-hXxqxQ7ZB1H/NSn1z/lV54IphbNTE0e29awTU6I9s0s=";
   }.${arch};
 
 in stdenv.mkDerivation {
   pname = "openvmm-deps-${arch}";
-  version = "0.3.0-175";
+  version = "0.3.0-185";
 
   src = fetchzip {
     url =
-      "https://github.com/microsoft/openvmm-deps/releases/download/0.3.0-175/openvmm-deps.${arch}.0.3.0-175.tar.gz";
+      "https://github.com/microsoft/openvmm-deps/releases/download/0.3.0-185/openvmm-deps.${arch}.0.3.0-185.tar.gz";
     stripRoot = false;
     inherit hash;
   };

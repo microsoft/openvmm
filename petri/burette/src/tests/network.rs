@@ -223,8 +223,11 @@ impl crate::harness::WarmPerfTest for NetworkTest {
                                 (c.with_pcie_root_topology(1, 1, 1).with_nic(), "s0rc0rp0")
                             }
                             NicBackend::VirtioNet => (
-                                c.with_pcie_root_topology(1, 1, 2)
-                                    .with_virtio_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS),
+                                c.with_pcie_root_topology(1, 1, 2).with_virtio_nic_rx_gso(
+                                    "s0rc0rp0",
+                                    petri::openvmm::NIC_MAC_ADDRESS,
+                                    true,
+                                ),
                                 "s0rc0rp1",
                             ),
                         };
@@ -240,6 +243,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
                                         disk: FileDiskHandle(erofs_file.into()).into_resource(),
                                         read_only: true,
                                         serial: None,
+                                        options: Default::default(),
                                     }
                                     .into_resource(),
                                 )
@@ -509,6 +513,7 @@ mod tap {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
+                    enable_rx_gso: true,
                     mac_address: TAP_MAC_ADDRESS,
                     endpoint,
                 }
@@ -532,8 +537,11 @@ mod tap {
                     (c.with_pcie_root_topology(1, 1, 1).with_nic(), "s0rc0rp0")
                 }
                 super::NicBackend::VirtioNet => (
-                    c.with_pcie_root_topology(1, 1, 3)
-                        .with_virtio_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS),
+                    c.with_pcie_root_topology(1, 1, 3).with_virtio_nic_rx_gso(
+                        "s0rc0rp0",
+                        petri::openvmm::NIC_MAC_ADDRESS,
+                        true,
+                    ),
                     "s0rc0rp2",
                 ),
             };
@@ -549,6 +557,7 @@ mod tap {
                             disk: FileDiskHandle(erofs_file.into()).into_resource(),
                             read_only: true,
                             serial: None,
+                            options: Default::default(),
                         }
                         .into_resource(),
                     )

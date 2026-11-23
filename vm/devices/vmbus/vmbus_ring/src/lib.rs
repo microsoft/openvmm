@@ -530,7 +530,7 @@ pub struct SingleMappedRingMem<T>(pub T);
 
 impl<T: AsRef<[AtomicU8]>> SingleMappedRingMem<T> {
     fn control_range(&self) -> &[AtomicU8; PAGE_SIZE] {
-        self.0.as_ref()[..PAGE_SIZE].try_into().unwrap()
+        self.0.as_ref()[..PAGE_SIZE].as_array().unwrap()
     }
 
     fn data(&self) -> &[AtomicU8] {
@@ -740,7 +740,7 @@ impl<T: PagedMemory> RingMem for PagedRingMem<T> {
     #[inline]
     fn control(&self) -> &[AtomicU32; CONTROL_WORD_COUNT] {
         self.0.control().as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
-            .try_into()
+            .as_array()
             .unwrap()
     }
 }

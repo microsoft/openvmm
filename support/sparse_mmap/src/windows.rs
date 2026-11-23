@@ -9,6 +9,7 @@ pub(crate) mod copy_on_write;
 
 use Memory::CreateFileMappingNumaW;
 use Memory::CreateFileMappingW;
+use Memory::FlushViewOfFile;
 use Memory::GetLargePageMinimum;
 use Memory::MEM_COMMIT;
 use Memory::MEM_DECOMMIT;
@@ -660,6 +661,21 @@ impl SparseMapping {
         Ok(())
     }
 
+    /// Flushes a mapped view to the backing file.
+    pub fn flush_view(&self, offset: usize, len: usize) -> Result<(), Error> {
+        assert!(self.is_local(), "cannot flush remote mappings");
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        // SAFETY: `validate_offset_len` confirms this range is within the
+        // sparse mapping, and the caller must ensure it is mapped to a file.
+        if unsafe { FlushViewOfFile(self.address.wrapping_add(offset), len) } == 0 {
+            return Err(Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// Maps read-only zero pages at the given offset within the mapping.
     pub fn map_zero(&self, offset: usize, len: usize) -> Result<(), Error> {
         self.virtual_alloc(offset, len, PAGE_READONLY, None)
@@ -843,7 +859,9 @@ impl SparseMapping {
         access: u32,
         numa_node: Option<u32>,
     ) -> Result<(), Error> {
-        assert_ne!(len, 0);
+        if len == 0 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         self.map(offset, len, |addr| unsafe {
             // Keep a handle for the mapping's lifetime (unmap/split re-map
             // through it), restricted to just `access` as mild defense in depth.
@@ -1206,45 +1224,23 @@ pub fn alloc_shared_memory_hugetlb(
 /// Fails loudly if the privilege is not held, rather than silently allowing the
 /// large-page allocation in `f` to fail with a less actionable error.
 fn with_lock_memory_privilege<R>(f: impl FnOnce() -> io::Result<R>) -> io::Result<R> {
+    use pal::windows::security::RevertToSelfGuard;
     use windows_sys::Wdk::System::SystemServices::SE_LOCK_MEMORY_PRIVILEGE;
     use windows_sys::Win32::Foundation::ERROR_NOT_ALL_ASSIGNED;
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::Foundation::LUID;
     use windows_sys::Win32::Security::AdjustTokenPrivileges;
-    use windows_sys::Win32::Security::ImpersonateSelf;
     use windows_sys::Win32::Security::LUID_AND_ATTRIBUTES;
-    use windows_sys::Win32::Security::RevertToSelf;
     use windows_sys::Win32::Security::SE_PRIVILEGE_ENABLED;
-    use windows_sys::Win32::Security::SecurityImpersonation;
     use windows_sys::Win32::Security::TOKEN_ADJUST_PRIVILEGES;
     use windows_sys::Win32::Security::TOKEN_PRIVILEGES;
     use windows_sys::Win32::Security::TOKEN_QUERY;
     use windows_sys::Win32::System::Threading::GetCurrentThread;
     use windows_sys::Win32::System::Threading::OpenThreadToken;
 
-    /// Reverts the calling thread to its process security context on drop, so
-    /// the impersonation token is removed even if `f` panics or an early return
-    /// occurs after impersonation is established.
-    struct RevertToSelfGuard;
-    impl Drop for RevertToSelfGuard {
-        fn drop(&mut self) {
-            // SAFETY: no preconditions.
-            if unsafe { RevertToSelf() } == 0 {
-                panic!(
-                    "failed to revert thread impersonation: {}",
-                    Error::last_os_error()
-                );
-            }
-        }
-    }
-
     // Give the current thread an impersonation token copied from the process
     // token, so that the privilege change below is scoped to this thread.
-    // SAFETY: calling per API contract.
-    if unsafe { ImpersonateSelf(SecurityImpersonation) } == 0 {
-        return Err(Error::last_os_error());
-    }
-    let _revert = RevertToSelfGuard;
+    let _revert = RevertToSelfGuard::impersonate_self()?;
 
     // Open this thread's impersonation token for privilege adjustment.
     // SAFETY: calling per API contract; the returned token handle is owned and

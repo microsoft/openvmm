@@ -123,7 +123,10 @@ impl VhdxIoError {
     pub fn kind(&self) -> VhdxIoErrorKind {
         match self.0 {
             VhdxIoErrorInner::ReadOnly => VhdxIoErrorKind::ReadOnly,
-            VhdxIoErrorInner::UnalignedIo => VhdxIoErrorKind::InvalidInput,
+            VhdxIoErrorInner::UnalignedIo
+            | VhdxIoErrorInner::NoParent
+            | VhdxIoErrorInner::ParentLinkageMismatch
+            | VhdxIoErrorInner::ParentParameters(_) => VhdxIoErrorKind::InvalidInput,
             VhdxIoErrorInner::BeyondEndOfDisk => VhdxIoErrorKind::InvalidSector,
             _ => VhdxIoErrorKind::Other,
         }
@@ -176,6 +179,20 @@ pub(crate) enum VhdxIoErrorInner {
     BatCache(#[source] CacheError),
     #[error("failed to access sector bitmap page cache")]
     SectorBitmapCache(#[source] CacheError),
+    #[error("failed to access metadata page cache")]
+    MetadataCache(#[source] CacheError),
+    #[error("failed to read parent locator")]
+    ReadParentLocator(#[source] OpenError),
+    #[error("invalid VHDX parent locator")]
+    InvalidParentLocator(#[source] crate::locator::VhdxParentError),
+    #[error("invalid parent locator parameters")]
+    ParentParameters(#[source] InvalidFormatReason),
+    #[error("image is not a differencing VHDX")]
+    NoParent,
+    #[error("parent linkage mismatch; only relocation of the same parent is supported")]
+    ParentLinkageMismatch,
+    #[error("no space for the replacement parent locator in the metadata region")]
+    MetadataRegionFull,
     #[error("VHDX file is opened read-only")]
     ReadOnly,
     #[error("VHDX file failed")]
@@ -268,8 +285,8 @@ pub enum InvalidFormatReason {
     #[error("parent locator strings cannot contain NUL characters")]
     ParentLocatorContainsNull,
 
-    /// Parent locator metadata exceeded the VHDX hosting-sector limit.
-    #[error("parent locator metadata exceeds the 64 KiB hosting-sector limit")]
+    /// Parent locator metadata exceeded supported size or encoding limits.
+    #[error("parent locator metadata exceeds supported size or encoding limits")]
     ParentLocatorTooLarge,
 
     /// The block size / logical sector size combination is invalid (chunk ratio is zero).

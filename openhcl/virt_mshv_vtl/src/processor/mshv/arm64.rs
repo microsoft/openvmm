@@ -394,8 +394,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
                 dev,
             ) {
                 let bit_offset = (gpa & (hvdef::HV_PAGE_SIZE - 1)) as u32 * 8;
-                while bitmask != 0 {
-                    let bit = 63 - bitmask.leading_zeros();
+                while let Some(bit) = bitmask.highest_one() {
                     bitmask &= !(1 << bit);
                     if let Some(connection_id) =
                         self.partition.monitor_page.write_bit(bit_offset + bit)

@@ -140,8 +140,8 @@ pub fn patch_opentmk_config(image: &mut [u8], json: &[u8]) -> Result<(), PatchEr
     let (sec_off, sec_len) = config_section_range(image).ok_or(PatchError::MagicNotFound)?;
     let section = &mut image[sec_off..sec_off + sec_len];
     let rel = section
-        .windows(OPENTMK_CONFIG_MAGIC.len())
-        .position(|w| w == OPENTMK_CONFIG_MAGIC)
+        .array_windows::<{ OPENTMK_CONFIG_MAGIC.len() }>()
+        .position(|w| w == &OPENTMK_CONFIG_MAGIC)
         .ok_or(PatchError::MagicNotFound)?;
 
     // Take a typed view bounded to the section so a match near the section end
@@ -253,8 +253,8 @@ mod tests {
     fn config_base(image: &[u8]) -> usize {
         let (sec_off, sec_len) = config_section_range(image).unwrap();
         let rel = image[sec_off..sec_off + sec_len]
-            .windows(OPENTMK_CONFIG_MAGIC.len())
-            .position(|w| w == OPENTMK_CONFIG_MAGIC)
+            .array_windows::<{ OPENTMK_CONFIG_MAGIC.len() }>()
+            .position(|w| w == &OPENTMK_CONFIG_MAGIC)
             .unwrap();
         sec_off + rel
     }

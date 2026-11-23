@@ -25,6 +25,7 @@ impl Worker {
         host: &WorkerHost,
         cfg: Config,
         shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
+        saved_state: Option<mesh::payload::message::ProtobufMessage>,
     ) -> anyhow::Result<(Self, mesh::Receiver<HaltReason>)> {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
@@ -32,7 +33,7 @@ impl Worker {
         let params = VmWorkerParameters {
             hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
             cfg,
-            saved_state: None,
+            saved_state,
             shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
@@ -137,6 +138,24 @@ impl Worker {
     pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
         self.rpc
             .call_failable(VmRpc::RemovePcieDevice, port_name)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn add_vpci_device(
+        &self,
+        instance_id: guid::Guid,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::AddVpciDevice, (instance_id, resource))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn remove_vpci_device(&self, instance_id: guid::Guid) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::RemoveVpciDevice, instance_id)
             .await?;
         Ok(())
     }

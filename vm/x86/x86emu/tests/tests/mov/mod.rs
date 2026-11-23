@@ -67,10 +67,10 @@ fn mov_regvalue_to_memory_imm32() {
 fn mov_memory_to_regvalue() {
     let mut cpu = run_test(
         RFLAGS_MOV_MASK,
-        |asm| asm.mov(eax, dword_ptr(rax + 0x10)),
+        |asm| asm.mov(eax, dword_ptr(0x100)),
         |cpu| {
             cpu.set_gp(Gp::RAX.into(), 0x12345678ffffffff);
-            cpu.valid_gva = cpu.gp(Gp::RAX.into()) + 0x10;
+            cpu.valid_gva = 0x100;
             cpu.mem_val = 0x123;
         },
     );
@@ -82,10 +82,10 @@ fn mov_memory_to_regvalue() {
 fn mov_memory_to_regvalue_8bit() {
     let mut cpu = run_test(
         RFLAGS_MOV_MASK,
-        |asm| asm.mov(al, byte_ptr(rax + 0x10)),
+        |asm| asm.mov(al, byte_ptr(0x100)),
         |cpu| {
             cpu.set_gp(Gp::RAX.into(), 0x12345678abcdefff);
-            cpu.valid_gva = cpu.gp(Gp::RAX.into()) + 0x10;
+            cpu.valid_gva = 0x100;
             cpu.mem_val = 0xffffffffffffff12;
         },
     );
@@ -112,9 +112,9 @@ fn mov_memory_to_regvalue64_two_indices() {
 fn mov_memory_to_rax() {
     let mut cpu = run_test(
         RFLAGS_MOV_MASK,
-        |asm| asm.mov(eax, ptr(0x123456789abcdef0i64)),
+        |asm| asm.mov(eax, ptr(0x123456789abci64)),
         |cpu| {
-            cpu.valid_gva = 0x123456789abcdef0;
+            cpu.valid_gva = 0x123456789abc;
             cpu.mem_val = 0x33333;
         },
     );

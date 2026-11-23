@@ -830,6 +830,13 @@ impl smmu::AcceleratedStreamBackend for IommufdStreamBackend {
         let mut state = self.state.lock();
         match config {
             smmu::StreamConfig::Abort => self.handle_abort(&mut state),
+            smmu::StreamConfig::Fault { .. } => {
+                // Linux's nested-SMMU backend installs a silent-abort STE even
+                // for an invalid virtual STE. Block DMA, but no configuration
+                // fault reaches vEVENTQ. Do not synthesize an event here:
+                // applying a policy does not imply a DMA transaction occurred.
+                self.handle_abort(&mut state)
+            }
             smmu::StreamConfig::Bypass => self.handle_bypass(&mut state),
             // `ste_dwords` is already canonicalized by the emulator to the
             // stage-1 fields the host nesting path accepts; pass it through.

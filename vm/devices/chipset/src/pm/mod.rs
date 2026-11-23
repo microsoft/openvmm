@@ -37,6 +37,9 @@ use chipset_device::io::IoResult;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
+use chipset_device::poll_device::PollDevice;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
+use futures::StreamExt;
 use inspect::Inspect;
 use inspect::InspectMut;
 use open_enum::open_enum;
@@ -82,6 +85,7 @@ const STATUS_DEVICE_MASK: u16 = 0x0010; // One device event flags is set
 const STATUS_GP_MASK: u16 = 0x0080; // One of the GP event flags is set
 const STATUS_PM_MASK: u16 = 0x0040; // One of the PM event flags is set
 const TIMER_OVERFLOW_MASK: u16 = 0x0001; // The PM timer overflowed
+const POWER_BUTTON_MASK: u16 = 1 << 8;
 
 /// Value that initiates a system reset when written to [`DynReg::RESET`].
 pub const RESET_VALUE: u8 = acpi_spec::hyperv::RESET_VALUE;
@@ -351,6 +355,8 @@ struct PowerManagementDeviceRt {
     /// Enable / Disable hypervisor PM timer assist (when available)
     #[inspect(skip)]
     pm_timer_assist: Option<Box<dyn PmTimerAssist>>,
+    #[inspect(skip)]
+    power_button_recv: mesh::Receiver<PowerButtonRpc>,
 }
 
 /// This is used when running the UEFI BIOS. When passed via
@@ -398,6 +404,8 @@ impl PowerManagementDevice {
     /// - `pio_control` and `pio_status`: define where in the port IO space the
     ///   control/status registers get mapped to.
     /// - `enable_acpi_mode`: see the docs for [`EnableAcpiMode`]
+    /// - `power_button_recv`: optional fixed power-button presses advertised by
+    ///   the PCAT FADT.
     pub fn new(
         action: PowerActionFn,
         acpi_interrupt: LineInterrupt,
@@ -405,6 +413,7 @@ impl PowerManagementDevice {
         vmtime: VmTimeAccess,
         enable_acpi_mode: Option<EnableAcpiMode>,
         pm_timer_assist: Option<Box<dyn PmTimerAssist>>,
+        power_button_recv: Option<mesh::Receiver<PowerButtonRpc>>,
     ) -> Self {
         let pio_dynamic = register_pio.new_io_region("dynamic", 0x37);
 
@@ -416,6 +425,7 @@ impl PowerManagementDevice {
                 acpi_interrupt,
                 vmtime,
                 pm_timer_assist,
+                power_button_recv: power_button_recv.unwrap_or_default(),
             },
             state: PmState::new(),
         };
@@ -452,8 +462,9 @@ impl PowerManagementDevice {
     /// reSearch query: `CheckInterruptAssertion`
     pub fn check_interrupt_assertion(&self) {
         // Check if any power events should cause an interrupt to be asserted.
-        let level = (self.state.resume_enable > 0 && self.state.status > 0)
-            || (self.state.general_purpose_status > 0 && self.state.general_purpose_enable > 0);
+        let level = self.state.control & CONTROL_SCI_ENABLE_MASK != 0
+            && ((self.state.resume_enable & self.state.status != 0)
+                || (self.state.general_purpose_status & self.state.general_purpose_enable != 0));
 
         self.rt.acpi_interrupt.set_level(level)
     }
@@ -489,6 +500,7 @@ impl PowerManagementDevice {
             self.state.control &= !CONTROL_SCI_ENABLE_MASK;
             self.state.resume_enable &= !ENABLE_TIMER_OVERFLOW_MASK;
         }
+        self.check_interrupt_assertion();
     }
 
     /// (used by the PIIX4 wrapper device)
@@ -521,6 +533,22 @@ impl ChipsetDevice for PowerManagementDevice {
 
     fn supports_line_interrupt_target(&mut self) -> Option<&mut dyn LineInterruptTarget> {
         Some(self)
+    }
+
+    fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
+        Some(self)
+    }
+}
+
+impl PollDevice for PowerManagementDevice {
+    fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        while let std::task::Poll::Ready(Some(PowerButtonRpc::Press(rpc))) =
+            self.rt.power_button_recv.poll_next_unpin(cx)
+        {
+            self.state.status |= POWER_BUTTON_MASK;
+            self.check_interrupt_assertion();
+            rpc.complete(());
+        }
     }
 }
 
@@ -730,6 +758,170 @@ mod saved_state {
             self.check_interrupt_assertion();
 
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use chipset_device::pio::ExternallyManagedPortIoIntercepts;
+        use mesh::rpc::RpcSend;
+        use pal_async::DefaultDriver;
+        use pal_async::async_test;
+        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+        use vmcore::vmtime::VmTime;
+        use vmcore::vmtime::VmTimeKeeper;
+
+        const BASE: u16 = 0x1000;
+
+        struct PioRegion(Option<u16>);
+
+        impl ControlPortIoIntercept for PioRegion {
+            fn region_name(&self) -> &str {
+                "pm"
+            }
+            fn map(&mut self, addr: u16) {
+                self.0 = Some(addr);
+            }
+            fn unmap(&mut self) {
+                self.0 = None;
+            }
+            fn addr(&self) -> Option<u16> {
+                self.0
+            }
+            fn len(&self) -> u16 {
+                0x37
+            }
+            fn offset_of(&self, addr: u16) -> Option<u16> {
+                addr.checked_sub(self.0?)
+                    .filter(|offset| *offset < self.len())
+            }
+        }
+
+        async fn new_pm(
+            driver: &DefaultDriver,
+            line: LineInterrupt,
+            power_button_recv: Option<mesh::Receiver<PowerButtonRpc>>,
+        ) -> (VmTimeKeeper, PowerManagementDevice) {
+            let time = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
+            let access = time.builder().build(driver).await.unwrap();
+            let mut pm = PowerManagementDevice::new(
+                Box::new(|_| panic!("unexpected power action")),
+                line,
+                &mut ExternallyManagedPortIoIntercepts,
+                access.access("pm"),
+                Some(EnableAcpiMode {
+                    default_pio_dynamic: BASE,
+                }),
+                None,
+                power_button_recv,
+            );
+            pm.rt.pio_dynamic = Box::new(PioRegion(Some(BASE)));
+            (time, pm)
+        }
+
+        fn write(pm: &mut PowerManagementDevice, reg: DynReg, value: u16) {
+            pm.io_write(BASE + u16::from(reg.0), &value.to_le_bytes())
+                .unwrap();
+        }
+
+        fn gpe_status(pm: &mut PowerManagementDevice) -> u16 {
+            let mut data = [0; 2];
+            pm.io_read(BASE + u16::from(DynReg::GEN_PURPOSE_STATUS.0), &mut data)
+                .unwrap();
+            u16::from_le_bytes(data)
+        }
+
+        #[async_test]
+        async fn power_button_latches_until_cleared_and_obeys_sci_enable(driver: DefaultDriver) {
+            let target = TestLineInterruptTarget::new_arc();
+            let (send, recv) = mesh::channel();
+            let (_time, mut pm) = new_pm(
+                &driver,
+                LineInterrupt::new_with_target("pm", target.clone(), 0),
+                Some(recv),
+            )
+            .await;
+
+            write(&mut pm, DynReg::RESUME_ENABLE, ENABLE_TIMER_OVERFLOW_MASK);
+            let mut response = std::pin::pin!(send.call(PowerButtonRpc::Press, ()));
+            assert!(futures::poll!(&mut response).is_pending());
+            futures::future::poll_fn(|cx| {
+                pm.poll_device(cx);
+                std::task::Poll::Ready(())
+            })
+            .await;
+            response.await.unwrap();
+            let mut status = [0; 2];
+            pm.io_read(BASE + u16::from(DynReg::STATUS.0), &mut status)
+                .unwrap();
+            assert_eq!(u16::from_le_bytes(status), POWER_BUTTON_MASK);
+            assert!(
+                !target.is_high(0),
+                "timer enable must not enable the power button"
+            );
+
+            write(&mut pm, DynReg::RESUME_ENABLE, POWER_BUTTON_MASK);
+            assert!(target.is_high(0));
+            write(&mut pm, DynReg::CONTROL, 0);
+            assert!(!target.is_high(0));
+            write(&mut pm, DynReg::CONTROL, CONTROL_SCI_ENABLE_MASK);
+            assert!(target.is_high(0));
+
+            let saved = pm.save().unwrap();
+            pm.reset().await;
+            assert!(!target.is_high(0));
+            assert_eq!(pm.state.status, 0);
+            pm.restore(saved).unwrap();
+            assert!(target.is_high(0));
+            pm.pcat_facp_acpi_enable(false);
+            assert!(!target.is_high(0));
+            pm.pcat_facp_acpi_enable(true);
+            assert!(target.is_high(0));
+            write(&mut pm, DynReg::STATUS, POWER_BUTTON_MASK);
+            assert!(!target.is_high(0));
+            assert_eq!(pm.state.status & POWER_BUTTON_MASK, 0);
+        }
+
+        #[async_test]
+        async fn sci_requires_a_matching_enabled_gpe(driver: DefaultDriver) {
+            let target = TestLineInterruptTarget::new_arc();
+            let (_time, mut pm) = new_pm(
+                &driver,
+                LineInterrupt::new_with_target("pm", target.clone(), 0),
+                None,
+            )
+            .await;
+            write(&mut pm, DynReg::GEN_PURPOSE_ENABLE, 1);
+            pm.set_irq(8, true);
+            pm.set_irq(8, false);
+            assert_eq!(gpe_status(&mut pm), 1 << 8);
+            assert!(!target.is_high(0), "GPE0 enable must not enable GPE8");
+            write(&mut pm, DynReg::GEN_PURPOSE_ENABLE, 1 << 8);
+            assert!(target.is_high(0));
+            write(&mut pm, DynReg::GEN_PURPOSE_STATUS, 1 << 8);
+            assert!(!target.is_high(0));
+        }
+
+        #[async_test]
+        async fn sci_requires_a_matching_enabled_pm_event(driver: DefaultDriver) {
+            let target = TestLineInterruptTarget::new_arc();
+            let (_time, mut pm) = new_pm(
+                &driver,
+                LineInterrupt::new_with_target("pm", target.clone(), 0),
+                None,
+            )
+            .await;
+            pm.state.status = 1 << 5;
+            write(&mut pm, DynReg::RESUME_ENABLE, ENABLE_TIMER_OVERFLOW_MASK);
+            assert!(
+                !target.is_high(0),
+                "timer enable must not enable the global event"
+            );
+            write(&mut pm, DynReg::RESUME_ENABLE, 1 << 5);
+            assert!(target.is_high(0));
+            write(&mut pm, DynReg::STATUS, 1 << 5);
+            assert!(!target.is_high(0));
         }
     }
 }

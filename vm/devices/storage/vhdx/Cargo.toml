@@ -20,6 +20,9 @@ thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [target.'cfg(windows)'.dev-dependencies]
 windows = { workspace = true, features = [
     "Win32_Storage_Vhd",

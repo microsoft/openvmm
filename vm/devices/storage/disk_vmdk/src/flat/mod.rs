@@ -33,10 +33,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::Read;
-#[cfg(unix)]
-use std::os::unix::fs::FileExt;
-#[cfg(windows)]
-use std::os::windows::fs::FileExt;
 use std::path::Path;
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
@@ -437,7 +433,7 @@ impl FlatVmdkDisk {
         let driver = self
             .driver
             .as_deref()
-            .filter(|_| !buffers.is_empty() && buffers.guest_memory().supports_locking());
+            .filter(|_| !buffers.is_empty() && buffers.guest_memory().supports_kernel_lock());
 
         // Fast path: if the read fits within one extent, use native I/O without building a segment list.
         #[cfg(target_os = "linux")]
@@ -653,10 +649,16 @@ impl FlatVmdkDisk {
             // Read at explicit file offsets until this segment is filled.
             let mut source_byte_offset = segment.source_byte_offset;
             while !destination.is_empty() {
-                #[cfg(unix)]
-                let result = source.file.read_at(destination, source_byte_offset);
-                #[cfg(windows)]
-                let result = source.file.seek_read(destination, source_byte_offset);
+                let result = cfg_select! {
+                    unix => {{
+                        use std::os::unix::fs::FileExt;
+                        source.file.read_at(destination, source_byte_offset)
+                    }}
+                    windows => {{
+                        use std::os::windows::fs::FileExt;
+                        source.file.seek_read(destination, source_byte_offset)
+                    }}
+                };
 
                 match result {
                     Ok(0) => {

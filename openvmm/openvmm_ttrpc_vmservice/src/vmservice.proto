@@ -27,6 +27,25 @@ service VM {
     // has had PauseVM called on it, or to start a VM that was created with CreateVM.
     rpc ResumeVM(google.protobuf.Empty) returns (google.protobuf.Empty);
 
+    // SaveVM captures the VM's memory, device state, and processor state into
+    // a new snapshot directory and returns a unique snapshot ID, which is also
+    // stored in the snapshot manifest. The current implementation hard-links
+    // the guest memory backing file into the snapshot, so after a successful
+    // save the VM can't be resumed and should be torn down. Cancelling the
+    // call only stops the caller from waiting; the save may still complete.
+    rpc SaveVM(SaveVMRequest) returns (SaveVMResponse);
+
+    // RestoreVM creates a VM from a snapshot directory and the supplied device
+    // configuration. The service must not already contain a VM. The VM stays
+    // paused unless resume is set. The snapshot's memory.bin is used in place,
+    // so a snapshot can be restored only once.
+    rpc RestoreVM(RestoreVMRequest) returns (RestoreVMResponse);
+
+    // ShutdownVM requests a cooperative guest power-off.
+    // Success does not mean the guest has halted. Use WaitVM to observe a halt
+    // and TeardownVM to release resources.
+    rpc ShutdownVM(ShutdownVMRequest) returns (google.protobuf.Empty);
+
     // WaitVM will block until the VM is either in a halted state or has had all of it's resources freed
     // via TeardownVM.
     rpc WaitVM(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -42,7 +61,7 @@ service VM {
 
     // ModifyResource is a generic call to modify (add/remove/update) resources for a VM.
     // This includes things such as block devices, network adapters, and pci devices.
-    rpc ModifyResource(ModifyResourceRequest) returns (google.protobuf.Empty);
+    rpc ModifyResource(ModifyResourceRequest) returns (ModifyResourceResponse);
 
     // AddPcieDevice hot-adds a PCIe device behind a named port (a root port or
     // switch downstream port declared in the topology).
@@ -64,9 +83,34 @@ service VM {
 
 // Note: VTL assignment is not modeled yet; all devices are assumed to be VTL0.
 
+// Request cooperative guest power-off in a running VM through the selected
+// mechanism. No fallback to another mechanism or hard power-off is performed.
 //
-// VM lifecycle request/response
-//
+// Success means IC acknowledgement or ACPI event injection, not halt.
+// With the default shutdown HALT
+// policy, use WaitVM to await halt, PropertiesVM to check for PowerOff, then
+// TeardownVM to release resources. TeardownVM and Quit do not request shutdown.
+message ShutdownVMRequest {
+    enum Mechanism {
+        // Invalid; a mechanism must be explicitly specified.
+        MECHANISM_UNSPECIFIED = 0;
+        // Explicitly request the Hyper-V shutdown integration component.
+        // Requires Hyper-V enlightenments, VMBus and guest shutdown IC support.
+        MECHANISM_HYPERV_IC = 1;
+        // Inject an ACPI power-button event. Not supported for IGVM boot.
+        // Requires guest ACPI power-button support and a guest power policy
+        // that shuts down on a button press.
+        MECHANISM_ACPI = 2;
+    }
+
+    // Required. Unspecified (including omitted) and unknown values return
+    // INVALID_ARGUMENT without issuing a shutdown request.
+    Mechanism mechanism = 1;
+    // Set the Hyper-V IC force bit. Interpretation is guest-specific.
+    // This is not a host-side hard power-off. Omitted means false.
+    bool force = 2;
+}
+
 message DirectBoot {
     string kernel_path = 1;
     string initrd_path = 2;
@@ -158,6 +202,9 @@ message MemoryConfig {
     uint64 low_mmio_gap_in_mb = 7;
     uint64 high_mmio_base_in_mb = 8;
     uint64 high_mmio_gap_in_mb = 9;
+    // Optional host file used to back guest memory. SaveVM requires
+    // file-backed memory. Must not be set for RestoreVM.
+    optional string backing_file_path = 10;
 }
 
 message ProcessorConfig {
@@ -255,7 +302,32 @@ message VirtioDevice {
         VirtioFs       fs        = 7;
         // virtio-rtc real-time clock device.
         VirtioRtc      rtc       = 8;
+        // File-backed virtio-pmem device.
+        VirtioPmem     pmem      = 9;
     }
+}
+
+// virtio-pmem device configuration.
+message VirtioPmem {
+    // Backing store mapped into the guest.
+    PmemBackend backend = 1;
+    // Expose the device read-only to the guest.
+    bool read_only = 2;
+}
+
+// Backing store for a virtio-pmem device. Additional backing types can be
+// added as new oneof arms.
+message PmemBackend {
+    oneof kind {
+        // A host file.
+        PmemFile file = 1;
+    }
+}
+
+// A virtio-pmem backing file on the host.
+message PmemFile {
+    // Path to the backing file.
+    string path = 1;
 }
 
 // virtio-console serial device configuration.
@@ -303,6 +375,8 @@ message DiskBackend {
         MemoryDisk memory = 2;
         // A memory-backed writable overlay over a read-only lower disk.
         MemoryDiffDisk memory_diff = 3;
+        // A VHD or VHDX opened by the client (Windows only).
+        VirtualDisk virtual_disk = 4;
     }
 }
 
@@ -312,8 +386,21 @@ message MemoryDisk {
 }
 
 message MemoryDiffDisk {
-    // Read-only lower disk.
+    // Read-only lower disk. Registered disk handles cannot be used here.
     DiskBackend lower = 1;
+}
+
+// A VHD or VHDX that the client opened with `OpenVirtualDisk` and attached for
+// raw access with `ATTACH_VIRTUAL_DISK_FLAG_NO_LOCAL_HOST` (plus
+// `ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY` for a read-only disk), so OpenVMM
+// accesses the image with the client's rights rather than its own.
+//
+// The client registers the handle using the resource-passing protocol (see
+// resource_passing.md). OpenVMM duplicates the registered handle while
+// processing the request; the name may be deregistered after the RPC succeeds.
+message VirtualDisk {
+    // Name of the registered virtual disk handle.
+    string handle_name = 1;
 }
 
 // A disk backed by a host file.
@@ -369,6 +456,9 @@ message VirtioNet {
     NicBackend backend = 2;
     // MAC address for the adapter (e.g. "12-34-56-78-9A-BC").
     string mac_address = 3;
+    // Enable receive GSO advertisement. Defaults to false because virtio-net
+    // does not yet support mergeable receive buffers.
+    bool enable_rx_gso = 4;
 }
 
 // A host network backend, shared across NIC device types (virtio-net, MANA,
@@ -639,6 +729,11 @@ message SmmuConfig {
     // freezes the advertised value; later hot-add must be compatible.
     // A fixed value cannot exceed the physical SMMU's OAS with acceleration.
     optional uint32 oas_bits = 2;
+    // Fixed SubstreamID width in bits (0..=20). Zero disables substreams.
+    // Absent => CLI ssidsize=auto: zero in software mode; with acceleration,
+    // adopt the host SMMU's width before device start freezes capabilities.
+    // A fixed width must not exceed the host's width with acceleration.
+    optional uint32 ssid_bits = 3;
 }
 
 // A PCIe port: a root-complex root port or a switch downstream port. Hosts at
@@ -759,6 +854,9 @@ message VMConfig {
     // Guest state storage, including UEFI variables. If absent, guest state
     // remains in memory and is lost when the VM is torn down.
     VmgsConfig vmgs = 21;
+    // Enable the guest watchdog device. Timeout behavior is configured
+    // separately by guest_power_actions.watchdog.
+    bool guest_watchdog = 22;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
@@ -835,6 +933,32 @@ message CreateVMRequest {
     // server/virtstack to make use of this field. Useful for debugging to be able to
     // correlate events in the virtstack for a given vm that the client launched.
     string log_id = 2;
+}
+
+message SaveVMRequest {
+    string destination_dir = 1;
+}
+
+message SaveVMResponse {
+    // OpenVMM-generated GUID for the snapshot.
+    string snapshot_id = 1;
+}
+
+message RestoreVMRequest {
+    string source_dir = 1;
+    // Device and boot configuration must be compatible with the snapshot.
+    VMConfig config = 2;
+    // If set, restore fails unless it matches the snapshot ID in the
+    // snapshot manifest. An empty value is treated as not set, so the ID
+    // isn't checked.
+    optional string expected_snapshot_id = 3;
+    // Resume the restored VM immediately. Otherwise it remains paused.
+    bool resume = 4;
+}
+
+message RestoreVMResponse {
+    // Snapshot ID read from the snapshot manifest.
+    string snapshot_id = 1;
 }
 
 message MemoryStats {
@@ -938,6 +1062,11 @@ message VPMEMDisk {
     bool read_only = 3;
 }
 
+enum NicFrontend {
+    NIC_FRONTEND_VMBUS = 0;
+    NIC_FRONTEND_VIRTIO = 1;
+}
+
 message NICConfig {
     string nic_id = 1; // GUID
     string mac_address = 3; // 12-34-56-78-9A-BC
@@ -950,6 +1079,10 @@ message NICConfig {
         TapBackend tap = 7;
         ConsommeBackend consomme = 8;
     }
+    // Guest-visible NIC frontend. Defaults to the VMBus synthetic NIC.
+    // Virtio uses VPCI on Windows/macOS with VMBus enabled, MMIO otherwise.
+    // Virtio NICs must be configured at VM creation, not added via ModifyResource.
+    NicFrontend frontend = 9;
 }
 
 message DioBackend {
@@ -962,7 +1095,7 @@ message TapBackend {
         // Open /dev/net/tun by this device name (existing behavior).
         string name = 1;
         // Use the file descriptor registered under this name via the
-        // fd-passing protocol (see fd_passing.md).
+        // resource-passing protocol (see resource_passing.md).
         string fd_name = 2;
     }
 }
@@ -989,6 +1122,51 @@ message ConsommeBackend {
     // Ports to forward from the host into the guest.
     // Used during initial creation and for dynamic add/remove via ModifyResource.
     repeated PortConfig ports = 2;
+    // If true or unset, the guest resolves names through consomme's built-in
+    // DNS resolver on the gateway address. If false, the guest uses the host's
+    // DNS servers instead. Only honored when the NIC is created.
+    optional bool internal_dns = 3;
+    // Optional guest IPv4 address, gateway IPv4 address and network mask.
+    // Each overrides the value derived from cidr. Only honored when the NIC
+    // is created.
+    string client_ip = 4;
+    string gateway_ip = 5;
+    string net_mask = 6;
+    // Optional guest IPv6 address, used before consomme learns it from the
+    // guest. Only honored when the NIC is created.
+    string client_ip_ipv6 = 7;
+    // If true, guest traffic to host-local addresses (loopback, unspecified,
+    // link-local) is forwarded to the host. Only honored when the NIC is
+    // created.
+    bool allow_host_local_access = 8;
+    // Runtime operations for ModifyResource UPDATE requests targeting this NIC.
+    // Do not combine an operation with ports. Not valid at VM creation or for
+    // REMOVE requests.
+    oneof operation {
+        AddDnsRecordRequest add_dns_record = 9;
+        CreateVirtualAddressRequest create_virtual_address = 10;
+    }
+}
+
+message CreateVirtualAddressRequest {
+    // The host address (IPv4 or IPv6) that guest traffic to the virtual
+    // address is routed to, e.g. "127.0.0.1". Allocates a guest-visible alias
+    // in the NIC's subnet and returns it in ModifyResourceResponse. Repeating
+    // the operation for the same destination returns the same virtual address.
+    string destination = 1;
+}
+
+message CreateVirtualAddressResponse {
+    // The allocated guest-visible address, in the same family as the destination.
+    string virtual_address = 1;
+}
+
+message AddDnsRecordRequest {
+    // The name the guest resolves, e.g. "host.wsl.internal".
+    string name = 1;
+    // The IPv4 address returned for the name (A record). Answered directly
+    // without forwarding the query to the host resolver.
+    string address = 2;
 }
 
 message WindowsPCIDevice {
@@ -999,7 +1177,21 @@ message WindowsPCIDevice {
 message VirtioFs {
     string tag = 1;
     string root_path = 2;
-    bool read_only = 3;
+    // Backend mount options, separated by ';'. Include "ro" for read-only access.
+    string mount_options = 3;
+    // Host-specific virtio-fs options. Omit on non-Windows hosts.
+    WindowsOptions windows_options = 4;
+
+    message WindowsOptions {
+        // Name of an access token registered with the resource-passing
+        // protocol (see resource_passing.md). OpenVMM duplicates the token for host
+        // filesystem access. The name may be deregistered after this RPC
+        // succeeds. Empty uses the VM service process token.
+        string user_token_name = 1;
+        // Expose shared-memory section objects instead of host files.
+        // root_path is the NT path of an existing object directory.
+        bool shared_mem = 2;
+    }
 }
 
 message VirtioConsoleConfig {
@@ -1025,6 +1217,22 @@ message ModifyProcessorConfigRequest {
     uint32 processor_limit = 2;
 }
 
+message HVSocketListener {
+    // Unix socket path to bind on ADD. ADD fails if the path already exists;
+    // it does not replace an existing socket or file. The caller owns the
+    // socket file and removes it after REMOVE (or a failed ADD that bound it).
+    // Ignored on REMOVE, which stops listening but preserves established
+    // connections.
+    string path = 1;
+    // Required on ADD and REMOVE. Only one listener per service is supported.
+    oneof service {
+        // Guest hvsocket service ID (GUID).
+        string service_id = 2;
+        // Guest vsock port, mapped to the equivalent hvsocket service ID.
+        uint32 vsock_port = 3;
+    }
+}
+
 message ModifyResourceRequest {
     ModifyType type = 1;
     oneof resource {
@@ -1035,6 +1243,14 @@ message ModifyResourceRequest {
         VPMEMDisk vpmem_disk = 6;
         NICConfig nic_config = 7;
         WindowsPCIDevice windows_device = 8;
+        HVSocketListener hvsocket_listener = 9;
+    }
+}
+
+message ModifyResourceResponse {
+    // Unset for operations without a result, including DNS and port changes.
+    oneof result {
+        CreateVirtualAddressResponse virtual_address = 1;
     }
 }
 

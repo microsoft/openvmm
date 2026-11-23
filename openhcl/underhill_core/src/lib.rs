@@ -18,7 +18,6 @@ mod inspect_internal;
 mod inspect_proc;
 mod livedump;
 mod loader;
-#[cfg(feature = "product_policy")]
 mod measured_product_policy;
 mod nvme_manager;
 mod options;
@@ -425,10 +424,9 @@ async fn launch_workers(
                         listener,
                         req_chan: send,
                         vp_count,
-                        target_arch: if cfg!(guest_arch = "x86_64") {
-                            debug_worker_defs::TargetArch::X86_64
-                        } else {
-                            debug_worker_defs::TargetArch::Aarch64
+                        target_arch: cfg_select! {
+                            guest_arch = "x86_64" => debug_worker_defs::TargetArch::X86_64,
+                            guest_arch = "aarch64" => debug_worker_defs::TargetArch::Aarch64,
                         },
                     },
                 )

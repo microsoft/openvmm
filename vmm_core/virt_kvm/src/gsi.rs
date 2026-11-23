@@ -31,7 +31,7 @@ impl GsiRouting {
     }
 
     /// Claims a specific GSI.
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    #[cfg(guest_arch = "x86_64")]
     pub fn claim(&mut self, gsi: u32) {
         let gsi = gsi as usize;
         assert_eq!(self.states[gsi], GsiState::Unallocated);

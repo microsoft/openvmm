@@ -6,11 +6,13 @@
 #![expect(unsafe_code)]
 
 pub mod affinity;
+pub mod credentials;
 pub mod fs;
 pub mod pipe;
 pub mod process;
 pub mod pthread;
 
+pub use credentials::effective_user_id;
 use std::fs::File;
 use std::io;
 use std::io::Error;

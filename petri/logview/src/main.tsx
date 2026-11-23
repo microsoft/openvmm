@@ -10,7 +10,6 @@ import { Routes, Route } from "react-router";
 import { Runs } from "./runs";
 import { Navigate } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { startDataPrefetching } from "./utils/fetch_runs_data";
 import { RunDetails } from "./run_details";
 import { Tests } from "./tests";
 import { TestDetails } from "./test_details";
@@ -19,9 +18,6 @@ import { Docs } from "./docs/docs";
 import { VerifyGetAllProvider } from "./contexts/verify_get_all_context";
 
 const queryClient = new QueryClient();
-
-// Start background data prefetching and refetching
-startDataPrefetching(queryClient);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

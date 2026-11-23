@@ -74,20 +74,13 @@ pub(super) fn self_signed_builder(
     let name = Name::from_der(&rdns.to_der()?)?;
 
     let spki = match key {
-        super::X509KeyPair::Rsa(key) => {
-            let components = key.to_components()?;
-            let pkcs1_pub = pkcs1::RsaPublicKey {
-                modulus: der::asn1::UintRef::new(&components.modulus)?,
-                public_exponent: der::asn1::UintRef::new(&components.public_exponent)?,
-            };
-            x509_cert::spki::SubjectPublicKeyInfoOwned {
-                algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
-                    oid: pkcs1::ALGORITHM_OID,
-                    parameters: Some(der::Any::null()),
-                },
-                subject_public_key: der::asn1::BitString::from_bytes(&pkcs1_pub.to_der()?)?,
-            }
-        }
+        super::X509KeyPair::Rsa(key) => x509_cert::spki::SubjectPublicKeyInfoOwned {
+            algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
+                oid: pkcs1::ALGORITHM_OID,
+                parameters: Some(der::Any::null()),
+            },
+            subject_public_key: der::asn1::BitString::from_bytes(&key.to_pkcs1_der()?)?,
+        },
         #[cfg(symcrypt)]
         super::X509KeyPair::Ecdsa(key) => key.0.as_pub().to_public_key_info()?,
     };

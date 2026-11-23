@@ -18,8 +18,6 @@ use loader::uefi::IMAGE_SIZE;
 use loader::uefi::config;
 use loader_defs::paravisor::PageRegionDescriptor;
 use memory_range::MemoryRange;
-#[cfg(guest_arch = "x86_64")]
-use serial_16550_resources::ComPort;
 use std::ffi::CString;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
@@ -82,12 +80,11 @@ pub enum Error {
     ExpectedGicV3,
 }
 
-pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
-    loader_defs::paravisor::PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_X64
-} else if cfg!(guest_arch = "aarch64") {
-    loader_defs::paravisor::PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64
-} else {
-    panic!("unsupported guest architecture");
+pub const PV_CONFIG_BASE_PAGE: u64 = cfg_select! {
+    guest_arch = "x86_64" => loader_defs::paravisor::PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_X64,
+    guest_arch = "aarch64" => {
+        loader_defs::paravisor::PARAVISOR_VTL0_MEASURED_CONFIG_BASE_PAGE_AARCH64
+    }
 };
 
 /// Additional loader config specified at runtime via underhill launch arguments.
@@ -141,61 +138,62 @@ pub fn load(
             )?;
             uefi_info.vp_context.clone()
         }
-        #[cfg(not(guest_arch = "x86_64"))]
-        LoadKind::Linux => {
-            let _ = config.cmdline_append;
-            let LinuxInfo {
-                kernel_range: _kernel_range,
-                kernel_entrypoint: _kernel_entrypoint,
-                initrd: _initrd,
-                command_line: _command_line,
-            } = vtl0_info
-                .supports_linux
-                .as_ref()
-                .ok_or(Error::LinuxSupport)?;
-            todo!();
-        }
-        #[cfg(guest_arch = "x86_64")]
-        LoadKind::Linux => {
-            tracing::info!(CVM_ALLOWED, "loading Linux into VTL0");
+        LoadKind::Linux => cfg_select! {
+            guest_arch = "x86_64" => {{
+                tracing::info!(CVM_ALLOWED, "loading Linux into VTL0");
 
-            let LinuxInfo {
-                kernel_range,
-                kernel_entrypoint,
-                initrd,
-                command_line,
-            } = vtl0_info
-                .supports_linux
-                .as_ref()
-                .ok_or(Error::LinuxSupport)?;
+                let LinuxInfo {
+                    kernel_range,
+                    kernel_entrypoint,
+                    initrd,
+                    command_line,
+                } = vtl0_info
+                    .supports_linux
+                    .as_ref()
+                    .ok_or(Error::LinuxSupport)?;
 
-            // Convert the read cstring to a vec to allow appending.
-            let mut command_line = command_line.clone().unwrap_or_default().into_bytes();
+                // Convert the read cstring to a vec to allow appending.
+                let mut command_line = command_line.clone().unwrap_or_default().into_bytes();
 
-            // Add a trailing space to the base string so that the appended
-            // string won't corrupt the last argument.
-            if !command_line.is_empty() && command_line.last() != Some(&b' ') {
-                command_line.push(b' ');
-            }
+                // Add a trailing space to the base string so that the appended
+                // string won't corrupt the last argument.
+                if !command_line.is_empty() && command_line.last() != Some(&b' ') {
+                    command_line.push(b' ');
+                }
 
-            // Copy from the append string.
-            command_line.extend_from_slice(config.cmdline_append.to_bytes());
+                // Copy from the append string.
+                command_line.extend_from_slice(config.cmdline_append.to_bytes());
 
-            let command_line = CString::new(command_line).expect("constructed from valid CStrings");
+                let command_line =
+                    CString::new(command_line).expect("constructed from valid CStrings");
 
-            load_linux(LoadLinuxParams {
-                gm,
-                mem_layout,
-                processor_topology,
-                platform_config,
-                chipset_capabilities,
-                chipset_mmio,
-                kernel_range: *kernel_range,
-                kernel_entrypoint: *kernel_entrypoint,
-                initrd: *initrd,
-                command_line,
-            })?
-        }
+                load_linux(LoadLinuxParams {
+                    gm,
+                    mem_layout,
+                    processor_topology,
+                    platform_config,
+                    chipset_capabilities,
+                    chipset_mmio,
+                    kernel_range: *kernel_range,
+                    kernel_entrypoint: *kernel_entrypoint,
+                    initrd: *initrd,
+                    command_line,
+                })?
+            }}
+            _ => {{
+                let _ = config.cmdline_append;
+                let LinuxInfo {
+                    kernel_range: _kernel_range,
+                    kernel_entrypoint: _kernel_entrypoint,
+                    initrd: _initrd,
+                    command_line: _command_line,
+                } = vtl0_info
+                    .supports_linux
+                    .as_ref()
+                    .ok_or(Error::LinuxSupport)?;
+                todo!();
+            }}
+        },
         LoadKind::Pcat => {
             tracing::info!(CVM_ALLOWED, "loading pcat into VTL0");
 
@@ -203,11 +201,10 @@ pub fn load(
                 return Err(Error::PcatSupport);
             }
 
-            #[cfg(not(guest_arch = "x86_64"))]
-            panic!("Not supported");
-
-            #[cfg(guest_arch = "x86_64")]
-            load_pcat(gm, mem_layout)?
+            cfg_select! {
+                guest_arch = "x86_64" => load_pcat(gm, mem_layout)?,
+                _ => panic!("Not supported"),
+            }
         }
     };
 
@@ -391,8 +388,8 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
                         b"\\_SB.UAR1",
                         b"COM1",
                         1,
-                        ComPort::Com1.io_port(),
-                        ComPort::Com1.irq().into(),
+                        serial_16550_resources::ComPort::Com1.io_port(),
+                        serial_16550_resources::ComPort::Com1.irq().into(),
                     );
                 }
 
@@ -401,8 +398,8 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
                         b"\\_SB.UAR2",
                         b"COM2",
                         2,
-                        ComPort::Com2.io_port(),
-                        ComPort::Com2.irq().into(),
+                        serial_16550_resources::ComPort::Com2.io_port(),
+                        serial_16550_resources::ComPort::Com2.irq().into(),
                     );
                 }
 
@@ -468,7 +465,6 @@ pub fn write_uefi_config(
     let mut build_madt = true;
     let mut build_srat = true;
 
-    #[cfg(not(guest_arch = "x86_64"))]
     let _ = chipset_capabilities;
 
     // ACPI tables that come from the DevicePlatformSettings
@@ -497,22 +493,22 @@ pub fn write_uefi_config(
             pcie_host_bridges: &vec![],
             slit_info: None,
             generic_initiators: &[],
-            #[cfg(guest_arch = "x86_64")]
-            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                with_ioapic: true,
-                with_pic: chipset_capabilities.with_pic,
-                with_pit: chipset_capabilities.with_pit,
-                with_psp: platform_config.general.psp_enabled,
-                pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
-                acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
-                iommu: None,
-            },
-            #[cfg(guest_arch = "aarch64")]
-            arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
-                // Not used for MADT/SRAT generation; only matters for FADT.
-                hypervisor_vendor_identity: 0,
-                virt_timer_ppi: processor_topology.virt_timer_ppi(),
-                smmu: Vec::new(),
+            arch: cfg_select! {
+                guest_arch = "x86_64" => vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                    with_ioapic: true,
+                    with_pic: chipset_capabilities.with_pic,
+                    with_pit: chipset_capabilities.with_pit,
+                    with_psp: platform_config.general.psp_enabled,
+                    pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
+                    acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
+                    iommu: None,
+                },
+                guest_arch = "aarch64" => vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
+                    // Not used for MADT/SRAT generation; only matters for FADT.
+                    hypervisor_vendor_identity: 0,
+                    virt_timer_ppi: processor_topology.virt_timer_ppi(),
+                    smmu: Vec::new(),
+                },
             },
         };
 
@@ -669,7 +665,6 @@ pub fn write_uefi_config(
 
         #[cfg(guest_arch = "x86_64")]
         flags.set_sgx_memory_enabled(caps.sgx);
-        #[cfg(not(guest_arch = "x86_64"))]
         let _ = caps;
 
         // Frontpage is disabled if either the host requests it, or the openhcl

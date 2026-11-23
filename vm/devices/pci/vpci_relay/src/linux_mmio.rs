@@ -81,13 +81,13 @@ impl MemoryAccess for DirectMmioInstance {
         let res = match value.len() {
             1 => self
                 .1
-                .write_volatile(offset, &<[u8; 1]>::try_from(value).unwrap()),
+                .write_volatile(offset, value.as_array::<1>().unwrap()),
             2 => self
                 .1
-                .write_volatile(offset, &<[u8; 2]>::try_from(value).unwrap()),
+                .write_volatile(offset, value.as_array::<2>().unwrap()),
             4 => self
                 .1
-                .write_volatile(offset, &<[u8; 4]>::try_from(value).unwrap()),
+                .write_volatile(offset, value.as_array::<4>().unwrap()),
             _ => panic!("size must be 1-, 2-, or 4-bytes"),
         };
         if let Err(err) = res {
@@ -148,6 +148,33 @@ impl MemoryAccess for HypercallMmioInstance {
                 error = &err as &dyn std::error::Error,
                 "vpci mmio write failure"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DirectMmioInstance;
+    use sparse_mmap::SparseMapping;
+    use test_with_tracing::test;
+    use vpci_client::MemoryAccess;
+
+    #[test]
+    fn direct_mmio_write_widths() {
+        let mapping = SparseMapping::new(0x2000).unwrap();
+        mapping.alloc(0, 0x2000).unwrap();
+        let mut mmio = DirectMmioInstance(0x1000, mapping);
+
+        for value in [
+            &[0x5a][..],
+            &[0x12, 0x34][..],
+            &[0x12, 0x34, 0x56, 0x78][..],
+        ] {
+            mmio.write(0x1100, value);
+
+            let mut readback = vec![0; value.len()];
+            mmio.read(0x1100, &mut readback);
+            assert_eq!(readback, value);
         }
     }
 }

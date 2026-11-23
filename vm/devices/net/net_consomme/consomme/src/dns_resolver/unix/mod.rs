@@ -3,22 +3,23 @@
 
 //! libc resolver backend implementation.
 
+cfg_select! {
+    any(target_os = "macos", all(target_os = "linux", target_env = "gnu")) => {
+        mod glibc;
+        use glibc::handle_dns_query;
+    }
+    _ => {
+        mod musl;
+        use musl::handle_dns_query;
+    }
+}
+
 use super::build_servfail_response;
 use crate::dns_resolver::DnsBackend;
 use crate::dns_resolver::DnsRequest;
 use crate::dns_resolver::DnsRequestInternal;
 use crate::dns_resolver::DnsResponse;
 use mesh_channel_core::Sender;
-
-cfg_if::cfg_if! {
-    if #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))] {
-        mod glibc;
-        use glibc::handle_dns_query;
-    } else {
-        mod musl;
-        use musl::handle_dns_query;
-    }
-}
 
 pub struct UnixDnsResolverBackend {}
 

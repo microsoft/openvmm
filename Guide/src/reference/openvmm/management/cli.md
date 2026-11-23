@@ -59,6 +59,9 @@ describes the source definitions.
   --memory size=4G,file=path/to/memory.bin
   --memory size=4G,thp=off
   ```
+* `--restore-snapshot <DIR>`: Restore RAM and device state from a snapshot.
+  Pass the same boot and device flags used at save time. Uses
+  `<DIR>/memory.bin` and conflicts with explicit memory backing files.
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
   enlightenments.
@@ -550,6 +553,34 @@ PCIe root port. The syntax varies slightly between device types:
 The optional `serial` value accepts 1-20 printable ASCII bytes except commas
 and brackets. If omitted, OpenVMM uses the disk ID or `openvmm-virtio-blk`.
 
+Native virtio-blk concurrency is opt-in. Each disk accepts `num_queues=<COUNT>`
+to select 1-256 request queues. When omitted, `--virtio-blk-queues <COUNT>`
+supplies the default (1). `--virtio-blk-io-depth <COUNT>` limits in-flight
+requests per queue (default 64). Additional queues require the guest to negotiate
+`VIRTIO_BLK_F_MQ`; guests without it use queue 0. Queues use the default shared
+executor. These options apply to native `--virtio-blk` disks, not vhost-user
+devices.
+
+For example, four queues with the same aggregate 64-request limit per disk
+as the default configuration:
+
+```sh
+--virtio-blk-queues 4 --virtio-blk-io-depth 16
+```
+
+Different disks can override the default independently, including selecting
+a single queue:
+
+```sh
+--virtio-blk-queues 4 \
+  --virtio-blk file:/path/to/boot.raw,num_queues=1 \
+  --virtio-blk file:/path/to/data.raw,num_queues=8
+```
+
+The in-flight limit is per queue: eight queues at the default depth 64 allow
+512 concurrent requests per disk. This limit is separate from the virtqueue
+descriptor-ring size.
+
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 
 ```sh
@@ -626,8 +657,8 @@ translation for DMA and MSI addresses. See
 
 The syntax is a comma-separated key/value list:
 
-```sh
---smmu rc=<name>[,accel][,oas=auto|N]
+```bash
+--smmu rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]
 ```
 
 - `rc=<name>` (required): the PCIe root complex this SMMU covers.
@@ -638,15 +669,20 @@ The syntax is a comma-separated key/value list:
   Without it, assigning a VFIO device behind an SMMU is rejected.
 - `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
   `auto` (the default) starts at 48 bits, which covers typical configurations.
-  Under `accel`, a device attached before VM start changes it to the physical
-  SMMU's OAS. VM start freezes the advertised value, so later hotplug validates
-  against it rather than changing it. Very large RAM or an explicitly pinned
+  Under `accel`, a cold-plug device changes it to the physical SMMU's OAS.
+  Device start freezes the value, so later hotplug validates against it rather
+  than changing it. Very large RAM or an explicitly pinned
   high MMIO/ECAM base can exceed 48 bits, requiring an explicit larger `oas=`
   (e.g. `oas=52`). A fixed `N` must be one of the SMMUv3-legal encodings: `32`,
   `36`, `40`, `42`, `44`, `48`, or `52`, and cannot exceed the physical
   SMMU's OAS under `accel`.
+- `ssidsize=auto|N` (optional): the SMMU's SubstreamID width in bits,
+  advertised in `IDR1.SSIDSIZE`. `auto` (the default) uses 0 in software mode
+  or the cold-plug host SMMU's width under `accel`. A fixed `N` is 0–20,
+  where 0 disables substreams, and must not exceed the host's width under
+  `accel`. The advertised width is fixed at device start.
 
-```sh
+```bash
 # Enable an emulated SMMU on root complex rc0
 --smmu rc=rc0
 
@@ -655,6 +691,9 @@ The syntax is a comma-separated key/value list:
 
 # Pin the output address size to 48 bits
 --smmu rc=rc0,oas=48
+
+# Disable substreams even when the host supports them
+--smmu rc=rc0,accel,ssidsize=0
 
 # Assign a VFIO device behind an accelerated SMMU
 --smmu rc=rc0,accel --iommu id=iommu0 \

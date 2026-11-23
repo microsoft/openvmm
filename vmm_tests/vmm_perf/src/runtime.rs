@@ -9,10 +9,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const ARCHIVE_SIGNATURE_FILE: &str = ".archive-signature";
-const SUPPORTED_ARCHIVE_EXTENSIONS: &[&str] = if cfg!(windows) {
-    &[".tar.gz", ".tar", ".zip"]
-} else {
-    &[".tar.gz", ".tar"]
+const SUPPORTED_ARCHIVE_EXTENSIONS: &[&str] = cfg_select! {
+    windows => &[".tar.gz", ".tar", ".zip"],
+    _ => &[".tar.gz", ".tar"],
 };
 
 pub(crate) struct VmmPerfRuntime {
@@ -179,30 +178,31 @@ pub(crate) fn find_runtime_dir(root: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn ensure_runtime_executables(runtime_dir: &Path) -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for path in [
-            runtime_dir.join(virtual_client_name()),
-            runtime_dir.join("cidata-inject"),
-        ] {
-            if path.is_file() {
-                let mut permissions = fs_err::metadata(&path)?.permissions();
-                permissions.set_mode(permissions.mode() | 0o111);
-                fs_err::set_permissions(path, permissions)?;
+    cfg_select! {
+        unix => {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [
+                runtime_dir.join(virtual_client_name()),
+                runtime_dir.join("cidata-inject"),
+            ] {
+                if path.is_file() {
+                    let mut permissions = fs_err::metadata(&path)?.permissions();
+                    permissions.set_mode(permissions.mode() | 0o111);
+                    fs_err::set_permissions(path, permissions)?;
+                }
             }
         }
+        _ => {
+            let _ = runtime_dir;
+        }
     }
-    #[cfg(not(unix))]
-    let _ = runtime_dir;
     Ok(())
 }
 
-const fn virtual_client_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "VirtualClient.exe"
-    } else {
-        "VirtualClient"
+pub(crate) const fn virtual_client_name() -> &'static str {
+    cfg_select! {
+        target_os = "windows" => "VirtualClient.exe",
+        _ => "VirtualClient",
     }
 }
 

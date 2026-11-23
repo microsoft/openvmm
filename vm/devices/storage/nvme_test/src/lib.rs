@@ -37,6 +37,9 @@ const MAX_QES: u16 = 256;
 /// (the size of the NSID address space), identical across all controllers,
 /// and is independent of how many namespaces are currently present.
 const MAX_NSID: u32 = 1024;
+/// The NSID that names every namespace at once (NVMe Base 2.1 section
+/// 3.2.1.2); whether a command accepts it is up to the command.
+const BROADCAST_NSID: u32 = 0xffff_ffff;
 const BAR0_LEN: u64 = 0x10000;
 const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;

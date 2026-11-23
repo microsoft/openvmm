@@ -335,26 +335,19 @@ impl PartitionUnitRunner {
                 Debug(vmm_core_defs::debug_rpc::DebugRequest),
             }
 
-            #[cfg(feature = "gdb")]
-            let debug = self.debugger_state.wait_rpc();
-            #[cfg(not(feature = "gdb"))]
-            let debug = std::future::pending();
+            let debug = cfg_select! {
+                feature = "gdb" => self.debugger_state.wait_rpc(),
+                _ => std::future::pending::<std::convert::Infallible>(),
+            };
 
             let event = futures::select! {  // merge semantics
                 request = recv.next() => Event::State(request),
                 request = self.halt_request_recv.select_next_some() => Event::Halt(request),
                 request = self.req_recv.select_next_some() => Event::Request(request),
-                request = debug.fuse() => {
-                    #[cfg(feature = "gdb")]
-                    {
-                        Event::Debug(request)
-                    }
-                    #[cfg(not(feature = "gdb"))]
-                    {
-                        let _: std::convert::Infallible = request;
-                        unreachable!()
-                    }
-                }
+                request = debug.fuse() => cfg_select! {
+                    feature = "gdb" => Event::Debug(request),
+                    _ => match request {},
+                },
             };
 
             match event {
@@ -420,10 +413,10 @@ impl PartitionUnitRunner {
                     self.halt_reason = Some(reason.clone());
 
                     // Report the halt to the debugger.
-                    #[cfg(feature = "gdb")]
-                    let reported = self.debugger_state.report_halt_to_debugger(&reason);
-                    #[cfg(not(feature = "gdb"))]
-                    let reported = false;
+                    let reported = cfg_select! {
+                        feature = "gdb" => self.debugger_state.report_halt_to_debugger(&reason),
+                        _ => false,
+                    };
 
                     // If the debugger is not attached, then report the halt
                     // to the client.
@@ -560,10 +553,10 @@ impl PartitionUnitRunner {
         use hyperv_dump::PartitionStateBuilder;
         use hyperv_dump::ProcessorArch;
 
-        #[cfg(guest_arch = "x86_64")]
-        let arch = ProcessorArch::X64;
-        #[cfg(guest_arch = "aarch64")]
-        let arch = ProcessorArch::Aarch64;
+        let arch = cfg_select! {
+            guest_arch = "x86_64" => ProcessorArch::X64,
+            guest_arch = "aarch64" => ProcessorArch::Aarch64,
+        };
 
         let mut builder = PartitionStateBuilder::new(arch);
         builder.set_os_id(self.partition.guest_os_id());

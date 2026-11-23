@@ -50,12 +50,13 @@ impl Agent {
                 let socket = (connect_client(&driver), connect_server(&driver))
                     .race()
                     .await;
-                #[cfg(target_os = "linux")]
-                let local_vsock_cid = Some(
-                    vmsocket::local_vsock_cid().context("failed to query local AF_VSOCK CID")?,
-                );
-                #[cfg(windows)]
-                let local_vsock_cid = None;
+                let local_vsock_cid = cfg_select! {
+                    target_os = "linux" => Some(
+                        vmsocket::local_vsock_cid()
+                            .context("failed to query local AF_VSOCK CID")?,
+                    ),
+                    windows => None,
+                };
                 Self::from_conn(driver, socket, local_vsock_cid)
             }
             Transport::Tcp => {

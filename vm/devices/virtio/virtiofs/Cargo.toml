@@ -27,6 +27,7 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 ntapi.workspace = true
 pal.workspace = true
@@ -36,6 +37,8 @@ windows-sys = { workspace = true, features = [
 	"Wdk_System_SystemServices",
 	"Win32_Foundation",
 	"Win32_System_Memory",
+	"Win32_Security",
+	"Win32_System_Threading",
 ] }
 
 [lints]

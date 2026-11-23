@@ -618,8 +618,8 @@ impl ThreadpoolDriver {
 
     /// Sets a function to be called when the thread gets spawned. The function
     /// accepts a single `bool` parameter that indicates that the notifier
-    /// should cancel any oustanding run or not. When called by the threadpool,
-    /// the function will recieve `true`.
+    /// should cancel any outstanding run or not. When called by the threadpool,
+    /// the function will receive `true`.
     ///
     /// Return `Err(f)` if the thread is already spawned.
     pub fn set_spawn_notifier<F: 'static + Send + FnOnce(bool)>(&self, f: F) -> Result<(), F> {

@@ -18,6 +18,7 @@ sparse_mmap.workspace = true
 task_control.workspace = true
 
 anyhow.workspace = true
+blocking.workspace = true
 futures.workspace = true
 fs-err.workspace = true
 pal_async.workspace = true

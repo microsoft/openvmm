@@ -16,6 +16,7 @@ use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::worker::Worker;
 use anyhow::Context;
 use async_trait::async_trait;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use framebuffer::View;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -280,6 +281,11 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_ipmi_sel(&mut self) -> anyhow::Result<IpmiSelEvent>
     );
     petri_vm_fn!(
+        /// Wait for OpenHCL's VTL0 start report, preserving a guest-reported
+        /// initialization error separately from transport and VM-halt errors.
+        pub async fn wait_for_vtl0_start(&mut self) -> anyhow::Result<Result<(), get_resources::ged::Vtl0StartError>>
+    );
+    petri_vm_fn!(
         /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
         /// that will be closed when it is no longer ready. Returns `None` if
         /// the shutdown IC is not configured.
@@ -288,6 +294,12 @@ impl PetriVmOpenVmm {
     petri_vm_fn!(
         /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
         pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Inject an ACPI power-button event without waiting for guest shutdown.
+        ///
+        /// Requires direct ACPI, UEFI, or PCAT boot and a guest power-button handler.
+        pub async fn send_acpi_shutdown(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
         /// Waits for the KVP IC to be ready, returning a sender that can be used
@@ -334,6 +346,21 @@ impl PetriVmOpenVmm {
     petri_vm_fn!(
         /// Resets the hardware state of the VM, simulating a power cycle.
         pub async fn reset(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Hot-add a VPCI device to VTL0 with the supplied instance ID.
+        pub async fn add_vpci_device(
+            &mut self,
+            instance_id: guid::Guid,
+            resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Hot-remove a dynamically added VPCI device by instance ID.
+        pub async fn remove_vpci_device(
+            &mut self,
+            instance_id: guid::Guid
+        ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
         /// Dumps the VM's processor and memory state to a `.vmrs` file at `path`.
@@ -504,6 +531,18 @@ impl PetriVmInner {
         Ok(())
     }
 
+    async fn send_acpi_shutdown(&mut self) -> anyhow::Result<()> {
+        self.resources
+            .acpi_power_button_send
+            .as_ref()
+            .context("ACPI shutdown requires direct ACPI, UEFI, or PCAT boot")?
+            .call(PowerButtonRpc::Press, ())
+            .await
+            .context("failed to inject ACPI power-button event")?;
+        tracing::info!("ACPI power-button event injected");
+        Ok(())
+    }
+
     async fn wait_for_kvp(
         &mut self,
     ) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>> {
@@ -553,6 +592,19 @@ impl PetriVmInner {
     async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
         self.worker.remove_pcie_device(port_name).await
     }
+
+    async fn add_vpci_device(
+        &mut self,
+        instance_id: guid::Guid,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.worker.add_vpci_device(instance_id, resource).await
+    }
+
+    async fn remove_vpci_device(&mut self, instance_id: guid::Guid) -> anyhow::Result<()> {
+        self.worker.remove_vpci_device(instance_id).await
+    }
+
     async fn dump_state(&mut self, path: &Path) -> anyhow::Result<()> {
         self.worker.dump_state(path).await
     }
@@ -581,6 +633,21 @@ impl PetriVmInner {
             .await?;
 
         Ok(())
+    }
+
+    async fn wait_for_vtl0_start(
+        &mut self,
+    ) -> anyhow::Result<Result<(), get_resources::ged::Vtl0StartError>> {
+        self.resources
+            .ged_send
+            .as_ref()
+            .context("openhcl not configured")?
+            .call(
+                get_resources::ged::GuestEmulationRequest::WaitForVtl0Start,
+                (),
+            )
+            .await
+            .context("failed to receive OpenHCL VTL0 start report")
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {

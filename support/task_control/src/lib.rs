@@ -3,10 +3,88 @@
 
 //! A simple asynchronous task model for execution that needs to be started,
 //! stopped, mutated, and inspected.
+//!
+//! # Worker cancellation
+//!
+//! [`TaskControl`] requests cancellation for stop, inspection, and updates.
+//! Return `Err(Cancelled)` to hand control back with unfinished work; `Ok(())`
+//! means the worker is permanently finished until removed and reinserted.
+//!
+//! An `await` need not return `Pending`. If a wrapped loop keeps making progress
+//! in one poll, [`StopTask::until_stopped`] cannot interrupt it from outside.
+//! Choose the wrapping style below to match your work loop. In both examples,
+//! `process` is a bounded synchronous step.
+//!
+//! ## Per-operation waits
+//!
+//! Wrap each interruptible wait when its poll and the work between waits are
+//! bounded. The wrapper checks stop even when every wait is immediately ready.
+//!
+//! ```rust
+//! use futures::{Stream, StreamExt};
+//! use task_control::{Cancelled, StopTask};
+//!
+//! async fn run<T>(
+//!     stop: &mut StopTask<'_>,
+//!     items: &mut (impl Stream<Item = T> + Unpin),
+//!     mut process: impl FnMut(T),
+//! ) -> Result<(), Cancelled> {
+//!     loop {
+//!         let Some(item) = stop.until_stopped(items.next()).await? else {
+//!             return Ok(());
+//!         };
+//!         process(item);
+//!     }
+//! }
+//! ```
+//!
+//! ## Whole-loop waits
+//!
+//! When wrapping the whole loop, obtain a [`StopCheck`] before borrowing `stop`
+//! for the wait. Check it before fetching each new unit of work. The wrapper
+//! interrupts blocked waits; the checks interrupt continuously ready work.
+//!
+//! ```rust
+//! use futures::{Stream, StreamExt};
+//! use task_control::{Cancelled, StopTask};
+//!
+//! async fn run<T>(
+//!     stop: &mut StopTask<'_>,
+//!     items: &mut (impl Stream<Item = T> + Unpin),
+//!     mut process: impl FnMut(T),
+//! ) -> Result<(), Cancelled> {
+//!     let check = stop.check_handle()?;
+//!     stop.until_stopped(async {
+//!         loop {
+//!             check.check()?;
+//!             let Some(item) = items.next().await else {
+//!                 return Ok(());
+//!             };
+//!             process(item);
+//!         }
+//!     })
+//!     .await?
+//! }
+//! ```
+//!
+//! ## Choosing check boundaries
+//!
+//! - Check between bounded batches rather than inside every item. Queue capacity
+//!   is not a bound if buffers or credits can be recycled while draining.
+//! - Cover nested loops and each concurrent branch, not just worker entry. A
+//!   shared helper can instead return after one bounded step to a checked caller.
+//! - Keep accepted I/O and partial progress in the task or its state across
+//!   awaits. Finish required queue publication and coordinator handoffs before
+//!   returning cancellation; do not put a check between consuming work and
+//!   recording the state needed to resume it.
+//!
+//! Keep cancellation separate from operational failures. Do not catch and log
+//! `Cancelled` and then return `Ok(())`, which prevents the worker from resuming.
+//! A synchronous check does not interrupt an outstanding wait or yield the
+//! executor; use `until_stopped` for waits that must be interruptible.
 
 #![forbid(unsafe_code)]
 
-use fast_select::FastSelect;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::task::Spawn;
@@ -17,18 +95,26 @@ use std::future::poll_fn;
 use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
 /// A method implemented by a task that can be run and stopped, storing
 /// transient state in `S`.
+///
+/// See the [worker cancellation guide](crate#worker-cancellation) for wrapping
+/// examples and check placement.
 pub trait AsyncRun<S>: 'static + Send {
     /// Runs the task.
     ///
     /// The task should stop when `stop` becomes ready. This can be determined
     /// either by awaiting on `stop`, or by calling [`StopTask::until_stopped`]
     /// with a future to run.
+    /// A future passed to `until_stopped` must return from each poll after
+    /// bounded work. Otherwise, use [`StopTask::check`] at cancel-safe work
+    /// boundaries within that future.
     ///
     /// The function should return `Ok(())` if the task is complete, in which
     /// case it will only run again after being removed and reinserted.
@@ -49,14 +135,43 @@ pub trait AsyncRun<S>: 'static + Send {
 
 /// The return error from [`AsyncRun::run`] indicating the task has not yet
 /// finished executing.
+///
+/// This is control flow, not an operational error. It deliberately does not
+/// implement [`std::error::Error`], preventing implicit error boxing.
+///
+/// ```compile_fail
+/// let error: Box<dyn std::error::Error> = Box::new(task_control::Cancelled);
+/// ```
 #[derive(Debug)]
 pub struct Cancelled;
 
 /// A future indicating that the task should return for event processing or
 /// because the task was stopped.
+///
+/// See the [worker cancellation guide](crate#worker-cancellation).
 pub struct StopTask<'a> {
     inner: &'a mut (dyn 'a + Send + Future<Output = ()> + Unpin),
-    fast_select: &'a mut FastSelect,
+    requested: &'a AtomicBool,
+    outer_waker: Option<Waker>,
+}
+
+/// A control-request check that can be used while [`StopTask`] is borrowed by a wait.
+///
+/// The handle borrows the backing signal, not the `StopTask`, and must only be
+/// used within the current worker activation.
+#[derive(Clone, Copy)]
+pub struct StopCheck<'a>(&'a AtomicBool);
+
+impl StopCheck<'_> {
+    /// Checks for a control request with only a relaxed atomic load.
+    #[inline]
+    pub fn check(&self) -> Result<(), Cancelled> {
+        if self.0.load(Ordering::Relaxed) {
+            Err(Cancelled)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// The inner polling implementation, which polls for an incoming request from
@@ -64,7 +179,7 @@ pub struct StopTask<'a> {
 ///
 /// This is separate from `StopTask` so that the types can be erased.
 struct StopTaskInner<'a, T, S> {
-    shared: &'a Mutex<Shared<T, S>>,
+    shared: &'a Shared<T, S>,
 }
 
 impl<T: AsyncRun<S>, S> Future for StopTaskInner<'_, T, S> {
@@ -86,18 +201,41 @@ impl<T: AsyncRun<S>, S> Future for StopTaskInner<'_, T, S> {
     }
 }
 
-impl StopTask<'_> {
-    /// Runs `f`, providing access to `stop` via a `StopTask` passed to `f`.
-    pub async fn run_with<R>(
-        mut stop: impl Send + Future<Output = ()> + Unpin,
-        f: impl AsyncFnOnce(&mut StopTask<'_>) -> R,
-    ) -> R {
-        let mut fast_select: FastSelect = FastSelect::new();
+impl<'a> StopTask<'a> {
+    /// Runs `f` with a task that never receives control requests.
+    ///
+    /// Intended for test helpers that run a device without a `TaskControl`.
+    pub async fn run_unstoppable<R>(f: impl AsyncFnOnce(&mut StopTask<'_>) -> R) -> R {
+        let requested = AtomicBool::new(false);
+        let mut pending = std::future::pending();
         let mut stop = StopTask {
-            inner: &mut stop,
-            fast_select: &mut fast_select,
+            inner: &mut pending,
+            requested: &requested,
+            outer_waker: None,
         };
         f(&mut stop).await
+    }
+
+    /// Checks whether the task should return for stop or event processing.
+    ///
+    /// Call at cancel-safe boundaries in loops that can keep making progress
+    /// without yielding. This does not yield or cancel an outstanding wait;
+    /// use [`Self::until_stopped`] for waits that must be interruptible.
+    ///
+    /// This only performs a relaxed atomic load. Request producers publish
+    /// the signal directly; checking does not register or poll a waker.
+    #[inline]
+    pub fn check(&self) -> Result<(), Cancelled> {
+        StopCheck(self.requested).check()
+    }
+
+    /// Checks for a request and returns a handle for this worker activation.
+    ///
+    /// Use this inside a future passed to [`Self::until_stopped`], or when
+    /// several processing loops need to check the same control request.
+    pub fn check_handle(&self) -> Result<StopCheck<'a>, Cancelled> {
+        self.check()?;
+        Ok(StopCheck(self.requested))
     }
 
     /// Runs `fut` until the task is requested to stop.
@@ -106,21 +244,19 @@ impl StopTask<'_> {
     ///
     /// If the task is requested to stop before `fut` completes, then `fut` is
     /// dropped and `Err(Cancelled)` is returned.
+    /// Stop takes priority when both stop and work are ready.
     pub async fn until_stopped<F: Future>(&mut self, fut: F) -> Result<F::Output, Cancelled> {
-        // Wrap the cancel task in a FastSelect to avoid taking the channel lock
-        // at each wakeup.
-        let mut cancel = pin!(
-            self.fast_select
-                .select((poll_fn(|cx| Pin::new(&mut self.inner).poll(cx)),))
-        );
-
         let mut fut = pin!(fut);
 
-        // Since this is a common fast path, implement the select manually.
+        // Check stop, poll work, then handle wake registration only if pending.
+        // Always-ready loops avoid waker comparisons entirely. Frequently
+        // pending workers reuse registration without a second stop-flag load.
         poll_fn(|cx| {
-            if let Poll::Ready(r) = fut.as_mut().poll(cx) {
+            if let Err(cancelled) = self.check() {
+                Poll::Ready(Err(cancelled))
+            } else if let Poll::Ready(r) = fut.as_mut().poll(cx) {
                 Poll::Ready(Ok(r))
-            } else if cancel.as_mut().poll(cx).is_ready() {
+            } else if self.poll_wait(cx).is_ready() {
                 Poll::Ready(Err(Cancelled))
             } else {
                 Poll::Pending
@@ -128,13 +264,41 @@ impl StopTask<'_> {
         })
         .await
     }
+
+    #[inline]
+    fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        // The caller already checked stop. On a cache hit, a request arriving
+        // during work polling wakes this task for another poll.
+        if self
+            .outer_waker
+            .as_ref()
+            .is_some_and(|waker| cx.waker().will_wake(waker))
+        {
+            return Poll::Pending;
+        }
+        if Pin::new(&mut self.inner).poll(cx).is_ready() {
+            return Poll::Ready(());
+        }
+        self.outer_waker = Some(cx.waker().clone());
+        // Recheck after registering the waker so a concurrent request
+        // cannot leave an interruptible wait asleep.
+        if self.check().is_err() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
 }
 
 impl Future for StopTask<'_> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.inner).poll(cx)
+        if self.check().is_err() {
+            Poll::Ready(())
+        } else {
+            self.poll_wait(cx)
+        }
     }
 }
 
@@ -236,7 +400,7 @@ enum Inner<T, S> {
     WithState {
         activity: Activity<T, S>,
         _backing_task: Task<()>,
-        shared: Arc<Mutex<Shared<T, S>>>,
+        shared: Arc<Shared<T, S>>,
     },
     Invalid,
 }
@@ -248,6 +412,13 @@ struct TaskAndState<T, S> {
 }
 
 struct Shared<T, S> {
+    // Mirrors stop or queued calls. Writers hold the state lock; readers use
+    // this only to return control, not to acquire access to the protected state.
+    requested: AtomicBool,
+    inner: Mutex<SharedState<T, S>>,
+}
+
+struct SharedState<T, S> {
     task_and_state: Option<Box<TaskAndState<T, S>>>,
     calls: Vec<CallFn<T, S>>,
     stop: bool,
@@ -256,11 +427,16 @@ struct Shared<T, S> {
 }
 
 impl<T, S> Shared<T, S> {
-    fn push_call(this: &Mutex<Self>, f: CallFn<T, S>) {
+    fn lock(&self) -> parking_lot::MutexGuard<'_, SharedState<T, S>> {
+        self.inner.lock()
+    }
+
+    fn push_call(this: &Self, f: CallFn<T, S>) {
         let waker = {
-            let mut this = this.lock();
-            this.calls.push(f);
-            this.inner_waker.take()
+            let mut shared = this.lock();
+            shared.calls.push(f);
+            this.requested.store(true, Ordering::Relaxed);
+            shared.inner_waker.take()
         };
         if let Some(waker) = waker {
             waker.wake();
@@ -431,13 +607,16 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
             Inner::NoState(mut task_and_state) => {
                 task_and_state.state = Some(state);
                 task_and_state.done = false;
-                let shared = Arc::new(Mutex::new(Shared {
-                    task_and_state: None,
-                    calls: Vec::new(),
-                    stop: true,
-                    outer_waker: None,
-                    inner_waker: None,
-                }));
+                let shared = Arc::new(Shared {
+                    requested: AtomicBool::new(true),
+                    inner: Mutex::new(SharedState {
+                        task_and_state: None,
+                        calls: Vec::new(),
+                        stop: true,
+                        outer_waker: None,
+                        inner_waker: None,
+                    }),
+                });
                 let backing_task = spawn.spawn(name, Self::run(shared.clone()));
                 Inner::WithState {
                     activity: Activity::Stopped(task_and_state),
@@ -467,10 +646,13 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                         return false;
                     }
                     let waker = {
-                        let mut shared = shared.lock();
-                        shared.task_and_state = Some(task_and_state);
-                        shared.stop = false;
-                        shared.inner_waker.take()
+                        let mut state = shared.lock();
+                        state.task_and_state = Some(task_and_state);
+                        state.stop = false;
+                        shared
+                            .requested
+                            .store(!state.calls.is_empty(), Ordering::Relaxed);
+                        state.inner_waker.take()
                     };
                     if let Some(waker) = waker {
                         waker.wake();
@@ -486,48 +668,59 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
         }
     }
 
-    async fn run(shared: Arc<Mutex<Shared<T, S>>>) {
-        StopTask::run_with(StopTaskInner { shared: &shared }, async |stop_task| {
-            let mut calls = Vec::new();
-            loop {
-                let (mut task_and_state, stop) = poll_fn(|cx| {
-                    let mut shared = shared.lock();
-                    let has_work = shared
-                        .task_and_state
-                        .as_ref()
-                        .is_some_and(|ts| !shared.calls.is_empty() || (!shared.stop && !ts.done));
-                    if !has_work {
-                        shared.inner_waker = Some(cx.waker().clone());
-                        return Poll::Pending;
-                    }
-                    calls.append(&mut shared.calls);
-                    Poll::Ready((shared.task_and_state.take().unwrap(), shared.stop))
-                })
-                .await;
-
-                for call in calls.drain(..) {
-                    call(&mut task_and_state);
+    async fn run(shared: Arc<Shared<T, S>>) {
+        let mut stop_source = StopTaskInner { shared: &shared };
+        let mut stop_task = StopTask {
+            inner: &mut stop_source,
+            requested: &shared.requested,
+            outer_waker: None,
+        };
+        let mut calls = Vec::new();
+        loop {
+            let (mut task_and_state, stop) = poll_fn(|cx| {
+                let mut state = shared.lock();
+                let has_work = state
+                    .task_and_state
+                    .as_ref()
+                    .is_some_and(|ts| !state.calls.is_empty() || (!state.stop && !ts.done));
+                if !has_work {
+                    state.inner_waker = Some(cx.waker().clone());
+                    return Poll::Pending;
                 }
+                calls.append(&mut state.calls);
+                // Drain and reset under the producer lock. Requests arriving
+                // while these callbacks run must remain visible to the worker.
+                shared.requested.store(state.stop, Ordering::Relaxed);
+                Poll::Ready((state.task_and_state.take().unwrap(), state.stop))
+            })
+            .await;
 
-                if !stop && !task_and_state.done {
+            for call in calls.drain(..) {
+                call(&mut task_and_state);
+            }
+
+            if !stop && !task_and_state.done {
+                // The driver may have consumed or replaced the registered
+                // worker waker since the preceding activation.
+                stop_task.outer_waker = None;
+                if stop_task.check().is_ok() {
                     task_and_state.done = task_and_state
                         .task
-                        .run(&mut *stop_task, task_and_state.state.as_mut().unwrap())
+                        .run(&mut stop_task, task_and_state.state.as_mut().unwrap())
                         .await
                         .is_ok();
                 }
-
-                let waker = {
-                    let mut shared = shared.lock();
-                    shared.task_and_state = Some(task_and_state);
-                    shared.outer_waker.take()
-                };
-                if let Some(waker) = waker {
-                    waker.wake();
-                }
             }
-        })
-        .await
+
+            let waker = {
+                let mut shared = shared.lock();
+                shared.task_and_state = Some(task_and_state);
+                shared.outer_waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
     }
 
     /// Poll variant of [`stop`](Self::stop). Signals the task to stop and polls
@@ -543,19 +736,20 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 activity, shared, ..
             } => match activity {
                 Activity::Running => {
-                    let mut shared = shared.lock();
-                    shared.stop = true;
-                    if shared.task_and_state.is_none() || !shared.calls.is_empty() {
-                        shared.outer_waker = Some(cx.waker().clone());
-                        let waker = shared.inner_waker.take();
-                        drop(shared);
+                    let mut state = shared.lock();
+                    state.stop = true;
+                    shared.requested.store(true, Ordering::Relaxed);
+                    if state.task_and_state.is_none() || !state.calls.is_empty() {
+                        state.outer_waker = Some(cx.waker().clone());
+                        let waker = state.inner_waker.take();
+                        drop(state);
                         if let Some(waker) = waker {
                             waker.wake();
                         }
                         return Poll::Pending;
                     }
-                    let task_and_state = shared.task_and_state.take().unwrap();
-                    drop(shared);
+                    let task_and_state = state.task_and_state.take().unwrap();
+                    drop(state);
                     let done = task_and_state.done;
                     *activity = Activity::Stopped(task_and_state);
                     Poll::Ready(!done)
@@ -607,7 +801,284 @@ mod tests {
     use futures::FutureExt;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use parking_lot::Mutex;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
     use std::task::Poll;
+    use std::task::Wake;
+    use std::task::Waker;
+
+    #[derive(Default)]
+    struct CheckSignal {
+        requested: AtomicBool,
+        polls: AtomicUsize,
+        waker: Mutex<Option<Waker>>,
+        request_during_registration: AtomicBool,
+    }
+
+    #[derive(Default)]
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl CheckSignal {
+        fn notify(&self) {
+            let waker = self.waker.lock().clone();
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
+    }
+
+    struct CheckStop<'a>(&'a CheckSignal);
+
+    impl Future for CheckStop<'_> {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            self.0.polls.fetch_add(1, Ordering::Relaxed);
+            let old = self.0.waker.lock().replace(cx.waker().clone());
+            drop(old);
+            let requested = self.0.requested.load(Ordering::Relaxed);
+            if self
+                .0
+                .request_during_registration
+                .swap(false, Ordering::Relaxed)
+            {
+                self.0.requested.store(true, Ordering::Relaxed);
+            }
+            if requested {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    async fn run_with_signal<R>(
+        signal: &CheckSignal,
+        f: impl AsyncFnOnce(&mut StopTask<'_>) -> R,
+    ) -> R {
+        let mut source = CheckStop(signal);
+        let mut stop = StopTask {
+            inner: &mut source,
+            requested: &signal.requested,
+            outer_waker: None,
+        };
+        f(&mut stop).await
+    }
+
+    #[test]
+    fn checks_observe_requests_without_polling_or_waker_registration() {
+        let signal = Arc::new(CheckSignal::default());
+        let result = run_with_signal(&signal, async |stop| {
+            let check = stop.check_handle().unwrap();
+            for _ in 0..1000 {
+                stop.check().unwrap();
+                check.check().unwrap();
+                stop.until_stopped(std::future::ready(())).await.unwrap();
+            }
+            assert_eq!(signal.polls.load(Ordering::Relaxed), 0);
+            assert!(signal.waker.lock().is_none());
+            assert!(stop.outer_waker.is_none());
+
+            signal.notify();
+            check.check().unwrap();
+            stop.check().unwrap();
+
+            signal.requested.store(true, Ordering::Relaxed);
+            assert!(check.check().is_err());
+            assert!(stop.check().is_err());
+            assert!(stop.check().is_err());
+            assert_eq!(signal.polls.load(Ordering::Relaxed), 0);
+            signal.requested.store(false, Ordering::Relaxed);
+            stop.check().unwrap();
+            signal.requested.store(true, Ordering::Relaxed);
+            assert!(stop.check().is_err());
+        })
+        .now_or_never();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn interruptible_wait_prioritizes_stop_and_handles_noop_wakers() {
+        let signal = Arc::new(CheckSignal::default());
+        let result = run_with_signal(&signal, async |stop| {
+            {
+                let mut wait = pin!(stop.until_stopped(std::future::pending::<()>()));
+                assert!(
+                    wait.as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop()))
+                        .is_pending()
+                );
+                signal.requested.store(true, Ordering::Relaxed);
+                signal.notify();
+                assert!(matches!(
+                    wait.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                    Poll::Ready(Err(_))
+                ));
+            }
+            let work = std::future::poll_fn(|_| -> Poll<u32> {
+                panic!("ready stop must prevent polling work");
+            });
+            assert!(stop.until_stopped(work).await.is_err());
+            assert!(stop.check().is_err());
+        })
+        .now_or_never();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn wait_caches_registration_and_tracks_executor_waker_changes() {
+        let signal = Arc::new(CheckSignal::default());
+        let count = Arc::new(CountWake::default());
+        let waker = Waker::from(count.clone());
+        let result = run_with_signal(&signal, async |stop| {
+            let mut cx = Context::from_waker(&waker);
+            assert!(Pin::new(&mut *stop).poll(&mut cx).is_pending());
+            signal.notify();
+            stop.check().unwrap();
+            assert!(Pin::new(&mut *stop).poll(&mut cx).is_pending());
+            assert_eq!(signal.polls.load(Ordering::Relaxed), 1);
+            let new_count = Arc::new(CountWake::default());
+            let new_waker = Waker::from(new_count.clone());
+            let mut cx = Context::from_waker(&new_waker);
+            assert!(Pin::new(&mut *stop).poll(&mut cx).is_pending());
+            assert_eq!(signal.polls.load(Ordering::Relaxed), 2);
+            signal.requested.store(true, Ordering::Relaxed);
+            signal.notify();
+            assert_eq!(count.0.load(Ordering::Relaxed), 1);
+            assert_eq!(new_count.0.load(Ordering::Relaxed), 1);
+            assert!(Pin::new(&mut *stop).poll(&mut cx).is_ready());
+            signal.requested.store(false, Ordering::Relaxed);
+            signal.waker.lock().take();
+            stop.outer_waker = None;
+            assert!(Pin::new(&mut *stop).poll(&mut cx).is_pending());
+            assert_eq!(signal.polls.load(Ordering::Relaxed), 3);
+        })
+        .now_or_never();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn cached_wait_observes_stop_on_repoll_when_requested_during_work() {
+        let signal = CheckSignal::default();
+        let count = Arc::new(CountWake::default());
+        let waker = Waker::from(count.clone());
+        let result = run_with_signal(&signal, async |stop| {
+            let mut cx = Context::from_waker(&waker);
+            assert!(Pin::new(&mut *stop).poll(&mut cx).is_pending());
+            let mut polled = false;
+            let work = std::future::poll_fn(|_| -> Poll<()> {
+                assert!(!polled, "stop must prevent polling work again");
+                polled = true;
+                signal.requested.store(true, Ordering::Relaxed);
+                signal.waker.lock().take().unwrap().wake();
+                Poll::Pending
+            });
+            let mut wait = pin!(stop.until_stopped(work));
+            assert!(wait.as_mut().poll(&mut cx).is_pending());
+            assert_eq!(count.0.load(Ordering::Relaxed), 1);
+            assert!(matches!(wait.as_mut().poll(&mut cx), Poll::Ready(Err(_))));
+            assert_eq!(signal.polls.load(Ordering::Relaxed), 1);
+        })
+        .now_or_never();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn wait_observes_request_arriving_during_registration() {
+        let signal = CheckSignal {
+            request_during_registration: AtomicBool::new(true),
+            ..Default::default()
+        };
+        let result = run_with_signal(&signal, async |stop| {
+            let mut wait = pin!(stop.until_stopped(std::future::pending::<()>()));
+            assert!(matches!(
+                wait.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Err(_))
+            ));
+        })
+        .now_or_never();
+        assert!(result.is_some());
+    }
+
+    #[async_test]
+    async fn checks_interrupt_busy_workers_for_update_stop_and_restart(driver: DefaultDriver) {
+        struct Busy {
+            started: std::sync::mpsc::Sender<usize>,
+            updates: usize,
+        }
+        impl AsyncRun<()> for Busy {
+            async fn run(&mut self, stop: &mut StopTask<'_>, _: &mut ()) -> Result<(), Cancelled> {
+                self.started.send(self.updates).unwrap();
+                loop {
+                    stop.check()?;
+                    std::future::ready(()).await;
+                }
+            }
+        }
+        async fn stop_with_timeout(task: &mut TaskControl<Busy, ()>, driver: &DefaultDriver) {
+            let mut timer = pal_async::timer::PolledTimer::new(driver);
+            match futures::future::select(
+                pin!(task.stop()),
+                pin!(timer.sleep(std::time::Duration::from_secs(5))),
+            )
+            .await
+            {
+                futures::future::Either::Left((stopped, _)) => assert!(stopped),
+                futures::future::Either::Right(_) => panic!("busy worker did not stop"),
+            }
+        }
+
+        let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("busy-check-test");
+        let (started, recv_started) = std::sync::mpsc::channel();
+        let mut task = TaskControl::new(Busy {
+            started,
+            updates: 0,
+        });
+        task.insert(&worker_driver, "busy", ());
+        assert!(task.start());
+        recv_started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let (entered, recv_entered) = std::sync::mpsc::channel();
+        let (release, recv_release) = std::sync::mpsc::channel();
+        task.update_with(move |worker, _| {
+            worker.updates += 1;
+            entered.send(()).unwrap();
+            recv_release
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        });
+        recv_entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        task.update_with(|worker, _| worker.updates += 1);
+        release.send(()).unwrap();
+        let updates_at_restart = recv_started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        stop_with_timeout(&mut task, &driver).await;
+        assert_eq!(updates_at_restart, 2);
+        assert_eq!(task.task().updates, 2);
+        assert!(task.start());
+        recv_started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        stop_with_timeout(&mut task, &driver).await;
+        assert_eq!(task.task().updates, 2);
+    }
 
     struct Foo(u32);
 

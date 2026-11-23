@@ -91,16 +91,18 @@ impl LocalAddrMap {
             self.next_ipv4_offset_from_end =
                 self.next_ipv4_offset_from_end.checked_add(1).unwrap_or(0);
 
-            let host_part = host_bits - offset_from_end as u32;
-            if host_part == 0 {
-                // Reached the network address — pool exhausted.
+            let Some(host_part) = host_bits
+                .checked_sub(offset_from_end as u32)
+                .filter(|&host_part| host_part != 0)
+            else {
+                // Reached the network address or the subnet has no host addresses.
                 self.next_ipv4_offset_from_end = 0;
                 tracelimit::warn_ratelimited!(
                     real_addr = %real_addr,
                     "Local IPv4 virtual address pool exhausted"
                 );
                 return None;
-            }
+            };
             let candidate_u32 = base_u32 | host_part;
             let candidate = Ipv4Addr::from(candidate_u32);
             // Skip if this collides with the current gateway or client IP.
@@ -266,6 +268,36 @@ mod tests {
             .unwrap();
         // Should skip .254 (gateway) and .253 (client), allocate .252
         assert_eq!(addr, Ipv4Addr::new(10, 0, 0, 252));
+    }
+
+    #[test]
+    fn test_v4_host_route_mask_reports_exhaustion() {
+        let mut map = LocalAddrMap::new();
+        assert_eq!(
+            map.get_or_allocate_v4(
+                Ipv4Addr::LOCALHOST,
+                Ipv4Addr::new(10, 0, 0, 2),
+                Ipv4Addr::BROADCAST,
+                Ipv4Addr::new(10, 0, 0, 2),
+                Ipv4Addr::new(10, 0, 0, 2),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_v4_point_to_point_mask_reports_exhaustion() {
+        let mut map = LocalAddrMap::new();
+        assert_eq!(
+            map.get_or_allocate_v4(
+                Ipv4Addr::LOCALHOST,
+                Ipv4Addr::new(10, 0, 0, 0),
+                Ipv4Addr::new(255, 255, 255, 254),
+                Ipv4Addr::new(10, 0, 0, 1),
+                Ipv4Addr::new(10, 0, 0, 0),
+            ),
+            None
+        );
     }
 
     #[test]

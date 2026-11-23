@@ -515,7 +515,7 @@ impl ResourceResolver {
             .collect::<Vec<_>>();
 
         static_resolvers.sort_by_key(|r| &r.key);
-        for (x, y) in static_resolvers.iter().zip(static_resolvers.iter().skip(1)) {
+        for [x, y] in static_resolvers.array_windows() {
             if x.key == y.key {
                 panic!("duplicate static resolver for {}", x.key);
             }

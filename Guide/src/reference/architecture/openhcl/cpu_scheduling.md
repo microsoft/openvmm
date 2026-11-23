@@ -233,4 +233,6 @@ When writing device backends, keep these rules in mind:
    [`TaskControl`](https://openvmm.dev/rustdoc/linux/task_control/struct.TaskControl.html),
    which provides start/stop/inspect integration. (This doesn't really apply to
    the CPU scheduling model, but is general good advice for writing device
-   backends).
+   backends). Follow the
+   [worker cancellation model](https://openvmm.dev/rustdoc/linux/task_control/index.html#worker-cancellation)
+   for responsive stop handling and preservation of accepted work.

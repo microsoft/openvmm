@@ -1123,8 +1123,8 @@ impl PartitionInfo {
                 log::info!(
                     "sidecar: disabling, too many CPUs for per-CPU state (max id {max_cpu_id})"
                 );
-                boot_options.sidecar = SidecarOptions::DisabledServicing;
-                options.sidecar = SidecarOptions::DisabledServicing;
+                boot_options.sidecar = SidecarOptions::DisabledPerCpuStateCapacity;
+                options.sidecar = SidecarOptions::DisabledPerCpuStateCapacity;
             }
         }
 

@@ -165,9 +165,15 @@ pub struct LocalClockTime {
 
 impl Debug for LocalClockTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        #[cfg(not(feature = "jiff_exts"))]
-        {
-            write!(
+        cfg_select! {
+            feature = "jiff_exts" => {{
+                let date_time: Result<jiff::Timestamp, _> = (*self).try_into();
+                match date_time {
+                    Ok(date_time) => write!(f, "{}", date_time),
+                    Err(e) => write!(f, "{:?}", e),
+                }
+            }}
+            _ => write!(
                 f,
                 "{}{:?}",
                 if self.millis_since_epoch.is_negative() {
@@ -176,16 +182,7 @@ impl Debug for LocalClockTime {
                     ""
                 },
                 std::time::Duration::from_millis(self.millis_since_epoch.unsigned_abs())
-            )
-        }
-
-        #[cfg(feature = "jiff_exts")]
-        {
-            let date_time: Result<jiff::Timestamp, _> = (*self).try_into();
-            match date_time {
-                Ok(date_time) => write!(f, "{}", date_time),
-                Err(e) => write!(f, "{:?}", e),
-            }
+            ),
         }
     }
 }

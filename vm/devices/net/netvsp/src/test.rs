@@ -2331,11 +2331,15 @@ async fn reject_completion_during_initialization(
             .unwrap();
 
         let mut initializing = None;
-        let result = channel
-            .initialize(&mut initializing, GuestMemory::allocate(PAGE_SIZE))
-            .now_or_never()
-            .expect("queued completion must be rejected without waiting")
-            .map(|_| ());
+        let result = StopTask::run_unstoppable(async |stop| {
+            let check = stop.check_handle().unwrap();
+            channel
+                .initialize(&mut initializing, GuestMemory::allocate(PAGE_SIZE), &check)
+                .await
+        })
+        .now_or_never()
+        .expect("queued completion must be rejected without waiting")
+        .map(|_| ());
         assert!(
             matches!(
                 result,

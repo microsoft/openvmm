@@ -41,6 +41,8 @@ pub enum DeviceCommand {
     Start(FailableRpc<StartParams, ()>),
     /// ChangeDeviceState::reset() — stop queues, reset device.
     Reset(Rpc<(), ()>),
+    /// Drop the stopped backend and exit, acknowledging after destruction.
+    Teardown(Rpc<(), ()>),
     /// Config register read at byte offset with byte length.
     ReadConfig {
         offset: u16,
@@ -283,6 +285,11 @@ pub async fn run_device_task(
             }
             DeviceCommand::Reset(rpc) => {
                 rpc.handle(async |()| task.reset().await).await;
+            }
+            DeviceCommand::Teardown(rpc) => {
+                drop(task);
+                rpc.complete(());
+                return;
             }
             DeviceCommand::ReadConfig {
                 offset,

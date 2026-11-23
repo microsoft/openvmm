@@ -27,6 +27,9 @@ pub const DMAR_REVISION: u8 = 1;
 /// DMAR flags: interrupt remapping supported (§8.1, Table 8-1).
 pub const DMAR_FLAGS_INTR_REMAP: u8 = 0x01;
 
+/// DMAR flags: platform firmware has opted into DMA control (§8.1, Table 8-1).
+pub const DMAR_FLAGS_DMA_CTRL_PLATFORM_OPT_IN: u8 = 0x04;
+
 /// DRHD structure type (§8.2).
 pub const DMAR_TYPE_DRHD: u16 = 0x0000;
 

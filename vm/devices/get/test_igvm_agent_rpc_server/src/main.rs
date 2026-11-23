@@ -16,7 +16,6 @@
 #[cfg(target_os = "windows")]
 mod rpc;
 
-use cfg_if::cfg_if;
 use clap::Parser;
 use get_resources::ged::IgvmAttestTestConfig;
 use std::process::ExitCode;
@@ -65,16 +64,17 @@ impl From<TestConfig> for IgvmAttestTestConfig {
 }
 
 fn main() -> ExitCode {
-    cfg_if! {
-        if #[cfg(target_os = "windows")] {
-            use tracing_subscriber::fmt;
-            use tracing_subscriber::EnvFilter;
+    cfg_select! {
+        target_os = "windows" => {
             use test_igvm_agent_lib::IgvmAgentTestSetting;
+            use tracing_subscriber::EnvFilter;
+            use tracing_subscriber::fmt;
 
             let args = Args::parse();
 
-            let filter = EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("test_igvm_agent_rpc_server=info,test_igvm_agent_lib=info"));
+            let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                EnvFilter::new("test_igvm_agent_rpc_server=info,test_igvm_agent_lib=info")
+            });
 
             let _ = fmt()
                 .with_env_filter(filter)
@@ -102,7 +102,7 @@ fn main() -> ExitCode {
 
             ExitCode::SUCCESS
         }
-        else {
+        _ => {
             eprintln!("IGVM agent RPC server is only supported on Windows hosts.");
             ExitCode::FAILURE
         }

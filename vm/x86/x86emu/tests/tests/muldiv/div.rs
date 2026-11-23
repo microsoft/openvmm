@@ -17,11 +17,11 @@ fn divide_regvalue_by_memory(
     for &(left_high, left_low, right, quotient, remainder) in variations {
         let mut cpu = run_test(
             RFLAGS_DIV_MASK,
-            |asm| div_op(asm, ptr_op(rax + 0x10)),
+            |asm| div_op(asm, ptr_op(AsmMemoryOperand::from(0x100))),
             |cpu| {
                 cpu.set_gp(Gp::RAX.into(), left_low);
                 cpu.set_gp(Gp::RDX.into(), (left_high).unwrap_or(0));
-                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
+                cpu.valid_gva = 0x100;
                 cpu.mem_val = right;
             },
         );

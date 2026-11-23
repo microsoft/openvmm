@@ -5,6 +5,7 @@
 
 use self::capabilities::*;
 use super::StalledIo;
+use super::core::QueueDoorbell;
 use super::core::TransportOps;
 use super::core::VirtioTransportCore;
 use super::task::ConfigReadCompletion;
@@ -73,13 +74,14 @@ enum InterruptKind {
     IntX(Arc<IntxInterrupt>),
 }
 
-/// BAR0 layout: common cfg is at offset 0, followed by notify, ISR, and
-/// device-specific config regions.
+/// BAR0 layout: common cfg, a reserved dword, ISR, device-specific config,
+/// then four-byte notification slots for each queue.
 const BAR0_NOTIFY_OFFSET: u16 = VIRTIO_PCI_COMMON_CFG_SIZE;
 const BAR0_NOTIFY_SIZE: u16 = 4;
 const BAR0_ISR_OFFSET: u16 = BAR0_NOTIFY_OFFSET + BAR0_NOTIFY_SIZE;
 const BAR0_ISR_SIZE: u16 = 4;
 const BAR0_DEVICE_CFG_OFFSET: u16 = BAR0_ISR_OFFSET + BAR0_ISR_SIZE;
+const NOTIFY_OFFSET_MULTIPLIER: u32 = 4;
 
 /// Map a virtio device type to its PCI class/subclass.
 ///
@@ -148,18 +150,20 @@ struct PciTransport {
     /// bound `pci_cfg_data` accesses.
     #[inspect(hex)]
     device_register_length: u32,
+    #[inspect(hex)]
+    notify_offset: u32,
+    notify_length: u32,
 }
 
 impl TransportOps for PciTransport {
     fn create_queue_interrupt(&mut self, _idx: usize, msix_vector: u16) -> Interrupt {
         match &self.interrupt_kind {
-            InterruptKind::Msix(msix) => {
-                if let Some(interrupt) = msix.interrupt(msix_vector) {
-                    interrupt
-                } else {
-                    tracelimit::warn_ratelimited!(msix_vector, "invalid MSIx vector specified");
-                    Interrupt::null()
-                }
+            InterruptKind::Msix(msix) if let Some(interrupt) = msix.interrupt(msix_vector) => {
+                interrupt
+            }
+            InterruptKind::Msix(_) => {
+                tracelimit::warn_ratelimited!(msix_vector, "invalid MSIx vector specified");
+                Interrupt::null()
             }
             InterruptKind::IntX(line) => {
                 let interrupt_status = self.interrupt_status.clone();
@@ -175,11 +179,12 @@ impl TransportOps for PciTransport {
     fn signal_config_change(&mut self) {
         *self.interrupt_status.lock() |= 2;
         match &self.interrupt_kind {
-            InterruptKind::Msix(msix) => {
-                if let Some(interrupt) = msix.interrupt(self.msix_config_vector) {
-                    interrupt.deliver();
-                }
+            InterruptKind::Msix(msix)
+                if let Some(interrupt) = msix.interrupt(self.msix_config_vector) =>
+            {
+                interrupt.deliver();
             }
+            InterruptKind::Msix(_) => (),
             InterruptKind::IntX(line) => line.set_level(true),
         }
     }
@@ -192,10 +197,15 @@ impl TransportOps for PciTransport {
         self.msix_config_vector = 0;
     }
 
-    fn doorbell_region(&mut self) -> Option<(u64, u32)> {
-        self.config_space
-            .bar_address(0)
-            .map(|base| (base + BAR0_NOTIFY_OFFSET as u64, 2))
+    fn queue_doorbell(&mut self, index: u16) -> Option<QueueDoorbell> {
+        self.config_space.bar_address(0).map(|base| QueueDoorbell {
+            // Dedicated addresses need no access-size or value decoding.
+            address: base
+                + u64::from(self.notify_offset)
+                + u64::from(index) * u64::from(NOTIFY_OFFSET_MULTIPLIER),
+            value: None,
+            length: None,
+        })
     }
 }
 
@@ -219,6 +229,10 @@ impl VirtioPciDevice {
         shared_mem_mapper: Option<&dyn MemoryMapper>,
     ) -> io::Result<Self> {
         let traits = device.traits();
+        let notify_offset =
+            (u32::from(BAR0_DEVICE_CFG_OFFSET) + traits.device_register_length).next_multiple_of(4);
+        let notify_length = u32::from(traits.max_queues) * NOTIFY_OFFSET_MULTIPLIER;
+        let bar0_length = u64::from(notify_offset) + u64::from(notify_length);
 
         let (base_class, sub_class) = virtio_class_code(traits.device_id);
         let hardware_ids = HardwareIds {
@@ -246,10 +260,10 @@ impl VirtioPciDevice {
             Box::new(ReadOnlyCapability::new(
                 "virtio-notify",
                 VirtioNotifyCapability::new(
+                    NOTIFY_OFFSET_MULTIPLIER,
                     0,
-                    0,
-                    BAR0_NOTIFY_OFFSET as u32,
-                    BAR0_NOTIFY_SIZE as u32,
+                    notify_offset,
+                    notify_length,
                 ),
             )),
             Box::new(ReadOnlyCapability::new(
@@ -284,11 +298,8 @@ impl VirtioPciDevice {
         }
 
         let mut bars = DeviceBars::new().bar0(
-            BAR0_DEVICE_CFG_OFFSET as u64 + traits.device_register_length as u64,
-            BarMemoryKind::Intercept(mmio_registration.new_io_region(
-                "config",
-                BAR0_DEVICE_CFG_OFFSET as u64 + traits.device_register_length as u64,
-            )),
+            bar0_length,
+            BarMemoryKind::Intercept(mmio_registration.new_io_region("config", bar0_length)),
         );
 
         let msix: Option<MsixEmulator> = if let PciInterruptModel::Msix(msi_target) =
@@ -307,10 +318,15 @@ impl VirtioPciDevice {
 
         let shared_memory_size = traits.shared_memory.size;
         if shared_memory_size > 0 {
+            // A PCI BAR must be a power of two, but the usable length of the
+            // shared memory region need not be. Round the BAR up and report the
+            // real length through the capability so that the guest does not
+            // access the unbacked tail of the BAR.
+            let bar_size = shared_memory_size.next_power_of_two();
             let (control, region) = shared_mem_mapper
                 .expect("must provide mapper for shmem")
                 .new_region(
-                    shared_memory_size.try_into().expect("region too big"),
+                    bar_size.try_into().expect("region too big"),
                     "virtio-pci-shmem".into(),
                 )?;
 
@@ -325,7 +341,7 @@ impl VirtioPciDevice {
                 ),
             )));
 
-            bars = bars.bar4(shared_memory_size, BarMemoryKind::SharedMem(control));
+            bars = bars.bar4(bar_size, BarMemoryKind::SharedMem(control));
 
             device
                 .set_shared_memory_region(&region)
@@ -372,6 +388,8 @@ impl VirtioPciDevice {
                 pci_cfg_access,
                 pci_cfg_data_offset,
                 device_register_length: traits.device_register_length,
+                notify_offset,
+                notify_length,
             },
         })
     }
@@ -413,10 +431,9 @@ impl VirtioPciDevice {
                 (msix_vector as u32) << 16 | size as u32
             }
             VirtioPciCommonCfg::QUEUE_ENABLE => {
-                self.core
-                    .queues
-                    .get(queue_select)
-                    .is_some_and(|qd| qd.params.enable) as u32
+                self.core.queues.get(queue_select).map_or(0, |qd| {
+                    (self.core.queue_select << 16) | u32::from(qd.params.enable)
+                })
             }
             VirtioPciCommonCfg::QUEUE_DESC_LO => self
                 .core
@@ -567,6 +584,38 @@ impl VirtioPciDevice {
         });
     }
 
+    fn notification_index(&self, offset: u64, length: usize) -> Result<u32, IoError> {
+        if !matches!(length, 2 | 4) {
+            return Err(IoError::InvalidAccessSize);
+        }
+        let relative = offset
+            .checked_sub(u64::from(self.pci.notify_offset))
+            .ok_or(IoError::InvalidRegister)?;
+        if !relative.is_multiple_of(u64::from(NOTIFY_OFFSET_MULTIPLIER)) {
+            return Err(IoError::UnalignedAccess);
+        }
+        if relative >= u64::from(self.pci.notify_length) {
+            return Err(IoError::InvalidRegister);
+        }
+        Ok((relative / u64::from(NOTIFY_OFFSET_MULTIPLIER)) as u32)
+    }
+
+    fn read_notification(&self, offset: u64, data: &mut [u8]) -> IoResult {
+        if let Err(err) = self.notification_index(offset, data.len()) {
+            return IoResult::Err(err);
+        }
+        data.fill(0);
+        IoResult::Ok
+    }
+
+    fn write_notification(&mut self, offset: u64, data: &[u8]) -> IoResult {
+        match self.notification_index(offset, data.len()) {
+            Ok(index) => self.core.notify_queue(index),
+            Err(err) => return IoResult::Err(err),
+        }
+        IoResult::Ok
+    }
+
     /// Validate a guest-programmed `pci_cfg_data` access against the selected
     /// BAR, returning the offset as a `u16`, or `None` if `bar`, `offset`, and
     /// `length` do not address `length` bytes within a reachable BAR.
@@ -609,6 +658,14 @@ impl VirtioPciDevice {
         if !offset.is_multiple_of(length) {
             return IoResult::Err(IoError::UnalignedAccess);
         }
+        if bar == 0 && offset >= self.pci.notify_offset {
+            let mut buf = [0; 4];
+            let result = self.read_notification(offset.into(), &mut buf[..length as usize]);
+            if let IoResult::Ok = result {
+                *value = u32::from_le_bytes(buf);
+            }
+            return result;
+        }
         // Reject accesses that do not address `length` bytes within the
         // selected BAR.
         let Some(offset) = self.pci_cfg_bar_offset(bar, offset, length) else {
@@ -650,6 +707,9 @@ impl VirtioPciDevice {
         }
         if !offset.is_multiple_of(length) {
             return IoResult::Err(IoError::UnalignedAccess);
+        }
+        if bar == 0 && offset >= self.pci.notify_offset {
+            return self.write_notification(offset.into(), &value.to_le_bytes()[..length as usize]);
         }
         // Reject accesses that do not address `length` bytes within the
         // selected BAR (see `read_pci_cfg_data`).
@@ -784,6 +844,10 @@ impl ChangeDeviceState for VirtioPciDevice {
         self.core.reset(&mut self.pci).await;
         self.pci.config_space.reset();
     }
+
+    async fn teardown(self) {
+        self.core.teardown().await;
+    }
 }
 
 impl PollDevice for VirtioPciDevice {
@@ -859,12 +923,13 @@ mod saved_state {
     }
 
     use super::*;
+    use vmcore::save_restore::AsyncSaveRestore;
     use vmcore::save_restore::SaveRestore;
 
-    impl SaveRestore for VirtioPciDevice {
+    impl AsyncSaveRestore for VirtioPciDevice {
         type SavedState = state::SavedState;
 
-        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+        async fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 common: self.core.save_common()?,
                 msix_config_vector: self.pci.msix_config_vector,
@@ -879,27 +944,27 @@ mod saved_state {
                     })
                     .collect(),
                 interrupt_status: *self.pci.interrupt_status.lock(),
-                cfg_space: self.pci.config_space.save()?,
+                cfg_space: SaveRestore::save(&mut self.pci.config_space)?,
             })
         }
 
-        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+        async fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let saved_queue_count = state.queues.len();
 
             // Restore the PCI config space (BARs, command register, etc.) so
             // that host pre-assigned BARs are preserved across the cycle.
             //
             // This has to come before `restore_common`, which reinstalls the
-            // queue doorbells: `doorbell_region` reads `bar_address(0)`, and a
+            // queue doorbells: `queue_doorbell` reads `bar_address(0)`, and a
             // BAR address only becomes active once the config space brings it
-            // back. If restored the other way round, `doorbell_region` answers
+            // back. If restored the other way round, `queue_doorbell` answers
             // `None` at that moment and no doorbell is installed. The only other
             // place they go in is the guest writing DRIVER_OK, which a guest
             // resumed mid-flight never does again, so the omission lasts for the
             // life of the VM and every queue kick takes an MMIO exit instead of
             // the registered doorbell. Nothing in `restore_common` reads the
             // interrupt state restored below.
-            self.pci.config_space.restore(state.cfg_space)?;
+            SaveRestore::restore(&mut self.pci.config_space, state.cfg_space)?;
 
             self.core.restore_common(
                 &mut self.pci,
@@ -954,6 +1019,9 @@ impl MmioIntercept for VirtioPciDevice {
         let Some((bar, offset)) = self.pci.config_space.find_bar(address) else {
             return IoResult::Err(IoError::InvalidRegister);
         };
+        if bar == 0 && offset >= u64::from(self.pci.notify_offset) {
+            return self.read_notification(offset, data);
+        }
         let offset = offset as u16;
         if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
             return defer_config_read(
@@ -990,6 +1058,9 @@ impl MmioIntercept for VirtioPciDevice {
         let Some((bar, offset)) = self.pci.config_space.find_bar(address) else {
             return IoResult::Err(IoError::InvalidRegister);
         };
+        if bar == 0 && offset >= u64::from(self.pci.notify_offset) {
+            return self.write_notification(offset, data);
+        }
         let offset = offset as u16;
         if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
             return defer_config_write(

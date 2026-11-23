@@ -55,6 +55,7 @@ use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 use tracing::Instrument;
 use tracing::instrument;
@@ -196,7 +197,6 @@ pub(crate) struct LoadedVm {
     pub runtime_params: crate::loader::vtl2_config::RuntimeParameters,
 
     /// Per-VM measured product policy.
-    #[cfg(feature = "product_policy")]
     pub measured_product_policy: product_policy::MeasuredProductPolicy,
 
     pub _input_distributor: SpawnedUnit<InputDistributor>,
@@ -207,6 +207,7 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
+    pub pending_host_mmios: Option<Arc<AtomicUsize>>,
     pub nvme_keep_alive: KeepAliveConfig,
     pub mana_keep_alive: KeepAliveConfig,
     pub test_configuration: Option<TestScenarioConfig>,
@@ -363,10 +364,12 @@ impl LoadedVm {
                             req.respond().field("dps", &self.device_platform_settings);
                         });
                         resp.field("runtime_params", &self.runtime_params);
+                        resp.field("measured_product_policy", &self.measured_product_policy);
                         resp.field("get", &self.get_client);
                         resp.field("vmgs", self.vmgs.as_ref().map(|x| &x.0));
                         resp.field("network", &self.network_settings);
                         resp.field("nvme", &self.nvme_manager);
+                        resp.field("pending_host_mmios", &self.pending_host_mmios);
                         resp.field("resolver", &self.resolver);
                         resp.field(
                             "vtl0_memory_map",

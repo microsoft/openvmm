@@ -51,11 +51,23 @@ pub mod fs {
         pub fs: VirtioFsBackend,
     }
 
+    #[derive(MeshPayload, Default)]
+    pub struct VirtioFsWindowsOptions {
+        /// Access token to impersonate for host file system access. `None`
+        /// uses the VMM process token.
+        #[cfg(windows)]
+        pub user_token: Option<std::os::windows::io::OwnedHandle>,
+        /// Expose shared-memory section objects instead of host files. Only
+        /// supported on Windows.
+        pub shared_mem: bool,
+    }
+
     #[derive(MeshPayload)]
     pub enum VirtioFsBackend {
         HostFs {
             root_path: String,
             mount_options: String,
+            windows_options: Option<VirtioFsWindowsOptions>,
         },
         SectionFs {
             root_path: String,
@@ -92,6 +104,7 @@ pub mod pmem {
     #[derive(MeshPayload)]
     pub struct VirtioPmemHandle {
         pub path: String,
+        pub read_only: bool,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioPmemHandle {
@@ -137,6 +150,23 @@ pub mod blk {
         pub disk: Resource<DiskHandleKind>,
         pub read_only: bool,
         pub serial: Option<String>,
+        pub options: VirtioBlkOptions,
+    }
+
+    /// Request queue concurrency for a native virtio-blk device.
+    #[derive(Clone, Copy, MeshPayload)]
+    pub struct VirtioBlkOptions {
+        pub queue_count: u16,
+        pub io_depth: u16,
+    }
+
+    impl Default for VirtioBlkOptions {
+        fn default() -> Self {
+            Self {
+                queue_count: 1,
+                io_depth: 64,
+            }
+        }
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioBlkHandle {
@@ -155,6 +185,8 @@ pub mod net {
     #[derive(MeshPayload)]
     pub struct VirtioNetHandle {
         pub max_queues: Option<u16>,
+        /// Advertise guest TCP segmentation offload when the backend supports it.
+        pub enable_rx_gso: bool,
         pub mac_address: MacAddress,
         pub endpoint: Resource<NetEndpointHandleKind>,
     }

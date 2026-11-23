@@ -44,6 +44,12 @@ pub(crate) struct QueueData {
     pub saved_state: Option<QueueState>,
 }
 
+pub(crate) struct QueueDoorbell {
+    pub address: u64,
+    pub value: Option<u64>,
+    pub length: Option<u32>,
+}
+
 /// Transport-specific operations that the core delegates to PCI or MMIO.
 pub(crate) trait TransportOps: Send {
     /// Create an interrupt for queue `idx`.
@@ -57,9 +63,9 @@ pub(crate) trait TransportOps: Send {
     /// Reset transport-specific interrupt state (clear status, deassert lines).
     fn reset_interrupts(&mut self);
 
-    /// Return the (base_address, entry_size) for doorbell registration,
+    /// Return the notification match for a queue's doorbell registration,
     /// or `None` if the address is not yet known.
-    fn doorbell_region(&mut self) -> Option<(u64, u32)>;
+    fn queue_doorbell(&mut self, index: u16) -> Option<QueueDoorbell>;
 }
 
 /// State shared by both the PCI and MMIO virtio transports.
@@ -68,7 +74,7 @@ pub(crate) struct VirtioTransportCore {
     #[inspect(rename = "device", send = "DeviceCommand::Inspect")]
     pub device_sender: mesh::Sender<DeviceCommand>,
     #[inspect(skip)]
-    pub _device_task: Task<()>,
+    pub device_task: Task<()>,
     pub state: TransportState,
     pub device_feature: VirtioDeviceFeatures,
     #[inspect(hex)]
@@ -131,13 +137,13 @@ impl VirtioTransportCore {
         let supports_save_restore = device.supports_save_restore();
 
         let (sender, receiver) = mesh::channel();
-        let _device_task = driver.spawn("virtio-device-task", async move {
+        let device_task = driver.spawn("virtio-device-task", async move {
             run_device_task(device, receiver).await;
         });
 
         Ok(Self {
             device_sender: sender,
-            _device_task,
+            device_task,
             state: TransportState::Ready,
             device_feature,
             device_feature_select: 0,
@@ -168,10 +174,10 @@ impl VirtioTransportCore {
     /// Register doorbells for all queues using the transport's
     /// notification address.
     pub fn install_doorbells(&mut self, ops: &mut dyn TransportOps) {
-        if let Some((base, entry_size)) = ops.doorbell_region() {
-            for (i, qd) in self.queues.iter().enumerate() {
+        for (i, qd) in self.queues.iter().enumerate() {
+            if let Some(doorbell) = ops.queue_doorbell(i as u16) {
                 self.doorbells
-                    .add(base, Some(i as u64), Some(entry_size), &qd.event);
+                    .add(doorbell.address, doorbell.value, doorbell.length, &qd.event);
             }
         }
     }
@@ -186,7 +192,7 @@ impl VirtioTransportCore {
         let Self {
             // Immutable / long-lived — not reset.
             device_sender: _,
-            _device_task: _,
+            device_task: _,
             device_feature: _,
             supports_save_restore: _,
             guest_memory: _,
@@ -422,6 +428,20 @@ impl VirtioTransportCore {
         let _ = self.state.drain().await;
         let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
         self.reset_status(ops);
+    }
+
+    pub async fn teardown(self) {
+        assert!(
+            !self.state.is_busy(),
+            "device must be stopped before teardown"
+        );
+        // Dropping the task handle only schedules cancellation; await backend
+        // destruction and task exit before acknowledging device removal.
+        self.device_sender
+            .call(DeviceCommand::Teardown, ())
+            .await
+            .expect("device task is gone");
+        self.device_task.await;
     }
 
     /// Signal a queue notification by index.

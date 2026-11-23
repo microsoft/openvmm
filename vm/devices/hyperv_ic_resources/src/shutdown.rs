@@ -31,6 +31,11 @@ pub enum ShutdownRpc {
     /// receiver to be closed.
     WaitReady(Rpc<(), mesh::OneshotReceiver<()>>),
     /// Send a shutdown request to the guest.
+    ///
+    /// Waits for the guest acknowledgment, not completion of the power-state change.
+    /// Stopping the caller's wait does not withdraw a command already sent to the
+    /// guest. The device continues waiting for acknowledgment and rejects further
+    /// shutdown requests with [`ShutdownResult::AlreadyInProgress`].
     Shutdown(Rpc<ShutdownParams, ShutdownResult>),
 }
 

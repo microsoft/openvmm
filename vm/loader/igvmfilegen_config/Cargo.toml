@@ -15,6 +15,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 serde_json = { workspace = true, features = ["std"] }
+test_with_tracing.workspace = true
+toml_edit = { workspace = true, features = ["serde"] }
 
 [lints]
 workspace = true

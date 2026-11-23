@@ -1365,7 +1365,7 @@ impl VmgsState {
             active_datastore_key_index: None,
             datastore_keys: [VmgsDatastoreKey::new_zeroed(); 2],
             unused_metadata_key: VmgsDatastoreKey::new_zeroed(),
-            encrypted_metadata_keys: std::array::from_fn(|_| VmgsEncryptionKey::new_zeroed()),
+            encrypted_metadata_keys: std::array::repeat(VmgsEncryptionKey::new_zeroed()),
             reprovisioned: false,
             provisioning_reason,
         }

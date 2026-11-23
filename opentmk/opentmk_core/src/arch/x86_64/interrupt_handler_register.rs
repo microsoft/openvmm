@@ -24,52 +24,61 @@ const ISR_STUB_LEN: usize = 10;
 #[cfg(target_feature = "avx")]
 compile_error!("AVX is not supported by this module");
 
-core::arch::global_asm! {
-    ".globl isr_common",
-    "isr_common:",
-    "push rbp",
-    "push r11",
-    "push r10",
-    "push r9",
-    "push r8",
-    "push rdi",
-    "push rsi",
-    "push rdx",
-    "push rcx",
-    "push rax",
-    "mov rbp, rsp",
-    "mov rdi, rbp",                 // arg0 = pointer to saved Frame
-    "sub rsp, 512",                 // reserve a 512-byte FXSAVE area below the frame
-    "and rsp, 0xfffffffffffffff0",  // 16-byte align it (fxsave requires it; also aligns the call)
-    "fxsave64 [rsp]",               // preserve the interrupted x87/MXCSR/XMM state
-    "call {isr_handler}",
-    "fxrstor64 [rsp]",              // restore x87/MXCSR/XMM (leaves al and flags intact)
-    "test al, al",                  // al = whether the vector pushed an error code
-    "mov rsp, rbp",                 // discard the FXSAVE area, back to the saved frame
-    "pop rax",
-    "pop rcx",
-    "pop rdx",
-    "pop rsi",
-    "pop rdi",
-    "pop r8",
-    "pop r9",
-    "pop r10",
-    "pop r11",
-    "pop rbp",
-    "jz 2f",
-    "add rsp, 8",                   // has error code: pop the vector too
-    "2:",
-    "add rsp, 8",                   // pop the error code or the vector
-    "iretq",
+/// # Safety
+/// Must be entered from an interrupt stub with the vector and CPU frame on the stack.
+// TODO: Use extern "custom" once supported by the minimum Rust version.
+// SAFETY: Assembly preserves GPR and x87/SSE state, aligns the SysV call stack,
+// and returns through the CPU's interrupt frame with IRETQ.
+#[unsafe(naked)]
+unsafe extern "sysv64" fn isr_common() -> ! {
+    core::arch::naked_asm!(
+        "push rbp",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rax",
+        "mov rbp, rsp",
+        "mov rdi, rbp",                 // arg0 = pointer to saved Frame
+        "sub rsp, 512",                 // reserve a 512-byte FXSAVE area below the frame
+        "and rsp, 0xfffffffffffffff0",  // 16-byte align it (fxsave requires it; also aligns the call)
+        "fxsave64 [rsp]",               // preserve the interrupted x87/MXCSR/XMM state
+        "call {isr_handler}",
+        "fxrstor64 [rsp]",              // restore x87/MXCSR/XMM (leaves al and flags intact)
+        "test al, al",                  // al = whether the vector pushed an error code
+        "mov rsp, rbp",                 // discard the FXSAVE area, back to the saved frame
+        "pop rax",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop rbp",
+        "jz 2f",
+        "add rsp, 8",                   // has error code: pop the vector too
+        "2:",
+        "add rsp, 8",                   // pop the error code or the vector
+        "iretq",
+        isr_handler = sym isr_handler,
+    );
+}
 
+core::arch::global_asm! {
     // 256 interrupt entry points, each `push <vector>; jmp isr_common`.
     ".globl {isr0}",
     "{isr0}:",
     ".rept 256",
     ".byte 0x68", ".long \\+",                  // push imm32 (the vector number)
-    ".byte 0xe9", ".long isr_common - . - 4",   // jmp rel32 to isr_common
+    ".byte 0xe9", ".long {isr_common} - . - 4", // jmp rel32 to isr_common
     ".endr",
-    isr_handler = sym isr_handler,
+    isr_common = sym isr_common,
     isr0 = sym ISR0,
 }
 

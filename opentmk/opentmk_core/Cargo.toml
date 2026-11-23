@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 acpi_spec = { workspace = true, features = ["alloc"] }
 bitfield-struct.workspace = true
-cfg-if.workspace = true
 hvdef.workspace = true
 log.workspace = true
 memory_range.workspace = true

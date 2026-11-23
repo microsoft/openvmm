@@ -43,6 +43,7 @@ use windows_sys::Win32::Foundation::GENERIC_WRITE;
 use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Foundation::STATUS_NAME_TOO_LONG;
 use windows_sys::Win32::Foundation::STATUS_NOT_SUPPORTED;
+use windows_sys::Win32::Foundation::STATUS_PENDING;
 use windows_sys::Win32::Foundation::STATUS_PIPE_DISCONNECTED;
 use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
 use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
@@ -287,8 +288,13 @@ pub trait PipeExt {
     fn get_pipe_state(&self) -> io::Result<u32>;
     fn get_pipe_buffer_sizes(&self) -> io::Result<(u32, u32)>;
     fn set_pipe_mode(&self, mode: u32) -> io::Result<()>;
-    fn set_pipe_select_event(&self, event: &Event, event_types: u32) -> io::Result<()>;
-    fn get_pipe_select_events(&self) -> io::Result<u32>;
+    fn set_pipe_select_event(
+        &self,
+        event: &Event,
+        event_types: u32,
+        control: &mut PipeEventControl,
+    ) -> io::Result<()>;
+    fn get_pipe_select_events(&self, control: &mut PipeEventControl) -> io::Result<u32>;
     fn is_pipe_connected(&self) -> io::Result<bool>;
     /// Returns whether the pipe's peer is gone, that is, whether the pipe is in
     /// the disconnected or closing state.
@@ -310,6 +316,68 @@ pub trait PipeExt {
     /// Windows can reuse once that process exits.
     fn get_pipe_peer_process_id(&self) -> io::Result<u32>;
     fn disconnect_pipe(&self) -> io::Result<()>;
+}
+
+/// Reusable completion state for named-pipe event controls.
+///
+/// Mutable access serializes controls using this context. Its completion
+/// event is private and separate from the selected readiness event.
+#[derive(Debug)]
+pub struct PipeEventControl {
+    completion: Event,
+}
+
+impl Default for PipeEventControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PipeEventControl {
+    /// Creates a completion context.
+    pub fn new() -> Self {
+        Self {
+            completion: Event::new(),
+        }
+    }
+
+    /// Issues a pipe control and waits for pending I/O before returning.
+    ///
+    /// # Safety
+    ///
+    /// The input and output buffers must be valid for their respective lengths.
+    unsafe fn fs_control(
+        &mut self,
+        file: &File,
+        code: u32,
+        input: *const c_void,
+        input_len: u32,
+        output: *mut c_void,
+        output_len: u32,
+    ) -> i32 {
+        let mut iosb = unsafe { zeroed() };
+        // A null APC context keeps this internally waited request off any IOCP.
+        let status = unsafe {
+            NtFsControlFile(
+                file.as_raw_handle(),
+                self.completion.as_handle().as_raw_handle(),
+                None,
+                null_mut(),
+                &mut iosb,
+                code,
+                input,
+                input_len,
+                output,
+                output_len,
+            )
+        };
+        if status == STATUS_PENDING {
+            self.completion.wait();
+            unsafe { iosb.Anonymous.Status }
+        } else {
+            status
+        }
+    }
 }
 
 impl PipeExt for File {
@@ -364,25 +432,25 @@ impl PipeExt for File {
         Ok(())
     }
 
-    fn set_pipe_select_event(&self, event: &Event, event_types: u32) -> io::Result<()> {
+    fn set_pipe_select_event(
+        &self,
+        event: &Event,
+        event_types: u32,
+        control: &mut PipeEventControl,
+    ) -> io::Result<()> {
         let mut input = FILE_PIPE_EVENT_SELECT_BUFFER {
             event_types,
             event_handle: event.as_handle().as_raw_handle() as usize as u64,
         };
         unsafe {
-            let mut iosb = zeroed();
             let mut status = !0;
             // Newer versions of Windows support FSCTL_PIPE_EVENT_SELECT, which
             // works on unidirectional pipes. Older versions require
             // FSCTL_PIPE_EVENT_SELECT_OLD, which only works on bidirectional
             // pipes.
             for fsctl in [FSCTL_PIPE_EVENT_SELECT, FSCTL_PIPE_EVENT_SELECT_OLD] {
-                status = NtFsControlFile(
-                    self.as_raw_handle().cast::<c_void>(),
-                    null_mut(),
-                    None,
-                    null_mut(),
-                    &mut iosb,
+                status = control.fs_control(
+                    self,
                     fsctl,
                     std::ptr::from_mut(&mut input).cast(),
                     size_of_val(&input) as u32,
@@ -398,17 +466,12 @@ impl PipeExt for File {
         Ok(())
     }
 
-    fn get_pipe_select_events(&self) -> io::Result<u32> {
+    fn get_pipe_select_events(&self, control: &mut PipeEventControl) -> io::Result<u32> {
         unsafe {
             let mut handle_to_reset: u64 = 0;
             let mut events: u32 = 0;
-            let mut iosb = zeroed();
-            chk_status(NtFsControlFile(
-                self.as_raw_handle().cast::<c_void>(),
-                null_mut(),
-                None,
-                null_mut(),
-                &mut iosb,
+            chk_status(control.fs_control(
+                self,
                 FSCTL_PIPE_EVENT_ENUM,
                 std::ptr::from_mut(&mut handle_to_reset).cast(),
                 size_of_val(&handle_to_reset) as u32,
@@ -543,8 +606,11 @@ struct FILE_PIPE_EVENT_SELECT_BUFFER {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::windows::IoCompletionPort;
     use crate::windows::security::LocalSecurityDescriptor;
     use std::fs::OpenOptions;
+    use std::io::Read;
+    use std::io::Write;
     use std::process::Child;
     use std::process::Command;
     use std::process::Stdio;
@@ -553,12 +619,15 @@ mod tests {
     use test_with_tracing::test;
     use widestring::U16CStr;
     use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
     use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
     use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
     use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
     use windows_sys::Win32::Security::GetKernelObjectSecurity;
+    use windows_sys::Win32::System::Pipes::PIPE_NOWAIT;
 
     fn dacl_sddl(file: &File) -> io::Result<String> {
         // SAFETY: both API calls use buffers of the reported size, and the
@@ -643,6 +712,110 @@ mod tests {
             .stdout(Stdio::null())
             .spawn()
             .unwrap()
+    }
+
+    fn nonblocking_pipe_pair(overlapped: bool) -> (File, File) {
+        let path = random_pipe_path();
+        let server = create_named_pipe(
+            null_mut(),
+            Path::new(&path),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_CREATE,
+            overlapped,
+            false,
+            None,
+        )
+        .unwrap();
+        let client = open_client(&path);
+        server.set_pipe_mode(PIPE_NOWAIT).unwrap();
+        (server, client)
+    }
+
+    #[test]
+    fn pipe_events_follow_pipe_state() {
+        let mut control = PipeEventControl::new();
+        for overlapped in [false, true] {
+            let (mut server, mut client) = nonblocking_pipe_pair(overlapped);
+            let event = Event::new();
+            server
+                .set_pipe_select_event(
+                    &event,
+                    FILE_PIPE_READ_READY | FILE_PIPE_WRITE_READY | FILE_PIPE_DISCONNECTED,
+                    &mut control,
+                )
+                .unwrap();
+            assert_eq!(
+                server.get_pipe_select_events(&mut control).unwrap(),
+                FILE_PIPE_WRITE_READY
+            );
+
+            for _ in 0..16 {
+                client.write_all(b"x").unwrap();
+                assert_ne!(
+                    server.get_pipe_select_events(&mut control).unwrap() & FILE_PIPE_READ_READY,
+                    0
+                );
+                server.read_exact(&mut [0]).unwrap();
+                assert_eq!(
+                    server.get_pipe_select_events(&mut control).unwrap() & FILE_PIPE_READ_READY,
+                    0
+                );
+            }
+
+            drop(client);
+            assert_ne!(
+                server.get_pipe_select_events(&mut control).unwrap() & FILE_PIPE_DISCONNECTED,
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn pipe_events_report_completed_errors() {
+        let mut control = PipeEventControl::new();
+        for overlapped in [false, true] {
+            let (server, client) = nonblocking_pipe_pair(overlapped);
+            drop(client);
+            assert_eq!(
+                server
+                    .set_pipe_select_event(&Event::new(), FILE_PIPE_DISCONNECTED, &mut control)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(ERROR_PIPE_NOT_CONNECTED as i32)
+            );
+            assert_eq!(
+                server
+                    .get_pipe_select_events(&mut control)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(ERROR_INVALID_PARAMETER as i32)
+            );
+
+            let (server, _client) = nonblocking_pipe_pair(overlapped);
+            server
+                .set_pipe_select_event(&Event::new(), FILE_PIPE_WRITE_READY, &mut control)
+                .unwrap();
+            assert_eq!(
+                server.get_pipe_select_events(&mut control).unwrap(),
+                FILE_PIPE_WRITE_READY
+            );
+        }
+    }
+
+    #[test]
+    fn pipe_events_do_not_queue_iocp_completions() {
+        let (server, _client) = nonblocking_pipe_pair(true);
+        let port = IoCompletionPort::new();
+        // SAFETY: the live server handle is opened for overlapped I/O.
+        unsafe { port.associate(server.as_raw_handle(), 0).unwrap() };
+        let event = Event::new();
+        let mut control = PipeEventControl::new();
+        server
+            .set_pipe_select_event(&event, FILE_PIPE_DISCONNECTED, &mut control)
+            .unwrap();
+        assert_eq!(server.get_pipe_select_events(&mut control).unwrap(), 0);
+        let mut entries = [unsafe { zeroed() }; 1];
+        assert_eq!(port.get(&mut entries, Some(Duration::ZERO)), 0);
     }
 
     #[test]

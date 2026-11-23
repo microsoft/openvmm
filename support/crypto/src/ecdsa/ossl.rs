@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! ECDSA implementation using OpenSSL.
+//! ECDSA and ECDH implementation using OpenSSL.
 
 use super::EcdsaCurve;
 use super::EcdsaError;
@@ -126,6 +126,17 @@ impl EcdsaKeyPairInner {
             sig,
             curve: self.curve,
         })
+    }
+
+    pub fn derive_shared_secret(&self, peer: &EcdsaPublicKeyInner) -> Result<Vec<u8>, EcdsaError> {
+        let mut deriver = openssl::derive::Deriver::new(&self.pkey)
+            .map_err(|e| err(e, "creating the ECDH derivation context"))?;
+        deriver
+            .set_peer(&peer.pkey)
+            .map_err(|e| err(e, "setting the ECDH peer public key"))?;
+        deriver
+            .derive_to_vec()
+            .map_err(|e| err(e, "computing the ECDH shared secret"))
     }
 
     pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {

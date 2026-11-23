@@ -22,6 +22,7 @@ mod firmware_dll;
 mod identity_mapping;
 mod measurement_diag;
 mod platform_mask;
+mod product_policy_initrd;
 mod snp_id_block;
 mod snp_linux_direct;
 mod vp_context_builder;
@@ -58,7 +59,10 @@ use igvmfilegen_config::ResourceType;
 use igvmfilegen_config::Resources;
 use igvmfilegen_config::SecureAvicType;
 use igvmfilegen_config::SnpInjectionType;
+use igvmfilegen_config::SnpIsolation;
+use igvmfilegen_config::TdxIsolation;
 use igvmfilegen_config::UefiConfigType;
+use igvmfilegen_config::VbsIsolation;
 use loader::importer::Aarch64Register;
 use loader::importer::GuestArch;
 use loader::importer::GuestArchKind;
@@ -68,7 +72,6 @@ use loader::linux::InitrdConfig;
 use loader::paravisor::CommandLineType;
 use loader::paravisor::Vtl0Config;
 use loader::paravisor::Vtl0Linux;
-use product_policy::ProductPolicy;
 use std::io::Seek;
 use std::io::Write;
 use std::path::PathBuf;
@@ -134,7 +137,7 @@ enum Options {
     /// measurable platform in the manifest, and `<base>-snp.idblock` (the
     /// SEV-SNP ID block signing payload) for SNP.
     Manifest {
-        /// Config manifest file path
+        /// TOML config manifest file path
         #[clap(short, long = "manifest")]
         manifest: PathBuf,
         /// Resources file describing binary resources used to build the igvm
@@ -180,7 +183,7 @@ enum Options {
     ///   SPKI public key, PEM or DER). No private key is held by this tool.
     ///   The guest SVN comes from the signing payload.
     /// * Temporary key (development/test): pass `--guest-svn <N>` to sign an
-    ///   OpenHCL identity, or `--manifest <config.json>` to source both the SVN
+    ///   OpenHCL identity, or `--manifest <config.toml>` to source both the SVN
     ///   and image identity from its SNP guest config. An ephemeral ECDSA P-384
     ///   key signs the block in-process.
     AddSnpIdBlock {
@@ -347,33 +350,13 @@ fn main() -> anyhow::Result<()> {
             disable_secure_avic,
             confidential_debug,
         } => {
-            // Read the config from the JSON manifest path.
-            let mut config: Config = serde_json::from_str(
-                &fs_err::read_to_string(manifest).context("reading manifest")?,
-            )
-            .context("parsing manifest")?;
-
-            if disable_secure_avic {
-                for guest_config in &mut config.guest_configs {
-                    if let ConfigIsolationType::Snp { secure_avic, .. } =
-                        &mut guest_config.isolation_type
-                    {
-                        *secure_avic = SecureAvicType::Disabled;
-                    }
-                }
-            }
-
-            if confidential_debug {
-                for guest_config in &mut config.guest_configs {
-                    if let Image::Openhcl { command_line, .. } = &mut guest_config.image {
-                        if !command_line.is_empty() {
-                            command_line.push(' ');
-                        }
-                        command_line.push_str(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME);
-                        command_line.push_str("=1");
-                    }
-                }
-            }
+            let config = load_manifest(
+                &manifest,
+                ManifestOverrides {
+                    disable_secure_avic,
+                    confidential_debug,
+                },
+            )?;
 
             // Read resources and validate that it covers the required resources
             // from the config.
@@ -450,6 +433,60 @@ struct PlatformMeta {
 /// where `base` is `output`'s stem, `<isolation>` is derived from
 /// `meta.platform`, and `ext` includes the leading dot
 /// (e.g. `".json"` or `".cbor"`).
+/// Command-line options that change a manifest's settings.
+#[derive(Debug, Default, Clone, Copy)]
+struct ManifestOverrides {
+    /// Disable secure AVIC for every SNP guest config.
+    disable_secure_avic: bool,
+    /// Add the confidential debug flag to every OpenHCL command line.
+    confidential_debug: bool,
+}
+
+/// Reads a manifest for building, resolving its device catalog paths and
+/// applying `overrides`.
+fn load_manifest(
+    manifest: &std::path::Path,
+    overrides: ManifestOverrides,
+) -> anyhow::Result<Config> {
+    let mut config: Config =
+        toml_edit::de::from_str(&fs_err::read_to_string(manifest).context("reading manifest")?)
+            .context("parsing manifest")?;
+
+    // Device catalog paths are relative to the manifest file.
+    for guest_config in &mut config.guest_configs {
+        if let Image::Openhcl {
+            product_policy: Some(p),
+            ..
+        } = &mut guest_config.image
+            && let Some(device_policy) = p.policy.device_policy_mut()
+        {
+            device_policy.devices = manifest.with_file_name(&device_policy.devices);
+        }
+    }
+
+    if overrides.disable_secure_avic {
+        for guest_config in &mut config.guest_configs {
+            if let ConfigIsolationType::Snp(snp) = &mut guest_config.isolation_type {
+                snp.secure_avic = SecureAvicType::Disabled;
+            }
+        }
+    }
+
+    if overrides.confidential_debug {
+        for guest_config in &mut config.guest_configs {
+            if let Image::Openhcl { command_line, .. } = &mut guest_config.image {
+                if !command_line.is_empty() {
+                    command_line.push(' ');
+                }
+                command_line.push_str(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME);
+                command_line.push_str("=1");
+            }
+        }
+    }
+
+    Ok(config)
+}
+
 fn sibling_path(
     base: &std::ffi::OsStr,
     output: &std::path::Path,
@@ -563,16 +600,16 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
 
         let loader_isolation_type = match &config.isolation_type {
             ConfigIsolationType::None => LoaderIsolationType::None,
-            ConfigIsolationType::Vbs { enable_debug } => LoaderIsolationType::Vbs {
+            ConfigIsolationType::Vbs(VbsIsolation { enable_debug }) => LoaderIsolationType::Vbs {
                 enable_debug: *enable_debug,
             },
-            ConfigIsolationType::Snp {
+            ConfigIsolationType::Snp(SnpIsolation {
                 shared_gpa_boundary_bits,
                 policy,
                 enable_debug,
                 injection_type,
                 secure_avic,
-            } => LoaderIsolationType::Snp {
+            }) => LoaderIsolationType::Snp {
                 shared_gpa_boundary_bits: *shared_gpa_boundary_bits,
                 policy: SnpPolicy::from(*policy).with_debug(*enable_debug as u8),
                 injection_type: match injection_type {
@@ -586,10 +623,10 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
                     SecureAvicType::Disabled => vp_context_builder::snp::SecureAvic::Disabled,
                 },
             },
-            ConfigIsolationType::Tdx {
+            ConfigIsolationType::Tdx(TdxIsolation {
                 enable_debug,
                 sept_ve_disable,
-            } => LoaderIsolationType::Tdx {
+            }) => LoaderIsolationType::Tdx {
                 policy: TdxPolicy::new()
                     .with_debug_allowed(*enable_debug as u8)
                     .with_sept_ve_disable(*sept_ve_disable as u8),
@@ -659,17 +696,18 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
                 linux,
                 memory_page_count,
                 c_bit_position,
+                memory_acceptance,
             } => {
                 if config.max_vtl != 0 {
                     bail!("snp_linux_direct requires max_vtl 0");
                 }
-                let ConfigIsolationType::Snp {
+                let ConfigIsolationType::Snp(SnpIsolation {
                     shared_gpa_boundary_bits,
                     policy,
                     enable_debug,
                     injection_type,
                     secure_avic,
-                } = &config.isolation_type
+                }) = &config.isolation_type
                 else {
                     bail!("snp_linux_direct requires SNP isolation");
                 };
@@ -684,6 +722,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
                     linux,
                     memory_page_count: *memory_page_count,
                     c_bit_position: *c_bit_position,
+                    memory_acceptance: *memory_acceptance,
                     policy: SnpPolicy::from(*policy).with_debug(*enable_debug as u8),
                     injection_type,
                     resources: &resources,
@@ -917,7 +956,7 @@ fn add_snp_id_block_command(
         let (svn, identity) = if let Some(svn) = guest_svn {
             (svn, snp_id_block::SnpImageIdentity::OPENHCL)
         } else if let Some(manifest_path) = manifest {
-            let config: Config = serde_json::from_str(
+            let config: Config = toml_edit::de::from_str(
                 &fs_err::read_to_string(&manifest_path)
                     .with_context(|| format!("reading manifest at {}", manifest_path.display()))?,
             )
@@ -950,7 +989,7 @@ fn snp_temporary_signing_metadata_from_config(
     let mut snp_guests = config
         .guest_configs
         .iter()
-        .filter(|c| matches!(&c.isolation_type, ConfigIsolationType::Snp { .. }));
+        .filter(|c| matches!(&c.isolation_type, ConfigIsolationType::Snp(_)));
     let guest = snp_guests.next().context(
         "manifest has no SEV-SNP guest config to source temporary-signing metadata from",
     )?;
@@ -1295,7 +1334,6 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
-        product_policy: Option<&ProductPolicy>,
     ) -> Result<(), loader::paravisor::Error>
     where
         F: std::io::Read + Seek;
@@ -1344,7 +1382,6 @@ impl IgvmfilegenRegister for X86Register {
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
-        product_policy: Option<&ProductPolicy>,
     ) -> Result<(), loader::paravisor::Error>
     where
         F: std::io::Read + Seek,
@@ -1359,7 +1396,6 @@ impl IgvmfilegenRegister for X86Register {
             memory_page_base,
             memory_page_count,
             vtl0_config,
-            product_policy,
         )
     }
 }
@@ -1408,7 +1444,6 @@ impl IgvmfilegenRegister for Aarch64Register {
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
-        product_policy: Option<&ProductPolicy>,
     ) -> Result<(), loader::paravisor::Error>
     where
         F: std::io::Read + Seek,
@@ -1422,7 +1457,6 @@ impl IgvmfilegenRegister for Aarch64Register {
             memory_page_base,
             memory_page_count,
             vtl0_config,
-            product_policy,
         )
     }
 }
@@ -1473,10 +1507,18 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 let initrd_path = resources
                     .get(ResourceType::UnderhillInitrd)
                     .expect("validated present");
-                Some(fs_err::File::open(initrd_path).context(format!(
+                let mut initrd = fs_err::read(initrd_path).context(format!(
                     "reading underhill initrd at {}",
                     initrd_path.display()
-                ))?)
+                ))?;
+                if let Some(config) = product_policy {
+                    product_policy_initrd::append(
+                        &mut initrd,
+                        &config.policy.policy(),
+                        config.policy.device_policy(),
+                    )?;
+                }
+                std::io::Cursor::new(initrd)
             };
 
             let shim_path = resources
@@ -1492,13 +1534,11 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                     None
                 };
 
-            let initrd_info = if let Some(ref mut f) = initrd {
-                let size = f.seek(std::io::SeekFrom::End(0))?;
-                f.rewind()?;
-                Some((f as &mut dyn loader::common::ReadSeek, size))
-            } else {
-                None
-            };
+            let initrd_size = initrd.get_ref().len() as u64;
+            let initrd_info = Some((
+                &mut initrd as &mut dyn loader::common::ReadSeek,
+                initrd_size,
+            ));
 
             // TODO: While the paravisor supports multiple things that can be
             // loaded in VTL0, we don't yet have updated file builder config for
@@ -1550,7 +1590,6 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 memory_page_base,
                 memory_page_count,
                 vtl0_load_config,
-                product_policy.as_ref(),
             )
             .context("underhill kernel loader")?;
         }
@@ -1623,11 +1662,12 @@ fn load_linux<R: IgvmfilegenRegister + GuestArch + 'static>(
 #[cfg(test)]
 mod temporary_signing_tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn linux_direct_manifest_selects_linux_direct_identity() {
         let config: Config =
-            serde_json::from_str(include_str!("../../manifests/snp-linux-direct.json")).unwrap();
+            toml_edit::de::from_str(include_str!("../../manifests/snp-linux-direct.toml")).unwrap();
 
         let (svn, identity) = snp_temporary_signing_metadata_from_config(&config).unwrap();
         assert_eq!(svn, 1);
@@ -1637,9 +1677,153 @@ mod temporary_signing_tests {
     #[test]
     fn openhcl_manifest_selects_openhcl_identity() {
         let config: Config =
-            serde_json::from_str(include_str!("../../manifests/openhcl-x64-cvm-dev.json")).unwrap();
+            toml_edit::de::from_str(include_str!("../../manifests/openhcl-x64-cvm-dev.toml"))
+                .unwrap();
 
         let (_, identity) = snp_temporary_signing_metadata_from_config(&config).unwrap();
         assert_eq!(identity, snp_id_block::SnpImageIdentity::OPENHCL);
+    }
+}
+
+/// Tests for `load_manifest`, which reads a manifest and applies the edits
+/// requested on the command line before an image is built. Those edits change
+/// what goes into the measured image, so each test checks that the intended
+/// change, and only that change, is made.
+#[cfg(test)]
+mod load_manifest_tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn manifests_dir() -> PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests")
+    }
+
+    fn load(name: &str, overrides: ManifestOverrides) -> Config {
+        load_manifest(&manifests_dir().join(name), overrides).unwrap()
+    }
+
+    /// Compares whole configs, so an option that changes anything beyond its
+    /// intended setting also fails.
+    fn assert_same(actual: &Config, expected: &Config) {
+        assert_eq!(format!("{actual:#?}"), format!("{expected:#?}"));
+    }
+
+    fn openhcl_command_lines(config: &mut Config) -> Vec<&mut String> {
+        config
+            .guest_configs
+            .iter_mut()
+            .filter_map(|guest| match &mut guest.image {
+                Image::Openhcl { command_line, .. } => Some(command_line),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Manifests name their device catalog relative to the manifest file, so
+    /// the build works no matter which directory it runs from. If the path
+    /// weren't resolved against the manifest, builds run from another
+    /// directory would fail to find the catalog, or could pick up a different
+    /// file with the same name.
+    #[test]
+    fn device_catalog_paths_are_relative_to_the_manifest() {
+        let config = load("openhcl-x64-cvm-release.toml", ManifestOverrides::default());
+        let mut checked = 0;
+        for guest in &config.guest_configs {
+            let Image::Openhcl {
+                product_policy: Some(policy),
+                ..
+            } = &guest.image
+            else {
+                panic!("expected an OpenHCL product policy");
+            };
+            let devices = &policy.policy.device_policy().unwrap().devices;
+            assert_eq!(*devices, manifests_dir().join("policies/devices.toml"));
+            assert!(devices.is_file(), "{}", devices.display());
+            checked += 1;
+        }
+        assert_eq!(checked, 3);
+    }
+
+    /// Without any options, the manifest must be built as written: secure
+    /// AVIC stays as configured and no command line gets the confidential
+    /// debug flag. Applying either edit by default would weaken every image
+    /// built from the manifest.
+    #[test]
+    fn no_overrides_leave_secure_avic_and_command_lines_alone() {
+        let mut config = load("openhcl-x64-cvm-release.toml", ManifestOverrides::default());
+        assert!(config.guest_configs.iter().any(|guest| matches!(
+            &guest.isolation_type,
+            ConfigIsolationType::Snp(snp) if snp.secure_avic == SecureAvicType::Enabled
+        )));
+        assert!(
+            openhcl_command_lines(&mut config)
+                .iter()
+                .all(|line| !line.contains("OPENHCL_CONFIDENTIAL_DEBUG"))
+        );
+    }
+
+    /// `--disable-secure-avic` turns off secure AVIC for debug SNP images. It
+    /// must turn off exactly that SNP setting. If it changed anything else, or
+    /// touched TDX or VBS, images built with it would differ from their
+    /// manifest in ways no one asked for.
+    #[test]
+    fn disable_secure_avic_changes_only_snp() {
+        for name in ["openhcl-x64-cvm-release.toml", "uefi-x64.toml"] {
+            let mut expected = load(name, ManifestOverrides::default());
+            let mut snp_guests = 0;
+            for guest in &mut expected.guest_configs {
+                if let ConfigIsolationType::Snp(snp) = &mut guest.isolation_type {
+                    assert_eq!(snp.secure_avic, SecureAvicType::Enabled, "{name}");
+                    snp.secure_avic = SecureAvicType::Disabled;
+                    snp_guests += 1;
+                }
+            }
+            assert_eq!(snp_guests, 1, "{name}");
+            let actual = load(
+                name,
+                ManifestOverrides {
+                    disable_secure_avic: true,
+                    ..Default::default()
+                },
+            );
+            assert_same(&actual, &expected);
+        }
+    }
+
+    /// `--confidential-debug` makes OpenHCL in a confidential guest trust
+    /// host-provided debug options, which weakens its security; it's for
+    /// intentionally debuggable development images. It must append exactly
+    /// `OPENHCL_CONFIDENTIAL_DEBUG=1` to every OpenHCL command line, separated
+    /// by one space from any existing options, and change nothing else. A
+    /// wrong name, value, or separator would leave the image without the debug
+    /// mode it was built for, and an extra change would alter the measured
+    /// image.
+    #[test]
+    fn confidential_debug_appends_the_flag_to_openhcl_command_lines() {
+        let overrides = ManifestOverrides {
+            confidential_debug: true,
+            ..Default::default()
+        };
+        for (name, existing_options) in [
+            ("openhcl-x64-cvm-release.toml", false),
+            ("openhcl-x64-dev.toml", true),
+        ] {
+            let mut expected = load(name, ManifestOverrides::default());
+            for line in openhcl_command_lines(&mut expected) {
+                assert_eq!(!line.is_empty(), existing_options, "{name}");
+                *line = if line.is_empty() {
+                    "OPENHCL_CONFIDENTIAL_DEBUG=1".to_owned()
+                } else {
+                    format!("{line} OPENHCL_CONFIDENTIAL_DEBUG=1")
+                };
+            }
+            assert_same(&load(name, overrides), &expected);
+        }
+
+        // Images without OpenHCL are unchanged.
+        assert_same(
+            &load("uefi-x64.toml", overrides),
+            &load("uefi-x64.toml", ManifestOverrides::default()),
+        );
     }
 }

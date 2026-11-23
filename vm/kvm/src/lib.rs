@@ -107,6 +107,8 @@ mod ioctl {
     ioctl_read!(kvm_get_xcrs, KVMIO, 0xa6, kvm_xcrs);
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_set_xcrs, KVMIO, 0xa7, kvm_xcrs);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_ptr!(kvm_set_nested_state, KVMIO, 0xbf, kvm_nested_state);
     ioctl_write_ptr!(kvm_get_reg, KVMIO, 0xab, kvm_one_reg);
     ioctl_write_ptr!(kvm_set_reg, KVMIO, 0xac, kvm_one_reg);
     #[cfg(target_arch = "aarch64")]
@@ -313,6 +315,9 @@ pub enum Error {
     GetXsave(#[source] nix::Error),
     #[error("SetXsave")]
     SetXsave(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("SetNestedState")]
+    SetNestedState(#[source] nix::Error),
     #[error("GetDebugRegs")]
     GetDebugRegs(#[source] nix::Error),
     #[error("SetDebugRegs")]
@@ -534,13 +539,9 @@ impl Kvm {
         // For that, include the `KVM_VM_TYPE_ARM_PROTECTED` flag.
         // Use 0 as the fallback machine type, which implies 40bit
         // IPA on ARM64, and on x86_64 is the only option.
-        #[cfg(target_arch = "aarch64")]
-        {
-            self.check_extension(KVM_CAP_ARM_VM_IPA_SIZE).unwrap_or(0)
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            0
+        cfg_select! {
+            target_arch = "aarch64" => self.check_extension(KVM_CAP_ARM_VM_IPA_SIZE).unwrap_or(0),
+            _ => 0,
         }
     }
 
@@ -1275,6 +1276,29 @@ pub enum RoutingEntry {
 
 pub struct Processor<'a>(&'a Partition, u32);
 
+#[cfg(target_arch = "x86_64")]
+// Architectural reset discards any prior L2 state. Only the CPU vendor
+// determines the inactive VMX/SVM header; no VMCS/VMCB payload survives.
+fn nested_state_at_reset(vmx: bool) -> kvm_nested_state {
+    let mut state = kvm_nested_state {
+        size: size_of::<kvm_nested_state>() as u32,
+        ..Default::default()
+    };
+    if vmx {
+        state.format = KVM_STATE_NESTED_FORMAT_VMX as u16;
+        // No VMXON region or current VMCS exists after reset.
+        state.hdr.vmx = kvm_vmx_nested_state_hdr {
+            vmxon_pa: u64::MAX,
+            vmcs12_pa: u64::MAX,
+            ..Default::default()
+        };
+    } else {
+        state.format = KVM_STATE_NESTED_FORMAT_SVM as u16;
+        state.flags = KVM_STATE_NESTED_GIF_SET as u16;
+    }
+    state
+}
+
 impl<'a> Processor<'a> {
     pub fn enable_synic(&self) -> Result<()> {
         // TODO: We are not checking KVM_CAP_ENABLE_CAP_VM first.
@@ -1567,6 +1591,19 @@ impl<'a> Processor<'a> {
         unsafe {
             ioctl::kvm_set_xsave(self.get().vcpu.as_raw_fd(), state.as_ptr().cast())
                 .map_err(Error::SetXsave)?;
+        }
+        Ok(())
+    }
+
+    /// Leaves nested guest mode and resets VMX or SVM state.
+    #[cfg(target_arch = "x86_64")]
+    pub fn reset_nested_state(&self, vmx: bool) -> Result<()> {
+        let state = nested_state_at_reset(vmx);
+        // SAFETY: The reset state advertises only the initialized header's
+        // size and has no nested guest payload for KVM to read.
+        unsafe {
+            ioctl::kvm_set_nested_state(self.get().vcpu.as_raw_fd(), &state)
+                .map_err(Error::SetNestedState)?;
         }
         Ok(())
     }

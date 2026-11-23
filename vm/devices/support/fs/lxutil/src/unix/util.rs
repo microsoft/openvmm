@@ -10,13 +10,12 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::ptr;
 
-// libc does not yet expose the generic Linux syscall number on AArch64.
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(target_arch = "aarch64")]
-const SYS_FCHMODAT2: libc::c_long = 452;
-// xtask-fmt allow-target-arch sys-crate
-#[cfg(not(target_arch = "aarch64"))]
-const SYS_FCHMODAT2: libc::c_long = libc::SYS_fchmodat2;
+const SYS_FCHMODAT2: libc::c_long = cfg_select! {
+    // libc does not yet expose the generic Linux syscall number on AArch64.
+    // xtask-fmt allow-target-arch sys-crate
+    target_arch = "aarch64" => 452,
+    _ => libc::SYS_fchmodat2,
+};
 
 // Wrapper around a C DIR* used for Unix file enumeration.
 pub struct DirectoryEnumerator {
@@ -174,6 +173,14 @@ pub fn openat(
     };
     let path = path_to_cstr(path)?;
     let creating = flags & libc::O_CREAT != 0 || flags & libc::O_TMPFILE == libc::O_TMPFILE;
+    // O_PATH opens reject data-open flags.
+    let flags = if flags & libc::O_PATH == 0 {
+        // Avoid waiting for a peer if the final component is a FIFO.
+        // TODO: Retain O_PATH handles at lookup to reject special files before data opens.
+        flags | libc::O_NOCTTY | libc::O_NONBLOCK
+    } else {
+        flags
+    };
     let how = OpenHow {
         flags: (flags | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32 as u64,
         mode: if creating {

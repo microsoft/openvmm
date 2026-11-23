@@ -132,8 +132,7 @@ impl InOrderCompletion {
         // front, its slot is guaranteed empty: any completed front descriptor is
         // published and popped immediately, so the front is always outstanding
         // on entry.)
-        if self.order.front() == Some(&idx) {
-            self.order.pop_front();
+        if self.order.pop_front_if(|front| *front == idx).is_some() {
             queue.complete_prepared(completion, bytes_written);
             self.in_flight[idx as usize] = false;
             if !self.order.is_empty() {

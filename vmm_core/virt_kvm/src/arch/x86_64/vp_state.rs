@@ -704,7 +704,14 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         Err(KvmError::NotSupported)
     }
 
-    fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
-        Err(KvmError::NotSupported)
+    fn set_nested_state(&mut self, value: &vp::NestedState) -> Result<(), Self::Error> {
+        if !value.data.is_empty() {
+            return Err(KvmError::NestedStateRestoreUnsupported);
+        }
+        // Empty is NestedState::at_reset's sentinel. There is no saved payload
+        // to restore; synthesize the vendor's architectural reset state.
+        self.kvm()
+            .reset_nested_state(self.vp.partition.caps.vendor.is_intel_compatible())?;
+        Ok(())
     }
 }

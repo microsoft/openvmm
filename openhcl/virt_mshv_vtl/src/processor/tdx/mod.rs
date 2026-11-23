@@ -559,6 +559,7 @@ struct TdxVtl {
 pub struct TdxEmulationCache {
     segs: [Option<SegmentRegister>; 6],
     cr0: Option<u64>,
+    cr4: Option<u64>,
 }
 
 #[derive(Inspect, Default)]
@@ -994,11 +995,11 @@ impl hv1_emulator::VtlProtectAccess for UntrustedSynicVtlProts<'_> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
         self.0
-            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
             .map_err(|_| HvError::OperationFailed)
     }
 
@@ -3040,6 +3041,13 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         *reg
     }
 
+    fn cr4(&mut self) -> u64 {
+        *self
+            .cache
+            .cr4
+            .get_or_insert_with(|| self.vp.backing.vtls[self.vtl].cr4.read(&self.vp.runner))
+    }
+
     fn rflags(&mut self) -> RFlags {
         self.vp.backing.vtls[self.vtl].private_regs.rflags.into()
     }
@@ -4289,9 +4297,7 @@ fn top_vector(reg: &[ApicRegisterValue; 8]) -> u8 {
     reg.iter()
         .enumerate()
         .rev()
-        .find_map(|(i, r)| {
-            (r.value != 0).then(|| (i as u32 * 32 + (31 - r.value.leading_zeros())) as u8)
-        })
+        .find_map(|(i, r)| r.value.highest_one().map(|bit| (i as u32 * 32 + bit) as u8))
         .unwrap_or(0)
 }
 

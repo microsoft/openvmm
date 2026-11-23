@@ -292,7 +292,7 @@ async fn servicing_keepalive_sidecar_with_outstanding_io_very_heavy(
     // Save while IO is in-flight. The CPUs with delayed IO will appear
     // in cpus_with_outstanding_io in the persisted state.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
         .await
         .expect("VM save should complete within 60 seconds")
@@ -516,14 +516,14 @@ async fn servicing_keepalive_with_namespace_update(
     vm.restore_openhcl().await?;
 
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(aer_verify_recv)
         .await
         .expect("AER command was not observed within 60 seconds of vm restore after servicing with namespace change")
         .expect("AER verification failed");
 
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(log_verify_recv)
         .await
         .expect("GET_LOG_PAGE command was not observed within 60 seconds of vm restore after servicing with namespace change")
@@ -935,7 +935,7 @@ async fn servicing_keepalive_with_io_queue_full(
     // 60 seconds should be plenty of time for the save to complete. If
     // save is stuck it will be exposed here.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
         .await
         .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck.")
@@ -965,7 +965,7 @@ async fn servicing_keepalive_with_unresponsive_io(
     let fault_configuration = FaultConfiguration::new(cell.clone()).with_io_queue_fault(
         IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
             CommandMatchBuilder::new().match_cdw0(0, 0).build(),
-            IoQueueFaultBehavior::Delay(Duration::from_secs(120)),
+            IoQueueFaultBehavior::Delay(Duration::from_mins(2)),
         ),
     );
 
@@ -1004,7 +1004,7 @@ async fn servicing_keepalive_with_unresponsive_io(
     // 60 seconds should be plenty of time for the save to complete. Save should
     // NEVER get stuck. Keeping a timeout to avoid long running tests.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
         .await
         .expect("VM save did not complete within 60 seconds, even though it should have. Stuck on first save attempt.")
@@ -1013,7 +1013,7 @@ async fn servicing_keepalive_with_unresponsive_io(
     agent.ping().await?;
 
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
         .await
         .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck when draining after restore.")
@@ -1252,7 +1252,7 @@ async fn servicing_keepalive_slow_create_io_queue_with_inspect(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(60);
+    const QUEUE_CREATION_DELAY: Duration = Duration::from_mins(1);
     const TRIGGER_CREATE_IO_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
     const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -2144,7 +2144,7 @@ async fn servicing_with_keepalive_disabled_after_servicing(
     .await?;
 
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(cc_enable_verify_recv)
         .await
         .expect("Controller Enable PCI command was not observed within 60 seconds of vm restore indicating that the controller was not reset, even though it should have been.")
@@ -2210,7 +2210,7 @@ async fn run_cpu_pinned_io(
          dd if={disk_path} of=/dev/null bs=4k count=256 iflag=direct status=none"
     );
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(cmd!(sh, "sh -c {pinned_dd}").run())
         .await
         .expect("IO on target CPU did not complete within 60 seconds after keepalive restore. create_io_queue may be stuck.")

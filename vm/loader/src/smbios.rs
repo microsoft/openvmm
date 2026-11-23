@@ -351,7 +351,7 @@ mod tests {
         let strings = &built.structure_table[t1_off + len..];
         let first_nul = strings.iter().position(|&b| b == 0).unwrap();
         assert_eq!(&strings[..first_nul], b"Mfg");
-        assert!(!strings.windows(4).any(|w| w == b"evil"));
+        assert!(!strings.array_windows::<4>().any(|w| w == b"evil"));
     }
 
     /// Walks the structure table and returns the byte offset of the first

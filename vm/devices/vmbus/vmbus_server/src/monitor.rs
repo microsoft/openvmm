@@ -14,10 +14,7 @@ impl AssignedMonitors {
     }
 
     pub fn assign_monitor(&mut self) -> Option<MonitorId> {
-        let index = self.bitmap.trailing_ones();
-        if index == u128::BITS {
-            return None;
-        }
+        let index = (!self.bitmap).lowest_one()?;
 
         self.bitmap |= 1 << index;
         Some(MonitorId(index as u8))
@@ -45,6 +42,20 @@ impl AssignedMonitors {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn assign_monitor_reuses_lowest_free_bit() {
+        let mut monitors = AssignedMonitors { bitmap: u128::MAX };
+        assert_eq!(monitors.assign_monitor(), None);
+        for index in [127, 63, 0] {
+            monitors.release_monitor(MonitorId(index));
+        }
+        for index in [0, 63, 127] {
+            assert_eq!(monitors.assign_monitor(), Some(MonitorId(index)));
+        }
+        assert_eq!(monitors.assign_monitor(), None);
+    }
 
     #[test]
     fn test_assign_release() {

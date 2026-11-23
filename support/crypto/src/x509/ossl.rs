@@ -141,18 +141,49 @@ impl X509CertificateInner {
     }
 
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
-        let sn = self
-            .0
-            .subject_name()
-            .entries_by_nid(openssl::nid::Nid::COMMONNAME)
-            .next();
-        match sn {
-            None => Ok(None),
-            Some(sn) => sn
+        common_name(self.0.subject_name())
+    }
+
+    pub fn issuer_common_name(&self) -> Result<Option<String>, X509Error> {
+        common_name(self.0.issuer_name())
+    }
+
+    pub fn validity(
+        &self,
+    ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), super::X509ValidityError> {
+        let epoch = openssl::asn1::Asn1Time::from_unix(jiff::Timestamp::UNIX_EPOCH.as_second())
+            .map_err(|e| err(e, "creating certificate time epoch"))?;
+        let time = |value: &openssl::asn1::Asn1TimeRef| {
+            let diff = epoch
+                .diff(value)
+                .map_err(|e| err(e, "reading certificate validity"))?;
+            Ok::<_, super::X509ValidityError>(
+                jiff::tz::Offset::UTC
+                    .to_datetime(jiff::Timestamp::UNIX_EPOCH)
+                    .checked_add(
+                        jiff::Span::new()
+                            .try_days(diff.days)?
+                            .try_seconds(diff.secs)?,
+                    )?,
+            )
+        };
+        Ok((time(self.0.not_before())?, time(self.0.not_after())?))
+    }
+
+    pub fn authority_key_identifier(&self) -> Result<Option<Vec<u8>>, X509Error> {
+        Ok(self.0.authority_key_id().map(|id| id.as_slice().to_vec()))
+    }
+}
+
+fn common_name(name: &openssl::x509::X509NameRef) -> Result<Option<String>, X509Error> {
+    name.entries_by_nid(openssl::nid::Nid::COMMONNAME)
+        .next()
+        .map(|entry| {
+            entry
                 .data()
                 .as_utf8()
-                .map(|u| Some(u.to_string()))
-                .map_err(|e| err(e, "decoding the subject common name")),
-        }
-    }
+                .map(|name| name.to_string())
+                .map_err(|e| err(e, "decoding certificate common name"))
+        })
+        .transpose()
 }

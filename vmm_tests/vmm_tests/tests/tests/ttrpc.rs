@@ -3,15 +3,19 @@
 
 //! Integration tests for OpenVMM's TTRPC interface.
 
-// Tests for the fd-passing protocol, which shares the TTRPC socket. It is
-// UNIX-only and tap `fd_name` resolution is Linux-only, so it only builds on
-// Linux.
+// Tests for the resource-passing protocols, which share the TTRPC socket. The
+// UNIX fd-passing test resolves a tap `fd_name`, which is Linux-only; the
+// Windows handle-passing tests resolve a virtio-fs user token and a virtual
+// disk.
 #[cfg(target_os = "linux")]
 mod fd_passing;
+#[cfg(windows)]
+mod handle_passing;
 
 use anyhow::Context;
 use futures::AsyncBufReadExt;
 use futures::AsyncReadExt;
+use futures::AsyncWriteExt;
 use guid::Guid;
 use mesh::CancelContext;
 use openvmm_ttrpc_vmservice as vmservice;
@@ -34,21 +38,418 @@ use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 
 const VIRTIO_BLK_SERIAL: &str = "ttrpc-blk";
+const PMEM_SIZE: u64 = 4 * 1024 * 1024;
+const PMEM_HOST_MARKER: &str = "ttrpc-pmem-host";
+const PMEM_GUEST_MARKER: &str = "ttrpc-pmem-guest";
+const PMEM_GUEST_OFFSET: usize = 4096;
 
 petri::test!(test_ttrpc_interface, |resolver| {
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
     let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
     let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
-    let pipette = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL)
-            .erase(),
-        petri_artifacts_common::tags::MachineArch::Aarch64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64_MUSL)
-            .erase(),
-    };
+    let pipette = require_pipette(resolver);
     Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
 });
+
+petri::test!(test_ttrpc_shutdown, |resolver| {
+    Some([
+        resolver.require(artifacts::OPENVMM_NATIVE).erase(),
+        resolver
+            .require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE)
+            .erase(),
+        resolver
+            .require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE)
+            .erase(),
+    ])
+});
+
+async fn test_ttrpc_shutdown(
+    params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    [openvmm, kernel_path, initrd_path]: [ResolvedArtifact; 3],
+) -> anyhow::Result<()> {
+    use vmservice::shutdown_vm_request::Mechanism;
+
+    let tempdir = tempfile::tempdir()?;
+    let pidfile_path = tempdir.path().join("openvmm.pid");
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        &driver,
+        &params,
+        &openvmm,
+        &tempdir.path().join("ttrpc.sock"),
+        &pidfile_path,
+    )
+    .await?;
+
+    // Supply the minimal initrd's OS shutdown helper so the kernel's IC handler
+    // powers off through userspace, rather than relying on its emergency fallback.
+    let initrd = std::fs::read(initrd_path.get())?;
+    let initrd = initrd_cpio::inject_into_initrd(
+        &initrd,
+        "shutdown-test-init",
+        br#"#!/bin/busybox sh
+set -eu
+/bin/busybox mount -t proc proc /proc
+echo /shutdown-test-poweroff > /proc/sys/kernel/poweroff_cmd
+echo shutdown-test-ready
+exec /bin/busybox sleep 3600
+"#,
+        0o100755,
+    )?;
+    let initrd = initrd_cpio::inject_into_initrd(
+        &initrd,
+        "shutdown-test-poweroff",
+        br#"#!/bin/busybox sh
+echo shutdown-test-poweroff > /dev/console
+exec /bin/busybox poweroff -f
+"#,
+        0o100755,
+    )?;
+    let mut initrd_file = tempfile::NamedTempFile::new_in(tempdir.path())?;
+    initrd_file.write_all(&initrd)?;
+    let console = match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
+        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
+    };
+
+    for (name, request) in [
+        (
+            "non-forced",
+            vmservice::ShutdownVmRequest {
+                mechanism: Mechanism::HypervIc as i32,
+                force: false,
+            },
+        ),
+        (
+            "force",
+            vmservice::ShutdownVmRequest {
+                mechanism: Mechanism::HypervIc as i32,
+                force: true,
+            },
+        ),
+    ] {
+        let com1_path = tempdir.path().join(format!("com1-{name}.sock"));
+        client
+            .call()
+            .start(
+                vmservice::Vm::CreateVm,
+                vmservice::CreateVmRequest {
+                    config: Some(vmservice::VmConfig {
+                        memory_config: Some(vmservice::MemoryConfig {
+                            memory_mb: 256,
+                            ..Default::default()
+                        }),
+                        boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                            vmservice::DirectBoot {
+                                kernel_path: kernel_path.get().to_string_lossy().into(),
+                                initrd_path: initrd_file.path().to_string_lossy().into(),
+                                kernel_cmdline: format!(
+                                    "console={console} rdinit=/shutdown-test-init panic=-1"
+                                ),
+                            },
+                        )),
+                        serial_config: Some(vmservice::SerialConfig {
+                            ports: vec![vmservice::serial_config::Config {
+                                port: 0,
+                                socket_path: com1_path.to_string_lossy().into(),
+                                connect: false,
+                            }],
+                        }),
+                        ..Default::default()
+                    }),
+                    log_id: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let (ready_send, ready_recv) = mesh::oneshot();
+        let (poweroff_send, poweroff_recv) = mesh::oneshot();
+        let _com1_task = driver.spawn(
+            "com1",
+            log_serial(
+                params.log_source.log_file(&format!("shutdown-{name}"))?,
+                PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                [
+                    ("shutdown-test-ready", ready_send),
+                    ("shutdown-test-poweroff", poweroff_send),
+                ],
+            ),
+        );
+        client
+            .call()
+            .start(vmservice::Vm::ResumeVm, ())
+            .await
+            .unwrap();
+        CancelContext::new()
+            .with_timeout(Duration::from_mins(1))
+            .until_cancelled(ready_recv)
+            .await
+            .context("timed out waiting for shutdown test guest to boot")?
+            .context("serial connection closed before shutdown test guest booted")?;
+
+        let waiter = client
+            .call()
+            .timeout(Some(Duration::from_mins(1)))
+            .start(vmservice::Vm::WaitVm, ());
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(10))
+            .until_cancelled(async {
+                let mut timer = pal_async::timer::PolledTimer::new(&driver);
+                loop {
+                    match client
+                        .call()
+                        .timeout(Some(Duration::from_secs(5)))
+                        .start(vmservice::Vm::ShutdownVm, request.clone())
+                        .await
+                    {
+                        Err(status)
+                            if status.code
+                                == mesh_rpc::service::Code::FailedPrecondition as i32
+                                && status.message.contains("shutdown IC not ready") =>
+                        {
+                            timer.sleep(Duration::from_millis(100)).await;
+                        }
+                        result => break result,
+                    }
+                }
+            })
+            .await
+            .context("timed out waiting for shutdown IC readiness")?
+            .unwrap();
+        waiter.await.unwrap();
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(poweroff_recv)
+            .await
+            .context("timed out waiting for the guest userspace shutdown helper")?
+            .context("serial connection closed before the guest userspace shutdown helper ran")?;
+
+        let props = client
+            .call()
+            .start(
+                vmservice::Vm::PropertiesVm,
+                vmservice::PropertiesVmRequest { types: Vec::new() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(props.state, vmservice::VmState::Halted as i32);
+        assert_eq!(props.halt_reason.as_deref(), Some("PowerOff"));
+
+        client
+            .call()
+            .timeout(Some(Duration::from_secs(10)))
+            .start(vmservice::Vm::TeardownVm, ())
+            .await
+            .unwrap();
+        let props = client
+            .call()
+            .start(
+                vmservice::Vm::PropertiesVm,
+                vmservice::PropertiesVmRequest { types: Vec::new() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(props.state, vmservice::VmState::Uninitialized as i32);
+        assert!(props.halt_reason.is_none());
+    }
+
+    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+    let status = child.wait().await?;
+    anyhow::ensure!(status.success(), "OpenVMM exited with {status}");
+    assert!(
+        !pidfile_path.exists(),
+        "pidfile should be removed after exit"
+    );
+    Ok(())
+}
+
+// Ignored by default because ttrpc requires a local Windows image, while
+// `vmm-tests-run` defaults to streaming. Use --no-lazy-fetch for local images.
+petri::multitest!(vec![
+    petri::SimpleTest::new_async(
+        "test_ttrpc_shutdown_windows_guest",
+        |resolver| {
+            if petri_artifacts_common::tags::MachineArch::host()
+                != petri_artifacts_common::tags::MachineArch::X86_64
+            {
+                return None;
+            }
+            Some((
+                resolver.require(artifacts::OPENVMM_NATIVE).erase(),
+                resolver
+                    .require(artifacts::loadable::UEFI_FIRMWARE_X64)
+                    .erase(),
+                resolver
+                    .require_source(
+                        artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64,
+                        petri::RemoteAccess::Allow,
+                    )
+                    .erase(),
+            ))
+        },
+        test_ttrpc_shutdown_windows_guest,
+    )
+    .ignore()
+    .remote_access(petri::RemoteAccess::Allow)
+    .into()
+]);
+
+async fn test_ttrpc_shutdown_windows_guest(
+    params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    (openvmm, firmware, guest_disk): (
+        ResolvedArtifact,
+        ResolvedArtifact,
+        petri::ResolvedArtifactSource,
+    ),
+) -> anyhow::Result<()> {
+    let guest_disk = match guest_disk.get() {
+        petri::ArtifactSource::Local(path) => path,
+        petri::ArtifactSource::Remote { .. } => anyhow::bail!(
+            "this test needs a local copy of the Windows Server 2022 image; run it with \
+             `cargo xflowey vmm-tests-run --no-lazy-fetch`"
+        ),
+    };
+    let tempdir = tempfile::tempdir()?;
+    let disk_path = tempdir.path().join("windows.vhd");
+    std::fs::copy(guest_disk, &disk_path).context("failed to copy the Windows guest disk")?;
+    let pidfile_path = tempdir.path().join("openvmm.pid");
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        &driver,
+        &params,
+        &openvmm,
+        &tempdir.path().join("ttrpc.sock"),
+        &pidfile_path,
+    )
+    .await?;
+
+    client
+        .call()
+        .start(
+            vmservice::Vm::CreateVm,
+            vmservice::CreateVmRequest {
+                config: Some(vmservice::VmConfig {
+                    memory_config: Some(vmservice::MemoryConfig {
+                        memory_mb: 2048,
+                        ..Default::default()
+                    }),
+                    boot_config: Some(vmservice::vm_config::BootConfig::Uefi(vmservice::Uefi {
+                        firmware_path: firmware.get().to_string_lossy().into(),
+                        initial_variables: Some(vmservice::uefi::InitialVariables {
+                            secure_boot_template: vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows as i32,
+                            ..Default::default()
+                        }),
+                        secure_boot_enabled: true,
+                    })),
+                    devices_config: Some(vmservice::DevicesConfig {
+                        scsi_disks: vec![vmservice::ScsiDisk {
+                            host_path: disk_path.to_string_lossy().into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                log_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    client
+        .call()
+        .start(vmservice::Vm::ResumeVm, ())
+        .await
+        .unwrap();
+
+    const WINDOWS_BOOT_TIMEOUT: Duration = Duration::from_mins(5);
+    CancelContext::new()
+        .with_timeout(WINDOWS_BOOT_TIMEOUT)
+        .until_cancelled(async {
+            let mut timer = pal_async::timer::PolledTimer::new(&driver);
+            loop {
+                let response = client
+                    .call()
+                    .timeout(Some(Duration::from_secs(5)))
+                    .start(
+                        inspect_proto::InspectService::Inspect,
+                        inspect_proto::InspectRequest {
+                            path: "vm/shutdown_ic:b6650ff7-33bc-4840-8048-e0676786f393/state"
+                                .into(),
+                            depth: 1,
+                        },
+                    )
+                    .await
+                    .map_err(|status| {
+                        anyhow::anyhow!("shutdown IC inspection failed: {status:?}")
+                    })?;
+                match response.result {
+                    inspect::Node::Dir(entries) => {
+                        if entries.iter().any(|entry| entry.name == "ready") {
+                            break Ok(());
+                        }
+                    }
+                    inspect::Node::Failed(
+                        inspect::Error::NotFound | inspect::Error::Unresolved,
+                    )
+                    | inspect::Node::Unevaluated => {}
+                    state => {
+                        anyhow::bail!("unexpected shutdown IC inspection result: {state}");
+                    }
+                }
+                timer.sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for Windows shutdown IC readiness")??;
+
+    // Match Petri's send_enlightened_shutdown: guests can drop requests sent
+    // immediately after IC readiness, so allow boot to settle first.
+    pal_async::timer::PolledTimer::new(&driver)
+        .sleep(Duration::from_secs(10))
+        .await;
+    client
+        .call()
+        .timeout(Some(Duration::from_secs(30)))
+        .start(
+            vmservice::Vm::ShutdownVm,
+            vmservice::ShutdownVmRequest {
+                mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
+                force: false,
+            },
+        )
+        .await
+        .unwrap();
+    client
+        .call()
+        .timeout(Some(Duration::from_mins(2)))
+        .start(vmservice::Vm::WaitVm, ())
+        .await
+        .unwrap();
+    let props = client
+        .call()
+        .start(
+            vmservice::Vm::PropertiesVm,
+            vmservice::PropertiesVmRequest { types: Vec::new() },
+        )
+        .await
+        .unwrap();
+    assert_eq!(props.state, vmservice::VmState::Halted as i32);
+    assert_eq!(props.halt_reason.as_deref(), Some("PowerOff"));
+    client
+        .call()
+        .timeout(Some(Duration::from_secs(30)))
+        .start(vmservice::Vm::TeardownVm, ())
+        .await
+        .unwrap();
+    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+    let status = child.wait().await?;
+    anyhow::ensure!(status.success(), "OpenVMM exited with {status}");
+    assert!(
+        !pidfile_path.exists(),
+        "pidfile should be removed after exit"
+    );
+    Ok(())
+}
 
 petri::test!(test_ttrpc_no_vmbus, |resolver| {
     // Restrict this test to aarch64 for now: without Hyper-V enlightenments,
@@ -59,14 +460,7 @@ petri::test!(test_ttrpc_no_vmbus, |resolver| {
     {
         return None;
     }
-    let pipette = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL)
-            .erase(),
-        petri_artifacts_common::tags::MachineArch::Aarch64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64_MUSL)
-            .erase(),
-    };
+    let pipette = require_pipette(resolver);
     Some([
         resolver.require(artifacts::OPENVMM_NATIVE).erase(),
         resolver
@@ -93,25 +487,11 @@ async fn test_ttrpc_no_vmbus(
         &tempdir.path().join("openvmm.pid"),
     )
     .await?;
-    let initrd = std::fs::read(initrd_path.get())?;
-    let pipette = std::fs::read(pipette_path.get())?;
-    let boot_initrd = initrd_cpio::inject_into_initrd(&initrd, "pipette", &pipette, 0o100755)?;
-    let mut initrd_file = tempfile::NamedTempFile::new_in(tempdir.path())?;
-    initrd_file.write_all(&boot_initrd)?;
-    let console = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
-        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
-    };
+    let initrd_file = pipette_initrd(tempdir.path(), &initrd_path, &pipette_path)?;
+    let console = linux_console();
     for disable_hv in [false, true] {
         let vsock_path = tempdir.path().join(format!("vsock-{disable_hv}"));
-        let mut pipette_listener = PolledSocket::new(
-            &driver,
-            UnixListener::bind(format!(
-                "{}_{}",
-                vsock_path.to_string_lossy(),
-                pipette_client::PIPETTE_PORT
-            ))?,
-        )?;
+        let mut pipette_listener = listen_for_pipette(&driver, &vsock_path)?;
         let com1_path = tempdir.path().join(format!("com1-{disable_hv}.sock"));
         client
             .call()
@@ -186,19 +566,14 @@ async fn test_ttrpc_no_vmbus(
             .start(vmservice::Vm::ResumeVm, ())
             .await
             .unwrap();
-        let agent = CancelContext::new()
-            .with_timeout(Duration::from_secs(60))
-            .until_cancelled(async {
-                let (conn, _) = pipette_listener.accept().await?;
-                pipette_client::PipetteClient::new(
-                    &driver,
-                    PolledSocket::new(&driver, conn)?,
-                    params.log_source.output_dir(),
-                )
-                .await
-            })
-            .await
-            .context("timed out connecting to pipette over virtio-vsock")??;
+        let agent = accept_pipette(
+            &driver,
+            &params,
+            &mut pipette_listener,
+            Duration::from_mins(1),
+        )
+        .await
+        .context("connecting to pipette over virtio-vsock")?;
         assert_eq!(
             agent.local_vsock_cid(),
             Some(42),
@@ -224,7 +599,7 @@ async fn test_ttrpc_no_vmbus(
         }
         agent.power_off().await?;
         CancelContext::new()
-            .with_timeout(Duration::from_secs(60))
+            .with_timeout(Duration::from_mins(1))
             .until_cancelled(waiter)
             .await
             .context("timed out waiting for guest poweroff")?
@@ -252,22 +627,8 @@ async fn test_ttrpc_interface(
     let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
 
-    let initrd = std::fs::read(initrd_path.get()).context("failed to read test initrd")?;
-    let pipette = std::fs::read(pipette_path.get()).context("failed to read pipette")?;
-    let pipette_initrd = initrd_cpio::inject_into_initrd(&initrd, "pipette", &pipette, 0o100755)
-        .context("failed to inject pipette into test initrd")?;
-    let mut pipette_initrd_file = tempfile::NamedTempFile::new_in(tempdir.path())
-        .context("failed to create initrd temp file")?;
-    pipette_initrd_file
-        .write_all(&pipette_initrd)
-        .context("failed to write initrd temp file")?;
-
-    // The serial console device differs by architecture: x86 exposes a 16550
-    // UART as `ttyS0`, while aarch64 exposes a PL011 UART as `ttyAMA0`.
-    let console = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
-        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
-    };
+    let pipette_initrd_file = pipette_initrd(tempdir.path(), &initrd_path, &pipette_path)?;
+    let console = linux_console();
 
     let (mut child, client, stderr_task) =
         launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
@@ -340,6 +701,15 @@ async fn test_ttrpc_interface(
     for path in [&nvme_disk_path, &blk_disk_path, &scsi_disk_path] {
         std::fs::File::create(path)?.set_len(1024 * 1024)?;
     }
+    // Backing files for the boot-time and hot-added virtio-pmem devices.
+    let pmem_path = tempdir.path().join("pmem.img");
+    let hotplug_pmem_path = tempdir.path().join("pmem-hotplug.img");
+    {
+        let mut file = std::fs::File::create(&pmem_path)?;
+        file.set_len(PMEM_SIZE)?;
+        file.write_all(PMEM_HOST_MARKER.as_bytes())?;
+    }
+    std::fs::File::create(&hotplug_pmem_path)?.set_len(PMEM_SIZE)?;
 
     let console_markers = ["ttrpc-console-0-marker", "ttrpc-console-1-marker"];
     for i in 0..3 {
@@ -354,6 +724,8 @@ async fn test_ttrpc_interface(
             std::fs::write(&console_path, b"stale console contents")?;
             std::fs::write(&append_console_path, b"stale append contents")?;
         }
+        let snapshot_memory_path = tempdir.path().join(format!("snapshot-memory-{i}.bin"));
+        let snapshot_path = tempdir.path().join(format!("snapshot-{i}"));
         let virtiofs_root = tempdir.path().join(format!("virtiofs-{i}"));
         let hotplug_virtiofs_root = tempdir.path().join(format!("hotplug-virtiofs-{i}"));
         let second_hotplug_virtiofs_root =
@@ -397,7 +769,9 @@ async fn test_ttrpc_interface(
         } else {
             None
         };
-        let console_paths = if i != 2 {
+        // Iteration 1 has no virtio consoles because they do not support
+        // save/restore. Iteration 2 uses file-backed consoles over PCIe.
+        let console_paths = if i == 0 {
             vec![&console_path, &second_console_path]
         } else {
             Vec::new()
@@ -419,7 +793,7 @@ async fn test_ttrpc_interface(
         // and a switch, plus an empty hotplug port used below for
         // AddPcieDevice/RemovePcieDevice. Other iterations use the simpler
         // flat-memory configuration so the flat path stays covered too.
-        let (memory_config, numa_config, processor_config, pcie) = if i == 0 {
+        let (mut memory_config, numa_config, processor_config, pcie) = if i == 0 {
             let switch = vmservice::PcieSwitch {
                 name: "sw0".to_string(),
                 downstream_ports: vec![
@@ -487,12 +861,15 @@ async fn test_ttrpc_interface(
                         Some(attachment_device(virtio_device(
                             vmservice::virtio_device::Kind::Net(vmservice::VirtioNet {
                                 max_queues: None,
+                                enable_rx_gso: false,
                                 mac_address: "00-15-5D-12-12-13".to_string(),
                                 backend: Some(vmservice::NicBackend {
                                     kind: Some(vmservice::nic_backend::Kind::Consomme(
                                         vmservice::ConsommeBackend {
                                             cidr: String::new(),
                                             ports: vec![],
+                                            internal_dns: None,
+                                            ..Default::default()
                                         },
                                     )),
                                 }),
@@ -511,6 +888,12 @@ async fn test_ttrpc_interface(
                         Some(attachment_device(virtio_device(
                             vmservice::virtio_device::Kind::Rtc(vmservice::VirtioRtc {}),
                         ))),
+                    ),
+                    // Writable file-backed virtio-pmem behind a root port.
+                    pcie_root_port(
+                        "rp5",
+                        false,
+                        Some(attachment_device(virtio_device(file_pmem(&pmem_path)))),
                     ),
                 ],
                 ..Default::default()
@@ -592,6 +975,10 @@ async fn test_ttrpc_interface(
                 None,
             )
         };
+        if i == 1 {
+            memory_config.as_mut().unwrap().backing_file_path =
+                Some(snapshot_memory_path.to_string_lossy().into_owned());
+        }
 
         let (boot_initrd_path, kernel_cmdline) = if i != 1 {
             (
@@ -601,10 +988,11 @@ async fn test_ttrpc_interface(
                 ),
             )
         } else {
-            let guest_command = if i == 1 { "sleep 30" } else { "poweroff -f" };
+            // The save/restore iteration runs a shell on the serial port, so
+            // the test can check that the guest keeps running across restore.
             (
                 initrd_path.get(),
-                format!("console={console} rdinit=/bin/busybox panic=-1 -- {guest_command}"),
+                format!("console={console} rdinit=/bin/busybox panic=-1 -- sh"),
             )
         };
 
@@ -631,78 +1019,96 @@ async fn test_ttrpc_interface(
             }),
         });
 
+        let vm_config = vmservice::VmConfig {
+            memory_config,
+            numa_config,
+            processor_config,
+            pcie,
+            boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                vmservice::DirectBoot {
+                    kernel_path: kernel_path.get().to_string_lossy().to_string(),
+                    initrd_path: boot_initrd_path.to_string_lossy().to_string(),
+                    kernel_cmdline,
+                },
+            )),
+            serial_config: Some(vmservice::SerialConfig {
+                ports: vec![vmservice::serial_config::Config {
+                    port: 0,
+                    socket_path: com1_path.to_string_lossy().into(),
+                    connect: use_connect,
+                }],
+            }),
+            devices_config: Some(vmservice::DevicesConfig {
+                nic_config: vec![vmservice::NicConfig {
+                    nic_id: consomme_nic_id.clone(),
+                    mac_address: "00-15-5D-12-12-12".to_string(),
+                    frontend: if i == 1 {
+                        vmservice::NicFrontend::Virtio as i32
+                    } else {
+                        vmservice::NicFrontend::Vmbus as i32
+                    },
+                    backend: Some(vmservice::nic_config::Backend::Consomme(
+                        vmservice::ConsommeBackend {
+                            cidr: String::new(),
+                            ports: vec![vmservice::PortConfig {
+                                host_port: host_port.into(),
+                                guest_port: 80,
+                                protocol: vmservice::IpProtocol::Tcp as i32,
+                                host_address: host_address.to_string(),
+                            }],
+                            internal_dns: None,
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                }],
+                virtio_consoles: console_paths
+                    .iter()
+                    .map(|path| vmservice::VirtioConsoleConfig {
+                        socket_path: path.to_string_lossy().into(),
+                        connect: use_connect,
+                    })
+                    .collect(),
+                virtiofs_config: if i == 1 {
+                    vec![]
+                } else {
+                    vec![vmservice::VirtioFs {
+                        tag: "testfs".to_string(),
+                        root_path: virtiofs_root.to_string_lossy().into(),
+                        mount_options: if i == 0 { "ro" } else { "" }.to_string(),
+                        windows_options: None,
+                    }]
+                },
+                // A SCSI controller keeps a request channel
+                // alive for the lifetime of the VM, which used
+                // to stop the VM worker from ever finishing its
+                // stop. Attach a disk so that the teardown and
+                // quit paths below cover that.
+                scsi_disks: vec![vmservice::ScsiDisk {
+                    controller: 0,
+                    lun: 0,
+                    host_path: scsi_disk_path.to_string_lossy().into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            hvsocket_config: (i != 1).then(|| vmservice::HvSocketConfig {
+                path: hvsocket_path.to_string_lossy().to_string(),
+            }),
+            smbios_config,
+            ..Default::default()
+        };
+        let restore_config = (i == 1).then(|| {
+            let mut config = vm_config.clone();
+            config.memory_config.as_mut().unwrap().backing_file_path = None;
+            config
+        });
         client
             .call()
             .start(
                 vmservice::Vm::CreateVm,
                 vmservice::CreateVmRequest {
-                    config: Some(vmservice::VmConfig {
-                        memory_config,
-                        numa_config,
-                        processor_config,
-                        pcie,
-                        boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
-                            vmservice::DirectBoot {
-                                kernel_path: kernel_path.get().to_string_lossy().to_string(),
-                                initrd_path: boot_initrd_path.to_string_lossy().to_string(),
-                                kernel_cmdline,
-                            },
-                        )),
-                        serial_config: Some(vmservice::SerialConfig {
-                            ports: vec![vmservice::serial_config::Config {
-                                port: 0,
-                                socket_path: com1_path.to_string_lossy().into(),
-                                connect: use_connect,
-                            }],
-                        }),
-                        devices_config: Some(vmservice::DevicesConfig {
-                            nic_config: vec![vmservice::NicConfig {
-                                nic_id: consomme_nic_id.clone(),
-                                mac_address: "00-15-5D-12-12-12".to_string(),
-                                backend: Some(vmservice::nic_config::Backend::Consomme(
-                                    vmservice::ConsommeBackend {
-                                        cidr: String::new(),
-                                        ports: vec![vmservice::PortConfig {
-                                            host_port: host_port.into(),
-                                            guest_port: 80,
-                                            protocol: vmservice::IpProtocol::Tcp as i32,
-                                            host_address: host_address.to_string(),
-                                        }],
-                                    },
-                                )),
-                                ..Default::default()
-                            }],
-                            virtio_consoles: console_paths
-                                .iter()
-                                .map(|path| vmservice::VirtioConsoleConfig {
-                                    socket_path: path.to_string_lossy().into(),
-                                    connect: use_connect,
-                                })
-                                .collect(),
-                            virtiofs_config: vec![vmservice::VirtioFs {
-                                tag: "testfs".to_string(),
-                                root_path: virtiofs_root.to_string_lossy().into(),
-                                read_only: i == 0,
-                            }],
-                            // A SCSI controller keeps a request channel
-                            // alive for the lifetime of the VM, which used
-                            // to stop the VM worker from ever finishing its
-                            // stop. Attach a disk so that the teardown and
-                            // quit paths below cover that.
-                            scsi_disks: vec![vmservice::ScsiDisk {
-                                controller: 0,
-                                lun: 0,
-                                host_path: scsi_disk_path.to_string_lossy().into(),
-                                ..Default::default()
-                            }],
-                            ..Default::default()
-                        }),
-                        hvsocket_config: (i != 1).then(|| vmservice::HvSocketConfig {
-                            path: hvsocket_path.to_string_lossy().to_string(),
-                        }),
-                        smbios_config,
-                        ..Default::default()
-                    }),
+                    config: Some(vm_config),
                     log_id: String::new(),
                 },
             )
@@ -779,6 +1185,8 @@ async fn test_ttrpc_interface(
                                                     protocol,
                                                     host_address: host_address.to_string(),
                                                 }],
+                                                internal_dns: None,
+                                                ..Default::default()
                                             },
                                         )),
                                         ..Default::default()
@@ -850,6 +1258,51 @@ async fn test_ttrpc_interface(
                 .await
                 .unwrap();
 
+            let err = client
+                .call()
+                .start(
+                    vmservice::Vm::AddPcieDevice,
+                    vmservice::AddPcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                        device: Some(virtio_device(vmservice::virtio_device::Kind::Pmem(
+                            vmservice::VirtioPmem {
+                                backend: None,
+                                read_only: false,
+                            },
+                        ))),
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                err.message.contains("missing pmem backend"),
+                "unexpected error: {}",
+                err.message
+            );
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::AddPcieDevice,
+                    vmservice::AddPcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                        device: Some(virtio_device(file_pmem(&hotplug_pmem_path))),
+                    },
+                )
+                .await
+                .unwrap();
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::RemovePcieDevice,
+                    vmservice::RemovePcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+
             client
                 .call()
                 .start(
@@ -860,7 +1313,8 @@ async fn test_ttrpc_interface(
                             vmservice::VirtioFs {
                                 tag: "hotplugfs".to_string(),
                                 root_path: hotplug_virtiofs_root.to_string_lossy().into(),
-                                read_only: true,
+                                mount_options: "ro".to_string(),
+                                windows_options: None,
                             },
                         ))),
                     },
@@ -927,14 +1381,18 @@ async fn test_ttrpc_interface(
             consoles.push(PolledSocket::new(&driver, console)?);
         }
 
-        let _com1_task = driver.spawn(
-            "com1",
-            petri::log_task(
-                params.log_source.log_file("linux").unwrap(),
-                PolledSocket::new(&driver, com1).unwrap(),
-                "linux com1",
-            ),
-        );
+        let com1 = PolledSocket::new(&driver, com1).unwrap();
+        let com1_log = params.log_source.log_file("linux").unwrap();
+        // The save/restore iteration drives a shell on COM1; the others only
+        // log it.
+        let (_com1_task, mut com1_shell) = if i == 1 {
+            (None, Some(SerialShell::new(&driver, com1, com1_log)))
+        } else {
+            (
+                Some(driver.spawn("com1", petri::log_task(com1_log, com1, "linux com1"))),
+                None,
+            )
+        };
 
         assert_eq!(
             client
@@ -989,8 +1447,12 @@ async fn test_ttrpc_interface(
                             cmd!(sh, "sh -c {command}").run().await?;
                         }
                         validate_pcie_config(&agent).await?;
+                        if i == 0 {
+                            validate_pmem(&agent, &pmem_path, "pmem0").await?;
+                        }
                         #[cfg(windows)]
                         {
+                            validate_vpci_pmem_hotplug(&client, &agent, tempdir.path()).await?;
                             mount_virtio_fs(&agent, "testfs", "/mnt/testfs").await?;
                             validate_virtio_fs_access(&agent, "/mnt/testfs", &virtiofs_root, true)
                                 .await?;
@@ -1034,7 +1496,7 @@ async fn test_ttrpc_interface(
                     }
 
                     CancelContext::new()
-                        .with_timeout(Duration::from_secs(60))
+                        .with_timeout(Duration::from_mins(1))
                         .until_cancelled(async {
                             for (console, marker) in consoles.iter_mut().zip(console_markers) {
                                 let mut output = Vec::new();
@@ -1084,18 +1546,129 @@ async fn test_ttrpc_interface(
                     "after ResumeVm, expected RUNNING"
                 );
 
+                let shell = com1_shell.as_mut().unwrap();
+                shell
+                    .wait_for("job control turned off", 0, SERIAL_BOOT_TIMEOUT)
+                    .await?;
+
                 client
                     .call()
                     .start(vmservice::Vm::PauseVm, ())
                     .await
                     .unwrap();
-
                 let props = query_props().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Paused as i32,
                     "after PauseVm, expected PAUSED"
                 );
+                client
+                    .call()
+                    .start(vmservice::Vm::ResumeVm, ())
+                    .await
+                    .unwrap();
+                let props = query_props().await.unwrap();
+                assert_eq!(
+                    props.state,
+                    vmservice::VmState::Running as i32,
+                    "after ResumeVm, expected RUNNING"
+                );
+                shell.run("echo PRE-$((40+2))", "PRE-42").await?;
+
+                // An existing destination is rejected before the VM is paused.
+                std::fs::create_dir_all(&snapshot_path).unwrap();
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::SaveVm,
+                        vmservice::SaveVmRequest {
+                            destination_dir: snapshot_path.to_string_lossy().into_owned(),
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::FailedPrecondition as i32,
+                    "SaveVm into an existing directory: {}",
+                    err.message
+                );
+                assert!(
+                    std::fs::read_dir(&snapshot_path).unwrap().next().is_none(),
+                    "a rejected SaveVm must not write into the existing directory"
+                );
+                let props = query_props().await.unwrap();
+                assert_eq!(
+                    props.state,
+                    vmservice::VmState::Running as i32,
+                    "a rejected SaveVm should leave the VM running"
+                );
+                std::fs::remove_dir(&snapshot_path).unwrap();
+
+                let save_result = client
+                    .call()
+                    .start(
+                        vmservice::Vm::SaveVm,
+                        vmservice::SaveVmRequest {
+                            destination_dir: snapshot_path.to_string_lossy().into_owned(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let snapshot_id = save_result.snapshot_id;
+                let parsed_id: Guid = snapshot_id
+                    .parse()
+                    .expect("SaveVm should return a GUID string");
+                assert!(
+                    !parsed_id.is_zero(),
+                    "SaveVm should return a non-zero snapshot ID"
+                );
+                for name in ["manifest.bin", "state.bin", "memory.bin"] {
+                    assert!(
+                        snapshot_path.join(name).exists(),
+                        "SaveVm should create {name}"
+                    );
+                }
+                let props = query_props().await.unwrap();
+                assert_eq!(
+                    props.state,
+                    vmservice::VmState::Paused as i32,
+                    "SaveVm should leave the VM paused"
+                );
+                client
+                    .call()
+                    .start(vmservice::Vm::ResumeVm, ())
+                    .await
+                    .unwrap_err();
+
+                // A second save is rejected, even to a new directory, because
+                // both snapshots would share the VM's memory backing file.
+                let second_snapshot_path = tempdir.path().join(format!("snapshot-second-{i}"));
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::SaveVm,
+                        vmservice::SaveVmRequest {
+                            destination_dir: second_snapshot_path.to_string_lossy().into_owned(),
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::FailedPrecondition as i32,
+                    "second SaveVm: {}",
+                    err.message
+                );
+                assert!(
+                    !second_snapshot_path.exists(),
+                    "a rejected second SaveVm must not create its destination"
+                );
+                client
+                    .call()
+                    .start(vmservice::Vm::ResumeVm, ())
+                    .await
+                    .unwrap_err();
 
                 client
                     .call()
@@ -1104,6 +1677,168 @@ async fn test_ttrpc_interface(
                     .unwrap();
 
                 waiter.await.unwrap_err();
+
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::RestoreVm,
+                        vmservice::RestoreVmRequest {
+                            source_dir: snapshot_path.to_string_lossy().into_owned(),
+                            config: restore_config.clone(),
+                            expected_snapshot_id: Some("not-a-guid".to_string()),
+                            resume: false,
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::InvalidArgument as i32,
+                    "RestoreVm with a malformed snapshot ID: {}",
+                    err.message
+                );
+
+                let wrong_snapshot_id = Guid::new_random().to_string();
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::RestoreVm,
+                        vmservice::RestoreVmRequest {
+                            source_dir: snapshot_path.to_string_lossy().into_owned(),
+                            config: restore_config.clone(),
+                            expected_snapshot_id: Some(wrong_snapshot_id),
+                            resume: false,
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::FailedPrecondition as i32,
+                    "RestoreVm with the wrong snapshot ID: {}",
+                    err.message
+                );
+                let restore_result = client
+                    .call()
+                    .start(
+                        vmservice::Vm::RestoreVm,
+                        vmservice::RestoreVmRequest {
+                            source_dir: snapshot_path.to_string_lossy().into_owned(),
+                            config: restore_config.clone(),
+                            // The expected ID is compared as a GUID, so case
+                            // doesn't matter.
+                            expected_snapshot_id: Some(snapshot_id.to_uppercase()),
+                            resume: false,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    restore_result.snapshot_id, snapshot_id,
+                    "RestoreVm should return the snapshot ID from the manifest"
+                );
+                let props = query_props().await.unwrap();
+                assert_eq!(
+                    props.state,
+                    vmservice::VmState::Paused as i32,
+                    "RestoreVm should leave the VM paused when resume is false"
+                );
+
+                // aarch64 saves only part of the processor state (for example,
+                // not the GIC or timer state), so a restored aarch64 guest
+                // can't run yet. The petri OpenVMM backend also skips its
+                // save/restore check on aarch64.
+                if petri_artifacts_common::tags::MachineArch::host()
+                    == petri_artifacts_common::tags::MachineArch::X86_64
+                {
+                    // The restored guest continues where it was saved, without
+                    // rebooting.
+                    let mut shell = SerialShell::new(
+                        &driver,
+                        PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                        params.log_source.log_file("linux-restored")?,
+                    );
+                    client
+                        .call()
+                        .start(vmservice::Vm::ResumeVm, ())
+                        .await
+                        .unwrap();
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Running as i32,
+                        "after resuming the restored VM, expected RUNNING"
+                    );
+                    shell.run("echo POST-$((40+3))", "POST-43").await?;
+                    assert!(
+                        !shell.output.contains("Linux version"),
+                        "the restored guest rebooted"
+                    );
+
+                    // Save the restored VM to a new snapshot, and restore that one
+                    // with `resume: true`. The first snapshot can't be restored
+                    // again because restore uses its memory in place.
+                    let save_result = client
+                        .call()
+                        .start(
+                            vmservice::Vm::SaveVm,
+                            vmservice::SaveVmRequest {
+                                destination_dir: second_snapshot_path
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    let second_snapshot_id = save_result.snapshot_id;
+                    assert_ne!(
+                        second_snapshot_id, snapshot_id,
+                        "each SaveVm should generate a new snapshot ID"
+                    );
+                    client
+                        .call()
+                        .start(vmservice::Vm::TeardownVm, ())
+                        .await
+                        .unwrap();
+                    drop(shell);
+
+                    let restore_result = client
+                        .call()
+                        .start(
+                            vmservice::Vm::RestoreVm,
+                            vmservice::RestoreVmRequest {
+                                source_dir: second_snapshot_path.to_string_lossy().into_owned(),
+                                config: restore_config,
+                                expected_snapshot_id: Some(second_snapshot_id.clone()),
+                                resume: true,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(restore_result.snapshot_id, second_snapshot_id);
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Running as i32,
+                        "RestoreVm should leave the VM running when resume is true"
+                    );
+                    let mut shell = SerialShell::new(
+                        &driver,
+                        PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                        params.log_source.log_file("linux-restored-resume")?,
+                    );
+                    shell.run("echo RESUME-$((40+4))", "RESUME-44").await?;
+                    assert!(
+                        !shell.output.contains("Linux version"),
+                        "the guest restored with resume rebooted"
+                    );
+                }
+
+                client
+                    .call()
+                    .start(vmservice::Vm::TeardownVm, ())
+                    .await
+                    .unwrap();
             }
             _ => unreachable!(),
         }
@@ -1320,8 +2055,7 @@ async fn test_ttrpc_uefi_boot(
         log_serial(
             params.log_source.log_file("uefi")?,
             com1,
-            UEFI_BANNER,
-            marker_send,
+            [(UEFI_BANNER, marker_send)],
         ),
     );
 
@@ -1338,7 +2072,7 @@ async fn test_ttrpc_uefi_boot(
     // The firmware takes a while to initialize and enumerate the SCSI
     // controller before it can launch anything off of the disk.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(120))
+        .with_timeout(Duration::from_mins(2))
         .until_cancelled(marker_recv)
         .await
         .context("timed out waiting for the guest UEFI application to run")?
@@ -1348,7 +2082,7 @@ async fn test_ttrpc_uefi_boot(
     // so waiting for the halt confirms the guest ran to completion rather
     // than just reaching its first line of output.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(120))
+        .with_timeout(Duration::from_mins(2))
         .until_cancelled(waiter)
         .await
         .context("timed out waiting for the guest to halt")?
@@ -1412,20 +2146,101 @@ async fn test_ttrpc_uefi_boot(
 /// The first thing `guest_test_uefi` prints once the firmware hands off to it.
 const UEFI_BANNER: &str = "UEFI vendor =";
 
+/// How long to wait for the guest shell to start after the VM is resumed.
+const SERIAL_BOOT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// A busybox shell on a guest serial port.
+///
+/// The output is drained and logged in the background for the lifetime of the
+/// connection, because the guest stalls if its serial output is not read.
+struct SerialShell {
+    writer: pal_async::socket::WriteHalf<UnixStream>,
+    chunks: mesh::Receiver<String>,
+    /// Everything read from the serial port so far.
+    output: String,
+    _reader: Task<()>,
+}
+
+impl SerialShell {
+    fn new(
+        driver: &DefaultDriver,
+        socket: PolledSocket<UnixStream>,
+        log_file: petri::PetriLogFile,
+    ) -> Self {
+        let (mut reader, writer) = socket.split();
+        let (send, chunks) = mesh::channel();
+        let reader = driver.spawn("serial-shell", async move {
+            let mut buf = [0; 4096];
+            let mut line = String::new();
+            while let Ok(n @ 1..) = reader.read(&mut buf).await {
+                let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                line.push_str(&text);
+                while let Some(end) = line.find('\n') {
+                    log_file.write_entry(line[..end].trim_end());
+                    line.drain(..=end);
+                }
+                send.send(text);
+            }
+        });
+        Self {
+            writer,
+            chunks,
+            output: String::new(),
+            _reader: reader,
+        }
+    }
+
+    /// Waits until `marker` appears in the output after byte offset `start`.
+    async fn wait_for(
+        &mut self,
+        marker: &str,
+        start: usize,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let wait = async {
+            while !self.output[start..].contains(marker) {
+                let chunk = self
+                    .chunks
+                    .recv()
+                    .await
+                    .context("guest serial port closed")?;
+                self.output.push_str(&chunk);
+            }
+            anyhow::Ok(())
+        };
+        CancelContext::new()
+            .with_timeout(timeout)
+            .until_cancelled(wait)
+            .await
+            .with_context(|| format!("timed out waiting for {marker:?} on the guest serial port"))?
+    }
+
+    /// Runs `command` in the shell and waits for `expected` in its output.
+    async fn run(&mut self, command: &str, expected: &str) -> anyhow::Result<()> {
+        let start = self.output.len();
+        self.writer
+            .write_all(format!("{command}\n").as_bytes())
+            .await?;
+        let timeout = Duration::from_secs(60);
+        self.wait_for(expected, start, timeout).await?;
+        // Also wait for the end of the line, so the reader has logged it.
+        let end = start + self.output[start..].find(expected).unwrap();
+        self.wait_for("\n", end, timeout).await
+    }
+}
+
 /// Logs everything read from `reader` until the stream ends, signalling
 /// `marker_send` the first time `marker` appears in the output.
 ///
 /// This keeps running after the marker is seen: the guest stalls if its serial
 /// output is not drained, so the reader has to stay attached for the lifetime
 /// of the VM.
-async fn log_serial(
+async fn log_serial<const N: usize>(
     log_file: petri::PetriLogFile,
     reader: impl futures::AsyncRead + Unpin,
-    marker: &str,
-    marker_send: mesh::OneshotSender<()>,
+    markers: [(&str, mesh::OneshotSender<()>); N],
 ) {
-    let mut marker_send = Some(marker_send);
-    let marker = marker.as_bytes();
+    let mut markers = markers.map(|(marker, send)| (marker.as_bytes(), Some(send)));
     let mut reader = futures::io::BufReader::new(reader);
     let mut line = Vec::new();
     loop {
@@ -1441,9 +2256,11 @@ async fn log_serial(
             }
         }
 
-        if line.windows(marker.len()).any(|window| window == marker) {
-            if let Some(send) = marker_send.take() {
-                send.send(());
+        for (marker, send) in &mut markers {
+            if line.windows(marker.len()).any(|window| window == *marker) {
+                if let Some(send) = send.take() {
+                    send.send(());
+                }
             }
         }
 
@@ -1544,7 +2361,8 @@ fn virtio_fs_vpci_request(
             vmservice::VirtioFs {
                 tag: tag.to_string(),
                 root_path: root_path.to_string_lossy().into_owned(),
-                read_only,
+                mount_options: if read_only { "ro" } else { "" }.to_string(),
+                windows_options: None,
             },
         ))),
     }
@@ -1708,6 +2526,101 @@ async fn mount_virtio_fs(
     cmd!(sh, "sh -c {script}").run().await
 }
 
+/// Requires the Linux pipette agent for the host architecture.
+fn require_pipette(resolver: &petri::ArtifactResolver<'_>) -> ResolvedArtifact {
+    match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => resolver
+            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL)
+            .erase(),
+        petri_artifacts_common::tags::MachineArch::Aarch64 => resolver
+            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64_MUSL)
+            .erase(),
+    }
+}
+
+/// Returns the Linux serial console device: x86 exposes a 16550 UART as
+/// `ttyS0`, while aarch64 exposes a PL011 UART as `ttyAMA0`.
+fn linux_console() -> &'static str {
+    match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
+        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
+    }
+}
+
+/// Writes `initrd` with `pipette` injected as `/pipette` to a temporary file
+/// in `dir`.
+fn pipette_initrd(
+    dir: &Path,
+    initrd: &ResolvedArtifact,
+    pipette: &ResolvedArtifact,
+) -> anyhow::Result<tempfile::NamedTempFile> {
+    let initrd = std::fs::read(initrd.get()).context("failed to read test initrd")?;
+    let pipette = std::fs::read(pipette.get()).context("failed to read pipette")?;
+    let pipette_initrd = initrd_cpio::inject_into_initrd(&initrd, "pipette", &pipette, 0o100755)
+        .context("failed to inject pipette into test initrd")?;
+    let mut file =
+        tempfile::NamedTempFile::new_in(dir).context("failed to create initrd temp file")?;
+    file.write_all(&pipette_initrd)
+        .context("failed to write initrd temp file")?;
+    Ok(file)
+}
+
+/// Listens for pipette's connection on the hybrid vsock socket at
+/// `hvsocket_path`.
+fn listen_for_pipette(
+    driver: &DefaultDriver,
+    hvsocket_path: &Path,
+) -> anyhow::Result<PolledSocket<UnixListener>> {
+    Ok(PolledSocket::new(
+        driver,
+        UnixListener::bind(format!(
+            "{}_{}",
+            hvsocket_path.to_string_lossy(),
+            pipette_client::PIPETTE_PORT
+        ))?,
+    )?)
+}
+
+/// Accepts pipette's connection on `listener`, failing after `timeout`.
+async fn accept_pipette(
+    driver: &DefaultDriver,
+    params: &petri::PetriTestParams<'_>,
+    listener: &mut PolledSocket<UnixListener>,
+    timeout: Duration,
+) -> anyhow::Result<pipette_client::PipetteClient> {
+    CancelContext::new()
+        .with_timeout(timeout)
+        .until_cancelled(async {
+            let (conn, _) = listener.accept().await?;
+            pipette_client::PipetteClient::new(
+                driver,
+                PolledSocket::new(driver, conn)?,
+                params.log_source.output_dir(),
+            )
+            .await
+        })
+        .await
+        .context("timed out connecting to pipette")?
+}
+
+/// Waits up to 20 seconds for the guest block device `/dev/{name}`.
+#[cfg(windows)]
+async fn wait_for_block_device(
+    agent: &pipette_client::PipetteClient,
+    name: &str,
+) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    let script = format!(
+        "i=0; while [ $i -lt 200 ]; do \
+         test -b /dev/{name} && exit 0; \
+         i=$((i + 1)); sleep 0.1; done; exit 1"
+    );
+    cmd!(sh, "sh -c {script}")
+        .run()
+        .await
+        .with_context(|| format!("waiting for /dev/{name}"))
+}
+
 /// Spawns `openvmm --rpc path=<socket_path>,transport=ttrpc --pidfile
 /// <pidfile_path>`, waits for it to signal readiness (by closing stdout),
 /// validates the pidfile, and connects a ttrpc client.
@@ -1797,6 +2710,43 @@ async fn launch_openvmm(
     Ok((child, client, stderr_task))
 }
 
+/// Sends a resource-passing client handshake with `magic` and validates the
+/// server's reply. See `openvmm_ttrpc_vmservice/src/resource_passing.md`.
+#[cfg(any(target_os = "linux", windows))]
+async fn resource_passing_handshake(
+    sock: &mut PolledSocket<UnixStream>,
+    magic: [u8; 4],
+) -> anyhow::Result<()> {
+    use futures::AsyncWriteExt as _;
+
+    let mut client_handshake = [0u8; 8];
+    client_handshake[..4].copy_from_slice(&magic);
+    sock.write_all(&client_handshake).await?;
+    let mut server_handshake = [0u8; 8];
+    sock.read_exact(&mut server_handshake).await?;
+    anyhow::ensure!(
+        server_handshake[..4] == magic,
+        "bad server handshake magic: {:x?}",
+        &server_handshake[..4]
+    );
+    Ok(())
+}
+
+/// Reads one resource-passing response frame: `status: u8`, `msg_len: u16`
+/// (LE), `msg`.
+#[cfg(any(target_os = "linux", windows))]
+async fn read_resource_passing_response(
+    sock: &mut PolledSocket<UnixStream>,
+) -> anyhow::Result<(u8, String)> {
+    let mut hdr = [0u8; 3];
+    sock.read_exact(&mut hdr).await?;
+    let status = hdr[0];
+    let msg_len = u16::from_le_bytes([hdr[1], hdr[2]]) as usize;
+    let mut msg = vec![0u8; msg_len];
+    sock.read_exact(&mut msg).await?;
+    Ok((status, String::from_utf8_lossy(&msg).into_owned()))
+}
+
 /// Builds a file-backed disk backend for the given path.
 fn file_disk(path: &Path) -> vmservice::DiskBackend {
     vmservice::DiskBackend {
@@ -1852,6 +2802,127 @@ async fn validate_smbios(agent: &pipette_client::PipetteClient) -> anyhow::Resul
         bios_release.trim()
     );
 
+    Ok(())
+}
+
+/// Builds a virtio-pmem device backed by the host file at `path`.
+fn file_pmem(path: &Path) -> vmservice::virtio_device::Kind {
+    vmservice::virtio_device::Kind::Pmem(vmservice::VirtioPmem {
+        backend: Some(vmservice::PmemBackend {
+            kind: Some(vmservice::pmem_backend::Kind::File(vmservice::PmemFile {
+                path: path.to_string_lossy().into(),
+            })),
+        }),
+        read_only: false,
+    })
+}
+
+/// Verifies a virtio-pmem device is visible to the guest and that
+/// data flows between the guest and the host backing file in both directions.
+async fn validate_pmem(
+    agent: &pipette_client::PipetteClient,
+    host_path: &Path,
+    name: &str,
+) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    let size_path = format!("/sys/block/{name}/size");
+    let device_path = format!("/dev/{name}");
+    let sectors = cmd!(sh, "cat {size_path}")
+        .read()
+        .await
+        .with_context(|| format!("{device_path} not found"))?;
+    let sectors: u64 = sectors
+        .trim()
+        .parse()
+        .with_context(|| format!("parse {name} size"))?;
+    anyhow::ensure!(
+        sectors * 512 == PMEM_SIZE,
+        "unexpected {name} size: {sectors} sectors"
+    );
+
+    let host_marker_len = PMEM_HOST_MARKER.len().to_string();
+    let readback = cmd!(sh, "head -c {host_marker_len} {device_path}")
+        .read()
+        .await?;
+    anyhow::ensure!(
+        readback == PMEM_HOST_MARKER,
+        "guest read {readback:?} from {name}, expected {PMEM_HOST_MARKER:?}"
+    );
+
+    let seek = (PMEM_GUEST_OFFSET / 4096).to_string();
+    let command = format!(
+        "printf {PMEM_GUEST_MARKER} | dd of={device_path} bs=4096 seek={seek} conv=notrunc,fsync 2>/dev/null"
+    );
+    cmd!(sh, "sh -c {command}").run().await?;
+
+    let contents = std::fs::read(host_path)?;
+    let written = contents
+        .get(PMEM_GUEST_OFFSET..PMEM_GUEST_OFFSET + PMEM_GUEST_MARKER.len())
+        .context("pmem backing file too small")?;
+    anyhow::ensure!(
+        written == PMEM_GUEST_MARKER.as_bytes(),
+        "host backing file has {:?} at offset {PMEM_GUEST_OFFSET:#x}, expected {PMEM_GUEST_MARKER:?}",
+        String::from_utf8_lossy(written)
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn validate_vpci_pmem_hotplug(
+    client: &mesh_rpc::Client,
+    agent: &pipette_client::PipetteClient,
+    root: &Path,
+) -> anyhow::Result<()> {
+    let first_path = root.join("vpci-pmem-1.img");
+    let second_path = root.join("vpci-pmem-2.img");
+    let first_instance_id = Guid::new_random();
+    let second_instance_id = Guid::new_random();
+    let sh = agent.unix_shell();
+    for (instance_id, path, name) in [
+        (first_instance_id, &first_path, "pmem1"),
+        (second_instance_id, &second_path, "pmem2"),
+    ] {
+        {
+            let mut file = std::fs::File::create(path)?;
+            file.set_len(PMEM_SIZE)?;
+            file.write_all(PMEM_HOST_MARKER.as_bytes())?;
+        }
+        client
+            .call()
+            .start(
+                vmservice::Vm::AddVpciDevice,
+                vmservice::AddVpciDeviceRequest {
+                    instance_id: instance_id.to_string(),
+                    device: Some(virtio_device(file_pmem(path))),
+                },
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!(err.message))?;
+
+        wait_for_block_device(agent, name).await?;
+        validate_pmem(agent, path, name).await?;
+    }
+
+    client
+        .call()
+        .start(
+            vmservice::Vm::RemoveVpciDevice,
+            vmservice::RemoveVpciDeviceRequest {
+                instance_id: second_instance_id.to_string(),
+            },
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.message))?;
+    let script = "i=0; while [ $i -lt 200 ]; do \
+                  if [ ! -e /sys/block/pmem2 ] && [ ! -b /dev/pmem2 ]; then exit 0; fi; \
+                  i=$((i + 1)); sleep 0.1; done; exit 1";
+    cmd!(sh, "sh -c {script}")
+        .run()
+        .await
+        .context("waiting for hot-removed pmem2 to disappear")?;
+
+    // Keep the first device attached through guest shutdown and TeardownVm.
+    validate_pmem(agent, &first_path, "pmem1").await?;
     Ok(())
 }
 

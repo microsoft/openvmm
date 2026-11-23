@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! ECDSA implementation using SymCrypt.
+//! ECDSA and ECDH implementation using SymCrypt.
 
 use super::EcdsaCurve;
 use super::EcdsaError;
@@ -100,7 +100,7 @@ impl EcdsaKeyPairInner {
         let curve_type = match curve {
             EcdsaCurve::P384 => CurveType::NistP384,
         };
-        let key = EcKey::generate_key_pair(curve_type, EcKeyUsage::EcDsa)
+        let key = EcKey::generate_key_pair(curve_type, EcKeyUsage::EcDhAndEcDsa)
             .map_err(|e| err(e, "generating the ECDSA key pair"))?;
         Ok(Self(key))
     }
@@ -111,6 +111,20 @@ impl EcdsaKeyPairInner {
             .ecdsa_sign(hash)
             .map_err(|e| err(e, "computing the ECDSA signature"))?;
         Ok(EcdsaSignatureInner(signature))
+    }
+
+    pub fn derive_shared_secret(&self, peer: &EcdsaPublicKeyInner) -> Result<Vec<u8>, EcdsaError> {
+        // SymCrypt's Rust wrapper consumes the peer key, so import a temporary
+        // key with ECDH usage rather than consuming the caller's public key.
+        let peer = peer
+            .0
+            .export_public_key()
+            .map_err(|e| err(e, "exporting the ECDH peer public key"))?;
+        let peer = EcKey::set_public_key(self.0.get_curve_type(), &peer, EcKeyUsage::EcDh)
+            .map_err(|e| err(e, "importing the ECDH peer public key"))?;
+        self.0
+            .ecdh_secret_agreement(peer)
+            .map_err(|e| err(e, "computing the ECDH shared secret"))
     }
 
     pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {

@@ -90,6 +90,8 @@ enum Commands {
     #[clap(hide = true)]
     Complete(clap_dyn_complete::Complete),
     Completions(completions::Completions),
+    #[clap(hide = true)]
+    CoverageSources(tasks::CoverageSources),
 
     Clean(tasks::Clean),
     Fmt(tasks::Fmt),
@@ -135,7 +137,10 @@ fn try_main() -> anyhow::Result<()> {
         }
     }
 
-    if !matches!(cli.command, Commands::Complete(..)) {
+    if !matches!(
+        cli.command,
+        Commands::Complete(..) | Commands::CoverageSources(..)
+    ) {
         tasks::update_hooks(&root).context("failed to update git hooks")?;
     }
 
@@ -157,6 +162,7 @@ fn try_main() -> anyhow::Result<()> {
         }
 
         Commands::Clean(task) => task.run(ctx),
+        Commands::CoverageSources(task) => task.run(ctx),
         Commands::Fmt(task) => task.run(ctx),
         Commands::Fuzz(task) => task.run(ctx),
         Commands::GuestTest(task) => task.run(ctx),

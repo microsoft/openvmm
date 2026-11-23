@@ -25,7 +25,6 @@ string_page_buf.workspace = true
 mesh_protobuf.workspace = true
 
 arrayvec.workspace = true
-cfg-if.workspace = true
 crc32fast.workspace = true
 log.workspace = true
 thiserror.workspace = true

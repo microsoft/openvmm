@@ -106,6 +106,7 @@ impl AmlObject for EisaId {
 mod tests {
     use super::*;
     use crate::aml::test_helpers::verify_expected_bytes;
+    use test_with_tracing::test;
 
     #[test]
     fn verify_eisaid() {

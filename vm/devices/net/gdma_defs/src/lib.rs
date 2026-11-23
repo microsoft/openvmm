@@ -155,8 +155,9 @@ impl WqeHeader {
         (self.data_len() + 8 + WQE_ALIGNMENT - 1) & !(WQE_ALIGNMENT - 1)
     }
 
+    /// The number of bytes after the header, through the end of the SGL.
     pub fn data_len(&self) -> usize {
-        self.oob_len() + self.sgl_len()
+        self.sgl_offset() + self.sgl_len()
     }
 
     pub fn oob_len(&self) -> usize {
@@ -618,4 +619,58 @@ pub struct GdmaChangeMsixVectorIndexForEq {
 pub struct GdmaGenerateResetEventReq {
     pub queue_index: u32,
     pub data: EqeVfReset,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OOB_SIZES: [(u8, usize); 3] =
+        [(CLIENT_OOB_8, 8), (CLIENT_OOB_24, 24), (CLIENT_OOB_32, 32)];
+
+    fn header(oob: u8, num_sge: u8) -> WqeHeader {
+        WqeHeader {
+            reserved: [0; 3],
+            last_vbytes: 0,
+            params: WqeParams::new()
+                .with_inline_client_oob_size(oob)
+                .with_num_sgl_entries(num_sge),
+        }
+    }
+
+    /// The offset of the end of the SGL from the start of the WQE, as a
+    /// producer lays it out: the SGL starts at the first `Sge` boundary after
+    /// the header and the inline OOB.
+    fn sgl_end(oob_len: usize, num_sge: u8) -> usize {
+        (size_of::<WqeHeader>() + oob_len).next_multiple_of(size_of::<Sge>())
+            + num_sge as usize * size_of::<Sge>()
+    }
+
+    #[test]
+    fn data_len_reaches_the_end_of_the_sgl() {
+        for (oob, oob_len) in OOB_SIZES {
+            for num_sge in 1..=8 {
+                let h = header(oob, num_sge);
+                assert_eq!(
+                    size_of::<WqeHeader>() + h.data_len(),
+                    sgl_end(oob_len, num_sge),
+                    "{oob_len}-byte oob, {num_sge} sges"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn total_len_matches_the_producer_stride() {
+        for (oob, oob_len) in OOB_SIZES {
+            for num_sge in 1..=8 {
+                let h = header(oob, num_sge);
+                assert_eq!(
+                    h.total_len(),
+                    sgl_end(oob_len, num_sge).next_multiple_of(WQE_ALIGNMENT),
+                    "{oob_len}-byte oob, {num_sge} sges"
+                );
+            }
+        }
+    }
 }

@@ -10,20 +10,26 @@
 use crate::VirtioConsoleDevice;
 use futures::AsyncRead;
 use futures::AsyncWrite;
+use futures::FutureExt;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::timer::PolledTimer;
+use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
 use serial_core::SerialIo;
 use std::collections::VecDeque;
 use std::io;
 use std::pin::Pin;
+use std::pin::pin;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
@@ -68,8 +74,12 @@ struct MockShared {
     tx_buf: Vec<u8>,
     /// Waker registered by poll_read when rx_buf is empty.
     rx_waker: Option<Waker>,
+    /// Signaled when the worker is waiting for backend input.
+    read_event: Event,
     /// Waker registered by poll_connect when disconnected.
     connect_waker: Option<Waker>,
+    /// Signaled when the worker polls for a replacement connection.
+    connect_event: Event,
     /// Waker registered by poll_disconnect when connected.
     disconnect_waker: Option<Waker>,
     /// If set, the next poll_write accepts at most this many bytes, then
@@ -77,6 +87,7 @@ struct MockShared {
     write_limit_then_disconnect: Option<usize>,
     /// If set, each poll_write accepts at most this many bytes (persistent).
     max_write_size: Option<usize>,
+    write_gate: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
 }
 
 /// A mock `SerialIo` implementation backed by shared state.
@@ -105,6 +116,7 @@ impl SerialIo for MockSerialIo {
             Poll::Ready(Ok(()))
         } else {
             shared.connect_waker = Some(cx.waker().clone());
+            shared.connect_event.signal();
             Poll::Pending
         }
     }
@@ -112,6 +124,8 @@ impl SerialIo for MockSerialIo {
     fn poll_disconnect(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut shared = self.shared.lock();
         if !shared.connected {
+            // Explicit disconnect can discard unread input, unlike reading to EOF.
+            shared.rx_buf.clear();
             Poll::Ready(Ok(()))
         } else {
             shared.disconnect_waker = Some(cx.waker().clone());
@@ -127,11 +141,12 @@ impl AsyncRead for MockSerialIo {
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
         let mut shared = self.shared.lock();
-        if !shared.connected {
+        if !shared.connected && shared.rx_buf.is_empty() {
             return Poll::Ready(Ok(0)); // EOF = disconnected
         }
         if shared.rx_buf.is_empty() {
             shared.rx_waker = Some(cx.waker().clone());
+            shared.read_event.signal();
             return Poll::Pending;
         }
         let n = buf.len().min(shared.rx_buf.len());
@@ -151,6 +166,10 @@ impl AsyncWrite for MockSerialIo {
         let mut shared = self.shared.lock();
         if !shared.connected {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        }
+        if let Some((entered, release)) = shared.write_gate.take() {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(5)).unwrap();
         }
         if let Some(limit) = shared.write_limit_then_disconnect.take() {
             let n = buf.len().min(limit);
@@ -241,10 +260,13 @@ fn new_mock_serial() -> (MockSerialIo, MockSerialHandle) {
         rx_buf: VecDeque::new(),
         tx_buf: Vec::new(),
         rx_waker: None,
+        read_event: Event::new(),
         connect_waker: None,
+        connect_event: Event::new(),
         disconnect_waker: None,
         write_limit_then_disconnect: None,
         max_write_size: None,
+        write_gate: None,
     }));
     (
         MockSerialIo {
@@ -451,6 +473,27 @@ impl TestHarness {
         .await
     }
 
+    async fn wait_for_connect(&self) {
+        let event = self.handle.shared.lock().connect_event.clone();
+        self.wait_for_backend_event(event).await;
+    }
+
+    async fn wait_for_read(&self) {
+        let event = self.handle.shared.lock().read_event.clone();
+        self.wait_for_backend_event(event).await;
+    }
+
+    async fn wait_for_backend_event(&self, event: Event) {
+        let mut wait = PolledWait::new(&self.driver, event).unwrap();
+        let mut timer = PolledTimer::new(&self.driver);
+        match futures::future::select(pin!(wait.wait()), pin!(timer.sleep(Duration::from_secs(5))))
+            .await
+        {
+            futures::future::Either::Left((result, _)) => result.unwrap(),
+            futures::future::Either::Right(_) => panic!("timed out waiting for backend event"),
+        }
+    }
+
     /// Disable the device.
     async fn disable(&mut self) {
         self.device.stop_queue(0).await;
@@ -473,6 +516,45 @@ impl TestHarness {
 }
 
 // --- Tests ---
+
+#[async_test]
+async fn stop_between_tx_chunks_preserves_partial_write_on_resume(driver: DefaultDriver) {
+    async fn stop(h: &mut TestHarness, driver: &DefaultDriver) {
+        let mut timer = PolledTimer::new(driver);
+        match futures::future::select(
+            pin!(h.device.worker.stop()),
+            pin!(timer.sleep(Duration::from_secs(5))),
+        )
+        .await
+        {
+            futures::future::Either::Left((stopped, _)) => assert!(stopped),
+            futures::future::Either::Right(_) => panic!("console worker did not stop"),
+        }
+    }
+
+    let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("console-tx-stop");
+    let mut h = TestHarness::new(&worker_driver);
+    h.enable().await;
+    let (entered, recv_entered) = mpsc::channel();
+    let (release, recv_release) = mpsc::channel();
+    h.handle.shared.lock().write_gate = Some((entered, recv_release));
+    h.handle.set_max_write_size(512);
+    let data: Vec<u8> = (0..12288).map(|i| (i % 251) as u8).collect();
+    h.post_tx_and_signal(0, &data);
+    recv_entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(h.device.worker.stop().now_or_never().is_none());
+    release.send(()).unwrap();
+    stop(&mut h, &driver).await;
+    assert_eq!(h.device.worker.state().unwrap().partial_transmit, 4096);
+    assert_eq!(h.handle.take_tx_data(), data[..4096]);
+    assert!(h.device.worker.start());
+    let (id, len) = h.wait_for_tx_used().await;
+    assert_eq!(id, 0);
+    assert_eq!(len, 0);
+    stop(&mut h, &driver).await;
+    assert_eq!(h.handle.take_tx_data(), data[4096..]);
+    assert_eq!(h.device.worker.state().unwrap().partial_transmit, 0);
+}
 
 /// Guest writes data via the transmitq; verify the mock backend receives it.
 #[async_test]
@@ -612,6 +694,43 @@ async fn disconnect_drains_tx_then_reconnect(driver: DefaultDriver) {
     assert_eq!(used_id, 2);
     let written = harness.handle.take_tx_data();
     assert_eq!(written, b"after-reconnect");
+}
+
+#[async_test]
+async fn disconnect_without_rx_buffers(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+
+    harness.post_tx_and_signal(0, b"connected");
+    harness.wait_for_tx_used().await;
+    assert_eq!(harness.handle.take_tx_data(), b"connected");
+
+    harness.handle.inject_rx_data(b"unread input");
+    harness.handle.disconnect();
+    harness.wait_for_connect().await;
+
+    harness.handle.reconnect();
+    harness.post_tx_and_signal(1, b"reconnected");
+    harness.wait_for_tx_used().await;
+    assert_eq!(harness.handle.take_tx_data(), b"reconnected");
+}
+
+#[async_test]
+async fn disconnect_drains_queued_input(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+
+    let gpa = harness.post_rx_buffer_and_signal(0, 64);
+    harness.wait_for_read().await;
+    let input = b"queued input";
+    harness.handle.inject_rx_data(input);
+    harness.handle.disconnect();
+
+    assert_eq!(harness.wait_for_rx_used().await, (0, input.len() as u32));
+    let mut readback = vec![0; input.len()];
+    harness.mem.read_at(gpa, &mut readback).unwrap();
+    assert_eq!(readback, input);
+    harness.wait_for_connect().await;
 }
 
 /// Disable and re-enable the device. Verify it still works after re-enable.
@@ -818,6 +937,15 @@ async fn tx_only_single_queue(driver: DefaultDriver) {
 
     let written = harness.handle.take_tx_data();
     assert_eq!(written, b"tx-only");
+
+    harness.handle.inject_rx_data(b"unread input");
+    harness.handle.disconnect();
+    harness.wait_for_connect().await;
+
+    harness.handle.reconnect();
+    harness.post_tx_and_signal(1, b"reconnected");
+    harness.wait_for_tx_used().await;
+    assert_eq!(harness.handle.take_tx_data(), b"reconnected");
 }
 
 /// When only the receiveq (queue 0) is enabled, RX should still work.

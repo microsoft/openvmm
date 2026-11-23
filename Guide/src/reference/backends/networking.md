@@ -109,6 +109,75 @@ host memory, but the `Queue` interface avoids any extra copies
 between the frontend and backend layers — the backend reads/writes
 guest RAM directly.
 
+### Receive offload invariants
+
+Receive checksum and segmentation offloads must be enabled end to end.
+The frontend reports only capabilities negotiated with the guest in
+`QueueConfig::enabled_rx_offloads`; the backend must not enable additional
+host transport offloads.
+
+This is especially important for Linux TAP. Enabling `TUN_F_CSUM`,
+`TUN_F_TSO4`, or `TUN_F_TSO6` changes the packet format returned by the
+TAP file descriptor: frames can carry partial-checksum metadata and can
+be much larger than the configured network MTU. A frontend that did not
+negotiate the corresponding guest feature cannot safely represent those
+frames.
+
+Linux TAP is configured with only the receive offloads reported by the
+frontend. The resulting vnet header is therefore a trusted kernel contract:
+the TAP backend translates it directly instead of reparsing the Ethernet,
+IP, and transport headers. The backend also relies on Linux TAP to return a
+complete frame no larger than `ETH_MAX_MTU` plus the Ethernet VLAN header. Its
+read buffer is sized to exactly that contract rather than adding truncation
+detection or recovery for frames the kernel must not produce; correctness
+depends on that size guarantee. A missing vnet header, invalid checksum or GSO
+metadata, or an unexpected offload is an internal kernel or configuration
+violation and fails fast rather than being handled as a recoverable packet
+error. The Ethernet frame contents remain untrusted input and are forwarded to
+the guest without protocol parsing.
+
+TAP offloads are reset when the endpoint attaches because a persistent device
+can retain state from an earlier user. Packets already queued before that reset
+can still carry any inherited checksum or GSO metadata, including ECN or UDP
+segmentation enabled by the earlier user, so the first queue drops such packets
+until the retained queue is observed to drain. The TAP file descriptor also
+persists across queue recreation. After a capability downgrade, TAP temporarily
+accepts only the capabilities removed from that configuration. It consumes and
+drops a matching stale packet without completing a frontend buffer, then retries
+the oldest buffer with the next frame. Unfinished recovery is preserved across
+another queue recreation. The recovery window closes only after a successful
+read is followed by a read that reaches `EAGAIN`; an initial asynchronous
+`Pending` does not prove that the queue drained. Steady-state and other vnet
+metadata violations still fail fast.
+
+Virtio-net receive GSO is disabled by default. Advertising guest TCP
+segmentation offload without mergeable receive buffers causes Linux guests to
+allocate receive buffers large enough for a complete coalesced packet, commonly
+64 KiB per descriptor. OpenVMM can opt in with the `rx_gso:` prefix on a
+`--virtio-net` argument when testing or when that allocation tradeoff is
+acceptable.
+
+When enabled, receive GSO is advertised only when the selected backend reports
+that it can produce coalesced receive packets. TCP GSO also requires guest
+checksum support; a guest that selects TCP GSO without checksum support does not
+cause the backend to request an invalid TAP offload configuration. Receive GSO
+can become the default after virtio-net supports distributing one packet across
+multiple mergeable receive buffers.
+
+Frontends must also publish a receive completion only after the packet
+payload and frontend-specific header have both been written successfully.
+For virtio-net, a capacity or guest-memory write failure leaves the
+descriptor as a dropped receive and increments an explicit drop counter;
+it is never counted as a successfully received packet.
+
+Frontends reject intrinsically unusable receive buffers before posting them
+to a backend. For example, virtio-net completes a descriptor that cannot hold
+a minimum Ethernet header as a zero-length dropped receive. If a valid TAP
+frame is larger than the oldest posted buffer, TAP drops that frame but retains
+the buffer at the front of the queue for the next frame. It does not skip ahead
+to a later buffer, because frontend completions may need to be published in the
+original descriptor order.
+
 ## Lifecycle
 
 1. The frontend creates a

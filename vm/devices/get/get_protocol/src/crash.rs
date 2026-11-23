@@ -13,6 +13,10 @@ use zerocopy::Unaligned;
 
 pub const CRASHDUMP_GUID: Guid = guid::guid!("427b03e7-4ceb-4286-b5fc-486f4a1dd439");
 
+/// Maximum size of the headerless dump payload message following a write request.
+/// Senders split dump data at this limit; receivers must accommodate it.
+pub const MAX_DUMP_PAYLOAD_SIZE: usize = 16 * 1024;
+
 /// Capabilities supported by the host crash dump services
 #[bitfield(u64)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq)]
