@@ -173,8 +173,8 @@ flight, rather than queuing it.
 - A client that cancels or disconnects does not end the operation early. If a
   `SaveVM` client cancels, the save may still be writing the snapshot, so
   the service remains terminal. Device and resource changes and lifecycle
-  operations return `FAILED_PRECONDITION`; the client must send `Quit` or
-  wait for the VM worker to stop.
+  operations return `FAILED_PRECONDITION`. The client must send `Quit` and
+  wait for process exit, even if the VM worker has already stopped.
 - Once `SaveVM` commits, the VM operation gate is sealed. This prevents a
   caller from accidentally resuming, mutating, tearing down, or recreating the
   saved VM in the same process.

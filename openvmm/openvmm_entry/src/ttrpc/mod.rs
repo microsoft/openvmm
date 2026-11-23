@@ -607,6 +607,12 @@ impl VmService {
         Ok(())
     }
 
+    fn complete_wait_vm(&mut self) {
+        if let Some((_, response)) = self.wait_vm_response.take() {
+            response.send(Ok(()));
+        }
+    }
+
     /// Like [`Self::start_rpc`], but admits the operation through the
     /// VM-mutation gate first. `build` runs only after admission, so a rejected
     /// operation has no side effects, and the gate is held until the operation
@@ -1033,6 +1039,9 @@ impl VmService {
                     .await
                     .map_err(anyhow::Error::from)
                     .and_then(|r| r);
+                if r.is_err() && self.snapshot_saved {
+                    self.complete_wait_vm();
+                }
                 response.send(map_grpc(r));
             }
             vmservice::Vm::RestoreVm(request, response) => {
@@ -2069,6 +2078,7 @@ impl VmService {
             Ok(snapshot_id) => {
                 self.operation_gate.seal();
                 self.lifecycle = VmLifecycle::Halted("snapshot saved".into());
+                self.complete_wait_vm();
                 Ok(vmservice::SaveVmResponse {
                     snapshot_id: snapshot_id.to_string(),
                 })
@@ -2104,7 +2114,9 @@ impl VmService {
                 } else {
                     tracing::info!("VM worker stopped");
                 }
-                if let Some((_, response)) = self.wait_vm_response.take() {
+                if self.snapshot_saved {
+                    self.complete_wait_vm();
+                } else if let Some((_, response)) = self.wait_vm_response.take() {
                     let status = if let Some(err) = &error {
                         grpc_error(anyhow!("VM worker stopped: {}", err))
                     } else {
@@ -3913,6 +3925,8 @@ mod tests {
             // Completed save: the gate is sealed and the VM is terminal.
             let mut svc = service(driver.clone(), None);
             let mut controller = with_controller(&mut svc);
+            let (wait_response, wait_result) = mesh::oneshot();
+            svc.wait_vm_response = Some((mesh::CancelContext::new(), wait_response));
             let (result, ()) = futures::join!(svc.save_vm(request("completed")), async {
                 let Some(VmControllerRpc::SaveSnapshot(rpc)) = controller.next().await else {
                     panic!("expected a SaveSnapshot request");
@@ -3921,6 +3935,8 @@ mod tests {
                 response.complete(Ok(Guid::new_random()));
             });
             result.unwrap();
+            wait_result.await.unwrap().unwrap();
+            assert!(svc.wait_vm_response.is_none());
             let status = grpc_error(
                 svc.operation_gate
                     .try_acquire(VmOperation::Topology)
@@ -4015,6 +4031,8 @@ mod tests {
             // terminal, so a later VM cannot reuse the process.
             let mut svc = service(driver, None);
             let mut controller = with_controller(&mut svc);
+            let (wait_response, wait_result) = mesh::oneshot();
+            svc.wait_vm_response = Some((mesh::CancelContext::new(), wait_response));
             drop(
                 futures::future::select(
                     std::pin::pin!(svc.save_vm(request("worker-stopped"))),
@@ -4024,6 +4042,8 @@ mod tests {
             );
             assert!(svc.save_guard.is_some());
             svc.handle_controller_event(VmControllerEvent::WorkerStopped { error: None });
+            wait_result.await.unwrap().unwrap();
+            assert!(svc.wait_vm_response.is_none());
             let status = grpc_error(
                 svc.operation_gate
                     .try_acquire(VmOperation::Topology)

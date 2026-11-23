@@ -1803,7 +1803,7 @@ async fn test_ttrpc_interface(
                 assert_eq!(
                     err.code,
                     mesh_rpc::service::Code::FailedPrecondition as i32,
-                    "consomme port change while paused after SaveVm: {}",
+                    "consomme port change after terminal SaveVm: {}",
                     err.message
                 );
 
@@ -1814,7 +1814,7 @@ async fn test_ttrpc_interface(
                     .unwrap_err();
                 assert_eq!(err.code, mesh_rpc::service::Code::FailedPrecondition as i32);
                 let _ = client.call().start(vmservice::Vm::Quit, ()).await;
-                waiter.await.unwrap_err();
+                waiter.await.unwrap();
                 assert!(child.wait().await?.success());
                 stderr_task
                     .await

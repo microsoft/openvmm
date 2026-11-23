@@ -31,8 +31,9 @@ service VM {
     // a new snapshot directory and returns a unique snapshot ID, which is also
     // stored in the snapshot manifest. The current implementation hard-links
     // the guest memory backing file into the snapshot, so after a successful
-    // save the VM can't be resumed and should be torn down. Cancelling the
-    // call only stops the caller from waiting; the save may still complete.
+    // save the VM is terminal and cannot be resumed or reused. The caller must
+    // send Quit and wait for process exit. Cancelling the call only stops the
+    // caller from waiting; the save may still commit and requires Quit too.
     rpc SaveVM(SaveVMRequest) returns (SaveVMResponse);
 
     // RestoreVM creates a VM from a snapshot directory and the supplied device
