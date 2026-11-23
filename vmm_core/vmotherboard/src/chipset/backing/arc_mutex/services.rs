@@ -40,6 +40,11 @@ pub struct ArcMutexChipsetServices<'a, 'b> {
     line_error: Option<NewLineError>,
     static_mmio: Vec<Box<dyn ControlMmioIntercept>>,
     static_pio: Vec<Box<dyn ControlPortIoIntercept>>,
+    // The device's places on the PCI and PCIe buses, which `finalize`
+    // registers once the add can no longer fail.
+    static_pci: Vec<(BusIdPci, (u8, u8, u8))>,
+    static_pcie: Vec<BusIdPcieDownstreamPort>,
+    static_pcie_rcieps: Vec<(BusIdPcieEnumerator, u8)>,
 
     omit_saved_state: bool,
 }
@@ -105,7 +110,8 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
 
         // Check what can fail first, ending with the spawn of the device's
         // unit, and only then make the device the chipset's EOI handler, PIC,
-        // and line target, so that a failed add leaves none of them behind.
+        // and line target and place it on its PCI or PCIe bus, so that a
+        // failed add leaves none of them behind.
         if handle_eoi && inner.vm_chipset.eoi_handler.is_some() {
             return Err(FinalizeError::EoiHandlerAlreadySet);
         }
@@ -163,6 +169,30 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
             }
         }
 
+        for (bus_id, bdf) in self.static_pci {
+            inner.bus_resolver.register_weak_mutex_pci_device(
+                bus_id,
+                bdf,
+                dev_name.clone(),
+                self.dev.clone(),
+            );
+        }
+        for bus_id_port in self.static_pcie {
+            inner.bus_resolver.register_weak_mutex_pcie_device(
+                bus_id_port,
+                dev_name.clone(),
+                self.dev.clone(),
+            );
+        }
+        for (enumerator_id, devfn) in self.static_pcie_rcieps {
+            inner.bus_resolver.register_weak_mutex_pcie_rciep(
+                enumerator_id,
+                devfn,
+                dev_name.clone(),
+                self.dev.clone(),
+            );
+        }
+
         inner
             .arc_mutex_device_units
             .push(DynamicDeviceUnit::new(unit, driver, device.clone()));
@@ -185,6 +215,9 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
             line_error: None,
             static_mmio: Vec::new(),
             static_pio: Vec::new(),
+            static_pci: Vec::new(),
+            static_pcie: Vec::new(),
+            static_pcie_rcieps: Vec::new(),
 
             omit_saved_state: false,
         }
@@ -233,29 +266,15 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     }
 
     pub fn register_static_pci(&mut self, bus_id: BusIdPci, bdf: (u8, u8, u8)) {
-        self.builder.register_weak_mutex_pci_device(
-            bus_id,
-            bdf,
-            self.dev_name.clone(),
-            self.dev.clone(),
-        );
+        self.static_pci.push((bus_id, bdf));
     }
 
     pub fn register_static_pcie(&mut self, bus_id: BusIdPcieDownstreamPort) {
-        self.builder.register_weak_mutex_pcie_device(
-            bus_id,
-            self.dev_name.clone(),
-            self.dev.clone(),
-        );
+        self.static_pcie.push(bus_id);
     }
 
     pub fn register_static_pcie_rciep(&mut self, enumerator_id: BusIdPcieEnumerator, devfn: u8) {
-        self.builder.register_weak_mutex_pcie_rciep(
-            enumerator_id,
-            devfn,
-            self.dev_name.clone(),
-            self.dev.clone(),
-        );
+        self.static_pcie_rcieps.push((enumerator_id, devfn));
     }
 
     pub fn new_line(&mut self, id: LineSetId, name: &str, vector: u32) -> LineInterrupt {
@@ -513,23 +532,38 @@ mod device_range {
 #[cfg(test)]
 mod tests {
     use super::FinalizeError;
+    use crate::BusIdPci;
+    use crate::BusIdPcieDownstreamPort;
+    use crate::BusIdPcieEnumerator;
+    use crate::Chipset;
     use crate::ChipsetBuilder;
     use crate::DebugEventHandler;
+    use crate::chipset::PcieConflict;
+    use crate::chipset::PcieConflictReason;
     use crate::chipset::backing::arc_mutex::device::AddDeviceError;
+    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPcie;
     use chipset_device::ChipsetDevice;
     use chipset_device::interrupt::AcknowledgePicInterrupt;
     use chipset_device::interrupt::HandleEoi;
     use chipset_device::interrupt::LineInterruptTarget;
+    use chipset_device::io::IoResult;
+    use chipset_device::pci::ByteEnabledDwordRead;
+    use chipset_device::pci::ByteEnabledDwordWrite;
+    use chipset_device::pci::PciConfigSpace;
     use chipset_device_resources::IRQ_LINE_SET;
+    use closeable_mutex::CloseableMutex;
     use inspect::InspectMut;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use parking_lot::Mutex;
+    use pci_bus::GenericPciBus;
+    use pcie::root::DownstreamPortInfo;
     use state_unit::StateRequest;
     use state_unit::StateUnits;
     use state_unit::UnitHandle;
     use std::ops::RangeInclusive;
     use std::sync::Arc;
+    use std::sync::Weak;
     use test_with_tracing::test;
     use vmcore::device_state::ChangeDeviceState;
     use vmcore::line_interrupt::LineInterrupt;
@@ -786,5 +820,226 @@ mod tests {
 
         assert_eq!(*failed.lock(), []);
         assert_eq!(*added.lock(), [Call::Eoi(5), Call::AcknowledgePic]);
+    }
+
+    /// The configuration address and data ports of the tests' PCI bus.
+    const PCI_ADDRESS_PORT: u16 = 0xcf8;
+    const PCI_DATA_PORT: u16 = 0xcfc;
+
+    /// The devfns of the two downstream ports of a [`RootComplex`], and the
+    /// devfns at which the tests add RCiEPs to it.
+    const PORT_DEVFN: u8 = 0x08;
+    const NEIGHBOR_PORT_DEVFN: u8 = 0x10;
+    const RCIEP_DEVFN: u8 = 0x18;
+    const NEIGHBOR_RCIEP_DEVFN: u8 = 0x20;
+
+    /// A PCI function whose vendor and device IDs read as its value.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct PciFunction(u32);
+
+    impl ChipsetDevice for PciFunction {
+        fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
+            Some(self)
+        }
+    }
+
+    impl PciConfigSpace for PciFunction {
+        fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+            value.set(if offset == 0 { self.0 } else { 0 });
+            IoResult::Ok
+        }
+
+        fn pci_cfg_write(&mut self, _: u16, _: ByteEnabledDwordWrite) -> IoResult {
+            IoResult::Ok
+        }
+    }
+
+    impl ChangeDeviceState for PciFunction {
+        fn start(&mut self) {}
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+    }
+
+    impl SaveRestore for PciFunction {
+        type SavedState = NoSavedState;
+
+        fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    /// The devices that a [`RootComplex`] attached, in order, with their
+    /// devfns and names.
+    type Attached = Arc<Mutex<Vec<(u8, Arc<str>, Weak<CloseableMutex<dyn ChipsetDevice>>)>>>;
+
+    /// A PCIe root complex with two downstream ports, which takes RCiEPs too
+    /// and, as a real one does, one device at each devfn.
+    struct RootComplex(Attached);
+
+    impl RootComplex {
+        fn attach(
+            &mut self,
+            devfn: u8,
+            name: Arc<str>,
+            device: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            let mut attached = self.0.lock();
+            if let Some((_, existing, _)) = attached.iter().find(|(d, _, _)| *d == devfn) {
+                return Err(PcieConflict {
+                    conflict_dev: name,
+                    reason: PcieConflictReason::ExistingDev(existing.clone()),
+                });
+            }
+            attached.push((devfn, name, device));
+            Ok(())
+        }
+    }
+
+    impl RegisterWeakMutexPcie for RootComplex {
+        fn add_pcie_device(
+            &mut self,
+            port_devfn: u8,
+            name: Arc<str>,
+            device: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.attach(port_devfn, name, device)
+        }
+
+        fn downstream_ports(&self) -> Vec<DownstreamPortInfo> {
+            [("port", PORT_DEVFN), ("neighbor port", NEIGHBOR_PORT_DEVFN)]
+                .map(|(name, devfn)| DownstreamPortInfo {
+                    devfn,
+                    name: name.into(),
+                    bus_range: Default::default(),
+                })
+                .into()
+        }
+
+        fn add_rciep(
+            &mut self,
+            devfn: u8,
+            name: Arc<str>,
+            device: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.attach(devfn, name, device)
+        }
+    }
+
+    /// Reads the vendor and device IDs of the function at `device` and
+    /// `function` on PCI bus 0, through the bus's configuration ports.
+    async fn read_pci_id(chipset: &Chipset, device: u8, function: u8) -> u32 {
+        let address = (1 << 31) | (u32::from(device) << 11) | (u32::from(function) << 8);
+        chipset
+            .io_write(0, PCI_ADDRESS_PORT, &address.to_le_bytes())
+            .await;
+        let mut id = [0; 4];
+        chipset.io_read(0, PCI_DATA_PORT, &mut id).await;
+        u32::from_le_bytes(id)
+    }
+
+    /// A PCI function whose add fails as its unit spawns leaves its bus,
+    /// device, and function free: the function added there in its place joins
+    /// the bus and answers its configuration reads, as the function added
+    /// beside it before the failure still does.
+    #[async_test]
+    async fn failed_add_leaves_the_pci_slot_free(driver: DefaultDriver) {
+        let foundation = Foundation::new(&driver).await;
+        let builder = foundation.builder();
+        let bus = builder
+            .arc_mutex_device("pci_bus")
+            .add(|services| {
+                GenericPciBus::new(
+                    &mut services.register_pio(),
+                    PCI_ADDRESS_PORT,
+                    PCI_DATA_PORT,
+                )
+            })
+            .unwrap();
+        builder.register_weak_mutex_pci_bus(BusIdPci::new("pci"), Box::new(bus));
+        let add_function = |name: &str, function, id| {
+            builder
+                .arc_mutex_device(name)
+                .on_pci_bus(BusIdPci::new("pci"))
+                .with_pci_addr(0, 5, function)
+                .add(|_| PciFunction(id))
+        };
+
+        add_function("neighbor", 1, 0x1111_1414).unwrap();
+        let _taken = foundation.take_name("device");
+        let Err(err) = add_function("device", 0, 0x2222_1414) else {
+            panic!("a device was added under another unit's name");
+        };
+        assert!(is_name_in_use(&err), "{err:?}");
+        add_function("replacement", 0, 0x3333_1414).unwrap();
+
+        let (chipset, _devices) = builder.build().unwrap();
+        assert_eq!(read_pci_id(&chipset, 5, 0).await, 0x3333_1414);
+        assert_eq!(read_pci_id(&chipset, 5, 1).await, 0x1111_1414);
+    }
+
+    /// A PCIe function whose add fails as its unit spawns leaves its
+    /// downstream port, or its devfn as an RCiEP, to the function added in its
+    /// place, while the functions added beside it before the failure stay
+    /// attached.
+    #[async_test]
+    async fn failed_add_leaves_the_pcie_port_and_rciep_free(driver: DefaultDriver) {
+        let foundation = Foundation::new(&driver).await;
+        let builder = foundation.builder();
+        let attached = Attached::default();
+        builder.register_weak_mutex_pcie_enumerator(
+            BusIdPcieEnumerator::new("root"),
+            Box::new(RootComplex(attached.clone())),
+        );
+        let on_port = |port: &str, name: &str| {
+            builder
+                .arc_mutex_device(name)
+                .on_pcie_port(BusIdPcieDownstreamPort::new(port))
+                .add(|_| PciFunction(0))
+        };
+        let as_rciep = |devfn, name: &str| {
+            builder
+                .arc_mutex_device(name)
+                .on_pcie_root_complex(BusIdPcieEnumerator::new("root"), devfn)
+                .add(|_| PciFunction(0))
+        };
+
+        on_port("neighbor port", "endpoint neighbor").unwrap();
+        as_rciep(NEIGHBOR_RCIEP_DEVFN, "rciep neighbor").unwrap();
+        let _taken = [
+            foundation.take_name("endpoint"),
+            foundation.take_name("rciep"),
+        ];
+        for result in [on_port("port", "endpoint"), as_rciep(RCIEP_DEVFN, "rciep")] {
+            let Err(err) = result else {
+                panic!("a device was added under another unit's name");
+            };
+            assert!(is_name_in_use(&err), "{err:?}");
+        }
+        on_port("port", "endpoint replacement").unwrap();
+        as_rciep(RCIEP_DEVFN, "rciep replacement").unwrap();
+
+        let (_chipset, _devices) = builder.build().unwrap();
+        let mut attached = attached
+            .lock()
+            .iter()
+            .map(|(devfn, name, device)| (*devfn, name.to_string(), device.upgrade().is_some()))
+            .collect::<Vec<_>>();
+        attached.sort();
+        assert_eq!(
+            attached,
+            [
+                (PORT_DEVFN, "endpoint replacement".to_owned(), true),
+                (NEIGHBOR_PORT_DEVFN, "endpoint neighbor".to_owned(), true),
+                (RCIEP_DEVFN, "rciep replacement".to_owned(), true),
+                (NEIGHBOR_RCIEP_DEVFN, "rciep neighbor".to_owned(), true),
+            ]
+        );
     }
 }

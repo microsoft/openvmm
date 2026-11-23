@@ -125,6 +125,50 @@ pub(crate) struct BusResolver {
     pcie: BusResolverWeakMutexPcie,
 }
 
+impl BusResolver {
+    pub(crate) fn register_weak_mutex_pci_device(
+        &mut self,
+        bus_id: BusIdPci,
+        bdf: (u8, u8, u8),
+        name: Arc<str>,
+        dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+    ) {
+        self.pci
+            .devices
+            .entry(bus_id)
+            .or_default()
+            .push(WeakMutexPciEntry { bdf, name, dev });
+    }
+
+    pub(crate) fn register_weak_mutex_pcie_device(
+        &mut self,
+        bus_id_port: BusIdPcieDownstreamPort,
+        name: Arc<str>,
+        dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+    ) {
+        self.pcie.devices.push(WeakMutexPcieDeviceEntry {
+            bus_id_port,
+            name,
+            dev,
+        });
+    }
+
+    pub(crate) fn register_weak_mutex_pcie_rciep(
+        &mut self,
+        bus_id_enumerator: BusIdPcieEnumerator,
+        devfn: u8,
+        name: Arc<str>,
+        dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+    ) {
+        self.pcie.rcieps.push(WeakMutexPcieRciepEntry {
+            bus_id_enumerator,
+            devfn,
+            name,
+            dev,
+        });
+    }
+}
+
 /// Mutable state behind the builder's interior mutex.
 pub(crate) struct ChipsetBuilderInner {
     pub(crate) vm_chipset: Chipset,
@@ -205,23 +249,6 @@ impl<'a> ChipsetBuilder<'a> {
         )
     }
 
-    pub(crate) fn register_weak_mutex_pci_device(
-        &self,
-        bus_id: BusIdPci,
-        bdf: (u8, u8, u8),
-        name: Arc<str>,
-        dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
-    ) {
-        self.inner
-            .lock()
-            .bus_resolver
-            .pci
-            .devices
-            .entry(bus_id)
-            .or_default()
-            .push(WeakMutexPciEntry { bdf, name, dev });
-    }
-
     /// Register a PCIe enumerator (ex. root complex or switch), and all of
     /// it's downstream ports.
     pub fn register_weak_mutex_pcie_enumerator(
@@ -253,44 +280,6 @@ impl<'a> ChipsetBuilder<'a> {
                 port_info.name
             );
         }
-    }
-
-    pub(crate) fn register_weak_mutex_pcie_device(
-        &self,
-        bus_id_port: BusIdPcieDownstreamPort,
-        name: Arc<str>,
-        dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
-    ) {
-        self.inner
-            .lock()
-            .bus_resolver
-            .pcie
-            .devices
-            .push(WeakMutexPcieDeviceEntry {
-                bus_id_port,
-                name,
-                dev,
-            });
-    }
-
-    pub(crate) fn register_weak_mutex_pcie_rciep(
-        &self,
-        bus_id_enumerator: BusIdPcieEnumerator,
-        devfn: u8,
-        name: Arc<str>,
-        dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
-    ) {
-        self.inner
-            .lock()
-            .bus_resolver
-            .pcie
-            .rcieps
-            .push(WeakMutexPcieRciepEntry {
-                bus_id_enumerator,
-                devfn,
-                name,
-                dev,
-            });
     }
 
     /// Add a new [`ChipsetDevice`](chipset_device::ChipsetDevice) to the
