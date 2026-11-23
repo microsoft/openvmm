@@ -37,10 +37,10 @@ pub enum RestoreKind {
     Clone,
 }
 
-/// Saved state for the VM worker to restore, and how to restore it.
+/// Parameters for restoring the VM from saved state.
 #[derive(MeshPayload)]
-pub struct VmRestore {
-    /// The saved state.
+pub struct RestoreParameters {
+    /// The saved state to restore.
     pub saved_state: ProtobufMessage,
     /// Whether the restored VM is the saved VM or a clone of it.
     pub kind: RestoreKind,
@@ -53,8 +53,8 @@ pub struct VmWorkerParameters {
     pub hypervisor: Resource<HypervisorKind>,
     /// The initial configuration.
     pub cfg: Config,
-    /// The saved state to restore, if any.
-    pub restore: Option<VmRestore>,
+    /// Restore the VM from saved state instead of booting it, if set.
+    pub restore: Option<RestoreParameters>,
     /// File-backed guest RAM handle. When set, guest memory uses this
     /// fd/handle instead of allocating anonymous memory.
     pub shared_memory: Option<SharedMemoryFd>,

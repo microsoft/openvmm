@@ -17,7 +17,7 @@ use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::worker::RestoreKind;
-use openvmm_defs::worker::VmRestore;
+use openvmm_defs::worker::RestoreParameters;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use petri_artifacts_common::tags::MachineArch;
@@ -47,7 +47,7 @@ impl PetriVmConfigOpenVmm {
     ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         let saved_state: ProtobufMessage = mesh::payload::decode(saved_state)
             .context("failed to decode serialized saved state")?;
-        self.run_core_inner(Some(VmRestore {
+        self.run_core_inner(Some(RestoreParameters {
             saved_state,
             kind: RestoreKind::SameVm,
         }))
@@ -56,7 +56,7 @@ impl PetriVmConfigOpenVmm {
 
     async fn run_core_inner(
         self,
-        restore: Option<VmRestore>,
+        restore: Option<RestoreParameters>,
     ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         let has_guest_shares = !self.guest_shares.is_empty();
         let Self {

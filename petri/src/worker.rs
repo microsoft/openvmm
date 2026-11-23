@@ -11,8 +11,8 @@ use mesh_worker::WorkerHost;
 use openvmm_defs::config::Config;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::RestoreParameters;
 use openvmm_defs::worker::VM_WORKER;
-use openvmm_defs::worker::VmRestore;
 use openvmm_defs::worker::VmWorkerParameters;
 use vmm_core_defs::HaltReason;
 
@@ -26,7 +26,7 @@ impl Worker {
         host: &WorkerHost,
         cfg: Config,
         shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
-        restore: Option<VmRestore>,
+        restore: Option<RestoreParameters>,
     ) -> anyhow::Result<(Self, mesh::Receiver<HaltReason>)> {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();

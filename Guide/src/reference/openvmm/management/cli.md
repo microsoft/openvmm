@@ -62,11 +62,8 @@ describes the source definitions.
 * `--restore-snapshot <DIR>`: Restore RAM and device state from a snapshot.
   Pass the same boot and device flags used at save time. Uses
   `<DIR>/memory.bin` and conflicts with explicit memory backing files.
-  Requires `--restore-kind`.
-* `--restore-kind <same-vm|clone>`: Whether the VM restored with
-  `--restore-snapshot` is the VM that was saved, continuing where it left off
-  (`same-vm`), or a new copy of it, such as a VM created from a template
-  snapshot or a rollback (`clone`).
+* `--restore-kind <same-vm|clone>`: Required with `--restore-snapshot`. Whether
+  the restored VM is the saved VM (`same-vm`) or a new copy of it (`clone`).
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
   enlightenments.

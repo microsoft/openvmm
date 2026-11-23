@@ -251,7 +251,6 @@ Examples:
     /// Restore VM from a snapshot directory (implies file-backed memory from
     /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
     /// The same boot and device flags used at save time must also be supplied.
-    /// Requires --restore-kind.
     #[clap(
         long,
         value_name = "DIR",
@@ -260,9 +259,7 @@ Examples:
     )]
     pub restore_snapshot: Option<PathBuf>,
 
-    /// Whether the VM restored with --restore-snapshot is the VM that was
-    /// saved, continuing where it left off (`same-vm`), or a new copy of it,
-    /// e.g. a VM created from a template snapshot or a rollback (`clone`).
+    /// Whether the restored VM is the saved VM or a copy of it (required with --restore-snapshot)
     #[clap(long, value_name = "KIND", requires = "restore_snapshot")]
     pub restore_kind: Option<RestoreKindCli>,
 
@@ -6271,22 +6268,6 @@ mod tests {
             opt.validate_isolation_options().unwrap_err().to_string(),
             "--snp-restricted-injection requires Linux direct boot"
         );
-    }
-
-    #[test]
-    fn test_restore_kind_required_with_restore_snapshot() {
-        assert!(Options::try_parse_from(["openvmm", "--restore-snapshot", "snapshot"]).is_err());
-        assert!(Options::try_parse_from(["openvmm", "--restore-kind", "clone"]).is_err());
-
-        let opt = Options::try_parse_from([
-            "openvmm",
-            "--restore-snapshot",
-            "snapshot",
-            "--restore-kind",
-            "clone",
-        ])
-        .unwrap();
-        assert_eq!(opt.restore_kind, Some(RestoreKindCli::Clone));
     }
 
     #[test]

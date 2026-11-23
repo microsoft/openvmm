@@ -3070,7 +3070,7 @@ async fn run_control_inner(
             };
             (
                 Some(fd),
-                Some(openvmm_defs::worker::VmRestore { saved_state, kind }),
+                Some(openvmm_defs::worker::RestoreParameters { saved_state, kind }),
             )
         } else {
             let shared_memory = opt

@@ -1602,7 +1602,7 @@ impl VmService {
                     prepare_snapshot_restore(restore, config_mem_size, config_proc_count)?;
                 (
                     Some(prepared.shared_memory),
-                    Some(openvmm_defs::worker::VmRestore {
+                    Some(openvmm_defs::worker::RestoreParameters {
                         saved_state: prepared.saved_state,
                         kind: restore.kind,
                     }),
