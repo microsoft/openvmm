@@ -442,7 +442,8 @@ impl Session {
             return Err(lx::Error::EIO.into());
         };
 
-        let mut info = self.info.write();
+        // The lock serializes racing FUSE_INIT requests.
+        let mut session_info = self.info.write();
         if self.is_initialized() {
             tracelimit::error_ratelimited!("Racy FUSE_INIT requests.");
             return Err(lx::Error::EIO.into());
@@ -470,28 +471,31 @@ impl Session {
             return Err(lx::Error::EIO.into());
         }
 
-        // Prepare the session info and call the file system to negotiate.
-        info.major = init.major;
-        info.minor = init.minor.min(FUSE_KERNEL_MINOR_VERSION);
-        info.max_readahead = init.max_readahead;
-        info.capable = init.flags;
-        info.want = DEFAULT_FLAGS & init.flags;
-        info.want2 = 0;
-        info.capable2 = 0;
+        // Prepare this request's session info, from the defaults and the client's offer alone, and
+        // call the file system to negotiate. The session publishes the result only once it has
+        // sent the reply.
+        let mut info = SessionInfo {
+            major: init.major,
+            minor: init.minor.min(FUSE_KERNEL_MINOR_VERSION),
+            max_readahead: init.max_readahead,
+            capable: init.flags,
+            want: DEFAULT_FLAGS & init.flags,
+            time_gran: 1,
+            max_write: DEFAULT_MAX_PAGES * PAGE_SIZE,
+            ..SessionInfo::default()
+        };
         // Negotiate flags2 when the kernel supports extended init.
         if init.flags & FUSE_INIT_EXT != 0 {
             info.capable2 = init.flags2;
             info.want2 = DEFAULT_FLAGS2 & init.flags2;
         }
-        info.time_gran = 1;
-        info.max_write = DEFAULT_MAX_PAGES * PAGE_SIZE;
         let SessionInfo {
             major,
             minor,
             capable,
             capable2,
             ..
-        } = *info;
+        } = info;
         self.fs.init(&mut info);
         // The version and the client's capabilities belong to the session:
         // keep them, even if `init` replaced the whole `info`.
@@ -514,7 +518,6 @@ impl Session {
                 "File system wants FUSE flags that the client did not offer",
             );
             // Leave the session uninitialized, without a negotiation.
-            *info = SessionInfo::default();
             return Err(lx::Error::EIO.into());
         }
 
@@ -532,9 +535,12 @@ impl Session {
             out.flags2 = info.want2;
         }
 
+        // A reply that cannot be sent leaves the session uninitialized, without a negotiation,
+        // since the client never received it.
         sender.send_arg(request.unique(), out)?;
 
-        // Indicate other requests can be received now.
+        // Publish the negotiation, and indicate other requests can be received now.
+        *session_info = info;
         self.initialized.store(true, atomic::Ordering::Release);
         Ok(())
     }

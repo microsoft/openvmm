@@ -103,3 +103,94 @@ fn init_keeps_the_client_version_and_capabilities() {
     );
     saved.validate().unwrap();
 }
+
+/// A file system that records the session information that each `init`
+/// receives, and that allows more background requests only when the client
+/// offers asynchronous direct I/O.
+#[derive(Default)]
+struct OfferDependentFs {
+    received: Arc<Mutex<Vec<SessionInfoState>>>,
+}
+
+impl Fuse for OfferDependentFs {
+    fn init(&self, info: &mut SessionInfo) {
+        self.received.lock().push((*info).into());
+        if info.capable() & FUSE_ASYNC_DIO != 0 {
+            info.max_background = 64;
+            info.congestion_threshold = 48;
+        }
+    }
+}
+
+/// A sender that cannot send a reply, as a virtio-fs reply fails when the
+/// client's buffers cannot hold it, and that counts the replies that the
+/// session tries to send.
+#[derive(Default)]
+struct FailingSender {
+    attempts: usize,
+}
+
+impl ReplySender for FailingSender {
+    fn send(&mut self, _bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+        self.attempts += 1;
+        Err(io::ErrorKind::WriteZero.into())
+    }
+}
+
+/// Sends `request` to `session` through a sender that cannot send the reply,
+/// and checks that the session tries to send exactly one reply.
+fn dispatch_request_failing_reply(session: &Session, request: &[u8]) {
+    let mut sender = FailingSender::default();
+    session.dispatch(Request::new(request).unwrap(), &mut sender, None);
+    assert_eq!(sender.attempts, 1);
+}
+
+/// The `FUSE_INIT` that the tests send first, whose reply cannot be sent,
+/// which offers asynchronous direct I/O and extended flags.
+fn first_init_request() -> Vec<u8> {
+    make_init_request(
+        7,
+        39,
+        131072,
+        FUSE_ASYNC_READ | FUSE_ASYNC_DIO | FUSE_INIT_EXT,
+        FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+    )
+}
+
+/// A client that never received the reply to its `FUSE_INIT` agreed to no
+/// negotiation, so the session stays uninitialized, without a negotiation to
+/// save.
+#[test]
+fn init_whose_reply_fails_leaves_no_negotiation() {
+    let session = Session::new(OfferDependentFs::default());
+    dispatch_request_failing_reply(&session, &first_init_request());
+    assert!(!session.is_initialized());
+    assert_eq!(session.save_state(), SessionState::default());
+}
+
+/// A `FUSE_INIT` that follows one whose reply could not be sent negotiates as
+/// on a new session: `init` receives, and the session replies and saves, only
+/// what the new request offers.
+#[test]
+fn init_after_a_failed_reply_negotiates_afresh() {
+    let retry = make_init_request(7, 31, 65536, FUSE_ASYNC_READ, 0);
+
+    let fs = OfferDependentFs::default();
+    let received = Arc::clone(&fs.received);
+    let session = Session::new(fs);
+    dispatch_request_failing_reply(&session, &first_init_request());
+    let (header, reply) = dispatch_request(&session, &retry);
+
+    let fresh_fs = OfferDependentFs::default();
+    let fresh_received = Arc::clone(&fresh_fs.received);
+    let fresh = Session::new(fresh_fs);
+    let (_, fresh_reply) = dispatch_request(&fresh, &retry);
+
+    assert_eq!(header.error, 0);
+    let (out, _) = fuse_init_out::read_from_prefix(&reply).unwrap();
+    assert_eq!((out.max_background, out.congestion_threshold), (0, 0));
+    assert_eq!(reply, fresh_reply);
+    assert_eq!(received.lock()[1..], fresh_received.lock()[..]);
+    assert!(session.is_initialized());
+    assert_eq!(session.save_state(), fresh.save_state());
+}
