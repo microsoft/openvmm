@@ -65,6 +65,7 @@ fuse_operations! {
     FUSE_REMOVEMAPPING RemoveMapping arg:fuse_removemapping_in mappings:[u8];
     FUSE_SYNCFS SyncFs _arg:fuse_syncfs_in;
     FUSE_STATX StatX arg:fuse_statx_in;
+    FUSE_COPY_FILE_RANGE_64 CopyFileRange64 arg:fuse_copy_file_range_in;
     FUSE_CANONICAL_PATH CanonicalPath;
 }
 

@@ -416,6 +416,12 @@ impl Session {
                 )?;
                 sender.send_arg(request.unique(), out)?;
             }
+            FuseOperation::CopyFileRange64 { arg: _ } => {
+                // The 64-bit variant of FUSE_COPY_FILE_RANGE is not supported. Since 6.18, Linux
+                // sends each copy as this variant first, and only ENOSYS makes it send
+                // FUSE_COPY_FILE_RANGE instead, for the rest of the session.
+                return Err(lx::Error::ENOSYS.into());
+            }
             FuseOperation::CanonicalPath {} => {
                 // Android-specific opcode used to return a guest accessible
                 // path to the file location being proxied by the fuse
@@ -697,6 +703,7 @@ enum OperationError {
 
 #[cfg(test)]
 mod tests {
+    mod copy_file_range_64;
     mod error_reply;
     mod harness;
     mod init;
