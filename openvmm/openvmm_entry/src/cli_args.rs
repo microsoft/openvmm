@@ -6271,6 +6271,22 @@ mod tests {
     }
 
     #[test]
+    fn test_restore_kind_required_with_restore_snapshot() {
+        assert!(Options::try_parse_from(["openvmm", "--restore-snapshot", "snapshot"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--restore-kind", "clone"]).is_err());
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-kind",
+            "clone",
+        ])
+        .unwrap();
+        assert_eq!(opt.restore_kind, Some(RestoreKindCli::Clone));
+    }
+
+    #[test]
     fn test_isolation_options_allow_vbs_uefi() {
         let opt = Options::try_parse_from(["openvmm", "--isolation", "vbs", "--uefi"]).unwrap();
 

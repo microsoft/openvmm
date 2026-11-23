@@ -1724,6 +1724,29 @@ async fn test_ttrpc_interface(
 
                 waiter.await.unwrap_err();
 
+                for kind in [vmservice::RestoreKind::Unspecified as i32, 99] {
+                    let err = client
+                        .call()
+                        .start(
+                            vmservice::Vm::RestoreVm,
+                            vmservice::RestoreVmRequest {
+                                source_dir: snapshot_path.to_string_lossy().into_owned(),
+                                config: restore_config.clone(),
+                                expected_snapshot_id: None,
+                                resume: false,
+                                kind,
+                            },
+                        )
+                        .await
+                        .unwrap_err();
+                    assert_eq!(
+                        err.code,
+                        mesh_rpc::service::Code::InvalidArgument as i32,
+                        "RestoreVm with restore kind {kind}: {}",
+                        err.message
+                    );
+                }
+
                 let err = client
                     .call()
                     .start(
