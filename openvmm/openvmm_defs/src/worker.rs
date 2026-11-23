@@ -29,11 +29,9 @@ pub const VM_WORKER: WorkerId<VmWorkerParameters> = WorkerId::new("VmWorker");
 /// clone of it.
 #[derive(MeshPayload, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreKind {
-    /// The same VM that was saved, continuing where it left off (for example,
-    /// guest-transparent hibernation).
+    /// The same VM that was saved, continuing where it left off.
     SameVm,
-    /// A new copy of the saved VM (for example, a VM created from a template
-    /// snapshot, or a rollback to an earlier snapshot).
+    /// A new copy of the saved VM.
     Clone,
 }
 
