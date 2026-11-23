@@ -1400,6 +1400,83 @@ fn a_held_file_that_the_host_replaces_fails_the_save_until_released() {
     }
 }
 
+/// A host can give the inode number of a removed object to a new object of
+/// another file type, and then to an object of the removed object's type
+/// again, while the guest holds a node of each: each gets a node of its own
+/// (see `InodeMap::dedup_entry`). Once the guest forgets the second, the nodes
+/// of the first and the last object both name an object of that inode number
+/// and type, by one name or by two names of it, which a restore cannot tell
+/// apart, so a save must fail rather than save a snapshot that cannot restore.
+#[test]
+fn nodes_that_name_one_object_fail_the_save() {
+    for path in ["file", "link"] {
+        let temporary_directory = tempdir().unwrap();
+        let root_path = temporary_directory.path();
+        let (fs, file, node_id) = microvm_with_a_tracked_file(root_path);
+        std::fs::hard_link(root_path.join("file"), root_path.join("link")).unwrap();
+        let (_, directory) = fs
+            .insert_inode(directory_with_the_inode_number_of(&file, "file"))
+            .unwrap();
+        let stat = file.volume().lstat(file.clone_path()).unwrap();
+        let (_, other) = fs
+            .insert_inode(VirtioFsInode::with_attr(
+                file.volume(),
+                PathBuf::from(path),
+                &stat,
+            ))
+            .unwrap();
+        assert_ne!(other, node_id, "{path}");
+        fs.forget(directory, 1);
+
+        let Err(error) = fs.save_microvm_state(&profile(root_path), SessionState::default()) else {
+            panic!("{path}: a save succeeded with two nodes of one object");
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&format!("nodes {node_id} and {other} name one host object")),
+            "{path}: {message}"
+        );
+        fs.forget(other, 1);
+        fs.save_microvm_state(&profile(root_path), SessionState::default())
+            .unwrap();
+    }
+}
+
+/// The guest can open a node after the host has replaced its object, as Linux
+/// does when a program reopens a file that it holds through `/proc/self/fd`,
+/// and the host can then give the node's name its object back. The node's
+/// names then reach its object, but its handle reaches the replacement, which
+/// a restore, which reopens each handle by its node's names, cannot reach, so
+/// a save must fail rather than save a snapshot that cannot restore.
+#[test]
+fn a_handle_of_another_object_than_its_node_fails_the_save() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::write(root_path.join("file"), b"old").unwrap();
+    let profile = profile(root_path);
+    let fs = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let node = lookup(&fs, "file").unwrap();
+    std::fs::rename(root_path.join("file"), root_path.join("kept")).unwrap();
+    std::fs::write(root_path.join("file"), b"new").unwrap();
+    let fh = open(&fs, node, lx::O_RDONLY).unwrap();
+    std::fs::rename(root_path.join("file"), root_path.join("replacement")).unwrap();
+    std::fs::rename(root_path.join("kept"), root_path.join("file")).unwrap();
+
+    let Err(error) = fs.save_microvm_state(&profile, SessionState::default()) else {
+        panic!("a save succeeded with a handle of another object than its node");
+    };
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&format!(
+            "handle {fh} of node {node} reaches another host object"
+        )),
+        "{message}"
+    );
+    release(&fs, node, fh);
+    fs.save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+}
+
 /// Objects with one inode number on two devices, as `/proc` and `/sys` are,
 /// save as two inodes and restore as two.
 #[cfg(target_os = "linux")]

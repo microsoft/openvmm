@@ -292,6 +292,20 @@ fn open_microvm_volume(
     Ok((volume, root_inode, root_stat))
 }
 
+/// Returns the error of a save whose nodes `first` and `second` name one host
+/// object, by one name or by two, which a restore cannot tell apart, as after
+/// the host gave the inode number of an object that the guest holds to another
+/// object of its type.
+fn nodes_of_one_object(first: u64, second: u64) -> anyhow::Error {
+    anyhow::anyhow!(
+        "nodes {} and {} name one host object, as after the host replaced an object that \
+         the guest holds by one with its inode number; the guest must release one of them \
+         before a save",
+        first.min(second),
+        first.max(second)
+    )
+}
+
 impl VirtioFs {
     /// Creates a filesystem attachment for the fixed microVM profile.
     ///
@@ -520,6 +534,10 @@ impl VirtioFs {
             let mut node_ids = HashMap::with_capacity(inodes.inodes_by_node_id.values.len());
             let mut alias_count = 0usize;
             let mut alias_bytes = 0usize;
+            // A restore keys the nodes by their names and by their objects, so
+            // no two nodes may share either.
+            let mut alias_nodes = HashMap::new();
+            let mut object_nodes = HashMap::new();
             for (&node_id, inode) in &inodes.inodes_by_node_id.values {
                 let aliases = inode.aliases();
                 anyhow::ensure!(
@@ -551,6 +569,11 @@ impl VirtioFs {
                             inode.guest_inode_nr()
                         )
                     })?;
+                    if let Some(other) =
+                        alias_nodes.insert((inode.volume_id(), alias.clone()), node_id)
+                    {
+                        return Err(nodes_of_one_object(other, node_id));
+                    }
                     let alias = encode_relative_path(&alias)?;
                     alias_bytes = alias_bytes
                         .checked_add(alias.len())
@@ -560,6 +583,9 @@ impl VirtioFs {
                         "saved aliases exceed the aggregate byte bound"
                     );
                     relative_aliases.push(alias);
+                }
+                if let Some(other) = object_nodes.insert(inode.dedup_key(), node_id) {
+                    return Err(nodes_of_one_object(other, node_id));
                 }
                 saved.push(SavedInode {
                     node_id,
@@ -593,6 +619,15 @@ impl VirtioFs {
                     .object_stat()
                     .map_err(anyhow::Error::from)
                     .context("open handle cannot be revalidated for save")?;
+                // A restore reopens the handle by its node's names, which reach
+                // the node's own object.
+                validate_identity(&stat, &file.inode().object_identity()).with_context(|| {
+                    format!(
+                        "handle {handle_id} of node {node_id} reaches another host object than \
+                         the node, as after the guest opened the node while the host had \
+                         replaced its object; the guest must close the handle before a save"
+                    )
+                })?;
                 let snapshot_entries = file.directory_entries();
                 let directory_snapshot_built = file.directory_snapshot_built();
                 anyhow::ensure!(
