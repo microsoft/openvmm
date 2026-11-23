@@ -261,9 +261,9 @@ pub(crate) enum SpaceState {
     /// Fresh space from file extension — zeroed on disk. Safe to commit
     /// BAT before flushing the data write (no data leak possible).
     Zero,
-    /// Recycled space containing the same block's own old data. Safe to
-    /// commit BAT before flushing (a power failure only exposes the
-    /// block's own stale data, not another block's). NOT zero.
+    /// Recycled space containing the same block's own old data, not another
+    /// block's. Padding still needs a flush before BAT publication if the
+    /// original mapping defines zeros rather than permitting old data. NOT zero.
     OwnStale,
     /// Recycled space that may contain another block's data. Must flush
     /// data writes before committing BAT to prevent cross-block data
@@ -272,7 +272,7 @@ pub(crate) enum SpaceState {
 }
 
 impl SpaceState {
-    /// Safe to commit BAT entry before data flush completes?
+    /// Safe from cross-block data exposure if BAT is committed before data flush?
     pub fn is_safe(self) -> bool {
         matches!(self, Self::Zero | Self::OwnStale)
     }
@@ -808,6 +808,13 @@ impl FreeSpaceInner {
 
             trimmed_found += 1;
             let mapping = bat.get_block_mapping(block_number as u32);
+
+            // Abort restores the anchor before dropping TFP. Do not steal it
+            // before the original mapping has also been restored.
+            if mapping.transitioning_to_fully_present() {
+                hint = block_number + 1;
+                continue;
+            }
 
             // Block must be soft-anchored: unmapped/undefined state with non-zero file_megabyte.
             let state = mapping.bat_state();
@@ -1552,6 +1559,37 @@ mod tests {
         let inner = tracker.inner.lock();
         assert!(!inner.trimmed_blocks.bitmap.check_bit(5));
         assert_eq!(inner.trimmed_blocks.num_trimmed_blocks, 0);
+    }
+
+    #[test]
+    fn unanchor_skips_transitioning_block() {
+        let (tracker, _eof) = make_test_tracker(20, 2);
+        let bat = make_test_bat_with_anchored_block(2, 6, 16);
+        let original = bat.get_block_mapping(2);
+        bat.set_block_mapping(2, original.with_transitioning_to_fully_present(true));
+        bat.set_block_mapping(
+            3,
+            BlockMapping::new()
+                .with_bat_state(BatEntryState::Unmapped)
+                .with_file_megabyte(8),
+        );
+        tracker
+            .mark_trimmed_block(2, 6 * MB1, 2 * MB1 as u32)
+            .unwrap();
+        tracker
+            .mark_trimmed_block(3, 8 * MB1, 2 * MB1 as u32)
+            .unwrap();
+
+        assert_eq!(
+            tracker.find_and_unanchor_in_memory(&bat),
+            Some((8 * MB1, 3))
+        );
+        assert_eq!(tracker.find_and_unanchor_in_memory(&bat), None);
+        bat.set_block_mapping(2, original);
+        assert_eq!(
+            tracker.find_and_unanchor_in_memory(&bat),
+            Some((6 * MB1, 2))
+        );
     }
 
     #[test]

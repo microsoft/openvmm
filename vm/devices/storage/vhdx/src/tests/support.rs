@@ -302,6 +302,15 @@ impl CrashTestFile {
 ///   concurrent writes to reach the log task before the flush completes.
 pub struct YieldingCrashFile {
     inner: Mutex<CrashTestFileYieldInner>,
+    io_event: event_listener::Event,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestIo {
+    Read,
+    Write,
+    Flush,
+    Resize,
 }
 
 struct CrashTestFileYieldInner {
@@ -310,6 +319,12 @@ struct CrashTestFileYieldInner {
     flush_count: u64,
     yield_on_write: bool,
     yield_on_flush: bool,
+    paused: Option<(TestIo, u64)>,
+    failure: Option<(TestIo, u64)>,
+    schedule: Option<u64>,
+    persist_unflushed: bool,
+    volatile_only: Option<std::ops::Range<u64>>,
+    trace: Vec<(TestIo, u64)>,
 }
 
 impl YieldingCrashFile {
@@ -322,13 +337,90 @@ impl YieldingCrashFile {
                 flush_count: 0,
                 yield_on_write,
                 yield_on_flush,
+                paused: None,
+                failure: None,
+                schedule: None,
+                persist_unflushed: false,
+                volatile_only: None,
+                trace: Vec::new(),
             }),
+            io_event: event_listener::Event::new(),
         }
     }
 
     /// Snapshot durable state without consuming the file.
     pub fn durable_snapshot(&self) -> Vec<u8> {
         self.inner.lock().durable.clone()
+    }
+
+    pub fn pause(&self, operation: TestIo, offset: u64) {
+        self.inner.lock().paused = Some((operation, offset));
+    }
+
+    pub fn resume(&self) {
+        self.inner.lock().paused = None;
+        self.io_event.notify(usize::MAX);
+    }
+
+    pub fn fail_next(&self, operation: TestIo, offset: u64) {
+        self.inner.lock().failure = Some((operation, offset));
+    }
+
+    pub fn schedule(&self, seed: u64, persist_unflushed: bool) {
+        let mut inner = self.inner.lock();
+        inner.schedule = Some(seed);
+        inner.persist_unflushed = persist_unflushed;
+    }
+
+    /// Persist metadata early while leaving a selected payload volatile.
+    pub fn persist_except(&self, range: std::ops::Range<u64>) {
+        let mut inner = self.inner.lock();
+        inner.persist_unflushed = true;
+        inner.volatile_only = Some(range);
+    }
+
+    pub fn trace(&self) -> Vec<(TestIo, u64)> {
+        self.inner.lock().trace.clone()
+    }
+
+    async fn before_io(&self, operation: TestIo, offset: u64) -> Result<(), std::io::Error> {
+        loop {
+            let listener = self.io_event.listen();
+            let decision = {
+                let mut inner = self.inner.lock();
+                if inner.paused == Some((operation, offset)) {
+                    None
+                } else {
+                    if inner.failure == Some((operation, offset)) {
+                        inner.failure = None;
+                        return Err(std::io::Error::other(format!(
+                            "injected {operation:?} failure at {offset:#x}"
+                        )));
+                    }
+                    if inner.schedule.is_some() {
+                        inner.trace.push((operation, offset));
+                    }
+                    Some(inner.next_schedule_bit())
+                }
+            };
+            if let Some(should_yield) = decision {
+                if should_yield {
+                    yield_once().await;
+                }
+                return Ok(());
+            }
+            listener.await;
+        }
+    }
+}
+
+impl CrashTestFileYieldInner {
+    fn next_schedule_bit(&mut self) -> bool {
+        let Some(state) = self.schedule.as_mut() else {
+            return false;
+        };
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        *state >> 63 != 0
     }
 }
 
@@ -510,6 +602,7 @@ impl AsyncFile for YieldingCrashFile {
     }
 
     async fn read_into(&self, offset: u64, mut buf: Vec<u8>) -> Result<Vec<u8>, std::io::Error> {
+        self.before_io(TestIo::Read, offset).await?;
         let inner = self.inner.lock();
         let offset = offset as usize;
         let file_len = inner.volatile.len();
@@ -529,6 +622,7 @@ impl AsyncFile for YieldingCrashFile {
         offset: u64,
         buf: impl Borrow<Vec<u8>> + Send + 'static,
     ) -> Result<(), std::io::Error> {
+        self.before_io(TestIo::Write, offset).await?;
         let should_yield = self.inner.lock().yield_on_write;
         if should_yield {
             yield_once().await;
@@ -541,10 +635,23 @@ impl AsyncFile for YieldingCrashFile {
             inner.volatile.resize(end, 0);
         }
         inner.volatile[off..end].copy_from_slice(buf.as_ref());
+        let persist = inner.persist_unflushed
+            && if let Some(range) = &inner.volatile_only {
+                offset + buf.len() as u64 <= range.start || offset >= range.end
+            } else {
+                inner.next_schedule_bit()
+            };
+        if persist {
+            if end > inner.durable.len() {
+                inner.durable.resize(end, 0);
+            }
+            inner.durable[off..end].copy_from_slice(buf.as_ref());
+        }
         Ok(())
     }
 
     async fn flush(&self) -> Result<(), std::io::Error> {
+        self.before_io(TestIo::Flush, 0).await?;
         let should_yield = self.inner.lock().yield_on_flush;
         if should_yield {
             yield_once().await;
@@ -561,6 +668,7 @@ impl AsyncFile for YieldingCrashFile {
     }
 
     async fn set_file_size(&self, size: u64) -> Result<(), std::io::Error> {
+        self.before_io(TestIo::Resize, size).await?;
         let mut inner = self.inner.lock();
         inner.volatile.resize(size as usize, 0);
         inner.durable.resize(size as usize, 0);
