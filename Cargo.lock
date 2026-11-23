@@ -8026,9 +8026,12 @@ dependencies = [
 name = "tdcall"
 version = "0.0.0"
 dependencies = [
+ "cvm_tracing",
  "hvdef",
  "memory_range",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "x86defs",
 ]
