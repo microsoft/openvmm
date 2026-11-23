@@ -13,8 +13,11 @@ use hvdef::VS1_PARTITION_PROPERTIES_EAX_IS_PORTABLE;
 use virt::CpuidLeaf;
 use x86defs::cpuid::CpuidFunction;
 
-// EAX bits 4 and 5 report hypervisor-managed DMA and interrupt remapping.
-const HYPERV_HARDWARE_FEATURES_IOMMU_IN_USE_MASK: u32 = (1 << 4) | (1 << 5);
+// Hypervisor-managed DMA and interrupt remapping claims in EAX.
+const HYPERV_HARDWARE_FEATURES_IOMMU_IN_USE_MASK: u32 = hvdef::HvHardwareFeatures::new()
+    .with_dma_remapping_in_use(true)
+    .with_interrupt_remapping_in_use(true)
+    .into_bits() as u32;
 
 /// Returns CPUID leaves for Hyper-V-style VMs.
 ///
@@ -94,18 +97,7 @@ mod tests {
         leaf.apply(&mut result);
 
         assert_eq!(leaf.function, HV_CPUID_FUNCTION_MS_HV_HARDWARE_FEATURES);
-        assert_eq!(
-            leaf.mask,
-            [HYPERV_HARDWARE_FEATURES_IOMMU_IN_USE_MASK, 0, 0, 0]
-        );
-        assert_eq!(
-            result,
-            [
-                !HYPERV_HARDWARE_FEATURES_IOMMU_IN_USE_MASK,
-                u32::MAX,
-                u32::MAX,
-                u32::MAX,
-            ]
-        );
+        assert_eq!(leaf.mask, [0x30, 0, 0, 0]);
+        assert_eq!(result, [!0x30, u32::MAX, u32::MAX, u32::MAX]);
     }
 }
