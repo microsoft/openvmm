@@ -617,7 +617,8 @@ pub struct MicrovmCli {
     #[clap(long = "cpu-profile", value_name = "ID", hide = true)]
     pub cpu_profile: Option<String>,
 
-    /// time ABI test hook (repeatable; testing only)
+    /// time ABI test hook (repeatable; testing only); ARM cold boot supports
+    /// only host-rate-offset-ppm
     #[clap(long = "x-time-abi-test-hook", value_name = "HOOK", hide = true)]
     pub x_time_abi_test_hook: Vec<String>,
 
@@ -844,10 +845,29 @@ impl Options {
             return Ok(());
         }
 
-        anyhow::ensure!(
-            cfg!(guest_arch = "x86_64"),
-            "microVM requires an x86-64 guest"
-        );
+        #[cfg(guest_arch = "aarch64")]
+        {
+            anyhow::ensure!(
+                matches!(self.gic_msi, super::GicMsiCli::Auto),
+                "ARM microVM does not support explicit --gic-msi its or v2m"
+            );
+            anyhow::ensure!(
+                self.microvm.snapshot_destination.is_none() && self.restore_snapshot.is_none(),
+                "ARM microVM supports cold boot only; snapshot capture and restore are unavailable"
+            );
+            anyhow::ensure!(
+                self.memory_size() <= 63 * 1024 * 1024 * 1024,
+                "ARM microVM requires at most 63 GiB logical RAM"
+            );
+            anyhow::ensure!(
+                self.microvm.x_time_abi_test_hook.iter().all(|hook| {
+                    hook.split_once('=')
+                        .is_some_and(|(name, _)| name == "host-rate-offset-ppm")
+                }),
+                "ARM microVM supports only the host-rate-offset-ppm time ABI test hook"
+            );
+            virt::time_abi::TimeAbiTestHooks::parse(&self.microvm.x_time_abi_test_hook)?;
+        }
         let ramfs_overlay =
             openvmm_defs::microvm::ramfs_overlay_requested(&self.cmdline.join(" "))?;
         if ramfs_overlay {
@@ -1543,16 +1563,169 @@ mod tests {
         assert!(Options::try_parse_from(["openvmm", "--machine", "unknown"]).is_err());
     }
 
-    /// The microVM profile requires an x86-64 guest, so the tests that
-    /// validate microVM options run only for x86-64 guests.
-    #[cfg(not(guest_arch = "x86_64"))]
+    #[cfg(guest_arch = "aarch64")]
     #[test]
-    fn test_microvm_requires_an_x86_64_guest() {
-        let options = Options::try_parse_from(["openvmm", "--machine", "microvm"]).unwrap();
-        assert_eq!(
-            options.validate_microvm_options().unwrap_err().to_string(),
-            "microVM requires an x86-64 guest"
-        );
+    fn test_microvm_arm_rejects_explicit_gic_msi_before_topology_replacement() {
+        for msi in ["auto", "its", "v2m"] {
+            let standard = Options::try_parse_from(["openvmm", "--gic-msi", msi]).unwrap();
+            standard.validate_microvm_options().unwrap();
+            let microvm =
+                Options::try_parse_from(["openvmm", "--machine", "microvm", "--gic-msi", msi])
+                    .unwrap();
+            let result = microvm.validate_microvm_options();
+            if msi == "auto" {
+                result.unwrap();
+            } else {
+                assert!(result.unwrap_err().to_string().contains("--gic-msi"));
+            }
+        }
+        Options::try_parse_from(["openvmm", "--machine", "microvm"])
+            .unwrap()
+            .validate_microvm_options()
+            .unwrap();
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn test_microvm_arm_cold_boot_admission_is_not_an_x86_or_snapshot_bypass() {
+        for profile in ["auto", "host"] {
+            for count in ["1", "2", "4", "8"] {
+                let options = Options::try_parse_from([
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--cpu-profile",
+                    profile,
+                    "--processors",
+                    count,
+                ])
+                .unwrap();
+                options.validate_microvm_options().unwrap();
+            }
+        }
+        for extra in [
+            vec!["--processors", "3"],
+            vec!["--memory", "64G"],
+            vec!["--uefi"],
+            vec!["--device-tree"],
+        ] {
+            let mut args = vec!["openvmm", "--machine", "microvm"];
+            args.extend(extra);
+            let options = Options::try_parse_from(args).unwrap();
+            assert!(options.validate_microvm_options().is_err());
+        }
+        Options::try_parse_from(["openvmm", "--machine", "microvm", "--x-time-abi-verify"])
+            .unwrap()
+            .validate_microvm_options()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_microvm_host_rate_hook_admission() {
+        for ppm in ["-10000", "-250", "0", "250", "10000"] {
+            for verify in [false, true] {
+                let hook = format!("host-rate-offset-ppm={ppm}");
+                let mut args = vec![
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--x-time-abi-test-hook",
+                    &hook,
+                ];
+                if verify {
+                    args.push("--x-time-abi-verify");
+                }
+                let options = Options::try_parse_from(args).unwrap();
+                options.validate_microvm_options().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_microvm_other_time_hooks_remain_architecture_gated() {
+        for hook in [
+            "force-utc-downtime",
+            "boot-id-mismatch",
+            "host-cpu-unknown",
+            "dest-rate-offset-ppm=0",
+            "dest-rate-offset-ppm=200",
+            "downtime-add-s=0",
+            "downtime-add-s=1",
+            "utc-offset-ms=0",
+            "utc-offset-ms=1",
+            "sample-delay-us=0",
+            "sample-delay-us=1",
+        ] {
+            for hooks in [
+                vec![hook],
+                vec![hook, "host-rate-offset-ppm=250"],
+                vec!["host-rate-offset-ppm=250", hook],
+            ] {
+                let mut args = vec!["openvmm", "--machine", "microvm"];
+                for hook in hooks {
+                    args.extend(["--x-time-abi-test-hook", hook]);
+                }
+                let options = Options::try_parse_from(args).unwrap();
+                let result = options.validate_microvm_options();
+                #[cfg(guest_arch = "aarch64")]
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("only the host-rate-offset-ppm"),
+                    "{hook}"
+                );
+                #[cfg(guest_arch = "x86_64")]
+                result.unwrap();
+            }
+        }
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn test_microvm_arm_rate_hook_rejects_invalid_values_and_duplicates() {
+        for hooks in [
+            vec!["host-rate-offset-ppm"],
+            vec!["host-rate-offset-ppm="],
+            vec!["host-rate-offset-ppm=x"],
+            vec!["host-rate-offset-ppm=1=2"],
+            vec!["host-rate-offset-ppm=-10001"],
+            vec!["host-rate-offset-ppm=10001"],
+            vec!["host-rate-offset-ppm=2147483648"],
+            vec!["host-rate-offset-ppm=0", "host-rate-offset-ppm=250"],
+            vec!["unknown=0"],
+        ] {
+            let mut args = vec!["openvmm", "--machine", "microvm"];
+            for hook in &hooks {
+                args.extend(["--x-time-abi-test-hook", hook]);
+            }
+            let options = Options::try_parse_from(args).unwrap();
+            assert!(options.validate_microvm_options().is_err(), "{hooks:?}");
+        }
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn test_microvm_arm_rate_hook_does_not_admit_snapshots() {
+        for snapshot in ["--snapshot-destination", "--restore-snapshot"] {
+            let options = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--x-time-abi-test-hook",
+                "host-rate-offset-ppm=250",
+                snapshot,
+                "snapshot",
+            ])
+            .unwrap();
+            assert!(
+                options
+                    .validate_microvm_options()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cold boot only")
+            );
+        }
     }
 
     #[cfg(guest_arch = "x86_64")]
