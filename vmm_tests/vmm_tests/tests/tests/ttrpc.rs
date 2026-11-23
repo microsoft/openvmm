@@ -1800,7 +1800,7 @@ async fn test_ttrpc_interface(
                             // doesn't matter.
                             expected_snapshot_id: Some(snapshot_id.to_uppercase()),
                             resume: false,
-                            kind: vmservice::RestoreKind::SameVm as i32,
+                            kind: vmservice::RestoreKind::Clone as i32,
                         },
                     )
                     .await
