@@ -5,7 +5,8 @@
 
 // Tests for the resource-passing protocols, which share the TTRPC socket. The
 // UNIX fd-passing test resolves a tap `fd_name`, which is Linux-only; the
-// Windows handle-passing test resolves a virtio-fs user token.
+// Windows handle-passing tests resolve a virtio-fs user token and a virtual
+// disk.
 #[cfg(target_os = "linux")]
 mod fd_passing;
 #[cfg(windows)]
@@ -46,14 +47,7 @@ petri::test!(test_ttrpc_interface, |resolver| {
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
     let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
     let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
-    let pipette = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL)
-            .erase(),
-        petri_artifacts_common::tags::MachineArch::Aarch64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64_MUSL)
-            .erase(),
-    };
+    let pipette = require_pipette(resolver);
     Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
 });
 
@@ -466,14 +460,7 @@ petri::test!(test_ttrpc_no_vmbus, |resolver| {
     {
         return None;
     }
-    let pipette = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL)
-            .erase(),
-        petri_artifacts_common::tags::MachineArch::Aarch64 => resolver
-            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64_MUSL)
-            .erase(),
-    };
+    let pipette = require_pipette(resolver);
     Some([
         resolver.require(artifacts::OPENVMM_NATIVE).erase(),
         resolver
@@ -500,25 +487,11 @@ async fn test_ttrpc_no_vmbus(
         &tempdir.path().join("openvmm.pid"),
     )
     .await?;
-    let initrd = std::fs::read(initrd_path.get())?;
-    let pipette = std::fs::read(pipette_path.get())?;
-    let boot_initrd = initrd_cpio::inject_into_initrd(&initrd, "pipette", &pipette, 0o100755)?;
-    let mut initrd_file = tempfile::NamedTempFile::new_in(tempdir.path())?;
-    initrd_file.write_all(&boot_initrd)?;
-    let console = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
-        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
-    };
+    let initrd_file = pipette_initrd(tempdir.path(), &initrd_path, &pipette_path)?;
+    let console = linux_console();
     for disable_hv in [false, true] {
         let vsock_path = tempdir.path().join(format!("vsock-{disable_hv}"));
-        let mut pipette_listener = PolledSocket::new(
-            &driver,
-            UnixListener::bind(format!(
-                "{}_{}",
-                vsock_path.to_string_lossy(),
-                pipette_client::PIPETTE_PORT
-            ))?,
-        )?;
+        let mut pipette_listener = listen_for_pipette(&driver, &vsock_path)?;
         let com1_path = tempdir.path().join(format!("com1-{disable_hv}.sock"));
         client
             .call()
@@ -593,19 +566,14 @@ async fn test_ttrpc_no_vmbus(
             .start(vmservice::Vm::ResumeVm, ())
             .await
             .unwrap();
-        let agent = CancelContext::new()
-            .with_timeout(Duration::from_mins(1))
-            .until_cancelled(async {
-                let (conn, _) = pipette_listener.accept().await?;
-                pipette_client::PipetteClient::new(
-                    &driver,
-                    PolledSocket::new(&driver, conn)?,
-                    params.log_source.output_dir(),
-                )
-                .await
-            })
-            .await
-            .context("timed out connecting to pipette over virtio-vsock")??;
+        let agent = accept_pipette(
+            &driver,
+            &params,
+            &mut pipette_listener,
+            Duration::from_mins(1),
+        )
+        .await
+        .context("connecting to pipette over virtio-vsock")?;
         assert_eq!(
             agent.local_vsock_cid(),
             Some(42),
@@ -659,22 +627,8 @@ async fn test_ttrpc_interface(
     let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
 
-    let initrd = std::fs::read(initrd_path.get()).context("failed to read test initrd")?;
-    let pipette = std::fs::read(pipette_path.get()).context("failed to read pipette")?;
-    let pipette_initrd = initrd_cpio::inject_into_initrd(&initrd, "pipette", &pipette, 0o100755)
-        .context("failed to inject pipette into test initrd")?;
-    let mut pipette_initrd_file = tempfile::NamedTempFile::new_in(tempdir.path())
-        .context("failed to create initrd temp file")?;
-    pipette_initrd_file
-        .write_all(&pipette_initrd)
-        .context("failed to write initrd temp file")?;
-
-    // The serial console device differs by architecture: x86 exposes a 16550
-    // UART as `ttyS0`, while aarch64 exposes a PL011 UART as `ttyAMA0`.
-    let console = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
-        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
-    };
+    let pipette_initrd_file = pipette_initrd(tempdir.path(), &initrd_path, &pipette_path)?;
+    let console = linux_console();
 
     let (mut child, client, stderr_task) =
         launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
@@ -2572,6 +2526,101 @@ async fn mount_virtio_fs(
     cmd!(sh, "sh -c {script}").run().await
 }
 
+/// Requires the Linux pipette agent for the host architecture.
+fn require_pipette(resolver: &petri::ArtifactResolver<'_>) -> ResolvedArtifact {
+    match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => resolver
+            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL)
+            .erase(),
+        petri_artifacts_common::tags::MachineArch::Aarch64 => resolver
+            .require(petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64_MUSL)
+            .erase(),
+    }
+}
+
+/// Returns the Linux serial console device: x86 exposes a 16550 UART as
+/// `ttyS0`, while aarch64 exposes a PL011 UART as `ttyAMA0`.
+fn linux_console() -> &'static str {
+    match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
+        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
+    }
+}
+
+/// Writes `initrd` with `pipette` injected as `/pipette` to a temporary file
+/// in `dir`.
+fn pipette_initrd(
+    dir: &Path,
+    initrd: &ResolvedArtifact,
+    pipette: &ResolvedArtifact,
+) -> anyhow::Result<tempfile::NamedTempFile> {
+    let initrd = std::fs::read(initrd.get()).context("failed to read test initrd")?;
+    let pipette = std::fs::read(pipette.get()).context("failed to read pipette")?;
+    let pipette_initrd = initrd_cpio::inject_into_initrd(&initrd, "pipette", &pipette, 0o100755)
+        .context("failed to inject pipette into test initrd")?;
+    let mut file =
+        tempfile::NamedTempFile::new_in(dir).context("failed to create initrd temp file")?;
+    file.write_all(&pipette_initrd)
+        .context("failed to write initrd temp file")?;
+    Ok(file)
+}
+
+/// Listens for pipette's connection on the hybrid vsock socket at
+/// `hvsocket_path`.
+fn listen_for_pipette(
+    driver: &DefaultDriver,
+    hvsocket_path: &Path,
+) -> anyhow::Result<PolledSocket<UnixListener>> {
+    Ok(PolledSocket::new(
+        driver,
+        UnixListener::bind(format!(
+            "{}_{}",
+            hvsocket_path.to_string_lossy(),
+            pipette_client::PIPETTE_PORT
+        ))?,
+    )?)
+}
+
+/// Accepts pipette's connection on `listener`, failing after `timeout`.
+async fn accept_pipette(
+    driver: &DefaultDriver,
+    params: &petri::PetriTestParams<'_>,
+    listener: &mut PolledSocket<UnixListener>,
+    timeout: Duration,
+) -> anyhow::Result<pipette_client::PipetteClient> {
+    CancelContext::new()
+        .with_timeout(timeout)
+        .until_cancelled(async {
+            let (conn, _) = listener.accept().await?;
+            pipette_client::PipetteClient::new(
+                driver,
+                PolledSocket::new(driver, conn)?,
+                params.log_source.output_dir(),
+            )
+            .await
+        })
+        .await
+        .context("timed out connecting to pipette")?
+}
+
+/// Waits up to 20 seconds for the guest block device `/dev/{name}`.
+#[cfg(windows)]
+async fn wait_for_block_device(
+    agent: &pipette_client::PipetteClient,
+    name: &str,
+) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    let script = format!(
+        "i=0; while [ $i -lt 200 ]; do \
+         test -b /dev/{name} && exit 0; \
+         i=$((i + 1)); sleep 0.1; done; exit 1"
+    );
+    cmd!(sh, "sh -c {script}")
+        .run()
+        .await
+        .with_context(|| format!("waiting for /dev/{name}"))
+}
+
 /// Spawns `openvmm --rpc path=<socket_path>,transport=ttrpc --pidfile
 /// <pidfile_path>`, waits for it to signal readiness (by closing stdout),
 /// validates the pidfile, and connects a ttrpc client.
@@ -2850,15 +2899,7 @@ async fn validate_vpci_pmem_hotplug(
             .await
             .map_err(|err| anyhow::anyhow!(err.message))?;
 
-        let script = format!(
-            "i=0; while [ $i -lt 200 ]; do \
-             test -b /dev/{name} && exit 0; \
-             i=$((i + 1)); sleep 0.1; done; exit 1"
-        );
-        cmd!(sh, "sh -c {script}")
-            .run()
-            .await
-            .with_context(|| format!("waiting for hot-added {name}"))?;
+        wait_for_block_device(agent, name).await?;
         validate_pmem(agent, path, name).await?;
     }
 

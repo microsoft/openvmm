@@ -2880,7 +2880,7 @@ async fn build_pci_device(
             let resource = build_virtio_device(virtio, registry).await?;
             VirtioPciDeviceHandle(resource).into_resource()
         }
-        Kind::Nvme(nvme) => build_nvme_controller(nvme).await?,
+        Kind::Nvme(nvme) => build_nvme_controller(nvme, registry).await?,
         Kind::Vfio(vfio) => build_vfio_device(vfio, iommufds)?,
     })
 }
@@ -2999,6 +2999,7 @@ fn build_vfio_device(
 /// Builds an NVMe controller resource from the proto `NvmeConfig`.
 async fn build_nvme_controller(
     nvme: vmservice::NvmeConfig,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     let vmservice::NvmeConfig {
         controller_id,
@@ -3011,8 +3012,12 @@ async fn build_nvme_controller(
             backend,
             read_only,
         } = ns;
-        let disk =
-            build_disk_backend(backend.context("missing namespace backend")?, read_only).await?;
+        let disk = build_disk_backend(
+            backend.context("missing namespace backend")?,
+            read_only,
+            registry,
+        )
+        .await?;
         namespaces.push(nvme_resources::NamespaceDefinition {
             nsid,
             read_only,
@@ -3044,7 +3049,8 @@ async fn build_virtio_device(
             serial,
         }) => {
             let disk =
-                build_disk_backend(backend.context("missing blk backend")?, read_only).await?;
+                build_disk_backend(backend.context("missing blk backend")?, read_only, registry)
+                    .await?;
             virtio_resources::blk::VirtioBlkHandle {
                 disk,
                 read_only,
@@ -3173,8 +3179,32 @@ fn build_virtio_fs_windows_options(
 async fn build_disk_backend(
     backend: vmservice::DiskBackend,
     read_only: bool,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
+    if let Some(vmservice::disk_backend::Kind::VirtualDisk(disk)) = &backend.kind {
+        return virtual_disk_backend(&disk.handle_name, registry);
+    }
     crate::disk_open(&disk_backend_from_proto(backend)?, read_only).await
+}
+
+/// Resolves the VHD or VHDX handle registered as `handle_name`.
+fn virtual_disk_backend(
+    handle_name: &str,
+    registry: &ResourceRegistry,
+) -> anyhow::Result<Resource<DiskHandleKind>> {
+    #[cfg(windows)]
+    {
+        let file: File = registry
+            .resolve(handle_name)
+            .with_context(|| format!("failed to resolve virtual disk '{handle_name}'"))?
+            .into();
+        Ok(disk_vhdmp::OpenVhdmpDiskConfig(disk_vhdmp::Vhd::from_file(file)).into_resource())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (handle_name, registry);
+        anyhow::bail!("virtual disk backends are only supported on Windows")
+    }
 }
 
 fn disk_backend_from_proto(backend: vmservice::DiskBackend) -> anyhow::Result<DiskCliKind> {
@@ -3191,6 +3221,9 @@ fn disk_backend_from_proto(backend: vmservice::DiskBackend) -> anyhow::Result<Di
         },
         vmservice::disk_backend::Kind::Memory(vmservice::MemoryDisk { size_bytes }) => {
             DiskCliKind::Memory(size_bytes)
+        }
+        vmservice::disk_backend::Kind::VirtualDisk(_) => {
+            anyhow::bail!("virtual disk backends must be a storage device's own backend")
         }
         vmservice::disk_backend::Kind::MemoryDiff(overlay) => DiskCliKind::MemoryDiff(Box::new(
             disk_backend_from_proto(*overlay.lower.context("missing memory diff lower disk")?)?,
@@ -3796,6 +3829,96 @@ mod tests {
                 cli.parse::<DiskCliKind>().unwrap()
             );
         }
+    }
+
+    fn virtual_disk(name: &str) -> vmservice::DiskBackend {
+        vmservice::DiskBackend {
+            kind: Some(vmservice::disk_backend::Kind::VirtualDisk(
+                vmservice::VirtualDisk {
+                    handle_name: name.into(),
+                },
+            )),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn registered_virtual_disk_backends() {
+        DefaultPool::run_with(async |_driver| {
+            let registry = ResourceRegistry::default();
+            let file = tempfile::tempfile().unwrap();
+            registry.register("disk".into(), file.into()).unwrap();
+            let backend = || virtual_disk("disk");
+
+            build_nvme_controller(
+                vmservice::NvmeConfig {
+                    namespaces: vec![vmservice::NvmeNamespace {
+                        nsid: 1,
+                        backend: Some(backend()),
+                        read_only: true,
+                    }],
+                    ..Default::default()
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
+            build_virtio_device(
+                vmservice::VirtioDevice {
+                    kind: Some(vmservice::virtio_device::Kind::Blk(vmservice::VirtioBlk {
+                        backend: Some(backend()),
+                        read_only: true,
+                        ..Default::default()
+                    })),
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
+            // Registered handles are resolved as VHDMP disks, not files.
+            let disk = build_disk_backend(backend(), true, &registry)
+                .await
+                .unwrap();
+            assert_eq!(disk.id(), "vhdmp");
+
+            // Names are resolved when the device is built, so a deregistered
+            // name no longer resolves.
+            registry.deregister("disk");
+            let error = build_disk_backend(backend(), true, &registry)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                format!("{error:#}"),
+                "failed to resolve virtual disk 'disk': no handle registered under name 'disk'"
+            );
+        });
+    }
+
+    /// Virtual disks can only be a storage device's own backend, not, for
+    /// example, a VMGS backend or the lower disk of a memory diff overlay.
+    #[test]
+    fn virtual_disk_backend_must_be_used_directly() {
+        DefaultPool::run_with(async |_driver| {
+            let registry = ResourceRegistry::default();
+            let diff = vmservice::DiskBackend {
+                kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::new(
+                    vmservice::MemoryDiffDisk {
+                        lower: Some(Box::new(virtual_disk("disk"))),
+                    },
+                ))),
+            };
+            for error in [
+                disk_backend_from_proto(virtual_disk("disk")).unwrap_err(),
+                build_disk_backend(diff, false, &registry)
+                    .await
+                    .unwrap_err(),
+            ] {
+                assert_eq!(
+                    error.to_string(),
+                    "virtual disk backends must be a storage device's own backend"
+                );
+            }
+        });
     }
 
     #[test]
