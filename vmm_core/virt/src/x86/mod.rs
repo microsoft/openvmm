@@ -625,6 +625,99 @@ mod tests {
         };
         assert_eq!(snp_c_bit_from_cpuid(cpuid_without_snp), None);
     }
+
+    const BREAKPOINT_TYPES: [BreakpointType; 3] = [
+        BreakpointType::Execute,
+        BreakpointType::Write,
+        BreakpointType::ReadOrWrite,
+    ];
+    const BREAKPOINT_SIZES: [BreakpointSize; 4] = [
+        BreakpointSize::Byte,
+        BreakpointSize::Word,
+        BreakpointSize::DWord,
+        BreakpointSize::QWord,
+    ];
+
+    // Test: Encode every breakpoint type and size into DR7 for each debug
+    //       register, then decode it back.
+    // Expected: Decoding returns the original breakpoint.
+    #[test]
+    fn hardware_breakpoint_round_trips_through_dr7() {
+        const ADDRESS: u64 = 0xffff_8000_1234_5678;
+        for reg in 0..4 {
+            for ty in BREAKPOINT_TYPES {
+                for size in BREAKPOINT_SIZES {
+                    let bp = HardwareBreakpoint {
+                        address: ADDRESS,
+                        ty,
+                        size,
+                    };
+                    assert_eq!(
+                        HardwareBreakpoint::from_dr7(bp.dr7_bits(reg), ADDRESS, reg),
+                        bp,
+                        "reg {reg}"
+                    );
+                }
+            }
+        }
+    }
+
+    // IGNORED: this test fails because of a known bug. BreakpointType::Write has
+    // value 2, so dr7_bits() programs the DR7 R/W field as 10b (an I/O breakpoint,
+    // undefined without CR4.DE) instead of 01b (break on data writes), and
+    // from_dr7() decodes a hardware 01b as Invalid. Write watchpoints from the gdb
+    // stub therefore do not trigger on KVM or OpenHCL. Re-enable this test together
+    // with the fix (swap the Write and Invalid/I/O values) by removing #[ignore].
+    //
+    // Test: Encode every breakpoint type and size into DR7 for each debug
+    //       register.
+    // Expected: The bits match the Intel SDM DR7 layout: the register's
+    //       global-enable bit, R/W = 00b execute, 01b data write, 11b data
+    //       read/write, and LEN = 00b 1 byte, 01b 2 bytes, 11b 4 bytes,
+    //       10b 8 bytes.
+    #[test]
+    #[ignore = "known bug: DR7 write breakpoints use the I/O encoding (see comment)"]
+    fn hardware_breakpoint_dr7_bits_match_architectural_encoding() {
+        for reg in 0..4 {
+            for ty in BREAKPOINT_TYPES {
+                let rw: u64 = match ty {
+                    BreakpointType::Execute => 0b00,
+                    BreakpointType::Write => 0b01,
+                    BreakpointType::ReadOrWrite => 0b11,
+                    BreakpointType::Invalid => unreachable!(),
+                };
+                for size in BREAKPOINT_SIZES {
+                    let len: u64 = match size {
+                        BreakpointSize::Byte => 0b00,
+                        BreakpointSize::Word => 0b01,
+                        BreakpointSize::DWord => 0b11,
+                        BreakpointSize::QWord => 0b10,
+                    };
+                    let bp = HardwareBreakpoint {
+                        address: 0,
+                        ty,
+                        size,
+                    };
+
+                    let expected = (1 << (1 + reg * 2)) | ((rw | (len << 2)) << (16 + reg * 4));
+                    assert_eq!(bp.dr7_bits(reg), expected, "reg {reg}, {ty:?}, {size:?}");
+                }
+            }
+        }
+    }
+
+    // Test: Convert supported and unsupported byte sizes to a breakpoint size.
+    // Expected: 1, 2, 4, and 8 map to their sizes; anything else is rejected.
+    #[test]
+    fn breakpoint_size_accepts_only_supported_lengths() {
+        assert_eq!(BreakpointSize::try_from(1).unwrap(), BreakpointSize::Byte);
+        assert_eq!(BreakpointSize::try_from(2).unwrap(), BreakpointSize::Word);
+        assert_eq!(BreakpointSize::try_from(4).unwrap(), BreakpointSize::DWord);
+        assert_eq!(BreakpointSize::try_from(8).unwrap(), BreakpointSize::QWord);
+        for size in [0, 3, 5, 16] {
+            assert!(BreakpointSize::try_from(size).is_err(), "size {size}");
+        }
+    }
 }
 
 /// Error returned by MSR routines.

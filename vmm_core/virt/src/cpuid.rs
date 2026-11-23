@@ -146,3 +146,90 @@ impl CpuidLeafSet {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    const DEFAULT: [u32; 4] = [0x1111_1111, 0x2222_2222, 0x3333_3333, 0x4444_4444];
+
+    // Test: Look up a leaf that has no entry in the set.
+    // Expected: The caller's default result is returned unchanged.
+    #[test]
+    fn missing_leaf_returns_default() {
+        let set = CpuidLeafSet::new(vec![CpuidLeaf::new(1, [1, 2, 3, 4])]);
+
+        assert_eq!(set.result(2, 0, &DEFAULT), DEFAULT);
+    }
+
+    // Test: Look up a leaf whose entry only covers some bits (a mask).
+    // Expected: Masked bits come from the entry; all other bits come from the
+    //       default.
+    #[test]
+    fn masked_leaf_overrides_only_masked_bits() {
+        let set = CpuidLeafSet::new(vec![CpuidLeaf::new(1, [0, 0, 0xffff_ffff, 0]).masked([
+            0,
+            0,
+            1 << 21,
+            0,
+        ])]);
+
+        let result = set.result(1, 0, &DEFAULT);
+
+        assert_eq!(result[0], DEFAULT[0]);
+        assert_eq!(result[1], DEFAULT[1]);
+        assert_eq!(result[2], DEFAULT[2] | 1 << 21);
+        assert_eq!(result[3], DEFAULT[3]);
+    }
+
+    // Test: Merge two entries for the same leaf and subleaf, where the later
+    //       entry overlaps some of the earlier entry's bits.
+    // Expected: Each entry's masked bits come from that entry, with the later
+    //       entry winning where they overlap; bits in neither mask come
+    //       from the default.
+    #[test]
+    fn later_leaf_overrides_earlier_leaf_within_its_mask() {
+        let set = CpuidLeafSet::new(vec![
+            CpuidLeaf::new(7, [0xaaaa_0000, 0, 0, 0]).masked([0xffff_0000, 0, 0, 0]),
+            CpuidLeaf::new(7, [0x00bb_00cc, 0, 0, 0]).masked([0x00ff_00ff, 0, 0, 0]),
+        ]);
+
+        assert_eq!(
+            set.result(7, 0, &[0x1234_5678, 0, 0, 0])[0],
+            0xaabb_56cc,
+            "later entry must win only within its mask"
+        );
+    }
+
+    // Test: Look up different subleaves of a leaf that has subleaf-specific
+    //       entries.
+    // Expected: Each entry applies only to its own subleaf; other subleaves
+    //       return the default.
+    #[test]
+    fn indexed_leaf_matches_only_its_subleaf() {
+        let set = CpuidLeafSet::new(vec![
+            CpuidLeaf::new(0xb, [1, 1, 1, 1]).indexed(0),
+            CpuidLeaf::new(0xb, [2, 2, 2, 2]).indexed(1),
+        ]);
+
+        assert_eq!(set.result(0xb, 0, &DEFAULT), [1, 1, 1, 1]);
+        assert_eq!(set.result(0xb, 1, &DEFAULT), [2, 2, 2, 2]);
+        assert_eq!(set.result(0xb, 2, &DEFAULT), DEFAULT);
+    }
+
+    // Test: Look up a leaf whose entry accepts any subleaf.
+    // Expected: The entry applies to every subleaf of that leaf.
+    #[test]
+    fn unindexed_leaf_matches_every_subleaf() {
+        let set = CpuidLeafSet::new(vec![CpuidLeaf::new(1, [5, 6, 7, 8])]);
+
+        for ecx in [0, 1, 0xffff_ffff] {
+            assert_eq!(
+                set.result(1, ecx, &DEFAULT),
+                [5, 6, 7, 8],
+                "subleaf {ecx:#x}"
+            );
+        }
+    }
+}

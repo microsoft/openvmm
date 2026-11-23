@@ -400,3 +400,362 @@ impl<T: Synic> GuestMessagePort for DirectGuestMessagePort<T> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+
+    /// Records messages, completing them only while `ready` is set.
+    struct TestMessagePort {
+        ready: bool,
+        messages: Mutex<Vec<(Vec<u8>, bool)>>,
+    }
+
+    impl TestMessagePort {
+        fn new(ready: bool) -> Arc<Self> {
+            Arc::new(Self {
+                ready,
+                messages: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl MessagePort for TestMessagePort {
+        fn poll_handle_message(
+            &self,
+            _cx: &mut Context<'_>,
+            msg: &[u8],
+            trusted: bool,
+        ) -> Poll<()> {
+            if !self.ready {
+                return Poll::Pending;
+            }
+            self.messages.lock().push((msg.to_vec(), trusted));
+            Poll::Ready(())
+        }
+    }
+
+    #[derive(Default)]
+    struct TestEventPort {
+        flags: Mutex<Vec<u16>>,
+        /// If set, the port asks for a hypervisor fast path.
+        os_event: Option<pal_event::Event>,
+    }
+
+    impl TestEventPort {
+        fn with_os_event() -> Arc<Self> {
+            Arc::new(Self {
+                flags: Mutex::new(Vec::new()),
+                os_event: Some(pal_event::Event::new()),
+            })
+        }
+    }
+
+    impl EventPort for TestEventPort {
+        fn handle_event(&self, flag: u16) {
+            self.flags.lock().push(flag);
+        }
+
+        fn os_event(&self) -> Option<&pal_event::Event> {
+            self.os_event.as_ref()
+        }
+    }
+
+    /// Records the hypervisor fast paths that are currently installed.
+    #[derive(Default)]
+    struct TestSynic {
+        port_map: SynicPortMap,
+        next_fast_path: AtomicU64,
+        fast_paths: Mutex<Vec<(u64, u32)>>,
+    }
+
+    /// Removes its fast path from the synic when dropped.
+    struct FastPathHandle {
+        synic: Weak<TestSynic>,
+        id: u64,
+    }
+
+    impl Drop for FastPathHandle {
+        fn drop(&mut self) {
+            if let Some(synic) = self.synic.upgrade() {
+                synic.fast_paths.lock().retain(|&(id, _)| id != self.id);
+            }
+        }
+    }
+
+    impl Synic for TestSynic {
+        fn port_map(&self) -> &SynicPortMap {
+            &self.port_map
+        }
+
+        fn new_host_event_port(
+            self: Arc<Self>,
+            connection_id: u32,
+            _minimum_vtl: Vtl,
+            _event: &pal_event::Event,
+        ) -> Result<Option<Box<dyn Sync + Send>>, vmcore::synic::Error> {
+            let id = self.next_fast_path.fetch_add(1, Ordering::Relaxed);
+            self.fast_paths.lock().push((id, connection_id));
+            Ok(Some(Box::new(FastPathHandle {
+                synic: Arc::downgrade(&self),
+                id,
+            })))
+        }
+
+        fn post_message(&self, _vtl: Vtl, _vp: VpIndex, _sint: u8, _typ: u32, _payload: &[u8]) {
+            unreachable!()
+        }
+
+        fn new_guest_event_port(
+            self: Arc<Self>,
+            _vtl: Vtl,
+            _vp: u32,
+            _sint: u8,
+            _flag: u16,
+        ) -> Box<dyn GuestEventPort> {
+            unreachable!()
+        }
+
+        fn prefer_os_events(&self) -> bool {
+            false
+        }
+    }
+
+    // Test: Post a guest message and signal a guest event to registered ports
+    //       of the matching type.
+    // Expected: The message, with its trusted flag, reaches the message port,
+    //       and the event flag reaches the event port.
+    #[test]
+    fn hypercalls_dispatch_to_registered_ports() {
+        let synic = Arc::new(TestSynic::default());
+        let ports = SynicPorts::new(synic.clone());
+        let map = synic.port_map();
+        let message_port = TestMessagePort::new(true);
+        let event_port = Arc::new(TestEventPort::default());
+        let _message_handle = ports
+            .add_message_port(10, Vtl::Vtl0, message_port.clone())
+            .unwrap();
+        let _event_handle = ports
+            .add_event_port(20, Vtl::Vtl0, event_port.clone(), None)
+            .unwrap();
+
+        map.handle_post_message(Vtl::Vtl0, 10, true, b"hello")
+            .unwrap();
+        map.handle_signal_event(Vtl::Vtl0, 20, 7).unwrap();
+
+        assert_eq!(*message_port.messages.lock(), [(b"hello".to_vec(), true)]);
+        assert_eq!(*event_port.flags.lock(), [7]);
+    }
+
+    // Test: Post to an unregistered connection ID, and use each registered
+    //       connection ID with the hypercall for the other port type.
+    // Expected: Each is rejected with InvalidConnectionId and no port is
+    //       invoked.
+    #[test]
+    fn hypercalls_reject_unknown_or_mismatched_connection_ids() {
+        let synic = Arc::new(TestSynic::default());
+        let ports = SynicPorts::new(synic.clone());
+        let map = synic.port_map();
+        let message_port = TestMessagePort::new(true);
+        let event_port = Arc::new(TestEventPort::default());
+        let _message_handle = ports
+            .add_message_port(10, Vtl::Vtl0, message_port.clone())
+            .unwrap();
+        let _event_handle = ports
+            .add_event_port(20, Vtl::Vtl0, event_port.clone(), None)
+            .unwrap();
+
+        assert_eq!(
+            map.handle_post_message(Vtl::Vtl0, 99, false, b"x"),
+            Err(HvError::InvalidConnectionId)
+        );
+        assert_eq!(
+            map.handle_signal_event(Vtl::Vtl0, 99, 0),
+            Err(HvError::InvalidConnectionId)
+        );
+        assert_eq!(
+            map.handle_post_message(Vtl::Vtl0, 20, false, b"x"),
+            Err(HvError::InvalidConnectionId)
+        );
+        assert_eq!(
+            map.handle_signal_event(Vtl::Vtl0, 10, 0),
+            Err(HvError::InvalidConnectionId)
+        );
+
+        assert!(message_port.messages.lock().is_empty());
+        assert!(event_port.flags.lock().is_empty());
+    }
+
+    // Test: Post messages and signal events from VTLs below and at each
+    //       port's minimum VTL.
+    // Expected: Callers below the minimum VTL get OperationDenied and the
+    //       port is not invoked; callers at or above it are dispatched.
+    #[test]
+    fn hypercalls_enforce_minimum_vtl() {
+        let synic = Arc::new(TestSynic::default());
+        let ports = SynicPorts::new(synic.clone());
+        let map = synic.port_map();
+        let message_port = TestMessagePort::new(true);
+        let event_port = Arc::new(TestEventPort::default());
+        let _message_handle = ports
+            .add_message_port(10, Vtl::Vtl2, message_port.clone())
+            .unwrap();
+        let _event_handle = ports
+            .add_event_port(20, Vtl::Vtl1, event_port.clone(), None)
+            .unwrap();
+
+        for vtl in [Vtl::Vtl0, Vtl::Vtl1] {
+            assert_eq!(
+                map.handle_post_message(vtl, 10, false, b"low"),
+                Err(HvError::OperationDenied),
+                "{vtl:?}"
+            );
+        }
+        assert_eq!(
+            map.handle_signal_event(Vtl::Vtl0, 20, 1),
+            Err(HvError::OperationDenied)
+        );
+        assert!(message_port.messages.lock().is_empty());
+        assert!(event_port.flags.lock().is_empty());
+
+        map.handle_post_message(Vtl::Vtl2, 10, false, b"high")
+            .unwrap();
+        map.handle_signal_event(Vtl::Vtl1, 20, 2).unwrap();
+        map.handle_signal_event(Vtl::Vtl2, 20, 3).unwrap();
+        assert_eq!(*message_port.messages.lock(), [(b"high".to_vec(), false)]);
+        assert_eq!(*event_port.flags.lock(), [2, 3]);
+    }
+
+    // Test: Post a guest message to a message port that cannot accept it yet.
+    // Expected: The hypercall fails with InsufficientBuffers so the guest
+    //       retries, rather than reporting success for a dropped message.
+    #[test]
+    fn busy_message_port_reports_insufficient_buffers() {
+        let synic = Arc::new(TestSynic::default());
+        let ports = SynicPorts::new(synic.clone());
+        let map = synic.port_map();
+        let message_port = TestMessagePort::new(false);
+        let _message_handle = ports
+            .add_message_port(10, Vtl::Vtl0, message_port.clone())
+            .unwrap();
+
+        assert_eq!(
+            map.handle_post_message(Vtl::Vtl0, 10, false, b"x"),
+            Err(HvError::InsufficientBuffers)
+        );
+        assert!(message_port.messages.lock().is_empty());
+    }
+
+    // Test: Register a connection ID twice (as either port type), then drop
+    //       the first registration's handle and register the ID again.
+    // Expected: The duplicate is rejected with ConnectionIdInUse; dropping the
+    //       handle unregisters the port so guest hypercalls to it fail and the
+    //       ID can be reused.
+    #[test]
+    fn port_handle_owns_connection_id() {
+        let synic = Arc::new(TestSynic::default());
+        let ports = SynicPorts::new(synic.clone());
+        let message_port = TestMessagePort::new(true);
+
+        let handle = ports
+            .add_message_port(10, Vtl::Vtl0, message_port.clone())
+            .unwrap();
+        assert!(matches!(
+            ports.add_message_port(10, Vtl::Vtl0, TestMessagePort::new(true)),
+            Err(vmcore::synic::Error::ConnectionIdInUse(10))
+        ));
+        assert!(matches!(
+            ports.add_event_port(10, Vtl::Vtl0, Arc::new(TestEventPort::default()), None),
+            Err(vmcore::synic::Error::ConnectionIdInUse(10))
+        ));
+        synic
+            .port_map()
+            .handle_post_message(Vtl::Vtl0, 10, false, b"before")
+            .unwrap();
+
+        drop(handle);
+        assert_eq!(
+            synic
+                .port_map()
+                .handle_post_message(Vtl::Vtl0, 10, false, b"after"),
+            Err(HvError::InvalidConnectionId)
+        );
+        assert_eq!(*message_port.messages.lock(), [(b"before".to_vec(), false)]);
+
+        let event_port = Arc::new(TestEventPort::default());
+        let _handle = ports
+            .add_event_port(10, Vtl::Vtl0, event_port.clone(), None)
+            .unwrap();
+        synic
+            .port_map()
+            .handle_signal_event(Vtl::Vtl0, 10, 4)
+            .unwrap();
+        assert_eq!(*event_port.flags.lock(), [4]);
+    }
+
+    // Test: Drop a port handle after the synic that owns the port map has
+    //       already been torn down.
+    // Expected: The drop does nothing and does not panic, and the port itself
+    //       was released along with the map.
+    #[test]
+    fn port_handle_drop_after_synic_teardown_is_a_no_op() {
+        let synic = Arc::new(TestSynic::default());
+        let weak_synic = Arc::downgrade(&synic);
+        let ports = SynicPorts::new(synic);
+        let message_port = TestMessagePort::new(true);
+        let handle = ports
+            .add_message_port(10, Vtl::Vtl0, message_port.clone())
+            .unwrap();
+
+        drop(ports);
+        assert!(weak_synic.upgrade().is_none(), "synic still alive");
+        assert_eq!(Arc::strong_count(&message_port), 1);
+
+        drop(handle);
+    }
+
+    // Test: Register an event port that requests a hypervisor fast path, then
+    //       try to register a second such port on the same connection ID, and
+    //       finally drop the first port's handle.
+    // Expected: The duplicate is rejected with ConnectionIdInUse and its fast
+    //       path is torn down, leaving only the original's fast path and
+    //       routing guest events to the original port. Dropping the original
+    //       handle removes its fast path too.
+    #[test]
+    fn duplicate_event_port_does_not_leave_a_fast_path() {
+        let synic = Arc::new(TestSynic::default());
+        let ports = SynicPorts::new(synic.clone());
+        let original = TestEventPort::with_os_event();
+
+        let handle = ports
+            .add_event_port(10, Vtl::Vtl0, original.clone(), None)
+            .unwrap();
+        let original_fast_paths = synic.fast_paths.lock().clone();
+        assert_eq!(original_fast_paths.len(), 1);
+        assert_eq!(original_fast_paths[0].1, 10);
+
+        let duplicate = TestEventPort::with_os_event();
+        assert!(matches!(
+            ports.add_event_port(10, Vtl::Vtl0, duplicate.clone(), None),
+            Err(vmcore::synic::Error::ConnectionIdInUse(10))
+        ));
+        assert_eq!(
+            *synic.fast_paths.lock(),
+            original_fast_paths,
+            "duplicate registration changed the installed fast paths"
+        );
+
+        synic
+            .port_map()
+            .handle_signal_event(Vtl::Vtl0, 10, 5)
+            .unwrap();
+        assert_eq!(*original.flags.lock(), [5]);
+        assert!(duplicate.flags.lock().is_empty());
+
+        drop(handle);
+        assert!(synic.fast_paths.lock().is_empty());
+    }
+}
