@@ -114,14 +114,19 @@ impl Session {
     /// End the session.
     ///
     /// This puts the session in a state where it can accept another FUSE_INIT message. This allows
-    /// a virtiofs file system to be remounted after unmount.
+    /// a virtiofs file system to be remounted after unmount. A FUSE_INIT that arrives while the
+    /// session ends waits until it has ended.
     ///
     /// This invokes the file system's destroy callback if it hadn't been called already.
     pub fn destroy(&self) {
+        // Lock the negotiation first, as FUSE_INIT does, so that no FUSE_INIT
+        // negotiates until the file system is cleaned up and the session has
+        // ended.
+        let mut info = self.info.write();
         if self.initialized.swap(false, atomic::Ordering::AcqRel) {
             self.fs.destroy();
         }
-        *self.info.write() = SessionInfo::default();
+        *info = SessionInfo::default();
     }
 
     /// Perform the actual dispatch. This allows the caller to send an error reply if any operation
