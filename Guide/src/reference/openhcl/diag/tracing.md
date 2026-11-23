@@ -8,6 +8,35 @@ different sorts of traces from OpenHCL.
 We suggest starting here, before exploring some of the other options presented
 on this page.
 
+## Investigating SNP unrecoverable exception exits
+
+For `HvMessageTypeUnrecoverableException`, OpenHCL emits rate-limited error
+events with the prefix `SNP unrecoverable exception`. Start collecting traces
+before reproducing the failure, and retain all events for the affected VP and
+VTL, not just the later `unknown synthetic exit` message.
+
+The exit summary records the Hyper-V message header, payload-length validity,
+SEV exit code, guest busy state, and interrupt-offload state. Additional events
+record the VMSA registers, pending and interrupted event delivery, the untrusted
+Hyper-V intercept header, and the message payload. These are captured before SEV
+exit handling can reinject an event, emulate an instruction, or return an error.
+The guest busy bit has already been set to protect the VMSA; `was_busy` records
+its value on return from the kernel.
+
+```admonish warning
+Register and payload events contain guest-confidential data and are filtered
+out unless confidential debugging is enabled in the OpenHCL image. Use an
+`enable_debug` image only with test workloads, and protect the resulting traces.
+See [CVM restrictions](./cvm_restrictions.md).
+```
+
+The Hyper-V message is untrusted and may describe a different state from the
+hardware VMSA. An invalid payload length disables typed intercept decoding;
+the payload dump is bounded by the message buffer. Kernel interrupt offload can
+also process multiple exits before returning to OpenHCL, so these events
+describe the final userspace-visible exit, not the complete exit history.
+Correlate them with host hypervisor and OpenHCL kernel diagnostics when needed.
+
 ## Enabling serial logging for OpenHCL
 
 The OpenHCL startup binary accepts a commmand line argument `OPENVMM_LOG` that can be used to enable global or discrete tracing levels.
