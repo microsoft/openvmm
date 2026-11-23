@@ -263,6 +263,10 @@ pub trait Fuse {
     /// drops `FUSE_INIT_EXT`, which discards `info.want2`. Otherwise, the session fails
     /// `FUSE_INIT` with `EIO` and stays uninitialized. The session keeps the client's version and
     /// capabilities, even if `init` replaces `info`.
+    ///
+    /// Each `FUSE_INIT` negotiates afresh, from the session's defaults and the client's offer, and
+    /// the session adopts the negotiation only once it has sent its reply: when the reply cannot
+    /// be sent, the session stays uninitialized, without a negotiation.
     fn init(&self, _info: &mut SessionInfo) {}
 
     /// Opens a directory.
