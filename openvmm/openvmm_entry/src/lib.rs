@@ -36,6 +36,7 @@ use cli_args::EndpointConfigCli;
 use cli_args::IgvmPersonalityCli;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionCondition;
+use cli_args::RestoreKindCli;
 use cli_args::SerialConfigCli;
 use cli_args::TpmVersionCli;
 use cli_args::UefiConsoleModeCli;
@@ -3058,9 +3059,19 @@ async fn run_control_inner(
     let vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
-        let (shared_memory, saved_state) = if let Some(snapshot_dir) = &opt.restore_snapshot {
-            let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
-            (Some(fd), Some(state_msg))
+        let (shared_memory, restore) = if let Some(snapshot_dir) = &opt.restore_snapshot {
+            let (fd, saved_state) = prepare_snapshot_restore(snapshot_dir, &opt)?;
+            let kind = match opt
+                .restore_kind
+                .context("--restore-snapshot requires --restore-kind")?
+            {
+                RestoreKindCli::SameVm => openvmm_defs::worker::RestoreKind::SameVm,
+                RestoreKindCli::Clone => openvmm_defs::worker::RestoreKind::Clone,
+            };
+            (
+                Some(fd),
+                Some(openvmm_defs::worker::VmRestore { saved_state, kind }),
+            )
         } else {
             let shared_memory = opt
                 .memory_backing_file()
@@ -3080,7 +3091,7 @@ async fn run_control_inner(
                 None => openvmm_helpers::hypervisor::choose_hypervisor()?,
             },
             cfg: vm_config,
-            saved_state,
+            restore,
             shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
@@ -3328,7 +3339,12 @@ mod tests {
                     let mut args = vec!["openvmm", "--single-process"];
                     args.extend(&boot);
                     if restore {
-                        args.extend(["--restore-snapshot", snapshot.to_str().unwrap()]);
+                        args.extend([
+                            "--restore-snapshot",
+                            snapshot.to_str().unwrap(),
+                            "--restore-kind",
+                            "same-vm",
+                        ]);
                     }
                     let opt = Options::try_parse_from(&args).unwrap();
                     let mesh = VmmMesh::new(&driver, true).unwrap();

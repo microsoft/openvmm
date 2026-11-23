@@ -16,6 +16,8 @@ use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
 use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::worker::RestoreKind;
+use openvmm_defs::worker::VmRestore;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use petri_artifacts_common::tags::MachineArch;
@@ -37,19 +39,24 @@ impl PetriVmConfigOpenVmm {
 
     /// Launch a fresh worker that restores from `saved_state`, mirroring
     /// production `--restore-snapshot`. Exercises the path the in-process
-    /// pulse (`verify_save_restore`) cannot reach.
+    /// pulse (`verify_save_restore`) cannot reach. The restored VM is the VM
+    /// that was saved, not a clone of it.
     pub(crate) async fn run_restore(
         self,
         saved_state: &[u8],
     ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         let saved_state: ProtobufMessage = mesh::payload::decode(saved_state)
             .context("failed to decode serialized saved state")?;
-        self.run_core_inner(Some(saved_state)).await
+        self.run_core_inner(Some(VmRestore {
+            saved_state,
+            kind: RestoreKind::SameVm,
+        }))
+        .await
     }
 
     async fn run_core_inner(
         self,
-        saved_state: Option<ProtobufMessage>,
+        restore: Option<VmRestore>,
     ) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         let has_guest_shares = !self.guest_shares.is_empty();
         let Self {
@@ -197,7 +204,7 @@ impl PetriVmConfigOpenVmm {
             );
         }
 
-        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory, saved_state)
+        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory, restore)
             .await
             .context("failed to launch vm worker")?;
 

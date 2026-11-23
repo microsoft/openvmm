@@ -760,6 +760,7 @@ struct RestoreParameters {
     /// expectations and the host.
     manifest: openvmm_helpers::snapshot::SnapshotManifest,
     state_bytes: Vec<u8>,
+    kind: openvmm_defs::worker::RestoreKind,
 }
 
 struct PreparedRestore {
@@ -780,6 +781,7 @@ fn prepare_snapshot_restore(
         source_dir,
         manifest,
         state_bytes,
+        kind: _,
     } = restore;
     openvmm_helpers::snapshot::validate_manifest(
         manifest,
@@ -1052,6 +1054,16 @@ impl VmService {
         &mut self,
         request: vmservice::RestoreVmRequest,
     ) -> anyhow::Result<vmservice::RestoreVmResponse> {
+        let kind = match request.kind() {
+            vmservice::RestoreKind::Unspecified => {
+                return Err(anyhow!(Code::InvalidArgument).context(format!(
+                    "unspecified or invalid restore kind {}",
+                    request.kind
+                )));
+            }
+            vmservice::RestoreKind::SameVm => openvmm_defs::worker::RestoreKind::SameVm,
+            vmservice::RestoreKind::Clone => openvmm_defs::worker::RestoreKind::Clone,
+        };
         let source_dir = PathBuf::from(request.source_dir);
         if source_dir.as_os_str().is_empty() {
             return Err(anyhow!(Code::InvalidArgument).context("missing snapshot source directory"));
@@ -1094,6 +1106,7 @@ impl VmService {
                     source_dir,
                     manifest,
                     state_bytes,
+                    kind,
                 }),
             )
             .await?
@@ -1583,13 +1596,16 @@ impl VmService {
             .await
             .context("spawning vm process failed")?;
 
-        let (shared_memory, saved_state, active_memory_backing_file, snapshot_id) =
+        let (shared_memory, worker_restore, active_memory_backing_file, snapshot_id) =
             if let Some(restore) = &restore {
                 let prepared =
                     prepare_snapshot_restore(restore, config_mem_size, config_proc_count)?;
                 (
                     Some(prepared.shared_memory),
-                    Some(prepared.saved_state),
+                    Some(openvmm_defs::worker::VmRestore {
+                        saved_state: prepared.saved_state,
+                        kind: restore.kind,
+                    }),
                     Some(restore.source_dir.join("memory.bin")),
                     Some(prepared.snapshot_id),
                 )
@@ -1612,7 +1628,7 @@ impl VmService {
                 VmWorkerParameters {
                     hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
                     cfg: config,
-                    saved_state,
+                    restore: worker_restore,
                     shared_memory,
                     rpc: recv,
                     notify: notify_send,

@@ -345,8 +345,11 @@ impl Worker for VmWorker {
             shared_memory,
         ))?;
         let saved_state = parameters
-            .saved_state
-            .map(|m| m.parse())
+            .restore
+            .map(|restore| {
+                tracing::info!(kind = ?restore.kind, "restoring VM from saved state");
+                restore.saved_state.parse()
+            })
             .transpose()
             .context("failed to decode saved state")?;
 

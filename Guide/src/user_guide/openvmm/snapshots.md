@@ -68,7 +68,9 @@ Use `shutdown` to exit OpenVMM after saving.
 
 ## Restoring a snapshot
 
-To restore, pass the snapshot directory with `--restore-snapshot`:
+To restore, pass the snapshot directory with `--restore-snapshot`, and say
+with `--restore-kind` whether the restored VM is the VM that was saved
+(`same-vm`) or a new copy of it (`clone`):
 
 ```bash
 cargo run -- \
@@ -78,8 +80,15 @@ cargo run -- \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M \
   --processors 4 \
-  --restore-snapshot path/to/snapshot-dir
+  --restore-snapshot path/to/snapshot-dir \
+  --restore-kind same-vm
 ```
+
+Use `same-vm` when the VM continues where it left off, for example after it
+was saved to disk to free host resources. Use `clone` when the restored VM is
+a new copy, for example one of several VMs created from a template snapshot,
+or a rollback to an earlier snapshot. `--restore-kind` is required with
+`--restore-snapshot`.
 
 `--restore-snapshot` automatically opens `memory.bin` from the snapshot
 directory, so `file=...` should not be specified in `--memory` (the two

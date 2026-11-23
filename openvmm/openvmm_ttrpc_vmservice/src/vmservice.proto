@@ -929,6 +929,18 @@ message SaveVMResponse {
     string snapshot_id = 1;
 }
 
+// Whether the restored VM is the VM that was saved, or a clone of it.
+enum RestoreKind {
+    // Rejected: the caller must choose.
+    RESTORE_KIND_UNSPECIFIED = 0;
+    // The same VM that was saved, continuing where it left off (for example,
+    // guest-transparent hibernation).
+    RESTORE_KIND_SAME_VM = 1;
+    // A new copy of the saved VM (for example, a VM created from a template
+    // snapshot, or a rollback to an earlier snapshot).
+    RESTORE_KIND_CLONE = 2;
+}
+
 message RestoreVMRequest {
     string source_dir = 1;
     // Device and boot configuration must be compatible with the snapshot.
@@ -939,6 +951,8 @@ message RestoreVMRequest {
     optional string expected_snapshot_id = 3;
     // Resume the restored VM immediately. Otherwise it remains paused.
     bool resume = 4;
+    // Required. Whether the restored VM is the saved VM or a clone of it.
+    RestoreKind kind = 5;
 }
 
 message RestoreVMResponse {
