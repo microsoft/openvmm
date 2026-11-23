@@ -292,10 +292,11 @@ fn open_microvm_volume(
     Ok((volume, root_inode, root_stat))
 }
 
-/// Returns the error of a save whose nodes `first` and `second` name one host
-/// object, by one name or by two, which a restore cannot tell apart, as after
-/// the host gave the inode number of an object that the guest holds to another
-/// object of its type.
+/// Returns the error of a save whose nodes `first` and `second` share a name or
+/// the dedup key of one host object in one volume, which a restore cannot tell
+/// apart, as after the host gave the inode number of an object that the guest
+/// holds to an object of another type, and then to one of the held object's
+/// type again, while the guest looked up each.
 fn nodes_of_one_object(first: u64, second: u64) -> anyhow::Error {
     anyhow::anyhow!(
         "nodes {} and {} name one host object, as after the host replaced an object that \
@@ -534,8 +535,8 @@ impl VirtioFs {
             let mut node_ids = HashMap::with_capacity(inodes.inodes_by_node_id.values.len());
             let mut alias_count = 0usize;
             let mut alias_bytes = 0usize;
-            // A restore keys the nodes by their names and by their objects, so
-            // no two nodes may share either.
+            // A restore keys the nodes of each volume by their names and by
+            // their dedup keys, so no two nodes of one volume may share either.
             let mut alias_nodes = HashMap::new();
             let mut object_nodes = HashMap::new();
             for (&node_id, inode) in &inodes.inodes_by_node_id.values {
