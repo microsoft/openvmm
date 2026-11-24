@@ -20,6 +20,10 @@ debug worker. e.g., `--gdb 9001`
 
 To pause the VM until the debugger has been attached, pass `--paused` at startup.
 
+Attaching a debugger to a paused VM, or interrupting it, does not change the
+VM's saved state, since the VM does not run. Interrupting a running VM halts
+it, and a snapshot taken while it is halted keeps that halt.
+
 ### OpenHCL
 
 1. Pass the `OPENHCL_GDBSTUB=1` `OPENHCL_GDBSTUB_PORT=<gdbstub port>` parameters to enable gdbstub. e.g., `Set-VmFirmwareParameters -Name UhVM -CommandLine OPENHCL_GDBSTUB=1 OPENHCL_GDBSTUB_PORT=5900`.
