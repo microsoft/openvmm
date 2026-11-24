@@ -389,3 +389,45 @@ async fn snapshot_rollback_requires_a_boundary(
     assert_eq!(partition_unit_state(&vm).await?, "running");
     vm.teardown().await
 }
+
+/// The VM worker stops a VM whose guest does not acknowledge its post-restore
+/// input gate within the gate's timeout: a guest that starts and then requests
+/// a snapshot, its acknowledgement, only after the timeout never reaches a
+/// snapshot boundary, since the worker has torn the VM down by then. The
+/// worker gates the first start of a cold boot as it gates a restore's, so the
+/// test arms the gate of a cold boot.
+#[openvmm_test_no_agent(linux_direct_x64)]
+async fn restore_gate_stops_a_late_acknowledgement(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    /// The gate's timeout, within which the guest starts.
+    const GATE_TIMEOUT: Duration = Duration::from_secs(5);
+    const READY: &[u8] = b"GATE-GUEST-READY\n";
+
+    let mut vm = run_snapshot_controller_guest(
+        config.modify_backend(|config| config.with_microvm_restore_gate(GATE_TIMEOUT)),
+        &format!(
+            "{}sleep {}\n{SNAPSHOT_REQUEST}",
+            portb_output(READY)?,
+            2 * GATE_TIMEOUT.as_secs(),
+        ),
+    )
+    .await?;
+
+    wait_for_guest_output(
+        &mut vm,
+        READY,
+        "the guest did not start within its gate's timeout",
+    )
+    .await?;
+    let boundary = CancelContext::new()
+        .with_timeout(BOOT_TIMEOUT)
+        .until_cancelled(vm.backend().wait_for_microvm_snapshot_boundary())
+        .await
+        .context("the VM worker kept the VM past its gate's timeout")?;
+    assert!(
+        boundary.is_err(),
+        "the guest's acknowledgement after the gate's timeout reached a snapshot boundary"
+    );
+    vm.teardown().await
+}

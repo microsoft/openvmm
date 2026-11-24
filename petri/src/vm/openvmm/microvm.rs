@@ -36,6 +36,7 @@ use petri_artifacts_common::tags::MachineArch;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use std::path::Path;
 use std::sync::OnceLock;
+use std::time::Duration;
 use unix_socket::UnixStream;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
@@ -53,6 +54,9 @@ pub(super) struct RuntimeResources {
     /// The VM worker's ends of the snapshot boundary channels, until the
     /// worker launches.
     worker_snapshot_channels: Option<SnapshotBoundaryChannels>,
+    /// The timeout of the VM worker's post-restore input gate, when the test
+    /// arms the gate, until the worker launches.
+    restore_gate_timeout: Option<Duration>,
 }
 
 /// The VM worker's ends of the channels of guest-requested snapshot
@@ -97,6 +101,23 @@ impl PetriVmConfigOpenVmm {
         resources.worker_snapshot_channels = Some(SnapshotBoundaryChannels { requests, ready });
         self
     }
+
+    /// Arms the VM worker's post-restore input gate with `timeout`, as a gated
+    /// microVM restore does. The worker gates the first start of a cold boot
+    /// as it gates a restore's: it starts the VM with host input gated, and
+    /// stops the VM unless the guest acknowledges the gate, with a snapshot
+    /// request, within `timeout` of that start. The worker holds the
+    /// acknowledgement at a snapshot boundary, and only the boundary's release
+    /// releases host input, so the test must be the VM's snapshot controller,
+    /// as [`Self::with_microvm_snapshot_boundary`] makes it.
+    pub fn with_microvm_restore_gate(mut self, timeout: Duration) -> Self {
+        self.resources
+            .microvm
+            .as_mut()
+            .expect("the restore gate requires a microVM with its portb console")
+            .restore_gate_timeout = Some(timeout);
+        self
+    }
 }
 
 /// Takes the VM worker's ends of the snapshot boundary channels of
@@ -106,6 +127,15 @@ pub(super) fn take_worker_snapshot_channels(
     resources: &mut PetriVmResourcesOpenVmm,
 ) -> Option<SnapshotBoundaryChannels> {
     resources.microvm.as_mut()?.worker_snapshot_channels.take()
+}
+
+/// Takes the timeout of the post-restore input gate of
+/// [`PetriVmConfigOpenVmm::with_microvm_restore_gate`], for the worker's
+/// launch.
+pub(super) fn take_worker_restore_gate_timeout(
+    resources: &mut PetriVmResourcesOpenVmm,
+) -> Option<Duration> {
+    resources.microvm.as_mut()?.restore_gate_timeout.take()
 }
 
 pub(super) struct PortbSerial {
@@ -438,6 +468,7 @@ pub(super) fn configure_serial(
                 unread: Vec::new(),
                 snapshot_boundaries: None,
                 worker_snapshot_channels: None,
+                restore_gate_timeout: None,
             },
         }),
     })

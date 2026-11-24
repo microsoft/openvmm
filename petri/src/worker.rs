@@ -27,6 +27,7 @@ impl Worker {
         shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
         saved_state: Option<mesh::payload::message::ProtobufMessage>,
         microvm_snapshot_boundary: Option<crate::openvmm::microvm::SnapshotBoundaryChannels>,
+        restore_gate_timeout: Option<std::time::Duration>,
     ) -> anyhow::Result<(Self, mesh::Receiver<HaltReason>)> {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
@@ -50,7 +51,7 @@ impl Worker {
             snapshot_ready,
             restore_time: None,
             restore_ready_sink: None,
-            restore_gate_timeout: None,
+            restore_gate_timeout,
             restore_vp_count: None,
             rpc: rpc_recv,
             notify: notify_send,
