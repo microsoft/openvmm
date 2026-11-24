@@ -240,10 +240,11 @@ disconnected.
 MicroVM orchestrators can add `--restore-ready-path <PATH>`. OpenVMM connects
 to an existing Unix domain socket on Linux or named pipe on Windows and writes
 `OPENVMM_RESTORE_READY_V1\n` after restore validation, attachment resolution,
-and state-unit startup. Ungated restores publish it before releasing a restored
-vCPU. Gated microVM restores publish it after the guest acknowledges repair and
-host input is re-enabled, while the restored vCPU remains stopped. The event
-is single-use and is not serialized.
+and state-unit startup, and before it releases a restored vCPU. Gated microVM
+restores publish it at the same point, with host input still gated: the
+guest's post-restore repair and its acknowledgement follow the event, so the
+event does not show that the guest has repaired its state or that host input
+reaches it. The event is single-use and is not serialized.
 Failure to write and flush it stops the started units and fails restore without
 releasing gated input. The peer must accept and read while resume is in
 progress; on Windows, flush completion waits until the named-pipe peer consumes
@@ -485,8 +486,8 @@ does not shift the emulated devices' timers relative to the TSC. The RTC
 keeps its time at the cut, and its alarm, periodic, and update interrupts
 keep their deadlines in VM time, so they keep their phase across a restore.
 Snapshots without the explicit capture-time `maxcpus` opt-in reject a restore
-target. This is not a post-readiness hotplug API and cannot add VPs absent
-from the saved topology.
+target. This is not a runtime hotplug API and cannot add VPs absent from the
+saved topology.
 
 ```admonish warning
 Snapshots do not contain or validate checksums of `state.bin`, `memory.bin`,
