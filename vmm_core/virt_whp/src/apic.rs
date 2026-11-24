@@ -258,7 +258,18 @@ impl WhpProcessor<'_> {
                         startup_suspend = false;
                         halted = true;
                     }
-                    vp::MpState::Idle => unimplemented!(),
+                    // Only the hypervisor's APIC suspends a VP in its `rdmsr`
+                    // of `HV_X64_MSR_GUEST_IDLE`, so this state comes from a
+                    // partition with that APIC, such as one that captured a
+                    // snapshot. An interrupt wakes an idle VP even with its
+                    // interrupts disabled, which a VP halted here would not
+                    // take, so refuse it before changing anything, rather than
+                    // restore it as halted.
+                    vp::MpState::Idle => {
+                        return Err(Error::UnsupportedState(
+                            "the Hyper-V idle state with the user-mode APIC",
+                        ));
+                    }
                 }
 
                 lapic.startup_suspend = startup_suspend;

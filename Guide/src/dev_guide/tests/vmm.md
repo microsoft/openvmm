@@ -89,6 +89,10 @@ that was saved and into a VP of a new partition. Each registers by hand, since
 it builds a second partition, and the wake-up, an NMI or a fixed interrupt, also
 reaches the restored VP before it first runs, as the vector of a LAPIC timer
 that expired during a snapshot's downtime does.
+WHP's user-mode APIC cannot hold the Hyper-V idle state, which only the
+hypervisor's APIC gives a VP, so `user_mode_apic_refuses_an_idle_vp_hv1`
+checks that a restore of an idle activity into a partition with the user-mode
+APIC fails, and leaves the activity as it was.
 A guest can send itself an SMI, and KVM takes the VP into SMM, where it saves
 the state that the SMI interrupts into the RAM at SMBASE through its SMM address
 space, and marks the whole VM dead when no RAM is mapped there. The KVM-only
