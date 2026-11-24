@@ -143,8 +143,10 @@ impl<F: AsyncFile> VhdxFile<F> {
     /// Set or clear sector bitmap bits for a range of sectors.
     ///
     /// For each sector in the virtual range, sets (or clears) the corresponding
-    /// bit in the sector bitmap. The bitmap page is acquired in Modify mode
-    /// and written through to disk on release.
+    /// bit in the sector bitmap. PartiallyPresent allocation has already
+    /// established safe payload contents and their BAT flush dependency.
+    /// Loaded partial blocks are assumed to satisfy the same invariant,
+    /// matching the reference implementation.
     ///
     /// # Arguments
     ///
@@ -203,21 +205,19 @@ impl<F: AsyncFile> VhdxFile<F> {
                 .await
                 .map_err(VhdxIoErrorInner::SectorBitmapCache)?;
 
-            if full_page {
-                // Overwrite entire page without reading existing data.
-                // Overwriting pages are zero-initialized by the cache.
-                if set || !guard.is_overwriting() {
-                    guard.fill(if set { 0xFF } else { 0x00 });
-                }
+            // Initialization must log zeros even when a read sees zeros:
+            // recycled storage may contain unflushed writes over stale data.
+            let needs_change = if !set || full_page {
+                true
             } else {
-                // Check via read-only Deref whether any bits actually differ.
-                // If not, DerefMut is never called, the page stays clean,
-                // and no write-back occurs.
                 let bits = BitSlice::<u8, Lsb0>::from_slice(&*guard);
                 let window = &bits[start_bit as usize..bits_in_this_page as usize];
-                let needs_change = if set { !window.all() } else { window.any() };
-
-                if needs_change {
+                !window.all()
+            };
+            if needs_change {
+                if full_page {
+                    guard.fill(if set { 0xFF } else { 0x00 });
+                } else {
                     let bits_mut = BitSlice::<u8, Lsb0>::from_slice_mut(&mut *guard);
                     bits_mut[start_bit as usize..bits_in_this_page as usize].fill(set);
                 }
