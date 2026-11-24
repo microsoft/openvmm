@@ -5089,6 +5089,7 @@ dependencies = [
  "inspect",
  "missing_dev_resources",
  "pci_core",
+ "test_with_tracing",
  "vm_resource",
  "vmcore",
 ]
