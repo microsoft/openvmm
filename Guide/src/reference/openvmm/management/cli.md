@@ -542,19 +542,19 @@ describes the source definitions.
 * `--restore-ready-path <PATH>`: Connect to an existing Unix domain socket on
   Linux or a `//./pipe/...` named pipe on Windows and write exactly
   `OPENVMM_RESTORE_READY_V1\n` once all restored state, required attachments,
-  and execution-owned workers are ready. Ungated restores flush the event
-  before releasing the restored vCPU. Gated microVM restores flush it after the
-  guest acknowledges post-restore repair and external input is re-enabled,
-  while the restored vCPU remains stopped.
+  and execution-owned workers are ready, and flush it before releasing a
+  restored vCPU. Gated microVM restores flush it while host input is still
+  gated: the guest's post-restore repair and its acknowledgement follow the
+  event.
   It is valid only with `--restore-snapshot` and is process-local; it is not
   saved in the snapshot. A connection, write, or flush failure aborts startup
   and stops the VM. The peer must accept and read the event while startup is
   in progress; Windows flush completion waits for the named-pipe peer to
   consume the complete frame.
-* `--restore-processors <COUNT>`: For an opt-in microVM snapshot, bring the
-  contiguous VP prefix `0..COUNT-1` online before restore readiness. The
-  snapshot's manifest VP count remains immutable capacity and must still match
-  `--processors`. The target must be 1, 2, 4, or 8 and satisfy
+* `--restore-processors <COUNT>`: For an opt-in microVM snapshot, have the
+  guest's post-restore repair bring the contiguous VP prefix `0..COUNT-1`
+  online. The snapshot's manifest VP count remains immutable capacity and must
+  still match `--processors`. The target must be 1, 2, 4, or 8 and satisfy
   `boot-online <= target <= capacity`. This option sets the restore packet's
   online-VP target and implies the post-restore gate. Snapshots without
   activation metadata reject it; platform snapshots opt in as untiered

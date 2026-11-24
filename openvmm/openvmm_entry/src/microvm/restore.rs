@@ -104,7 +104,8 @@ fn restore_console_contract_attachment<'a>(
 pub(crate) struct MicrovmRestore {
     /// The authoritative machine contract of the snapshot being restored.
     pub(crate) machine_contract: Option<SnapshotMachineContract>,
-    /// Whether the guest must complete post-restore repair before readiness.
+    /// Whether the restore gates host input until the guest completes
+    /// post-restore repair and acknowledges the restore.
     pub(crate) gate_required: bool,
     /// Whether the restore packet carries the network settings of the
     /// restore's policy, which the guest applies before it acknowledges the

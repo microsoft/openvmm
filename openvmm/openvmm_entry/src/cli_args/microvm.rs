@@ -284,7 +284,8 @@ impl From<MachineProfileCli> for MachineProfile {
 /// Options of the microVM machine profile.
 #[derive(clap::Args)]
 pub struct MicrovmCli {
-    /// Bring this contiguous prefix of capacity VPs online before restore readiness.
+    /// Have the guest's post-restore repair bring this contiguous prefix of
+    /// capacity VPs online.
     #[clap(long, value_name = "COUNT", requires = "restore_snapshot")]
     pub restore_processors: Option<u32>,
 
