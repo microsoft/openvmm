@@ -28,6 +28,8 @@ pub struct DebuggerState {
     /// Whether the debugger holds the VPs stopped without a halt reason, as it
     /// does from a break into the stopped unit until it resumes them.
     holds_vps: bool,
+    /// Whether the debugger has set the VPs' debug state since it attached.
+    debug_state_set: bool,
 }
 
 impl DebuggerState {
@@ -40,6 +42,7 @@ impl DebuggerState {
             halt_reported: false,
             halt_withheld: false,
             holds_vps: false,
+            debug_state_set: false,
         }
     }
 
@@ -106,7 +109,12 @@ impl PartitionUnitRunner {
             DebugRequest::Detach => {
                 tracing::info!("debugger detached");
                 self.debugger_state.debug_notify_halt = None;
-                if let Err(err) = self.vp_set.clear_debug_state().await {
+                // Clear the VPs' debug state only if the debugger set it, since
+                // backends that do not support it, such as KVM's and OpenHCL's
+                // on ARM64, panic when asked to clear it.
+                if std::mem::take(&mut self.debugger_state.debug_state_set)
+                    && let Err(err) = self.vp_set.clear_debug_state().await
+                {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "failed to clear debug state"
@@ -159,6 +167,7 @@ impl PartitionUnitRunner {
                 }
             }
             DebugRequest::SetDebugState { vp, state } => {
+                self.debugger_state.debug_state_set = true;
                 if let Err(err) = self.vp_set.set_debug_state(VpIndex::new(vp), state).await {
                     tracing::error!(
                         vp,
