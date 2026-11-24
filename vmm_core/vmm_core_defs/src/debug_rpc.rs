@@ -19,6 +19,10 @@ pub enum DebugRequest {
     /// The debugger has been attached.
     Attach,
     /// The debugger has been detached.
+    ///
+    /// The VM clears the session's debug state, and reports its halts to its
+    /// client again, starting with a recorded halt that went to the debugger
+    /// instead.
     Detach,
     /// Resume the VM, responding with a [`DebugStopReason`] once the VM encounters a stop condition (e.g: breakpoint hit)
     Resume {
@@ -29,7 +33,7 @@ pub enum DebugRequest {
     /// A running VM halts, which reports the stop to the pending
     /// [`Self::Resume`]. A paused VM is reported stopped at once instead, and
     /// its VPs stay stopped for the debugger, without a halt in the VM's saved
-    /// state, until the next [`Self::Resume`].
+    /// state, until the next [`Self::Resume`] or [`Self::Detach`].
     Break,
     /// Sets the hardware debugger state for a VP.
     SetDebugState { vp: u32, state: DebugState },

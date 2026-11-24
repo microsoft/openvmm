@@ -476,7 +476,7 @@ impl PartitionUnitRunner {
 
         // Report the halt to the debugger.
         let reported = cfg_select! {
-            feature = "gdb" => self.debugger_state.report_halt_to_debugger(&reason),
+            feature = "gdb" => self.debugger_state.route_halt(&reason),
             _ => false,
         };
 
@@ -1010,6 +1010,7 @@ mod save_restore {
 
         #[cfg(feature = "gdb")]
         mod debugger {
+            use super::halt;
             use super::save;
             use super::state;
             use super::test_runner;
@@ -1115,6 +1116,50 @@ mod save_restore {
                     assert!(runner.needs_reset);
                     assert!(client.try_recv().is_err());
                 }
+            }
+
+            #[test]
+            fn detach_hands_the_halt_that_the_debugger_took_to_the_client() {
+                let (mut runner, vp_halt, mut client) = test_runner();
+                block_on(StateUnit::start(&mut runner));
+
+                // A break into the running VM halts it for the debugger, and
+                // the client does not hear of it...
+                let stop = attach(&mut runner);
+                assert!(matches!(reported(stop), Some(DebugStopReason::Break)));
+                assert!(client.try_recv().is_err());
+
+                // ...until the debugger detaches without resuming the VM.
+                debug(&mut runner, DebugRequest::Detach);
+                assert_eq!(
+                    client.try_recv().unwrap(),
+                    HaltReason::DebugBreak { vp: None }
+                );
+
+                // The client resumes the VM, which powers off, and the next
+                // debugger to attach is told so, without clearing the halt.
+                assert!(runner.clear_halt());
+                halt(&mut runner, &vp_halt, &mut client, HaltReason::PowerOff);
+                let stop = attach(&mut runner);
+                assert!(matches!(reported(stop), Some(DebugStopReason::PowerOff)));
+                assert_eq!(runner.halt_reason, Some(HaltReason::PowerOff));
+            }
+
+            #[test]
+            fn detach_leaves_the_client_a_halt_that_it_already_has() {
+                let (mut runner, vp_halt, mut client) = test_runner();
+                halt(&mut runner, &vp_halt, &mut client, HaltReason::PowerOff);
+
+                // A debugger attaches to the halted VM, is told of the halt,
+                // and detaches.
+                let stop = attach(&mut runner);
+                assert!(matches!(reported(stop), Some(DebugStopReason::PowerOff)));
+                debug(&mut runner, DebugRequest::Detach);
+
+                // The VM stays halted, and the client, which has heard of the
+                // halt, does not hear of it again.
+                assert_eq!(runner.halt_reason, Some(HaltReason::PowerOff));
+                assert!(client.try_recv().is_err());
             }
 
             #[test]
