@@ -324,6 +324,17 @@ impl virt::Hypervisor for Kvm {
                 return Err(KvmError::Vtl2NotSupported);
             }
 
+            // `build` claims a SynIC route for each VP in the routing table,
+            // which must hold them all: refuse more VPs here, before creating
+            // the VM, rather than panic there after creating every VP.
+            let vp_count = config.processor_topology.vp_count();
+            if vp_count > MAX_SYNIC_VPS {
+                return Err(KvmError::TooManyVps {
+                    vp_count,
+                    max: MAX_SYNIC_VPS,
+                });
+            }
+
             let split_u128 = |x: u128| -> [u32; 4] {
                 let bytes = x.to_le_bytes();
                 [
@@ -669,7 +680,8 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         }
 
         if self.config.hv_config.is_some() {
-            // Setup GSI routes for signaling the synic.
+            // Setup GSI routes for signaling the synic. `new_partition`
+            // refused more VPs than the table has routes for.
             // TODO: set this up on every SINT, not just the VMBus one.
             for vp in self.config.processor_topology.vps() {
                 let index = vp.vp_index.index();
@@ -929,6 +941,11 @@ fn check_xsave_layout(
 }
 
 const VMBUS_BASE_GSI: u32 = virt::irqcon::IRQ_LINES as u32;
+
+/// The most VPs that a partition with Hyper-V enlightenments can have: the
+/// SynIC of each VP has a route of its own, the GSI [`VMBUS_BASE_GSI`] plus
+/// its VP index, which must be in the routing table.
+const MAX_SYNIC_VPS: u32 = crate::gsi::NUM_GSIS as u32 - VMBUS_BASE_GSI;
 
 #[derive(Debug, Inspect)]
 pub struct KvmVpInner {

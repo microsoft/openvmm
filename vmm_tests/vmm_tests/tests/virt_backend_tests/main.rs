@@ -37,6 +37,8 @@ cfg_select! {
         mod time;
         mod unsupported_state;
         #[cfg(target_os = "linux")]
+        mod vp_count;
+        #[cfg(target_os = "linux")]
         mod xsave;
     }
     _ => {}
