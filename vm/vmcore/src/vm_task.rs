@@ -301,7 +301,7 @@ impl Driver for VmTaskDriver {
     }
 
     #[cfg(target_os = "linux")]
-    fn io_uring_probe(&self, opcode: u8) -> bool {
+    fn io_uring_probe(&self, opcode: u8) -> std::io::Result<bool> {
         self.inner.driver().io_uring_probe(opcode)
     }
 
@@ -582,7 +582,7 @@ pub mod thread {
         }
 
         #[cfg(target_os = "linux")]
-        fn io_uring_probe(&self, opcode: u8) -> bool {
+        fn io_uring_probe(&self, opcode: u8) -> std::io::Result<bool> {
             self.with_driver(|d| d.io_uring_probe(opcode))
         }
 
@@ -604,13 +604,7 @@ pub mod thread {
                     CURRENT_DRIVER.with(|cell| cell.borrow(|weak| weak.and_then(|w| w.upgrade())));
                 let driver = driver.as_ref().unwrap_or(&self.default);
                 // SAFETY: passthru from caller
-                unsafe {
-                    driver
-                        .io_uring_submitter()
-                        .ok_or(std::io::ErrorKind::Unsupported)?
-                        .submit(sqe)
-                        .await
-                }
+                unsafe { driver.io_uring_submitter()?.submit(sqe).await }
             })
         }
 

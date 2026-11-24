@@ -611,9 +611,9 @@ pub mod io_uring_tests {
 
     /// Verify probe returns true for NOP and false for an invalid opcode.
     async fn uring_probe(uring: &dyn Driver) {
-        assert!(uring.io_uring_probe(opcode::Nop::CODE));
+        assert!(uring.io_uring_probe(opcode::Nop::CODE).unwrap());
         // Opcode 255 is not a valid io-uring opcode.
-        assert!(!uring.io_uring_probe(255));
+        assert!(!uring.io_uring_probe(255).unwrap());
     }
 
     /// Submit multiple NOPs concurrently and verify all complete.

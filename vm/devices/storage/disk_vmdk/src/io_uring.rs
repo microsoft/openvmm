@@ -20,8 +20,11 @@ use std::sync::Arc;
 const MAX_READ_IOVECS: usize = libc::UIO_MAXIOV as usize;
 
 /// Returns whether the driver supports both read opcodes used by this module.
+///
+/// A driver that cannot set up its io-uring supports neither.
 pub(crate) fn is_supported(driver: &dyn Driver) -> bool {
-    driver.io_uring_probe(opcode::Read::CODE) && driver.io_uring_probe(opcode::Readv::CODE)
+    let supports = |opcode| matches!(driver.io_uring_probe(opcode), Ok(true));
+    supports(opcode::Read::CODE) && supports(opcode::Readv::CODE)
 }
 
 /// Fills the guest buffers with file data starting at byte `offset`.
@@ -175,8 +178,8 @@ pub(crate) mod tests {
         }
 
         /// Can hide one opcode to exercise setup fallback.
-        fn io_uring_probe(&self, opcode: u8) -> bool {
-            self.unsupported_opcode != Some(opcode) && self.inner.io_uring_probe(opcode)
+        fn io_uring_probe(&self, opcode: u8) -> io::Result<bool> {
+            Ok(self.unsupported_opcode != Some(opcode) && self.inner.io_uring_probe(opcode)?)
         }
 
         /// Injects EINTR before submitting anything, then delegates unchanged.

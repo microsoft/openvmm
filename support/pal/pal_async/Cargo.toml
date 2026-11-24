@@ -30,6 +30,9 @@ tempfile = { workspace = true, optional = true }
 io-uring.workspace = true
 once_cell.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+seccompiler.workspace = true
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true, features = ["extra_traits"] }
 
