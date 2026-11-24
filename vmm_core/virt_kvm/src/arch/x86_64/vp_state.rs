@@ -375,7 +375,31 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         // run as it is. Take the vCPU out of SMM before setting the MP state,
         // which KVM can refuse for a vCPU in SMM.
         super::smm::leave(&self.kvm())?;
+
+        // It holds no paravirtual kick either: a wake-up that a guest sends a
+        // vCPU with KVM_HC_KICK_CPU, or with an IPI in the remote-read delivery
+        // mode, and that KVM holds until it wakes the vCPU from a halt. KVM
+        // reads a halted vCPU that holds one as runnable, and the next HLT of a
+        // runnable one returns at once. KVM_SET_MP_STATE keeps the kick for any
+        // other state, but clears it for runnable from Linux 6.15 on, so set
+        // the vCPU runnable first.
+        if state != kvm::KVM_MP_STATE_RUNNABLE {
+            self.kvm().set_mp_state(kvm::KVM_MP_STATE_RUNNABLE)?;
+        }
         self.kvm().set_mp_state(state)?;
+        // Before Linux 6.15, no ioctl clears the kick. A vCPU that is set
+        // halted would then run at once, as KVM reads it, so refuse that:
+        // reading the MP state accepts no INIT, which leaving SMM dropped, and
+        // only drops a SIPI, which a halted vCPU does not take. A vCPU that is
+        // set runnable, or to wait for a SIPI, as a reset sets it, keeps the
+        // kick unseen there, and its next HLT returns at once.
+        if state == kvm::KVM_MP_STATE_HALTED
+            && self.kvm().get_mp_state()? != kvm::KVM_MP_STATE_HALTED
+        {
+            return Err(KvmError::PvKick {
+                vp_index: self.vp.vpindex.index(),
+            });
+        }
 
         let mut event_flags = 0;
         if nmi_pending {

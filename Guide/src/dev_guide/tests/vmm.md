@@ -40,10 +40,11 @@ The `virt_backend_tests` executable in the `vmm_tests` package tests the public
 `virt` interfaces directly on native x86_64 KVM, MSHV, and WHP backends. These
 are hardware-dependent integration tests, not ordinary unit tests. They use
 Petri for registration, host eligibility, logs, and results, but do not use its
-VM builders, launch OpenVMM, or load guest artifacts. Only the `suspend` and
-`smm` modules execute a VP, and then a few bytes of code that the test writes
-into the fixture's RAM, which run in real mode or, for one case of `suspend`, in
-64-bit mode; the code of `smm` is an SMI handler, which runs in SMM.
+VM builders, launch OpenVMM, or load guest artifacts. Only the `suspend`,
+`smm`, and `pv_kick` modules execute a VP, and then a few bytes of code that
+the test writes into the fixture's RAM, which run in real mode or, for one case
+of `suspend`, in 64-bit mode; the code of `smm` is an SMI handler, which runs in
+SMM.
 
 Each backend has independently reported cases for initially frozen clocks,
 freeze/thaw transitions, reset values, and serialized restoration of clocks,
@@ -96,6 +97,14 @@ an SMI and runs it, which must execute the handler that the test wrote at the
 SMI entry point of the default SMBASE, 0x8000 above it, and then checks that a
 save refuses the VP in SMM. It needs a fixture with room for SMBASE, so it
 registers by hand.
+A guest can also kick a VP with KVM's paravirtual `KVM_HC_KICK_CPU`, a wake-up
+that KVM holds until it wakes the VP from a halt, and that no saved state holds.
+The KVM-only case `a_vp_set_halted_stays_halted_over_its_kick`, in `pv_kick.rs`,
+runs a VP whose guest kicks the VP itself, sets the VP halted, as a restore
+does, and checks that it reads as halted and does not run on. KVM clears the
+kick only from Linux 6.15 on; before, the case requires the backend to refuse
+the halt instead. It writes its code into the fixture's RAM, so it registers by
+hand.
 
 The contract functions operate on the public `virt` interfaces. Each function
 has an adjacent `backend_test!` declaration that registers it with Petri for
