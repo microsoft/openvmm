@@ -6,6 +6,8 @@ use futures::executor::block_on;
 use gdbstub::common::Tid;
 use mesh::rpc::RpcSend;
 use std::num::NonZeroUsize;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use vmm_core_defs::debug_rpc::DebugRequest;
 use vmm_core_defs::debug_rpc::DebugStopReason;
 use vmm_core_defs::debug_rpc::GuestAddress;
@@ -40,6 +42,13 @@ impl VmProxy {
 
     pub fn into_params(self) -> (mesh::Sender<DebugRequest>, u32) {
         (self.req_chan, self.vps.len() as u32)
+    }
+
+    /// Attaches the debugger to the VM for a session, which detaches it when
+    /// dropped.
+    pub fn attach(&mut self) -> Session<'_> {
+        self.send_req(DebugRequest::Attach);
+        Session(self)
     }
 
     pub fn send_req(&mut self, req: DebugRequest) {
@@ -109,5 +118,37 @@ impl VmProxy {
         ))
         .context("failed to write memory")?;
         Ok(())
+    }
+}
+
+/// A debugger session, during which the debugger is attached to the VM.
+///
+/// Dropping the session detaches the debugger, however the session ends: GDB
+/// detaching, its connection dropping, or the worker stopping.
+pub struct Session<'a>(&'a mut VmProxy);
+
+impl Drop for Session<'_> {
+    fn drop(&mut self) {
+        // The VM clears the session's hardware breakpoints and single-stepping
+        // when the debugger detaches, so forget them too, lest the next
+        // session's first resume set them again.
+        self.0.breakpoints = [None; 4];
+        self.0.vps.fill(Vp::default());
+        self.0.stop_chan = None;
+        self.0.send_req(DebugRequest::Detach);
+    }
+}
+
+impl Deref for Session<'_> {
+    type Target = VmProxy;
+
+    fn deref(&self) -> &VmProxy {
+        self.0
+    }
+}
+
+impl DerefMut for Session<'_> {
+    fn deref_mut(&mut self) -> &mut VmProxy {
+        self.0
     }
 }
