@@ -17,6 +17,8 @@ use super::profile::MicroVmVirtioFsProfile;
 use super::profile::microvm_root_identity;
 use super::saved_state::MAX_ALIASES_PER_INODE;
 use super::saved_state::MAX_DIRECTORY_ENTRIES;
+use super::saved_state::MAX_DIRECTORY_ENTRY_NAME_BYTES;
+use super::saved_state::MAX_DIRECTORY_SNAPSHOT_BYTES;
 use super::saved_state::MAX_INODES;
 use super::saved_state::MAX_PATH_BYTES;
 use super::state::encode_relative_path;
@@ -1308,6 +1310,77 @@ fn restored_directory_listings_count_toward_the_saved_bound() {
         release_root(&destination, handles[0]);
         read_root(&destination, fh, false).unwrap();
     }
+}
+
+/// A handle's listing holds every entry of its directory that the access
+/// policy shows, `.` and `..` included. A Windows host enumerates a directory
+/// in cached windows of 64 entries, and a read of the directory ends at the
+/// end of a window, so the listing must read on until a read returns no
+/// entry, also past a window whose every entry the policy hides
+/// (microsoft/nvx#1923).
+#[test]
+fn microvm_listings_hold_every_entry_that_the_policy_shows() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    let names =
+        |prefix: &'static str, count| (0..count).map(move |index| format!("{prefix}{index:03}"));
+    // A Windows host enumerates the names in order, so the hidden ones, as
+    // many as a policy can deny, fill a whole window between the shown ones.
+    let hidden: Vec<_> = names("b", 128).collect();
+    let shown: Vec<_> = names("a", 10).chain(names("c", 10)).collect();
+    for name in hidden.iter().chain(&shown) {
+        std::fs::write(root_path.join(name), b"").unwrap();
+    }
+    let profile = MicroVmVirtioFsProfile::from_attachment(
+        MICROVM_ATTACHMENT_ID.to_owned(),
+        microvm_root_identity(root_path).unwrap(),
+        true,
+        hidden,
+    )
+    .unwrap();
+    let fs = VirtioFs::new_microvm(root_path, profile).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let mut expected: Vec<_> = [".", ".."]
+        .map(str::to_owned)
+        .into_iter()
+        .chain(shown)
+        .collect();
+    expected.sort();
+    for plus in [false, true] {
+        let handle = fs
+            .insert_file(Arc::clone(&root).open(lx::O_RDONLY).unwrap())
+            .unwrap();
+        let directory = fs.get_file(FUSE_ROOT_ID, handle).unwrap();
+        let listed: Vec<_> = crate::tests::read_directory(&fs, &directory, 0, 4096, plus)
+            .into_keys()
+            .collect();
+        assert_eq!(listed, expected, "plus={plus}");
+    }
+}
+
+/// A handle's listing holds at most MAX_DIRECTORY_SNAPSHOT_BYTES of names,
+/// `.` and `..` included, and the first read of a directory whose names take
+/// more fails with E2BIG, although each of the cached windows of 64 entries in
+/// which a Windows host enumerates the directory holds fewer.
+#[test]
+fn microvm_listings_of_more_names_than_a_handle_holds_fail_with_e2big() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    let name = |index: usize| format!("{index:0>width$}", width = MAX_DIRECTORY_ENTRY_NAME_BYTES);
+    // As many files of the longest name as the bound holds besides the three
+    // bytes of `.` and `..`.
+    let files = (MAX_DIRECTORY_SNAPSHOT_BYTES - 3) / MAX_DIRECTORY_ENTRY_NAME_BYTES;
+    for index in 0..files {
+        std::fs::write(root_path.join(name(index)), b"").unwrap();
+    }
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    let fh = open_root(&fs);
+    read_root(&fs, fh, false).unwrap();
+    let listed = fs.get_file(FUSE_ROOT_ID, fh).unwrap().directory_entries();
+    assert_eq!(listed.len(), files + 2);
+
+    std::fs::write(root_path.join(name(files)), b"").unwrap();
+    assert_eq!(read_root(&fs, open_root(&fs), false), Err(lx::Error::E2BIG));
 }
 
 #[test]
