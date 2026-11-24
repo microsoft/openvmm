@@ -119,7 +119,11 @@ impl InspectMut for PartitionUnitRunner {
         req.respond()
             .field(
                 "power_state",
-                self.halt_reason.as_ref().map_or("running", |_| "halted"),
+                if self.halt_reason.is_some() || self.debugger_holds_vps() {
+                    "halted"
+                } else {
+                    "running"
+                },
             )
             .merge(&self.halt_reason)
             .merge(&self.vp_set)
@@ -287,8 +291,8 @@ impl PartitionUnit {
         runner.client_notify_send
     }
 
-    /// Clears the current halt reason from the partition, resuming the VPs if
-    /// they are stopped.
+    /// Clears the current halt reason from the partition, and a debugger's hold
+    /// on the VPs, resuming the VPs if they are stopped.
     pub async fn clear_halt(&mut self) -> bool {
         self.req_send
             .call(PartitionRequest::ClearHalt, ())
@@ -482,16 +486,30 @@ impl PartitionUnitRunner {
         }
     }
 
-    /// Clears the halt and resumes the VPs if the partition is started. Returns
-    /// `false` if VPs were not already halted.
+    /// Clears the halt, and a debugger's hold on the VPs, and resumes the VPs
+    /// if the partition is started. Returns `false` if VPs were neither halted
+    /// nor held.
     fn clear_halt(&mut self) -> bool {
+        let released = cfg_select! {
+            feature = "gdb" => self.debugger_state.release_vps(),
+            _ => false,
+        };
         if self.halt_reason.is_some() {
             self.halt_reason = None;
             self.vp_set.clear_halt();
-            self.try_start();
-            true
-        } else {
-            false
+        } else if !released {
+            return false;
+        }
+        self.try_start();
+        true
+    }
+
+    /// Returns whether a debugger holds the VPs stopped without a halt reason,
+    /// as it does from a break into the stopped unit until it resumes them.
+    fn debugger_holds_vps(&self) -> bool {
+        cfg_select! {
+            feature = "gdb" => self.debugger_state.holds_vps(),
+            _ => false,
         }
     }
 
@@ -541,7 +559,11 @@ impl PartitionUnitRunner {
     }
 
     fn try_start(&mut self) {
-        if self.unit_started && self.halt_reason.is_none() && self.vp_stop_count == 0 {
+        if self.unit_started
+            && self.halt_reason.is_none()
+            && !self.debugger_holds_vps()
+            && self.vp_stop_count == 0
+        {
             // A VTL scrub can reset its clock during a temporary VP stop.
             self.partition.thaw_time();
             self.needs_reset = true;
@@ -984,6 +1006,133 @@ mod save_restore {
             );
             assert_eq!(target.halt_reason, Some(HaltReason::Reset));
             assert!(target_client.try_recv().is_err());
+        }
+
+        #[cfg(feature = "gdb")]
+        mod debugger {
+            use super::save;
+            use super::state;
+            use super::test_runner;
+            use crate::partition_unit::PartitionUnitRunner;
+            use futures::FutureExt;
+            use pal_async::local::block_on;
+            use state_unit::StateUnit;
+            use test_with_tracing::test;
+            use vmcore::save_restore::SavedStateBlob;
+            use vmm_core_defs::HaltReason;
+            use vmm_core_defs::debug_rpc::DebugRequest;
+            use vmm_core_defs::debug_rpc::DebugStopReason;
+
+            /// Handles `req` from the debugger, then the halts that it raised,
+            /// as the run loop does.
+            fn debug(runner: &mut PartitionUnitRunner, req: DebugRequest) {
+                block_on(async {
+                    runner.handle_gdb(req).await;
+                    while let Ok(reason) = runner.halt_request_recv.try_recv() {
+                        runner.vp_set.stop().await;
+                        runner.handle_halt(reason).await;
+                    }
+                });
+            }
+
+            /// Resumes the VM for the debugger, and returns the receiver of the
+            /// stop that it reports next.
+            fn resume(runner: &mut PartitionUnitRunner) -> mesh::OneshotReceiver<DebugStopReason> {
+                let (send, recv) = mesh::oneshot();
+                debug(runner, DebugRequest::Resume { response: send });
+                recv
+            }
+
+            /// Attaches a debugger as the gdb stub does, which resumes the VM
+            /// and breaks into it, and returns the receiver of its stop report.
+            fn attach(runner: &mut PartitionUnitRunner) -> mesh::OneshotReceiver<DebugStopReason> {
+                debug(runner, DebugRequest::Attach);
+                let stop = resume(runner);
+                debug(runner, DebugRequest::Break);
+                stop
+            }
+
+            /// Returns the stop that the VM has reported, if any.
+            fn reported(stop: mesh::OneshotReceiver<DebugStopReason>) -> Option<DebugStopReason> {
+                stop.now_or_never().map(Result::unwrap)
+            }
+
+            fn encoded(state: SavedStateBlob) -> Vec<u8> {
+                mesh::payload::encode(state)
+            }
+
+            #[test]
+            fn break_into_a_stopped_unit_leaves_its_saved_state_unchanged() {
+                let (mut runner, _, mut client) = test_runner();
+                block_on(StateUnit::start(&mut runner));
+                block_on(StateUnit::stop(&mut runner));
+                let before = save(&mut runner);
+
+                // The debugger gets its stop report...
+                let stop = attach(&mut runner);
+                assert!(matches!(reported(stop), Some(DebugStopReason::Break)));
+                assert!(client.try_recv().is_err());
+
+                // ...but the VM did not run, so its saved state is the same.
+                assert_eq!(encoded(save(&mut runner)), encoded(before));
+            }
+
+            #[test]
+            fn break_into_a_stopped_unit_holds_the_vps_until_resumed() {
+                let (mut runner, _, _) = test_runner();
+                let before = save(&mut runner);
+                drop(attach(&mut runner));
+
+                // Starting the unit runs no VP, which `needs_reset` would
+                // record, and a save is still the same.
+                block_on(StateUnit::start(&mut runner));
+                assert!(!runner.needs_reset);
+                block_on(StateUnit::stop(&mut runner));
+                assert_eq!(encoded(save(&mut runner)), encoded(before));
+
+                // Once the debugger resumes them, the VPs run, and report no
+                // further stop.
+                let stop = resume(&mut runner);
+                block_on(StateUnit::start(&mut runner));
+                assert!(runner.needs_reset);
+                assert!(reported(stop).is_none());
+            }
+
+            #[test]
+            fn hold_ends_when_the_debugger_detaches_or_the_halt_is_cleared() {
+                for detach in [false, true] {
+                    let (mut runner, _, mut client) = test_runner();
+                    drop(attach(&mut runner));
+                    if detach {
+                        debug(&mut runner, DebugRequest::Detach);
+                    } else {
+                        assert!(runner.clear_halt());
+                    }
+
+                    // The VPs run once the unit starts, and the client hears
+                    // of no halt.
+                    block_on(StateUnit::start(&mut runner));
+                    assert!(runner.needs_reset);
+                    assert!(client.try_recv().is_err());
+                }
+            }
+
+            #[test]
+            fn break_into_a_running_unit_halts_it_with_a_saved_halt() {
+                let (mut runner, _, _) = test_runner();
+                block_on(StateUnit::start(&mut runner));
+                let stop = attach(&mut runner);
+                assert!(matches!(reported(stop), Some(DebugStopReason::Break)));
+
+                block_on(StateUnit::stop(&mut runner));
+                let saved: state::Partition = save(&mut runner).parse().unwrap();
+                assert_eq!(
+                    saved
+                        .halt_reason
+                        .map(|reason| mesh::payload::decode(&reason).unwrap()),
+                    Some(HaltReason::DebugBreak { vp: None })
+                );
+            }
         }
     }
 }

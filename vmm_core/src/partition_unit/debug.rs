@@ -22,6 +22,9 @@ pub struct DebuggerState {
     rpc: Option<mesh::Receiver<DebugRequest>>,
     attached: bool,
     halt_reported: bool,
+    /// Whether the debugger holds the VPs stopped without a halt reason, as it
+    /// does from a break into the stopped unit until it resumes them.
+    holds_vps: bool,
 }
 
 impl DebuggerState {
@@ -32,7 +35,18 @@ impl DebuggerState {
             rpc,
             attached: false,
             halt_reported: false,
+            holds_vps: false,
         }
+    }
+
+    /// Returns whether the debugger holds the VPs stopped.
+    pub fn holds_vps(&self) -> bool {
+        self.holds_vps
+    }
+
+    /// Ends the debugger's hold on the VPs, returning whether it held them.
+    pub fn release_vps(&mut self) -> bool {
+        std::mem::take(&mut self.holds_vps)
     }
 
     pub async fn wait_rpc(&mut self) -> DebugRequest {
@@ -93,20 +107,42 @@ impl PartitionUnitRunner {
                     self.client_notify_send.send(reason);
                 }
                 self.debugger_state.attached = false;
+                if self.debugger_state.release_vps() {
+                    self.try_start();
+                }
             }
             DebugRequest::Resume { response } => {
                 tracing::debug!("debugger resumed");
                 self.debugger_state.debug_notify_halt = Some(response);
+                let held = self.debugger_state.release_vps();
                 if self.debugger_state.halt_reported {
                     self.clear_halt();
                     self.debugger_state.halt_reported = false;
                 } else if let Some(reason) = self.halt_reason.as_ref() {
                     self.debugger_state.report_halt_to_debugger(reason);
                 }
+                if held {
+                    self.try_start();
+                }
             }
             DebugRequest::Break => {
                 tracing::debug!("debug break requested");
-                self.vp_set.halt(HaltReason::DebugBreak { vp: None });
+                if self.debugger_state.holds_vps {
+                    // The VPs are already stopped for the debugger.
+                } else if self.unit_started {
+                    self.vp_set.halt(HaltReason::DebugBreak { vp: None });
+                } else if self.halt_reason.is_none() && self.debugger_state.attached {
+                    // The VPs are already stopped, and cannot run before the
+                    // unit starts, so report the stop that the debugger waits
+                    // for at once, and hold the VPs for the debugger until it
+                    // resumes them. A halt reason would change the saved state
+                    // although the VM has not run.
+                    tracing::debug!("debugger holds the stopped VPs");
+                    self.debugger_state.holds_vps = true;
+                    if let Some(notify) = self.debugger_state.debug_notify_halt.take() {
+                        notify.send(DebugStopReason::Break);
+                    }
+                }
             }
             DebugRequest::SetDebugState { vp, state } => {
                 if let Err(err) = self.vp_set.set_debug_state(VpIndex::new(vp), state).await {

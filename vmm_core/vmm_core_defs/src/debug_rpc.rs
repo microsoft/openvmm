@@ -25,6 +25,11 @@ pub enum DebugRequest {
         response: mesh::OneshotSender<DebugStopReason>,
     },
     /// Debugger is requesting a manual break.
+    ///
+    /// A running VM halts, which reports the stop to the pending
+    /// [`Self::Resume`]. A paused VM is reported stopped at once instead, and
+    /// its VPs stay stopped for the debugger, without a halt in the VM's saved
+    /// state, until the next [`Self::Resume`].
     Break,
     /// Sets the hardware debugger state for a VP.
     SetDebugState { vp: u32, state: DebugState },
