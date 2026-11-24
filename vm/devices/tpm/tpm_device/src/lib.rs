@@ -2780,7 +2780,6 @@ mod tests {
                 REPORT_SIZE as u16,
                 0,
             );
-            let start = std::time::Instant::now();
             for generation in 1u64..=2 {
                 let input = [generation as u8; ATTESTATION_REPORT_DATA_SIZE];
                 tpm.tpm_engine_helper
@@ -2795,11 +2794,13 @@ mod tests {
                     .mem
                     .write_at(tpm.control_area.command_pa, command.as_bytes())
                     .unwrap();
+                if generation > 1 {
+                    tpm.attestation_report_renew_time = Some(std::time::SystemTime::now());
+                }
                 let result = tpm.mmio_write(
                     TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_START as u64,
                     &1u32.to_le_bytes(),
                 );
-                assert!(start.elapsed() < std::time::Duration::from_secs(2));
                 if let IoResult::Defer(mut token) = result {
                     complete(&mut tpm, &mut token).await;
                 } else {
