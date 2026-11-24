@@ -738,11 +738,18 @@ impl LxFile {
     /// from the same position by calling this function again with the offset of the entry *before*
     /// the one that cancelled the enumeration.
     ///
+    /// A call can also end before the end of the directory without the callback stopping it, as
+    /// on Windows, so a caller that needs every entry calls this function again with the offset of
+    /// the last entry until a call returns none.
+    ///
     /// # Windows
     ///
     /// The . and .. entries are always returned, but their inode number is not set.
     /// Sandbox filtering uses the names and attributes captured in each cached
     /// enumeration window; subsequent path-based operations recheck access.
+    /// Besides the . and .. entries, a call returns entries of one cached enumeration
+    /// window at most, so that the offsets that it returns stay valid while the caller
+    /// removes the entries that it read before it continues.
     ///
     /// # Unix
     ///

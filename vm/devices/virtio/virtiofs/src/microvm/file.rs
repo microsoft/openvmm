@@ -306,7 +306,7 @@ impl VirtioFsFile {
         let self_inode_nr = self.inode.guest_inode_nr();
         let mut total_bytes = 0usize;
         let mut entries = Vec::new();
-        self.file.write().read_dir(0, |entry| {
+        let mut add_entry = |entry: lx::DirEntry| -> lx::Result<bool> {
             if entries.len() == MAX_DIRECTORY_ENTRIES_PER_HANDLE {
                 return Err(lx::Error::E2BIG);
             }
@@ -344,7 +344,23 @@ impl VirtioFsFile {
                 kind: entry.file_type as u32,
             });
             Ok(true)
-        })?;
+        };
+        // A read can end before the directory does, as one on Windows does at
+        // the end of each cached window of the host's enumeration, so read on
+        // from the last entry until a read returns none.
+        let mut file = self.file.write();
+        let mut offset = 0;
+        loop {
+            let mut read_any = false;
+            file.read_dir(offset, |entry| {
+                read_any = true;
+                offset = entry.offset;
+                add_entry(entry)
+            })?;
+            if !read_any {
+                break;
+            }
+        }
         Self::validate_directory_entries(&entries)?;
         Ok(entries)
     }
