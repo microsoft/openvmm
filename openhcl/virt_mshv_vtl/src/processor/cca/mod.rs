@@ -17,11 +17,15 @@ use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::processor::InterceptMessageState;
 use aarch64defs::EsrEl2;
+use aarch64defs::HpfarEl2;
+use aarch64defs::InstructionAbortReason;
 use aarch64defs::IssDataAbort;
+use aarch64defs::IssInstructionAbort;
 use aarch64defs::SystemReg;
 use aarch64defs::rsi::cca_rsi_plane_exit;
 use hcl::GuestVtl;
 use hcl::ioctl::cca::Cca;
+use hcl::ioctl::cca::GetIpaStateError;
 use hcl::ioctl::register;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
@@ -49,6 +53,20 @@ enum CcaUnsupportedExit {
     ExceptionClass { exception_class: u8, esr_el2: u64 },
     #[error("CCA data abort with invalid instruction syndrome in ESR_EL2 {0:#x}")]
     InvalidDataAbortIss(u64),
+    #[error(
+        "CCA instruction abort: ESR_EL2 {esr_el2:#x}, ELR_EL2 {elr_el2:#x}, FAR_EL2 {far_el2:#x},
+        FIPA {fipa:#x}, FIPA RIPAS state {fipa_state:#x}, IFSC {ifsc:#x}, reason {reason:?}, FNV {far_not_valid}"
+    )]
+    InstructionAbort {
+        esr_el2: u64,
+        elr_el2: u64,
+        far_el2: u64,
+        fipa: u64,
+        fipa_state: u8,
+        ifsc: u8,
+        reason: InstructionAbortReason,
+        far_not_valid: bool,
+    },
 }
 
 const AARCH64_ZERO_REGISTER_INDEX: u8 = 31;
@@ -167,6 +185,14 @@ impl<'a> CcaExit<'a> {
 
     fn far_el2(&self) -> u64 {
         self.0.far_el2
+    }
+
+    fn hpfar_el2(&self) -> HpfarEl2 {
+        self.0.hpfar_el2.into()
+    }
+
+    fn elr_el2(&self) -> u64 {
+        self.0.elr_el2
     }
 
     fn gpr_or_zero_register(&self, index: u8) -> Option<u64> {
@@ -345,7 +371,57 @@ impl BackingPrivate for CcaBacked {
                         }
                         ExceptionClass::InstructionAbort => {
                             // Handle instruction abort
-                            todo!();
+                            let iss = IssInstructionAbort::from_bits(esr_el2.iss());
+
+                            let reason = InstructionAbortReason::from(iss.ifsc());
+
+                            if iss.fnv() {
+                                tracing::warn!("CCA InstructionAbort: FAR_EL2 is not valid");
+
+                                return Err(dev.fatal_error(
+                                    CcaUnsupportedExit::InstructionAbort {
+                                        esr_el2: cca_exit.0.esr_el2,
+                                        elr_el2: cca_exit.elr_el2(),
+                                        far_el2: cca_exit.far_el2(),
+                                        fipa: 0,
+                                        fipa_state: u8::MAX,
+                                        ifsc: iss.ifsc().0,
+                                        reason,
+                                        far_not_valid: iss.fnv(),
+                                    }
+                                    .into(),
+                                ));
+                            }
+
+                            let far = cca_exit.far_el2();
+                            let hpfar = cca_exit.hpfar_el2();
+                            let fipa = (hpfar.fipa() << 12) | (far & 0xfff);
+
+                            let plane_state = match this.ipa_state_read(fipa) {
+                                Ok(state) => state,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = ?e,
+                                        fipa,
+                                        "failed to read IPA state; state will be u8::MAX which is unavailable"
+                                    );
+                                    None
+                                }
+                            };
+
+                            return Err(dev.fatal_error(
+                                CcaUnsupportedExit::InstructionAbort {
+                                    esr_el2: cca_exit.0.esr_el2,
+                                    elr_el2: cca_exit.elr_el2(),
+                                    far_el2: cca_exit.far_el2(),
+                                    fipa,
+                                    fipa_state: plane_state.map_or(u8::MAX, |state| state as u8),
+                                    ifsc: iss.ifsc().0,
+                                    reason,
+                                    far_not_valid: iss.fnv(),
+                                }
+                                .into(),
+                            ));
                         }
                         ExceptionClass::SimdAccess => {
                             this.runner.cca_plane_no_trap_simd();
@@ -446,6 +522,10 @@ impl UhProcessor<'_, CcaBacked> {
         val: &mut u64,
     ) -> Result<(), register::GetRegError> {
         self.runner.cca_sysreg_read(vtl, reg, val)
+    }
+
+    fn ipa_state_read(&self, fipa: u64) -> Result<Option<u64>, GetIpaStateError> {
+        self.runner.cca_ipa_state_read(fipa)
     }
 
     fn set_plane_enter(&mut self) {

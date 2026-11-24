@@ -9,37 +9,31 @@
 mod hypervisor_resolvers;
 
 // Resources.
+#[cfg(guest_arch = "x86_64")]
 vm_resource::register_static_resolvers! {
     // Chipset devices
-    #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
-    #[cfg(guest_arch = "x86_64")]
     chipset_legacy::piix4_uhci::resolver::Piix4PciUsbUhciStubResolver,
-    #[cfg(guest_arch = "x86_64")]
     chipset_legacy::piix4_pci_isa_bridge::resolver::Piix4PciIsaBridgeResolver,
-    #[cfg(guest_arch = "x86_64")]
     chipset::dma::resolver::GenericIsaDmaResolver,
-    #[cfg(guest_arch = "x86_64")]
     chipset_legacy::piix4_pm::resolver::Piix4PowerManagementResolver,
-    #[cfg(guest_arch = "x86_64")]
     chipset_legacy::i440bx_host_pci_bridge::resolver::I440BxHostPciBridgeResolver,
-    #[cfg(guest_arch = "x86_64")]
     chipset::pit::resolver::PitResolver,
-    #[cfg(guest_arch = "x86_64")]
     chipset::pic::resolver::PicResolver,
-    #[cfg(guest_arch = "x86_64")]
     chipset::ioapic::resolver::GenericIoApicResolver,
-    #[cfg(guest_arch = "x86_64")]
     chipset::pm::resolver::HyperVPowerManagementResolver,
+    serial_16550::resolver::Serial16550Resolver,
+    serial_debugcon::resolver::SerialDebugconResolver,
+}
+
+vm_resource::register_static_resolvers! {
+    // Chipset devices
+    chipset::acpi_power_button::AcpiPowerButtonResolver,
     chipset_resources::cmos_rtc_time_source::SystemTimeClockResolver,
     firmware_uefi::resolver::UefiDeviceResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,
-    #[cfg(guest_arch = "x86_64")]
-    serial_16550::resolver::Serial16550Resolver,
-    #[cfg(guest_arch = "x86_64")]
-    serial_debugcon::resolver::SerialDebugconResolver,
     #[cfg(guest_arch = "aarch64")]
     serial_pl011::resolver::SerialPl011Resolver,
     chipset::battery::resolver::BatteryResolver,
@@ -51,6 +45,8 @@ vm_resource::register_static_resolvers! {
 
     // Serial ports
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,
+    serial_core::null::resolver::NullSerialBackendResolver,
+    serial_socket::file::FileSerialResolver,
     #[cfg(windows)]
     serial_socket::windows::WindowsPipeSerialResolver,
     serial_socket::net::SocketSerialResolver,
@@ -74,6 +70,7 @@ vm_resource::register_static_resolvers! {
     disk_prwrap::DiskWithReservationsResolver,
     disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,
+    disk_vmdk::FlatVmdkResolver,
     #[cfg(windows)]
     disk_vhdmp::VhdmpDiskResolver,
     #[cfg(feature = "disk_blob")]
@@ -83,9 +80,10 @@ vm_resource::register_static_resolvers! {
     disklayer_ram::resolver::RamDiskLayerResolver,
     #[cfg(feature = "disklayer_sqlite")]
     disklayer_sqlite::resolver::SqliteDiskLayerResolver,
+    disklayer_vhdx::resolver::VhdxDiskLayerResolver,
 
     // PCI devices
-    cxl_spec::test::resolver::CxlTestDeviceResolver,
+    cxl::test::resolver::CxlTestDeviceResolver,
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
     nvme_test::resolver::NvmeFaultControllerResolver,
@@ -104,9 +102,12 @@ vm_resource::register_static_resolvers! {
     virtio_net::resolver::VirtioNetResolver,
     virtio_pmem::resolver::VirtioPmemResolver,
     virtio_rng::resolver::VirtioRngResolver,
+    virtio_rtc::resolver::VirtioRtcResolver,
     #[cfg(target_os = "linux")]
     vhost_user_frontend::resolver::VhostUserFrontendResolver,
     virtio_vsock::resolver::VirtioVsockResolver,
+    #[cfg(target_os = "linux")]
+    virtio_vsock::resolver::VirtioVsockVhostResolver,
 
     // Vmbus devices
     guest_crash_device::resolver::GuestCrashDeviceResolver,
@@ -117,6 +118,7 @@ vm_resource::register_static_resolvers! {
     hyperv_ic::resolver::TimesyncIcResolver,
     netvsp::resolver::NetvspResolver,
     storvsp::resolver::StorvspResolver,
+    storvsp::resolver::StorvspIdeResolver,
     uidevices::resolver::VmbusUiResolver,
     vmbfs::resolver::VmbfsResolver,
     vmbus_serial_host::resolver::VmbusSerialDeviceResolver,

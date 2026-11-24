@@ -4,6 +4,8 @@
 //! Utilities for encoding various resource types into ACPI Machine Language (AML).
 
 use super::objects::*;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// An AML resource.
 pub trait ResourceObject {

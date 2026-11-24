@@ -13,7 +13,7 @@ inspect = ["dep:inspect", "uefi_specs/inspect"]
 save_restore = ["inspect", "dep:mesh_protobuf", "dep:vmcore", "guid/mesh"]
 
 [dependencies]
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }
 ucs2.workspace = true

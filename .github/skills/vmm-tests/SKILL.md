@@ -25,9 +25,18 @@ cargo xflowey vmm-tests-run --filter "test(/^boot_/)"
 cargo xflowey vmm-tests-run --filter "all()"
 ```
 
-Do not pass `--dir` — it defaults to `target/vmm_tests` and is only required
-when cross-compiling for Windows from WSL2, where the output directory must be
-on the Windows filesystem (e.g., `--dir /mnt/d/vmm_tests`).
+Omitting `--filter` selects all tests. Use an explicit selection so the
+command's scope is clear.
+
+## Output Directory
+
+Usually you don't need `--dir` — it defaults to `target/vmm_tests`. When
+cross-compiling for Windows from WSL2, `--dir` on the Windows filesystem (e.g.,
+`--dir /mnt/d/vmm_tests`) is required **only** when the selected tests use disk
+images that need a Windows filesystem: **Hyper-V tests**, or tests using **VHDX
+/ dynamic VHD1** images. For everything else (streamed disks, or plain fixed
+VHD1 / VMGS / ISO files), the default WSL-side directory works. `vmm-tests-run`
+detects this and errors with a clear message if `--dir` is required.
 
 ## Filter Syntax
 
@@ -47,7 +56,7 @@ cross-compilation:
 
 ```bash
 # Cross-compile and run Windows tests from WSL2
-cargo xflowey vmm-tests-run --target windows-x64 --dir /mnt/d/vmm_tests
+cargo xflowey vmm-tests-run --target windows-x64 --filter "test(my_test_name)"
 ```
 
 | Target | Description |
@@ -56,9 +65,7 @@ cargo xflowey vmm-tests-run --target windows-x64 --dir /mnt/d/vmm_tests
 | `windows-aarch64` | Windows ARM64 (Hyper-V / WHP) |
 | `linux-x64` | Linux x86_64 |
 
-**Windows from WSL2**: The output directory **must** be on the Windows
-filesystem (e.g., `/mnt/d/...`). `--dir` is required in this case.
-Cross-compilation setup is required first — see
+**Windows from WSL2**: Cross-compilation setup is required first — see
 `Guide/src/dev_guide/getting_started/cross_compile.md`.
 
 ## Artifact Handling (Lazy Fetch)
@@ -97,8 +104,6 @@ Run `cargo xflowey vmm-tests-run --help` for the full option list.
 
 - **Don't use `cargo nextest run -p vmm_tests` directly** — artifacts won't
   be present and tests will fail with missing-artifact errors.
-- **Windows output dir from WSL** — must be on `/mnt/c/` or `/mnt/d/`, not
-  in the WSL filesystem.
 - **Hyper-V tests** — require Hyper-V Administrators group membership and
   disable lazy fetch automatically.
 - **CI failures** — use the `openvmm-ci-investigation` skill to diagnose

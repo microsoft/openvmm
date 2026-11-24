@@ -48,6 +48,9 @@ pub type EpollPool = IoPool<EpollBackend>;
 /// A driver to spawn tasks and IO objects on [`EpollPool`].
 pub type EpollDriver = IoDriver<EpollBackend>;
 
+/// A weak reference to an [`EpollDriver`].
+pub type WeakEpollDriver = crate::io_pool::WeakIoDriver<EpollBackend>;
+
 #[derive(Debug)]
 pub struct EpollBackend {
     epfd: EpollFd,

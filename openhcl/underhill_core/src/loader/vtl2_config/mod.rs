@@ -117,11 +117,7 @@ impl<'a> Vtl2ParamsMap<'a> {
         zero_on_drop: bool,
     ) -> anyhow::Result<Self> {
         // No overlaps.
-        if let Some((l, r)) = ranges
-            .iter()
-            .zip(ranges.iter().skip(1))
-            .find(|(l, r)| r.start() < l.end())
-        {
+        if let Some([l, r]) = ranges.array_windows().find(|[l, r]| r.start() < l.end()) {
             anyhow::bail!("range {r} overlaps {l}");
         }
 
@@ -417,9 +413,9 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         )
         .context("failed to read measured vtl2 config")?;
 
-    drop(mapping);
-
     assert_eq!(measured_config.magic, ParavisorMeasuredVtl2Config::MAGIC);
+
+    drop(mapping);
 
     let vtom_offset_bit = if measured_config.vtom_offset_bit == 0 {
         None

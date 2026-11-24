@@ -6,6 +6,9 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod file;
 pub mod net;
 #[cfg(windows)]
 pub mod windows;
+#[cfg(all(test, windows))]
+mod windows_tests;

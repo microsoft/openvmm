@@ -11,6 +11,7 @@ use super::boot_time::BootProfile;
 use super::platform;
 use crate::report::MetricResult;
 use anyhow::Context as _;
+use petri::PetriInitrd;
 
 /// Single-VM memory overhead test.
 pub struct MemoryTest {
@@ -19,7 +20,7 @@ pub struct MemoryTest {
     /// Guest RAM in MiB.
     pub mem_mb: u64,
     /// Pre-built initrd (only used for minimal profiles).
-    initrd: Option<tempfile::TempPath>,
+    initrd: Option<PetriInitrd>,
 }
 
 impl MemoryTest {
@@ -67,7 +68,7 @@ impl crate::harness::ColdPerfTest for MemoryTest {
         let log_source = crate::log_source();
         let params = petri::PetriTestParams {
             test_name: "memory",
-            logger: &log_source,
+            log_source: &log_source,
             post_test_hooks: &mut post_test_hooks,
         };
 
@@ -80,11 +81,12 @@ impl crate::harness::ColdPerfTest for MemoryTest {
             })
             .with_memory(petri::MemoryConfig {
                 startup_bytes: self.mem_mb * 1024 * 1024,
+                private_memory: Some(self.profile.uses_private_memory()),
                 ..Default::default()
             });
 
         if let Some(ref initrd) = self.initrd {
-            builder = builder.with_prebuilt_initrd(initrd.to_path_buf());
+            builder = builder.with_prebuilt_initrd(initrd.clone());
         }
 
         let (mut vm, agent) = builder.run().await.context("failed to boot VM")?;

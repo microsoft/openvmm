@@ -7,12 +7,16 @@
 #![forbid(unsafe_code)]
 
 mod buffers;
-mod protocol;
 pub mod resolver;
-mod rndisprot;
 mod rx_bufs;
 mod saved_state;
 mod test;
+
+// Re-export the shared wire modules from `netvsp_protocol` so existing
+// `crate::protocol` and `crate::rndisprot` paths keep resolving after the
+// extraction. All wire types are canonically defined in `netvsp_protocol`.
+pub use netvsp_protocol::protocol;
+pub use netvsp_protocol::rndisprot;
 
 use crate::buffers::GuestBuffers;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
@@ -32,6 +36,7 @@ use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::GuestMemoryView;
 use guestmem::ranges::PagedRange;
 use guestmem::ranges::PagedRanges;
 use guestmem::ranges::PagedRangesReader;
@@ -131,17 +136,17 @@ const NETVSP_MAX_SUBCHANNELS_PER_VNIC: u16 = 64;
 // could get the "eth0" name. In provisioning scenarios, the scripts will make
 // assumptions about which interface should be used, with eth0 being the
 // default.
-#[cfg(not(test))]
-const VF_DEVICE_DELAY: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const VF_DEVICE_DELAY: Duration = Duration::from_millis(100);
+const VF_DEVICE_DELAY: Duration = cfg_select! {
+    test => Duration::from_millis(100),
+    _ => Duration::from_secs(1),
+};
 
 // Linux guests are known to not act on link state change notifications if
 // they happen in quick succession.
-#[cfg(not(test))]
-const LINK_DELAY_DURATION: Duration = Duration::from_secs(5);
-#[cfg(test)]
-const LINK_DELAY_DURATION: Duration = Duration::from_millis(333);
+const LINK_DELAY_DURATION: Duration = cfg_select! {
+    test => Duration::from_millis(333),
+    _ => Duration::from_secs(5),
+};
 
 #[derive(Default, PartialEq)]
 struct CoordinatorMessageUpdateType {
@@ -217,7 +222,14 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 .merge(&state.state.stats);
             }
 
-            resp.field("packet_filter", worker.channel.packet_filter);
+            resp.field("packet_filter", worker.channel.packet_filter)
+                .field(
+                    "packet_size",
+                    match worker.channel.packet_size {
+                        PacketSize::V1 => protocol::PACKET_SIZE_V1,
+                        PacketSize::V61 => protocol::PACKET_SIZE_V61,
+                    },
+                );
         }
 
         if let Some(queue_state) = &mut self.queue_state {
@@ -468,12 +480,22 @@ struct NetChannel<T: RingMem> {
 }
 
 // Use an enum to give the compiler more visibility into the packet size.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum PacketSize {
     /// [`protocol::PACKET_SIZE_V1`]
     V1,
     /// [`protocol::PACKET_SIZE_V61`]
     V61,
+}
+
+impl From<Version> for PacketSize {
+    fn from(v: Version) -> Self {
+        if v >= Version::V61 {
+            PacketSize::V61
+        } else {
+            PacketSize::V1
+        }
+    }
 }
 
 /// Buffers used during packet processing.
@@ -1093,6 +1115,7 @@ const RX_RESERVED_CONTROL_BUFFERS: u32 = 16;
 /// A network adapter.
 pub struct Nic {
     instance_id: Guid,
+    offer_order: Option<u64>,
     resources: DeviceResources,
     coordinator: TaskControl<CoordinatorState, Coordinator>,
     coordinator_send: Option<mpsc::Sender<CoordinatorMessage>>,
@@ -1102,6 +1125,7 @@ pub struct Nic {
 
 pub struct NicBuilder {
     virtual_function: Option<Box<dyn VirtualFunction>>,
+    offer_order: Option<u64>,
     limit_ring_buffer: bool,
     max_queues: u16,
     get_guest_os_id: Option<Box<dyn Fn() -> HvGuestOsId + Send + Sync>>,
@@ -1120,6 +1144,16 @@ impl NicBuilder {
 
     pub fn virtual_function(mut self, virtual_function: Box<dyn VirtualFunction>) -> Self {
         self.virtual_function = Some(virtual_function);
+        self
+    }
+
+    /// Sets the VMBus offer order for this NIC. Lower values sort first among
+    /// pending offers with the same interface ID; instance IDs break ties.
+    ///
+    /// The default is `None`, which sorts as `u64::MAX` and results in instance-ID
+    /// ordering.
+    pub fn offer_order(mut self, offer_order: u64) -> Self {
+        self.offer_order = Some(offer_order);
         self
     }
 
@@ -1213,6 +1247,7 @@ impl NicBuilder {
 
         Nic {
             instance_id,
+            offer_order: self.offer_order,
             resources: Default::default(),
             coordinator,
             coordinator_send: None,
@@ -1258,6 +1293,7 @@ impl Nic {
     pub fn builder() -> NicBuilder {
         NicBuilder {
             virtual_function: None,
+            offer_order: None,
             limit_ring_buffer: false,
             max_queues: !0,
             get_guest_os_id: None,
@@ -1289,6 +1325,7 @@ impl VmbusDevice for Nic {
                 data4: [0x91, 0x3f, 0xf2, 0xd2, 0xf9, 0x65, 0xed, 0xe],
             },
             subchannel_index: 0,
+            offer_order: self.offer_order,
             mnf_interrupt_latency: Some(Duration::from_micros(100)),
             ..Default::default()
         }
@@ -1494,6 +1531,14 @@ impl Nic {
             .clone();
         driver.retarget_vp(open_request.open_data.target_vp.unwrap_or_default());
 
+        let packet_size = match &state {
+            WorkerState::Init(Some(init)) => init.version.into(),
+            WorkerState::Ready(ready) | WorkerState::WaitingForCoordinator(Some(ready)) => {
+                ready.buffers.version.into()
+            }
+            WorkerState::Init(None) | WorkerState::WaitingForCoordinator(None) => PacketSize::V1,
+        };
+
         let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx)
             .map_err(OpenError::Ring)?;
         let mut queue = Queue::new(raw).map_err(OpenError::Queue)?;
@@ -1511,7 +1556,7 @@ impl Nic {
                 adapter: self.adapter.clone(),
                 queue,
                 gpadl_map: self.resources.gpadl_map.clone(),
-                packet_size: PacketSize::V1,
+                packet_size,
                 pending_send_size: 0,
                 restart: None,
                 can_use_ring_size_opt,
@@ -2007,6 +2052,18 @@ impl Nic {
 }
 
 #[derive(Debug, Error)]
+enum MessageComponentError {
+    #[error("header")]
+    Header,
+    #[error("per-packet information")]
+    PerPacketInfo,
+    #[error("message body")]
+    Data,
+    #[error("control message")]
+    Control,
+}
+
+#[derive(Debug, Error)]
 enum WorkerError {
     #[error("packet error")]
     Packet(#[source] PacketError),
@@ -2018,8 +2075,11 @@ enum WorkerError {
     NonRndisPacketAfterPacket(u32),
     #[error("memory access error")]
     Access(#[from] AccessError),
-    #[error("rndis message too small")]
-    RndisMessageTooSmall,
+    #[error("rndis message too small: {0}")]
+    RndisMessageTooSmall(#[source] MessageComponentError),
+    // See https://lkml.org/lkml/2025/5/12/1565 for more information.
+    #[error("rndis headers missing or split across a page")]
+    RndisBadHeaders,
     #[error("unsupported rndis behavior")]
     UnsupportedRndisBehavior,
     #[error("vmbus queue error")]
@@ -2144,7 +2204,10 @@ impl Packet<'_> {
 fn read_packet_data<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
     reader: &mut impl MemoryRead,
 ) -> Result<T, PacketError> {
-    reader.read_plain().map_err(PacketError::Access)
+    reader
+        .read_plain()
+        .map_err(PacketError::Access)
+        .inspect_err(|_| tracelimit::info_ratelimited!("read_packet_data"))
 }
 
 fn parse_packet<'a, T: RingMem>(
@@ -2163,8 +2226,15 @@ fn parse_packet<'a, T: RingMem>(
                 PacketData::SwitchDataPathCompletion
             } else {
                 let mut reader = completion.reader();
-                let header: protocol::MessageHeader =
-                    reader.read_plain().map_err(PacketError::Access)?;
+                let header: protocol::MessageHeader = reader
+                    .read_plain()
+                    .map_err(PacketError::Access)
+                    .inspect_err(|_| {
+                        tracelimit::info_ratelimited!(
+                            tx_id = completion.transaction_id(),
+                            "parsing completion header"
+                        )
+                    })?;
                 match header.message_type {
                     protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE => {
                         PacketData::RndisPacketComplete(read_packet_data(&mut reader)?)
@@ -2181,7 +2251,10 @@ fn parse_packet<'a, T: RingMem>(
     };
 
     let mut reader = packet.reader();
-    let header: protocol::MessageHeader = reader.read_plain().map_err(PacketError::Access)?;
+    let header: protocol::MessageHeader = reader
+        .read_plain()
+        .map_err(PacketError::Access)
+        .inspect_err(|_| tracelimit::info_ratelimited!("parsing data packet header"))?;
     let data = match header.message_type {
         protocol::MESSAGE_TYPE_INIT => PacketData::Init(read_packet_data(&mut reader)?),
         protocol::MESSAGE1_TYPE_SEND_NDIS_VERSION if version >= Some(Version::V1) => {
@@ -2456,7 +2529,9 @@ impl<T: RingMem> NetChannel<T> {
         // process the queue as suballocations become available.
         const CONTROL_MESSAGE_MAX_QUEUED_BYTES: usize = 100 * 1024;
         if reader.len() == 0 {
-            return Err(WorkerError::RndisMessageTooSmall);
+            return Err(WorkerError::RndisMessageTooSmall(
+                MessageComponentError::Control,
+            ));
         }
         // Do not let the queue get too large--the guest should not be
         // sending very many control messages at a time.
@@ -2496,7 +2571,9 @@ impl<T: RingMem> NetChannel<T> {
         loop {
             let next_message_offset = message_len
                 .checked_sub(size_of::<rndisprot::MessageHeader>())
-                .ok_or(WorkerError::RndisMessageTooSmall)?;
+                .ok_or(WorkerError::RndisMessageTooSmall(
+                    MessageComponentError::Header,
+                ))?;
 
             self.handle_rndis_packet_message(
                 id,
@@ -2535,7 +2612,7 @@ impl<T: RingMem> NetChannel<T> {
             .into_inner()
             .paged_ranges()
             .next()
-            .ok_or(WorkerError::RndisMessageTooSmall)?;
+            .ok_or(WorkerError::RndisBadHeaders)?;
         let mut data = reader.into_inner();
         let request: rndisprot::Packet = headers.reader(mem).read_plain()?;
         if request.num_oob_data_elements != 0
@@ -2550,7 +2627,9 @@ impl<T: RingMem> NetChannel<T> {
             || (data.len() - request.data_offset as usize) < request.data_length as usize
             || request.data_length == 0
         {
-            return Err(WorkerError::RndisMessageTooSmall);
+            return Err(WorkerError::RndisMessageTooSmall(
+                MessageComponentError::Data,
+            ));
         }
 
         data.skip(request.data_offset as usize);
@@ -2568,18 +2647,26 @@ impl<T: RingMem> NetChannel<T> {
                     request.per_packet_info_offset as usize,
                     request.per_packet_info_length as usize,
                 )
-                .ok_or(WorkerError::RndisMessageTooSmall)?;
+                .ok_or(WorkerError::RndisMessageTooSmall(
+                    MessageComponentError::PerPacketInfo,
+                ))?;
             while !ppi.is_empty() {
                 let h: rndisprot::PerPacketInfo = ppi.reader(mem).read_plain()?;
                 if h.size == 0 {
-                    return Err(WorkerError::RndisMessageTooSmall);
+                    return Err(WorkerError::RndisMessageTooSmall(
+                        MessageComponentError::PerPacketInfo,
+                    ));
                 }
-                let (this, rest) = ppi
-                    .try_split(h.size as usize)
-                    .ok_or(WorkerError::RndisMessageTooSmall)?;
+                let (this, rest) =
+                    ppi.try_split(h.size as usize)
+                        .ok_or(WorkerError::RndisMessageTooSmall(
+                            MessageComponentError::PerPacketInfo,
+                        ))?;
                 let (_, d) = this
                     .try_split(h.per_packet_information_offset as usize)
-                    .ok_or(WorkerError::RndisMessageTooSmall)?;
+                    .ok_or(WorkerError::RndisMessageTooSmall(
+                        MessageComponentError::PerPacketInfo,
+                    ))?;
                 match h.typ {
                     rndisprot::PPI_TCP_IP_CHECKSUM => {
                         let n: rndisprot::TxTcpIpChecksumInfo = d.reader(mem).read_plain()?;
@@ -3064,7 +3151,9 @@ impl<T: RingMem> NetChannel<T> {
                         size_of::<rndisprot::MessageHeader>()
                             + size_of::<rndisprot::QueryComplete>(),
                     )
-                    .ok_or(WorkerError::RndisMessageTooSmall)?;
+                    .ok_or(WorkerError::RndisMessageTooSmall(
+                        MessageComponentError::Header,
+                    ))?;
                 let (status, tx) = match self.adapter.handle_oid_query(
                     buffers,
                     primary,
@@ -3641,6 +3730,11 @@ impl Adapter {
         let mut restart_endpoint = false;
         let mut packet_filter = None;
         match oid {
+            rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD => {
+                let _: u32 = reader.clone().read_plain()?;
+                // NetVSP supplies the full packet in every receive indication, so the
+                // requested lookahead does not change behavior.
+            }
             rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER => {
                 packet_filter = self.oid_set_packet_filter(reader)?;
             }
@@ -4273,7 +4367,11 @@ impl Coordinator {
 
         // Best-effort attempt to coalesce any `RestartRequired` endpoint
         // action into this restart operation.
-        while let Some(action) = state.endpoint.wait_for_endpoint_action().now_or_never() {
+        loop {
+            stop.check()?;
+            let Some(action) = state.endpoint.wait_for_endpoint_action().now_or_never() else {
+                break;
+            };
             self.handle_endpoint_action(action).await;
         }
 
@@ -4733,6 +4831,7 @@ impl Coordinator {
                     // buffers.
                     queue_config.push(QueueConfig {
                         driver: Box::new(drivers[0].clone()),
+                        enabled_rx_offloads: Default::default(),
                     });
                     per_queue_rx.push(Vec::new());
                     rx_buffers.push(RxBufferRange::new(
@@ -4768,6 +4867,7 @@ impl Coordinator {
                     let (this, rest) = initial_rx.split_at(end);
                     queue_config.push(QueueConfig {
                         driver: Box::new(drivers[queue_index as usize].clone()),
+                        enabled_rx_offloads: Default::default(),
                     });
                     per_queue_rx.push(this.to_vec());
                     initial_rx = rest;
@@ -4810,6 +4910,8 @@ impl Coordinator {
             self.num_queues = num_queues;
         }
 
+        // Determining packet size before taking mutable borrows
+        let packet_size = state.buffers.version.into();
         self.active_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
         // Provide the queue and receive buffer ranges for each worker.
         for (((worker, mut queue), rx_buffer), initial) in self
@@ -4838,6 +4940,10 @@ impl Coordinator {
                     ready_state.state.pending_rx_packets.clear();
                     ready_state.reset_tx_after_endpoint_stop();
                 }
+
+                // Ensure we're sending the negotiated packet size.
+                // Guests with less-compatible, older, or more stringent netvsc would drop packets otherwise.
+                worker.channel.packet_size = packet_size;
             }
         }
 
@@ -4892,14 +4998,20 @@ impl<T: RingMem + 'static> Worker<T> {
         // guest actions, or waiting for network packets to arrive) without
         // wrapping the wait on `stop.until_stopped`.
         loop {
+            stop.check()?;
             match &mut self.state {
                 WorkerState::Init(initializing) => {
                     assert_eq!(self.channel_idx, 0);
 
                     tracelimit::info_ratelimited!("network accepted");
 
+                    let check = stop.check_handle()?;
                     let (buffers, state) = stop
-                        .until_stopped(self.channel.initialize(initializing, self.mem.clone()))
+                        .until_stopped(self.channel.initialize(
+                            initializing,
+                            self.mem.clone(),
+                            &check,
+                        ))
                         .await??;
 
                     let state = ReadyState {
@@ -5041,9 +5153,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
         &mut self,
         initializing: &mut Option<InitState>,
         mem: GuestMemory,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<(ChannelBuffers, ActiveState), WorkerError> {
         let mut has_init_packet_arrived = false;
         loop {
+            check.check()?;
             if let Some(initializing) = &mut *initializing {
                 if Self::is_ready_to_initialize(initializing, false) || has_init_packet_arrived {
                     let recv_buffer = initializing.recv_buffer.take().unwrap();
@@ -5232,11 +5346,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         if let Some(version) = version {
                             tracelimit::info_ratelimited!(?version, "network negotiated");
 
-                            if version >= Version::V61 {
-                                // Update the packet size so that the appropriate padding is
-                                // appended for picky Windows guests.
-                                self.packet_size = PacketSize::V61;
-                            }
+                            // Ensure packet size is set appropriately for the protocol version.
+                            self.packet_size = version.into();
+
                             *initializing = Some(InitState {
                                 version,
                                 ndis_config: None,
@@ -5246,7 +5358,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             });
                         }
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        return Err(WorkerError::UnexpectedPacketOrder(
+                            PacketOrderError::InvalidPacketData,
+                        ));
+                    }
                 }
             }
         }
@@ -5258,6 +5374,10 @@ impl<T: 'static + RingMem> NetChannel<T> {
         ready_state: &mut ReadyState,
         queue_state: &mut QueueState,
     ) -> Result<CoordinatorMessage, WorkerError> {
+        if let Some(restart) = self.restart.take() {
+            return Ok(restart);
+        }
+        let check = stop.check_handle()?;
         let buffers = &ready_state.buffers;
         let state = &mut ready_state.state;
         let data = &mut ready_state.data;
@@ -5379,7 +5499,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     queue_state.queue.as_mut(),
                     &mut queue_state.pool,
                 )?)
-                | self.process_ring_buffer(buffers, state, data, queue_state)?
+                | self.process_ring_buffer(buffers, state, data, queue_state, &check)?
                 | (!ring_full
                     && self.process_endpoint_tx(
                         state,
@@ -5397,6 +5517,12 @@ impl<T: 'static + RingMem> NetChannel<T> {
             // Process any outstanding control messages before sleeping in case
             // there are now suballocations available for use.
             self.process_control_messages(buffers, state)?;
+
+            // Finish a recorded coordinator handoff before a cancellable wait
+            // can leave the worker with a partially processed guest VF state.
+            if let Some(restart) = self.restart.take() {
+                return Ok(restart);
+            }
 
             // This should be the only await point waiting on network traffic or
             // guest actions. Wrap it in `stop.until_stopped` to allow
@@ -5654,6 +5780,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         data: &mut ProcessingData,
         queue_state: &mut QueueState,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<bool, WorkerError> {
         if !data.tx_segments.is_empty() {
             // There are still segments pending transmission. Skip polling the
@@ -5663,9 +5790,17 @@ impl<T: 'static + RingMem> NetChannel<T> {
         }
         let mut total_packets = 0;
         let mut did_some_work = false;
-        loop {
+        let cancelled = loop {
+            if self.restart.is_some() {
+                break None;
+            }
+            // Control packets can replenish TX credits inline, so the pool
+            // does not bound this loop.
+            if let Err(cancelled) = check.check() {
+                break Some(cancelled);
+            }
             if state.free_tx_packets.is_empty() {
-                break;
+                break None;
             }
             let packet = if let Some(packet) = self.try_next_packet(
                 buffers.send_buffer.as_ref(),
@@ -5674,7 +5809,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             )? {
                 packet
             } else {
-                break;
+                break None;
             };
 
             did_some_work = true;
@@ -5714,7 +5849,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         .queue
                         .rx_avail(&mut queue_state.pool, &data.rx_done);
                 }
-                PacketData::SubChannelRequest(request) if state.primary.is_some() => {
+                PacketData::SubChannelRequest(request)
+                    if let Some(primary) = state.primary.as_mut() =>
+                {
                     let mut subchannel_count = 0;
                     // The number of requested subchannels has to stay below the maximum queue limit
                     // because one queue is always reserved for the primary channel. In other words,
@@ -5753,7 +5890,6 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     )?;
 
                     if subchannel_count > 0 {
-                        let primary = state.primary.as_mut().unwrap();
                         primary.requested_num_queues = subchannel_count as u16 + 1;
                         primary.tx_spread_sent = false;
                         self.restart = Some(CoordinatorMessage::Restart { channel_idx: 0 });
@@ -5799,11 +5935,14 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     ));
                 }
             }
-        }
+        };
         if total_packets > 0 && !self.transmit_segments(state, data, queue_state)? {
             state.stats.tx_stalled.increment();
         }
         state.stats.tx_packets_per_wake.add_sample(total_packets);
+        if let Some(cancelled) = cancelled {
+            return Err(cancelled.into());
+        }
         Ok(did_some_work)
     }
 

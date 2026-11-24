@@ -12,21 +12,27 @@ pub mod alloc;
 pub mod unix;
 pub mod windows;
 
+cfg_select! {
+    unix => {
+        use unix as sys;
+    }
+    windows => {
+        use windows as sys;
+    }
+}
+
 pub use sys::AsMappableRef;
 pub use sys::Mappable;
 pub use sys::MappableRef;
 pub use sys::SparseMapping;
 pub use sys::alloc_shared_memory;
 pub use sys::alloc_shared_memory_hugetlb;
+pub use sys::copy_on_write::new_mappable_from_file_copy_on_write;
 pub use sys::new_mappable_from_file;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicU8;
 use thiserror::Error;
-#[cfg(unix)]
-use unix as sys;
-#[cfg(windows)]
-use windows as sys;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -38,6 +44,32 @@ pub enum SparseMappingError {
     OutOfBounds,
     #[error(transparent)]
     Memory(trycopy::MemoryError),
+}
+
+/// Computes the reservation alignment for a mapping of `len` bytes.
+///
+/// Larger mappings are aligned to large-page boundaries (2 MB, then 1 GB) so
+/// that they can back large pages without the caller having to ask. The result
+/// is always at least `minimum_alignment` and at least the system page size.
+///
+/// Returns an error if `minimum_alignment` is not a power of two.
+fn reservation_alignment(len: usize, minimum_alignment: usize) -> std::io::Result<usize> {
+    if !minimum_alignment.is_power_of_two() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "alignment must be a power of two",
+        ));
+    }
+    const SIZE_2M: usize = 0x200000;
+    const SIZE_1G: usize = 0x40000000;
+    let default_alignment = if len < SIZE_2M {
+        SparseMapping::page_size()
+    } else if len < SIZE_1G {
+        SIZE_2M
+    } else {
+        SIZE_1G
+    };
+    Ok(default_alignment.max(minimum_alignment))
 }
 
 impl SparseMapping {
@@ -162,9 +194,405 @@ impl SparseMapping {
 
 #[cfg(test)]
 mod tests {
+    mod copy_on_write;
+
     use super::*;
+    use std::io::Write;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
 
     static BUF: [u8; 65536] = [0xcc; 65536];
+
+    #[test]
+    fn test_typed_access_round_trip() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(2 * page_size).unwrap();
+        mapping.alloc(0, mapping.len()).unwrap();
+
+        mapping.write_volatile(page_size + 1, &0x12u8).unwrap();
+        mapping.write_volatile(page_size + 2, &0x3456u16).unwrap();
+        mapping
+            .write_volatile(page_size + 4, &0x789abcdeu32)
+            .unwrap();
+        mapping
+            .write_volatile(page_size + 8, &0x0123456789abcdefu64)
+            .unwrap();
+
+        assert_eq!(mapping.read_volatile::<u8>(page_size + 1).unwrap(), 0x12);
+        assert_eq!(mapping.read_volatile::<u16>(page_size + 2).unwrap(), 0x3456);
+        assert_eq!(
+            mapping.read_volatile::<u32>(page_size + 4).unwrap(),
+            0x789abcde
+        );
+        assert_eq!(
+            mapping.read_volatile::<u64>(page_size + 8).unwrap(),
+            0x0123456789abcdef
+        );
+        assert_eq!(mapping.read_plain::<u8>(page_size + 1).unwrap(), 0x12);
+        assert_eq!(mapping.read_plain::<u16>(page_size + 2).unwrap(), 0x3456);
+        assert_eq!(
+            mapping.read_plain::<u32>(page_size + 4).unwrap(),
+            0x789abcde
+        );
+        assert_eq!(
+            mapping.read_plain::<u64>(page_size + 8).unwrap(),
+            0x0123456789abcdef
+        );
+
+        let expected = [
+            &[0x12][..],
+            &0x3456u16.to_ne_bytes(),
+            &0x789abcdeu32.to_ne_bytes(),
+            &0x0123456789abcdefu64.to_ne_bytes(),
+        ]
+        .concat();
+        let mut bytes = [0; 15];
+        mapping.read_at(page_size + 1, &mut bytes).unwrap();
+        assert_eq!(bytes.as_slice(), expected);
+    }
+
+    #[test]
+    fn test_read_plain_large_object_across_pages() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(2 * page_size).unwrap();
+        mapping.alloc(0, mapping.len()).unwrap();
+        let pattern = std::array::from_fn::<_, 17, _>(|i| i as u8);
+        mapping.write_at(page_size - 8, &pattern).unwrap();
+        assert_eq!(
+            mapping.read_plain::<[u8; 17]>(page_size - 8).unwrap(),
+            pattern
+        );
+    }
+
+    #[test]
+    fn test_access_bounds_and_empty_ranges() {
+        let mapping = SparseMapping::new(SparseMapping::page_size()).unwrap();
+        mapping.alloc(0, mapping.len()).unwrap();
+        mapping.fill_at(0, 0xa5, mapping.len()).unwrap();
+
+        for offset in [
+            mapping.len() - 1,
+            mapping.len(),
+            mapping.len() + 1,
+            usize::MAX,
+        ] {
+            assert!(matches!(
+                mapping.read_at(offset, &mut [0; 2]),
+                Err(SparseMappingError::OutOfBounds)
+            ));
+            assert!(matches!(
+                mapping.write_at(offset, &[0; 2]),
+                Err(SparseMappingError::OutOfBounds)
+            ));
+            assert!(matches!(
+                mapping.fill_at(offset, 0, 2),
+                Err(SparseMappingError::OutOfBounds)
+            ));
+            assert!(matches!(
+                mapping.read_volatile::<u16>(offset),
+                Err(SparseMappingError::OutOfBounds)
+            ));
+            assert!(matches!(
+                mapping.write_volatile(offset, &0u16),
+                Err(SparseMappingError::OutOfBounds)
+            ));
+            assert!(matches!(
+                mapping.read_plain::<[u8; 17]>(offset),
+                Err(SparseMappingError::OutOfBounds)
+            ));
+        }
+
+        mapping.read_at(mapping.len(), &mut []).unwrap();
+        mapping.write_at(mapping.len(), &[]).unwrap();
+        mapping.fill_at(mapping.len(), 0, 0).unwrap();
+        for offset in [mapping.len() + 1, usize::MAX] {
+            assert!(matches!(
+                mapping.read_at(offset, &mut []),
+                Err(SparseMappingError::OutOfBounds)
+            ));
+            assert!(matches!(
+                mapping.write_at(offset, &[]),
+                Err(SparseMappingError::OutOfBounds)
+            ));
+            assert!(matches!(
+                mapping.fill_at(offset, 0, 0),
+                Err(SparseMappingError::OutOfBounds)
+            ));
+        }
+
+        let mut bytes = vec![0; mapping.len()];
+        mapping.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0xa5; mapping.len()]);
+    }
+
+    #[test]
+    fn test_unmapped_accesses_return_memory_errors() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(2 * page_size).unwrap();
+        mapping.alloc(0, mapping.len()).unwrap();
+        mapping.fill_at(0, 0xa5, mapping.len()).unwrap();
+        mapping.unmap(page_size, page_size).unwrap();
+
+        for offset in [page_size - 1, page_size] {
+            assert!(matches!(
+                mapping.read_at(offset, &mut [0; 2]),
+                Err(SparseMappingError::Memory(_))
+            ));
+            assert!(matches!(
+                mapping.write_at(offset, &[0; 2]),
+                Err(SparseMappingError::Memory(_))
+            ));
+            assert!(matches!(
+                mapping.fill_at(offset, 0, 2),
+                Err(SparseMappingError::Memory(_))
+            ));
+            assert!(matches!(
+                mapping.read_volatile::<u16>(offset),
+                Err(SparseMappingError::Memory(_))
+            ));
+            assert!(matches!(
+                mapping.write_volatile(offset, &0u16),
+                Err(SparseMappingError::Memory(_))
+            ));
+            assert!(matches!(
+                mapping.read_plain::<[u8; 17]>(offset),
+                Err(SparseMappingError::Memory(_))
+            ));
+        }
+
+        mapping.alloc(page_size, page_size).unwrap();
+        assert_eq!(mapping.read_plain::<u16>(page_size).unwrap(), 0);
+        mapping.write_volatile(page_size, &0x1234u16).unwrap();
+        assert_eq!(mapping.read_plain::<u16>(page_size).unwrap(), 0x1234);
+    }
+
+    #[test]
+    fn test_atomic_slice_shares_mapping_contents() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(2 * page_size).unwrap();
+        mapping.alloc(0, mapping.len()).unwrap();
+        mapping.fill_at(page_size + 1, 0xa5, 2).unwrap();
+
+        let slice = mapping.atomic_slice(page_size + 1, 2);
+        assert_eq!(slice[0].load(Ordering::Relaxed), 0xa5);
+        slice[0].store(0x12, Ordering::Relaxed);
+        assert_eq!(slice[1].fetch_add(1, Ordering::Relaxed), 0xa5);
+        let mut bytes = [0xff; 4];
+        mapping.read_at(page_size, &mut bytes).unwrap();
+        assert_eq!(bytes, [0, 0x12, 0xa6, 0]);
+    }
+
+    #[test]
+    fn test_zero_mapping_rejects_writes() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(page_size).unwrap();
+        mapping.map_zero(0, page_size).unwrap();
+
+        let mut bytes = vec![0xff; page_size];
+        mapping.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0; page_size]);
+        assert!(matches!(
+            mapping.write_at(0, &[1]),
+            Err(SparseMappingError::Memory(_))
+        ));
+        assert!(matches!(
+            mapping.fill_at(0, 1, page_size),
+            Err(SparseMappingError::Memory(_))
+        ));
+        mapping.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0; page_size]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_set_writable_preserves_data_and_neighbors() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(2 * page_size).unwrap();
+        mapping.alloc(0, mapping.len()).unwrap();
+        mapping.fill_at(0, 0xa5, mapping.len()).unwrap();
+
+        mapping.set_writable(page_size, page_size, false).unwrap();
+        assert_eq!(mapping.read_plain::<u8>(page_size).unwrap(), 0xa5);
+        assert!(matches!(
+            mapping.write_volatile(page_size, &0u8),
+            Err(SparseMappingError::Memory(_))
+        ));
+        mapping.write_volatile(0, &0x12u8).unwrap();
+        mapping.set_writable(page_size, page_size, true).unwrap();
+        assert_eq!(mapping.read_plain::<u8>(page_size).unwrap(), 0xa5);
+        mapping.write_volatile(page_size, &0x34u8).unwrap();
+        assert_eq!(mapping.read_plain::<u8>(page_size).unwrap(), 0x34);
+        assert_eq!(mapping.read_plain::<u8>(0).unwrap(), 0x12);
+    }
+
+    #[test]
+    fn test_shared_file_offsets_and_handle_lifetime() {
+        // Windows section offsets must be aligned to its 64 KB allocation granularity.
+        let granularity = SparseMapping::page_size().max(0x10000);
+        let original = (0..3 * granularity)
+            .map(|i| (i / granularity) as u8)
+            .collect::<Vec<_>>();
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&original).unwrap();
+        let mappable = new_mappable_from_file(&file, true, false).unwrap();
+        drop(file);
+
+        let mapping = SparseMapping::new(2 * granularity).unwrap();
+        mapping
+            .map_file(0, granularity, &mappable, 0, false)
+            .unwrap();
+        mapping
+            .map_file(
+                granularity,
+                granularity,
+                &mappable,
+                granularity as u64,
+                true,
+            )
+            .unwrap();
+        let read_only = SparseMapping::new(granularity).unwrap();
+        read_only
+            .map_file(0, granularity, &mappable, granularity as u64, false)
+            .unwrap();
+        drop(mappable);
+
+        let mut bytes = vec![0xff; 2 * granularity];
+        mapping.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, original[..2 * granularity]);
+        mapping.write_at(granularity + 7, &[0xaa, 0xbb]).unwrap();
+        let mut shared_bytes = vec![0xff; granularity];
+        read_only.read_at(0, &mut shared_bytes).unwrap();
+        let mut expected = original[granularity..2 * granularity].to_vec();
+        expected[7..9].copy_from_slice(&[0xaa, 0xbb]);
+        assert_eq!(shared_bytes, expected);
+        assert!(matches!(
+            read_only.write_at(7, &[0]),
+            Err(SparseMappingError::Memory(_))
+        ));
+        mapping.read_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes[..granularity], &original[..granularity]);
+        assert_eq!(&bytes[granularity..], expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_reservation_rejects_invalid_size_and_alignment() {
+        let high_bit = 1usize << (usize::BITS - 1);
+        for (len, alignment) in [
+            (0, 1),
+            (SparseMapping::page_size(), 3),
+            (usize::MAX, 1),
+            (high_bit, high_bit),
+        ] {
+            assert_eq!(
+                SparseMapping::new_with_minimum_alignment(len, alignment)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_mapping_ranges_preserve_contents() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(2 * page_size).unwrap();
+        mapping.alloc(0, mapping.len()).unwrap();
+        mapping.fill_at(0, 0xa5, mapping.len()).unwrap();
+        let shmem = alloc_shared_memory(page_size, "invalid-ranges").unwrap();
+
+        for (offset, len) in [
+            (1, page_size),
+            (0, page_size - 1),
+            (mapping.len(), page_size),
+            (usize::MAX - page_size + 1, page_size),
+            (mapping.len() + page_size, 0),
+        ] {
+            let invalid_input = std::io::ErrorKind::InvalidInput;
+            assert_eq!(
+                mapping.alloc(offset, len).unwrap_err().kind(),
+                invalid_input
+            );
+            assert_eq!(
+                mapping.map_zero(offset, len).unwrap_err().kind(),
+                invalid_input
+            );
+            assert_eq!(
+                mapping.unmap(offset, len).unwrap_err().kind(),
+                invalid_input
+            );
+            assert_eq!(
+                mapping.commit(offset, len).unwrap_err().kind(),
+                invalid_input
+            );
+            assert_eq!(
+                mapping.decommit(offset, len).unwrap_err().kind(),
+                invalid_input
+            );
+            assert_eq!(
+                mapping
+                    .map_file(offset, len, &shmem, 0, true)
+                    .unwrap_err()
+                    .kind(),
+                invalid_input
+            );
+            #[cfg(unix)]
+            assert_eq!(
+                mapping.set_writable(offset, len, false).unwrap_err().kind(),
+                invalid_input
+            );
+        }
+
+        for offset in [0, page_size, mapping.len()] {
+            assert_eq!(
+                mapping
+                    .map_file(offset, 0, &shmem, 0, true)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+
+        let mut bytes = vec![0; mapping.len()];
+        mapping.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0xa5; mapping.len()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_zero_length_mapping_operations_preserve_contents() {
+        let mapping = SparseMapping::new(SparseMapping::page_size()).unwrap();
+        mapping.alloc(0, mapping.len()).unwrap();
+        mapping.fill_at(0, 0xa5, mapping.len()).unwrap();
+
+        for offset in [0, mapping.len()] {
+            mapping.commit(offset, 0).unwrap();
+            mapping.decommit(offset, 0).unwrap();
+            #[cfg(target_os = "linux")]
+            mapping.madvise_hugepage(offset, 0).unwrap();
+            assert_eq!(
+                mapping.unmap(offset, 0).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+
+        let mut bytes = vec![0; mapping.len()];
+        mapping.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0xa5; mapping.len()]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_hugetlb_rejects_invalid_page_sizes() {
+        for size in [0, 3, 0x200001] {
+            assert_eq!(
+                alloc_shared_memory_hugetlb(0x200000, "invalid-hugetlb", Some(size), None)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+    }
 
     fn test_with(range_size: usize) {
         let page_size = SparseMapping::page_size();
@@ -212,33 +640,37 @@ mod tests {
                 .unwrap();
         assert_eq!(mapping.as_ptr() as usize % alignment, 0);
 
+        // Alignments larger than the allocation granularity are honored on
+        // both platforms.
         let alignment = 0x200000;
+        let mapping =
+            SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
+                .unwrap();
+        assert_eq!(mapping.as_ptr() as usize % alignment, 0);
+    }
 
-        #[cfg(unix)]
-        {
-            let mapping =
-                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
-                    .unwrap();
-            assert_eq!(mapping.as_ptr() as usize % alignment, 0);
-        }
+    #[test]
+    fn test_sparse_mapping_default_alignment() {
+        // A small mapping only needs page alignment.
+        let mapping = SparseMapping::new(SparseMapping::page_size()).unwrap();
+        assert_eq!(mapping.as_ptr() as usize % SparseMapping::page_size(), 0);
 
-        #[cfg(windows)]
-        {
-            let error =
-                SparseMapping::new_with_minimum_alignment(SparseMapping::page_size(), alignment)
-                    .unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-        }
+        // Mappings of at least 2 MB are aligned to a 2 MB boundary so that they
+        // can back large pages.
+        let mapping = SparseMapping::new(0x200000).unwrap();
+        assert_eq!(mapping.as_ptr() as usize % 0x200000, 0);
+
+        // Mappings of at least 1 GB are aligned to a 1 GB boundary.
+        let mapping = SparseMapping::new(0x40000000).unwrap();
+        assert_eq!(mapping.as_ptr() as usize % 0x40000000, 0);
     }
 
     #[test]
     fn test_overlapping_mappings() {
-        #![expect(clippy::identity_op)]
-
         let page_size = SparseMapping::page_size();
         let mapping = SparseMapping::new(0x10 * page_size).unwrap();
-        mapping.alloc(0x1 * page_size, 0x4 * page_size).unwrap();
-        mapping.alloc(0x1 * page_size, 0x2 * page_size).unwrap();
+        mapping.alloc(page_size, 0x4 * page_size).unwrap();
+        mapping.alloc(page_size, 0x2 * page_size).unwrap();
         mapping.alloc(0x2 * page_size, 0x3 * page_size).unwrap();
         mapping.alloc(0, 0x10 * page_size).unwrap();
         mapping.alloc(0x8 * page_size, 0x8 * page_size).unwrap();
@@ -248,7 +680,7 @@ mod tests {
 
         mapping.alloc(0x5 * page_size, 0x4 * page_size).unwrap();
         mapping.alloc(0x6 * page_size, 0x2 * page_size).unwrap();
-        mapping.alloc(0x6 * page_size, 0x1 * page_size).unwrap();
+        mapping.alloc(0x6 * page_size, page_size).unwrap();
         mapping.alloc(0x4 * page_size, 0x3 * page_size).unwrap();
 
         let shmem = alloc_shared_memory(0x4 * page_size, "test").unwrap();
@@ -259,7 +691,7 @@ mod tests {
             .map_file(0x6 * page_size, 0x2 * page_size, &shmem, 0, true)
             .unwrap();
         mapping
-            .map_file(0x6 * page_size, 0x1 * page_size, &shmem, 0, true)
+            .map_file(0x6 * page_size, page_size, &shmem, 0, true)
             .unwrap();
         mapping
             .map_file(0x4 * page_size, 0x3 * page_size, &shmem, 0, true)
@@ -335,16 +767,15 @@ mod tests {
 
         // Allocate (commit) pages.
         mapping.alloc(0, 4 * page_size).unwrap();
+        let pattern = vec![0xEFu8; 4 * page_size];
+        mapping.write_at(0, &pattern).unwrap();
 
         // Commit the same range again — should be a no-op, no error.
         mapping.commit(0, 4 * page_size).unwrap();
         mapping.commit(0, page_size).unwrap();
         mapping.commit(page_size, page_size).unwrap();
 
-        // Write and read to verify pages still work.
-        let pattern = vec![0xEFu8; page_size];
-        mapping.write_at(0, &pattern).unwrap();
-        let mut buf = vec![0u8; page_size];
+        let mut buf = vec![0u8; 4 * page_size];
         mapping.read_at(0, &mut buf).unwrap();
         assert_eq!(buf, pattern);
     }
@@ -377,6 +808,25 @@ mod tests {
                 "decommitted page should be zeros even with THP"
             );
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_madvise_hugepage_shared() {
+        let page_size = SparseMapping::page_size();
+        let size = 2 * 1024 * 1024;
+        let shmem = alloc_shared_memory(size, "test-thp").unwrap();
+        let mapping = SparseMapping::new(size).unwrap();
+        mapping.map_file(0, size, &shmem, 0, true).unwrap();
+
+        mapping.madvise_hugepage(0, size).unwrap();
+
+        // Memory should still work after the madvise.
+        let pattern = vec![0xABu8; page_size];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; page_size];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
     }
 
     #[test]
@@ -437,16 +887,13 @@ mod tests {
         let mapping = SparseMapping::new(page_size).unwrap();
 
         // A very large NUMA node number should fail with an error (not panic).
-        #[cfg(unix)]
-        {
-            mapping.alloc(0, page_size).unwrap();
-            let result = mapping.mbind_at(0, page_size, 99999);
-            assert!(result.is_err());
-        }
-        #[cfg(windows)]
-        {
-            let result = mapping.alloc_numa(0, page_size, Some(99999));
-            assert!(result.is_err());
-        }
+        let result = cfg_select! {
+            unix => {{
+                mapping.alloc(0, page_size).unwrap();
+                mapping.mbind_at(0, page_size, 99999)
+            }}
+            windows => mapping.alloc_numa(0, page_size, Some(99999)),
+        };
+        assert!(result.is_err());
     }
 }

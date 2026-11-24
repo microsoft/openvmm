@@ -17,6 +17,7 @@ pub mod tp;
 
 pub use iocp::IocpDriver as DefaultDriver;
 pub use iocp::IocpPool as DefaultPool;
+pub use iocp::WeakIocpDriver as WeakDefaultDriver;
 
 pub(crate) fn monotonic_nanos_now() -> u64 {
     let mut time = 0;

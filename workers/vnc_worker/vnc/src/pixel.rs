@@ -28,23 +28,22 @@ pub(crate) struct PixelConversion {
 impl PixelConversion {
     pub(crate) fn from_format(fmt: &rfb::PixelFormat) -> Self {
         let dest_depth = fmt.bits_per_pixel as usize / 8;
-        // Use leading_zeros to derive bit width, not count_ones.
+        // Use bit width, not count_ones.
         // count_ones gives wrong results for non-conforming max values
         // (e.g., max=5 → count_ones=2, but actual width is 3).
-        // leading_zeros on a u16 gives 16 - bit_width, so bit_width = 16 - lz.
         // Guard against max=0 (would produce bit_width=0, shift underflow).
         let red_bits = if fmt.red_max.get() > 0 {
-            16 - fmt.red_max.get().leading_zeros()
+            fmt.red_max.get().bit_width()
         } else {
             8
         };
         let green_bits = if fmt.green_max.get() > 0 {
-            16 - fmt.green_max.get().leading_zeros()
+            fmt.green_max.get().bit_width()
         } else {
             8
         };
         let blue_bits = if fmt.blue_max.get() > 0 {
-            16 - fmt.blue_max.get().leading_zeros()
+            fmt.blue_max.get().bit_width()
         } else {
             8
         };
@@ -102,6 +101,7 @@ pub(crate) fn convert_pixels(src: &[u32], pc: &PixelConversion, out: &mut Vec<u8
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     fn default_pc() -> PixelConversion {
         PixelConversion::from_format(&default_pixel_format())
@@ -190,7 +190,7 @@ mod tests {
     fn convert_pixels_rgb332_asymmetric() {
         // RGB332: red=3 bits (max=7), green=3 bits (max=7), blue=2 bits (max=3).
         // Different bit widths per channel — catches the old red_max-for-blue bug
-        // and the count_ones vs leading_zeros bug simultaneously.
+        // and the count_ones vs bit_width bug simultaneously.
         let pc = PixelConversion::from_format(&rfb::PixelFormat {
             bits_per_pixel: 8,
             depth: 8,
@@ -242,6 +242,21 @@ mod tests {
         let src = [0x00112233u32];
         let mut out = Vec::new();
         convert_pixels(&src, &pc, &mut out);
-        assert_eq!(out.len(), 4); // 32bpp output
+        assert_eq!(out, src.as_bytes());
+    }
+
+    #[test]
+    fn convert_pixels_nonconforming_max_uses_bit_width() {
+        let pc = PixelConversion::from_format(&rfb::PixelFormat {
+            red_max: 5.into(),
+            green_max: 5.into(),
+            blue_max: 5.into(),
+            ..default_pixel_format()
+        });
+        assert_eq!((pc.shift_r, pc.shift_g, pc.shift_b), (21, 13, 5));
+
+        let mut out = Vec::new();
+        convert_pixels(&[0x00ffffff], &pc, &mut out);
+        assert_eq!(out, 0x00070707u32.to_le_bytes());
     }
 }

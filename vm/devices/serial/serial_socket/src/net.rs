@@ -183,11 +183,19 @@ impl AsyncRead for SocketSerialBackend {
         let Some(current) = &mut self.current else {
             return Poll::Ready(Ok(0));
         };
-        let r = ready!(Pin::new(current).poll_read(cx, buf));
-        if matches!(r, Ok(0)) {
-            self.current = None;
+        match ready!(Pin::new(current).poll_read(cx, buf)) {
+            Ok(0) => {}
+            Ok(n) => return Poll::Ready(Ok(n)),
+            Err(err) => {
+                tracing::warn!(
+                    error = &err as &dyn std::error::Error,
+                    "serial socket read failed, disconnecting"
+                );
+            }
         }
-        Poll::Ready(r)
+        self.current = None;
+        // SerialIo reports transport disconnects as EOF.
+        Poll::Ready(Ok(0))
     }
 }
 
@@ -227,5 +235,70 @@ impl AsyncWrite for SocketSerialBackend {
             return Poll::Ready(Ok(()));
         }
         Poll::Ready(r)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::AsyncReadExt;
+    use futures::future::poll_fn;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::io::Write;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+    use test_with_tracing::test;
+
+    fn new_backend(driver: DefaultDriver) -> (SocketSerialBackend, SocketAddr) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let backend =
+            SocketSerialBackend::new(Box::new(driver), OpenSocketSerialConfig::from(listener))
+                .unwrap();
+        (backend, address)
+    }
+
+    async fn connect_peer(backend: &mut SocketSerialBackend, address: SocketAddr) -> TcpStream {
+        let peer = TcpStream::connect(address).unwrap();
+        poll_fn(|cx| backend.poll_connect(cx)).await.unwrap();
+        assert!(backend.is_connected());
+        peer
+    }
+
+    fn reset_peer(peer: TcpStream) {
+        let peer = Socket::from(peer);
+        peer.set_linger(Some(Duration::ZERO)).unwrap();
+        drop(peer);
+    }
+
+    #[async_test]
+    async fn read_returns_input_then_eof_and_accepts_replacement(driver: DefaultDriver) {
+        let (mut backend, address) = new_backend(driver);
+        let mut peer = connect_peer(&mut backend, address).await;
+        peer.write_all(b"input").unwrap();
+        drop(peer);
+
+        let mut buf = [0; 5];
+        backend.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"input");
+        assert_eq!(backend.read(&mut buf).await.unwrap(), 0);
+        assert!(!backend.is_connected());
+
+        let _replacement = connect_peer(&mut backend, address).await;
+    }
+
+    #[async_test]
+    async fn read_failure_returns_eof_and_accepts_replacement(driver: DefaultDriver) {
+        let (mut backend, address) = new_backend(driver);
+        let peer = connect_peer(&mut backend, address).await;
+        reset_peer(peer);
+
+        let mut buf = [0];
+        assert_eq!(backend.read(&mut buf).await.unwrap(), 0);
+        assert!(!backend.is_connected());
+        assert_eq!(backend.read(&mut buf).await.unwrap(), 0);
+
+        let _replacement = connect_peer(&mut backend, address).await;
     }
 }

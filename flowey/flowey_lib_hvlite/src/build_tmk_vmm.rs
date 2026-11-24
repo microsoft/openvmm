@@ -6,7 +6,7 @@
 use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
-use std::collections::BTreeMap;
+use flowey_lib_common::_util::group_by;
 
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
@@ -22,7 +22,7 @@ pub enum TmkVmmOutput {
         #[serde(rename = "tmk_vmm")]
         bin: PathBuf,
         #[serde(rename = "tmk_vmm.dbg")]
-        dbg: PathBuf,
+        dbg: Option<PathBuf>,
     },
 }
 
@@ -46,18 +46,11 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        // de-dupe incoming requests
-        let requests = requests
-            .into_iter()
-            .fold(BTreeMap::<_, Vec<_>>::new(), |mut m, r| {
-                let Request {
-                    target,
-                    profile,
-                    tmk_vmm,
-                } = r;
-                m.entry((target, profile)).or_default().push(tmk_vmm);
-                m
-            });
+        let requests = group_by(
+            requests
+                .into_iter()
+                .map(|r| ((r.target, r.profile), r.tmk_vmm)),
+        );
 
         for ((target, profile), tmk_vmm) in requests {
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
@@ -82,17 +75,12 @@ impl FlowNode for Node {
                             TmkVmmOutput::WindowsBin { exe, pdb }
                         }
                         crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                            TmkVmmOutput::LinuxBin {
-                                bin,
-                                dbg: dbg.unwrap(),
-                            }
+                            TmkVmmOutput::LinuxBin { bin, dbg }
                         }
                         _ => unreachable!(),
                     };
 
-                    for var in tmk_vmm {
-                        rt.write(var, &output);
-                    }
+                    rt.write_all(tmk_vmm, &output);
                 }
             });
         }

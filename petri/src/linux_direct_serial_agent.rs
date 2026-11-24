@@ -60,7 +60,7 @@ impl LinuxDirectSerialAgent {
             tracing::debug!(buf = ?&buf[..n], "read serial bytes from guest");
             output.extend_from_slice(&buf[..n]);
             if let Some(pos) = output
-                .windows(COMMAND_END_SIGNAL.len())
+                .array_windows::<{ COMMAND_END_SIGNAL.len() }>()
                 .rev()
                 .position(|window| window == COMMAND_END_SIGNAL.as_bytes())
             {

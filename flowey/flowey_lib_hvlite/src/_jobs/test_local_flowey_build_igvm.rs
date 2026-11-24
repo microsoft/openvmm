@@ -45,10 +45,13 @@ impl SimpleFlowNode for Node {
                     let rust_toolchain = rt.read(rust_toolchain);
                     let base_recipe = base_recipe.non_production_tag();
                     rt.sh.change_dir(hvlite_repo);
-                    let mut cmd = flowey::shell_cmd!(
-                        rt,
-                        "rustup run {rust_toolchain...} cargo xflowey build-igvm {base_recipe} --install-missing-deps"
-                    )
+                    let mut cmd = if let Some(rust_toolchain) = &rust_toolchain {
+                        flowey::shell_cmd!(rt, "rustup run {rust_toolchain} cargo")
+                    } else {
+                        flowey::shell_cmd!(rt, "cargo")
+                    }
+                    .args(["xflowey", "build-igvm", &base_recipe])
+                    .arg("--install-missing-deps")
                     .env("I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_IGVM_IN_CI", "true");
                     if let Some(gh_token) = gh_token {
                         cmd = cmd.env("GITHUB_TOKEN", gh_token);

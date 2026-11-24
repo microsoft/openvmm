@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 guestmem.workspace = true
-inspect = { workspace = true, features = ["defer"] }
+inspect = { workspace = true, features = ["defer", "std"] }
 inspect_counters.workspace = true
 mesh.workspace = true
 nvme_spec.workspace = true
@@ -43,7 +43,7 @@ nvme_resources.workspace = true
 disk_prwrap.workspace = true
 disk_backend.workspace = true
 
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 
 [lints]
 workspace = true

@@ -33,11 +33,32 @@ impl ReferenceTime {
         if (diff_100ns as i64) < 0 {
             return None;
         }
-        // Can't just use from_nanos since that could overflow.
-        let count_per_sec = 10 * 1000 * 1000;
-        Some(Duration::new(
-            diff_100ns / count_per_sec,
-            (diff_100ns % count_per_sec) as u32 * 100,
-        ))
+        Some(Duration::from_nanos_u128(u128::from(diff_100ns) * 100))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReferenceTime;
+    use std::time::Duration;
+    use test_with_tracing::test;
+
+    #[test]
+    fn since_preserves_large_durations_and_wrapping_order() {
+        for ticks in [0, 1, 9_999_999, 10_000_000, i64::MAX as u64] {
+            let duration = ReferenceTime::new(ticks)
+                .since(ReferenceTime::new(0))
+                .unwrap();
+            assert_eq!(duration.as_nanos(), u128::from(ticks) * 100);
+        }
+        assert_eq!(
+            ReferenceTime::new(0).since(ReferenceTime::new(u64::MAX)),
+            Some(Duration::from_nanos(100)),
+        );
+        assert_eq!(ReferenceTime::new(0).since(ReferenceTime::new(1)), None);
+        assert_eq!(
+            ReferenceTime::new(1 << 63).since(ReferenceTime::new(0)),
+            None,
+        );
     }
 }

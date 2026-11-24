@@ -13,8 +13,20 @@ mod arch;
 mod gsi;
 mod memory;
 
-pub use arch::Kvm;
+cfg_select! {
+    guest_arch = "x86_64" => {
+        mod snp;
+        pub use snp::SnpError;
+        use snp::SnpLaunchState;
+    }
+    _ => {}
+}
 
+pub use arch::Kvm;
+pub use memory::MemoryError;
+
+#[cfg(guest_arch = "x86_64")]
+use anyhow::Context as _;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use memory::KvmMemoryBackingMode;
@@ -34,6 +46,25 @@ pub fn is_available() -> Result<bool, KvmError> {
     }
 }
 
+/// Returns whether KVM supports the nested-state ioctls on this machine.
+#[cfg(guest_arch = "x86_64")]
+pub fn is_nested_state_available() -> bool {
+    let probe = || -> anyhow::Result<bool> {
+        let kvm = kvm::Kvm::new().context("open KVM for nested-state probe")?;
+        Ok(kvm
+            .check_extension(kvm::KVM_CAP_NESTED_STATE)
+            .context("query KVM_CAP_NESTED_STATE")?
+            > 0)
+    };
+    match probe() {
+        Ok(supported) => supported,
+        Err(err) => {
+            tracing::warn!(error = &*err, "KVM nested-state probe failed");
+            false
+        }
+    }
+}
+
 use arch::KvmVpInner;
 use std::sync::atomic::Ordering;
 use virt::VpIndex;
@@ -49,6 +80,11 @@ pub enum KvmError {
     IsolationNotSupported,
     #[error("kvm error")]
     Kvm(#[from] kvm::Error),
+    #[error(transparent)]
+    Memory(#[from] MemoryError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(transparent)]
+    Snp(#[from] SnpError),
     #[error("failed to stat /dev/kvm")]
     AvailableCheck(#[source] std::io::Error),
     #[error(transparent)]
@@ -57,19 +93,25 @@ pub enum KvmError {
     InvalidState(&'static str),
     #[error("unsupported isolation configuration: {0}")]
     UnsupportedIsolationConfiguration(&'static str),
-    #[error("cannot resize KVM guest_memfd memory slot")]
-    CannotResizeGuestMemfdSlot,
-    #[error("private memory range is not contained in guest_memfd private memory")]
-    InvalidPrivateMemoryRange,
     #[error("misaligned gic base address")]
     Misaligned,
     #[error("host does not support GICv2 or GICv3")]
     NoGic,
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[cfg(guest_arch = "aarch64")]
+    #[error("failed to set MPIDR_EL1 for VP {vp_index}")]
+    SetMpidr {
+        vp_index: u32,
+        #[source]
+        err: kvm::Error,
+    },
     #[cfg(guest_arch = "x86_64")]
     #[error("nested virtualization was requested but the host does not support it")]
     NestedVirtUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("restoring saved nested state is not supported; only reset is implemented")]
+    NestedStateRestoreUnsupported,
     #[cfg(guest_arch = "x86_64")]
     #[error("unsupported CPU vendor")]
     UnsupportedCpuVendor,
@@ -93,12 +135,24 @@ pub struct KvmPartition {
 struct KvmPartitionInner {
     #[inspect(skip)]
     kvm: kvm::Partition,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    sev: Option<std::fs::File>,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    snp_config: Option<snp::KvmSnpConfig>,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    snp_launch_state: Mutex<SnpLaunchState>,
     memory: Mutex<KvmMemoryRangeState>,
     memory_backing_mode: KvmMemoryBackingMode,
     #[inspect(iter_by_index)]
     ram_ranges: Vec<MemoryRange>,
     hv1_enabled: bool,
     gm: GuestMemory,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    bsp_cpuid: Vec<kvm::kvm_cpuid_entry2>,
     #[inspect(skip)]
     vps: Vec<KvmVpInner>,
     #[inspect(skip)]
@@ -151,8 +205,20 @@ enum KvmRunVpError {
     #[error("unhandled KVM hypercall: nr={nr:#x}, flags={flags:#x}")]
     UnhandledHypercall { nr: u64, flags: u64 },
     #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "SEV guest requested termination: ghcb_msr={ghcb_msr:#x} reason_set={reason_set:#x} reason={reason:#x}"
+    )]
+    SevTermination {
+        ghcb_msr: u64,
+        reason_set: u64,
+        reason: u64,
+    },
+    #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("cannot inject an extint: the VP is not ready for interrupt injection")]
+    ExtintNotInjectable,
 }
 
 pub struct KvmProcessorBinder {
@@ -175,10 +241,10 @@ impl KvmPartitionInner {
         let Some(vp) = self.vp(vp_index) else { return };
         vp.set_eval(true, Ordering::Relaxed);
 
-        #[cfg(guest_arch = "x86_64")]
-        self.kvm.vp(vp.vp_info().apic_id).force_exit();
-
-        #[cfg(guest_arch = "aarch64")]
-        self.kvm.vp(vp.vp_info().base.vp_index.index()).force_exit();
+        let vp_id = cfg_select! {
+            guest_arch = "x86_64" => vp.vp_info().apic_id,
+            guest_arch = "aarch64" => vp.vp_info().base.vp_index.index(),
+        };
+        self.kvm.vp(vp_id).force_exit();
     }
 }

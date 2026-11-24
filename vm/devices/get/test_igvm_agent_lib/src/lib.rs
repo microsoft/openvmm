@@ -10,6 +10,8 @@
 
 //! NOTE: This is a test implementation and should not be used in production.
 
+pub mod ak_cert;
+
 use base64::Engine;
 use crypto::rsa::RsaKeyPair;
 use crypto::rsa::RsaPublicKey;
@@ -54,6 +56,8 @@ pub enum Error {
     WrappedKeyError(#[source] WrappedKeyError),
     #[error("failed to generate mock key release response")]
     KeyReleaseError(#[source] KeyReleaseError),
+    #[error("AK certificate test validation failed: {0}")]
+    AkCertValidation(String),
 }
 
 #[expect(missing_docs)] // self-explanatory fields
@@ -104,6 +108,8 @@ pub struct TestIgvmAgent {
     plan: Option<IgvmAgentTestPlan>,
     /// Track whether the plan has been installed to prevent multiple installations.
     plan_installed: bool,
+    /// Opt-in stateful AK certificate test policy.
+    ak_cert: Option<ak_cert::State>,
 }
 
 /// Possible actions for the IGVM agent to take in response to a request.
@@ -154,6 +160,12 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
     let mut plan = IgvmAgentTestPlan::default();
 
     match test_config {
+        IgvmAttestTestConfig::AkCertNoRenewal
+        | IgvmAttestTestConfig::AkCertRenewal
+        | IgvmAttestTestConfig::AkCertPersistentAcrossBoot
+        | IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended => {
+            // These configurations use the stateful AK certificate handler.
+        }
         IgvmAttestTestConfig::AkCertRequestFailureAndRetry => {
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
@@ -180,30 +192,6 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondSuccess,
-                ]),
-            );
-        }
-        IgvmAttestTestConfig::AkCertPersistentAcrossBoot => {
-            plan.insert(
-                IgvmAttestRequestType::AK_CERT_REQUEST,
-                VecDeque::from([
-                    IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::AlwaysNoResponse,
-                ]),
-            );
-        }
-        IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended => {
-            // Hyper-V VMs go through an `initial_reboot` that can consume
-            // the first success action.  The extra RespondSuccess ensures
-            // the cert is still provisioned after the reboot, so the
-            // subsequent boot can validate that the cert is served from
-            // the persistent cache.
-            plan.insert(
-                IgvmAttestRequestType::AK_CERT_REQUEST,
-                VecDeque::from([
-                    IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::AlwaysNoResponse,
                 ]),
             );
         }
@@ -266,6 +254,7 @@ impl TestIgvmAgent {
             des_key: None,
             plan: None,
             plan_installed: false,
+            ak_cert: None,
         }
     }
 
@@ -285,6 +274,7 @@ impl TestIgvmAgent {
             }
             IgvmAgentTestSetting::TestConfig(config) => {
                 self.plan = Some(test_config_to_plan(config));
+                self.ak_cert = ak_cert::State::from_config(config);
             }
         }
 
@@ -369,7 +359,7 @@ impl TestIgvmAgent {
             return Err(Error::InvalidIgvmAttestRequestVersion {
                 found: request.request_data.version,
                 expected: IGVM_ATTEST_REQUEST_CURRENT_VERSION,
-            })?;
+            });
         }
 
         // The runtime claims are appended after the fixed-size IgvmAttestRequestBase and IgvmAttestRequestDataExt structures.
@@ -386,6 +376,24 @@ impl TestIgvmAgent {
             return Err(Error::InvalidIgvmAttestRequest);
         }
         let runtime_claims_bytes = &request_bytes[runtime_claims_start..runtime_claims_end];
+
+        if request.header.request_type == IgvmAttestRequestType::AK_CERT_REQUEST {
+            if let Some(state) = &mut self.ak_cert {
+                return state.handle_request(runtime_claims_bytes);
+            }
+        }
+
+        // Extract the request capability bitmap, appended right after the
+        // request base. This tells the agent whether the guest requested the
+        // SHA-384 variant of the RSA+AES key-wrap scheme.
+        let request_data_ext = IgvmAttestRequestDataExt::read_from_prefix(
+            &request_bytes[size_of::<IgvmAttestRequestBase>()..],
+        )
+        .map_err(|_| Error::InvalidIgvmAttestRequest)?
+        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        let use_rsa_aes_key_wrap_384 = request_data_ext
+            .capability_bitmap
+            .use_rsa_aes_key_wrap_384();
 
         let (response, length) = if let Some(action) =
             self.take_next_action(request.header.request_type)
@@ -423,7 +431,10 @@ impl TestIgvmAgent {
                                 self.initialize_keys()?;
                             }
                             let jwt = self
-                                .generate_mock_key_release_response(runtime_claims_bytes)
+                                .generate_mock_key_release_response(
+                                    runtime_claims_bytes,
+                                    use_rsa_aes_key_wrap_384,
+                                )
                                 .map_err(Error::KeyReleaseError)?;
                             let data = jwt.as_bytes().to_vec();
                             let header = IgvmAttestKeyReleaseResponseHeader {
@@ -431,7 +442,11 @@ impl TestIgvmAgent {
                                     + size_of::<IgvmAttestKeyReleaseResponseHeader>())
                                     as u32,
                                 version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo::default(),
+                                error_info: IgvmErrorInfo {
+                                    igvm_signal: IgvmSignal::default()
+                                        .with_rsa_aes_key_wrap_384_used(use_rsa_aes_key_wrap_384),
+                                    ..Default::default()
+                                },
                             };
                             let payload = [header.as_bytes(), &data].concat();
                             let payload_len = payload.len() as u32;
@@ -530,7 +545,10 @@ impl TestIgvmAgent {
 
                     // Generate a mock JWT response for testing - convert request to proper type
                     let jwt_response = self
-                        .generate_mock_key_release_response(runtime_claims_bytes)
+                        .generate_mock_key_release_response(
+                            runtime_claims_bytes,
+                            use_rsa_aes_key_wrap_384,
+                        )
                         .map_err(Error::KeyReleaseError)?;
                     let data = jwt_response.as_bytes().to_vec();
 
@@ -538,7 +556,11 @@ impl TestIgvmAgent {
                         data_size: (data.len() + size_of::<IgvmAttestKeyReleaseResponseHeader>())
                             as u32,
                         version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                        error_info: IgvmErrorInfo::default(),
+                        error_info: IgvmErrorInfo {
+                            igvm_signal: IgvmSignal::default()
+                                .with_rsa_aes_key_wrap_384_used(use_rsa_aes_key_wrap_384),
+                            ..Default::default()
+                        },
                     };
                     let payload = [header.as_bytes(), &data].concat();
                     let payload_len = payload.len() as u32;
@@ -637,6 +659,7 @@ impl TestIgvmAgent {
     fn generate_mock_key_release_response(
         &self,
         runtime_claims_bytes: &[u8],
+        use_rsa_aes_key_wrap_384: bool,
     ) -> Result<String, KeyReleaseError> {
         use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims;
 
@@ -671,7 +694,7 @@ impl TestIgvmAgent {
             .map_err(KeyReleaseError::ConvertJwkRsaFailed)?;
 
         // Generate the JWT response using the extracted RSA key
-        self.generate_jwt_with_rsa_key(rsa_public_key)
+        self.generate_jwt_with_rsa_key(rsa_public_key, use_rsa_aes_key_wrap_384)
     }
 
     /// Generate a mock JWT response for testing KEY_RELEASE_REQUEST
@@ -679,6 +702,7 @@ impl TestIgvmAgent {
     fn generate_jwt_with_rsa_key(
         &self,
         public_key: RsaPublicKey,
+        use_rsa_aes_key_wrap_384: bool,
     ) -> Result<String, KeyReleaseError> {
         use openhcl_attestation_protocol::igvm_attest::akv;
 
@@ -697,9 +721,16 @@ impl TestIgvmAgent {
             .and_then(|kw| kw.wrapper()?.wrap(priv_key_der.as_bytes()))
             .map_err(KeyReleaseError::AesKeyWrap)?;
 
-        // Encrypt the KEK using RSA-OAEP
+        // Encrypt the KEK using RSA-OAEP. Use the SHA-384 variant when the
+        // guest requested it (RSA_AES_KEY_WRAP_384), otherwise the default
+        // scheme with inner RSA-OAEP using SHA-1.
+        let oaep_hash_algorithm = if use_rsa_aes_key_wrap_384 {
+            crypto::HashAlgorithm::Sha384
+        } else {
+            crypto::HashAlgorithm::Sha1
+        };
         let encrypted_kek = public_key
-            .oaep_encrypt(&kek_bytes, crypto::HashAlgorithm::Sha1)
+            .oaep_encrypt(&kek_bytes, oaep_hash_algorithm)
             .map_err(KeyReleaseError::RsaEncryptionError)?;
 
         // Create the PKCS#11 RSA-AES-KEY-WRAP payload: RSA-encrypted KEK + AES-wrapped key

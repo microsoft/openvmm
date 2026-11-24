@@ -58,17 +58,56 @@ impl SimpleFlowNode for Node {
                 fs_err::create_dir_all(&out_dir)?;
                 rt.sh.change_dir(&out_dir);
 
-                flowey::shell_cmd!(rt, "{gh_cli} run download {run_id} -R {repo_owner}/{repo_name} --pattern {file_name}").run()?;
+                let args = DownloadGhArtifactArgs {
+                    gh_cli,
+                    run_id,
+                    repo_owner,
+                    repo_name,
+                    file_name,
+                };
 
-                if !out_dir.join(file_name).exists() {
+                crate::_util::retry(rt, download_gh_artifact, &args, crate::_util::GH_RETRIES)?;
+
+                let artifact_path = out_dir.join(args.file_name);
+
+                if !artifact_path.exists() {
                     anyhow::bail!("Failed to download artifact");
                 }
 
-                rt.write(path, &out_dir);
+                rt.write(path, &artifact_path);
                 Ok(())
             }
         });
 
         Ok(())
     }
+}
+
+struct DownloadGhArtifactArgs {
+    gh_cli: PathBuf,
+    run_id: String,
+    repo_owner: String,
+    repo_name: String,
+    file_name: String,
+}
+
+fn download_gh_artifact(
+    rt: &mut RustRuntimeServices<'_>,
+    args: &DownloadGhArtifactArgs,
+) -> anyhow::Result<()> {
+    let DownloadGhArtifactArgs {
+        gh_cli,
+        run_id,
+        repo_owner,
+        repo_name,
+        file_name,
+    } = args;
+
+    flowey::shell_cmd!(
+        rt,
+        "{gh_cli} run download {run_id} -R {repo_owner}/{repo_name} --pattern {file_name}"
+    )
+    .run()?;
+
+    Ok(())
 }

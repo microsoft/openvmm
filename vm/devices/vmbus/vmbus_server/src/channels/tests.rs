@@ -14,6 +14,31 @@ use vmbus_core::protocol::TargetInfo;
 use zerocopy::FromBytes;
 
 #[test]
+fn pipe_offer_data_is_encoded_in_user_defined_data() {
+    let pipe_flags = protocol::PipeFlags::new().with_gpa_direct(true);
+    let user_defined = protocol::PipeUserDefinedData::from([0x5a; 112]);
+    let params: OfferParamsInternal = OfferParams {
+        channel_type: ChannelType::Pipe {
+            message_mode: true,
+            user_defined,
+            pipe_flags,
+        },
+        ..Default::default()
+    }
+    .into();
+
+    assert_eq!(
+        params.user_defined.as_pipe_params().pipe_type,
+        protocol::PipeType::MESSAGE
+    );
+    assert_eq!(
+        params.user_defined.as_pipe_params().user_defined,
+        user_defined
+    );
+    assert_eq!(params.user_defined.as_pipe_params().flags, pipe_flags);
+}
+
+#[test]
 fn test_version_negotiation_not_supported() {
     let mut env = TestEnv::new();
 
@@ -193,6 +218,35 @@ fn test_version_negotiation_feature_flags() {
         TestVersion::Supported {
             version: Version::Copper,
             expected_features: FeatureFlags::new().with_client_id(true).into(),
+        },
+        target_info.into(),
+    );
+}
+
+#[test]
+fn test_version_negotiation_gpa_pinning_requires_server_support() {
+    let requested_features = FeatureFlags::new().with_gpa_pinning(true);
+    let target_info = TargetInfo::new()
+        .with_sint(VMBUS_SINT)
+        .with_vtl(0)
+        .with_feature_flags(requested_features.into());
+
+    let mut env = TestEnv::new();
+    test_initiate_contact(
+        &mut env,
+        TestVersion::Supported {
+            version: Version::Copper,
+            expected_features: 0,
+        },
+        target_info.into(),
+    );
+
+    let mut env = TestEnv::with_params(false, true);
+    test_initiate_contact(
+        &mut env,
+        TestVersion::Supported {
+            version: Version::Copper,
+            expected_features: requested_features.into(),
         },
         target_info.into(),
     );
@@ -1413,53 +1467,6 @@ fn test_save_restore_hot_add_during_restore() {
 }
 
 #[test]
-fn test_save_restore_closed_channel_without_per_device_restore() {
-    // A channel that is in the Closed state at save time (offered to the
-    // guest but never opened) and is not re-restored per-device must not
-    // be rescinded by revoke_unclaimed_channels. The existing offer has
-    // no per-device state to lose, and rescinding races with any
-    // in-flight probe in the guest that is attempting to open the
-    // channel.
-    let mut env = TestEnv::new();
-
-    let _offer_id1 = env.offer(1);
-    let _offer_id2 = env.offer(2);
-
-    env.connect(Version::Copper, FeatureFlags::new());
-    env.c().handle_request_offers().unwrap();
-
-    let state = env.server.save();
-    let mut env = TestEnv::new();
-
-    let offer_id1 = env.offer(1);
-    let offer_id2 = env.offer(2);
-
-    env.c().restore(state).unwrap();
-    // Only offer_id1 is restored per-device; offer_id2 simulates a
-    // device that doesn't support save/restore (e.g. the IC devices),
-    // which re-offers itself but leaves the per-device restore to
-    // revoke_unclaimed_channels.
-    env.c().restore_channel(offer_id1, false).unwrap();
-
-    env.c().revoke_unclaimed_channels();
-
-    // No messages should be sent: in particular, no rescind for
-    // offer_id2.
-    assert!(env.notifier.messages.is_empty());
-
-    // Both channels should remain in the Closed state, ready to be
-    // opened by the guest.
-    assert!(matches!(
-        env.server.channels[offer_id1].state,
-        ChannelState::Closed
-    ));
-    assert!(matches!(
-        env.server.channels[offer_id2].state,
-        ChannelState::Closed
-    ));
-}
-
-#[test]
 fn test_pending_messages() {
     let mut env = TestEnv::new();
 
@@ -2108,8 +2115,78 @@ fn test_channel_id_order() {
 }
 
 #[test]
+fn test_save_restore_netvsp_channel_id_order() {
+    let interface_id = guid::guid!("f8615163-df3e-46c5-913f-f2d2f965ed0e");
+    let primary_instance_id = guid::guid!("f8615163-0000-1000-2000-00155d121213");
+    let secondary_instance_id = guid::guid!("f8615163-0000-1000-2000-00155d121212");
+
+    let mut env = TestEnv::new();
+    let offer_ids =
+        [(secondary_instance_id, 1), (primary_instance_id, 0)].map(|(instance_id, offer_order)| {
+            env.c()
+                .offer_channel(OfferParamsInternal {
+                    interface_id,
+                    instance_id,
+                    offer_order: Some(offer_order),
+                    ..Default::default()
+                })
+                .unwrap()
+        });
+    env.connect(Version::Win10, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    let [saved_secondary_channel_id, saved_primary_channel_id] = offer_ids.map(|offer_id| {
+        env.server.channels[offer_id]
+            .info
+            .as_ref()
+            .unwrap()
+            .channel_id
+    });
+    assert_eq!(saved_primary_channel_id, ChannelId(1));
+    assert_eq!(saved_secondary_channel_id, ChannelId(2));
+    let state = env.server.save();
+
+    let mut env = TestEnv::new();
+    // Deliberately swapping the offer_order.
+    let secondary_offer_id = env
+        .c()
+        .offer_channel(OfferParamsInternal {
+            interface_id,
+            instance_id: secondary_instance_id,
+            offer_order: Some(0),
+            ..Default::default()
+        })
+        .unwrap();
+    let primary_offer_id = env
+        .c()
+        .offer_channel(OfferParamsInternal {
+            interface_id,
+            instance_id: primary_instance_id,
+            offer_order: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+
+    env.c().restore(state).unwrap();
+    env.c().restore_channel(secondary_offer_id, false).unwrap();
+    env.c().restore_channel(primary_offer_id, false).unwrap();
+
+    let primary_channel_id = env.server.channels[primary_offer_id]
+        .info
+        .as_ref()
+        .unwrap()
+        .channel_id;
+    let secondary_channel_id = env.server.channels[secondary_offer_id]
+        .info
+        .as_ref()
+        .unwrap()
+        .channel_id;
+    assert_eq!(primary_channel_id, saved_primary_channel_id);
+    assert_eq!(secondary_channel_id, saved_secondary_channel_id);
+}
+
+#[test]
 fn test_channel_id_order_absolute() {
-    let mut env = TestEnv::with_params(true);
+    let mut env = TestEnv::with_params(true, false);
 
     let _offer_id1 = env.offer_with_order(3, 3, Some(1));
     let _offer_id3 = env.offer_with_order(5, 5, Some(3));
@@ -2305,6 +2382,33 @@ fn test_confidential_channels_unsupported() {
 
     env.notifier
         .check_message(OutgoingMessage::new(&protocol::AllOffersDelivered {}));
+}
+
+#[test]
+fn test_offer_requires_pinning_only_when_negotiated() {
+    for negotiate_gpa_pinning in [false, true] {
+        let mut env = TestEnv::with_params(false, true);
+        env.connect(
+            Version::Copper,
+            FeatureFlags::new().with_gpa_pinning(negotiate_gpa_pinning),
+        );
+
+        env.offer_with_flags(
+            1,
+            OfferFlags::new().with_require_pinned_external_memory(true),
+        );
+        env.c().handle_request_offers().unwrap();
+
+        let offer = env.notifier.get_message::<protocol::OfferChannel>();
+        assert_eq!(offer.channel_id, ChannelId(1));
+        assert_eq!(
+            offer.flags,
+            OfferFlags::new().with_require_pinned_external_memory(negotiate_gpa_pinning)
+        );
+
+        env.notifier
+            .check_message(OutgoingMessage::new(&protocol::AllOffersDelivered {}));
+    }
 }
 
 #[test]
@@ -2774,16 +2878,17 @@ struct TestEnv {
 
 impl TestEnv {
     fn new() -> Self {
-        Self::with_params(false)
+        Self::with_params(false, false)
     }
 
-    fn with_params(assign_channel_id_on_offer: bool) -> Self {
+    fn with_params(assign_channel_id_on_offer: bool, support_gpa_pinning: bool) -> Self {
         let (notifier, recv) = TestNotifier::new();
         let server = Server::new(
             Vtl::Vtl0,
             MESSAGE_CONNECTION_ID,
             0,
             assign_channel_id_on_offer,
+            support_gpa_pinning,
         );
         Self {
             server,

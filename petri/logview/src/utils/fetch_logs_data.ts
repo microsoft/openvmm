@@ -3,6 +3,7 @@
 
 import { LogEntry, LogLink } from "../data_defs";
 import { stripAnsi } from "./ansi";
+import { waitForIdle } from "./prefetch";
 
 /**
  * Fetch the raw petri.jsonl log content for a given run / architecture / test path.
@@ -15,13 +16,14 @@ export async function fetchLog(
   runId: string,
   architecture: string | undefined,
   testNameRemainder: string,
+  signal?: AbortSignal,
 ): Promise<{ url: string; text: string }> {
   if (!runId) throw new Error("runId required");
   const parts: string[] = [runId];
   if (architecture) parts.push(architecture);
   if (testNameRemainder) parts.push(testNameRemainder);
   const url = `https://openvmmghtestresults.blob.core.windows.net/results/${parts.join("/")}/petri.jsonl`;
-  const response = await fetch(url);
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     throw new Error(
       `Failed to fetch log (${response.status} ${response.statusText}) for ${url}`,
@@ -82,15 +84,6 @@ export function parseLogText(text: string): RawLogRecord[] {
 // Processed petri log entries (UI friendly)
 // --------------------------------------------
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 function removeTimestampPrefix(orig: string, entryTimestamp: Date): string {
   const message = orig.trim();
   const i = message.indexOf(" ");
@@ -140,9 +133,22 @@ export async function fetchProcessedLog(
   runId: string,
   architecture: string | undefined,
   testNameRemainder: string,
+  options: {
+    signal?: AbortSignal;
+    background?: boolean;
+    foregroundSignal?: AbortSignal;
+  } = {},
 ): Promise<LogEntry[]> {
-  const { url, text } = await fetchLog(runId, architecture, testNameRemainder);
+  const { signal, background, foregroundSignal } = options;
+  const { url, text } = await fetchLog(
+    runId,
+    architecture,
+    testNameRemainder,
+    signal,
+  );
+  signal?.throwIfAborted();
   if (!text) return [];
+  if (background) await waitForIdle(signal, foregroundSignal);
   const raw = parseLogText(text);
   const entries: LogEntry[] = [];
   let start: string | null = null;

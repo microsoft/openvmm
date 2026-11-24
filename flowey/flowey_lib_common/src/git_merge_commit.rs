@@ -9,7 +9,7 @@ flowey_request! {
     pub struct Request {
         pub repo_path: ReadVar<PathBuf>,
         pub merge_commit: WriteVar<String>,
-        pub base_branch: String,
+        pub base_branch: ReadVar<String>,
     }
 }
 
@@ -32,9 +32,11 @@ impl SimpleFlowNode for Node {
         ctx.emit_rust_step("get merge commit", move |ctx| {
             let merge_commit = merge_commit.claim(ctx);
             let repo_path = repo_path.claim(ctx);
+            let base_branch = base_branch.claim(ctx);
 
             move |rt| {
                 let repo_path = rt.read(repo_path);
+                let base_branch = rt.read(base_branch);
 
                 rt.sh.change_dir(repo_path);
 

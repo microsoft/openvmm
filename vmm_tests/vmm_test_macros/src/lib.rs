@@ -28,7 +28,10 @@ struct Config {
     arch: MachineArch,
     span: Span,
     extra_deps: Vec<Path>,
-    unstable: bool,
+    /// If unstable, the reason why.
+    unstable: Option<Unstable>,
+    /// If ignored, the reason why (compile-time documentation only).
+    ignored: Option<String>,
 }
 
 struct ResolvedConfig {
@@ -36,15 +39,89 @@ struct ResolvedConfig {
     firmware: Firmware,
     arch: MachineArch,
     extra_deps: Vec<Path>,
-    unstable: bool,
+    unstable: Option<Unstable>,
+    ignored: Option<String>,
     requires_host_vendor: Option<HostVendor>,
     requires_capabilities: Vec<&'static str>,
 }
 
+struct MaybeNestedResolvedConfig {
+    l1_config: ResolvedConfig,
+    nested_config: Option<NestedResolvedConfig>,
+}
+
+struct NestedResolvedConfig {
+    archive_artifact: Path,
+    test_module: syn::LitStr,
+    inner_module: syn::LitStr,
+    test_fn: Ident,
+    l2_config: ResolvedConfig,
+}
+
+#[derive(Clone)]
+struct Unstable {
+    reason: String,
+    on: Option<HostHypervisor>,
+}
+
+impl Parse for Unstable {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let on = if input.peek(syn::Ident) && input.fork().parse::<Ident>()? == "on" {
+            input.parse::<Ident>()?;
+            input.parse::<Token![=]>()?;
+            let hypervisor = input.parse()?;
+            input.parse::<Token![,]>()?;
+            Some(hypervisor)
+        } else {
+            None
+        };
+        let reason = parse_reason(input)?;
+        Ok(Self { reason, on })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HostHypervisor {
+    Mshv,
+    Kvm,
+    Whp,
+    Hvf,
+}
+
+impl Parse for HostHypervisor {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let ident = input.parse::<Ident>()?;
+        match ident.to_string().as_str() {
+            "mshv" => Ok(Self::Mshv),
+            "kvm" => Ok(Self::Kvm),
+            "whp" => Ok(Self::Whp),
+            "hvf" => Ok(Self::Hvf),
+            _ => Err(Error::new(
+                ident.span(),
+                "expected an OpenVMM backend: mshv, kvm, whp, or hvf",
+            )),
+        }
+    }
+}
+
+impl ToTokens for HostHypervisor {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let variant = match self {
+            Self::Mshv => quote!(Mshv),
+            Self::Kvm => quote!(Kvm),
+            Self::Whp => quote!(Whp),
+            Self::Hvf => quote!(Hvf),
+        };
+        tokens.extend(quote!(::petri::requirements::OpenVmmHypervisor::#variant));
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Vmm {
+    #[expect(clippy::enum_variant_names)]
     OpenVmm,
     HyperV,
+    Qemu,
 }
 
 /// Host CPU vendor that a test can be restricted to via macro overrides.
@@ -58,17 +135,17 @@ enum HostVendor {
 }
 
 enum Firmware {
-    LinuxDirect,
+    LinuxDirect(FirmwareOptions),
     LinuxDirectBzImage,
     Pcat(PcatGuest),
     Uefi(UefiGuest),
     OpenhclLinuxDirect,
     OpenhclPcat(PcatGuest),
-    OpenhclUefi(OpenhclUefiOptions, UefiGuest),
+    OpenhclUefi(FirmwareOptions, UefiGuest),
 }
 
 #[derive(Default)]
-struct OpenhclUefiOptions {
+struct FirmwareOptions {
     isolation: Option<IsolationType>,
 }
 
@@ -84,6 +161,7 @@ enum PcatGuest {
 }
 
 enum UefiGuest {
+    Mshv,
     Vhd(ImageInfo),
     GuestTestUefi(MachineArch),
     None,
@@ -96,20 +174,16 @@ struct ImageInfo {
 }
 
 struct Args {
-    configs: Vec<Config>,
+    configs: Vec<MaybeNestedConfig>,
 }
 
 struct ArgsWithOverrides {
     args: Args,
-    vmm: Option<Vmm>,
-    unstable: bool,
-    with_vtl0_pipette: bool,
-    requires_host_vendor: Option<HostVendor>,
-    requires_capabilities: Vec<&'static str>,
+    overrides: ParsedOverrides,
 }
 
 struct ResolvedArgs {
-    configs: Vec<ResolvedConfig>,
+    configs: Vec<MaybeNestedResolvedConfig>,
     with_vtl0_pipette: bool,
 }
 
@@ -134,10 +208,11 @@ impl ResolvedConfig {
         let vmm_prefix = match self.vmm {
             Vmm::OpenVmm => "openvmm",
             Vmm::HyperV => "hyperv",
+            Vmm::Qemu => "qemu",
         };
 
         let firmware_prefix = match &self.firmware {
-            Firmware::LinuxDirect => "linux",
+            Firmware::LinuxDirect(_) => "linux",
             Firmware::LinuxDirectBzImage => "linux_bzimage",
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
@@ -147,21 +222,20 @@ impl ResolvedConfig {
         };
 
         let guest_prefix = match &self.firmware {
-            Firmware::LinuxDirect | Firmware::LinuxDirectBzImage | Firmware::OpenhclLinuxDirect => {
-                None
-            }
+            Firmware::LinuxDirect(_)
+            | Firmware::LinuxDirectBzImage
+            | Firmware::OpenhclLinuxDirect => None,
             Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
 
         let options_prefix = match &self.firmware {
-            Firmware::LinuxDirect
-            | Firmware::LinuxDirectBzImage
+            Firmware::LinuxDirectBzImage
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
             | Firmware::OpenhclLinuxDirect
             | Firmware::OpenhclPcat(_) => None,
-            Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
+            Firmware::LinuxDirect(opt) | Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
         };
 
         let mut name_prefix = format!("{}_{}_{}", vmm_prefix, firmware_prefix, arch_prefix);
@@ -208,6 +282,7 @@ impl UefiGuest {
             UefiGuest::Vhd(known_vhd) => Some(known_vhd.name_prefix.clone()),
             UefiGuest::GuestTestUefi(arch) => Some(format!("guest_test_{}", arch_to_str(*arch))),
             UefiGuest::None => None,
+            UefiGuest::Mshv => Some("mshv".into()),
         }
     }
 }
@@ -224,6 +299,7 @@ impl ToTokens for UefiGuest {
                 quote!(::petri::UefiGuest::guest_test_uefi(resolver, #arch_tokens))
             }
             UefiGuest::None => quote!(::petri::UefiGuest::None),
+            UefiGuest::Mshv => quote!(::petri::UefiGuest::Mshv(::petri::mshv_boot::MshvBoot::resolve(resolver))),
         });
     }
 }
@@ -237,8 +313,12 @@ impl ToTokens for FirmwareAndArch {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let arch = arch_to_tokens(self.arch);
         tokens.extend(match &self.firmware {
-            Firmware::LinuxDirect => {
-                quote!(::petri::Firmware::linux_direct(resolver, #arch))
+            Firmware::LinuxDirect(FirmwareOptions { isolation }) => {
+                let isolation = match isolation {
+                    Some(i) => quote!(Some(#i)),
+                    None => quote!(None),
+                };
+                quote!(::petri::Firmware::linux_direct(resolver, #arch, #isolation))
             }
             Firmware::LinuxDirectBzImage => {
                 quote!(::petri::Firmware::linux_direct_bzimage(resolver))
@@ -255,7 +335,7 @@ impl ToTokens for FirmwareAndArch {
             Firmware::OpenhclPcat(guest) => {
                 quote!(::petri::Firmware::openhcl_pcat(resolver, #guest))
             }
-            Firmware::OpenhclUefi(OpenhclUefiOptions { isolation }, guest) => {
+            Firmware::OpenhclUefi(FirmwareOptions { isolation }, guest) => {
                 let isolation = match isolation {
                     Some(i) => quote!(Some(#i)),
                     None => quote!(None),
@@ -283,7 +363,8 @@ impl Parse for ArgsWithOverrides {
 
         while !input.is_empty() {
             let ident = input.parse::<Ident>()?;
-            match ident.to_string().as_str() {
+            let ident_string = ident.to_string();
+            match ident_string.as_str() {
                 "configs" => {
                     let configs;
                     syn::parenthesized!(configs in input);
@@ -304,18 +385,50 @@ impl Parse for ArgsWithOverrides {
                         overrides.add_capability(capability.span, capability.name)?;
                     }
                 }
-                "openvmm" | "hyperv" => {
+                "openvmm" | "hyperv" | "qemu" => {
                     if position != 0 {
                         return Err(Error::new(
                             ident.span(),
                             "the vmm must be the first argument",
                         ));
                     }
-                    overrides.vmm = Some(if ident == "openvmm" {
-                        Vmm::OpenVmm
-                    } else {
-                        Vmm::HyperV
-                    });
+                    overrides.vmm = match ident_string.as_str() {
+                        "openvmm" => Some(Vmm::OpenVmm),
+                        "hyperv" => Some(Vmm::HyperV),
+                        "qemu" => Some(Vmm::Qemu),
+                        _ => unreachable!(),
+                    };
+                }
+                "unstable" => {
+                    let inner;
+                    syn::parenthesized!(inner in input);
+                    let unstable = inner.parse::<Unstable>()?;
+                    let _: Option<Token![,]> = inner.parse()?;
+                    if !inner.is_empty() {
+                        return Err(inner.error(
+                            "expected `unstable(reason = \"...\")` or \
+                             `unstable(on = <backend>, reason = \"...\")`",
+                        ));
+                    }
+                    if overrides.unstable.replace(unstable).is_some() {
+                        return Err(Error::new(ident.span(), "conflicting override"));
+                    }
+                }
+                "ignore" => {
+                    let inner;
+                    syn::parenthesized!(inner in input);
+                    let reason = parse_reason(&inner)?;
+                    // Tolerate a trailing comma (e.g. from rustfmt).
+                    let _: Option<Token![,]> = inner.parse()?;
+                    if !inner.is_empty() {
+                        return Err(inner.error(
+                            "whole-list `ignore` takes only `reason = \"...\"`; \
+                             wrap an individual config to scope it",
+                        ));
+                    }
+                    if overrides.ignored.replace(reason).is_some() {
+                        return Err(Error::new(ident.span(), "conflicting override"));
+                    }
                 }
                 _ => overrides.apply_ident(&ident)?,
             }
@@ -336,8 +449,9 @@ impl Parse for ArgsWithOverrides {
 
 struct ParsedOverrides {
     vmm: Option<Vmm>,
-    unstable: Option<bool>,
-    with_vtl0_pipette: Option<bool>,
+    unstable: Option<Unstable>,
+    ignored: Option<String>,
+    with_vtl0_pipette: bool,
     requires_host_vendor: Option<HostVendor>,
     requires_capabilities: Vec<&'static str>,
 }
@@ -347,7 +461,8 @@ impl ParsedOverrides {
         Self {
             vmm: None,
             unstable: None,
-            with_vtl0_pipette: None,
+            ignored: None,
+            with_vtl0_pipette: true,
             requires_host_vendor: None,
             requires_capabilities: Vec::new(),
         }
@@ -357,17 +472,11 @@ impl ParsedOverrides {
         let ident_string = ident.to_string();
         let conflict_err = || Err(Error::new(ident.span(), "conflicting override"));
         match ident_string.as_str() {
-            "unstable" => {
-                if self.unstable.is_some() {
-                    return conflict_err();
-                }
-                self.unstable = Some(true);
-            }
             "noagent" => {
-                if self.with_vtl0_pipette.is_some() {
+                if !self.with_vtl0_pipette {
                     return conflict_err();
                 }
-                self.with_vtl0_pipette = Some(false);
+                self.with_vtl0_pipette = false;
             }
             "amd" => {
                 if self.requires_host_vendor.is_some() {
@@ -397,11 +506,7 @@ impl ParsedOverrides {
     fn finish(self, args: Args) -> ArgsWithOverrides {
         ArgsWithOverrides {
             args,
-            vmm: self.vmm,
-            with_vtl0_pipette: self.with_vtl0_pipette.unwrap_or(true),
-            unstable: self.unstable.unwrap_or(false),
-            requires_host_vendor: self.requires_host_vendor,
-            requires_capabilities: self.requires_capabilities,
+            overrides: self,
         }
     }
 }
@@ -432,43 +537,104 @@ fn parse_required_capabilities(input: ParseStream<'_>) -> syn::Result<Vec<Requir
         .collect()
 }
 
+impl Config {
+    fn resolve(self, overrides: &ParsedOverrides) -> syn::Result<ResolvedConfig> {
+        let config = ResolvedConfig {
+            vmm: match (overrides.vmm, self.vmm) {
+                (Some(Vmm::HyperV), Some(Vmm::HyperV))
+                | (Some(Vmm::HyperV), None)
+                | (None, Some(Vmm::HyperV)) => Vmm::HyperV,
+                (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
+                | (Some(Vmm::OpenVmm), None)
+                | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
+                (Some(Vmm::Qemu), Some(Vmm::Qemu))
+                | (Some(Vmm::Qemu), None)
+                | (None, Some(Vmm::Qemu)) => Vmm::Qemu,
+                (None, None) => {
+                    return Err(Error::new(self.span, "vmm must be specified"));
+                }
+                _ => return Err(Error::new(self.span, "vmm mismatch")),
+            },
+            firmware: self.firmware,
+            arch: self.arch,
+            extra_deps: self.extra_deps,
+            // A per-config unstable marker replaces the whole-list reason and condition.
+            // A config may carry both `unstable` and `ignored`; `ignore`
+            // dominates at runtime (the test is skipped).
+            unstable: self.unstable.or_else(|| overrides.unstable.clone()),
+            ignored: self.ignored.or_else(|| overrides.ignored.clone()),
+            requires_host_vendor: overrides.requires_host_vendor,
+            requires_capabilities: overrides.requires_capabilities.clone(),
+        };
+        if config.vmm != Vmm::OpenVmm
+            && config
+                .unstable
+                .as_ref()
+                .is_some_and(|unstable| unstable.on.is_some())
+        {
+            return Err(Error::new(
+                self.span,
+                "`unstable(on = ...)` requires OpenVMM configurations",
+            ));
+        }
+        if matches!(&config.firmware, Firmware::Uefi(UefiGuest::Mshv)) && config.vmm != Vmm::OpenVmm
+        {
+            return Err(Error::new(self.span, "mshv requires the OpenVMM backend"));
+        }
+        Ok(config)
+    }
+}
+
+impl NestedConfig {
+    fn resolve(self, overrides: &ParsedOverrides) -> syn::Result<NestedResolvedConfig> {
+        Ok(NestedResolvedConfig {
+            archive_artifact: self.archive_artifact,
+            test_module: self.test_module,
+            inner_module: self.inner_module,
+            test_fn: self.test_fn,
+            l2_config: self.l2_config.resolve(overrides)?,
+        })
+    }
+}
+
+impl MaybeNestedConfig {
+    fn resolve(self, overrides: &ParsedOverrides) -> syn::Result<MaybeNestedResolvedConfig> {
+        let mut default_overrides = ParsedOverrides::new();
+        let (l1_overrides, l2_overrides) = if let Some(nested_config) = &self.nested_config {
+            default_overrides.add_capability(self.l1_config.span, "nested_virt")?;
+            for capability in &nested_config.l1_requires {
+                default_overrides.add_capability(capability.span, capability.name)?;
+            }
+            (&default_overrides, overrides)
+        } else {
+            (overrides, &default_overrides)
+        };
+        Ok(MaybeNestedResolvedConfig {
+            l1_config: self.l1_config.resolve(l1_overrides)?,
+            nested_config: self
+                .nested_config
+                .map(|c| c.resolve(l2_overrides))
+                .transpose()?,
+        })
+    }
+}
+
 impl ArgsWithOverrides {
     fn resolve(self) -> syn::Result<ResolvedArgs> {
         let ArgsWithOverrides {
             args: Args { configs },
-            vmm,
-            unstable,
-            with_vtl0_pipette,
-            requires_host_vendor,
-            requires_capabilities,
+            overrides,
         } = self;
 
         let mut resolved_configs = Vec::new();
 
         for config in configs.into_iter() {
-            resolved_configs.push(ResolvedConfig {
-                vmm: match (vmm, config.vmm) {
-                    (Some(Vmm::HyperV), Some(Vmm::HyperV))
-                    | (Some(Vmm::HyperV), None)
-                    | (None, Some(Vmm::HyperV)) => Vmm::HyperV,
-                    (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
-                    | (Some(Vmm::OpenVmm), None)
-                    | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
-                    (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
-                    _ => return Err(Error::new(config.span, "vmm mismatch")),
-                },
-                firmware: config.firmware,
-                arch: config.arch,
-                extra_deps: config.extra_deps,
-                unstable: config.unstable || unstable,
-                requires_host_vendor,
-                requires_capabilities: requires_capabilities.clone(),
-            });
+            resolved_configs.push(config.resolve(&overrides)?);
         }
 
         Ok(ResolvedArgs {
             configs: resolved_configs,
-            with_vtl0_pipette,
+            with_vtl0_pipette: overrides.with_vtl0_pipette,
         })
     }
 }
@@ -480,7 +646,7 @@ impl Parse for Args {
         }
 
         let configs: Vec<_> = input
-            .parse_terminated(Config::parse, Token![,])?
+            .parse_terminated(MaybeNestedConfig::parse, Token![,])?
             .into_iter()
             .collect();
 
@@ -489,17 +655,9 @@ impl Parse for Args {
         }
 
         for config in &configs {
-            #[expect(clippy::single_match)] // more patterns coming later
-            match config.firmware {
-                Firmware::Uefi(UefiGuest::Vhd(ImageInfo { arch, .. })) => {
-                    if config.arch != arch {
-                        return Err(Error::new(
-                            config.span,
-                            "firmware architecture must match guest architecture",
-                        ));
-                    }
-                }
-                _ => {}
+            validate_firmware(&config.l1_config)?;
+            if let Some(nested_config) = config.nested_config.as_ref() {
+                validate_firmware(&nested_config.l2_config)?;
             }
         }
 
@@ -507,74 +665,171 @@ impl Parse for Args {
     }
 }
 
-impl Parse for Config {
+fn validate_firmware(config: &Config) -> syn::Result<()> {
+    match config.firmware {
+        Firmware::Uefi(UefiGuest::Mshv) => {
+            if config.arch != MachineArch::X86_64
+                || config.vmm.is_some_and(|vmm| vmm != Vmm::OpenVmm)
+            {
+                return Err(Error::new(config.span, "mshv requires x86-64 OpenVMM UEFI"));
+            }
+        }
+        Firmware::OpenhclUefi(_, UefiGuest::Mshv) => {
+            return Err(Error::new(config.span, "mshv does not support OpenHCL"));
+        }
+        Firmware::Uefi(UefiGuest::Vhd(ImageInfo { arch, .. })) => {
+            if config.arch != arch {
+                return Err(Error::new(
+                    config.span,
+                    "firmware architecture must match guest architecture",
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+impl Parse for MaybeNestedConfig {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let word = input.parse::<Ident>()?;
         let word_string = word.to_string();
 
-        let (unstable, remainder) = if let Some(remainder) = word_string.strip_prefix("unstable_") {
-            (true, remainder)
+        if word_string == "nested" {
+            let inner;
+            syn::parenthesized!(inner in input);
+            parse_nested(&inner)
         } else {
-            (false, word_string.as_str())
-        };
-
-        let (vmm, remainder) = if let Some(remainder) = remainder.strip_prefix("hyperv_") {
-            (Some(Vmm::HyperV), remainder)
-        } else if let Some(remainder) = remainder.strip_prefix("openvmm_") {
-            (Some(Vmm::OpenVmm), remainder)
-        } else {
-            (None, remainder)
-        };
-
-        let (arch, firmware) = match remainder {
-            "linux_direct_x64" => (MachineArch::X86_64, Firmware::LinuxDirect),
-            "linux_direct_bzimage_x64" => (MachineArch::X86_64, Firmware::LinuxDirectBzImage),
-            "linux_direct_aarch64" => (MachineArch::Aarch64, Firmware::LinuxDirect),
-            "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
-            "pcat_x64" => (
-                MachineArch::X86_64,
-                Firmware::Pcat(parse_pcat_guest(input)?),
-            ),
-            "uefi_x64" => (
-                MachineArch::X86_64,
-                Firmware::Uefi(parse_uefi_guest(input)?),
-            ),
-            "uefi_aarch64" => (
-                MachineArch::Aarch64,
-                Firmware::Uefi(parse_uefi_guest(input)?),
-            ),
-            "openhcl_pcat_x64" => (
-                MachineArch::X86_64,
-                Firmware::OpenhclPcat(parse_pcat_guest(input)?),
-            ),
-            "openhcl_uefi_x64" => (
-                MachineArch::X86_64,
-                Firmware::OpenhclUefi(parse_openhcl_uefi_options(input)?, parse_uefi_guest(input)?),
-            ),
-            "openhcl_uefi_aarch64" => (
-                MachineArch::Aarch64,
-                Firmware::OpenhclUefi(parse_openhcl_uefi_options(input)?, parse_uefi_guest(input)?),
-            ),
-            "openhcl_linux_direct_aarch64" | "pcat_aarch64" => {
-                return Err(Error::new(
-                    word.span(),
-                    "aarch64 is not supported for this firmware, use x64 instead",
-                ));
-            }
-            _ => return Err(Error::new(word.span(), "unrecognized firmware")),
-        };
-
-        let extra_deps = parse_extra_deps(input)?;
-
-        Ok(Config {
-            vmm,
-            firmware,
-            arch,
-            span: input.span(),
-            extra_deps,
-            unstable,
-        })
+            Ok(parse_config(input, word)?.into())
+        }
     }
+}
+
+impl Parse for Config {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let word = input.parse::<Ident>()?;
+        parse_config(input, word)
+    }
+}
+
+fn parse_config(input: ParseStream<'_>, word: Ident) -> syn::Result<Config> {
+    let word_string = word.to_string();
+
+    // Per-config `ignore(reason = "...", <config>)` /
+    // `unstable(reason = "...", <config>)` wrappers.
+    if word_string == "ignore" || word_string == "unstable" {
+        let inner;
+        syn::parenthesized!(inner in input);
+        if word_string == "unstable"
+            && inner.peek(syn::Ident)
+            && inner.fork().parse::<Ident>()? == "on"
+        {
+            return Err(
+                inner.error("use test-wide `unstable(on = ..., reason = ...)` in `vmm_test_with`")
+            );
+        }
+        let unstable = if word_string == "unstable" {
+            Some(Unstable {
+                reason: parse_reason(&inner)?,
+                on: None,
+            })
+        } else {
+            None
+        };
+        let ignored = if word_string == "ignore" {
+            Some(parse_reason(&inner)?)
+        } else {
+            None
+        };
+        inner.parse::<Token![,]>().map_err(|_| {
+            Error::new(
+                word.span(),
+                "per-config `ignore`/`unstable` requires a config, e.g. \
+                     `ignore(reason = \"...\", linux_direct_x64)`",
+            )
+        })?;
+        let mut config = inner.parse::<Config>()?;
+        // Tolerate a trailing comma (e.g. from rustfmt).
+        let _: Option<Token![,]> = inner.parse()?;
+        if !inner.is_empty() {
+            return Err(inner.error("expected a single config after the reason"));
+        }
+        if config.unstable.is_some() || config.ignored.is_some() {
+            return Err(Error::new(
+                word.span(),
+                "cannot nest `ignore`/`unstable` wrappers",
+            ));
+        }
+        config.ignored = ignored;
+        config.unstable = unstable;
+        return Ok(config);
+    }
+
+    let (vmm, remainder) = if let Some(remainder) = word_string.strip_prefix("hyperv_") {
+        (Some(Vmm::HyperV), remainder)
+    } else if let Some(remainder) = word_string.strip_prefix("openvmm_") {
+        (Some(Vmm::OpenVmm), remainder)
+    } else if let Some(remainder) = word_string.strip_prefix("qemu_") {
+        (Some(Vmm::Qemu), remainder)
+    } else {
+        (None, word_string.as_str())
+    };
+
+    let (arch, firmware) = match remainder {
+        "linux_direct_x64" => (
+            MachineArch::X86_64,
+            Firmware::LinuxDirect(parse_linux_direct_options(input, MachineArch::X86_64)?),
+        ),
+        "linux_direct_bzimage_x64" => (MachineArch::X86_64, Firmware::LinuxDirectBzImage),
+        "linux_direct_aarch64" => (
+            MachineArch::Aarch64,
+            Firmware::LinuxDirect(parse_linux_direct_options(input, MachineArch::Aarch64)?),
+        ),
+        "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
+        "pcat_x64" => (
+            MachineArch::X86_64,
+            Firmware::Pcat(parse_pcat_guest(input)?),
+        ),
+        "uefi_x64" => (
+            MachineArch::X86_64,
+            Firmware::Uefi(parse_uefi_guest(input)?),
+        ),
+        "uefi_aarch64" => (
+            MachineArch::Aarch64,
+            Firmware::Uefi(parse_uefi_guest(input)?),
+        ),
+        "openhcl_pcat_x64" => (
+            MachineArch::X86_64,
+            Firmware::OpenhclPcat(parse_pcat_guest(input)?),
+        ),
+        "openhcl_uefi_x64" => (
+            MachineArch::X86_64,
+            Firmware::OpenhclUefi(parse_openhcl_uefi_options(input)?, parse_uefi_guest(input)?),
+        ),
+        "openhcl_uefi_aarch64" => (
+            MachineArch::Aarch64,
+            Firmware::OpenhclUefi(parse_openhcl_uefi_options(input)?, parse_uefi_guest(input)?),
+        ),
+        "openhcl_linux_direct_aarch64" | "pcat_aarch64" => {
+            return Err(Error::new(
+                word.span(),
+                "aarch64 is not supported for this firmware, use x64 instead",
+            ));
+        }
+        _ => return Err(Error::new(word.span(), "unrecognized firmware")),
+    };
+
+    let extra_deps = parse_extra_deps(input)?;
+
+    Ok(Config {
+        vmm,
+        firmware,
+        arch,
+        span: input.span(),
+        extra_deps,
+        unstable: None,
+        ignored: None,
+    })
 }
 
 fn parse_pcat_guest(input: ParseStream<'_>) -> syn::Result<PcatGuest> {
@@ -617,6 +872,7 @@ impl Parse for UefiGuest {
             "guest_test_uefi_x64" => Ok(UefiGuest::GuestTestUefi(MachineArch::X86_64)),
             "guest_test_uefi_aarch64" => Ok(UefiGuest::GuestTestUefi(MachineArch::Aarch64)),
             "none" => Ok(UefiGuest::None),
+            "mshv" => Ok(UefiGuest::Mshv),
             "vhd" => {
                 let parens;
                 syn::parenthesized!(parens in input);
@@ -734,7 +990,7 @@ fn parse_iso(input: ParseStream<'_>) -> syn::Result<ImageInfo> {
     })
 }
 
-impl OpenhclUefiOptions {
+impl FirmwareOptions {
     fn name_prefix(&self) -> Option<String> {
         let mut prefix = String::new();
         if let Some(isolation) = &self.isolation {
@@ -752,7 +1008,7 @@ impl OpenhclUefiOptions {
     }
 }
 
-impl Parse for OpenhclUefiOptions {
+impl Parse for FirmwareOptions {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut options = Self::default();
 
@@ -777,7 +1033,7 @@ impl Parse for OpenhclUefiOptions {
                     }
                     options.isolation = Some(IsolationType::Tdx);
                 }
-                _ => return Err(Error::new(word.span(), "unrecognized openhcl uefi option")),
+                _ => return Err(Error::new(word.span(), "unrecognized firmware option")),
             }
         }
         Ok(options)
@@ -794,7 +1050,7 @@ impl ToTokens for IsolationType {
     }
 }
 
-fn parse_openhcl_uefi_options(input: ParseStream<'_>) -> syn::Result<OpenhclUefiOptions> {
+fn parse_openhcl_uefi_options(input: ParseStream<'_>) -> syn::Result<FirmwareOptions> {
     if input.peek(syn::token::Paren) {
         return Ok(Default::default());
     }
@@ -802,6 +1058,42 @@ fn parse_openhcl_uefi_options(input: ParseStream<'_>) -> syn::Result<OpenhclUefi
     let brackets;
     syn::bracketed!(brackets in input);
     brackets.parse()
+}
+
+/// Parses optional `[isolation]` options for Linux direct.
+///
+/// A bracket after Linux direct can also hold extra artifact dependencies, so
+/// it holds options only when every entry is a known option word.
+fn parse_linux_direct_options(
+    input: ParseStream<'_>,
+    arch: MachineArch,
+) -> syn::Result<FirmwareOptions> {
+    if !bracket_holds_options(&input.fork()).unwrap_or(false) {
+        return Ok(Default::default());
+    }
+
+    let span = input.span();
+    let brackets;
+    syn::bracketed!(brackets in input);
+    let options: FirmwareOptions = brackets.parse()?;
+    match (arch, &options.isolation) {
+        (_, None) | (MachineArch::X86_64, Some(IsolationType::Snp)) => Ok(options),
+        _ => Err(Error::new(
+            span,
+            "Linux direct supports only SNP isolation, and only on x64",
+        )),
+    }
+}
+
+fn bracket_holds_options(input: ParseStream<'_>) -> syn::Result<bool> {
+    let brackets;
+    syn::bracketed!(brackets in input);
+    let words = brackets.parse_terminated(Path::parse, Token![,])?;
+    Ok(!words.is_empty()
+        && words.iter().all(|p| {
+            p.get_ident()
+                .is_some_and(|i| matches!(&*i.to_string(), "vbs" | "snp" | "tdx"))
+        }))
 }
 
 fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
@@ -815,13 +1107,116 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
     Ok(deps.into_iter().collect())
 }
 
+/// Parses a mandatory `reason = "..."` argument, returning the reason string.
+fn parse_reason(input: ParseStream<'_>) -> syn::Result<String> {
+    let ident = input.parse::<Ident>()?;
+    if ident != "reason" {
+        return Err(Error::new(ident.span(), "expected `reason = \"...\"`"));
+    }
+    input.parse::<Token![=]>()?;
+    let reason = input.parse::<syn::LitStr>()?;
+    Ok(reason.value())
+}
+
+struct MaybeNestedConfig {
+    l1_config: Config,
+    nested_config: Option<NestedConfig>,
+}
+
+impl From<Config> for MaybeNestedConfig {
+    fn from(value: Config) -> Self {
+        Self {
+            l1_config: value,
+            nested_config: None,
+        }
+    }
+}
+
+struct NestedConfig {
+    archive_artifact: Path,
+    test_module: syn::LitStr,
+    inner_module: syn::LitStr,
+    test_fn: Ident,
+    l1_requires: Vec<RequiredCapability>,
+    l2_config: Config,
+}
+
+/// Parses a nested config
+fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
+    let parens;
+    syn::parenthesized!(parens in input);
+    let test_fn = parens.parse::<Ident>()?;
+    parens.parse::<Token![,]>()?;
+    let l1_config = parens.parse::<Config>()?;
+    if l1_config.ignored.is_some() || l1_config.unstable.is_some() {
+        return Err(Error::new(
+            l1_config.span,
+            "ignored/unstable should be applied to the l2 config",
+        ));
+    }
+    let _: Option<Token![,]> = parens.parse()?;
+    let l1_requires = if parens.is_empty() {
+        Vec::new()
+    } else {
+        let requires = parens.parse::<Ident>()?;
+        if requires != "requires" {
+            return Err(Error::new(requires.span(), "expected `requires(...)`"));
+        }
+        let capabilities;
+        syn::parenthesized!(capabilities in parens);
+        let capabilities = parse_required_capabilities(&capabilities)?;
+        let _: Option<Token![,]> = parens.parse()?;
+        capabilities
+    };
+    if !parens.is_empty() {
+        return Err(parens.error("unexpected tokens after the L1 config"));
+    }
+    input.parse::<Token![,]>()?;
+
+    let parens;
+    syn::parenthesized!(parens in input);
+    let archive_artifact = parens.parse::<Path>()?;
+    parens.parse::<Token![,]>()?;
+    let test_module = parens.parse::<syn::LitStr>()?;
+    parens.parse::<Token![,]>()?;
+    let inner_module = parens.parse::<syn::LitStr>()?;
+    parens.parse::<Token![,]>()?;
+    let l2_config = parens.parse::<Config>()?;
+    let _: Option<Token![,]> = parens.parse()?;
+    if !parens.is_empty() {
+        return Err(parens.error("unexpected tokens after the L2 config"));
+    }
+    let _: Option<Token![,]> = input.parse()?;
+    if !input.is_empty() {
+        return Err(parens.error("unexpected tokens after nested config"));
+    }
+
+    Ok(MaybeNestedConfig {
+        l1_config,
+        nested_config: Some(NestedConfig {
+            archive_artifact,
+            test_module,
+            inner_module,
+            test_fn,
+            l1_requires,
+            l2_config,
+        }),
+    })
+}
+
 /// Transform the function into VMM tests, one for each specified firmware configuration.
 ///
-/// All options can be prefixed with "unstable_" to denote that this should
-/// not block PRs if it fails.
+/// An individual config can be marked unstable (runs, but failures don't block
+/// PRs) or ignored (skipped by default, like a libtest `#[ignore]` test) by
+/// wrapping it in `unstable(reason = "...", <config>)` or
+/// `ignore(reason = "...", <config>)`. The `reason` is mandatory. Use
+/// `vmm_test_with` to apply either to the whole list of configs.
+///
+/// Use the test-wide `unstable(on = <backend>, reason = "...")` attribute in
+/// `vmm_test_with` to limit instability to an OpenVMM backend.
 ///
 /// Valid configuration options are:
-/// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
+/// - `{vmm}_linux_direct_{arch}[list,of,options]`: Our provided Linux direct image
 /// - `{vmm}_linux_direct_bzimage_x64`: Our provided Linux direct bzImage (compressed kernel, x86_64 only)
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
@@ -832,6 +1227,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// Valid VMMs are:
 /// - openvmm
 /// - hyperv
+/// - qemu
 ///
 /// Valid architectures are:
 /// - x64
@@ -844,6 +1240,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// Valid UEFI guest options are:
 /// - `vhd(<VHD>)`: One of our supported VHDs
 /// - `guest_test_uefi_{arch}`: Our UEFI test application
+/// - `mshv`: An x86-64 mshv root on OpenVMM with shared test provisioning.
 /// - `none`: No guest
 ///
 /// Valid x64 VHD options are:
@@ -866,6 +1263,9 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// Valid x64 ISO options are:
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 installer from the FreeBSD Project
 ///
+/// Valid Linux direct options are:
+/// - `snp`: Boot an SNP-isolated guest from an IGVM file (x64 only).
+///
 /// Valid OpenHCL UEFI options are:
 /// - `nvme`: Attach the boot drive via NVMe assigned to VTL2.
 /// - `vbs`: Use VBS isolation.
@@ -875,6 +1275,22 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// Each configuration can be optionally followed by a square-bracketed, comma-separated
 /// list of additional artifacts required for that particular configuration.
 ///
+/// Nested tests can be defined by wrapping the necessary information with `nested(...)`:
+/// - The L1 and L2 configs, as defined above.
+/// - The function that creates the L1 VM host.
+/// - The information necessary to run the L2 test inside of the L1.
+///
+/// ```rust,ignore
+/// nested(
+///     (my_vm_host, l1_config),
+///     (NEXTEST_ARCHIVE_WITH_NESTED_TEST, "test_binary", "test::module::path", l2_config),
+/// ),
+/// ```
+///
+/// The L1 tuple optionally accepts `requires(...)` after its config to require
+/// host capabilities independently of the L2 test, for example
+/// `(my_vm_host, l1_config, requires(nested_reset))`.
+///
 #[proc_macro_attribute]
 pub fn vmm_test(
     attr: proc_macro::TokenStream,
@@ -882,11 +1298,14 @@ pub fn vmm_test(
 ) -> proc_macro::TokenStream {
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
-        vmm: None,
-        unstable: false,
-        with_vtl0_pipette: true,
-        requires_host_vendor: None,
-        requires_capabilities: Vec::new(),
+        overrides: ParsedOverrides {
+            vmm: None,
+            unstable: None,
+            ignored: None,
+            with_vtl0_pipette: true,
+            requires_host_vendor: None,
+            requires_capabilities: Vec::new(),
+        },
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -903,7 +1322,11 @@ pub fn vmm_test(
 /// ```
 ///
 /// The available attributes are:
-/// - unstable: all variants of this test are unstable
+/// - unstable(reason = "..."): all variants are unstable (failures don't block PRs)
+/// - `unstable(on = <backend>, reason = "...")`: OpenVMM variants are unstable only
+///   on the selected backend (`mshv`, `kvm`, `whp`, or `hvf`); they still run as
+///   stable tests on other backends
+/// - ignore(reason = "..."): all variants are ignored (skipped by default)
 /// - noagent: don't use pipette in vtl0 for this test
 /// - amd: this test only runs on AMD-vendor hosts (skipped otherwise)
 /// - intel: this test only runs on Intel-vendor hosts (skipped otherwise)
@@ -911,17 +1334,24 @@ pub fn vmm_test(
 /// - openvmm: use openvmm as the vmm
 /// - requires(...): required capabilities (see below)
 ///
+/// `unstable` and `ignore` can also be applied to a single config by wrapping
+/// it: `unstable(reason = "...", <config>)` / `ignore(reason = "...", <config>)`.
+/// A per-config wrapper cannot itself be nested inside another.
+/// The `on` selector is only supported in the test-wide `unstable` attribute,
+/// not in a per-config wrapper.
+///
 /// `requires(...)` lists capabilities the test needs. Petri auto-detects some
 /// capabilities, such as `vpci`, and execution environments can advertise
 /// capabilities via the `PETRI_CAPABILITIES` environment variable. When a
 /// required capability is not available, the test is skipped, so it
-/// self-excludes on any host that cannot provide it.
+/// self-excludes on any host that cannot provide it. Capability availability
+/// is evaluated in the context of each config's resolved VMM.
 ///
 /// By convention the vmm (if specified) comes first and `configs(...)` comes
 /// last; both are enforced.
 ///
 /// example: #[vmm_test_with(noagent, configs(linux_direct_x64, ...))]
-/// example: #[vmm_test_with(openvmm, requires(test_disk_vfio), configs(linux_direct_aarch64))]
+/// example: #[vmm_test_with(openvmm, requires(test_disk), configs(linux_direct_aarch64))]
 /// example: #[vmm_test_with(openvmm, amd, configs(linux_direct_x64))]
 #[proc_macro_attribute]
 pub fn vmm_test_with(
@@ -944,11 +1374,14 @@ pub fn openvmm_test(
 ) -> proc_macro::TokenStream {
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
-        vmm: Some(Vmm::OpenVmm),
-        unstable: false,
-        with_vtl0_pipette: true,
-        requires_host_vendor: None,
-        requires_capabilities: Vec::new(),
+        overrides: ParsedOverrides {
+            vmm: Some(Vmm::OpenVmm),
+            unstable: None,
+            ignored: None,
+            with_vtl0_pipette: true,
+            requires_host_vendor: None,
+            requires_capabilities: Vec::new(),
+        },
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -965,11 +1398,14 @@ pub fn openvmm_test_no_agent(
 ) -> proc_macro::TokenStream {
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
-        vmm: Some(Vmm::OpenVmm),
-        unstable: false,
-        with_vtl0_pipette: false,
-        requires_host_vendor: None,
-        requires_capabilities: Vec::new(),
+        overrides: ParsedOverrides {
+            vmm: Some(Vmm::OpenVmm),
+            unstable: None,
+            ignored: None,
+            with_vtl0_pipette: false,
+            requires_host_vendor: None,
+            requires_capabilities: Vec::new(),
+        },
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -997,77 +1433,159 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
     let original_name = &item.sig.ident;
     let mut tests = TokenStream::new();
     // FUTURE: compute all this in code instead of in the macro.
-    for config in args.configs {
-        let name = format!("{}_{original_name}", config.name_prefix());
-
-        // Build requirements based on the configuration and resolved VMM
-        let requirements = build_requirements(
-            &config.firmware,
-            config.vmm,
-            config.requires_host_vendor,
-            &config.requires_capabilities,
-        );
-
-        // Now move the values for the FirmwareAndArch and extra_deps
-        let extra_deps = config.extra_deps;
-
-        let firmware = FirmwareAndArch {
-            firmware: config.firmware,
-            arch: config.arch,
-        };
-        let arch = arch_to_tokens(config.arch);
-
-        let (cfg_conditions, artifacts, petri_vm_config) = match config.vmm {
-            Vmm::HyperV => (
-                quote!(#[cfg(windows)]),
-                quote!(::petri::PetriVmArtifacts::<::petri::hyperv::HyperVPetriBackend>),
-                quote!(::petri::PetriVmBuilder::<::petri::hyperv::HyperVPetriBackend>),
-            ),
-            Vmm::OpenVmm => (
-                quote!(),
-                quote!(::petri::PetriVmArtifacts::<::petri::openvmm::OpenVmmPetriBackend>),
-                quote!(::petri::PetriVmBuilder::<::petri::openvmm::OpenVmmPetriBackend>),
-            ),
-        };
-
-        let remote_access = match config.vmm {
-            Vmm::HyperV => quote!(::petri::RemoteAccess::LocalOnly),
-            Vmm::OpenVmm => quote!(::petri::RemoteAccess::Allow),
-        };
-
-        let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
-        let unstable = config.unstable.to_token_stream();
-
-        let test = quote! {
-            #cfg_conditions
-            ::petri::SimpleTest::new(
-                #name,
-                |resolver| {
-                    let firmware = #firmware;
-                    let arch = #arch;
-                    let extra_deps = (#(resolver.require(#extra_deps),)*);
-                    let artifacts = #artifacts::new(resolver, firmware, arch, #with_vtl0_pipette)?;
-                    Some((artifacts, extra_deps))
-                },
-                |params, (artifacts, extra_deps)| {
-                    ::pal_async::DefaultPool::run_with(async |driver| {
-                        let config = #petri_vm_config;
-                        #original_name(#original_args).await
-                    })
-                },
-                Some(#requirements),
-                #unstable,
-                #remote_access,
-            ).into(),
-        };
-
-        tests.extend(test);
+    for mut config in args.configs {
+        let no_nested_test = quote!(None);
+        if let Some(mut nested_config) = config.nested_config {
+            let name = format!(
+                "{}_{}_on_{}_{}",
+                nested_config.l2_config.name_prefix(),
+                original_name,
+                config.l1_config.name_prefix(),
+                nested_config.test_fn,
+            );
+            let archive = nested_config.archive_artifact.to_token_stream();
+            let inner_name = format!("nested_{name}");
+            let test_module = nested_config.test_module;
+            let inner_module = nested_config.inner_module;
+            let nested_test = quote! {{
+                const NAME: &'static str = concat!(#inner_module, "::", #inner_name);
+                resolver.require_nested(#archive, NAME);
+                Some(::petri::NestedTestDeps::new(
+                    #archive,
+                    #test_module,
+                    NAME,
+                ))
+            }};
+            let l1_args = if config.l1_config.extra_deps.is_empty() {
+                quote! {config}
+            } else {
+                quote! {config, extra_deps}
+            };
+            config.l1_config.ignored = nested_config.l2_config.ignored.take();
+            config.l1_config.unstable = nested_config.l2_config.unstable.take();
+            tests.extend(make_vmm_test_config(
+                &name,
+                &nested_config.test_fn.to_token_stream(),
+                &l1_args,
+                config.l1_config,
+                &true.to_token_stream(),
+                &nested_test,
+            ));
+            nested_config.l2_config.ignored = Some("always ignore l2 tests".into());
+            tests.extend(make_vmm_test_config(
+                &inner_name,
+                &original_name.to_token_stream(),
+                &original_args,
+                nested_config.l2_config,
+                &with_vtl0_pipette,
+                &no_nested_test,
+            ));
+        } else {
+            let name = format!("{}_{original_name}", config.l1_config.name_prefix());
+            tests.extend(make_vmm_test_config(
+                &name,
+                &original_name.to_token_stream(),
+                &original_args,
+                config.l1_config,
+                &with_vtl0_pipette,
+                &no_nested_test,
+            ));
+        }
     }
 
     Ok(quote! {
         ::petri::multitest!(vec![#tests]);
         #item
     })
+}
+
+fn make_vmm_test_config(
+    name: &String,
+    original_name: &TokenStream,
+    original_args: &TokenStream,
+    config: ResolvedConfig,
+    with_vtl0_pipette: &TokenStream,
+    nested_test: &TokenStream,
+) -> TokenStream {
+    // Build requirements based on the configuration and resolved VMM
+    let requirements = build_requirements(
+        &config.firmware,
+        config.vmm,
+        config.requires_host_vendor,
+        &config.requires_capabilities,
+    );
+
+    // Now move the values for the FirmwareAndArch and extra_deps
+    let extra_deps = config.extra_deps;
+
+    let firmware = FirmwareAndArch {
+        firmware: config.firmware,
+        arch: config.arch,
+    };
+    let arch = arch_to_tokens(config.arch);
+
+    let (cfg_conditions, backend) = match config.vmm {
+        Vmm::HyperV => (
+            quote!(#[cfg(windows)]),
+            quote!(::petri::hyperv::HyperVPetriBackend),
+        ),
+        Vmm::OpenVmm => (quote!(), quote!(::petri::openvmm::OpenVmmPetriBackend)),
+        Vmm::Qemu => (quote!(), quote!(::petri::qemu::QemuPetriBackend)),
+    };
+
+    let remote_access = match config.vmm {
+        Vmm::HyperV => quote!(::petri::RemoteAccess::LocalOnly),
+        Vmm::OpenVmm => quote!(::petri::RemoteAccess::Allow),
+        Vmm::Qemu => quote!(::petri::RemoteAccess::LocalOnly),
+    };
+
+    let petri_vm_config =
+        quote!(::petri::PetriVmBuilder::<#backend>::new(params, artifacts, &driver)?);
+    let unstable = match &config.unstable {
+        Some(Unstable {
+            reason,
+            on: Some(hypervisor),
+        }) => quote!(.unstable_on(
+            #reason,
+            ::petri::requirements::TestRequirement::OpenVmmHypervisor(#hypervisor)
+        )),
+        Some(Unstable { reason, on: None }) => quote!(.unstable(#reason)),
+        None => quote!(),
+    };
+    let ignore = if config.ignored.is_some() {
+        quote!(.ignore())
+    } else {
+        quote!()
+    };
+
+    quote! {
+        #cfg_conditions
+        ::petri::SimpleTest::new_async(
+            #name,
+            |resolver| {
+                let firmware = #firmware;
+                let arch = #arch;
+                let extra_deps = (#(resolver.require(#extra_deps),)*);
+                let artifacts = ::petri::PetriVmArtifacts::<#backend>::new_maybe_nested(
+                    resolver,
+                    firmware,
+                    arch,
+                    #with_vtl0_pipette,
+                    #nested_test,
+                )?;
+                Some((artifacts, extra_deps))
+            },
+            async |params, driver, (artifacts, extra_deps)| {
+                let config = #petri_vm_config;
+                #original_name(#original_args).await
+            },
+        )
+        .requirements(#requirements)
+        .remote_access(#remote_access)
+        #unstable
+        #ignore
+        .into(),
+    }
 }
 
 // Helper to build requirements TokenStream for firmware and resolved VMM
@@ -1080,8 +1598,11 @@ fn build_requirements(
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
     // Add isolation requirement if specified
-    if let Firmware::OpenhclUefi(
-        OpenhclUefiOptions {
+    if let Firmware::LinuxDirect(FirmwareOptions {
+        isolation: Some(isolation),
+    })
+    | Firmware::OpenhclUefi(
+        FirmwareOptions {
             isolation: Some(isolation),
         },
         _,
@@ -1126,12 +1647,158 @@ fn build_requirements(
     }
 
     for capability in requires_capabilities {
+        let vmm = match resolved_vmm {
+            Vmm::OpenVmm => quote!(::petri::requirements::VmmType::OpenVmm),
+            Vmm::HyperV => quote!(::petri::requirements::VmmType::HyperV),
+            Vmm::Qemu => quote!(::petri::requirements::VmmType::Qemu),
+        };
         requirement_expr = quote!(#requirement_expr.and(
-            ::petri::requirements::TestRequirement::RequiresCapability(#capability)
+            ::petri::requirements::TestRequirement::RequiresCapability {
+                name: #capability,
+                vmm: #vmm,
+            }
         ));
     }
 
     quote!(
         ::petri::requirements::TestCaseRequirements::new(#requirement_expr)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn expand(attr: TokenStream) -> syn::Result<String> {
+        let args = syn::parse2::<ArgsWithOverrides>(attr)?;
+        let item = syn::parse_quote! {
+            async fn restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+                Ok(())
+            }
+        };
+        let output = make_vmm_test(args, item)?;
+        syn::parse2::<syn::File>(output.clone())?;
+        Ok(output.to_string())
+    }
+
+    #[test]
+    fn test_wide_instability_selects_the_backend() {
+        for (backend, variant) in [
+            (quote!(mshv), quote!(Mshv)),
+            (quote!(kvm), quote!(Kvm)),
+            (quote!(whp), quote!(Whp)),
+            (quote!(hvf), quote!(Hvf)),
+        ] {
+            let output = expand(quote! {
+                openvmm, unstable(on = #backend, reason = "backend issue",),
+                configs(linux_direct_x64)
+            })
+            .unwrap();
+            let requirement = quote! {
+                ::petri::requirements::TestRequirement::OpenVmmHypervisor(
+                    ::petri::requirements::OpenVmmHypervisor::#variant
+                )
+            };
+            assert!(
+                output.contains(&quote!(.unstable_on("backend issue", #requirement)).to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn per_config_instability_replaces_the_whole_list_condition() {
+        let output = expand(quote! {
+            openvmm, unstable(on = mshv, reason = "outer"),
+            configs(unstable(reason = "inner", linux_direct_x64))
+        })
+        .unwrap();
+        assert!(output.contains(&quote!(.unstable("inner")).to_string()));
+        assert!(!output.contains("unstable_on"));
+        assert!(!output.contains("Mshv"));
+    }
+
+    #[test]
+    fn unconditional_instability_and_ignore_keep_their_syntax() {
+        let output = expand(quote! {
+            openvmm, unstable(reason = "all hosts",),
+            configs(ignore(reason = "not ready", linux_direct_x64,))
+        })
+        .unwrap();
+        assert!(output.contains(&quote!(.unstable("all hosts")).to_string()));
+        assert!(output.contains(&quote!(.ignore()).to_string()));
+    }
+
+    #[test]
+    fn invalid_conditional_instability_is_rejected() {
+        for attr in [
+            quote! {
+                openvmm, unstable(on = mshv), configs(linux_direct_x64)
+            },
+            quote! {
+                openvmm, unstable(on = unknown_backend, reason = "backend issue"),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                openvmm, unstable(reason = "one"), unstable(on = mshv, reason = "two"),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                openvmm, configs(unstable(on = mshv, reason = "backend issue", linux_direct_x64))
+            },
+            quote! {
+                openvmm, configs(unstable(reason = "backend issue", on = mshv, linux_direct_x64))
+            },
+            quote! {
+                openvmm, unstable(reason = "backend issue", when = requirement),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                openvmm, unstable(on = TestRequirement::Any, reason = "backend issue"),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                hyperv, unstable(on = mshv, reason = "backend issue"),
+                configs(linux_direct_x64)
+            },
+            quote! {
+                qemu, unstable(on = mshv, reason = "backend issue"),
+                configs(linux_direct_x64)
+            },
+        ] {
+            assert!(expand(attr).is_err());
+        }
+    }
+
+    #[test]
+    fn mshv_is_a_first_class_uefi_guest() -> syn::Result<()> {
+        let args =
+            syn::parse_str::<ArgsWithOverrides>("openvmm, configs(uefi_x64(mshv))")?.resolve()?;
+        assert_eq!(
+            args.configs[0].l1_config.name_prefix(),
+            "openvmm_uefi_x64_mshv"
+        );
+        assert!(matches!(
+            args.configs[0].l1_config.firmware,
+            Firmware::Uefi(UefiGuest::Mshv)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mshv_rejects_unsupported_architecture_backend_and_openhcl() {
+        for input in [
+            "openvmm, configs(uefi_aarch64(mshv))",
+            "hyperv, configs(uefi_x64(mshv))",
+            "qemu, configs(uefi_x64(mshv))",
+            "openvmm, configs(openhcl_uefi_x64(mshv))",
+        ] {
+            assert!(
+                syn::parse_str::<ArgsWithOverrides>(input)
+                    .and_then(|args| args.resolve())
+                    .is_err(),
+                "{input}"
+            );
+        }
+    }
 }

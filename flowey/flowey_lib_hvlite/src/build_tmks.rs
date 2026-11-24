@@ -6,14 +6,14 @@
 use crate::common::CommonArch;
 use crate::common::CommonProfile;
 use flowey::node::prelude::*;
-use std::collections::BTreeMap;
+use flowey_lib_common::_util::group_by;
 
 #[derive(Serialize, Deserialize)]
 pub struct TmksOutput {
     #[serde(rename = "simple_tmk")]
     pub bin: PathBuf,
     #[serde(rename = "simple_tmk.dbg")]
-    pub dbg: PathBuf,
+    pub dbg: Option<PathBuf>,
 }
 
 impl Artifact for TmksOutput {}
@@ -36,29 +36,10 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        // de-dupe incoming requests
-        let requests = requests
-            .into_iter()
-            .fold(BTreeMap::<_, Vec<_>>::new(), |mut m, r| {
-                let Request {
-                    arch,
-                    profile,
-                    tmks,
-                } = r;
-                m.entry((arch, profile)).or_default().push(tmks);
-                m
-            });
+        let requests = group_by(requests.into_iter().map(|r| ((r.arch, r.profile), r.tmks)));
 
         for ((arch, profile), tmks) in requests {
-            let target = target_lexicon::Triple {
-                architecture: arch.as_arch(),
-                operating_system: target_lexicon::OperatingSystem::None_,
-                environment: target_lexicon::Environment::Unknown,
-                vendor: target_lexicon::Vendor::Custom(target_lexicon::CustomVendor::Static(
-                    "minimal_rt",
-                )),
-                binary_format: target_lexicon::BinaryFormat::Unknown,
-            };
+            let target = arch.minimal_rt_triple();
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "simple_tmk".into(),
@@ -83,17 +64,12 @@ impl FlowNode for Node {
                 move |rt| {
                     let output = match rt.read(output) {
                         crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                            TmksOutput {
-                                bin,
-                                dbg: dbg.unwrap(),
-                            }
+                            TmksOutput { bin, dbg }
                         }
                         _ => unreachable!(),
                     };
 
-                    for var in tmks {
-                        rt.write(var, &output);
-                    }
+                    rt.write_all(tmks, &output);
                 }
             });
         }

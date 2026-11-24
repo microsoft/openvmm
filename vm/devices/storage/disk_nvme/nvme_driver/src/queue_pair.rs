@@ -93,11 +93,12 @@ impl PendingCommands {
     const MAX_CIDS: usize = 1 << Self::CID_KEY_BITS;
     const CID_SEQ_OFFSET: Wrapping<u16> = Wrapping(1 << Self::CID_KEY_BITS);
 
-    fn new(qid: u16) -> Self {
+    fn new(qid: u16, device_id: String) -> Self {
         Self {
             commands: Slab::new(),
             next_cid_high_bits: Wrapping(0),
             qid,
+            device_id,
         }
     }
 
@@ -132,7 +133,12 @@ impl PendingCommands {
         let command = self
             .commands
             .try_remove((cid & Self::CID_KEY_MASK) as usize)
-            .unwrap_or_else(|| panic!("completion for unknown cid: qid={}, cid={}", self.qid, cid));
+            .unwrap_or_else(|| {
+                panic!(
+                    "completion for unknown cid {cid} on qid {} for device {}",
+                    self.qid, self.device_id
+                )
+            });
         assert_eq!(
             command.command.cdw0.cid(),
             cid,
@@ -161,7 +167,11 @@ impl PendingCommands {
     }
 
     /// Restore pending commands from the saved state.
-    pub fn restore(saved_state: &PendingCommandsSavedState, qid: u16) -> anyhow::Result<Self> {
+    pub fn restore(
+        saved_state: &PendingCommandsSavedState,
+        qid: u16,
+        device_id: String,
+    ) -> anyhow::Result<Self> {
         let PendingCommandsSavedState {
             commands,
             next_cid_high_bits,
@@ -188,6 +198,7 @@ impl PendingCommands {
                 .collect::<Slab<PendingCommand>>(),
             next_cid_high_bits: Wrapping(*next_cid_high_bits),
             qid,
+            device_id,
         })
     }
 }
@@ -358,6 +369,7 @@ impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
         stop: &mut task_control::StopTask<'_>,
         _: &mut (),
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
             self.queue_handler
                 .run(
@@ -365,10 +377,11 @@ impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
                     &mut self.recv_req,
                     &mut self.recv_cmd,
                     &mut self.interrupt,
+                    &check,
                 )
-                .await;
+                .await
         })
-        .await
+        .await?
     }
 }
 
@@ -393,6 +406,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         bounce_buffer: bool,
         aer_handler: A,
         drain_after_restore: DrainAfterRestore,
+        commands_forbidden: bool,
     ) -> anyhow::Result<Self> {
         // FUTURE: Consider splitting this into several allocations, rather than
         // allocating the sum total together. This can increase the likelihood
@@ -428,6 +442,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
             bounce_buffer,
             aer_handler,
             drain_after_restore,
+            commands_forbidden,
         )
     }
 
@@ -444,6 +459,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         bounce_buffer: bool,
         aer_handler: A,
         drain_after_restore: DrainAfterRestore,
+        commands_forbidden: bool,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, SQ_SIZE);
@@ -502,18 +518,20 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
                 device_id,
                 qid,
                 drain_after_restore,
+                commands_forbidden,
             )?,
             None => {
                 // Create a new one.
                 QueueHandler {
                     sq: SubmissionQueue::new(qid, sq_entries, sq_mem_block),
                     cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
-                    commands: PendingCommands::new(qid),
+                    commands: PendingCommands::new(qid, device_id.into()),
                     stats: Default::default(),
                     drain_after_restore,
                     aer_handler,
                     device_id: device_id.into(),
                     qid,
+                    commands_forbidden,
                 }
             }
         };
@@ -631,6 +649,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         bounce_buffer: bool,
         aer_handler: A,
         drain_after_restore: DrainAfterRestore,
+        commands_forbidden: bool,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -654,6 +673,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
             bounce_buffer,
             aer_handler,
             drain_after_restore,
+            commands_forbidden,
         )
     }
 }
@@ -947,6 +967,8 @@ struct PendingCommands {
     #[inspect(hex)]
     next_cid_high_bits: Wrapping<u16>,
     qid: u16,
+    #[inspect(skip)]
+    device_id: String,
 }
 
 #[derive(Inspect)]
@@ -1035,6 +1057,9 @@ pub struct AdminAerHandler {
     await_aen_cid: Option<u16>,
     send_aen: Option<Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>>, // Channel to return AENs on.
     failed_status: Option<spec::Status>, // If the failed state is reached, it will stop looping until save/restore.
+    /// When true, no AER commands will be issued. Used for fused keepalive
+    /// devices where admin commands must never be issued after initialization.
+    disabled: bool,
 }
 
 impl AdminAerHandler {
@@ -1044,6 +1069,19 @@ impl AdminAerHandler {
             await_aen_cid: None,
             send_aen: None,
             failed_status: None,
+            disabled: false,
+        }
+    }
+
+    /// Creates a handler that never issues AER commands. Used for fused
+    /// keepalive devices where the admin queue must remain idle after init.
+    pub fn new_disabled() -> Self {
+        Self {
+            last_aen: None,
+            await_aen_cid: None,
+            send_aen: None,
+            failed_status: None,
+            disabled: true,
         }
     }
 }
@@ -1090,7 +1128,7 @@ impl AerHandler for AdminAerHandler {
     }
 
     fn poll_send_aer(&self) -> bool {
-        self.await_aen_cid.is_none() && self.failed_status.is_none()
+        !self.disabled && self.await_aen_cid.is_none() && self.failed_status.is_none()
     }
 
     fn update_awaiting_cid(&mut self, cid: u16) {
@@ -1149,6 +1187,7 @@ struct QueueHandler<A: AerHandler> {
     aer_handler: A,
     device_id: String,
     qid: u16,
+    commands_forbidden: bool,
 }
 
 #[derive(Inspect, Default)]
@@ -1165,7 +1204,8 @@ impl<A: AerHandler> QueueHandler<A> {
         recv_req: &mut mesh::Receiver<Req>,
         recv_cmd: &mut mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
-    ) {
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), task_control::Cancelled> {
         if matches!(
             &self.drain_after_restore,
             DrainAfterRestore::Draining { .. }
@@ -1174,11 +1214,17 @@ impl<A: AerHandler> QueueHandler<A> {
         }
 
         loop {
+            if let Err(cancelled) = check.check() {
+                self.sq.commit(registers);
+                self.cq.commit(registers);
+                return Err(cancelled);
+            }
             enum Event {
                 Request(Req),
                 Command(Cmd),
                 Completion(spec::Completion),
                 DrainComplete,
+                Cancelled(task_control::Cancelled),
             }
 
             let event = if matches!(self.drain_after_restore, DrainAfterRestore::AllDrained) {
@@ -1200,6 +1246,9 @@ impl<A: AerHandler> QueueHandler<A> {
                     }
                     // Look for completions
                     while !self.commands.is_empty() {
+                        if let Err(cancelled) = check.check() {
+                            return Event::Cancelled(cancelled).into();
+                        }
                         if let Some(completion) = self.cq.read() {
                             return Event::Completion(completion).into();
                         }
@@ -1229,6 +1278,9 @@ impl<A: AerHandler> QueueHandler<A> {
                     }
 
                     while !self.commands.is_empty() {
+                        if let Err(cancelled) = check.check() {
+                            return Event::Cancelled(cancelled).into();
+                        }
                         if let Some(completion) = self.cq.read() {
                             return Event::Completion(completion).into();
                         }
@@ -1244,6 +1296,11 @@ impl<A: AerHandler> QueueHandler<A> {
             };
 
             match event {
+                Event::Cancelled(cancelled) => {
+                    self.sq.commit(registers);
+                    self.cq.commit(registers);
+                    return Err(cancelled);
+                }
                 Event::Request(req) => match req {
                     Req::Save(queue_state) => {
                         tracing::info!(pci_id = ?self.device_id, qid = ?self.qid, "received save request, shutting down ...");
@@ -1271,6 +1328,12 @@ impl<A: AerHandler> QueueHandler<A> {
                 },
                 Event::Command(cmd) => match cmd {
                     Cmd::Command(rpc) => {
+                        if self.commands_forbidden {
+                            panic!(
+                                "attempted to submit a command to admin queue {} for device {} after restore; the admin queue must remain idle for fused keepalive devices",
+                                self.qid, self.device_id
+                            );
+                        }
                         let (mut command, respond) = rpc.split();
                         self.commands.insert(&mut command, respond);
                         self.sq.write(command).unwrap();
@@ -1307,6 +1370,7 @@ impl<A: AerHandler> QueueHandler<A> {
                 }
             }
         }
+        Ok(())
     }
 
     /// Save queue data for servicing.
@@ -1347,6 +1411,7 @@ impl<A: AerHandler> QueueHandler<A> {
         device_id: &str,
         qid: u16,
         drain_after_restore: DrainAfterRestore,
+        commands_forbidden: bool,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,
@@ -1360,7 +1425,7 @@ impl<A: AerHandler> QueueHandler<A> {
         Ok(Self {
             sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
             cq: CompletionQueue::restore(cq_mem_block, cq_state)?,
-            commands: PendingCommands::restore(pending_cmds, sq_state.sqid)?,
+            commands: PendingCommands::restore(pending_cmds, sq_state.sqid, device_id.into())?,
             stats: Default::default(),
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
@@ -1368,6 +1433,7 @@ impl<A: AerHandler> QueueHandler<A> {
             aer_handler,
             device_id: device_id.into(),
             qid,
+            commands_forbidden,
         })
     }
 }

@@ -12,17 +12,18 @@ use crate::win::*;
 use std::sync::LazyLock;
 use windows::Win32::Foundation::NTE_BAD_DATA;
 use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
+use windows::Win32::Security::Cryptography::BCRYPT_CHAIN_MODE_ECB;
 use windows::Win32::Security::Cryptography::BCRYPT_FLAGS;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS;
 use zerocopy::IntoBytes;
 
 static AES_ECB: LazyLock<Result<AlgHandle, AesKeyWrapError>> = LazyLock::new(|| {
-    const CHAINING_MODE: &[u16] = wchar::wchz!("ChainingModeECB");
     let mut handle = BCRYPT_ALG_HANDLE::default();
 
     // SAFETY: errors are handled before the handle is used; the handle is
-    // closed on drop via `AlgHandle`.
+    // closed on drop via `AlgHandle`. BCRYPT_CHAIN_MODE_ECB is a static,
+    // null-terminated wide string.
     unsafe {
         let handle = windows::Win32::Security::Cryptography::BCryptOpenAlgorithmProvider(
             &mut handle,
@@ -32,23 +33,27 @@ static AES_ECB: LazyLock<Result<AlgHandle, AesKeyWrapError>> = LazyLock::new(|| 
         )
         .ok()
         .map(|()| AlgHandle(handle))
-        .map_err(|e| err(e, "open algorithm provider"))?;
+        .map_err(|e| err(e, "opening the AES algorithm provider"))?;
 
+        let mut chaining_mode = BCRYPT_CHAIN_MODE_ECB.as_wide().to_vec();
+        chaining_mode.push(0);
         windows::Win32::Security::Cryptography::BCryptSetProperty(
             handle.0.into(),
             windows::Win32::Security::Cryptography::BCRYPT_CHAINING_MODE,
-            CHAINING_MODE.as_bytes(),
+            chaining_mode.as_bytes(),
             0,
         )
         .ok()
-        .map_err(|e| err(e, "setting ECB property"))?;
+        .map_err(|e| err(e, "selecting the ECB chaining mode"))?;
 
         Ok(handle)
     }
 });
 
 fn err(err: windows_result::Error, op: &'static str) -> AesKeyWrapError {
-    AesKeyWrapError(AesKeyWrapErrorInner::Backend(crate::BackendError(err, op)))
+    AesKeyWrapError(AesKeyWrapErrorInner::Backend(crate::BackendError::Windows(
+        err, op,
+    )))
 }
 
 fn import_key(key: &[u8]) -> Result<KeyHandle, AesKeyWrapError> {
@@ -74,7 +79,7 @@ fn import_key(key: &[u8]) -> Result<KeyHandle, AesKeyWrapError> {
         )
         .ok()
         .map(|()| KeyHandle(handle))
-        .map_err(|e| err(e, "importing key"))
+        .map_err(|e| err(e, "importing the wrapping key"))
     }
 }
 
@@ -113,9 +118,9 @@ fn ecb_block(
         err(
             e,
             if op == 0 {
-                "AES-ECB encrypt"
+                "encrypting an AES-ECB block"
             } else {
-                "AES-ECB decrypt"
+                "decrypting an AES-ECB block"
             },
         )
     })?;
@@ -168,7 +173,7 @@ impl AesKeyUnwrapCtxInner<'_> {
             Some(v) => Ok(v),
             None => Err(err(
                 windows_result::Error::from_hresult(NTE_BAD_DATA),
-                "AES key unwrap integrity check",
+                "checking the key unwrap integrity",
             )),
         }
     }

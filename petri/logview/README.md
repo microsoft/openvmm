@@ -4,8 +4,14 @@ A React-based web application for viewing and analyzing Petri logs, built with T
 
 ## Prerequisites
 
-- **Node.js** (version `^20.19.0 || >=22.12.0`, as required by Vite 8)
+- **Node.js** (version `>=22.22.0`, as required by react-router 8)
 - **npm** (comes with Node.js)
+- **Browser**: Safari 16.4+, Chrome 111+, or Firefox 128+ (required by Tailwind CSS 4)
+
+Tailwind CSS 4 runs through the `@tailwindcss/vite` plugin in `vite.config.ts`.
+`tailwind.css` imports the theme and utilities without Preflight and retains
+the existing gray palette, preserving browser defaults and the site's custom
+styles. Source scanning is limited to TypeScript files under `src/`.
 
 ## Initial Setup
 
@@ -19,9 +25,13 @@ Navigate to the project directory and install all required packages:
 # Navigate to the logview directory
 cd .\petri\logview
 
-# Install all dependencies
-npm install
+# Install all dependencies exactly as locked
+npm ci
 ```
+
+`npm ci` installs the exact versions recorded in `package-lock.json`, which is
+what CI runs. Use `npm install` only when you intend to add or update a
+dependency, and commit the resulting `package-lock.json` changes.
 
 ### 2. Verify Installation
 
@@ -30,7 +40,7 @@ After installation, you should have the following key dependencies:
 **Runtime Dependencies:**
 
 - `react` & `react-dom` - React framework
-- `react-router-dom` - Client-side routing
+- `react-router` - Client-side routing
 - `@tanstack/react-query` - Data fetching and caching
 - `@tanstack/react-table` - Table component library
 - `@tanstack/react-virtual` - Virtual scrolling
@@ -59,6 +69,21 @@ npm run preview
 npx eslint .
 ```
 
+## Running Locally
+
+Build and serve the production viewer:
+
+```bash
+npm run build
+npm run preview -- --host 127.0.0.1 --port 4177 --strictPort
+```
+
+Open <http://localhost:4177/test-results/>.
+If the server is on a remote development machine, forward port 4177 first.
+The viewer reads the public results; no Azure credentials or uploads are needed.
+
+Run the automated tests with `npm test`.
+
 ## Project Structure
 
 ```text
@@ -78,11 +103,45 @@ logview/
 └── README.md             # This file
 ```
 
+## Run Manifests
+
+The results uploader publishes versioned JSON in the body of
+`results/attempts/<runId>_<attempt>`, retaining the metadata used by the runs
+index. It uploads this manifest only after the run's artifacts have uploaded
+successfully. For example:
+
+```json
+{
+  "version": 1,
+  "runNumber": "123_1",
+  "creationTime": "2026-10-30T16:00:00Z",
+  "tests": [{ "name": "x64/job/test", "status": "passed" }]
+}
+```
+
+Test names are artifact-directory paths relative to the run, including the
+architecture. The viewer derives log paths from them. A `petri.jsonl` file
+identifies a test, and a sibling `petri.passed` file identifies a pass; other
+tests are failed. The timestamp is the source workflow's creation time.
+
+The viewer tries this manifest before listing artifacts. Missing or empty
+legacy markers fall back to the paginated listing. Malformed manifests,
+unsupported versions, and other HTTP errors are reported rather than silently
+falling back. Existing runs need backfilled manifests to use the fast path.
+Foreground and background requests share the same run-details cache.
+
+Run the viewer's scheduler and manifest-reader tests with `npm test`. From the
+repository root, test the uploader's manifest generator with:
+
+```bash
+python3 -m unittest discover -s repo_support -p 'test_generate_petri_results_manifest.py'
+```
+
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Module not found errors**: Ensure all dependencies are installed with `npm install`
+1. **Module not found errors**: Ensure all dependencies are installed with `npm ci`
 2. **TypeScript errors**: Make sure both `tsconfig.json` and `tsconfig.node.json` are present
 3. **Port already in use**: The dev server uses port 3000 by default. You can change this in `vite.config.ts`
 

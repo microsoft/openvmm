@@ -4,8 +4,7 @@
 This page offers a high-level overview of different ways to launch and interact
 with OpenVMM.
 
-These examples are by no means "exhaustive", and should be treated as a useful
-jumping-off point for subsequent self-guided experimentation with OpenVMM.
+These examples provide a starting point for launching and configuring OpenVMM.
 
 ## Obtaining a copy of OpenVMM
 
@@ -47,10 +46,10 @@ When running the `openvmm` binary directly, these environment variables are
 
 > fatal error: must provide uefi firmware when booting with uefi
 
-To fix this, **explicitly pass the firmware** using `--uefi-firmware`:
+To fix this, **explicitly pass the firmware** using the `firmware` option:
 
 ```shell
-openvmm --uefi --uefi-firmware path/to/MSVM.fd \
+openvmm --uefi firmware=path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:path/to/disk.vhdx,on=scsi0
 ```
@@ -138,12 +137,35 @@ docs.
 
 The file `windows.vhdx` can be any format of VHD(X).
 
-Note that OpenVMM does not currently support using dynamic VHD/VHDX files on
-Linux hosts. Unless you have a fixed VHD1 image, you will need to convert the
-image to raw format, using the following command:
+VHDX files (dynamic, fixed, and differencing) are supported on non-Windows
+platforms via the pure-Rust [`vhdx`](../../reference/backends/vhdx.md)
+parser. On Windows, `.vhdx` files use the native kernel-mode VHD path
+instead. OpenVMM identifies VHD1 images by the `.vhd` extension. Fixed VHD1
+images work on all platforms, while dynamic and differencing VHD1 images
+require Windows. Convert non-fixed VHD1 images to VHDX for use on Linux:
 
-```shell
-qemu-img convert -f vhdx -O raw windows.vhdx windows.img
+```bash
+qemu-img convert -f vpc -O vhdx dynamic.vhd converted.vhdx
+```
+
+Fixed VHD1 images require cached I/O on every host. VHDX images also require
+cached I/O on Linux.
+
+OpenVMM currently supports only the read-only `monolithicFlat` and
+`twoGbMaxExtentFlat`
+[VMDK disk types](../../reference/backends/vmdk.md). Sparse and parent-backed
+VMDKs, writes, and direct I/O are not supported. Multi-process mesh messages
+can carry at most 64 file handles, so VMDKs with more than 64 distinct
+regular-file `FLAT` sources require `--single-process`. See the VMDK support
+page for additional transport considerations.
+
+When attaching a VMDK as a file disk, pass the `ro` flag because file disks are
+writable by default:
+
+```bash
+cargo run -- --uefi \
+  --vmbus-scsi id=scsi0 \
+  --disk file:path/to/disk.vmdk,ro,on=scsi0
 ```
 
 Also, note the use of `memdiff`, which creates a memory-backed "differencing
@@ -179,7 +201,7 @@ This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
 .\openvmm.exe `
     --hv `
     --vtl2 `
-    --igvm openhcl-x64-test-linux-direct.bin `
+    --igvm "firmware=openhcl-x64-test-linux-direct.bin,personality=openhcl" `
     -c "panic=-1 reboot=triple UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=rdinit=/bin/sh" `
     -m 2GB `
     --vmbus-com1-serial "term,name=VTL0 Linux" `

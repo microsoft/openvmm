@@ -55,7 +55,7 @@ pub struct IdentifyNamespace {
     pub anagrpid: u32,
     #[inspect(skip)]
     pub rsvd2: [u8; 3],
-    pub nsattr: u8,
+    pub nsattr: Nsattr,
     pub nvmsetid: u16,
     pub endgid: u16,
     pub nguid: [u8; 16],
@@ -101,6 +101,17 @@ pub struct Nsfeat {
     /// NPWG, NPWA, NPDG, NPDA, and NOWS are defined for this namespace.
     pub optperf: bool,
     #[bits(3)]
+    _rsvd: u8,
+}
+
+/// Namespace attributes
+#[derive(Inspect)]
+#[bitfield(u8)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct Nsattr {
+    /// The namespace is currently write protected, for any reason.
+    pub write_protected: bool,
+    #[bits(7)]
     _rsvd: u8,
 }
 
@@ -318,6 +329,14 @@ pub struct Cdw10ReservationRelease {
     pub rtype: u8,
     _rsvd2: u16,
 }
+
+const RESERVATION_ACTION_BITS: usize = 3;
+/// Maximum value of the action field of a reservation command, for use by the fuzzer
+pub const RESERVATION_ACTION_MAX: u8 = (1u8 << RESERVATION_ACTION_BITS) - 1;
+
+const _: () = assert!(Cdw10ReservationRegister::RREGA_BITS == RESERVATION_ACTION_BITS);
+const _: () = assert!(Cdw10ReservationAcquire::RACQA_BITS == RESERVATION_ACTION_BITS);
+const _: () = assert!(Cdw10ReservationRelease::RRELA_BITS == RESERVATION_ACTION_BITS);
 
 open_enum! {
     pub enum ReservationReleaseAction: u8 {

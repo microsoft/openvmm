@@ -1,7 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Standalone CLI for testing the incubator launcher.
+//! Runner for executing test commands in a disposable Linux guest.
+//!
+//! Incubator reads a TOML hardware profile, boots a VM with a shared
+//! host directory, connects to the in-guest Pipette agent, and returns the
+//! requested command's exit status. It is used for configurations such as
+//! AArch64 PCIe, IOMMU, and device-assignment tests that need hardware models
+//! outside OpenVMM's device surface.
+//!
+//! Configuration is available through flags and `INCUBATOR_*` environment
+//! variables. Launch directly with
+//! `incubator --profile <profile> --share <directory> <command> [args...]` for
+//! focused debugging.
 
 #![forbid(unsafe_code)]
 
@@ -13,10 +24,8 @@ use std::path::PathBuf;
 
 /// Standalone CLI for launching the incubator.
 ///
-/// Every option can also be supplied via its `INCUBATOR_*` environment
-/// variable, which is how flowey drives this binary as a cargo-nextest target
-/// runner: cargo invokes `incubator <test-binary> <args>` with no flags, and
-/// the configuration is read from the environment.
+/// Options can also be supplied via their `INCUBATOR_*` environment variables.
+/// Registered nested VMM tests use Petri directly, not this CLI.
 #[derive(Parser)]
 struct Args {
     /// Path to a TOML profile file.
@@ -54,8 +63,8 @@ struct Args {
     /// runner, where raw mode would interfere with nextest's Ctrl-C handling.
     #[clap(long, env = "INCUBATOR_NO_PTY")]
     no_pty: bool,
-    /// Timeout in seconds.
-    #[clap(long, env = "INCUBATOR_TIMEOUT", default_value_t = 1800)]
+    /// Timeout in seconds: boot for Linux direct, boot and command for mshv.
+    #[clap(long, env = "INCUBATOR_TIMEOUT", default_value_t = 300)]
     timeout: u64,
     /// Command to run in the guest: the program followed by its arguments.
     ///
@@ -83,10 +92,16 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| format!("{}/pipette", incubator::GUEST_SHARE_ROOT));
 
     let profile = incubator::IncubatorProfile::from_file(std::path::Path::new(&args.profile))?;
+    profile.validate()?;
 
     let arch = profile.incubator.arch();
     let kernel = match args.kernel {
         Some(kernel) => kernel,
+        None if matches!(profile.boot, incubator::IncubatorBoot::Mshv(_)) => {
+            anyhow::bail!(
+                "mshv boot requires an explicit --kernel / INCUBATOR_KERNEL with mshv EFI launch support"
+            )
+        }
         None => kernel_or_initrd_from_env(arch, "OPENVMM_LINUX_DIRECT_KERNEL")?,
     };
     let initrd = match args.initrd {

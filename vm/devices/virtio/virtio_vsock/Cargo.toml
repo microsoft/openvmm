@@ -30,6 +30,11 @@ tracelimit.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["ioctl"] }
+pal_event.workspace = true
+sparse_mmap.workspace = true
+
 [dev-dependencies]
 getrandom.workspace = true
 guid.workspace = true

@@ -16,28 +16,111 @@ pub use spec_services::NvramResult;
 pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
-use crate::UefiDevice;
-use firmware_uefi_custom_vars::CustomVars;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
+use firmware_uefi_custom_vars::BaseTemplate;
+use firmware_uefi_custom_vars::BaseTemplateVars;
+use firmware_uefi_custom_vars::FinalVars;
+use firmware_uefi_custom_vars::Signature;
+use firmware_uefi_custom_vars::UefiVarsDeltaJson;
 use firmware_uefi_resources::platform::VsmConfig;
+use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use guid::Guid;
 use inspect::Inspect;
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
+use std::mem::size_of;
+use std::mem::size_of_val;
 use thiserror::Error;
+use uefi_nvram_specvars::signature_list::ParseError as SignatureListParseError;
+use uefi_nvram_specvars::signature_list::ParseSignatureList;
+use uefi_nvram_specvars::signature_list::ParseSignatureLists;
 use uefi_nvram_storage::VmmNvramStorage;
 use uefi_specs::uefi::common::EfiStatus;
+use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
 use uefi_specs::uefi::nvram::EfiVariableAttributes;
+use uefi_specs::uefi::nvram::signature_list::EFI_SIGNATURE_DATA;
+use uefi_specs::uefi::nvram::vars;
+use uefi_specs::uefi::signing::EFI_CERT_TYPE_PKCS7_GUID;
+use uefi_specs::uefi::signing::WIN_CERT_TYPE_EFI_GUID;
+use uefi_specs::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
+use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
-#[cfg(feature = "fuzzing")]
-pub mod spec_services;
-#[cfg(not(feature = "fuzzing"))]
-mod spec_services;
+cfg_select! {
+    feature = "fuzzing" => {
+        pub mod spec_services;
+    }
+    _ => {
+        mod spec_services;
+    }
+}
+
+const WIN_CERT_REVISION_2_0: u16 = 0x0200;
+const MAX_NVRAM_COMMAND_BUFFER_SIZE: u32 = 4 * 1024 * 1024;
+
+fn nvram_command_buffer_len(len: u32) -> Option<usize> {
+    (len <= MAX_NVRAM_COMMAND_BUFFER_SIZE).then_some(len as usize)
+}
+
+/// A Secure Boot signature's type, owner, and payload used for set comparison.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SignatureValue {
+    X509(EFI_SIGNATURE_DATA, Vec<u8>),
+    Sha256(EFI_SIGNATURE_DATA, Vec<u8>),
+}
+
+/// Unique Secure Boot signatures contained in a variable or base template.
+type SignatureSet = BTreeSet<SignatureValue>;
+
+/// Secure Boot telemetry schema mirrored by legacy HCL's `UefiNvramStore.cpp`.
+struct SecureBootVariableReport<'a> {
+    name: &'a ucs2::Ucs2LeSlice,
+    in_nvram: bool,
+    has_custom_uefi: bool,
+    loaded_bytes: usize,
+    loaded_entries: usize,
+    template_entries: usize,
+    missing_entries: usize,
+}
+
+impl Debug for SecureBootVariableReport<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            name,
+            in_nvram,
+            has_custom_uefi,
+            loaded_bytes,
+            loaded_entries,
+            template_entries,
+            missing_entries,
+        } = self;
+
+        formatter
+            .debug_struct("SecureBootVariable")
+            .field("name", name)
+            .field("in_nvram", in_nvram)
+            .field("has_custom_uefi", has_custom_uefi)
+            .field("loaded_bytes", &format_args!("{loaded_bytes:#x}"))
+            .field("loaded_entries", &format_args!("{loaded_entries:#x}"))
+            .field("template_entries", &format_args!("{template_entries:#x}"))
+            .field("missing_entries", &format_args!("{missing_entries:#x}"))
+            .finish()
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum NvramSetupError {
     #[error("could not query backing nvram storage")]
     BadNvramStorage(#[source] uefi_nvram_storage::NvramStorageError),
+    #[error("failed to apply custom UEFI template variables")]
+    ApplyCustomTemplate(#[source] firmware_uefi_custom_vars::ApplyDeltaError),
+    #[error("failed to load built-in UEFI template")]
+    LoadBaseTemplate(#[source] hyperv_uefi_custom_vars_json::ParseJsonError),
+    #[error("failed to load custom UEFI variable JSON")]
+    LoadCustomUefiJson(#[source] hyperv_uefi_custom_vars_json::ParseJsonError),
     #[error("could not inject pre-boot var '{0}': {1:?}")]
     InjectPreBootVar(
         Cow<'static, ucs2::Ucs2LeSlice>,
@@ -50,10 +133,10 @@ pub enum NvramSetupError {
         EfiStatus,
         #[source] Option<NvramError>,
     ),
-    #[error("could not inject custom var '{0}': {1:?}")]
-    InjectCustomVar(String, EfiStatus, #[source] Option<NvramError>),
-    #[error("custom variable name is not valid UCS-2")]
-    CustomVarNotUcs2,
+    #[error("could not inject UEFI var '{0}': {1:?}")]
+    InjectUefiVar(String, EfiStatus, #[source] Option<NvramError>),
+    #[error("UEFI variable name is not valid UCS-2")]
+    UefiVarNotUcs2,
 }
 
 /// Implements Hyper-V specific nvram service interfaces, extensions, and
@@ -73,7 +156,8 @@ pub struct NvramServices {
 impl NvramServices {
     pub async fn new(
         nvram_storage: Box<dyn VmmNvramStorage>,
-        custom_vars: CustomVars,
+        base_template: Option<BaseTemplate>,
+        custom_uefi_json: Option<UefiVarsDeltaJson>,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
         is_restoring: bool,
@@ -84,9 +168,50 @@ impl NvramServices {
         };
 
         if !is_restoring {
-            nvram.inject_vars_on_first_boot(custom_vars).await?;
+            let is_nvram_empty = nvram
+                .services
+                .is_empty()
+                .await
+                .map_err(NvramSetupError::BadNvramStorage)?;
+            let base_template = match base_template
+                .filter(|_| is_nvram_empty || secure_boot_enabled)
+                .map(|template| {
+                    hyperv_uefi_custom_vars_json::parse_template_json(template.json.as_bytes())
+                })
+                .transpose()
+            {
+                Ok(vars) => vars,
+                Err(error) if !is_nvram_empty => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        error = &error as &dyn std::error::Error,
+                        "secure boot configuration report skipped: failed to parse baseline template"
+                    );
+                    None
+                }
+                Err(error) => return Err(NvramSetupError::LoadBaseTemplate(error)),
+            };
+
+            // Top-level configuration reads the VMGS CUSTOM_UEFI entry on every boot and
+            // populates this value when the entry is non-empty, matching legacy HCL. The delta
+            // itself is only applied below when NVRAM is empty.
+            let has_custom_uefi = custom_uefi_json
+                .as_ref()
+                .is_some_and(|json| !json.as_bytes().is_empty());
+
+            if is_nvram_empty {
+                nvram
+                    .inject_initial_vars(base_template.as_ref(), custom_uefi_json)
+                    .await?;
+            }
             nvram.inject_hyperv_vars().await?;
             nvram.setup_secure_boot(secure_boot_enabled).await?;
+
+            if secure_boot_enabled {
+                nvram
+                    .report_secure_boot_configuration(base_template.as_ref(), has_custom_uefi)
+                    .await;
+            }
         }
 
         nvram.services.prepare_for_boot();
@@ -99,21 +224,18 @@ impl NvramServices {
         self.services.prepare_for_boot();
     }
 
-    /// Check if this is the VM's first boot, and if so, inject various
-    /// hard-coded and custom UEFI vars.
-    async fn inject_vars_on_first_boot(
+    /// Inject hard-coded and configured UEFI variables into empty NVRAM.
+    async fn inject_initial_vars(
         &mut self,
-        custom_vars: CustomVars,
+        base_template_vars: Option<&BaseTemplateVars>,
+        custom_uefi_json: Option<UefiVarsDeltaJson>,
     ) -> Result<(), NvramSetupError> {
-        // "First boot" is marked by having no variables in nvram storage
-        if !self
-            .services
-            .is_empty()
-            .await
-            .map_err(NvramSetupError::BadNvramStorage)?
-        {
-            return Ok(());
-        }
+        let custom_template_delta = custom_uefi_json
+            .map(|json| hyperv_uefi_custom_vars_json::parse_delta_json(json.as_bytes()))
+            .transpose()
+            .map_err(NvramSetupError::LoadCustomUefiJson)?;
+        let final_vars = FinalVars::resolve(base_template_vars.cloned(), custom_template_delta)
+            .map_err(NvramSetupError::ApplyCustomTemplate)?;
 
         tracing::info!("No NVRAM variables (first boot). Loading in initial NVRAM values.");
 
@@ -132,7 +254,7 @@ impl NvramServices {
             // pre-boot, which means it suffices to use a dummy header.
             let data = {
                 let mut v = Vec::new();
-                v.extend(uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes());
+                v.extend(EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes());
                 v.extend(data);
                 v
             };
@@ -159,9 +281,114 @@ impl NvramServices {
             })?
         }
 
-        self.inject_custom_vars(custom_vars).await?;
+        self.inject_final_vars(final_vars).await?;
 
         Ok(())
+    }
+
+    /// Compare one loaded Secure Boot variable with its base-template signatures.
+    async fn get_secure_boot_variable_report<'a>(
+        &mut self,
+        (vendor, name): (Guid, &'a ucs2::Ucs2LeSlice),
+        template_signatures: &[Signature],
+        has_custom_uefi: bool,
+    ) -> Option<SecureBootVariableReport<'a>> {
+        let base_signatures = base_signature_set(template_signatures);
+        if base_signatures.is_empty() {
+            tracing::warn!(
+                CVM_ALLOWED,
+                %name,
+                "secure boot variable omitted from configuration report: baseline contains no signatures"
+            );
+            return None;
+        }
+
+        match self.services.get_variable_ucs2(vendor, name).await {
+            // The variable exists in NVRAM but is empty
+            Ok((_, data)) if data.is_empty() => Some(SecureBootVariableReport {
+                name,
+                in_nvram: true,
+                has_custom_uefi,
+                loaded_bytes: 0,
+                loaded_entries: 0,
+                template_entries: base_signatures.len(),
+                missing_entries: base_signatures.len(),
+            }),
+            // The variable exists in NVRAM and has data
+            Ok((_, data)) => match collect_signature_set(&data) {
+                // The data is valid
+                Ok(loaded_signatures) => Some(SecureBootVariableReport {
+                    name,
+                    in_nvram: true,
+                    has_custom_uefi,
+                    loaded_bytes: data.len(),
+                    loaded_entries: loaded_signatures.len(),
+                    template_entries: base_signatures.len(),
+                    missing_entries: base_signatures.difference(&loaded_signatures).count(),
+                }),
+                // The data cannot be parsed
+                Err(error) => {
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        %name,
+                        error = &error as &dyn std::error::Error,
+                        "secure boot variable omitted from configuration report: failed to parse variable"
+                    );
+                    None
+                }
+            },
+            // The variable does not exist in NVRAM
+            Err((EfiStatus::NOT_FOUND, _)) => Some(SecureBootVariableReport {
+                name,
+                in_nvram: false,
+                has_custom_uefi,
+                loaded_bytes: 0,
+                loaded_entries: 0,
+                template_entries: base_signatures.len(),
+                missing_entries: base_signatures.len(),
+            }),
+            // The variable exists in NVRAM but cannot be read for some other reason
+            Err((status, error)) => {
+                tracing::warn!(
+                    CVM_CONFIDENTIAL,
+                    %name,
+                    ?status,
+                    ?error,
+                    "secure boot variable omitted from configuration report: failed to read variable"
+                );
+                None
+            }
+        }
+    }
+
+    /// Report the loaded Secure Boot configuration against the selected base template.
+    async fn report_secure_boot_configuration(
+        &mut self,
+        base_template: Option<&BaseTemplateVars>,
+        has_custom_uefi: bool,
+    ) {
+        let Some(signatures) = base_template.and_then(BaseTemplateVars::signatures) else {
+            tracing::warn!(
+                CVM_ALLOWED,
+                "secure boot configuration report skipped: baseline signatures are unavailable"
+            );
+            return;
+        };
+
+        // Report each secure boot variable's loaded configuration against the baseline template
+        for (variable, template_signatures) in [
+            (vars::PK(), std::slice::from_ref(&signatures.pk)),
+            (vars::KEK(), signatures.kek.as_slice()),
+            (vars::DB(), signatures.db.as_slice()),
+            (vars::DBX(), signatures.dbx.as_slice()),
+        ] {
+            if let Some(variable_report) = self
+                .get_secure_boot_variable_report(variable, template_signatures, has_custom_uefi)
+                .await
+            {
+                tracing::info!(CVM_ALLOWED, "{variable_report:?}");
+            }
+        }
     }
 
     async fn inject_hyperv_vars(&mut self) -> Result<(), NvramSetupError> {
@@ -202,28 +429,31 @@ impl NvramServices {
         Ok(())
     }
 
-    async fn inject_custom_vars(&mut self, custom_vars: CustomVars) -> Result<(), NvramSetupError> {
-        use firmware_uefi_custom_vars::CustomVar;
+    async fn inject_final_vars(&mut self, final_vars: FinalVars) -> Result<(), NvramSetupError> {
         use firmware_uefi_custom_vars::Sha256Digest;
         use firmware_uefi_custom_vars::Signature;
+        use firmware_uefi_custom_vars::UefiVar;
         use firmware_uefi_custom_vars::X509Cert;
         use uefi_nvram_specvars::signature_list::SignatureData;
         use uefi_nvram_specvars::signature_list::SignatureList;
         use uefi_specs::hyperv::nvram::vars::MSFT_SECURE_BOOT_PRODUCTION_GUID;
         use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
 
-        tracing::trace!(custom_vars = ?custom_vars.custom_vars, "custom uefi vars");
+        let firmware_uefi_custom_vars::UefiVars {
+            signatures,
+            non_signature_vars,
+        } = final_vars.into_uefi_vars();
 
-        // inject freeform custom vars first, as some may require an auth bypass
-        for (name, CustomVar { guid, attr, value }) in custom_vars.custom_vars {
-            tracing::trace!(%name, "Injecting custom var");
+        // Inject non-signature vars first, as some may require an auth bypass.
+        for (name, UefiVar { guid, attr, value }) in non_signature_vars {
+            tracing::trace!(%name, "Injecting UEFI var");
 
             // the value might need to be prepended with an auth header,
             // depending on what auth mode the variable is using.
             let value = {
                 let attr = EfiVariableAttributes::from(attr);
                 if attr.contains_unsupported_bits() {
-                    return Err(NvramSetupError::InjectCustomVar(
+                    return Err(NvramSetupError::InjectUefiVar(
                         name,
                         EfiStatus::INVALID_PARAMETER,
                         Some(NvramError::AttributeNonSpec),
@@ -246,11 +476,11 @@ impl NvramServices {
             self.services
                 .set_variable(guid, &name, attr, value)
                 .await
-                .map_err(|(status, err)| NvramSetupError::InjectCustomVar(name, status, err))?;
+                .map_err(|(status, err)| NvramSetupError::InjectUefiVar(name, status, err))?;
         }
 
         // inject structured signature vars
-        if let Some(sigs) = custom_vars.signatures {
+        if let Some(sigs) = signatures {
             use uefi_specs::linux::nvram::vars as linux_vars;
             use uefi_specs::uefi::nvram::vars as uefi_vars;
 
@@ -285,13 +515,6 @@ impl NvramServices {
 
                 let mut var_data: Vec<u8> = Vec::new();
 
-                if attr.time_based_authenticated_write_access() {
-                    // a dummy header needs to be present, even through no
-                    // actual validation will be performed while nvram is still
-                    // in SetupMode (i.e: until `pk` is injected).
-                    var_data.extend(EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes());
-                }
-
                 for sig in sigs {
                     match sig {
                         Signature::X509(certs) => {
@@ -324,6 +547,16 @@ impl NvramServices {
 
                 if var_data.is_empty() {
                     continue;
+                }
+
+                if attr.time_based_authenticated_write_access() {
+                    // a dummy header needs to be present, even through no
+                    // actual validation will be performed while nvram is still
+                    // in SetupMode (i.e: until `pk` is injected).
+                    let mut authenticated_var_data =
+                        EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes().to_vec();
+                    authenticated_var_data.extend(var_data);
+                    var_data = authenticated_var_data;
                 }
 
                 self.services
@@ -391,11 +624,720 @@ impl NvramServices {
     }
 }
 
-impl UefiDevice {
-    pub(crate) async fn nvram_handle_command(&mut self, desc_addr: u64) {
+/// Convert typed base-template signatures into their injected signature identities.
+fn base_signature_set<'a>(signatures: impl IntoIterator<Item = &'a Signature>) -> SignatureSet {
+    use uefi_specs::hyperv::nvram::vars::MSFT_SECURE_BOOT_PRODUCTION_GUID;
+
+    let header = EFI_SIGNATURE_DATA {
+        signature_owner: MSFT_SECURE_BOOT_PRODUCTION_GUID,
+    };
+    let mut values = SignatureSet::new();
+    for signature in signatures {
+        match signature {
+            Signature::X509(certs) => values.extend(
+                certs
+                    .iter()
+                    .map(|cert| SignatureValue::X509(header, cert.0.clone())),
+            ),
+            Signature::Sha256(digests) => values.extend(
+                digests
+                    .iter()
+                    .map(|digest| SignatureValue::Sha256(header, digest.0.to_vec())),
+            ),
+        }
+    }
+    values
+}
+
+/// Parse a serialized Secure Boot variable into unique signature identities.
+fn collect_signature_set(data: &[u8]) -> Result<SignatureSet, SignatureListParseError> {
+    let mut signatures = SignatureSet::new();
+
+    for list in ParseSignatureLists::new(signature_list_payload(data)) {
+        match list? {
+            ParseSignatureList::X509(certs) => {
+                for cert in certs {
+                    let cert = cert?;
+                    signatures.insert(SignatureValue::X509(
+                        cert.header,
+                        cert.data.0.as_ref().to_vec(),
+                    ));
+                }
+            }
+            ParseSignatureList::Sha256(digests) => {
+                for digest in digests {
+                    let digest = digest?;
+                    signatures.insert(SignatureValue::Sha256(
+                        digest.header,
+                        digest.data.0.as_ref().to_vec(),
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(signatures)
+}
+
+/// Return the signature-list payload, skipping a valid authentication header.
+///
+/// Malformed or unrecognized headers are treated as part of the payload so the
+/// signature-list parser can report the underlying format error.
+fn signature_list_payload(data: &[u8]) -> &[u8] {
+    let Ok((auth, _)) = EFI_VARIABLE_AUTHENTICATION_2::read_from_prefix(data) else {
+        return data;
+    };
+
+    if auth.auth_info.header.revision != WIN_CERT_REVISION_2_0
+        || auth.auth_info.header.certificate_type != WIN_CERT_TYPE_EFI_GUID
+        || auth.auth_info.cert_type != EFI_CERT_TYPE_PKCS7_GUID
+    {
+        return data;
+    }
+
+    let cert_len = auth.auth_info.header.length as usize;
+    if cert_len < size_of::<WIN_CERTIFICATE_UEFI_GUID>() {
+        return data;
+    }
+
+    let Some(auth_len) = size_of_val(&auth.timestamp).checked_add(cert_len) else {
+        return data;
+    };
+    data.get(auth_len..).unwrap_or(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use firmware_uefi_custom_vars::ApplyDeltaError;
+    use pal_async::async_test;
+    use ucs2::Ucs2LeSlice;
+    use uefi_nvram_specvars::signature_list::SignatureData;
+    use uefi_nvram_specvars::signature_list::SignatureList;
+    use uefi_nvram_storage::EFI_TIME;
+    use uefi_nvram_storage::NvramStorage;
+    use uefi_nvram_storage::in_memory::InMemoryNvram;
+    use wchar::wchz;
+
+    const TEST_SIGNATURE_OWNER: Guid = guid::guid!("00000000-0000-0000-0000-000000000001");
+
+    fn x509_variable(certs: &[&'static [u8]]) -> Vec<u8> {
+        let mut data = Vec::new();
+        for cert in certs {
+            SignatureList::X509(SignatureData::new_x509(
+                TEST_SIGNATURE_OWNER,
+                Cow::Borrowed(*cert),
+            ))
+            .extend_as_spec_signature_list(&mut data);
+        }
+        data
+    }
+
+    fn append_without_base_json() -> Vec<u8> {
+        br#"{
+            "type": "Microsoft.Compute/disks",
+            "properties": {
+                "uefiSettings": {
+                    "signatureMode": "Append",
+                    "signatures": {}
+                }
+            }
+        }"#
+        .to_vec()
+    }
+
+    fn invalid_base_template() -> BaseTemplate {
+        BaseTemplate {
+            json: b"not json".to_vec().into(),
+        }
+    }
+
+    fn nvram_services(storage: impl VmmNvramStorage + 'static) -> NvramServices {
+        let storage: Box<dyn VmmNvramStorage> = Box::new(storage);
+        NvramServices {
+            vsm_config: None,
+            services: NvramSpecServices::new(storage),
+        }
+    }
+
+    #[async_test]
+    async fn full_nvram_guest_writes_return_out_of_resources() {
+        use hcl_compat_uefi_nvram_storage::HclCompatNvram;
+        use hcl_compat_uefi_nvram_storage::storage_backend::StorageBackend;
+        use hcl_compat_uefi_nvram_storage::storage_backend::StorageBackendError;
+        use uefi_specs::hyperv::nvram::NvramCommand;
+        use uefi_specs::hyperv::nvram::NvramCommandDescriptor;
+        use uefi_specs::hyperv::nvram::NvramVariableCommand;
+        use uefi_specs::uefi::nvram::EfiVariableAttributes;
+
+        #[derive(Default)]
+        struct TestStorage(Option<Vec<u8>>);
+
+        #[async_trait::async_trait]
+        impl StorageBackend for TestStorage {
+            async fn persist(&mut self, data: Vec<u8>) -> Result<(), StorageBackendError> {
+                self.0 = Some(data);
+                Ok(())
+            }
+
+            async fn restore(&mut self) -> Result<Option<Vec<u8>>, StorageBackendError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        async fn set_variable(
+            nvram: &mut NvramServices,
+            gm: &GuestMemory,
+            vendor: Guid,
+            attributes: u32,
+            data: &[u8],
+        ) -> EfiStatus {
+            let name = wchz!(u16, "var").as_bytes();
+            gm.write_at(0x2000, name).unwrap();
+            gm.write_at(0x3000, data).unwrap();
+            gm.write_plain(
+                0x1000,
+                &NvramCommandDescriptor {
+                    command: NvramCommand::SET_VARIABLE,
+                    status: EfiStatus::DEVICE_ERROR.into(),
+                },
+            )
+            .unwrap();
+            gm.write_plain(
+                0x1000 + size_of::<NvramCommandDescriptor>() as u64,
+                &NvramVariableCommand {
+                    attributes,
+                    name_address: 0x2000.into(),
+                    name_bytes: name.len() as u32,
+                    vendor_guid: vendor,
+                    data_address: 0x3000.into(),
+                    data_bytes: data.len() as u32,
+                },
+            )
+            .unwrap();
+            nvram.handle_command(gm, 0x1000).await;
+            EfiStatus::from(
+                gm.read_plain::<NvramCommandDescriptor>(0x1000)
+                    .unwrap()
+                    .status,
+            )
+        }
+
+        let gm = GuestMemory::allocate(64 * 1024);
+        let mut nvram = nvram_services(HclCompatNvram::new(TestStorage::default(), None));
+        let vendors: [Guid; 4] = std::array::from_fn(|_| Guid::new_random());
+        let attributes = EfiVariableAttributes::new()
+            .with_non_volatile(true)
+            .with_bootservice_access(true)
+            .with_runtime_access(true);
+        let data = vec![0x5a; 32 * 1024 - 48 - wchz!(u16, "var").as_bytes().len()];
+        nvram.services.prepare_for_boot();
+
+        for &vendor in &vendors {
+            assert_eq!(
+                set_variable(&mut nvram, &gm, vendor, attributes.into(), &data).await,
+                EfiStatus::SUCCESS
+            );
+        }
+
+        for runtime in [false, true] {
+            if runtime {
+                nvram.services.exit_boot_services();
+            }
+            assert_eq!(
+                set_variable(&mut nvram, &gm, Guid::new_random(), attributes.into(), &[1],).await,
+                EfiStatus::OUT_OF_RESOURCES
+            );
+            assert_eq!(
+                set_variable(
+                    &mut nvram,
+                    &gm,
+                    vendors[0],
+                    attributes.into(),
+                    &vec![1; data.len() + 1],
+                )
+                .await,
+                EfiStatus::OUT_OF_RESOURCES
+            );
+            assert_eq!(
+                set_variable(
+                    &mut nvram,
+                    &gm,
+                    vendors[0],
+                    attributes.with_append_write(true).into(),
+                    &[1],
+                )
+                .await,
+                EfiStatus::OUT_OF_RESOURCES
+            );
+            assert_eq!(
+                set_variable(
+                    &mut nvram,
+                    &gm,
+                    vendors[0],
+                    attributes.into(),
+                    &vec![1; 32 * 1024 + 1],
+                )
+                .await,
+                EfiStatus::INVALID_PARAMETER
+            );
+            assert_eq!(
+                set_variable(
+                    &mut nvram,
+                    &gm,
+                    vendors[0],
+                    attributes.with_append_write(true).into(),
+                    &vec![1; 32 * 1024 - data.len() + 1],
+                )
+                .await,
+                EfiStatus::INVALID_PARAMETER
+            );
+            let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "var").as_bytes()).unwrap();
+            let (stored_attributes, stored_data) = nvram
+                .services
+                .get_variable_ucs2(vendors[0], name)
+                .await
+                .unwrap();
+            assert_eq!(stored_attributes, u32::from(attributes));
+            assert_eq!(stored_data, data);
+        }
+    }
+
+    #[test]
+    fn authenticated_and_raw_signature_payloads_parse_identically() {
+        let raw = x509_variable(&[b"cert1"]);
+        let mut authenticated = EFI_VARIABLE_AUTHENTICATION_2::DUMMY.as_bytes().to_vec();
+        authenticated.extend_from_slice(&raw);
+
+        assert_eq!(
+            collect_signature_set(&authenticated).unwrap(),
+            collect_signature_set(&raw).unwrap()
+        );
+    }
+
+    #[test]
+    fn signature_set_difference_ignores_extra_loaded_signatures() {
+        let base = collect_signature_set(&x509_variable(&[b"cert1", b"cert2"])).unwrap();
+        let loaded = collect_signature_set(&x509_variable(&[b"cert1", b"cert3"])).unwrap();
+
+        assert_eq!(base.difference(&loaded).count(), 1);
+    }
+
+    #[test]
+    fn secure_boot_variable_report_fits_get_trace_limit() {
+        const GET_TRACE_MESSAGE_MAX_BYTES: usize = 256;
+
+        let report = SecureBootVariableReport {
+            name: vars::KEK().1,
+            in_nvram: false,
+            has_custom_uefi: false,
+            loaded_bytes: usize::MAX,
+            loaded_entries: usize::MAX,
+            template_entries: usize::MAX,
+            missing_entries: usize::MAX,
+        };
+        let message = format!("{report:?}");
+
+        assert!(
+            message.len() <= GET_TRACE_MESSAGE_MAX_BYTES,
+            "Secure Boot variable report is {} bytes: {message}",
+            message.len()
+        );
+    }
+
+    #[test]
+    fn nvram_command_buffer_size_is_bounded() {
+        assert_eq!(
+            nvram_command_buffer_len(MAX_NVRAM_COMMAND_BUFFER_SIZE),
+            Some(MAX_NVRAM_COMMAND_BUFFER_SIZE as usize)
+        );
+        assert_eq!(
+            nvram_command_buffer_len(MAX_NVRAM_COMMAND_BUFFER_SIZE + 1),
+            None
+        );
+        assert_eq!(nvram_command_buffer_len(u32::MAX), None);
+    }
+
+    /// Guest-controlled NVRAM lengths must be rejected before the host allocates.
+    ///
+    /// `data_bytes == u32::MAX` used to execute `vec![0; command.data_bytes as usize]`
+    /// (~4 GiB) and only then try to read guest memory. A missing check either OOMs
+    /// or reports [`EfiStatus::DEVICE_ERROR`] after that read fails. The length gate
+    /// returns [`EfiStatus::INVALID_PARAMETER`] without allocating.
+    #[async_test]
+    async fn oversized_guest_nvram_buffers_are_rejected() {
+        use std::mem::size_of;
+        use uefi_specs::hyperv::nvram::NvramCommand;
+        use uefi_specs::hyperv::nvram::NvramCommandDescriptor;
+        use uefi_specs::hyperv::nvram::NvramDebugStringCommand;
+        use uefi_specs::hyperv::nvram::NvramVariableCommand;
+        use uefi_specs::uefi::nvram::EfiVariableAttributes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        let gm = GuestMemory::allocate(64 * 1024);
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        async fn issue(
+            nvram: &mut NvramServices,
+            gm: &GuestMemory,
+            command: NvramCommand,
+            cmd: &(impl IntoBytes + Immutable + KnownLayout),
+        ) -> EfiStatus {
+            let desc_addr = 0x1000;
+            gm.write_plain(
+                desc_addr,
+                &NvramCommandDescriptor {
+                    command,
+                    // Sentinel: a missing write-back must not look like success.
+                    status: EfiStatus::DEVICE_ERROR.into(),
+                },
+            )
+            .unwrap();
+            gm.write_plain(desc_addr + size_of::<NvramCommandDescriptor>() as u64, cmd)
+                .unwrap();
+            nvram.handle_command(gm, desc_addr).await;
+            EfiStatus::from(
+                gm.read_plain::<NvramCommandDescriptor>(desc_addr)
+                    .unwrap()
+                    .status,
+            )
+        }
+
+        let oversized_set = NvramVariableCommand {
+            attributes: 0,
+            name_address: 0.into(),
+            name_bytes: 0,
+            vendor_guid: Guid::default(),
+            data_address: 0x2000.into(),
+            data_bytes: u32::MAX,
+        };
+        assert_eq!(
+            issue(&mut nvram, &gm, NvramCommand::SET_VARIABLE, &oversized_set).await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
+        let mut just_over_cap = oversized_set;
+        just_over_cap.data_bytes = MAX_NVRAM_COMMAND_BUFFER_SIZE + 1;
+        assert_eq!(
+            issue(&mut nvram, &gm, NvramCommand::SET_VARIABLE, &just_over_cap).await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
+        let oversized_data_with_unreadable_name = NvramVariableCommand {
+            attributes: 0,
+            name_address: 0x1_0000.into(),
+            name_bytes: 2,
+            vendor_guid: Guid::default(),
+            data_address: 0x2000.into(),
+            data_bytes: u32::MAX,
+        };
+        assert_eq!(
+            issue(
+                &mut nvram,
+                &gm,
+                NvramCommand::SET_VARIABLE,
+                &oversized_data_with_unreadable_name
+            )
+            .await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
+        let oversized_name = NvramVariableCommand {
+            attributes: 0,
+            name_address: 0x2000.into(),
+            name_bytes: u32::MAX,
+            vendor_guid: Guid::default(),
+            data_address: 0.into(),
+            data_bytes: 0,
+        };
+        assert_eq!(
+            issue(&mut nvram, &gm, NvramCommand::GET_VARIABLE, &oversized_name).await,
+            EfiStatus::INVALID_PARAMETER
+        );
+        assert_eq!(
+            issue(
+                &mut nvram,
+                &gm,
+                NvramCommand::GET_NEXT_VARIABLE_NAME,
+                &oversized_name
+            )
+            .await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
+        assert_eq!(
+            issue(
+                &mut nvram,
+                &gm,
+                NvramCommand::DEBUG_STRING,
+                &NvramDebugStringCommand {
+                    padding: 0,
+                    address: 0x2000.into(),
+                    len: u32::MAX,
+                },
+            )
+            .await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
+        // A legal request still passes the gate and is stored.
+        let name = wchz!(u16, "TestVar");
+        let name_addr = 0x2000;
+        let data_addr = 0x2200;
+        let data = b"test";
+        gm.write_at(name_addr, name.as_bytes()).unwrap();
+        gm.write_at(data_addr, data).unwrap();
+        assert_eq!(
+            issue(
+                &mut nvram,
+                &gm,
+                NvramCommand::SET_VARIABLE,
+                &NvramVariableCommand {
+                    attributes: EfiVariableAttributes::DEFAULT_ATTRIBUTES.into(),
+                    name_address: name_addr.into(),
+                    name_bytes: name.as_bytes().len().try_into().unwrap(),
+                    vendor_guid: Guid::default(),
+                    data_address: data_addr.into(),
+                    data_bytes: data.len().try_into().unwrap(),
+                },
+            )
+            .await,
+            EfiStatus::SUCCESS
+        );
+    }
+
+    #[async_test]
+    async fn missing_secure_boot_variable_is_reported_as_not_present() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+        let template_signatures = [Signature::X509(vec![firmware_uefi_custom_vars::X509Cert(
+            b"cert1".to_vec(),
+        )])];
+
+        let report = nvram
+            .get_secure_boot_variable_report(vars::DB(), &template_signatures, true)
+            .await
+            .unwrap();
+
+        assert!(!report.in_nvram);
+        assert!(report.has_custom_uefi);
+        assert_eq!(report.loaded_bytes, 0);
+        assert_eq!(report.loaded_entries, 0);
+        assert_eq!(report.template_entries, 1);
+        assert_eq!(report.missing_entries, 1);
+    }
+
+    #[async_test]
+    async fn empty_secure_boot_variable_reports_all_entries_missing() {
+        let (vendor, name) = vars::DB();
+        let mut storage = InMemoryNvram::new();
+        storage
+            .set_variable(name, vendor, 0, Vec::new(), EFI_TIME::default())
+            .await
+            .unwrap();
+        let mut nvram = nvram_services(storage);
+        let template_signatures = [Signature::X509(vec![
+            firmware_uefi_custom_vars::X509Cert(b"cert1".to_vec()),
+            firmware_uefi_custom_vars::X509Cert(b"cert2".to_vec()),
+        ])];
+
+        let report = nvram
+            .get_secure_boot_variable_report((vendor, name), &template_signatures, false)
+            .await
+            .unwrap();
+
+        assert!(report.in_nvram);
+        assert!(!report.has_custom_uefi);
+        assert_eq!(report.loaded_bytes, 0);
+        assert_eq!(report.loaded_entries, 0);
+        assert_eq!(report.template_entries, 2);
+        assert_eq!(report.missing_entries, 2);
+    }
+
+    #[async_test]
+    async fn populated_secure_boot_variable_reports_signature_counts() {
+        use uefi_specs::hyperv::nvram::vars::MSFT_SECURE_BOOT_PRODUCTION_GUID;
+
+        let (vendor, name) = vars::DB();
+        let mut data = Vec::new();
+        for cert in [b"cert1".as_slice(), b"cert3".as_slice()] {
+            SignatureList::X509(SignatureData::new_x509(
+                MSFT_SECURE_BOOT_PRODUCTION_GUID,
+                Cow::Borrowed(cert),
+            ))
+            .extend_as_spec_signature_list(&mut data);
+        }
+        let loaded_bytes = data.len();
+        let mut storage = InMemoryNvram::new();
+        storage
+            .set_variable(name, vendor, 0, data, EFI_TIME::default())
+            .await
+            .unwrap();
+        let mut nvram = nvram_services(storage);
+        let template_signatures = [Signature::X509(vec![
+            firmware_uefi_custom_vars::X509Cert(b"cert1".to_vec()),
+            firmware_uefi_custom_vars::X509Cert(b"cert2".to_vec()),
+        ])];
+
+        let report = nvram
+            .get_secure_boot_variable_report((vendor, name), &template_signatures, false)
+            .await
+            .unwrap();
+
+        assert_eq!(report.loaded_bytes, loaded_bytes);
+        assert_eq!(report.loaded_entries, 2);
+        assert_eq!(report.template_entries, 2);
+        assert_eq!(report.missing_entries, 1);
+    }
+
+    #[async_test]
+    async fn invalid_templates_are_ignored_after_first_boot_without_secure_boot() {
+        let mut storage = InMemoryNvram::new();
+        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
+        storage
+            .set_variable(name, Guid::default(), 0, vec![1], EFI_TIME::default())
+            .await
+            .unwrap();
+
+        NvramServices::new(
+            Box::new(storage),
+            Some(invalid_base_template()),
+            Some(b"not json".to_vec().into()),
+            false,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[async_test]
+    async fn invalid_base_template_is_ignored_after_first_boot_with_secure_boot() {
+        let mut storage = InMemoryNvram::new();
+        let name = Ucs2LeSlice::from_slice_with_nul(wchz!(u16, "existing").as_bytes()).unwrap();
+        storage
+            .set_variable(name, Guid::default(), 0, vec![1], EFI_TIME::default())
+            .await
+            .unwrap();
+
+        NvramServices::new(
+            Box::new(storage),
+            Some(invalid_base_template()),
+            None,
+            true,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[async_test]
+    async fn invalid_base_template_fails_on_first_boot() {
+        assert!(matches!(
+            NvramServices::new(
+                Box::new(InMemoryNvram::new()),
+                Some(invalid_base_template()),
+                None,
+                false,
+                None,
+                false,
+            )
+            .await,
+            Err(NvramSetupError::LoadBaseTemplate(_))
+        ));
+    }
+
+    #[async_test]
+    async fn invalid_delta_fails_on_first_boot() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        assert!(matches!(
+            nvram
+                .inject_initial_vars(None, Some(append_without_base_json().into()))
+                .await,
+            Err(NvramSetupError::ApplyCustomTemplate(
+                ApplyDeltaError::AppendWithoutBase
+            ))
+        ));
+    }
+
+    #[async_test]
+    async fn malformed_json_fails_on_first_boot() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        assert!(matches!(
+            nvram
+                .inject_initial_vars(None, Some(b"not json".to_vec().into()))
+                .await,
+            Err(NvramSetupError::LoadCustomUefiJson(_))
+        ));
+    }
+
+    #[async_test]
+    async fn deferred_base_template_parses_on_first_boot() {
+        let mut nvram = nvram_services(InMemoryNvram::new());
+        let base_template = firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows();
+        let base_template_vars =
+            hyperv_uefi_custom_vars_json::parse_template_json(base_template.json.as_bytes())
+                .unwrap();
+
+        nvram
+            .inject_initial_vars(Some(&base_template_vars), None)
+            .await
+            .unwrap();
+
+        let (vendor, name) = vars::PK();
+        assert!(nvram.services.get_variable_ucs2(vendor, name).await.is_ok());
+    }
+
+    #[async_test]
+    async fn omitted_dbx_is_not_injected_on_first_boot() {
+        let custom_vars = br#"{
+            "type": "Microsoft.Compute/disks",
+            "properties": {
+                "uefiSettings": {
+                    "signatureMode": "Replace",
+                    "signatures": {
+                        "PK": { "type": "x509", "value": ["Jw=="] },
+                        "KEK": [{ "type": "x509", "value": ["Jw=="] }],
+                        "db": [{ "type": "x509", "value": ["Jw=="] }]
+                    }
+                }
+            }
+        }"#;
+        let mut nvram = nvram_services(InMemoryNvram::new());
+
+        nvram
+            .inject_initial_vars(None, Some(custom_vars.to_vec().into()))
+            .await
+            .unwrap();
+
+        let (pk_vendor, pk_name) = vars::PK();
+        assert!(
+            nvram
+                .services
+                .get_variable_ucs2(pk_vendor, pk_name)
+                .await
+                .is_ok()
+        );
+
+        let (dbx_vendor, dbx_name) = vars::DBX();
+        assert!(matches!(
+            nvram.services.get_variable_ucs2(dbx_vendor, dbx_name).await,
+            Err((EfiStatus::NOT_FOUND, _))
+        ));
+    }
+}
+
+impl NvramServices {
+    /// Runs the Hyper-V NVRAM command whose descriptor is at `desc_addr` and writes
+    /// its status back into the descriptor.
+    pub(crate) async fn handle_command(&mut self, gm: &GuestMemory, desc_addr: u64) {
         use uefi_specs::hyperv::nvram::NvramCommandDescriptor;
 
-        let mut desc: NvramCommandDescriptor = match self.gm.read_plain(desc_addr) {
+        let mut desc: NvramCommandDescriptor = match gm.read_plain(desc_addr) {
             Ok(desc) => desc,
             Err(err) => {
                 tracelimit::warn_ratelimited!(
@@ -406,7 +1348,7 @@ impl UefiDevice {
             }
         };
 
-        let status = match self.handle_nvram_command_inner(desc_addr, desc).await {
+        let status = match self.handle_command_inner(gm, desc_addr, desc).await {
             Ok(status) => status,
             Err(err) => {
                 tracelimit::warn_ratelimited!(
@@ -420,7 +1362,7 @@ impl UefiDevice {
         // write back status into guest memory
         desc.status = status.into();
 
-        if let Err(err) = self.gm.write_plain(desc_addr, &desc) {
+        if let Err(err) = gm.write_plain(desc_addr, &desc) {
             tracelimit::warn_ratelimited!(
                 error = &err as &dyn std::error::Error,
                 "Could not write NvramCommandDescriptor into guest memory",
@@ -428,8 +1370,9 @@ impl UefiDevice {
         }
     }
 
-    async fn handle_nvram_command_inner(
+    async fn handle_command_inner(
         &mut self,
+        gm: &GuestMemory,
         desc_addr: u64,
         desc: uefi_specs::hyperv::nvram::NvramCommandDescriptor,
     ) -> Result<EfiStatus, GuestMemoryError> {
@@ -440,20 +1383,20 @@ impl UefiDevice {
 
         let (status, err) = match desc.command {
             NvramCommand::GET_VARIABLE => {
-                let mut command: NvramVariableCommand = self.gm.read_plain(command_addr)?;
+                let mut command: NvramVariableCommand = gm.read_plain(command_addr)?;
 
                 let name = if command.name_address.get() != 0 {
-                    let mut buf = vec![0; command.name_bytes as usize];
-                    self.gm
-                        .read_at(command.name_address.into(), buf.as_mut_slice())?;
+                    let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
+                        return Ok(EfiStatus::INVALID_PARAMETER);
+                    };
+                    let mut buf = vec![0; name_len];
+                    gm.read_at(command.name_address.into(), buf.as_mut_slice())?;
                     Some(buf)
                 } else {
                     None
                 };
 
                 let NvramResult(data, status, err) = self
-                    .service
-                    .nvram
                     .services
                     .uefi_get_variable(
                         name.as_deref(),
@@ -465,41 +1408,43 @@ impl UefiDevice {
                     .await;
 
                 // writeback updated command struct
-                self.gm.write_plain(command_addr, &command)?;
+                gm.write_plain(command_addr, &command)?;
 
                 // write any data to provided guest memory location
                 // (bounds checking is performed within `nvram.get_variable`)
                 if let Some(data) = data {
-                    self.gm
-                        .write_at(command.data_address.get(), data.as_bytes())?;
+                    gm.write_at(command.data_address.get(), data.as_bytes())?;
                 }
 
                 (status, err)
             }
             NvramCommand::SET_VARIABLE => {
-                let command: NvramVariableCommand = self.gm.read_plain(command_addr)?;
+                let command: NvramVariableCommand = gm.read_plain(command_addr)?;
+
+                let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
+                    return Ok(EfiStatus::INVALID_PARAMETER);
+                };
+                let Some(data_len) = nvram_command_buffer_len(command.data_bytes) else {
+                    return Ok(EfiStatus::INVALID_PARAMETER);
+                };
 
                 let name = if command.name_address.get() != 0 {
-                    let mut buf = vec![0; command.name_bytes as usize];
-                    self.gm
-                        .read_at(command.name_address.into(), buf.as_mut_slice())?;
+                    let mut buf = vec![0; name_len];
+                    gm.read_at(command.name_address.into(), buf.as_mut_slice())?;
                     Some(buf)
                 } else {
                     None
                 };
 
                 let data = if command.data_address.get() != 0 {
-                    let mut buf = vec![0; command.data_bytes as usize];
-                    self.gm
-                        .read_at(command.data_address.into(), buf.as_mut_slice())?;
+                    let mut buf = vec![0; data_len];
+                    gm.read_at(command.data_address.into(), buf.as_mut_slice())?;
                     Some(buf)
                 } else {
                     None
                 };
 
                 let NvramResult((), status, err) = self
-                    .service
-                    .nvram
                     .services
                     .uefi_set_variable(
                         name.as_deref(),
@@ -513,13 +1458,15 @@ impl UefiDevice {
                 (status, err)
             }
             NvramCommand::GET_FIRST_VARIABLE_NAME | NvramCommand::GET_NEXT_VARIABLE_NAME => {
-                let mut command: NvramVariableCommand = self.gm.read_plain(command_addr)?;
+                let mut command: NvramVariableCommand = gm.read_plain(command_addr)?;
 
                 let name = if desc.command == NvramCommand::GET_NEXT_VARIABLE_NAME {
                     if command.name_address.get() != 0 {
-                        let mut buf = vec![0; command.name_bytes as usize];
-                        self.gm
-                            .read_at(command.name_address.into(), buf.as_mut_slice())?;
+                        let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
+                            return Ok(EfiStatus::INVALID_PARAMETER);
+                        };
+                        let mut buf = vec![0; name_len];
+                        gm.read_at(command.name_address.into(), buf.as_mut_slice())?;
                         Some(buf)
                     } else {
                         None
@@ -534,8 +1481,6 @@ impl UefiDevice {
                 };
 
                 let NvramResult(data, status, err) = self
-                    .service
-                    .nvram
                     .services
                     .uefi_get_next_variable(
                         &mut command.name_bytes,
@@ -549,37 +1494,38 @@ impl UefiDevice {
                 if let Some((name, vendor)) = data {
                     command.vendor_guid = vendor;
 
-                    self.gm
-                        .write_at(command.name_address.get(), name.as_bytes())?;
+                    gm.write_at(command.name_address.get(), name.as_bytes())?;
                 }
 
                 // writeback updated command struct
-                self.gm.write_at(command_addr, command.as_bytes())?;
+                gm.write_at(command_addr, command.as_bytes())?;
 
                 (status, err)
             }
             NvramCommand::QUERY_INFO => (EfiStatus::UNSUPPORTED, None),
             NvramCommand::SIGNAL_RUNTIME => {
                 use uefi_specs::hyperv::nvram::NvramSignalRuntimeCommand;
-                let command: NvramSignalRuntimeCommand = self.gm.read_plain(command_addr)?;
+                let command: NvramSignalRuntimeCommand = gm.read_plain(command_addr)?;
 
                 if !command.flags.vsm_aware() {
-                    if let Some(vsm) = &self.service.nvram.vsm_config {
+                    if let Some(vsm) = &self.vsm_config {
                         tracelimit::info_ratelimited!("Revoking guest vsm");
                         vsm.revoke_guest_vsm()
                     }
                 }
-                self.service.nvram.services.exit_boot_services();
+                self.services.exit_boot_services();
 
                 (EfiStatus::SUCCESS, None)
             }
             NvramCommand::DEBUG_STRING => {
                 let command: uefi_specs::hyperv::nvram::NvramDebugStringCommand =
-                    self.gm.read_plain(command_addr)?;
+                    gm.read_plain(command_addr)?;
 
-                let mut data = vec![0u16; command.len as usize / 2];
-                self.gm
-                    .read_at(command.address.into(), data.as_mut_bytes())?;
+                let Some(data_len) = nvram_command_buffer_len(command.len) else {
+                    return Ok(EfiStatus::INVALID_PARAMETER);
+                };
+                let mut data = vec![0u16; data_len / 2];
+                gm.read_at(command.address.into(), data.as_mut_bytes())?;
 
                 tracing::trace!(
                     target: "uefi-nvram-guest-debug",

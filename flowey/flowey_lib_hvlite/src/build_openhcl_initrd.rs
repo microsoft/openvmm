@@ -65,6 +65,7 @@ impl FlowNode for Node {
                 FlowPlatformLinuxDistro::Fedora
                 | FlowPlatformLinuxDistro::Ubuntu
                 | FlowPlatformLinuxDistro::AzureLinux
+                | FlowPlatformLinuxDistro::OpenSuse
                 | FlowPlatformLinuxDistro::Nix => "python3",
                 FlowPlatformLinuxDistro::Arch => "python",
                 FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),

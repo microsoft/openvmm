@@ -132,7 +132,7 @@ impl Request {
 
     fn read_operation(header: &fuse_in_header, mut reader: impl RequestReader) -> FuseOperation {
         if header.len as usize > reader.remaining_len() + size_of_val(header) {
-            tracing::error!(
+            tracelimit::error_ratelimited!(
                 opcode = header.opcode,
                 unique = header.unique,
                 header_len = header.len,
@@ -150,7 +150,7 @@ impl Request {
             let payload_len = (header.len as usize) - size_of::<fuse_in_header>();
             let available = payload_len.min(size_of::<fuse_init_in>());
             if available < FUSE_COMPAT_INIT_IN_SIZE as usize {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
                     opcode = header.opcode,
                     unique = header.unique,
                     len = available,
@@ -160,7 +160,7 @@ impl Request {
             }
             let mut init = fuse_init_in::new_zeroed();
             if let Err(e) = reader.read_exact(&mut init.as_mut_bytes()[..available]) {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
                     opcode = header.opcode,
                     unique = header.unique,
                     error = &e as &dyn std::error::Error,
@@ -174,7 +174,7 @@ impl Request {
         match FuseOperation::read(header.opcode, reader) {
             Ok(operation) => operation,
             Err(e) => {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
                     opcode = header.opcode,
                     unique = header.unique,
                     error = &e as &dyn std::error::Error,
@@ -184,6 +184,23 @@ impl Request {
             }
         }
     }
+}
+
+const NAME_MAX: usize = 255;
+
+pub fn check_name(name: &[u8]) -> lx::Result<()> {
+    if name.is_empty()
+        || name == b"."
+        || name == b".."
+        || name.contains(&b'/')
+        || name.contains(&b'\0')
+    {
+        return Err(lx::Error::EINVAL);
+    }
+    if name.len() > NAME_MAX {
+        return Err(lx::Error::ENAMETOOLONG);
+    }
+    Ok(())
 }
 
 /// Helpers to parse FUSE messages.
@@ -224,19 +241,10 @@ pub trait RequestReader: io::Read {
         Ok(lx::LxString::from_vec(buffer))
     }
 
-    /// Maximum length of a file name component (NAME_MAX on Linux).
-    const NAME_MAX: usize = 255;
-
     /// Read a NULL-terminated string and ensure it's a valid path name component.
     fn name(&mut self) -> lx::Result<lx::LxString> {
         let name = self.string()?;
-        if name.is_empty() || name == "." || name == ".." || name.as_bytes().contains(&b'/') {
-            return Err(lx::Error::EINVAL);
-        }
-        if name.len() > Self::NAME_MAX {
-            return Err(lx::Error::ENAMETOOLONG);
-        }
-
+        check_name(name.as_bytes())?;
         Ok(name)
     }
 }

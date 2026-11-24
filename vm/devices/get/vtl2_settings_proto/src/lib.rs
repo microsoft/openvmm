@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 #![expect(unused_qualifications)] // pbjson-build doesn't use ::fully::qualified::paths.
 #![expect(clippy::allow_attributes)] // both crates generate allows
+#![expect(clippy::useless_borrows_in_formatting)] // both crates generate extra borrows
 
 // These crates are referenced by the generated code. Reference them
 // explicitly here so that they are not removed by automated tools (xtask

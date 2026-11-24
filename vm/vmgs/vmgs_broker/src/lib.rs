@@ -10,6 +10,7 @@ mod client;
 pub mod non_volatile_store;
 pub mod resolver;
 
+pub use broker::VmgsBrokerError;
 pub use client::VmgsClient;
 pub use client::VmgsClientError;
 

@@ -99,16 +99,24 @@ impl SimpleFlowNode for Node {
         });
 
         let consolidated_html = if matches!(ctx.backend(), FlowBackend::Github) {
+            // actions/upload-pages-artifact v4.0.0
             let did_upload = ctx
-                .emit_gh_step("Upload pages artifact", "actions/upload-pages-artifact@v4")
+                .emit_gh_step(
+                    "Upload pages artifact",
+                    "actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
+                )
                 .with(
                     "path",
                     consolidated_html.map(ctx, |x| x.display().to_string()),
                 )
                 .finish(ctx);
 
+            // actions/deploy-pages v4.0.5
             let did_deploy = ctx
-                .emit_gh_step("Deploy to GitHub Pages", "actions/deploy-pages@v4")
+                .emit_gh_step(
+                    "Deploy to GitHub Pages",
+                    "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",
+                )
                 .requires_permission(GhPermission::IdToken, GhPermissionValue::Write)
                 .requires_permission(GhPermission::Pages, GhPermissionValue::Write)
                 .run_after(did_upload)

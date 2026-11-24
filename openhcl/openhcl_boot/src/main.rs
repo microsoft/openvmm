@@ -1,20 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The openhcl boot loader, which loads before the kernel to set up the
-//! kernel's boot parameters.
+//! Bare-metal OpenHCL boot loader that prepares VTL2 before Linux starts.
+//!
+//! This measured payload validates its imported regions and host parameters,
+//! establishes the VTL2 address space and processor state, constructs Linux
+//! boot parameters and a device tree, and initializes the sidecar kernel when
+//! configured. It then transfers control to the OpenHCL Linux kernel.
 
 // See build.rs.
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
-// Allow the allocator api when compiling with `RUSTFLAGS="--cfg nightly"`. This
-// is used for some miri tests for testing the bump allocator.
-//
-// Do not use a normal feature, as that shows errors with rust-analyzer since
-// most people are using stable and enable all features. We could remove this
-// once the allocator_api feature is stable.
-#![cfg_attr(nightly, feature(allocator_api))]
 
 mod arch;
 mod boot_logger;
@@ -195,35 +192,22 @@ fn build_kernel_command_line(
         "acpi=off",
     ];
 
-    const X86_KERNEL_PARAMETERS: &[&str] = &[
-        // Disable pcid support. This is a temporary fix to allow
-        // Underhill to run nested inside AMD VMs. Otherwise, the
-        // Underhill kernel tries to start APs with PCID bits set in CR3
-        // without the PCIDE bit set in CR4, which is an invalid
-        // VP state (according to the mshv nested implementation).
-        //
-        // TODO: remove this once we figure out the root cause and apply
-        // a workaround/fix elsewhere.
-        "clearcpuid=pcid",
-        // Disable all attempts to use an IOMMU, including swiotlb.
-        "iommu=off",
-        // Don't probe for a PCI bus. PCI devices currently come from VPCI. When
-        // this changes, we will explicitly enumerate a PCI bus via devicetree.
-        "pci=off",
-    ];
-
-    const AARCH64_KERNEL_PARAMETERS: &[&str] = &[];
+    const ARCH_KERNEL_PARAMETERS: &[&str] = cfg_select! {
+        target_arch = "x86_64" => &[
+            // Disable all attempts to use an IOMMU, including swiotlb.
+            "iommu=off",
+            // Don't probe for a PCI bus. PCI devices currently come from VPCI. When
+            // this changes, we will explicitly enumerate a PCI bus via devicetree.
+            "pci=off",
+        ],
+        target_arch = "aarch64" => &[],
+    };
 
     for p in KERNEL_PARAMETERS {
         write!(cmdline, "{p} ")?;
     }
 
-    let arch_parameters = if cfg!(target_arch = "x86_64") {
-        X86_KERNEL_PARAMETERS
-    } else {
-        AARCH64_KERNEL_PARAMETERS
-    };
-    for p in arch_parameters {
+    for p in ARCH_KERNEL_PARAMETERS {
         write!(cmdline, "{p} ")?;
     }
 
@@ -315,19 +299,6 @@ fn build_kernel_command_line(
 
     if let Some(sidecar) = sidecar {
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
-    }
-
-    if !cmdline.contains("hv_vmbus.message_connection_id") {
-        // HACK: Set the vmbus connection id via kernel commandline if we haven't
-        // gotten one from elsewhere.
-        //
-        // This code will be removed when the kernel supports setting connection id
-        // via device tree.
-        write!(
-            cmdline,
-            "hv_vmbus.message_connection_id=0x{:x} ",
-            partition_info.vmbus_vtl2.connection_id
-        )?;
     }
 
     // Prepend the computed parameters to the original command line.
@@ -555,6 +526,90 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
     }
 }
 
+/// Dump diagnostics when initrd CRC32 does not match the build-time value.
+///
+/// Contents:
+///
+/// - `base` / `size` / `expected` (build-time) / `got` (first read)
+///   CRCs.
+/// - `got2` — a second CRC re-computed immediately from the same virtual
+///   range. If `got2 != got`, initrd memory is not being read consistently
+///   (typical symptom of stale/mismatched cache lines after the SNP shared
+///   -> private transition, rather than data being wrong in memory).
+/// - `head` / `tail` — first and last 16 bytes as hex, to fingerprint what
+///   is actually in memory.
+/// - `eighths` — CRC32 of eight roughly-equal slices of the initrd. This
+///   is a coarse "which region diverges" locator that is cheap to compute
+///   and stable across boots, so it can be compared with a known-good
+///   build without needing a per-page dump (which would blow the log
+///   budget for real-sized initrds).
+//
+// SNP TODO: temporary diagnostic; remove once the SNP initrd CRC mismatch
+// is root-caused.
+fn build_initrd_crc_diagnostic(p: &ShimParams, first_computed_crc: u32) -> ArrayString<384> {
+    let initrd_bytes = p.initrd();
+
+    // A second read from the same VA. If this differs from the first read,
+    // the initrd memory is not being read consistently, which typically
+    // indicates stale/mismatched cache lines rather than actual data
+    // corruption.
+    let second_computed_crc = crc32fast::hash(initrd_bytes);
+
+    // First 16 and last 16 bytes, as fixed-size arrays so we can rely on
+    // Debug's `{:02x?}` slice formatting.
+    let mut head = [0u8; 16];
+    let head_len = head.len().min(initrd_bytes.len());
+    head[..head_len].copy_from_slice(&initrd_bytes[..head_len]);
+
+    let mut tail = [0u8; 16];
+    let tail_len = tail.len().min(initrd_bytes.len());
+    if tail_len > 0 {
+        let start = initrd_bytes.len() - tail_len;
+        tail[..tail_len].copy_from_slice(&initrd_bytes[start..]);
+    }
+
+    // Split the initrd into (up to) 8 roughly-equal slices and CRC each.
+    // Bytes past the aligned slices go into the last chunk.
+    let mut eighths = [0u32; 8];
+    let n = initrd_bytes.len();
+    if n > 0 {
+        let step = n.div_ceil(8);
+        for (i, e) in eighths.iter_mut().enumerate() {
+            let start = i * step;
+            if start >= n {
+                break;
+            }
+            let end = ((i + 1) * step).min(n);
+            *e = crc32fast::hash(&initrd_bytes[start..end]);
+        }
+    }
+
+    let mut buf = ArrayString::<384>::new();
+    let _ = write!(
+        &mut buf,
+        "initrd crc mismatch: iso={:?} base={:#x} size={:#x} \
+         exp={:#x} got={:#x} got2={:#x} head={:02x?} tail={:02x?} \
+         eighths=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
+        p.isolation_type,
+        p.initrd_base,
+        p.initrd_size,
+        p.initrd_crc,
+        first_computed_crc,
+        second_computed_crc,
+        &head[..head_len],
+        &tail[..tail_len],
+        eighths[0],
+        eighths[1],
+        eighths[2],
+        eighths[3],
+        eighths[4],
+        eighths[5],
+        eighths[6],
+        eighths[7],
+    );
+    buf
+}
+
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
     if p.isolation_type == IsolationType::None {
@@ -717,6 +772,11 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Validate the initrd crc matches what was put at file generation time.
     let computed_crc = crc32fast::hash(p.initrd());
+    if computed_crc != p.initrd_crc && is_confidential_debug {
+        let diag = build_initrd_crc_diagnostic(&p, computed_crc);
+        log::error!("{}", diag.as_str());
+        panic!("{}", diag.as_str());
+    }
     assert_eq!(
         computed_crc, p.initrd_crc,
         "computed initrd crc does not match build time calculated crc"
@@ -795,16 +855,21 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         arch::uninitialize_serial_io(&p);
     }
 
-    cfg_if::cfg_if! {
-        if #[cfg(target_arch = "x86_64")] {
+    cfg_select! {
+        target_arch = "x86_64" => {
             // SAFETY: the parameter blob is trusted.
             let kernel_entry: extern "C" fn(u64, &loader_defs::linux::boot_params) -> ! =
                 unsafe { core::mem::transmute(p.kernel_entry_address) };
             kernel_entry(0, &boot_params.0)
-        } else if #[cfg(target_arch = "aarch64")] {
+        }
+        target_arch = "aarch64" => {
             // SAFETY: the parameter blob is trusted.
-            let kernel_entry: extern "C" fn(fdt_data: *const u8, mbz0: u64, mbz1: u64, mbz2: u64) -> ! =
-                unsafe { core::mem::transmute(p.kernel_entry_address) };
+            let kernel_entry: extern "C" fn(
+                fdt_data: *const u8,
+                mbz0: u64,
+                mbz1: u64,
+                mbz2: u64,
+            ) -> ! = unsafe { core::mem::transmute(p.kernel_entry_address) };
             // Disable MMU for kernel boot without EFI, as required by the boot protocol.
             // Flush (and invalidate) the caches, as that is required for disabling MMU.
             // SAFETY: Just changing a bit in the register and then jumping to the kernel.
@@ -821,7 +886,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
                 );
             }
             kernel_entry(fdt.data.as_ptr(), 0, 0, 0)
-        } else {
+        }
+        _ => {
             panic!("unsupported arch")
         }
     }
@@ -943,13 +1009,9 @@ mod test {
                 sidecar_starts_cpu: [true; sidecar_defs::NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
             },
             cmdline: ArrayString::new(),
-            vmbus_vtl2: VmbusInfo {
-                mmio,
-                connection_id: 0,
-            },
+            vmbus_vtl2: VmbusInfo { mmio },
             vmbus_vtl0: VmbusInfo {
                 mmio: ArrayVec::new(),
-                connection_id: 0,
             },
             com3_serial: ComInfo::None,
             gic: None,

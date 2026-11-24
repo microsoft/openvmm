@@ -36,15 +36,19 @@ impl FlowNode for Node {
             ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled),
         ];
 
-        // On Ubuntu, we need the `build-essential` package to ensure that
-        // the system has a working linker.
-        if matches!(
-            ctx.platform(),
-            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
-        ) {
+        let packages = match ctx.platform() {
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => {
+                vec!["build-essential", "cmake"]
+            }
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::OpenSuse) => {
+                vec!["gcc", "gcc-c++", "glibc-devel", "make", "cmake"]
+            }
+            _ => Vec::new(),
+        };
+        if !packages.is_empty() {
             side_effects.push(ctx.reqv(|v| {
                 flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec!["build-essential".into()],
+                    package_names: packages.into_iter().map(Into::into).collect(),
                     done: v,
                 }
             }));

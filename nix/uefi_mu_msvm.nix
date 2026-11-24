@@ -2,23 +2,23 @@
 
 let
   # Allow explicit override of architecture, otherwise derive from host system
-  # X64 uses VS2022 toolchain, AARCH64 uses CLANGPDB
-  archToolchain = if targetArch == "x86_64" then "X64-VS2022"
+  # Both architectures use the legacy C core with CLANGPDB
+  archToolchain = if targetArch == "x86_64" then "X64-CLANGPDB"
          else if targetArch == "aarch64" then "AARCH64-CLANGPDB"
          else if system == "aarch64-linux" then "AARCH64-CLANGPDB"
-         else "X64-VS2022";
+         else "X64-CLANGPDB";
   hash = {
-    "AARCH64-CLANGPDB" = "sha256-HI2tT8sry3avIafZT1aMzP0821fiFKQc9CE7o5hl6Nw=";
-    "X64-VS2022" = "sha256-V44ql2wTDhE0GcrzRztJhgrE6inuhY19YvO79m286nU=";
+    "AARCH64-CLANGPDB" = "sha256-zIdsaLRfkNJZl9Pj4GIjkHfxW3c3F3j+6cjFUlVt3U8=";
+    "X64-CLANGPDB" = "sha256-8H2nN8Lehsbr8DsL6zAGkcxm+ECEwQFKtmgXVtjaXx8=";
   }.${archToolchain};
 
 in stdenv.mkDerivation rec {
   pname = "uefi-mu-msvm-${archToolchain}";
-  version = "26.0.13";
+  version = "26.0.50";
 
   src = fetchzip {
     url =
-      "https://github.com/microsoft/mu_msvm/releases/download/v${version}/RELEASE-${archToolchain}-artifacts.tar.gz";
+      "https://github.com/microsoft/mu_msvm/releases/download/v${version}/firmware-RELEASE-${archToolchain}.tar.gz";
     stripRoot = false;
     inherit hash;
   };

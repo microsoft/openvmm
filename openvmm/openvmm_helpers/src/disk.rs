@@ -34,8 +34,14 @@ pub struct OpenDiskOptions {
 /// Opens the resources needed for using a disk from a file at `path`.
 ///
 /// If the file ends with .vhd and is a fixed VHD1, it will be opened using
-/// the user-mode VHD parser. Otherwise, if the file ends with .vhd or
-/// .vhdx, the file will be opened using the kernel-mode VHD parser.
+/// the user-mode VHD parser. Otherwise, if the file ends with .vhd, the
+/// file will be opened using the kernel-mode VHD parser (Windows only).
+///
+/// If the file ends with .vhdx, the kernel-mode VHD parser is used on
+/// Windows. On Linux, the pure-Rust VHDX parser is used, with automatic
+/// parent-locator walking for differencing chains.
+///
+/// If the file ends with .vmdk, the VMDK backend is used for all platforms.
 pub async fn open_disk_type(
     path: &Path,
     options: OpenDiskOptions,
@@ -48,6 +54,11 @@ pub async fn open_disk_type(
         Ok(())
     };
     Ok(match path.extension().and_then(|s| s.to_str()) {
+        Some("vmdk") => {
+            ensure_no_direct(".vmdk")?;
+            disk_vmdk::open_vmdk(path, read_only)
+                .with_context(|| disk_open_error(path, "failed to open"))?
+        }
         Some("vhd") => {
             let file = std::fs::OpenOptions::new()
                 .read(true)
@@ -79,20 +90,19 @@ pub async fn open_disk_type(
                 Err(err) => return Err(err.into()),
             }
         }
-        Some("vhdx") => {
-            #[cfg(windows)]
-            {
-                Resource::new(disk_vhdmp::OpenVhdmpDiskConfig(
-                    disk_vhdmp::VhdmpDisk::options()
-                        .read_only(read_only)
-                        .cached_io(!options.direct)
-                        .open(path)
-                        .with_context(|| disk_open_error(path, "failed to open"))?,
-                ))
-            }
-            #[cfg(not(windows))]
-            anyhow::bail!("VHDX not supported on Linux");
-        }
+        Some("vhdx") => cfg_select! {
+            windows => Resource::new(disk_vhdmp::OpenVhdmpDiskConfig(
+                disk_vhdmp::VhdmpDisk::options()
+                    .read_only(read_only)
+                    .cached_io(!options.direct)
+                    .open(path)
+                    .with_context(|| disk_open_error(path, "failed to open"))?,
+            )),
+            _ => {{
+                ensure_no_direct(".vhdx")?;
+                disklayer_vhdx::chain::open_vhdx_chain(path, read_only).await?
+            }}
+        },
         Some("iso") if !read_only => {
             anyhow::bail!("iso file cannot be opened as read/write")
         }
@@ -138,6 +148,9 @@ pub fn create_disk_type(
         Some("vhdx") => {
             anyhow::bail!("creating vhdx not supported")
         }
+        Some("vmdk") => {
+            anyhow::bail!("creating vmdk not supported")
+        }
         Some("iso") => {
             anyhow::bail!("creating iso not supported")
         }
@@ -182,14 +195,89 @@ fn open_raw_disk(
         file.set_len(size)?;
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        Ok(Resource::new(
-            disk_backend_resources::BlockDeviceDiskHandle { file },
-        ))
+    Ok(cfg_select! {
+        target_os = "linux" => {
+            Resource::new(disk_backend_resources::BlockDeviceDiskHandle { file })
+        }
+        _ => Resource::new(disk_backend_resources::FileDiskHandle(file)),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::async_test;
+
+    // Creates a minimal flat VMDK descriptor and source file for routing tests.
+    fn create_test_vmdk() -> (tempfile::TempDir, std::path::PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("source.bin"), [0; 512]).unwrap();
+        let descriptor = directory.path().join("disk.vmdk");
+        std::fs::write(
+            &descriptor,
+            "# Disk DescriptorFile\n\
+             version=1\n\
+             parentCID=ffffffff\n\
+             createType=\"monolithicFlat\"\n\
+             # Extent description\n\
+             RW 1 FLAT \"source.bin\" 0\n",
+        )
+        .unwrap();
+        (directory, descriptor)
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Ok(Resource::new(disk_backend_resources::FileDiskHandle(file)))
+
+    #[async_test]
+    async fn opens_flat_vmdk_read_only() {
+        let (_directory, descriptor) = create_test_vmdk();
+        open_disk_type(
+            &descriptor,
+            OpenDiskOptions {
+                read_only: true,
+                direct: false,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[async_test]
+    async fn rejects_vmdk_write_direct_io_and_creation() {
+        let (_directory, descriptor) = create_test_vmdk();
+        // Writable VMDK opens are not supported.
+        assert!(
+            open_disk_type(
+                &descriptor,
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: false,
+                },
+            )
+            .await
+            .is_err()
+        );
+        // VMDK sources cannot use direct I/O.
+        assert!(
+            open_disk_type(
+                &descriptor,
+                OpenDiskOptions {
+                    read_only: true,
+                    direct: true,
+                },
+            )
+            .await
+            .is_err()
+        );
+        // The generic disk creator must not treat VMDK as a raw file.
+        assert!(
+            create_disk_type(
+                &descriptor,
+                512,
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: false,
+                },
+            )
+            .is_err()
+        );
     }
 }

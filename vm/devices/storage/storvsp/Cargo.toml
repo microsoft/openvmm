@@ -35,7 +35,6 @@ vmcore.workspace = true
 vm_resource.workspace = true
 
 guid.workspace = true
-fast_select.workspace = true
 inspect.workspace = true
 inspect_counters.workspace = true
 mesh.workspace = true

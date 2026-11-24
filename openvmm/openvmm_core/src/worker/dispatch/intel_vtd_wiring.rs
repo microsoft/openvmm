@@ -206,6 +206,7 @@ mod tests {
             segment,
             start_bus: 0,
             end_bus: 0,
+            legacy_pci_config_io: false,
             low_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
             high_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
             ports: Vec::new(),

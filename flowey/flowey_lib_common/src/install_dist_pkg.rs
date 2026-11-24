@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Globally install a package via `apt` on DEB-based Linux systems,
-//! or `dnf` on RPM-based ones.
+//! `dnf` or `tdnf` on RPM-based systems, `zypper` on openSUSE, or `pacman` on Arch.
 //!
 //! This is a temporary solution, and this file will be split in
 //! two in the future to have two flowey Nodes.
@@ -31,6 +31,8 @@ flowey_request! {
     }
 }
 
+const APT_RETRIES: usize = 5;
+
 fn query_installed_packages(
     rt: &mut RustRuntimeServices<'_>,
     distro: FlowPlatformLinuxDistro,
@@ -38,10 +40,12 @@ fn query_installed_packages(
 ) -> anyhow::Result<BTreeSet<String>> {
     let output = match distro {
         FlowPlatformLinuxDistro::Ubuntu => {
-            let fmt = "${binary:Package}\n";
+            let fmt = "${binary:Package}\t${db:Status-Status}\n";
             flowey::shell_cmd!(rt, "dpkg-query -W -f={fmt} {packages_to_check...}")
         }
-        FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux => {
+        FlowPlatformLinuxDistro::Fedora
+        | FlowPlatformLinuxDistro::AzureLinux
+        | FlowPlatformLinuxDistro::OpenSuse => {
             let fmt = "%{NAME}\n";
             flowey::shell_cmd!(rt, "rpm -q --queryformat={fmt} {packages_to_check...}")
         }
@@ -57,8 +61,27 @@ fn query_installed_packages(
     .output()?;
     let output = String::from_utf8(output.stdout)?;
 
+    parse_installed_packages(distro, &output)
+}
+
+fn parse_installed_packages(
+    distro: FlowPlatformLinuxDistro,
+    output: &str,
+) -> anyhow::Result<BTreeSet<String>> {
     let mut installed_packages = BTreeSet::new();
     for ln in output.trim().lines() {
+        let ln = if distro == FlowPlatformLinuxDistro::Ubuntu {
+            let (package, status) = ln
+                .split_once('\t')
+                .ok_or_else(|| anyhow::anyhow!("invalid dpkg-query output: {ln:?}"))?;
+            // dpkg also retains records for removed and partially installed packages.
+            if status != "installed" {
+                continue;
+            }
+            package
+        } else {
+            ln
+        };
         let package = match ln.split_once(':') {
             Some((package, _arch)) => package,
             None => ln,
@@ -72,11 +95,14 @@ fn query_installed_packages(
 
 fn update_packages(
     rt: &mut RustRuntimeServices<'_>,
-    distro: FlowPlatformLinuxDistro,
+    distro: &FlowPlatformLinuxDistro,
 ) -> anyhow::Result<()> {
     match distro {
         FlowPlatformLinuxDistro::Ubuntu => flowey::shell_cmd!(rt, "sudo apt-get update").run()?,
         FlowPlatformLinuxDistro::Fedora => flowey::shell_cmd!(rt, "sudo dnf update").run()?,
+        FlowPlatformLinuxDistro::OpenSuse => {
+            flowey::shell_cmd!(rt, "sudo zypper --non-interactive refresh").run()?
+        }
         // tdnf auto-refreshes metadata; no explicit update step needed
         FlowPlatformLinuxDistro::AzureLinux => (),
         // Running `pacman -Sy` without a full system update can break everything; do nothing
@@ -98,7 +124,9 @@ fn install_packages(
 ) -> anyhow::Result<()> {
     match distro {
         FlowPlatformLinuxDistro::Ubuntu => {
-            let mut options = Vec::new();
+            // don't install recommended packages to avoid relying on
+            // dependencies not explicitly listed.
+            let mut options = vec!["--no-install-recommends"];
             if !interactive {
                 // auto accept
                 options.push("-y");
@@ -118,6 +146,14 @@ fn install_packages(
         FlowPlatformLinuxDistro::Arch => {
             let auto_accept = (!interactive).then_some("--noconfirm");
             flowey::shell_cmd!(rt, "sudo pacman -S {auto_accept...} {packages...}").run()?;
+        }
+        FlowPlatformLinuxDistro::OpenSuse => {
+            let auto_accept = (!interactive).then_some("--non-interactive");
+            flowey::shell_cmd!(
+                rt,
+                "sudo zypper {auto_accept...} install --no-recommends {packages...}"
+            )
+            .run()?;
         }
         FlowPlatformLinuxDistro::Nix => {
             anyhow::bail!("Nix environments cannot install packages")
@@ -187,10 +223,7 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        // maybe a questionable design choice... but we'll allow non-linux
-        // platforms from taking a dep on this, and simply report that it was
-        // installed.
-        if !matches!(ctx.platform(), FlowPlatform::Linux(_)) {
+        if packages.is_empty() || !matches!(ctx.platform(), FlowPlatform::Linux(_)) {
             ctx.emit_side_effect_step([], did_install);
             return Ok(());
         }
@@ -266,15 +299,12 @@ impl FlowNodeWithConfig for Node {
                     return Ok(());
                 }
                 if !skip_update {
-                    // Retry on failure in CI
-                    let mut i = 0;
-                    while let Err(e) = update_packages(rt, distro) {
-                        i += 1;
-                        if i == 5 || interactive {
-                            return Err(e);
-                        }
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                    }
+                    crate::_util::retry(
+                        rt,
+                        update_packages,
+                        &distro,
+                        if interactive { 1 } else { APT_RETRIES },
+                    )?;
                 }
                 install_packages(rt, distro, &packages, interactive)?;
 
@@ -283,5 +313,58 @@ impl FlowNodeWithConfig for Node {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn dpkg_only_counts_installed_packages() {
+        let output = "\
+compiler\tinstalled
+libc6-dev-arm64-cross\tconfig-files
+unpacked-lib\tunpacked
+broken-lib\thalf-installed
+unconfigured-lib\thalf-configured
+absent-lib\tnot-installed
+native-lib:amd64\tinstalled
+";
+        let installed = parse_installed_packages(FlowPlatformLinuxDistro::Ubuntu, output).unwrap();
+        assert_eq!(
+            installed,
+            BTreeSet::from(["compiler".into(), "native-lib".into()])
+        );
+    }
+
+    #[test]
+    fn dpkg_rejects_missing_status() {
+        assert!(parse_installed_packages(FlowPlatformLinuxDistro::Ubuntu, "compiler\n").is_err());
+    }
+
+    #[test]
+    fn empty_query_has_no_installed_packages() {
+        assert!(
+            parse_installed_packages(FlowPlatformLinuxDistro::Ubuntu, "")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn other_distros_keep_name_only_queries() {
+        for distro in [
+            FlowPlatformLinuxDistro::Fedora,
+            FlowPlatformLinuxDistro::AzureLinux,
+            FlowPlatformLinuxDistro::Arch,
+            FlowPlatformLinuxDistro::OpenSuse,
+        ] {
+            assert_eq!(
+                parse_installed_packages(distro, "compiler\nlibrary\n").unwrap(),
+                BTreeSet::from(["compiler".into(), "library".into()])
+            );
+        }
     }
 }

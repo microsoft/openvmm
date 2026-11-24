@@ -3,8 +3,11 @@
 
 //! Integration tests for x86_64 guests.
 
+mod ipmi;
 mod openhcl_linux_direct;
 mod openhcl_uefi;
+#[cfg(target_os = "linux")]
+mod snp_linux_direct;
 mod storage;
 
 use anyhow::Context;
@@ -18,6 +21,7 @@ use nvme_resources::fault::FaultConfiguration;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
 use petri::ApicMode;
+use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -45,6 +49,61 @@ async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
         .await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot the guest-test UEFI image, which purposefully triple-faults itself via
+/// an expiring watchdog. Once the crash is observed, explicitly drive a state
+/// dump via the `DumpState` RPC and verify that a well-formed `.vmrs` file is
+/// written.
+#[vmm_test_with(noagent, configs(openvmm_uefi_x64(guest_test_uefi_x64)))]
+async fn crash_dump_on_triple_fault(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let dump_dir = tempfile::tempdir().context("failed to create temp dir for crash dump")?;
+    let dump_path = dump_dir.path().join("crash.vmrs");
+
+    // The template provides the `db` variable, which `test_dbdefault` needs
+    // to pass before the image reaches its watchdog test.
+    let mut vm = config
+        .with_windows_secure_boot_template()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 256 * 1024 * 1024,
+            ..Default::default()
+        })
+        .run_without_agent()
+        .await?;
+
+    // Wait for the guest to triple-fault. The worker stays alive after
+    // signaling the crash, so it can still service the dump request.
+    let halt_reason = vm.wait_for_halt().await?;
+    if halt_reason.reason != PetriHaltReason::TripleFault {
+        anyhow::bail!("expected TripleFault, got {halt_reason:?}");
+    }
+
+    // The controlling process (this test) creates the dump file and drives the
+    // dump via the `DumpState` RPC directly.
+    vm.backend()
+        .dump_state(&dump_path)
+        .await
+        .context("failed to dump VM state on crash")?;
+
+    vm.teardown().await?;
+
+    // Validate the dump is a well-formed Hyper-V saved-state file by reading a
+    // required key back out of it.
+    let file = std::fs::File::open(&dump_path)
+        .with_context(|| format!("crash dump not found at {}", dump_path.display()))?;
+    let reader =
+        hvs_file::reader::HvsFileReader::open(file).context("failed to parse .vmrs crash dump")?;
+    anyhow::ensure!(
+        reader
+            .read_int("/savedstate/VmVersion")
+            .context("missing VmVersion")?
+            != 0,
+        "crash dump has an invalid VmVersion"
+    );
+
     Ok(())
 }
 
@@ -159,6 +218,23 @@ async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(
         .with_openhcl_command_line("OPENHCL_SIDECAR=log")
         .run()
         .await?;
+
+    let vps = vm.inspect_openhcl("vm/partition/vp", Some(3), None).await?;
+    let vps: serde_json::Value = serde_json::from_str(&format!("{}", vps.json()))?;
+    let vps = vps.as_object().unwrap();
+    // A VP retains its sidecar exit reason after migrating into Linux.
+    anyhow::ensure!(
+        vps.values().any(|vp| {
+            vp.get("sidecar").and_then(serde_json::Value::as_bool) == Some(true)
+                || vp
+                    .get("sidecar_exit_reason")
+                    .and_then(|reason| reason.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+        }),
+        "no VP ran in sidecar: {vps:?}"
+    );
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -196,6 +272,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                         resource: VirtioPciDeviceHandle(
                             VirtioNetHandle {
                                 max_queues: None,
+                                enable_rx_gso: false,
                                 mac_address: MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]),
                                 endpoint: NullHandle.into_resource(),
                             }
@@ -220,6 +297,164 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
     // The virtio device should not have made it through, but the NVMe
     // controller should be there.
     assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:c03e"))]);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Removing the first relay device must leave the second device usable.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn vpci_relay_hot_remove(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    use disk_backend_resources::LayeredDiskHandle;
+    use disk_backend_resources::layer::RamDiskLayerHandle;
+    use nvme_resources::NamespaceDefinition;
+
+    let (mut vm, agent) = config
+        .with_openhcl_command_line("OPENHCL_ENABLE_VPCI_RELAY=1")
+        .with_vmbus_redirect(true)
+        .run()
+        .await?;
+    let sh = agent.unix_shell();
+    let mut timer = pal_async::timer::PolledTimer::new(&driver);
+    let instance_ids = [
+        guid::guid!("78fc4861-29bf-408d-88b7-24199de560d1"),
+        guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3"),
+    ];
+    let mut first_device = String::new();
+    let mut second_device = String::new();
+
+    // Wait after each add so the first device gets the lower relay slab key.
+    for (index, instance_id) in instance_ids.into_iter().enumerate() {
+        vm.backend()
+            .add_vpci_device(
+                instance_id,
+                NvmeControllerHandle {
+                    subsystem_id: instance_id,
+                    msix_count: 1,
+                    max_io_queues: 1,
+                    namespaces: if index == 1 {
+                        vec![NamespaceDefinition {
+                            nsid: 1,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(8 * 1024 * 1024),
+                                sector_size: None,
+                            })
+                            .into_resource(),
+                            read_only: false,
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    requests: None,
+                }
+                .into_resource(),
+            )
+            .await?;
+
+        let mut found = false;
+        for _ in 0..60 {
+            let output = cmd!(sh, "ls /sys/bus/pci/devices").read().await?;
+            let devices: Vec<_> = output.lines().collect();
+            if devices.len() == index + 1 {
+                if index == 0 {
+                    first_device = devices[0].to_owned();
+                } else {
+                    second_device = devices
+                        .into_iter()
+                        .find(|device| *device != first_device)
+                        .context("second NVMe device has no distinct PCI address")?
+                        .to_owned();
+                }
+                found = true;
+                break;
+            }
+            timer.sleep(std::time::Duration::from_millis(500)).await;
+        }
+        anyhow::ensure!(found, "NVMe device {index} did not appear after hot-add");
+    }
+
+    let expected_data = [0x5a; 4096];
+    let survivor_disk = mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(30))
+        .until_cancelled(async {
+            let disk = loop {
+                let blocks = cmd!(sh, "ls /sys/block").read().await?;
+                let mut disk = None;
+                for block in blocks.lines().filter(|block| block.starts_with("nvme")) {
+                    let pci_path = cmd!(sh, "readlink -f /sys/block/{block}/device")
+                        .read()
+                        .await?;
+                    if pci_path
+                        .split('/')
+                        .any(|component| component == second_device)
+                    {
+                        disk = Some(format!("/dev/{block}"));
+                        break;
+                    }
+                }
+                if let Some(disk) = disk {
+                    break disk;
+                }
+                timer.sleep(std::time::Duration::from_millis(500)).await;
+            };
+            agent
+                .write_file("/tmp/vpci_relay_expected", &expected_data[..])
+                .await?;
+            cmd!(
+                sh,
+                "dd if=/tmp/vpci_relay_expected of={disk} bs=4096 count=1 oflag=direct conv=fsync"
+            )
+            .run()
+            .await
+            .context("failed to write known data to the surviving NVMe namespace")?;
+            anyhow::Ok(disk)
+        })
+        .await
+        .context("timed out preparing the surviving NVMe namespace")??;
+
+    mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(30))
+        .until_cancelled(vm.backend().remove_vpci_device(instance_ids[0]))
+        .await
+        .context("timed out hot-removing the first NVMe device")??;
+
+    let mut removed = false;
+    for _ in 0..60 {
+        let output = cmd!(sh, "ls /sys/bus/pci/devices").read().await?;
+        if output.lines().collect::<Vec<_>>() == vec![second_device.as_str()] {
+            removed = true;
+            break;
+        }
+        timer.sleep(std::time::Duration::from_millis(500)).await;
+    }
+    anyhow::ensure!(
+        removed,
+        "first NVMe device did not disappear with the second device still present"
+    );
+    mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(30))
+        .until_cancelled(async {
+            cmd!(
+                sh,
+                "dd if={survivor_disk} of=/tmp/vpci_relay_actual bs=4096 count=1 iflag=direct,fullblock"
+            )
+            .run()
+            .await
+            .context("failed to read the surviving NVMe namespace after removal")?;
+            let actual_data = agent.read_file("/tmp/vpci_relay_actual").await?;
+            anyhow::ensure!(
+                actual_data == expected_data,
+                "surviving NVMe namespace returned incorrect data after removal"
+            );
+            anyhow::Ok(())
+        })
+        .await
+        .context("timed out reading the surviving NVMe namespace after removal")??;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -281,7 +516,7 @@ async fn vpci_relay_tdisp_device(
 }
 
 /// Boot with a virtio-blk disk via virtio-mmio and verify the device appears in the guest.
-#[openvmm_test(unstable_linux_direct_x64)]
+#[openvmm_test(linux_direct_x64)]
 async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     use disk_backend_resources::LayeredDiskHandle;
     use disk_backend_resources::layer::RamDiskLayerHandle;
@@ -303,6 +538,8 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
                     VirtioBlkHandle {
                         disk: disk_resource,
                         read_only: false,
+                        serial: None,
+                        options: Default::default(),
                     }
                     .into_resource(),
                 ));
@@ -393,17 +630,21 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
-/// Boot with a virtio-rng device via virtio-mmio and verify the guest can read entropy.
+/// Boot with a virtio-rng device on a PCIe root port and verify the guest can
+/// read entropy.
 #[openvmm_test(linux_direct_x64)]
 async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    use openvmm_defs::config::VirtioBus;
+    use openvmm_defs::config::PcieDeviceConfig;
     use virtio_resources::rng::VirtioRngHandle;
 
     let (vm, agent) = config
         .modify_backend(|b| {
-            b.with_custom_config(|c| {
-                c.virtio_devices
-                    .push((VirtioBus::Mmio, VirtioRngHandle.into_resource()));
+            b.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
+                c.pcie_devices.push(PcieDeviceConfig {
+                    port_name: "s0rc0rp0".to_string(),
+                    resource: VirtioPciDeviceHandle(VirtioRngHandle.into_resource())
+                        .into_resource(),
+                });
             })
         })
         .run()
@@ -458,6 +699,90 @@ async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot with a writable virtio-pmem device on a PCIe root port and verify
+/// data flows in both directions between the host file and the guest.
+#[openvmm_test(linux_direct_x64)]
+async fn virtio_pmem_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    use openvmm_defs::config::PcieDeviceConfig;
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::Write;
+    use virtio_resources::pmem::VirtioPmemHandle;
+
+    const PMEM_SIZE: u64 = 4 * 1024 * 1024;
+    const HOST_DATA: &[u8] = b"host_pmem_data";
+    const GUEST_DATA: &str = "guest_pmem_data";
+    const GUEST_OFFSET: u64 = 4096;
+
+    let mut file = tempfile::NamedTempFile::new()?;
+    file.as_file().set_len(PMEM_SIZE)?;
+    file.write_all(HOST_DATA)?;
+    file.flush()?;
+    let path = file
+        .path()
+        .to_str()
+        .context("non-utf8 temp path")?
+        .to_owned();
+
+    let (vm, agent) = config
+        .modify_backend(move |b| {
+            b.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
+                c.pcie_devices.push(PcieDeviceConfig {
+                    port_name: "s0rc0rp0".to_string(),
+                    resource: VirtioPciDeviceHandle(
+                        VirtioPmemHandle {
+                            path,
+                            read_only: false,
+                        }
+                        .into_resource(),
+                    )
+                    .into_resource(),
+                });
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    let sectors = cmd!(sh, "cat /sys/block/pmem0/size")
+        .read()
+        .await
+        .context("/dev/pmem0 not found - guest kernel may lack CONFIG_VIRTIO_PMEM")?;
+    let sectors: u64 = sectors.trim().parse().context("parse pmem0 size")?;
+    assert_eq!(sectors * 512, PMEM_SIZE, "unexpected pmem0 size");
+
+    // Data written by the host before boot must be visible to the guest.
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/pmem0 bs=4096 count=1 2>/dev/null | head -c 14'"
+    )
+    .read()
+    .await
+    .context("read from /dev/pmem0")?;
+    assert_eq!(readback.as_bytes(), HOST_DATA, "guest read mismatch");
+
+    // Data written and flushed by the guest must land in the host file.
+    cmd!(
+        sh,
+        "sh -c 'echo -n guest_pmem_data | dd of=/dev/pmem0 bs=4096 seek=1 conv=notrunc,fsync 2>/dev/null'"
+    )
+    .run()
+    .await
+    .context("write to /dev/pmem0")?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    let mut buf = vec![0; GUEST_DATA.len()];
+    let f = file.as_file_mut();
+    f.seek(std::io::SeekFrom::Start(GUEST_OFFSET))?;
+    f.read_exact(&mut buf)?;
+    assert_eq!(buf, GUEST_DATA.as_bytes(), "host file mismatch");
+
     Ok(())
 }
 
@@ -547,6 +872,7 @@ async fn snapshot_save_to_disk(
         vp_count: 2,
         page_size: 4096,
         architecture: "x86_64".to_string(),
+        snapshot_id: Guid::new_random(),
     };
     openvmm_helpers::snapshot::write_snapshot(&snap_dir, &manifest, &saved_state_bytes, &mem_path)?;
 

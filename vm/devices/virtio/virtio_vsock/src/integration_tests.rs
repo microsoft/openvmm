@@ -478,6 +478,37 @@ async fn config_returns_guest_cid(driver: DefaultDriver) {
     assert_eq!(cid, GUEST_CID);
 }
 
+#[async_test]
+async fn validates_guest_cid(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+
+    for guest_cid in [3, u64::from(u32::MAX - 1)] {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(tmp_dir.path().join("listener")).unwrap();
+        VirtioVsockDevice::new(
+            &driver_source,
+            guest_cid,
+            tmp_dir.path().join("vsock"),
+            listener,
+        )
+        .unwrap();
+    }
+
+    for guest_cid in [2, u64::from(u32::MAX), u64::from(u32::MAX) + 1] {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(tmp_dir.path().join("listener")).unwrap();
+        assert!(
+            VirtioVsockDevice::new(
+                &driver_source,
+                guest_cid,
+                tmp_dir.path().join("vsock"),
+                listener
+            )
+            .is_err()
+        );
+    }
+}
+
 /// Guest-initiated connection: guest sends REQUEST, device connects to the
 /// host Unix socket and sends RESPONSE back to the guest.
 #[async_test]

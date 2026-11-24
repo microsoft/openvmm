@@ -6,6 +6,9 @@
 /// Mocks for the host interface and the emulator.
 pub mod mocks;
 
+/// Unit tests for reading and writing the TDI interface report.
+pub mod devicereport_tests;
+
 /// Unit tests for serialization and deserialization of TDISP guest-to-host commands and responses.
 pub mod serialize_tests;
 

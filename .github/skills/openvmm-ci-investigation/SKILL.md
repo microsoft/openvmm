@@ -5,16 +5,17 @@ description: Investigate CI failures on OpenVMM PRs. Load when a PR has failing 
 
 # Investigating CI Failures
 
-When a PR has failing CI checks, **always start by running the investigation
-script**. Do not manually query the GitHub API or download artifacts by hand
-— the script handles all of that automatically.
+When a PR has failing CI checks, prefer the investigation script. If it is
+unavailable or incompatible with the execution environment, use the read-only
+manual fallback below.
+
+The script reads from GitHub and downloads artifacts locally. It does not
+modify remote resources. Downloads use the system temporary directory; check
+that this destination is suitable for the execution environment.
 
 ## Step 1: Run the Script
 
 ```bash
-# Investigate the current branch's PR (no argument needed)
-python3 repo_support/investigate_ci.py
-
 # Investigate a specific PR by number
 python3 repo_support/investigate_ci.py 2946
 
@@ -22,9 +23,16 @@ python3 repo_support/investigate_ci.py 2946
 python3 repo_support/investigate_ci.py 23017249697
 ```
 
+Prefer explicit PR or run identifiers for reproducible investigation. Omitting
+the identifier requires the script to resolve the current branch's PR.
+
 The script automatically:
-1. Resolves the PR to the correct CI run (prefers failed runs from the main
-   "OpenVMM PR" workflow)
+1. Resolves the PR to **every** failed CI run for its head commit. A commit
+   can have multiple workflows (e.g. "OpenVMM PR" and "OpenVMM Docs PR"),
+   and each failing one is investigated in turn — so don't assume a single
+   run covers everything. Only the newest run of each workflow is used, so
+   superseded runs are ignored; a `NOTE: <workflow> is still in_progress`
+   line means results are incomplete and more failures may appear later.
 2. Identifies failed jobs
 3. Downloads `*-unit-tests-junit-xml` artifacts and parses JUnit XML for
    unit test failures
@@ -39,6 +47,10 @@ Read the script's output to identify:
 - Which tests failed (unit tests and/or VMM tests)
 - Error messages and root causes
 - Whether it's a build/fmt/clippy failure vs. a test failure
+
+When more than one run failed, the output is split by `# RUN n of m` banners.
+Check **all** of them — a docs failure and a build failure are reported in
+separate runs.
 
 Then use the information to diagnose the issue and suggest fixes.
 
@@ -60,17 +72,25 @@ architecture — you can only reproduce tests locally on the same arch. If
 it doesn't match, explain this to the user and continue diagnosing from
 CI logs and test code.
 
-To reproduce locally, load the `vmm-tests` skill for instructions on
-running with `cargo xflowey vmm-tests-run`. Do **not** use
-`cargo nextest run -p vmm_tests` directly — it won't have the required
-artifacts.
+For approved local reproduction, select the workflow for the failure:
+
+| Failure | Workflow |
+|---------|----------|
+| Unit test | `cargo nextest run --profile agent -p <package>` with a focused filter |
+| VMM test | Load the `vmm-tests` skill and use `cargo xflowey vmm-tests-run` |
+| Rustdoc | `cargo doc --no-deps -p <package>` |
+| Guide | The Guide build workflow in `flowey/flowey_lib_hvlite/src/build_guide.rs`, including plugin setup, `mdbook test`, and `mdbook build` |
+| Build, clippy, or formatting | The failed job's command, scoped to the affected package or rule where possible |
+
+Do **not** use `cargo nextest run -p vmm_tests` directly; it won't have the
+required artifacts.
 
 ## Reference: Manual Commands
 
-> **Only use these if the script fails or you need to dig deeper into a
-> specific artifact.** In normal usage, the script above is sufficient.
+> Use these if the script is unavailable, fails, is incompatible with the
+> execution environment, or you need to inspect a specific artifact.
 
-If the script isn't available or you need more control, follow these steps:
+Follow these steps:
 
 ### 1. Find the failing run
 
@@ -138,7 +158,10 @@ marker files (passing tests have `petri.passed` instead):
 find /tmp/test-logs -name "petri.failed"
 ```
 
-The `petri.failed` file contains the test name.
+The `petri.failed` file contains the error petri recorded for the test. The
+test's real name is in `petri.test`, which petri writes before the test body
+runs — so a directory with `petri.test` but *no* result marker is a test that
+was killed or crashed before it could report.
 
 ### 5. Extract errors from petri.jsonl
 
@@ -172,7 +195,8 @@ primary artifacts for diagnosing unit test / cargo-nextest failures.
 Each test directory contains:
 - `petri.jsonl` — Structured JSON Lines log **(primary file for investigation)**
 - `petri.log` — Plain text version of the test log
-- `petri.passed` or `petri.failed` — Pass/fail marker
+- `petri.test` — The test's name, written before the test body runs
+- `petri.passed` or `petri.failed` — Pass/fail marker; a failure marker holds the error
 - `openhcl.log` — OpenHCL serial console output, if the test exercised OpenHCL
 - `hyperv.log` — Hyper-V event log, if the test exercises the Hyper-V backend
 - `openvmm.log` — OpenVMM serial console output, if the test exercises the OpenVMM backend
@@ -183,7 +207,11 @@ Each test directory contains:
 ## Viewing Results in Browser
 
 Test results are uploaded to Azure Blob Storage and viewable at:
-`https://openvmm.dev/test-results/#/runs/<RUN_ID>`
+`https://openvmm.dev/test-results/#/runs/<RUN_ID>_<RUN_ATTEMPT>`
+
+Logs are uploaded per re-run attempt, so the run key includes the attempt
+number (`1` for the first attempt). `investigate_ci.py` prints the correct
+URL in its summary.
 
 ## Common Failure Patterns
 
@@ -192,8 +220,15 @@ Test results are uploaded to Azure Blob Storage and viewable at:
   causes: new test code that relies on OS capabilities not available in CI
   (e.g. TAP devices, elevated permissions).
 - **Formatting / house-rules**: The `quick check [fmt, clippy x64-linux]` job
-  failed. No test artifacts will exist. Run `cargo xtask fmt --fix` locally
-  and check the job log for the specific rule that failed.
+  failed. No test artifacts will exist. Check the job log for the specific rule
+  that failed. For approved reproduction, run `cargo xtask fmt --fix` locally.
+- **Guide failure**: The `build mdbook guide` job in "OpenVMM Docs PR" failed.
+  Check for broken Guide markdown, links, or code examples and
+  `[ERROR] (mdbook::...)` diagnostics. Use the Guide workflow above for approved
+  reproduction, not `cargo doc`. No test artifacts will exist.
+- **Rustdoc failure**: The `build and check docs` job in "OpenVMM Docs PR" failed.
+  Rustdoc warnings are denied in CI. Use package-scoped `cargo doc` for approved
+  reproduction. No test artifacts will exist.
 - **TripleFault**: VM hit a fatal error during boot. Check `petri.jsonl` for
   Hyper-V Worker/Chipset errors. Often infrastructure-related, not caused by
   the PR's code changes.

@@ -1,15 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Command-line utility for interacting with a physical TPM during guest attestation tests.
-//! Supports reading the AK certificate NV index and producing attestation reports with
-//! optional user-provided payloads.
+//! In-guest command-line probe for TPM and attestation integration tests.
+//!
+//! The utility sends TPM 2.0 commands through `/dev/tpmrm0` or `/dev/tpm0` on
+//! Unix and TPM Base Services on Windows. Its subcommands read and verify the
+//! AK certificate, submit guest input and decode an IGVM attestation report,
+//! and define, write, or verify arbitrary owner-authorized NV indices.
+//!
+//! Petri normally copies this executable into a VM and invokes it through
+//! Pipette to validate the guest-visible vTPM and OpenHCL attestation contract.
+//! It can also be run manually inside a guest with `tpm_guest_tests <command>`;
+//! failures and comparison mismatches produce a nonzero exit status.
 
 mod report;
 mod tpm;
 
 use std::error::Error;
 use std::io;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -25,15 +34,19 @@ use tpm_lib::TpmEngine;
 use tpm_lib::TpmEngineHelper;
 use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
 
+use report::ATTESTATION_REPORT_OFFSET;
 use report::IGVM_ATTEST_REQUEST_VERSION_1;
 use report::IGVM_ATTESTATION_SIGNATURE;
 use report::IGVM_ATTESTATION_VERSION;
+use report::IGVM_REPORT_TYPE_SNP_VM_REPORT;
 use report::IGVM_REQUEST_BASE_SIZE;
 use report::IGVM_REQUEST_DATA_OFFSET;
 use report::IGVM_REQUEST_DATA_SIZE;
 use report::IGVM_REQUEST_TYPE_AK_CERT;
 use report::IgvmAttestRequestData;
 use report::IgvmAttestRequestHeader;
+use report::SNP_ID_KEY_DIGEST_OFFSET;
+use report::SNP_ID_KEY_DIGEST_SIZE;
 use tpm::Tpm;
 
 const NV_INDEX_AK_CERT: u32 = tpm_protocol::TPM_NV_INDEX_AIK_CERT;
@@ -50,6 +63,7 @@ const AK_CERT_RETRY_DELAY_MS: u64 = 1000;
 struct Config {
     ak_cert: bool,
     ak_cert_expected: Option<Vec<u8>>,
+    ak_cert_output_file: Option<PathBuf>,
     ak_cert_retry_attempts: u32,
     report: bool,
     user_data: Option<Vec<u8>>,
@@ -118,6 +132,10 @@ struct AkCertArgs {
     /// Expected AK certificate contents (hex)
     #[arg(long, value_name = "HEX", conflicts_with = "expected_data")]
     expected_data_hex: Option<String>,
+
+    /// Save the complete AK certificate NV contents, including padding
+    #[arg(long, value_name = "PATH")]
+    output_file: Option<PathBuf>,
 
     /// Retry AK certificate comparison up to COUNT times
     #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(u32).range(1..))]
@@ -206,16 +224,20 @@ fn run(config: &Config) -> Result<(), Box<dyn Error>> {
     let mut helper = tpm.into_engine_helper();
 
     if config.ak_cert {
-        handle_ak_cert(
+        let data = handle_ak_cert(
             &mut helper,
             config.ak_cert_expected.as_deref(),
             config.ak_cert_retry_attempts,
         )?;
+        if let Some(path) = &config.ak_cert_output_file {
+            std::fs::write(path, data)?;
+        }
     }
 
     if config.report {
         let payload = build_guest_input_payload(config.user_data.as_deref())?;
         let att_report = handle_report(&mut helper, &payload)?;
+        print_snp_id_key_digest(&att_report)?;
         if config.show_runtime_claims {
             print_runtime_claims(&att_report)?;
         }
@@ -240,7 +262,7 @@ fn handle_ak_cert<E: TpmEngine>(
     helper: &mut TpmEngineHelper<E>,
     expected: Option<&[u8]>,
     retry_attempts: u32,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Vec<u8>, Box<dyn Error>> {
     for attempt in 0..=retry_attempts {
         if attempt > 0 {
             println!(
@@ -279,14 +301,14 @@ fn handle_ak_cert<E: TpmEngine>(
                     "AK certificate matches expected value ({} bytes).",
                     data.len()
                 );
-                return Ok(());
+                return Ok(data);
             }
 
             if attempt == retry_attempts {
                 return Err("AK certificate contents did not match expected value".into());
             }
         } else {
-            return Ok(());
+            return Ok(data);
         }
     }
 
@@ -299,6 +321,7 @@ fn config_from_cli(cli: Cli) -> Result<Config, String> {
     match cli.command {
         Command::AkCert(args) => {
             config.ak_cert = true;
+            config.ak_cert_output_file = args.output_file;
 
             if let Some(data) = args.expected_data {
                 config.ak_cert_expected = Some(data.into_bytes());
@@ -469,6 +492,56 @@ fn print_runtime_claims(attestation_report: &[u8]) -> Result<(), Box<dyn Error>>
         }
         None => println!("Runtime claims: <empty>"),
     }
+
+    Ok(())
+}
+
+/// If the attestation report is an SNP report, print its `id_key_digest` field
+/// as hex (line prefix `SNP ID key digest:`).
+///
+/// `id_key_digest` is the SHA-384 of the ID public key that signed the ID block
+/// provided at `SNP_LAUNCH_FINISH`. It is non-zero only when the VM launched
+/// with `id_block_en = 1`, so a consumer can use it to confirm an ID block was
+/// accepted. The report type is read from the report itself, so no
+/// platform-specific input is needed; non-SNP reports print nothing.
+fn print_snp_id_key_digest(attestation_report: &[u8]) -> Result<(), Box<dyn Error>> {
+    let request_data_end = IGVM_REQUEST_DATA_OFFSET + IGVM_REQUEST_DATA_SIZE;
+    if request_data_end > attestation_report.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attestation report truncated before request data",
+        )
+        .into());
+    }
+
+    let (request_data, _) = IgvmAttestRequestData::read_from_prefix(
+        &attestation_report[IGVM_REQUEST_DATA_OFFSET..request_data_end],
+    )
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to read attestation request data",
+        )
+    })?;
+
+    if request_data.report_type != IGVM_REPORT_TYPE_SNP_VM_REPORT {
+        // Not an SNP report; `id_key_digest` is meaningless here.
+        return Ok(());
+    }
+
+    let start = ATTESTATION_REPORT_OFFSET + SNP_ID_KEY_DIGEST_OFFSET;
+    let end = start + SNP_ID_KEY_DIGEST_SIZE;
+    if end > attestation_report.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attestation report truncated before SNP id_key_digest",
+        )
+        .into());
+    }
+
+    let digest = &attestation_report[start..end];
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    println!("SNP ID key digest: {hex}");
 
     Ok(())
 }
@@ -861,5 +934,18 @@ mod tests {
         .expect("parse CLI");
         let config = config_from_cli(cli).expect("build config");
         assert_eq!(config.ak_cert_expected.as_deref(), Some(&b"AB"[..]));
+    }
+
+    #[test]
+    fn cli_ak_cert_output_file_parses() {
+        let cli =
+            Cli::try_parse_from(["tpm_guest_tests", "ak_cert", "--output-file", "ak-cert.bin"])
+                .expect("parse CLI");
+        let config = config_from_cli(cli).expect("build config");
+        assert_eq!(
+            config.ak_cert_output_file,
+            Some(PathBuf::from("ak-cert.bin"))
+        );
+        assert!(config.ak_cert_expected.is_none());
     }
 }

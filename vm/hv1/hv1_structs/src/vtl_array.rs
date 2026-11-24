@@ -53,7 +53,7 @@ impl<T, const N: usize> VtlArray<T, N> {
 
     /// Borrows each element and returns an array of references with the same
     /// size as self.
-    pub fn each_ref(&self) -> VtlArray<&T, N> {
+    pub const fn each_ref(&self) -> VtlArray<&T, N> {
         VtlArray {
             data: self.data.each_ref(),
         }
@@ -61,7 +61,7 @@ impl<T, const N: usize> VtlArray<T, N> {
 
     /// Borrows each element mutably and returns an array of mutable references
     /// with the same size as self.
-    pub fn each_mut(&mut self) -> VtlArray<&mut T, N> {
+    pub const fn each_mut(&mut self) -> VtlArray<&mut T, N> {
         VtlArray {
             data: self.data.each_mut(),
         }
@@ -201,6 +201,12 @@ impl VtlSet {
             .rev()
             .map(|i| Vtl::try_from(i as u8).unwrap())
     }
+
+    /// Sets the given [`Vtl`] in the set and returns self.
+    pub fn with_vtl(mut self, vtl: Vtl) -> Self {
+        self.set(vtl);
+        self
+    }
 }
 
 impl Inspect for VtlSet {
@@ -217,10 +223,25 @@ impl From<u16> for VtlSet {
     }
 }
 
+impl From<VtlSet> for u16 {
+    fn from(set: VtlSet) -> Self {
+        set.bits.into_inner()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::VtlSet;
     use hvdef::Vtl;
+    use test_with_tracing::test;
+
+    #[test]
+    fn highest_vtl_matches_reverse_iteration() {
+        for bits in 0..8 {
+            let set = VtlSet::from(bits);
+            assert_eq!(set.highest_set(), set.iter_highest_first().next());
+        }
+    }
 
     #[test]
     fn test_vtlset() {

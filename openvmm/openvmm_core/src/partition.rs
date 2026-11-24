@@ -11,19 +11,27 @@
 //!
 //! If this ends up not being true, then this layer should probably be removed.
 
+cfg_select! {
+    guest_arch = "x86_64" => {
+        use virt::X86Partition as ArchPartition;
+        use virt::irqcon::MsiRequest;
+        use vmcore::line_interrupt::LineSetTarget;
+    }
+    guest_arch = "aarch64" => {
+        use virt::Aarch64Partition as ArchPartition;
+    }
+}
+
 use anyhow::Context as _;
 use async_trait::async_trait;
 use guestmem::DoorbellRegistration;
 use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
-use memory_range::MemoryRange;
 use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::sync::Arc;
-#[cfg(guest_arch = "aarch64")]
-use virt::Aarch64Partition as ArchPartition;
-use virt::PageVisibility;
+use virt::InitialPageImport;
 use virt::Partition;
 use virt::PartitionAccessState;
 use virt::PartitionCapabilities;
@@ -32,17 +40,11 @@ use virt::PartitionMemoryMapper;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
-#[cfg(guest_arch = "x86_64")]
-use virt::X86Partition as ArchPartition;
 use virt::io::CpuIo;
-#[cfg(guest_arch = "x86_64")]
-use virt::irqcon::MsiRequest;
 use virt::vm::AccessVmState;
 use virt::vm::VmSavedState;
 use virt::vp::AccessVpState;
 use virt::vp::VpSavedState;
-#[cfg(guest_arch = "x86_64")]
-use vmcore::line_interrupt::LineSetTarget;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -70,6 +72,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
 
     /// Gets the [`PartitionMemoryMap`] interface for `vtl`.
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap>;
+
+    /// Gets the host-access interface, if the partition requires it.
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>>;
 
     /// Requests an MSI be delivered to `vtl`.
     #[cfg(guest_arch = "x86_64")]
@@ -119,16 +124,29 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
 }
 
 pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
+    fn freeze_time(&self);
+    fn thaw_time(&self);
     fn save(&self) -> anyhow::Result<VmSavedState>;
     fn restore(&self, state: VmSavedState) -> anyhow::Result<()>;
     fn reset(&self) -> anyhow::Result<()>;
     fn scrub_vtl(&self, vtl: Vtl) -> anyhow::Result<()>;
-    fn accept_initial_pages(&self, pages: Vec<(MemoryRange, PageVisibility)>)
-    -> anyhow::Result<()>;
+    fn accept_initial_pages(&self, pages: Vec<InitialPageImport>) -> anyhow::Result<()>;
     fn guest_os_id(&self) -> u64;
 }
 
 impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
+    fn freeze_time(&self) {
+        if let Some(time) = self.supports_time_control() {
+            time.freeze_time();
+        }
+    }
+
+    fn thaw_time(&self) {
+        if let Some(time) = self.supports_time_control() {
+            time.thaw_time();
+        }
+    }
+
     fn save(&self) -> anyhow::Result<VmSavedState> {
         let vm = self
             .access_state(Vtl::Vtl0)
@@ -160,28 +178,25 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
         Ok(())
     }
 
-    fn accept_initial_pages(
-        &self,
-        pages: Vec<(MemoryRange, PageVisibility)>,
-    ) -> anyhow::Result<()> {
-        self.supports_initial_accept_pages()
-            .context("accept pages not supported")?
+    fn accept_initial_pages(&self, pages: Vec<InitialPageImport>) -> anyhow::Result<()> {
+        self.supports_initial_page_acceptance()
+            .context("initial page import finalization not supported")?
             .accept_initial_pages(&pages)?;
         Ok(())
     }
 
-    #[cfg(guest_arch = "x86_64")]
     fn guest_os_id(&self) -> u64 {
-        self.access_state(Vtl::Vtl0)
-            .hypercall()
-            .map_or(0, |msrs| msrs.guest_os_id)
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    fn guest_os_id(&self) -> u64 {
-        // TODO: implement guest OS ID for aarch64 once there is
-        // an equivalent to HV_X64_MSR_GUEST_OS_ID.
-        0
+        cfg_select! {
+            guest_arch = "x86_64" => self
+                .access_state(Vtl::Vtl0)
+                .hypercall()
+                .map_or(0, |msrs| msrs.guest_os_id),
+            guest_arch = "aarch64" => {
+                // TODO: implement guest OS ID for aarch64 once there is
+                // an equivalent to HV_X64_MSR_GUEST_OS_ID.
+                0
+            }
+        }
     }
 }
 
@@ -199,11 +214,19 @@ where
     }
 
     fn into_vm_partition(self: Arc<Self>) -> WrappedPartition {
-        WrappedPartition(self)
+        let initial_vp_state_source = Partition::initial_vp_state_source(self.as_ref());
+        WrappedPartition {
+            partition: self,
+            initial_vp_state_source,
+        }
     }
 
     fn memory_mapper(&self, vtl: Vtl) -> Arc<dyn PartitionMemoryMap> {
         self.memory_mapper(vtl)
+    }
+
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>> {
+        PartitionMemoryMapper::host_access(self)
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -268,28 +291,41 @@ where
 
 /// Wrapper struct that implements [`VmPartition`].
 #[derive(InspectMut)]
-#[inspect(transparent)]
-pub struct WrappedPartition(Arc<dyn BasicPartitionStateAccess>);
+pub struct WrappedPartition {
+    #[inspect(flatten)]
+    partition: Arc<dyn BasicPartitionStateAccess>,
+    #[inspect(skip)]
+    initial_vp_state_source: virt::InitialVpStateSource,
+}
 
 #[async_trait]
 impl VmPartition for WrappedPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        self.initial_vp_state_source
+    }
+
+    fn freeze_time(&mut self) {
+        self.partition.freeze_time()
+    }
+
+    fn thaw_time(&mut self) {
+        self.partition.thaw_time()
+    }
+
     fn reset(&mut self) -> anyhow::Result<()> {
-        self.0.reset()
+        self.partition.reset()
     }
 
     fn scrub_vtl(&mut self, vtl: Vtl) -> anyhow::Result<()> {
-        self.0.scrub_vtl(vtl)
+        self.partition.scrub_vtl(vtl)
     }
 
-    fn accept_initial_pages(
-        &mut self,
-        pages: Vec<(MemoryRange, PageVisibility)>,
-    ) -> anyhow::Result<()> {
-        self.0.accept_initial_pages(pages)
+    fn accept_initial_pages(&mut self, pages: Vec<InitialPageImport>) -> anyhow::Result<()> {
+        self.partition.accept_initial_pages(pages)
     }
 
     fn guest_os_id(&self) -> u64 {
-        self.0.guest_os_id()
+        self.partition.guest_os_id()
     }
 }
 
@@ -297,11 +333,11 @@ impl SaveRestore for WrappedPartition {
     type SavedState = VmSavedState;
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        self.0.save().map_err(SaveError::Other)
+        self.partition.save().map_err(SaveError::Other)
     }
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-        self.0.restore(state).map_err(RestoreError::Other)
+        self.partition.restore(state).map_err(RestoreError::Other)
     }
 }
 

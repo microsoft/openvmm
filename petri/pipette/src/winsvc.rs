@@ -58,7 +58,7 @@ async fn service_main_inner(
     let mut send = Some(send);
     let event_handler = move |control_event| match control_event {
         service::ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-        service::ServiceControl::Stop => {
+        service::ServiceControl::Stop | service::ServiceControl::Shutdown => {
             let _ = send.take();
             ServiceControlHandlerResult::NoError
         }
@@ -71,7 +71,8 @@ async fn service_main_inner(
             .set_service_status(service::ServiceStatus {
                 service_type: service::ServiceType::OWN_PROCESS,
                 current_state,
-                controls_accepted: service::ServiceControlAccept::STOP,
+                controls_accepted: service::ServiceControlAccept::STOP
+                    | service::ServiceControlAccept::SHUTDOWN,
                 exit_code: service::ServiceExitCode::Win32(0),
                 checkpoint: 0,
                 wait_hint: Duration::ZERO,
@@ -80,12 +81,25 @@ async fn service_main_inner(
             .context("failed to set service status")
     };
 
-    set_status(service::ServiceState::StartPending)?;
+    // Report the service as running before connecting to the host.
+    //
+    // The SCM locks the service control database for as long as a service is
+    // initializing, which blocks every other `StartService` call in the guest.
+    // Connecting to the host is unbounded and host-paced, so treating it as
+    // initialization stalls unrelated guest service startup.
+    set_status(service::ServiceState::Running)?;
 
     let run = async {
-        let agent = Agent::new(driver, transport).await?;
-        set_status(service::ServiceState::Running)?;
-        agent.run().await
+        loop {
+            let agent = Agent::new(driver.clone(), transport).await?;
+            match agent.run().await {
+                Ok(_) => eprintln!("Pipette disconnected, reconnecting..."),
+                Err(err) => {
+                    eprintln!("Pipette agent failed: {:#}", err);
+                    break Err(err);
+                }
+            }
+        }
     };
 
     let stop = async {
@@ -104,7 +118,8 @@ async fn service_main_inner(
         .set_service_status(service::ServiceStatus {
             service_type: service::ServiceType::OWN_PROCESS,
             current_state: service::ServiceState::Stopped,
-            controls_accepted: service::ServiceControlAccept::STOP,
+            controls_accepted: service::ServiceControlAccept::STOP
+                | service::ServiceControlAccept::SHUTDOWN,
             exit_code: service::ServiceExitCode::Win32(exit_code),
             checkpoint: 0,
             wait_hint: Duration::ZERO,

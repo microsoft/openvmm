@@ -899,6 +899,7 @@ fn modify_network_configuration(
 pub struct UhIdeControllerConfig {
     pub config: IdeControllerConfig,
     pub dvds: Vec<(IdePath, mesh::Sender<SimpleScsiDvdRequest>)>,
+    pub disk_params: HashMap<IdePath, scsidisk_resources::DiskParameters>,
 }
 
 pub struct UhScsiControllerConfig {
@@ -1187,7 +1188,14 @@ async fn make_ide_disk_config(
     storage_context: &StorageContext<'_>,
     disk: &underhill_config::IdeDisk,
     is_restoring: bool,
-) -> Result<(IdeDeviceConfig, Option<mesh::Sender<SimpleScsiDvdRequest>>), Vtl2SettingsErrorInfo> {
+) -> Result<
+    (
+        IdeDeviceConfig,
+        Option<mesh::Sender<SimpleScsiDvdRequest>>,
+        Option<scsidisk_resources::DiskParameters>,
+    ),
+    Vtl2SettingsErrorInfo,
+> {
     let disk_type = make_disk_type(
         ctx,
         storage_context,
@@ -1209,21 +1217,20 @@ async fn make_ide_disk_config(
                 ),
             },
             Some(send),
+            None,
         ))
     } else {
+        let disk_parameters = make_disk_config_inner(disk.location, &disk.disk_params)?;
         Ok((
             IdeDeviceConfig {
                 path: ide_path_from_config(disk)?,
                 guest_media: GuestMedia::Disk {
                     disk_type: disk_type.unwrap(),
                     read_only: false,
-                    disk_parameters: Some(make_disk_config_inner(
-                        disk.location,
-                        &disk.disk_params,
-                    )?),
                 },
             },
             None,
+            Some(disk_parameters),
         ))
     }
 }
@@ -1351,13 +1358,17 @@ async fn make_ide_controller_config(
     let mut io_queue_depth = None;
 
     let mut dvds = Vec::new();
+    let mut disk_params = HashMap::new();
     if let Some(ide_controller) = &settings.ide_controller {
         io_queue_depth = ide_controller.io_queue_depth;
         for disk in &ide_controller.disks {
-            let (config, dvd) =
+            let (config, dvd, params) =
                 make_ide_disk_config(ctx, storage_context, disk, is_restoring).await?;
             if let Some(dvd) = dvd {
                 dvds.push((config.path, dvd));
+            }
+            if let Some(params) = params {
+                disk_params.insert(config.path, params);
             }
             if disk.channel == 0 {
                 primary_channel_disks.push(config);
@@ -1377,6 +1388,7 @@ async fn make_ide_controller_config(
                 io_queue_depth,
             },
             dvds,
+            disk_params,
         }))
     }
 }
@@ -1817,6 +1829,7 @@ fn calculate_device_change_from_map<'a, T>(
 
 pub struct InitialControllers {
     pub ide_controller: Option<IdeControllerConfig>,
+    pub ide_disk_params: HashMap<IdePath, scsidisk_resources::DiskParameters>,
     pub vmbus_devices: Vec<Resource<VmbusDeviceHandleKind>>,
     pub vpci_devices: Vec<UhVpciDeviceConfig>,
     pub mana: Vec<NicConfig>,
@@ -1876,12 +1889,14 @@ impl InitialControllers {
         let mut scsi_dvds = HashMap::new();
         let mut scsi_request = HashMap::new();
 
+        let mut ide_disk_params = HashMap::new();
         let ide_controller = ide_controller.map(|c| {
             scsi_dvds.extend(
                 c.dvds
                     .into_iter()
                     .map(|(path, send)| (StorageDevicePath::Ide(path), send)),
             );
+            ide_disk_params = c.disk_params;
             c.config
         });
 
@@ -1900,6 +1915,7 @@ impl InitialControllers {
 
         let cfg = InitialControllers {
             ide_controller,
+            ide_disk_params,
             vmbus_devices,
             mana,
             vpci_devices,

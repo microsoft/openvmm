@@ -21,6 +21,7 @@ pub use reply::ReplySender;
 pub use request::FuseOperation;
 pub use request::Request;
 pub use request::RequestReader;
+pub use request::check_name;
 pub use session::Session;
 pub use session::SessionInfo;
 
@@ -29,6 +30,7 @@ use lx::LxString;
 use protocol::*;
 use std::time::Duration;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -153,6 +155,9 @@ pub trait Fuse {
     }
 
     /// Opens a file.
+    ///
+    /// Flags are Linux `O_*` values from [`lx`], using the platform's Linux ABI,
+    /// not FUSE `FOPEN_*` reply flags.
     ///
     /// If not implemented, this call will succeed, which can be used if the file system doesn't
     /// need any state for open files, since the inode number is also provided to functions
@@ -285,6 +290,9 @@ pub trait Fuse {
 
     /// Create and open a file.
     ///
+    /// The request retains its wire representation, including Linux `O_*` flags
+    /// from [`lx`], using the platform's Linux ABI.
+    ///
     /// If not implemented, the client will use `mknod` followed by `open`.
     fn create(
         &self,
@@ -397,10 +405,14 @@ pub trait Fuse {
     }
 }
 
-#[cfg(windows)]
-pub type FileRef<'a> = std::os::windows::io::BorrowedHandle<'a>;
-#[cfg(unix)]
-pub type FileRef<'a> = std::os::unix::io::BorrowedFd<'a>;
+cfg_select! {
+    windows => {
+        pub type FileRef<'a> = std::os::windows::io::BorrowedHandle<'a>;
+    }
+    unix => {
+        pub type FileRef<'a> = std::os::unix::io::BorrowedFd<'a>;
+    }
+}
 
 /// Trait for mapping files into a shared memory region.
 ///
@@ -435,6 +447,13 @@ impl fuse_entry_out {
             attr_valid_nsec: attr_valid.subsec_nanos(),
             attr,
         }
+    }
+
+    pub fn new_dot(ino: u64, mode: u32) -> Self {
+        let mut entry = Self::new_zeroed();
+        entry.attr.ino = ino;
+        entry.attr.mode = mode;
+        entry
     }
 }
 

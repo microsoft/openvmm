@@ -19,6 +19,9 @@ range_map_vec.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

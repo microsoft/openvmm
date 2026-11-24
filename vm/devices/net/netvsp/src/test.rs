@@ -702,6 +702,7 @@ impl TestNicDevice {
             interrupt: host_to_guest_interrupt,
             use_confidential_ring: false,
             use_confidential_external_memory: false,
+            is_external_memory_pinned: false,
         };
 
         let open_response = self
@@ -753,6 +754,7 @@ impl TestNicDevice {
             interrupt: host_to_guest_interrupt,
             use_confidential_ring: false,
             use_confidential_external_memory: false,
+            is_external_memory_pinned: false,
         };
 
         let open_response = self
@@ -879,6 +881,7 @@ impl TestNicDevice {
                                                 interrupt: host_to_guest_interrupt.clone(),
                                                 use_confidential_external_memory: false,
                                                 use_confidential_ring: false,
+                                                is_external_memory_pinned: false,
                                             }),
                                             gpadls,
                                         })
@@ -1163,13 +1166,13 @@ impl<'a> TestNicChannel<'a> {
         writer.write(packet).await.unwrap();
     }
 
-    pub async fn send_initialize_message(&mut self) {
+    pub async fn send_initialize_message_with_version(&mut self, version: Version) {
         let message = NvspMessage {
             header: protocol::MessageHeader {
                 message_type: protocol::MESSAGE_TYPE_INIT,
             },
             data: protocol::MessageInit {
-                protocol_version: Version::V5 as u32,
+                protocol_version: version as u32,
                 protocol_version2: Version::V6 as u32,
             },
             padding: &[],
@@ -1193,6 +1196,10 @@ impl<'a> TestNicChannel<'a> {
         })
         .await
         .expect("completion message");
+    }
+
+    pub async fn send_initialize_message(&mut self) {
+        self.send_initialize_message_with_version(Version::V5).await;
     }
 
     pub async fn send_ndis_config_message(
@@ -1346,7 +1353,17 @@ impl<'a> TestNicChannel<'a> {
         max_subchannels: usize,
         capabilities: protocol::NdisConfigCapabilities,
     ) {
-        self.send_initialize_message().await;
+        self.initialize_with_version(max_subchannels, capabilities, Version::V5)
+            .await;
+    }
+
+    pub async fn initialize_with_version(
+        &mut self,
+        max_subchannels: usize,
+        capabilities: protocol::NdisConfigCapabilities,
+        version: Version,
+    ) {
+        self.send_initialize_message_with_version(version).await;
         self.send_ndis_config_message(capabilities).await;
         self.send_ndis_version_message().await;
         self.send_receive_buffer_message(max_subchannels).await;
@@ -1746,6 +1763,40 @@ impl<'a> TestNicChannel<'a> {
         })
         .await;
         self.transaction_id += 1;
+    }
+
+    pub async fn allocate_subchannels(&mut self, count: u32) {
+        let message = NvspMessage {
+            header: protocol::MessageHeader {
+                message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+            },
+            data: protocol::Message5SubchannelRequest {
+                operation: protocol::SubchannelOperation::ALLOCATE,
+                num_sub_channels: count,
+            },
+            padding: &[],
+        };
+        self.write(OutgoingPacket {
+            transaction_id: self.transaction_id,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &message.payload(),
+        })
+        .await;
+        self.transaction_id += 1;
+        self.read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(header.message_type, protocol::MESSAGE5_TYPE_SUB_CHANNEL);
+                let completion_data: protocol::Message5SubchannelComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion_data.status, protocol::Status::SUCCESS);
+                assert_eq!(completion_data.num_sub_channels, count);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("subchannel allocation completion");
     }
 
     pub async fn connect_subchannel(&mut self, idx: u32) {
@@ -2179,6 +2230,23 @@ async fn build_nic(driver: DefaultDriver) {
     let offer_params = nic.offer();
     assert_eq!(offer_params.interface_id, VMNIC_CHANNEL_TYPE_GUID);
     assert_eq!(offer_params.instance_id, unique_id);
+    assert_eq!(offer_params.offer_order, None);
+}
+
+#[async_test]
+async fn build_nic_with_offer_order(driver: DefaultDriver) {
+    let offer_order = 7;
+    let builder = Nic::builder().offer_order(offer_order);
+    let unique_id = Guid::new_random();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver)),
+        unique_id,
+        Box::new(NullEndpoint::new()),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let offer_params = nic.offer();
+    assert_eq!(offer_params.offer_order, Some(offer_order));
 }
 
 #[async_test]
@@ -2204,6 +2272,153 @@ async fn send_initial_handshake(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel.send_initialize_message().await;
+}
+
+async fn reject_completion_during_initialization(
+    driver: DefaultDriver,
+    transaction_id: u64,
+    payload: &[&[u8]],
+) {
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver)),
+        Guid::new_random(),
+        Box::new(NullEndpoint::new()),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    for negotiate_version in [false, true] {
+        let (host_queue, mut guest_queue) = queue::connected_queues(PAGE_SIZE);
+        let mut channel = NetChannel {
+            adapter: nic.adapter.clone(),
+            queue: host_queue,
+            gpadl_map: GpadlMap::new().view(),
+            packet_size: PacketSize::V1,
+            pending_send_size: 0,
+            restart: None,
+            can_use_ring_size_opt: false,
+            packet_filter: 0,
+        };
+        if negotiate_version {
+            let message = NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE_TYPE_INIT,
+                },
+                data: protocol::MessageInit {
+                    protocol_version: Version::V5 as u32,
+                    protocol_version2: Version::V5 as u32,
+                },
+                padding: &[],
+            };
+            guest_queue
+                .split()
+                .1
+                .try_write(&OutgoingPacket {
+                    transaction_id: 1,
+                    packet_type: OutgoingPacketType::InBandWithCompletion,
+                    payload: &message.payload(),
+                })
+                .unwrap();
+        }
+        guest_queue
+            .split()
+            .1
+            .try_write(&OutgoingPacket {
+                transaction_id,
+                packet_type: OutgoingPacketType::Completion,
+                payload,
+            })
+            .unwrap();
+
+        let mut initializing = None;
+        let result = StopTask::run_unstoppable(async |stop| {
+            let check = stop.check_handle().unwrap();
+            channel
+                .initialize(&mut initializing, GuestMemory::allocate(PAGE_SIZE), &check)
+                .await
+        })
+        .now_or_never()
+        .expect("queued completion must be rejected without waiting")
+        .map(|_| ());
+        assert!(
+            matches!(
+                result,
+                Err(WorkerError::UnexpectedPacketOrder(
+                    PacketOrderError::InvalidPacketData
+                ))
+            ),
+            "expected InvalidPacketData, got {result:?}"
+        );
+        assert_eq!(initializing.is_some(), negotiate_version);
+    }
+}
+
+#[async_test]
+async fn reject_vf_association_completion_during_initialization(driver: DefaultDriver) {
+    reject_completion_during_initialization(driver, VF_ASSOCIATION_TRANSACTION_ID, &[]).await;
+}
+
+#[async_test]
+async fn reject_switch_data_path_completion_during_initialization(driver: DefaultDriver) {
+    reject_completion_during_initialization(driver, SWITCH_DATA_PATH_TRANSACTION_ID, &[]).await;
+}
+
+#[async_test]
+async fn reject_rndis_completion_during_initialization(driver: DefaultDriver) {
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+        },
+        data: protocol::Message1SendRndisPacketComplete {
+            status: protocol::Status::SUCCESS,
+        },
+        padding: &[],
+    };
+    reject_completion_during_initialization(driver, 2, &message.payload()).await;
+}
+
+/// Starts up a VMBus channel, mimics negotiating a protocol version, then creates
+/// a subchannel.
+async fn test_new_subchannel_packet_size(
+    driver: DefaultDriver,
+    version: Version,
+    expected_packet_size: usize,
+) {
+    let mut nic = TestNicDevice::new(&driver).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize_with_version(1, protocol::NdisConfigCapabilities::new(), version)
+        .await;
+    channel.allocate_subchannels(1).await;
+    channel.connect_subchannel(1).await;
+
+    assert_eq!(
+        read_netvsp_counter(&channel.nic.channel, "queues/1/packet_size").await,
+        expected_packet_size as u64
+    );
+}
+
+#[async_test]
+async fn new_worker_without_negotiated_version_uses_v1_packet_size(driver: DefaultDriver) {
+    let mut nic = TestNicDevice::new(&driver).await;
+    nic.start_vmbus_channel();
+    let channel = nic.connect_vmbus_channel().await;
+
+    assert_eq!(
+        read_netvsp_counter(&channel.nic.channel, "queues/0/packet_size").await,
+        protocol::PACKET_SIZE_V1 as u64
+    );
+}
+
+#[async_test]
+async fn new_worker_with_v5_uses_v1_packet_size(driver: DefaultDriver) {
+    test_new_subchannel_packet_size(driver, Version::V5, protocol::PACKET_SIZE_V1).await;
+}
+
+#[async_test]
+async fn new_worker_with_v61_uses_v61_packet_size(driver: DefaultDriver) {
+    test_new_subchannel_packet_size(driver, Version::V61, protocol::PACKET_SIZE_V61).await;
 }
 
 #[async_test]
@@ -6647,9 +6862,7 @@ async fn rndis_send_lso_packet_with_vlan_ppi(driver: DefaultDriver) {
     );
 }
 
-/// Helper to initialize RNDIS and set the packet filter on a channel so
-/// that RX packets will be delivered to the guest.
-async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
+async fn initialize_rndis_control(channel: &mut TestNicChannel<'_>) {
     channel
         .send_rndis_control_message(
             rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
@@ -6668,8 +6881,9 @@ async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
         .await
         .unwrap();
     assert_eq!(init_complete.status, rndisprot::STATUS_SUCCESS);
+}
 
-    // Set packet filter so RX packets are delivered to the guest.
+async fn set_packet_filter(channel: &mut TestNicChannel<'_>) {
     channel
         .send_rndis_control_message(
             rndisprot::MESSAGE_TYPE_SET_MSG,
@@ -6689,6 +6903,13 @@ async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
         .await
         .unwrap();
     assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+}
+
+/// Helper to initialize RNDIS and set the packet filter on a channel so
+/// that RX packets will be delivered to the guest.
+async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
+    initialize_rndis_control(channel).await;
+    set_packet_filter(channel).await;
 }
 
 /// Helper to inject an RX packet on queue 0, read it from the guest channel,
@@ -7622,6 +7843,93 @@ async fn oid_query_mac_options_reports_vlan_support(driver: DefaultDriver) {
     assert_ne!(options & rndisprot::MAC_OPTION_NO_LOOPBACK, 0);
     assert_ne!(options & rndisprot::MAC_OPTION_COPY_LOOKAHEAD_DATA, 0);
     assert_ne!(options & rndisprot::MAC_OPTION_TRANSFERS_NOT_PEND, 0);
+}
+
+#[async_test]
+async fn oid_set_current_lookahead_allows_rx_initialization(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_control(&mut channel).await;
+
+    let request_id = 10;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &(DEFAULT_MTU - net_backend::ETHERNET_HEADER_LEN).to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(set_complete.request_id, request_id);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    set_packet_filter(&mut channel).await;
+
+    let data = vec![0xAA; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        ..Default::default()
+    };
+    let parser = channel.rndis_message_parser();
+    let ppi = inject_and_parse_rx(&mut channel, &endpoint_state, &parser, data, metadata).await;
+    assert!(ppi.vlan.is_none());
+}
+
+#[async_test]
+async fn oid_set_current_lookahead_rejects_short_payload(driver: DefaultDriver) {
+    let mut nic = TestNicDevice::new(&driver).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_control(&mut channel).await;
+
+    let request_id = 11;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD,
+                information_buffer_length: 3,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &[0; 3],
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(set_complete.request_id, request_id);
+    assert_eq!(set_complete.status, rndisprot::STATUS_FAILURE);
 }
 
 #[async_test]

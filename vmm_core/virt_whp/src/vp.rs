@@ -307,11 +307,9 @@ impl<'a> WhpProcessor<'a> {
                             if let Some(next_ref_time) = next_ref_time {
                                 // Convert from reference timer basis to vmtime basis via
                                 // difference of programmed timer and current reference time.
-                                const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
                                 let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                                let ref_duration = std::time::Duration::new(
-                                    ref_diff / NUM_100NS_IN_SEC,
-                                    (ref_diff % NUM_100NS_IN_SEC) as u32 * 100,
+                                let ref_duration = std::time::Duration::from_nanos_u128(
+                                    u128::from(ref_diff) * 100,
                                 );
                                 let timeout = self.state.vmtime.now().wrapping_add(ref_duration);
                                 self.state.vmtime.set_timeout_if_before(timeout);
@@ -512,6 +510,7 @@ mod x86 {
     use hvdef::HvVtlEntryReason;
     use hvdef::HvX64VpExecutionState;
     use hvdef::Vtl;
+    use memory_range::MemoryRange;
     use thiserror::Error;
     use virt::LateMapVtl0MemoryPolicy;
     use virt::VpHaltReason;
@@ -713,11 +712,58 @@ mod x86 {
             if !access.AccessInfo.GpaUnmapped() && should_populate {
                 // This is a mapped GPA that wasn't mapped in the SLAT. Tell the
                 // kernel to populate the SLAT.
+                //
+                // By default only the faulting page is populated. For VTL0 RAM
+                // faults, ask the memory backing's fault resolver whether the
+                // range can be widened to a soft large page (2 MB). The resolver
+                // only knows RAM-region granularity, so `is_uniform_ram`
+                // confirms the widened range holds no per-page exceptions (the
+                // monitor page, a VTL-protected page, or an unaccepted page)
+                // before it is mapped as one, since those are only tracked here.
+                let mut populate = whp::abi::WHV_MEMORY_RANGE_ENTRY {
+                    GuestAddress: access.Gpa,
+                    SizeInBytes: 1,
+                };
+
+                if self.state.active_vtl == Vtl::Vtl0 {
+                    if let Some(resolver) = self.vp.partition.fault_resolver.as_ref() {
+                        let page = access.Gpa & !(hvdef::HV_PAGE_SIZE - 1);
+                        let fault = MemoryRange::new(page..page + hvdef::HV_PAGE_SIZE);
+                        let write =
+                            access.AccessInfo.AccessType() == whp::abi::WHvMemoryAccessWrite;
+                        match resolver.resolve(fault, write) {
+                            Ok(resolved) if resolved.len() > fault.len() => {
+                                // The resolver widened to a soft large page but
+                                // only knows RAM-region granularity, so confirm
+                                // the whole widened range is uniform RAM here (no
+                                // monitor page, VTL protection, or unaccepted page
+                                // hidden inside) before mapping it as one.
+                                let GpaBackingType::Ram { writable } = backing_type else {
+                                    unreachable!("should_populate implies Ram")
+                                };
+                                if self.vp.partition.is_uniform_ram(
+                                    self.state.active_vtl,
+                                    resolved,
+                                    writable,
+                                ) {
+                                    populate.GuestAddress = resolved.start();
+                                    populate.SizeInBytes = resolved.len();
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(err) => {
+                                tracelimit::warn_ratelimited!(
+                                    gpa = access.Gpa,
+                                    error = ?err,
+                                    "memory fault resolver failed; populating single page"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 match self.current_vtlp().whp.populate_ranges(
-                    &[whp::abi::WHV_MEMORY_RANGE_ENTRY {
-                        GuestAddress: access.Gpa,
-                        SizeInBytes: 1,
-                    }],
+                    &[populate],
                     access.AccessInfo.AccessType(),
                     Default::default(),
                 ) {
@@ -726,7 +772,7 @@ mod x86 {
                         return Ok(());
                     }
                     Err(err) => {
-                        tracing::warn!(
+                        tracelimit::warn_ratelimited!(
                             gpa = access.Gpa,
                             access = ?access.AccessInfo.AccessType(),
                             error = &err as &dyn std::error::Error,
@@ -1065,13 +1111,9 @@ mod x86 {
                             match self.vp.partition.isolation {
                                 virt::IsolationType::None => {}
                                 virt::IsolationType::Vbs => {
-                                    // Eax report paravisor present if VTL2 enabled.
-                                    // TODO: Should Underhill be handling this?
-                                    if self.vp.partition.vtl2.is_some()
-                                        && self.state.active_vtl != Vtl::Vtl2
-                                    {
-                                        default[0] |= 1;
-                                    }
+                                    // Paravisor-present selects GHCB/TDVMCALL interfaces,
+                                    // which VBS does not implement. Match Hyper-V.
+                                    default[0] &= !1;
 
                                     // Ebx report vbs isolated type.
                                     default[1] |= 1;
@@ -1275,9 +1317,13 @@ mod x86 {
                     msr @ (X86X_MSR_APIC_BASE | X2APIC_MSR_BASE..=X2APIC_MSR_END) => {
                         self.apic_msr_write(dev, msr, v)
                     }
-                    x86defs::X86X_AMD_MSR_HW_CFG
+                    x86defs::X86X_AMD_MSR_PERF_EVT_SEL0..=x86defs::X86X_AMD_MSR_PERF_CTR3
+                    | x86defs::X86X_AMD_MSR_HW_CFG
                     | x86defs::X86X_AMD_MSR_IGNNE
                     | x86defs::X86X_AMD_MSR_NB_CFG
+                    // Discarded for the same reason the reads return zero; see
+                    // the read path.
+                    | x86defs::X86X_AMD_MSR_LS_CFG..=x86defs::X86X_AMD_MSR_EX_CFG
                         if self.vp.partition.caps.vendor.is_amd_compatible() =>
                     {
                         Ok(())
@@ -1368,6 +1414,18 @@ mod x86 {
                     | x86defs::X86X_AMD_MSR_IGNNE
                     | x86defs::X86X_AMD_MSR_NB_CFG
                     | x86defs::X86X_AMD_MSR_OSVW_ID_LENGTH..=x86defs::X86X_AMD_MSR_OSVW_ID_STATUS
+                    // The implementation-specific unit configuration registers,
+                    // LS_CFG through EX_CFG. These hold chicken bits that a
+                    // guest cannot act on, so like the AMD configuration MSRs
+                    // above they read as zero rather than faulting.
+                    //
+                    // Windows accesses EX_CFG (0xc001102c) while initializing
+                    // the processor on family 17h. Returning MsrError::Unknown
+                    // injects a #GP on a kernel system thread, which bugchecks
+                    // the guest with SYSTEM_THREAD_EXCEPTION_NOT_HANDLED before
+                    // it finishes booting. KVM ignores the same MSR for the
+                    // same reason; see MSR_F15H_EX_CFG in msr-index.h.
+                    | x86defs::X86X_AMD_MSR_LS_CFG..=x86defs::X86X_AMD_MSR_EX_CFG
                         if self.vp.partition.caps.vendor.is_amd_compatible() =>
                     {
                         Ok(0)
@@ -1609,7 +1667,6 @@ mod x86 {
         /// https://docs.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/vsm#virtual-processor-state-isolation
         ///
         /// TODO: Not not the full list, but cribbed from what previous Microsoft HCL versions used.
-        #[cfg(guest_arch = "x86_64")]
         pub(super) const VTL_SHARED_REGISTERS: &'static [whp::abi::WHV_REGISTER_NAME] = &[
             whp::abi::WHV_REGISTER_NAME(whp::Register64::MsrMtrrDefType as u32),
             whp::abi::WHV_REGISTER_NAME(whp::Register64::MsrMtrrPhysBase0 as u32),
@@ -1714,6 +1771,9 @@ mod aarch64 {
         pub(crate) fn flush_apic(&mut self, _vtl: Vtl) {}
 
         fn get_x(&self, n: u8) -> u64 {
+            if n >= 31 {
+                return 0; // XZR
+            }
             let mut value = [Default::default()];
             self.current_whp()
                 .get_registers(
@@ -1727,6 +1787,9 @@ mod aarch64 {
         }
 
         fn set_x(&self, n: u8, v: u64) {
+            if n >= 31 {
+                return;
+            }
             let value = [whp::abi::WHV_REGISTER_VALUE(v.into())];
             self.current_whp()
                 .set_registers(
@@ -1775,7 +1838,6 @@ mod aarch64 {
             Ok(())
         }
 
-        #[cfg(guest_arch = "aarch64")]
         fn handle_sint_deliverable(&mut self, message: &hvdef::HvArm64SynicSintDeliverableMessage) {
             tracing::trace!(sints = message.deliverable_sints, "sints deliverable");
             self.sints_deliverable(self.state.active_vtl, message.deliverable_sints);

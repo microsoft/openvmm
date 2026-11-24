@@ -245,9 +245,11 @@ fn allocate_vtl2_ram(
         params.memory_size
     };
 
-    // Next, calculate the amount of memory that needs to be allocated per numa
-    // node.
-    let ram_per_node = vtl2_size / numa_node_count as u64;
+    // Next, calculate the amount of memory that needs to be allocated per NUMA
+    // node. The lower VTL permission bitmaps require RAM boundaries to be
+    // aligned to one bitmap byte, which represents eight pages.
+    const ALIGNMENT_GRANULARITY: u64 = HV_PAGE_SIZE * 8;
+    let ram_per_node = (vtl2_size / numa_node_count as u64).next_multiple_of(ALIGNMENT_GRANULARITY);
 
     // Seed the remaining allocation list with the memory required per node.
     let mut memory_per_node = off_stack!(ArrayVec<u64, MAX_NUMA_NODES>, ArrayVec::new_const());
@@ -373,8 +375,14 @@ fn allocate_vtl2_ram(
                 assert!(required_mem != 0);
                 let bytes_to_allocate = core::cmp::min(entry.range.len(), required_mem);
 
-                // Allocate top down from the range.
-                let offset = entry.range.len() - bytes_to_allocate;
+                // Allocate top down from the range. Round the allocation start
+                // down so that any range left for VTL0 ends on an eight-page
+                // bitmap boundary. This can allocate up to seven extra pages.
+                let allocation_start =
+                    (entry.range.end() - bytes_to_allocate) & !(ALIGNMENT_GRANULARITY - 1);
+                let offset = allocation_start
+                    .saturating_sub(entry.range.start())
+                    .min(entry.range.len());
                 let (remaining, alloc) = MemoryRange::split_at_offset(&entry.range, offset);
 
                 entry.range = remaining;
@@ -384,7 +392,7 @@ fn allocate_vtl2_ram(
                     vnode: node as u32,
                 });
 
-                required_mem -= bytes_to_allocate;
+                required_mem = required_mem.saturating_sub(alloc.len());
 
                 // Stop allocating if we're done allocating.
                 if required_mem == 0 {
@@ -1023,7 +1031,7 @@ impl PartitionInfo {
                 // Check the host-provided command line for options for ourself,
                 // and pass it along to the kernel.
                 options.parse(&parsed.command_line);
-                write!(storage.cmdline, " {}", &parsed.command_line)
+                write!(storage.cmdline, " {}", parsed.command_line)
                     .map_err(|_| DtError::CommandLineSize)?;
             }
             CommandLinePolicy::APPEND_CHOSEN if !can_trust_host => {
@@ -1115,8 +1123,8 @@ impl PartitionInfo {
                 log::info!(
                     "sidecar: disabling, too many CPUs for per-CPU state (max id {max_cpu_id})"
                 );
-                boot_options.sidecar = SidecarOptions::DisabledServicing;
-                options.sidecar = SidecarOptions::DisabledServicing;
+                boot_options.sidecar = SidecarOptions::DisabledPerCpuStateCapacity;
+                options.sidecar = SidecarOptions::DisabledPerCpuStateCapacity;
             }
         }
 
@@ -1127,22 +1135,13 @@ impl PartitionInfo {
         partition_ram.extend(parsed.memory.iter().copied());
         *memory_allocation_mode = topology.memory_allocation_mode;
 
-        // Set vmbus fields. The connection ID comes from the host, but mmio
-        // comes from topology.
+        // The host must describe both vmbus nodes, but mmio comes from topology.
+        parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?;
+        parsed.vmbus_vtl2.as_ref().ok_or(DtError::Vtl2Vmbus)?;
         *vmbus_vtl0 = VmbusInfo {
-            connection_id: parsed
-                .vmbus_vtl0
-                .as_ref()
-                .ok_or(DtError::Vtl0Vmbus)?
-                .connection_id,
             mmio: topology.vtl0_mmio,
         };
         *vmbus_vtl2 = VmbusInfo {
-            connection_id: parsed
-                .vmbus_vtl2
-                .as_ref()
-                .ok_or(DtError::Vtl2Vmbus)?
-                .connection_id,
             mmio: topology.vtl2_mmio,
         };
 

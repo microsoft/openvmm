@@ -1,0 +1,72 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+guest_arch = "x64"
+
+# ----------------------------------------------------------------------------
+# AMD SEV-SNP isolation
+# ----------------------------------------------------------------------------
+[guest_configs.snp]
+guest_svn = 1
+max_vtl = 2
+
+[guest_configs.snp.isolation]
+shared_gpa_boundary_bits = 46
+policy = 0x3001f
+enable_debug = true
+injection_type = "normal"
+secure_avic = "enabled"
+
+[guest_configs.snp.image.openhcl]
+command_line = "OPENHCL_CONFIDENTIAL_DEBUG=1"
+memory_page_count = 262144
+memory_page_base = 32768
+uefi = true
+
+[guest_configs.snp.image.openhcl.product_policy.policy.azure.device_policy]
+devices = "policies/devices.toml"
+allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm"]
+vpci_relay = "default_on"
+
+# ----------------------------------------------------------------------------
+# Intel TDX isolation
+# ----------------------------------------------------------------------------
+[guest_configs.tdx]
+guest_svn = 1
+max_vtl = 2
+
+[guest_configs.tdx.isolation]
+enable_debug = false
+sept_ve_disable = true
+
+[guest_configs.tdx.image.openhcl]
+command_line = "OPENHCL_CONFIDENTIAL_DEBUG=1"
+memory_page_count = 163840
+memory_page_base = 32768
+uefi = true
+
+[guest_configs.tdx.image.openhcl.product_policy.policy.azure.device_policy]
+devices = "policies/devices.toml"
+allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm"]
+vpci_relay = "default_on"
+
+# ----------------------------------------------------------------------------
+# VBS isolation
+# ----------------------------------------------------------------------------
+[guest_configs.vbs]
+guest_svn = 1
+max_vtl = 2
+
+[guest_configs.vbs.isolation]
+enable_debug = true
+
+[guest_configs.vbs.image.openhcl]
+command_line = "OPENHCL_CONFIDENTIAL_DEBUG=1"
+memory_page_count = 163840
+memory_page_base = 32768
+uefi = true
+
+[guest_configs.vbs.image.openhcl.product_policy.policy.azure.device_policy]
+devices = "policies/devices.toml"
+allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm"]
+vpci_relay = "default_on"

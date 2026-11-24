@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 tmk_core.workspace = true
+tmk_protocol.workspace = true
 tmk_macros.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

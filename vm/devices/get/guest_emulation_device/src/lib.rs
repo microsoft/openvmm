@@ -49,6 +49,7 @@ use get_protocol::dps_json::PcatBootDevice;
 use get_resources::ged::FirmwareEvent;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
+use get_resources::ged::IpmiSelEvent;
 use get_resources::ged::ModifyVtl2SettingsError;
 use get_resources::ged::SaveRestoreError;
 use get_resources::ged::Vtl0StartError;
@@ -115,6 +116,8 @@ enum Error {
     TestIgvmAgent(#[source] test_igvm_agent_lib::Error),
     #[error("failed to write to shared memory")]
     SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
+    #[error("SMBIOS field `{0}` cannot be configured over the paravisor GET path")]
+    UnsupportedSmbiosField(&'static str),
 }
 
 impl From<task_control::Cancelled> for Error {
@@ -136,7 +139,7 @@ pub struct GuestConfig {
     pub serial_tx_only: bool,
     /// Enable vmbus redirection.
     pub vmbus_redirection: bool,
-    /// Enable the TPM.
+    /// Enable the TPM device in the guest.
     pub enable_tpm: bool,
     /// The encoded VTL2 settings document.
     #[inspect(with = "Option::is_some")]
@@ -148,6 +151,10 @@ pub struct GuestConfig {
     pub secure_boot_template: SecureBootTemplateType,
     /// Enable battery.
     pub enable_battery: bool,
+    /// Enable the IPMI KCS interface.
+    pub enable_ipmi: bool,
+    /// Enable hibernation.
+    pub enable_hibernation: bool,
     /// Suppress attestation.
     pub no_persistent_secrets: bool,
     /// Guest state lifetime
@@ -167,6 +174,9 @@ pub struct GuestConfig {
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
     /// Force UEFI to bounce-buffer all DMA traffic.
     pub force_dma_bounce_enabled: bool,
+    /// SMBIOS identity overrides.
+    #[inspect(skip)]
+    pub smbios: smbios_defs::SmbiosConfig,
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -177,6 +187,8 @@ pub enum GuestFirmwareConfig {
         enable_vpci_boot: bool,
         /// Enable UEFI firmware debugging for VTL0.
         firmware_debug: bool,
+        /// Enable UEFI memory protections for VTL0.
+        enable_memory_protections: bool,
         /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
         disable_frontpage: bool,
         /// Where to send UEFI console output
@@ -220,6 +232,8 @@ pub struct GuestEmulationDevice {
     #[inspect(skip)]
     firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
     #[inspect(skip)]
+    ipmi_sel_event_send: Option<mesh::Sender<IpmiSelEvent>>,
+    #[inspect(skip)]
     framebuffer_control: Option<Box<dyn FramebufferControl>>,
     #[inspect(skip)]
     guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
@@ -255,6 +269,7 @@ impl GuestEmulationDevice {
         config: GuestConfig,
         power_client: PowerRequestClient,
         firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
+        ipmi_sel_event_send: Option<mesh::Sender<IpmiSelEvent>>,
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,
@@ -265,6 +280,7 @@ impl GuestEmulationDevice {
             config,
             power_client,
             firmware_event_send,
+            ipmi_sel_event_send,
             framebuffer_control,
             guest_request_recv,
             vmgs: vmgs_disk.map(|disk| VmgsState {
@@ -285,6 +301,12 @@ impl GuestEmulationDevice {
             sender.send(event);
         }
     }
+
+    fn send_ipmi_sel_event(&self, event: IpmiSelEvent) {
+        if let Some(sender) = &self.ipmi_sel_event_send {
+            sender.send(event);
+        }
+    }
 }
 
 #[async_trait]
@@ -297,7 +319,11 @@ impl SimpleVmbusDevice for GuestEmulationDevice {
             interface_name: "get".to_owned(),
             interface_id: get_protocol::GUEST_EMULATION_INTERFACE_TYPE,
             instance_id: get_protocol::GUEST_EMULATION_INTERFACE_INSTANCE,
-            channel_type: ChannelType::Pipe { message_mode: true },
+            channel_type: ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }
@@ -640,6 +666,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::UNMAP_FRAMEBUFFER => self.handle_unmap_framebuffer(state).await?,
             HostRequests::CREATE_RAM_GPA_RANGE => self.handle_create_ram_gpa_range(message_buf)?,
             HostRequests::RESET_RAM_GPA_RANGE => self.handle_reset_ram_gpa_range(message_buf)?,
+            HostRequests::LOAD_FIRMWARE => self.handle_load_firmware(message_buf)?,
             _ => {
                 tracing::error!(message_id = ?header.message_id(), "unexpected message");
                 return Err(Error::InvalidSequence);
@@ -1059,6 +1086,26 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
+    fn handle_load_firmware(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+        let request = get_protocol::LoadFirmwareRequest::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+
+        let firmware_token = request.firmware_token;
+        tracing::info!(firmware_token, "load firmware request");
+
+        // This emulated host does not have a firmware image to write into guest
+        // RAM, so the request is simply acknowledged with a zero entry-point
+        // offset (leave VTL0's RIP unchanged). A real host loads the image
+        // identified by the token and returns the computed SEC entry offset.
+        let response =
+            get_protocol::LoadFirmwareResponse::new(get_protocol::LoadFirmwareStatus::SUCCESS, 0);
+        self.channel
+            .try_send(response.as_bytes())
+            .map_err(Error::Vmbus)?;
+        Ok(())
+    }
+
     fn handle_host_notification(
         &mut self,
         header: get_protocol::HeaderHostNotification,
@@ -1067,13 +1114,16 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     ) -> Result<(), Error> {
         match header.message_id() {
             HostNotifications::POWER_OFF => {
-                self.handle_power_off(state);
+                self.handle_power_off(message_buf, state)?;
             }
             HostNotifications::RESET => {
                 self.handle_reset(state);
             }
             HostNotifications::EVENT_LOG => {
                 self.handle_event_log(state, message_buf)?;
+            }
+            HostNotifications::IPMI_SEL => {
+                self.handle_ipmi_sel(state, message_buf)?;
             }
             HostNotifications::RESTORE_GUEST_VTL2_STATE_COMPLETED => {
                 self.handle_restore_guest_vtl2_state_completed(message_buf)?;
@@ -1097,8 +1147,36 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_power_off(&mut self, state: &mut GuestEmulationDevice) {
-        state.power_client.power_request(PowerRequest::PowerOff);
+    fn handle_ipmi_sel(
+        &mut self,
+        state: &GuestEmulationDevice,
+        message_buf: &[u8],
+    ) -> Result<(), Error> {
+        let notification = get_protocol::IpmiSelNotification::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        state.send_ipmi_sel_event(IpmiSelEvent {
+            record_id: notification.record_id.get(),
+            record: notification.record,
+        });
+        Ok(())
+    }
+
+    fn handle_power_off(
+        &mut self,
+        message_buf: &[u8],
+        state: &mut GuestEmulationDevice,
+    ) -> Result<(), Error> {
+        let msg = get_protocol::PowerOffNotification::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        let request = match msg.hibernate.0 {
+            0 => PowerRequest::PowerOff,
+            1 => PowerRequest::Hibernate,
+            _ => return Err(Error::InvalidFieldValue),
+        };
+        state.power_client.power_request(request);
+        Ok(())
     }
 
     fn handle_reset(&mut self, state: &mut GuestEmulationDevice) {
@@ -1263,39 +1341,82 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         &mut self,
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        let vpci_boot_enabled;
-        let enable_firmware_debugging;
-        let disable_frontpage;
-        let firmware_mode_is_pcat;
-        let pcat_boot_device_order;
-        let uefi_console_mode;
-        let default_boot_always_attempt;
-        match state.config.firmware {
+        // The paravisor GET path only carries the SMBIOS *system* (Type 1)
+        // identity. BIOS (Type 0) overrides have no wire representation and the
+        // paravisor's direct loader builds Type 0 from its own defaults, so
+        // fail closed rather than silently dropping a requested override
+        // (mirrors the UEFI load path's handling).
+        let smbios_defs::SmbiosBiosOverrides {
+            vendor,
+            version,
+            release_date,
+            release,
+        } = &state.config.smbios.bios;
+        if vendor.is_some() {
+            return Err(Error::UnsupportedSmbiosField("BIOS vendor"));
+        }
+        if version.is_some() {
+            return Err(Error::UnsupportedSmbiosField("BIOS version"));
+        }
+        if release_date.is_some() {
+            return Err(Error::UnsupportedSmbiosField("BIOS release date"));
+        }
+        if release.is_some() {
+            return Err(Error::UnsupportedSmbiosField("BIOS release"));
+        }
+
+        // Destructure the Type 1 (System) overrides so that every field is
+        // explicitly forwarded below; adding a field to `SmbiosSystemOverrides`
+        // is then a compile error here until it is wired into the DPS payload,
+        // rather than being silently dropped.
+        let smbios_defs::SmbiosSystemOverrides {
+            manufacturer: system_manufacturer,
+            product_name: system_product_name,
+            version: system_version,
+            serial_number: system_serial_number,
+            sku_number: system_sku_number,
+            family: system_family,
+            uuid: system_uuid,
+        } = &state.config.smbios.system;
+
+        let (
+            vpci_boot_enabled,
+            enable_firmware_debugging,
+            disable_frontpage,
+            firmware_mode_is_pcat,
+            pcat_boot_device_order,
+            uefi_console_mode,
+            default_boot_always_attempt,
+            enable_memory_protections,
+        ) = match state.config.firmware {
             GuestFirmwareConfig::Uefi {
                 enable_vpci_boot,
                 firmware_debug,
+                enable_memory_protections,
                 disable_frontpage: v_disable_frontpage,
                 console_mode,
                 default_boot_always_attempt: v_default_boot_always_attempt,
-            } => {
-                vpci_boot_enabled = enable_vpci_boot;
-                enable_firmware_debugging = firmware_debug;
-                disable_frontpage = v_disable_frontpage;
-                firmware_mode_is_pcat = false;
-                pcat_boot_device_order = None;
-                uefi_console_mode = Some(console_mode);
-                default_boot_always_attempt = v_default_boot_always_attempt;
-            }
-            GuestFirmwareConfig::Pcat { boot_order } => {
-                vpci_boot_enabled = false;
-                enable_firmware_debugging = false;
-                disable_frontpage = false;
-                firmware_mode_is_pcat = true;
-                pcat_boot_device_order = Some(boot_order);
-                uefi_console_mode = None;
-                default_boot_always_attempt = false;
-            }
-        }
+            } => (
+                enable_vpci_boot,
+                firmware_debug,
+                v_disable_frontpage,
+                false,
+                None,
+                Some(console_mode),
+                v_default_boot_always_attempt,
+                enable_memory_protections,
+            ),
+            GuestFirmwareConfig::Pcat { boot_order } => (
+                false,
+                false,
+                false,
+                true,
+                Some(boot_order),
+                None,
+                false,
+                false,
+            ),
+        };
 
         let json = get_protocol::dps_json::DevicePlatformSettingsV2Json {
             v1: get_protocol::dps_json::HclDevicePlatformSettings {
@@ -1323,12 +1444,15 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     _ => panic!("Invalid secure boot template"),
                 },
                 enable_battery: state.config.enable_battery,
+                enable_ipmi: state.config.enable_ipmi,
+                enable_hibernation: state.config.enable_hibernation,
                 console_mode: uefi_console_mode.unwrap_or(UefiConsoleMode::DEFAULT).0,
                 bios_guid: if state.test_gsp_by_id {
                     guid::guid!("2b701019-2816-4a85-9692-3981f1af4423")
                 } else {
-                    Default::default()
+                    *system_uuid
                 },
+                serial_number: system_serial_number.clone().unwrap_or_default(),
                 ..Default::default()
             },
             v2: get_protocol::dps_json::HclDevicePlatformSettingsV2 {
@@ -1344,13 +1468,20 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     measure_additional_pcrs: true,
                     disable_sha384_pcr: false,
                     media_present_enabled_by_default: false,
-                    memory_protection_mode: 0,
+                    memory_protection_mode: enable_memory_protections.into(),
                     default_boot_always_attempt,
                     vpci_boot_enabled,
                     vpci_instance_filter: None,
                     num_lock_enabled: false,
                     pcat_boot_device_order,
-                    smbios: Default::default(),
+                    smbios: get_protocol::dps_json::HclDevicePlatformSettingsV2StaticSmbios {
+                        system_manufacturer: system_manufacturer.clone().unwrap_or_default(),
+                        system_product_name: system_product_name.clone().unwrap_or_default(),
+                        system_version: system_version.clone().unwrap_or_default(),
+                        system_sku_number: system_sku_number.clone().unwrap_or_default(),
+                        system_family: system_family.clone().unwrap_or_default(),
+                        ..Default::default()
+                    },
                     watchdog_enabled: false,
                     always_relay_host_mmio: false,
                     imc_enabled: false,

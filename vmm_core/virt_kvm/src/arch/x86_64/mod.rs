@@ -3,17 +3,22 @@
 
 //! This module implements support for KVM on x86_64.
 
-#![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
-
+mod extint;
 mod regs;
+pub(crate) mod snp;
 mod vm_state;
 mod vp_state;
+
+pub(crate) use vp_state::seg_reg;
+pub(crate) use vp_state::table_reg;
 
 use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
+use crate::SnpError;
+use crate::SnpLaunchState;
 use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
 use crate::gsi::MsiRouteBuilder;
@@ -42,6 +47,7 @@ use parking_lot::Mutex;
 use parking_lot::RwLock;
 use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
+use std::fs::OpenOptions;
 use std::future::poll_fn;
 use std::io;
 use std::os::unix::prelude::*;
@@ -75,6 +81,7 @@ use virt::vm::AccessVmState;
 use virt::x86::HardwareBreakpoint;
 use virt::x86::max_physical_address_size_from_cpuid;
 use virt::x86::vp::AccessVpState;
+use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86VpInfo;
 use vmcore::interrupt::Interrupt;
@@ -126,6 +133,16 @@ fn gb_pages_supported() -> bool {
         && safe_intrinsics::cpuid(GB_PAGE_LEAF, 0).edx & GB_PAGE_FLAG != 0
 }
 
+/// Checks KVM's Hyper-V CPUID leaves for the `use_apic_msrs` recommendation.
+///
+/// Missing or unrelated leaves are treated as no recommendation.
+fn kvm_recommends_hyperv_apic_msrs(cpuid: &[kvm::kvm_cpuid_entry2]) -> bool {
+    cpuid.iter().any(|leaf| {
+        leaf.function == hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION
+            && hvdef::HvEnlightenmentInformation::from(u128::from(leaf.eax)).use_apic_msrs()
+    })
+}
+
 impl virt::Hypervisor for Kvm {
     type ProtoPartition<'a> = KvmProtoPartition<'a>;
     type Partition = KvmPartition;
@@ -143,8 +160,18 @@ impl virt::Hypervisor for Kvm {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<Self::ProtoPartition<'a>, Self::Error> {
-        if config.isolation.is_isolated() {
-            return Err(KvmError::IsolationNotSupported);
+        match config.isolation.isolation_type() {
+            virt::IsolationType::None => {}
+            virt::IsolationType::Snp => {
+                if config.hv_config.is_some() {
+                    return Err(KvmError::UnsupportedIsolationConfiguration(
+                        "SNP does not support Hyper-V enlightenments or VTL2",
+                    ));
+                }
+            }
+            virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
+                return Err(KvmError::IsolationNotSupported);
+            }
         }
 
         let nested_virt = config.nested_virt;
@@ -155,7 +182,6 @@ impl virt::Hypervisor for Kvm {
         // Query which MCE capability bits this host allows us to set so that
         // bind() can advertise CMCI to the guest where supported (Intel).
         let supported_mce_cap = self.kvm.supported_mce_cap()?;
-
         // Determine the CPU vendor from CPUID leaf 0.
         let vendor = supported_cpuid
             .iter()
@@ -260,6 +286,7 @@ impl virt::Hypervisor for Kvm {
             use hvdef::*;
             let privileges = HvPartitionPrivilege::new()
                 .with_access_partition_reference_counter(true)
+                .with_access_partition_reference_tsc(true)
                 .with_access_hypercall_msrs(true)
                 .with_access_vp_index(true)
                 .with_access_frequency_msrs(true)
@@ -313,6 +340,8 @@ impl virt::Hypervisor for Kvm {
                     HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
                     split_u128(
                         HvEnlightenmentInformation::new()
+                            // Advertise enlightened APIC access only when KVM recommends it.
+                            .with_use_apic_msrs(kvm_recommends_hyperv_apic_msrs(&kvm_hv_cpuid))
                             .with_deprecate_auto_eoi(true)
                             .with_long_spin_wait_count(0xffffffff) // no spin wait notifications
                             .into(),
@@ -354,13 +383,75 @@ impl virt::Hypervisor for Kvm {
             }
         }
 
-        let vm = self.kvm.new_vm(kvm::VmType::Default)?;
+        let snp_config = match &config.isolation {
+            virt::ProtoPartitionIsolation::None => None,
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(snp_config)) => {
+                Some(crate::snp::prepare_snp_config(
+                    snp_config.as_ref().clone(),
+                    self.kvm.supported_sev_vmsa_features()?,
+                )?)
+            }
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                restricted_injection: false,
+            }) => None,
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                restricted_injection: true,
+            }) => {
+                return Err(SnpError::UnsupportedVmsaFeatures(
+                    x86defs::snp::SevFeatures::new()
+                        .with_restrict_injection(true)
+                        .into_bits(),
+                )
+                .into());
+            }
+            virt::ProtoPartitionIsolation::Vbs
+            | virt::ProtoPartitionIsolation::Tdx
+            | virt::ProtoPartitionIsolation::Cca => {
+                return Err(KvmError::IsolationNotSupported);
+            }
+        };
+        let isolation = config.isolation.isolation_type();
+
+        let sev = match isolation {
+            virt::IsolationType::Snp => Some(
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/sev")
+                    .map_err(SnpError::OpenSev)?,
+            ),
+            virt::IsolationType::None => None,
+            virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
+                unreachable!()
+            }
+        };
+
+        let vm = match isolation {
+            virt::IsolationType::None => self.kvm.new_vm(kvm::VmType::Default)?,
+            virt::IsolationType::Snp => {
+                let vm = self.kvm.new_vm(kvm::VmType::Snp)?;
+                vm.enable_hypercall_exits(1 << kvm::KVM_HC_MAP_GPA_RANGE_UAPI)?;
+                vm
+            }
+            virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
+                unreachable!()
+            }
+        };
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;
 
+        if let Some(sev) = &sev {
+            vm.sev_snp_init(
+                sev.as_fd(),
+                snp_config.as_ref().map_or(0, |config| config.vmsa_features),
+            )?;
+        }
+
         Ok(KvmProtoPartition {
             vm,
+            sev,
+            snp_config,
             config,
             cpuid: cpuid_entries,
             nested_virt,
@@ -372,6 +463,8 @@ impl virt::Hypervisor for Kvm {
 /// A prototype partition.
 pub struct KvmProtoPartition<'a> {
     vm: kvm::Partition,
+    sev: Option<std::fs::File>,
+    snp_config: Option<crate::snp::KvmSnpConfig>,
     config: ProtoPartitionConfig<'a>,
     cpuid: CpuidLeafSet,
     nested_virt: bool,
@@ -393,6 +486,12 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         mut self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        if let Some(config) = &self.snp_config
+            && config.bsp.gpa != crate::snp::KVM_SNP_VMSA_GPA
+        {
+            return Err(SnpError::InvalidVmsaGpa(config.bsp.gpa).into());
+        }
+
         // Build topology leaves using the base cpuid before consuming it.
         let mut topology_leaves = Vec::new();
         virt::x86::topology::topology_cpuid(
@@ -462,19 +561,38 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         gsi_routing.update_routes(&self.vm);
 
+        let ram_ranges: Vec<_> = config
+            .mem_layout
+            .ram()
+            .iter()
+            .map(|range| range.range)
+            .chain(config.mem_layout.vtl2_range())
+            .collect();
+        let memory_backing_mode = match self.config.isolation.isolation_type() {
+            virt::IsolationType::None => KvmMemoryBackingMode::Userspace,
+            virt::IsolationType::Snp => {
+                KvmMemoryBackingMode::guest_memfd(&self.vm, ram_ranges.iter().copied(), true)?
+            }
+            virt::IsolationType::Vbs | virt::IsolationType::Tdx | virt::IsolationType::Cca => {
+                unreachable!()
+            }
+        };
+
         let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
+            sev: self.sev,
+            snp_config: self.snp_config,
+            snp_launch_state: Mutex::new(SnpLaunchState::NotStarted),
             memory: Default::default(),
-            memory_backing_mode: KvmMemoryBackingMode::Userspace,
-            ram_ranges: config
-                .mem_layout
-                .ram()
-                .iter()
-                .map(|range| range.range)
-                .chain(config.mem_layout.vtl2_range())
-                .collect(),
+            memory_backing_mode,
+            ram_ranges,
             hv1_enabled: self.config.hv_config.is_some(),
             gm: config.guest_memory.clone(),
+            bsp_cpuid: kvm_cpuid_entries(
+                &cpuid,
+                &self.config.processor_topology.vp_arch(VpIndex::BSP),
+                self.config.processor_topology,
+            ),
             vps: self
                 .config
                 .processor_topology
@@ -515,6 +633,73 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                     .access(format!("vp-{}", vp.vp_index.index())),
             })
             .collect::<Vec<_>>();
+
+        if cfg!(debug_assertions) {
+            (&partition).check_reset_all(&partition.inner.bsp().vp_info);
+        }
+
+        fn kvm_cpuid_entries(
+            cpuid: &CpuidLeafSet,
+            vp_info: &X86VpInfo,
+            processor_topology: &ProcessorTopology,
+        ) -> Vec<kvm::kvm_cpuid_entry2> {
+            cpuid
+                .leaves()
+                .iter()
+                .map(|leaf| {
+                    let mut entry = kvm::kvm_cpuid_entry2 {
+                        function: leaf.function,
+                        index: leaf.index.unwrap_or(0),
+                        flags: if leaf.index.is_some() {
+                            KVM_CPUID_FLAG_SIGNIFCANT_INDEX
+                        } else {
+                            0
+                        },
+                        eax: leaf.result[0],
+                        ebx: leaf.result[1],
+                        ecx: leaf.result[2],
+                        edx: leaf.result[3],
+                        padding: [0; 3],
+                    };
+                    match CpuidFunction(leaf.function) {
+                        CpuidFunction::VersionAndFeatures => {
+                            entry.ebx &= 0x00ffffff;
+                            entry.ebx |= vp_info.apic_id << 24;
+                        }
+                        CpuidFunction::ExtendedTopologyEnumeration => {
+                            entry.edx = vp_info.apic_id;
+                        }
+                        CpuidFunction::V2ExtendedTopologyEnumeration => {
+                            entry.edx = vp_info.apic_id;
+                        }
+                        CpuidFunction::ProcessorTopologyDefinition => {
+                            let eax =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEax::from(entry.eax);
+                            entry.eax = eax.with_extended_apic_id(vp_info.apic_id).into();
+                            let ebx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(entry.ebx);
+                            entry.ebx = ebx
+                                .with_compute_unit_id(
+                                    (vp_info.apic_id % processor_topology.reserved_vps_per_socket()
+                                        / (ebx.threads_per_compute_unit() as u32 + 1))
+                                        as u8,
+                                )
+                                .into();
+                            let ecx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(entry.ecx);
+                            entry.ecx = ecx
+                                .with_node_id(
+                                    (vp_info.apic_id / processor_topology.reserved_vps_per_socket())
+                                        as u8,
+                                )
+                                .into();
+                        }
+                        _ => (),
+                    }
+                    entry
+                })
+                .collect()
+        }
 
         Ok((partition, vps))
     }
@@ -591,8 +776,20 @@ impl ResetPartition for KvmPartition {
 }
 
 impl Partition for KvmPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = Self::Error>> {
-        Some(self)
+        // TODO: Support resetting SNP launch state and rebuilding the protected
+        // guest before advertising reset support.
+        self.inner.sev.is_none().then_some(self)
+    }
+
+    fn supports_initial_page_acceptance(
+        &self,
+    ) -> Option<&dyn virt::AcceptInitialPages<Error = <Self as Hv1>::Error>> {
+        self.inner.sev.is_some().then_some(self)
     }
 
     fn doorbell_registration(
@@ -838,6 +1035,7 @@ impl virt::BindProcessor for KvmProcessorBinder {
             simp_overlay: OverlayPage::default(),
             siefp_overlay: OverlayPage::default(),
             vmtime: &mut self.vmtime,
+            interrupt_window_stale: true,
         };
 
         // 1. Reset the APIC state to clear the directed EOI bit, which is
@@ -857,6 +1055,21 @@ impl virt::BindProcessor for KvmProcessorBinder {
 
         if cfg!(debug_assertions) {
             vp.access_state(Vtl::Vtl0).check_reset_all(&vp_info);
+        }
+
+        if self.partition.sev.is_some() && !vp_info.base.is_bsp() {
+            // NOTE: SNP APs are started through the guest's GHCB AP creation
+            // request. Keep them halted so KVM can wake them to install the
+            // guest-provided VMSA instead of blocking in the uninitialized/APIC
+            // startup path, which would return -EAGAIN from kvm_run to usermode
+            // instead of making forward progress.
+            //
+            // The flow on KVM + QEMU + OVMF is that QEMU first programs a VMSA
+            // for each AP pointing to QEMU's reset vector, then OVMF sends an
+            // INIT_SIPI to each AP to then place it into the halted state. We
+            // may need to change this depending on the contract with what we
+            // expect to load (UEFI vs direct boot).
+            vp.kvm.set_mp_state(kvm::KVM_MP_STATE_HALTED)?;
         }
 
         Ok(vp)
@@ -887,6 +1100,9 @@ pub struct KvmProcessor<'a> {
     simp_overlay: OverlayPage,
     /// Overlay backing the synic event flags page (SIEFP).
     siefp_overlay: OverlayPage,
+    /// Whether the VP state may have changed since KVM last reported the
+    /// interrupt window in `kvm_run`.
+    interrupt_window_stale: bool,
 }
 
 impl KvmProcessor<'_> {
@@ -895,17 +1111,38 @@ impl KvmProcessor<'_> {
     /// The VP must be known to be stopped and must have an open interrupt
     /// window.
     fn deliver_pic_interrupt(&mut self, dev: &impl CpuIo) -> Result<(), KvmRunVpError> {
-        if let Some(vector) = dev.acknowledge_pic_interrupt() {
-            self.runner
-                .inject_extint_interrupt(vector)
-                .map_err(KvmRunVpError::ExtintInterrupt)?;
+        if self.partition.caps.nested_virt {
+            // Let KVM decide whether the interrupt must first exit a nested
+            // guest. A queued interrupt is missing from the saved state, but
+            // KVM partitions cannot save nested state either.
+            if let Some(vector) = dev.acknowledge_pic_interrupt() {
+                self.runner
+                    .queue_extint_interrupt(vector)
+                    .map_err(KvmRunVpError::ExtintInterrupt)?;
+            }
+        } else {
+            // Keep the interrupt in the saved VP state until the guest takes
+            // it. KVM delivers it without checking whether the guest can take
+            // it, so KVM must have reported the open window for the current VP
+            // state.
+            assert!(
+                !self.interrupt_window_stale,
+                "extint injected without a current interrupt window"
+            );
+            // Acknowledge the PIC only once the VP is known to be able to take
+            // the interrupt.
+            if extint::inject(&self.kvm, || dev.acknowledge_pic_interrupt())? {
+                // The VP state changed, so the window that KVM reported no
+                // longer applies.
+                self.interrupt_window_stale = true;
+            }
         }
         Ok(())
     }
 
     /// Tries to deliver any pending synic messages for a VP.
     fn try_deliver_synic_messages(&mut self) -> Option<VmTime> {
-        if !self.scontrol.enabled() && self.simp.enabled() {
+        if !(self.scontrol.enabled() && self.simp.enabled()) {
             return None;
         }
         self.inner
@@ -988,9 +1225,11 @@ impl hv1_emulator::VtlProtectAccess for KvmNoVtlProtections<'_> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
+        // Overlay pages are written through the returned locked pages, so lock
+        // them for write.
         self.0
-            .lock_gpns(false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
             .map_err(|_| HvError::OperationDenied)
     }
 
@@ -1379,6 +1618,20 @@ impl<'p> Processor for KvmProcessor<'p> {
         stop: StopVp<'_>,
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
+        // The VP state may have changed while the VP was stopped (e.g., by a
+        // restore or a debugger), so the interrupt window that KVM last
+        // reported is stale.
+        self.interrupt_window_stale = true;
+        // KVM does not wake a halted VP just to report an open interrupt
+        // window, so if a PIC interrupt was still waiting for the window when
+        // the VP stopped, check the window again: the new VP state may have
+        // opened it.
+        if self.runner.interrupt_window_requested() {
+            self.inner
+                .request_interrupt_window
+                .store(true, Ordering::Relaxed);
+        }
+
         loop {
             self.inner.needs_yield.maybe_yield().await;
             stop.check()?;
@@ -1393,12 +1646,15 @@ impl<'p> Processor for KvmProcessor<'p> {
                 }
             }
 
-            // Check for pending PIC interrupts.
+            // Check for pending PIC interrupts, once KVM has reported the
+            // interrupt window for the current VP state (see below).
             //
             // Check and clear this with a relaxed ordering since `evaluate_vp`
             // (called when this is set) will force the VP to exit, causing us
             // to re-check.
-            if self.inner.request_interrupt_window.load(Ordering::Relaxed) {
+            if !self.interrupt_window_stale
+                && self.inner.request_interrupt_window.load(Ordering::Relaxed)
+            {
                 self.inner
                     .request_interrupt_window
                     .store(false, Ordering::Relaxed);
@@ -1419,11 +1675,23 @@ impl<'p> Processor for KvmProcessor<'p> {
             //
             // Don't break out of the loop while there is a pending exit so that
             // the register state is up-to-date for save.
+            //
+            // If a PIC interrupt is waiting but the interrupt window that KVM
+            // last reported may be stale, don't run the VP: just complete any
+            // pending exit, which makes KVM report the window for the current
+            // VP state, and then loop around to check it.
+            let refresh_interrupt_window = self.interrupt_window_stale
+                && self.inner.request_interrupt_window.load(Ordering::Relaxed);
             let mut pending_exit = false;
             loop {
-                let exit = if self.inner.eval.load(Ordering::Relaxed) || stop.check().is_err() {
-                    // Break out of the loop as soon as there is no pending exit.
-                    if !pending_exit {
+                let exit = if refresh_interrupt_window
+                    || self.inner.eval.load(Ordering::Relaxed)
+                    || stop.check().is_err()
+                {
+                    // Break out of the loop as soon as there is no pending exit
+                    // and no pending refresh of the interrupt window.
+                    let refresh_pending = refresh_interrupt_window && self.interrupt_window_stale;
+                    if !pending_exit && !refresh_pending {
                         self.inner.eval.store(false, Ordering::Relaxed);
                         break;
                     }
@@ -1433,6 +1701,11 @@ impl<'p> Processor for KvmProcessor<'p> {
                     // Run the VP.
                     self.runner.run()
                 };
+                // KVM reports the interrupt window for the current VP state
+                // when KVM_RUN returns, unless it fails early (e.g., because
+                // the VM is dead or the thread is being killed), which leaves
+                // the VP unusable anyway.
+                self.interrupt_window_stale = false;
 
                 let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;
                 pending_exit = true;
@@ -1525,17 +1798,53 @@ impl<'p> Processor for KvmProcessor<'p> {
                     }
                     kvm::Exit::Hypercall {
                         nr,
-                        args: _,
+                        args,
                         result,
                         flags,
                     } => {
-                        // This is only reachable for hypercall exits explicitly
-                        // enabled on the VM. Later SNP support enables
-                        // KVM_HC_MAP_GPA_RANGE and handles it here.
-                        *result = 1;
-                        return Err(
-                            dev.fatal_error(KvmRunVpError::UnhandledHypercall { nr, flags }.into())
-                        );
+                        if nr == kvm::KVM_HC_MAP_GPA_RANGE_UAPI {
+                            let gpa = args[0];
+                            let page_count = args[1];
+                            let map_attributes = args[2];
+
+                            tracing::debug!(
+                                gpa,
+                                page_count,
+                                map_attributes,
+                                flags,
+                                "handling KVM_HC_MAP_GPA_RANGE"
+                            );
+                            match self.partition.set_map_gpa_range_attributes(
+                                gpa,
+                                page_count,
+                                map_attributes,
+                            ) {
+                                Ok(()) => {
+                                    *result = 0;
+                                    tracing::debug!(
+                                        gpa,
+                                        page_count,
+                                        map_attributes,
+                                        "handled KVM_HC_MAP_GPA_RANGE"
+                                    );
+                                }
+                                Err(err) => {
+                                    tracelimit::error_ratelimited!(
+                                        error = &err as &dyn std::error::Error,
+                                        gpa,
+                                        page_count,
+                                        map_attributes,
+                                        "failed KVM_HC_MAP_GPA_RANGE"
+                                    );
+                                    *result = 1;
+                                }
+                            }
+                        } else {
+                            *result = 1;
+                            return Err(dev.fatal_error(
+                                KvmRunVpError::UnhandledHypercall { nr, flags }.into(),
+                            ));
+                        }
                     }
                     kvm::Exit::Debug {
                         exception: _,
@@ -1543,8 +1852,8 @@ impl<'p> Processor for KvmProcessor<'p> {
                         dr6,
                         dr7,
                     } => {
-                        if dr6 & x86defs::DR6_BREAKPOINT_MASK != 0 {
-                            let i = dr6.trailing_zeros() as usize;
+                        if let Some(i) = (dr6 & x86defs::DR6_BREAKPOINT_MASK).lowest_one() {
+                            let i = i as usize;
                             let bp = HardwareBreakpoint::from_dr7(dr7, self.guest_debug_db[i], i);
                             return Err(VpHaltReason::HwBreak(bp));
                         } else if dr6 & x86defs::DR6_SINGLE_STEP != 0 {
@@ -1589,6 +1898,17 @@ impl<'p> Processor for KvmProcessor<'p> {
                             }
                             kvm::KVM_SYSTEM_EVENT_CRASH => {
                                 return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+                            }
+                            kvm::KVM_SYSTEM_EVENT_SEV_TERM => {
+                                let ghcb_msr = event_flags;
+                                return Err(dev.fatal_error(
+                                    KvmRunVpError::SevTermination {
+                                        ghcb_msr,
+                                        reason_set: (ghcb_msr >> 12) & 0xf,
+                                        reason: (ghcb_msr >> 16) & 0xff,
+                                    }
+                                    .into(),
+                                ));
                             }
                             _ => {
                                 return Err(dev.fatal_error(
@@ -1740,5 +2060,68 @@ impl GuestEventPort for KvmGuestEventPort {
 impl SignalMsi for KvmPartitionInner {
     fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.request_msi(MsiRequest { address, data });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kvm_recommends_hyperv_apic_msrs;
+    use hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION;
+    use hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES;
+    use hvdef::HvEnlightenmentInformation;
+    use test_with_tracing::test;
+
+    #[test]
+    fn only_recommends_apic_msrs_when_kvm_does() {
+        let recommendation =
+            u128::from(HvEnlightenmentInformation::new().with_use_apic_msrs(true)) as u32;
+        let other_enlightenment =
+            u128::from(HvEnlightenmentInformation::new().with_deprecate_auto_eoi(true)) as u32;
+
+        // A missing enlightenment-information leaf is not a recommendation.
+        assert!(!kvm_recommends_hyperv_apic_msrs(&[]));
+
+        // test various combinations of CPUID entries
+        for (function, eax, expected) in [
+            // The correct leaf without the recommendation bit must be rejected.
+            (HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0, false),
+            // Other enlightenment bits must not be mistaken for this recommendation.
+            (
+                HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                other_enlightenment,
+                false,
+            ),
+            // The recommendation bit is meaningful only in the correct leaf.
+            (HV_CPUID_FUNCTION_MS_HV_FEATURES, recommendation, false),
+            // The correct leaf with the recommendation bit must be accepted.
+            (
+                HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                recommendation,
+                true,
+            ),
+        ] {
+            assert_eq!(
+                kvm_recommends_hyperv_apic_msrs(&[kvm::kvm_cpuid_entry2 {
+                    function,
+                    eax,
+                    ..Default::default()
+                }]),
+                expected
+            );
+        }
+
+        // The search must continue when the relevant leaf is not first.
+        assert!(kvm_recommends_hyperv_apic_msrs(&[
+            kvm::kvm_cpuid_entry2 {
+                function: HV_CPUID_FUNCTION_MS_HV_FEATURES,
+                eax: recommendation,
+                ..Default::default()
+            },
+            kvm::kvm_cpuid_entry2 {
+                function: HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                eax: recommendation,
+                ..Default::default()
+            },
+        ]));
     }
 }

@@ -37,3 +37,34 @@ impl ResolveResource<VirtioDeviceHandle, VirtioVsockHandle> for VirtioVsockResol
         Ok(device.into())
     }
 }
+
+/// Resolver for Linux kernel `vhost_vsock` devices.
+#[cfg(target_os = "linux")]
+pub struct VirtioVsockVhostResolver;
+
+#[cfg(target_os = "linux")]
+declare_static_resolver! {
+    VirtioVsockVhostResolver,
+    (VirtioDeviceHandle, virtio_resources::vsock::VirtioVsockVhostHandle),
+}
+
+#[cfg(target_os = "linux")]
+impl ResolveResource<VirtioDeviceHandle, virtio_resources::vsock::VirtioVsockVhostHandle>
+    for VirtioVsockVhostResolver
+{
+    type Output = ResolvedVirtioDevice;
+    type Error = anyhow::Error;
+
+    fn resolve(
+        &self,
+        resource: virtio_resources::vsock::VirtioVsockVhostHandle,
+        input: VirtioResolveInput<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(crate::vhost::VhostVsockDevice::new(
+            input.driver_source,
+            resource.vhost,
+            resource.guest_cid,
+        )?
+        .into())
+    }
+}

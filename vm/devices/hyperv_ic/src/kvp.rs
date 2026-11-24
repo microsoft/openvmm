@@ -7,6 +7,10 @@ use crate::common::IcPipe;
 use crate::common::NegotiateState;
 use crate::common::Versions;
 use anyhow::Context;
+#[cfg(test)]
+#[path = "kvp_tests.rs"]
+mod tests;
+
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -38,6 +42,7 @@ use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmbus_ring::RingMem;
 use vmcore::save_restore::NoSavedState;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -61,9 +66,9 @@ pub struct KvpIc {
 
 #[doc(hidden)]
 #[derive(InspectMut)]
-pub struct KvpChannel {
+pub struct KvpChannel<M: RingMem = GpadlRingMem> {
     #[inspect(mut)]
-    pipe: IcPipe,
+    pipe: IcPipe<M>,
     state: ChannelState,
 }
 
@@ -101,7 +106,11 @@ impl SimpleVmbusDevice for KvpIc {
             interface_name: "kvp_ic".to_owned(),
             instance_id: proto::INSTANCE_ID,
             interface_id: proto::INTERFACE_ID,
-            channel_type: ChannelType::Pipe { message_mode: true },
+            channel_type: ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }
@@ -123,8 +132,8 @@ impl SimpleVmbusDevice for KvpIc {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(async { runner.process(self).await })
-            .await
+        let check = stop.check_handle()?;
+        stop.until_stopped(runner.process(self, &check)).await?
     }
 
     fn supports_save_restore(
@@ -132,7 +141,7 @@ impl SimpleVmbusDevice for KvpIc {
     ) -> Option<
         &mut dyn SaveRestoreSimpleVmbusDevice<SavedState = Self::SavedState, Runner = Self::Runner>,
     > {
-        None
+        Some(self)
     }
 }
 
@@ -146,9 +155,9 @@ impl KvpIc {
     }
 }
 
-impl KvpChannel {
+impl<M: RingMem + Unpin> KvpChannel<M> {
     fn new(
-        channel: RawAsyncChannel<GpadlRingMem>,
+        channel: RawAsyncChannel<M>,
         restore_state: Option<ChannelState>,
     ) -> Result<Self, ChannelOpenError> {
         let pipe = IcPipe::new(channel)?;
@@ -158,13 +167,18 @@ impl KvpChannel {
         })
     }
 
-    async fn process(&mut self, ic: &mut KvpIc) -> ! {
+    async fn process(
+        &mut self,
+        ic: &mut KvpIc,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
         enum Event {
             StateMachine(anyhow::Result<()>),
             Request(KvpConnectRpc),
         }
 
         loop {
+            check.check()?;
             let event = pin!(
                 (
                     once(
@@ -371,7 +385,9 @@ impl KvpChannel {
                     *state = ReadyState::WaitingResponse(rpc);
                 }
                 ReadyState::WaitingResponse(_) => {
-                    let (status, response) = self.pipe.read_response().await?;
+                    let Some((status, response)) = self.pipe.read_response(versions).await? else {
+                        return Ok(());
+                    };
                     let r = if status == Status::SUCCESS {
                         Ok(())
                     } else {
@@ -409,6 +425,22 @@ impl KvpChannel {
             ChannelState::Failed => std::future::pending().await,
         }
         Ok(())
+    }
+}
+
+// Like Hyper-V, no state is saved or restored. On restore, the channel starts
+// over with version negotiation.
+impl SaveRestoreSimpleVmbusDevice for KvpIc {
+    fn save_open(&mut self, _runner: &Self::Runner) -> Self::SavedState {
+        NoSavedState
+    }
+
+    fn restore_open(
+        &mut self,
+        NoSavedState: Self::SavedState,
+        channel: RawAsyncChannel<GpadlRingMem>,
+    ) -> Result<Self::Runner, ChannelOpenError> {
+        KvpChannel::new(channel, None)
     }
 }
 

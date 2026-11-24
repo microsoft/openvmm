@@ -72,6 +72,7 @@ pub mod user_facing {
     pub use crate::node::FlowPlatformLinuxDistro;
     pub use crate::pipeline::Artifact;
     pub use crate::pipeline::ArtifactType;
+    pub use crate::pipeline::resolve as resolve_artifact;
 
     /// Helper method to streamline request validation in cases where a value is
     /// expected to be identical across all incoming requests.
@@ -935,11 +936,6 @@ pub fn new_import_ctx(backend: &mut dyn ImportCtxBackend) -> ImportCtx<'_> {
     ImportCtx { backend }
 }
 
-#[derive(Debug)]
-pub enum CtxAnchor {
-    PostJob,
-}
-
 pub trait NodeCtxBackend {
     /// Handle to the current node this `ctx` corresponds to
     fn current_node(&self) -> NodeHandle;
@@ -1046,6 +1042,8 @@ pub enum FlowPlatformLinuxDistro {
     AzureLinux,
     /// Arch Linux (including WSL2)
     Arch,
+    /// openSUSE (including WSL2)
+    OpenSuse,
     /// Nix environment (detected via IN_NIX_SHELL env var or having a `/nix/store` in PATH)
     Nix,
     /// An unknown distribution
@@ -1683,9 +1681,12 @@ impl<'ctx> NodeCtx<'ctx> {
         T: Serialize + DeserializeOwned,
     {
         // normalize call path to ensure determinism between windows and linux
-        let caller = std::panic::Location::caller()
-            .to_string()
-            .replace('\\', "/");
+        //
+        // Only the source file is kept, not line/column: `{modpath}:{ordinal}`
+        // already uniquely identifies the var, so including line/column would
+        // needlessly churn every generated pipeline whenever unrelated edits
+        // shift line numbers.
+        let caller = std::panic::Location::caller().file().replace('\\', "/");
 
         // until we have a proper way to "split" debug info related to vars, we
         // kinda just lump it in with the var name itself.
@@ -1888,6 +1889,17 @@ pub mod steps {
 
             /// `build.BuildNumber`
             pub const BUILD_BUILD_NUMBER: AdoRuntimeVar = AdoRuntimeVar::new("build.BuildNumber");
+
+            /// `Build.BuildId`
+            pub const BUILD_BUILD_ID: AdoRuntimeVar = AdoRuntimeVar::new("Build.BuildId");
+
+            /// `System.CollectionUri`
+            pub const SYSTEM_COLLECTION_URI: AdoRuntimeVar =
+                AdoRuntimeVar::new("System.CollectionUri");
+
+            /// `System.TeamProjectId`
+            pub const SYSTEM_TEAM_PROJECT_ID: AdoRuntimeVar =
+                AdoRuntimeVar::new("System.TeamProjectId");
 
             /// `System.AccessToken`
             pub const SYSTEM_ACCESS_TOKEN: AdoRuntimeVar =
@@ -2231,6 +2243,7 @@ pub mod steps {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
         pub enum GhPermission {
             Actions,
+            ArtifactMetadata,
             Attestations,
             Checks,
             Contents,
@@ -2504,7 +2517,7 @@ impl std::fmt::Debug for NodeHandle {
 }
 
 impl NodeHandle {
-    pub fn from_type<N: FlowNodeBase + 'static>() -> NodeHandle {
+    pub const fn from_type<N: FlowNodeBase + 'static>() -> NodeHandle {
         NodeHandle(std::any::TypeId::of::<N>())
     }
 
@@ -2533,7 +2546,7 @@ impl NodeHandle {
 
     /// Return a dummy NodeHandle, which will panic if `new_erased_node` is ever
     /// called on it.
-    pub fn dummy() -> NodeHandle {
+    pub const fn dummy() -> NodeHandle {
         NodeHandle(std::any::TypeId::of::<()>())
     }
 }

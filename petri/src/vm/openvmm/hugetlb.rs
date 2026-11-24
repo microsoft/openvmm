@@ -8,10 +8,8 @@ use anyhow::Context;
 /// Size of a 2 MiB hugetlb page.
 pub const HUGETLB_2MB_PAGE_SIZE: u64 = 2 * 1024 * 1024;
 
-const REQUIRE_2MB_HUGETLB_ENV: &str = "OPENVMM_REQUIRE_2MB_HUGETLB";
-
 fn require_2mb_hugetlb() -> bool {
-    std::env::var_os(REQUIRE_2MB_HUGETLB_ENV).is_some()
+    std::env::var_os(petri_artifacts_vmm_test::env::OPENVMM_REQUIRE_2MB_HUGETLB).is_some()
 }
 
 fn read_hugetlb_counter(name: &str) -> anyhow::Result<Option<u64>> {

@@ -28,6 +28,7 @@ prost-build = { workspace = true, optional = true }
 [dev-dependencies]
 expect-test.workspace = true
 prost-types.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

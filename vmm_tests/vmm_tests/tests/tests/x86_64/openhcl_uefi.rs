@@ -6,13 +6,79 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::MemoryConfig;
-use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
+use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_SIVM_TEST_X64;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test_with;
+
+/// Verify that the manifest policy reaches the running OpenHCL VM through its initrd.
+#[openvmm_test(
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_SIVM_TEST_X64]
+)]
+async fn sivm_product_policy_delivered(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm,): (ResolvedArtifact<LATEST_SIVM_TEST_X64>,),
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_custom_openhcl(igvm)
+        .with_secure_boot()
+        .run()
+        .await?;
+    let policy = vm
+        .inspect_openhcl("vm/measured_product_policy", None, None)
+        .await?;
+    let policy: serde_json::Value = serde_json::from_str(&policy.json().to_string())?;
+    assert_eq!(
+        policy,
+        serde_json::json!({
+            "sivm": {
+                "0": {
+                    "require_ephemeral_vmgs": true,
+                    "require_secure_boot": true,
+                    "require_secure_boot_vars": false,
+                    "require_bcd_integrity": false,
+                    "custom_uefi_json": 2,
+                }
+            }
+        })
+    );
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// A lost or ignored policy must not turn a forbidden configuration into a successful boot.
+#[vmm_test_with(
+    noagent,
+    configs(openvmm_openhcl_uefi_x64(none)[LATEST_SIVM_TEST_X64])
+)]
+async fn sivm_product_policy_rejects_disabled_secure_boot(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm,): (ResolvedArtifact<LATEST_SIVM_TEST_X64>,),
+) -> anyhow::Result<()> {
+    let mut vm = config
+        .with_custom_openhcl(igvm)
+        .with_expect_no_boot_event()
+        .run_without_agent()
+        .await?;
+    let error = vm
+        .backend()
+        .wait_for_vtl0_start()
+        .await?
+        .expect_err("OpenHCL accepted a VM with secure boot disabled despite the SIVM policy");
+    anyhow::ensure!(
+        error
+            .0
+            .contains("product policy requires secure boot to be enabled"),
+        "unexpected VTL0 start error: {error}"
+    );
+    vm.teardown().await?;
+    Ok(())
+}
 
 #[derive(Debug)]
 struct ExpectedNvmeDeviceProperties {
@@ -51,13 +117,6 @@ async fn nvme_relay_test_core(
     } = params;
 
     let (vm, agent) = config
-        .with_host_log_levels(OpenvmmLogConfig::Custom(
-            [
-                ("OPENVMM_LOG".to_owned(), "debug,vpci=trace".to_owned()),
-                ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
-            ]
-            .into(),
-        ))
         .with_boot_device_type(petri::BootDeviceType::ScsiViaNvme)
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
@@ -336,6 +395,99 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
         .await?;
 
     vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Boot OpenHCL with VTL2 RAM split across three NUMA nodes.
+///
+/// 512 MiB does not divide evenly across three nodes on a 32 KiB boundary.
+/// This verifies that the bootloader rounds each allocation to the lower-VTL
+/// permission bitmap granularity.
+#[vmm_test_with(noagent, configs(openvmm_openhcl_uefi_x64(none)))]
+async fn vtl2_ram_32k_aligned_across_three_numa_nodes<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    const ALIGNMENT_GRANULARITY: u64 = 32 * 1024;
+    const VTL2_RAM_SIZE: u64 = 512 * 1024 * 1024;
+
+    let mut vm = config
+        .with_expect_no_boot_event()
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 3,
+            vps_per_socket: Some(1),
+            ..Default::default()
+        })
+        .with_memory(MemoryConfig {
+            numa_mem_sizes: Some(vec![
+                2 * 1024 * 1024 * 1024,
+                2 * 1024 * 1024 * 1024,
+                2 * 1024 * 1024 * 1024,
+            ]),
+            ..Default::default()
+        })
+        .with_vtl2_base_address_type(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(VTL2_RAM_SIZE),
+        })
+        .run_without_agent()
+        .await?;
+
+    vm.wait_for_vtl2_ready().await?;
+
+    let vtl2_ranges = vm
+        .inspect_openhcl(
+            "vm/runtime_params/parsed_openhcl_boot/vtl2_memory",
+            None,
+            None,
+        )
+        .await?;
+    let vtl2_ranges: serde_json::Value = serde_json::from_str(&format!("{}", vtl2_ranges.json()))?;
+    let vtl2_ranges = vtl2_ranges
+        .as_object()
+        .context("VTL2 memory ranges are not an object")?;
+    let expected_ram_per_node = (VTL2_RAM_SIZE / 3).next_multiple_of(ALIGNMENT_GRANULARITY);
+    let mut ram_per_node = [0; 3];
+
+    for entry in vtl2_ranges.values() {
+        let vnode = entry
+            .get("vnode")
+            .and_then(serde_json::Value::as_u64)
+            .context("VTL2 memory vnode is not an integer")?;
+        let vnode = usize::try_from(vnode).context("VTL2 memory vnode does not fit in usize")?;
+        let node_ram = ram_per_node
+            .get_mut(vnode)
+            .with_context(|| format!("unexpected VTL2 memory vnode {vnode}"))?;
+        let range = entry
+            .get("range")
+            .and_then(serde_json::Value::as_str)
+            .context("VTL2 memory range is not a string")?;
+        let (start, end) = range
+            .split_once('-')
+            .context("VTL2 memory range is not start-end")?;
+        let parse_address = |address: &str| -> Result<u64, anyhow::Error> {
+            let address = address
+                .strip_prefix("0x")
+                .context("VTL2 memory address does not start with 0x")?;
+            Ok(u64::from_str_radix(address, 16)?)
+        };
+        let start = parse_address(start)?;
+        let end = parse_address(end)?;
+
+        anyhow::ensure!(start < end, "VTL2 RAM range {range} is empty or reversed");
+        anyhow::ensure!(
+            start.is_multiple_of(ALIGNMENT_GRANULARITY)
+                && end.is_multiple_of(ALIGNMENT_GRANULARITY),
+            "VTL2 RAM range {range} is not aligned to {ALIGNMENT_GRANULARITY:#x}"
+        );
+        *node_ram += end - start;
+    }
+
+    for (vnode, node_ram) in ram_per_node.into_iter().enumerate() {
+        anyhow::ensure!(
+            node_ram >= expected_ram_per_node,
+            "VTL2 RAM on vnode {vnode} is {node_ram:#x}, expected at least {expected_ram_per_node:#x}"
+        );
+    }
 
     Ok(())
 }

@@ -11,8 +11,6 @@ use crate::BusIdPcieEnumerator;
 use crate::VmmChipsetDevice;
 use arc_cyclic_builder::ArcCyclicBuilder;
 use arc_cyclic_builder::ArcCyclicBuilderExt;
-use chipset_device::mmio::RegisterMmioIntercept;
-use chipset_device::pio::RegisterPortIoIntercept;
 use closeable_mutex::CloseableMutex;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -162,20 +160,14 @@ where
         if let Some(dev) = typed_dev.supports_mmio() {
             // static mmio registration
             for (label, range) in dev.get_static_regions() {
-                self.services
-                    .register_mmio()
-                    .new_io_region(label, range.end() - range.start() + 1)
-                    .map(*range.start());
+                self.services.register_static_mmio(label, range.clone());
             }
         }
 
         if let Some(dev) = typed_dev.supports_pio() {
             // static pio registration
             for (label, range) in dev.get_static_regions() {
-                self.services
-                    .register_pio()
-                    .new_io_region(label, range.end() - range.start() + 1)
-                    .map(*range.start());
+                self.services.register_static_pio(label, range.clone());
             }
         }
 

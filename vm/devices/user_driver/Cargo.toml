@@ -23,7 +23,7 @@ vfio = [
 mmio_simulate_fallback = []
 
 [dependencies]
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 pal_async.workspace = true
 safeatomic.workspace = true
 event-listener.workspace = true

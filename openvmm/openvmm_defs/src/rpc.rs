@@ -27,6 +27,8 @@ pub enum VmRpc {
     Nmi(Rpc<u32, ()>),
     AddVmbusDevice(FailableRpc<(DeviceVtl, Resource<VmbusDeviceHandleKind>), ()>),
     ConnectHvsock(FailableRpc<(CancelContext, Guid, DeviceVtl), unix_socket::UnixStream>),
+    AddHvsockListener(FailableRpc<(DeviceVtl, Guid, unix_socket::UnixListener), ()>),
+    RemoveHvsockListener(FailableRpc<(DeviceVtl, Guid), ()>),
     PulseSaveRestore(Rpc<(), Result<(), PulseSaveRestoreError>>),
     StartReloadIgvm(FailableRpc<File, ()>),
     CompleteReloadIgvm(FailableRpc<bool, ()>),
@@ -40,6 +42,10 @@ pub enum VmRpc {
     AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a PCIe device from a named port at runtime.
     RemovePcieDevice(FailableRpc<String, ()>),
+    /// Hot-add a VPCI device to VTL0 at runtime with the supplied instance ID.
+    AddVpciDevice(FailableRpc<(Guid, Resource<PciDeviceHandleKind>), ()>),
+    /// Hot-remove a dynamically added VPCI device by instance ID.
+    RemoveVpciDevice(FailableRpc<Guid, ()>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     ///
     /// The worker pauses the VM internally, collects state, and restores
@@ -74,6 +80,8 @@ impl fmt::Debug for VmRpc {
             VmRpc::Nmi(_) => "Nmi",
             VmRpc::AddVmbusDevice(_) => "AddVmbusDevice",
             VmRpc::ConnectHvsock(_) => "ConnectHvsock",
+            VmRpc::AddHvsockListener(_) => "AddHvsockListener",
+            VmRpc::RemoveHvsockListener(_) => "RemoveHvsockListener",
             VmRpc::PulseSaveRestore(_) => "PulseSaveRestore",
             VmRpc::StartReloadIgvm(_) => "StartReloadIgvm",
             VmRpc::CompleteReloadIgvm(_) => "CompleteReloadIgvm",
@@ -82,6 +90,8 @@ impl fmt::Debug for VmRpc {
             VmRpc::UpdateCliParams(_) => "UpdateCliParams",
             VmRpc::AddPcieDevice(_) => "AddPcieDevice",
             VmRpc::RemovePcieDevice(_) => "RemovePcieDevice",
+            VmRpc::AddVpciDevice(_) => "AddVpciDevice",
+            VmRpc::RemoveVpciDevice(_) => "RemoveVpciDevice",
             VmRpc::DumpState(_) => "DumpState",
         };
         f.pad(s)

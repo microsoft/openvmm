@@ -87,8 +87,8 @@ open_enum! {
 open_enum! {
     /// The memory type reported from the bootshim to usermode, for which VTL a
     /// given memory range is for.
-    #[derive(mesh_protobuf::Protobuf)]
-    #[mesh(package = "openhcl.openhcl_boot")]
+    #[cfg_attr(feature = "save_restore", derive(mesh_protobuf::Protobuf))]
+    #[cfg_attr(feature = "save_restore", mesh(package = "openhcl.openhcl_boot"))]
     pub enum MemoryVtlType: u32 {
         /// This memory is for VTL0.
         VTL0 = 0,
@@ -266,6 +266,7 @@ impl PersistedStateHeader {
 }
 
 /// Definitions used for save/restore between boots.
+#[cfg(feature = "save_restore")]
 pub mod save_restore {
     extern crate alloc;
 

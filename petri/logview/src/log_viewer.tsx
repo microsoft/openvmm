@@ -3,7 +3,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Menu } from "./menu";
-import { Link, useParams, useLocation, useNavigate } from "react-router-dom";
+import { Link, useParams, useLocation, useNavigate } from "react-router";
 import { VirtualizedTable } from "./virtualized_table";
 import { fetchProcessedLog } from "./utils/fetch_logs_data";
 import { useQuery } from "@tanstack/react-query";
@@ -116,7 +116,8 @@ export function LogViewer(): React.JSX.Element {
   // Fetch the relevant data
   const { data: logEntries } = useQuery({
     queryKey: ["petriLog", runId, architecture, testName],
-    queryFn: () => fetchProcessedLog(runId, architecture, testName),
+    queryFn: ({ signal }) =>
+      fetchProcessedLog(runId, architecture, testName, { signal }),
     staleTime: Infinity, // never goes stale
     gcTime: Infinity,
   });

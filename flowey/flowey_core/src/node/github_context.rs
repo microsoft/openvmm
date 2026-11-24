@@ -117,6 +117,13 @@ impl GhContextVarReader<'_, state::Global> {
         self.read_var("github.workspace", false, false)
     }
 
+    /// `github.base_ref`
+    ///
+    /// The PR's target branch. Empty for events other than `pull_request`.
+    pub fn base_ref(self) -> ReadVar<String> {
+        self.read_var("github.base_ref", false, false)
+    }
+
     /// `github.token`
     pub fn token(self) -> ReadVar<String> {
         // TODO: change is_secret parameter to true.

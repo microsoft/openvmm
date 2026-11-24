@@ -67,6 +67,9 @@ pub trait SimpleVmbusDevice<M: RingMem = GpadlRingMem>: 'static + Send {
     ) -> Result<Self::Runner, ChannelOpenError>;
 
     /// Runs an open channel until `stop` is signaled.
+    ///
+    /// Check for stop at cancel-safe work boundaries, including when incoming
+    /// packets or outgoing ring space stay continuously ready.
     async fn run(
         &mut self,
         stop: &mut StopTask<'_>,
@@ -299,15 +302,27 @@ impl<T: SimpleVmbusDevice> InspectMut for SimpleDeviceWrapper<T> {
     }
 }
 
+/// The initial state of a simple VMBus device.
+pub enum InitialDeviceState {
+    /// The device is stopped until explicitly started.
+    Stopped,
+    /// The device is started before it is offered.
+    Running,
+}
+
 /// Offers a new channel, returning a typed handle to get back the original
 /// channel when it's revoked.
 pub async fn offer_simple_device<T: 'static + SimpleVmbusDevice>(
     driver_source: &VmTaskDriverSource,
     bus: &(impl ParentBus + ?Sized),
     device: T,
+    initial_state: InitialDeviceState,
 ) -> anyhow::Result<SimpleDeviceHandle<T>> {
     let driver = driver_source.builder().target_vp(0).build("simple-vmbus");
-    let channel = SimpleDeviceWrapper::new(driver, device);
+    let mut channel = SimpleDeviceWrapper::new(driver, device);
+    if matches!(initial_state, InitialDeviceState::Running) {
+        VmbusDevice::start(&mut channel);
+    }
     Ok(SimpleDeviceHandle(
         offer_channel(&driver_source.simple(), bus, channel).await?,
     ))

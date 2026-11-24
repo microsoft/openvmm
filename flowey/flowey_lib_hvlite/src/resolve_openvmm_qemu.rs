@@ -118,7 +118,7 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let version = version.expect("local requests handled above");
+        let version = version.context("missing QEMU package version")?;
 
         // Deduplicate downloads per host architecture.
         let needed_archives: BTreeSet<CommonArch> = deps.keys().map(|(_, arch)| *arch).collect();
@@ -130,8 +130,8 @@ impl FlowNodeWithConfig for Node {
                 CommonArch::Aarch64 => "aarch64",
             };
             let archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm-deps".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                repo_name: crate::common::OPENVMM_DEPS_GITHUB_REPO.into(),
                 needs_auth: false,
                 tag: version.clone(),
                 file_name: format!("qemu-linux-static.{arch_str}.{version}.tar.gz"),
@@ -165,7 +165,7 @@ impl FlowNodeWithConfig for Node {
                 for ((file, arch), vars) in deps {
                     let extract_dir = extract_dirs
                         .get(&arch)
-                        .expect("archive was downloaded for this arch");
+                        .with_context(|| format!("missing extracted QEMU archive for {arch:?}"))?;
                     let path = extract_dir.join(file.filename());
                     if !path.exists() {
                         anyhow::bail!(

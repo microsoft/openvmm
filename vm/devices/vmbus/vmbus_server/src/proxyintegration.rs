@@ -570,7 +570,11 @@ impl ProxyTask {
                         anyhow::bail!("unsupported offer pipe mode");
                     }
                 };
-                ChannelType::Pipe { message_mode }
+                ChannelType::Pipe {
+                    message_mode,
+                    user_defined: params.user_defined,
+                    pipe_flags: params.flags,
+                }
             } else {
                 ChannelType::Interface {
                     user_defined: offer.UserDefined,
@@ -608,7 +612,9 @@ impl ProxyTask {
             mnf_interrupt_latency: offer
                 .ChannelFlags
                 .request_monitored_notification()
-                .then(|| Duration::from_nanos(offer.InterruptLatencyIn100nsUnits * 100)),
+                .then(|| {
+                    Duration::from_nanos_u128(u128::from(offer.InterruptLatencyIn100nsUnits) * 100)
+                }),
             offer_order,
             allow_confidential_external_memory: false,
         };

@@ -5,19 +5,19 @@ use core::arch::asm;
 
 use spin::Mutex;
 
-use crate::context::InterruptPlatformTrait;
-use crate::context::SecureInterceptPlatformTrait;
-use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VtlPlatformTrait;
 use crate::create_function_with_restore;
 use crate::tmk_assert;
+use opentmk_core::context::InterruptPlatformTrait;
+use opentmk_core::context::SecureInterceptPlatformTrait;
+use opentmk_core::context::VirtualProcessorPlatformTrait;
+use opentmk_core::context::VtlPlatformTrait;
 
 static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 
 // Without inline the compiler may optimize away the call and the VTL switch may
 // distort the architectural registers
 #[inline(never)]
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(target_arch = "x86_64")]
 fn violate_reg_rule() {
     // SAFETY: we are writing to a valid MSR
     unsafe {
@@ -46,7 +46,7 @@ where
 {
     use hvdef::Vtl;
 
-    use crate::context::VpExecToken;
+    use opentmk_core::context::VpExecToken;
 
     let vp_count = ctx.get_vp_count();
     tmk_assert!(vp_count.is_ok(), "get_vp_count should succeed");

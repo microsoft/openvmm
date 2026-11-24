@@ -7,7 +7,7 @@
 use crate::rndisprot;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
-use guestmem::LockedPages;
+use guestmem::UserLockedPages;
 use net_backend::BufferAccess;
 use net_backend::L4Protocol;
 use net_backend::RxBufferSegment;
@@ -43,7 +43,7 @@ pub enum GuestBuffersError {
 pub struct GuestBuffers {
     mem: GuestMemory,
     _gpadl: GpadlView,
-    locked_pages: LockedPages,
+    locked_pages: UserLockedPages,
     gpns: Vec<u64>,
     sub_allocation_size: u32,
     mtu: u32,
@@ -109,7 +109,7 @@ impl GuestBuffers {
 
         let gpns = gpadl.first().unwrap().gpns().to_vec();
         let locked_pages = mem
-            .lock_gpns(false, &gpns)
+            .lock_user_gpns(guestmem::AccessType::Write, &gpns)
             .map_err(GuestBuffersError::GpnLock)?;
         Ok(Self {
             mem,
@@ -189,6 +189,15 @@ impl BufferAccess for BufferPool {
 
     fn write_data(&mut self, id: RxId, data: &[u8]) {
         self.buffers.write_at(self.offset(id) + RX_HEADER_LEN, data);
+    }
+
+    fn write_packet_segments(&mut self, id: RxId, metadata: &RxMetadata, segments: &[&[u8]]) {
+        let mut offset = self.offset(id) + RX_HEADER_LEN;
+        for segment in segments {
+            self.buffers.write_at(offset, segment);
+            offset += segment.len() as u32;
+        }
+        self.write_header(id, metadata);
     }
 
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {

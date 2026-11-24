@@ -68,12 +68,12 @@ pub struct NamespaceError {
 }
 
 /// PCI vendor ID, as it appears in the sysfs `vendor` file (e.g. `0x0100`),
-/// for NVMe devices that are incompatible with keepalive.
-const KEEPALIVE_INCOMPATIBLE_VENDOR_ID: &str = "0x1414";
+/// for NVMe devices that require fused keepalive device mode.
+const FUSED_DEVICE_VENDOR_ID: &str = "0x1414";
 
 /// PCI device ID, as it appears in the sysfs `device` file (e.g. `0x0100`),
-/// for NVMe devices that are incompatible with keepalive.
-const KEEPALIVE_INCOMPATIBLE_DEVICE_ID: &str = "0xb111";
+/// for NVMe devices that require fused keepalive device mode.
+const FUSED_DEVICE_DEVICE_ID: &str = "0xb111";
 
 #[derive(Debug, Error)]
 pub enum NvmeSpawnerError {
@@ -116,24 +116,24 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
         pci_id: &str,
         vp_count: u32,
         save_restore_supported: bool,
+        fused_keepalive_device: bool,
         saved_state: Option<&nvme_driver::save_restore::NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError>;
 }
 
-/// Returns whether the given PCI device is compatible with NVMe keepalive.
-pub(crate) fn is_nvme_keepalive_compatible(pci_id: &str) -> bool {
+/// Returns whether the given PCI device requires fused keepalive device mode
+pub(crate) fn is_nvme_fused_keepalive_device(pci_id: &str) -> bool {
     match read_pci_vendor_device_ids(pci_id) {
         Ok((vendor_id, device_id)) => {
-            vendor_id != KEEPALIVE_INCOMPATIBLE_VENDOR_ID
-                || device_id != KEEPALIVE_INCOMPATIBLE_DEVICE_ID
+            vendor_id == FUSED_DEVICE_VENDOR_ID && device_id == FUSED_DEVICE_DEVICE_ID
         }
         Err(err) => {
             tracing::warn!(
                 pci_id = %pci_id,
                 error = err.as_ref() as &dyn std::error::Error,
-                "failed to read PCI vendor/device IDs; treating device as not keepalive-compatible"
+                "failed to read PCI vendor/device IDs; treating device as a fused keepalive device"
             );
-            false
+            true
         }
     }
 }

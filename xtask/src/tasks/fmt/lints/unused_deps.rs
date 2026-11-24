@@ -166,6 +166,20 @@ impl Lint for UnusedDeps {
     }
 
     fn exit_crate(&mut self, content: &mut Lintable<DocumentMut>) {
+        // Ignored crates are treated as used at the workspace level
+        self.workspace_found_deps.extend(
+            content
+                .get("package")
+                .and_then(|p| p.get("metadata"))
+                .and_then(|m| m.get("xtask"))
+                .and_then(|x| x.get("unused-deps"))
+                .and_then(|u| u.get("ignored"))
+                .and_then(|i| i.as_array())
+                .into_iter()
+                .flatten()
+                .map(|dep| dep.as_str().unwrap().to_owned())
+                .filter(|dep| self.crate_deps.contains(dep)),
+        );
         exit_toml(content, &self.crate_deps, &self.crate_found_deps, false);
     }
 
@@ -200,14 +214,11 @@ fn exit_toml(
         .and_then(|m| m.get("xtask"))
         .and_then(|x| x.get("unused-deps"))
         .and_then(|u| u.get("ignored"))
-        .map(|arr| {
-            arr.as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_str().unwrap().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
+        .and_then(|i| i.as_array())
+        .into_iter()
+        .flatten()
+        .map(|dep| dep.as_str().unwrap().to_owned())
+        .collect();
 
     for ign in &ignored {
         if !deps.contains(ign) {

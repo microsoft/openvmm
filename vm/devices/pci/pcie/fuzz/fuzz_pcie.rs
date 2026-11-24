@@ -12,6 +12,8 @@ use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigAccessType;
+use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigSpace;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
@@ -22,6 +24,7 @@ use pcie::root::GenericPcieRootComplex;
 use pcie::switch::GenericPcieSwitch;
 use pcie::switch::GenericPcieSwitchDefinition;
 use pcie::test_helpers::TestPcieMmioRegistration;
+use pcie::test_helpers::TestPciePioRegistration;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -76,30 +79,30 @@ impl GenericPciBusDevice for SwitchAdapter {
 
     fn pci_cfg_read_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
         value: ByteEnabledDwordRead<'_>,
     ) -> Option<IoResult> {
-        Some(
-            self.0
-                .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
-        )
+        Some(PciConfigSpace::pci_cfg_read_with_routing(
+            &mut self.0,
+            access_type,
+            address,
+            value,
+        ))
     }
 
     fn pci_cfg_write_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
         value: ByteEnabledDwordWrite,
     ) -> Option<IoResult> {
-        Some(
-            self.0
-                .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
-        )
+        Some(PciConfigSpace::pci_cfg_write_with_routing(
+            &mut self.0,
+            access_type,
+            address,
+            value,
+        ))
     }
 }
 
@@ -126,6 +129,7 @@ impl FuzzRootComplex {
         let hotplug = matches!(topology, Topology::Hotplug { .. });
 
         let mut register_mmio = TestPcieMmioRegistration {};
+        let mut register_pio = TestPciePioRegistration;
         let port_defs: Vec<GenericPciePortDefinition> = (0..NUM_PORTS)
             .map(|i| GenericPciePortDefinition {
                 name: format!("rp{}", i).into(),
@@ -135,11 +139,15 @@ impl FuzzRootComplex {
             })
             .collect();
         let msi_conn = pci_core::msi::MsiConnection::new();
-        let rc =
-            GenericPcieRootComplex::builder(&mut register_mmio, START_BUS..=END_BUS, ecam_range)
-                .root_ports(port_defs, &msi_conn.target())
-                .build()
-                .unwrap();
+        let rc = GenericPcieRootComplex::builder(
+            &mut register_mmio,
+            &mut register_pio,
+            START_BUS..=END_BUS,
+            ecam_range,
+        )
+        .root_ports(port_defs, &msi_conn.target())
+        .build()
+        .unwrap();
         Self { rc }
     }
 

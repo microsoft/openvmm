@@ -3,13 +3,20 @@
 
 //! Hypervisor MSR emulation.
 
+cfg_select! {
+    guest_arch = "aarch64" => {
+        use aarch64defs::Vendor;
+    }
+    guest_arch = "x86_64" => {
+        use x86defs::cpuid::Vendor;
+    }
+}
+
 use super::synic::GlobalSynic;
 use super::synic::ProcessorSynic;
 use crate::VtlProtectAccess;
 use crate::pages::LockedPage;
 use crate::pages::OverlayPage;
-#[cfg(guest_arch = "aarch64")]
-use aarch64defs::Vendor;
 use hv1_structs::VtlArray;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
 use hvdef::HvError;
@@ -27,8 +34,6 @@ use std::sync::atomic::Ordering;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time::ReferenceTimeSource;
-#[cfg(guest_arch = "x86_64")]
-use x86defs::cpuid::Vendor;
 use zerocopy::FromZeros;
 
 /// The partition-wide hypervisor state.
@@ -177,7 +182,7 @@ impl ProcessorVtlHv {
     }
 
     /// Resets the processor's state.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
         let Self {
             vp_index: _,
             partition_state: _,
@@ -187,9 +192,9 @@ impl ProcessorVtlHv {
             vp_assist_page,
         } = self;
 
-        synic.reset();
+        synic.reset(prot_access);
         *vp_assist_page_reg = Default::default();
-        *vp_assist_page = OverlayPage::default();
+        vp_assist_page.reset(prot_access);
     }
 
     /// Emulates an MSR write for the guest OS ID MSR.

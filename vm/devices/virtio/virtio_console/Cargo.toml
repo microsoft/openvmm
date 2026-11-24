@@ -25,7 +25,6 @@ futures-concurrency.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 futures.workspace = true

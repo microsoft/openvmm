@@ -393,6 +393,8 @@ impl VpContextBuilder for TdxHardwareContext {
         // jne mailbox_spinloop
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
         byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] =
+            (mailbox_spinloop.wrapping_sub(byte_offset)) as u8;
 
         // skip_mailbox_for_bsp:
         reset_page[skip_mailbox_for_bsp.wrapping_sub(1)] =

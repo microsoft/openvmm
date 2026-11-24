@@ -1,0 +1,20 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "netvsp_protocol"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+inspect.workspace = true
+net_backend_core.workspace = true
+vmbus_core.workspace = true
+
+bitfield-struct.workspace = true
+open_enum.workspace = true
+static_assertions.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

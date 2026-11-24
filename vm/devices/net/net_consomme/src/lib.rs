@@ -4,7 +4,11 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+mod egress;
 pub mod resolver;
+
+#[cfg(test)]
+mod tests;
 
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -12,6 +16,8 @@ use consomme::ChecksumState;
 use consomme::Consomme;
 use consomme::ConsommeParams;
 pub use consomme::IpVersion;
+pub use consomme::StaticDnsRecord;
+pub use consomme::StaticDnsRecordError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -23,18 +29,24 @@ use net_backend::L4Protocol;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxChecksumState;
+use net_backend::RxGsoProtocol;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::RxOffload;
+use net_backend::RxOffloadSupport;
 use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
-use net_backend::TxSegmentType;
 use net_backend_resources::consomme::ConsommeRequest;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
+use smoltcp::wire::ETHERNET_HEADER_LEN;
+use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::IPV6_HEADER_LEN;
+use smoltcp::wire::TcpPacket;
 use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
@@ -194,6 +206,13 @@ pub enum ConsommeMessageError {
     /// Error executing request on current network instance.
     #[error("bind error")]
     Bind(consomme::BindError),
+    /// Error adding a static DNS record.
+    #[error("dns record error: {0}")]
+    DnsRecord(#[source] StaticDnsRecordError),
+    /// The subnet's virtual address pool is exhausted, so no virtual address
+    /// could be allocated.
+    #[error("virtual address pool exhausted")]
+    VirtualAddressPoolExhausted,
 }
 
 /// Callback to modify network state dynamically.
@@ -224,10 +243,19 @@ struct PortUnbindConfig {
     guest_port: u16,
 }
 
+struct AddDnsRecordConfig {
+    /// The type and data of the record (currently only `A` is supported).
+    record: StaticDnsRecord,
+    /// The query name in presentation form (e.g. `"example.com"`).
+    name: String,
+}
+
 enum ConsommeMessage {
     BindPort(Rpc<PortForwardConfig, Result<(), consomme::BindError>>),
     UnbindPort(Rpc<PortUnbindConfig, Result<(), consomme::BindError>>),
     UpdateState(Rpc<ConsommeParamsUpdateFn, ()>),
+    AddDnsRecord(Rpc<AddDnsRecordConfig, Result<(), StaticDnsRecordError>>),
+    CreateVirtualAddress(Rpc<IpAddr, Option<IpAddr>>),
 }
 
 impl ConsommeControl {
@@ -299,6 +327,39 @@ impl ConsommeControl {
             .await
             .map_err(ConsommeMessageError::Mesh)
     }
+
+    /// Adds a static DNS record that will be returned directly
+    /// if the guest sends a matching query.
+    pub async fn add_dns_record(
+        &self,
+        record: StaticDnsRecord,
+        name: String,
+    ) -> Result<(), ConsommeMessageError> {
+        self.send
+            .call(
+                ConsommeMessage::AddDnsRecord,
+                AddDnsRecordConfig { record, name },
+            )
+            .await
+            .map_err(ConsommeMessageError::Mesh)?
+            .map_err(ConsommeMessageError::DnsRecord)
+    }
+
+    /// Allocates a virtual IP address within the endpoint's subnet and routes
+    /// guest traffic sent to it to `destination` on the host.
+    ///
+    /// Returns [`ConsommeMessageError::VirtualAddressPoolExhausted`] if the
+    /// subnet's virtual address pool is exhausted.
+    pub async fn create_virtual_address(
+        &self,
+        destination: IpAddr,
+    ) -> Result<IpAddr, ConsommeMessageError> {
+        self.send
+            .call(ConsommeMessage::CreateVirtualAddress, destination)
+            .await
+            .map_err(ConsommeMessageError::Mesh)?
+            .ok_or(ConsommeMessageError::VirtualAddressPoolExhausted)
+    }
 }
 
 #[async_trait]
@@ -327,6 +388,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             },
             stats: Default::default(),
             driver: config.driver,
+            enabled_rx_offloads: config.enabled_rx_offloads,
         });
         let port_forwards =
             std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
@@ -392,6 +454,7 @@ pub struct ConsommeQueue {
     state: QueueState,
     stats: Stats,
     driver: Box<dyn Driver>,
+    enabled_rx_offloads: RxOffloadSupport,
 }
 
 impl InspectMut for ConsommeQueue {
@@ -441,6 +504,7 @@ impl ConsommeQueue {
                 stats: &mut self.stats,
                 driver: &self.driver,
                 pool,
+                enabled_rx_offloads: self.enabled_rx_offloads,
             }))
     }
 
@@ -463,6 +527,7 @@ impl ConsommeQueue {
                         stats: &mut self.stats,
                         driver: &self.driver,
                         pool,
+                        enabled_rx_offloads: self.enabled_rx_offloads,
                     }),
                     message,
                 ),
@@ -487,6 +552,7 @@ impl ConsommeQueue {
                         stats: &mut self.stats,
                         driver: &self.driver,
                         pool,
+                        enabled_rx_offloads: self.enabled_rx_offloads,
                     }),
                     request,
                 ),
@@ -583,6 +649,33 @@ fn process_port_request(
                 },
             );
         }
+        ConsommeRequest::AddDnsRecord(rpc) => {
+            rpc.handle_failable_sync(
+                |cfg| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                    consomme
+                        .get_mut()
+                        .add_dns_record(StaticDnsRecord::A(cfg.address.octets()), &cfg.name)?;
+                    tracing::info!(name = %cfg.name, address = %cfg.address, "dns record added");
+                    Ok(())
+                },
+            );
+        }
+        ConsommeRequest::CreateVirtualAddress(rpc) => {
+            rpc.handle_failable_sync(
+                |destination| -> Result<
+                    net_backend_resources::consomme::HostIpAddress,
+                    Box<dyn std::error::Error + Send + Sync>,
+                > {
+                    let destination = IpAddr::from(destination);
+                    let virtual_address = consomme
+                        .get_mut()
+                        .create_virtual_address(destination)
+                        .ok_or(ConsommeMessageError::VirtualAddressPoolExhausted)?;
+                    tracing::info!(%destination, %virtual_address, "virtual address created");
+                    Ok(virtual_address.into())
+                },
+            );
+        }
     }
 }
 
@@ -619,83 +712,18 @@ fn process_message(
                 consomme.update_dns_nameservers()
             });
         }
+        ConsommeMessage::AddDnsRecord(rpc) => {
+            rpc.handle_sync(|cfg| consomme.get_mut().add_dns_record(cfg.record, &cfg.name));
+        }
+        ConsommeMessage::CreateVirtualAddress(rpc) => {
+            rpc.handle_sync(|destination| consomme.get_mut().create_virtual_address(destination));
+        }
     }
 }
 
 impl net_backend::Queue for ConsommeQueue {
     fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()> {
-        while let Some(head) = self.state.tx_avail.front() {
-            let TxSegmentType::Head(meta) = &head.ty else {
-                unreachable!()
-            };
-            let tx_id = meta.id;
-            let checksum = ChecksumState {
-                ipv4: meta.flags.offload_ip_header_checksum(),
-                tcp: meta.flags.offload_tcp_checksum(),
-                udp: meta.flags.offload_udp_checksum(),
-                tso: meta
-                    .flags
-                    .offload_tcp_segmentation()
-                    .then_some(meta.max_segment_size),
-                gso: meta
-                    .flags
-                    .offload_udp_segmentation()
-                    .then_some(meta.max_segment_size),
-            };
-
-            // Reuse the scratch buffer to avoid per-packet heap allocation.
-            // TSO caps the assembled packet at 64 KiB; assert so a buggy
-            // upstream caller can't permanently inflate the scratch buffer
-            // (and thus the queue's steady-state memory) by feeding an
-            // oversized `meta.len`.
-            debug_assert!(
-                meta.len as usize <= 64 * 1024,
-                "tx packet len {} exceeds 64 KiB TSO bound",
-                meta.len
-            );
-            let mut buf = std::mem::take(&mut self.state.tx_scratch);
-            buf.clear();
-            buf.resize(meta.len as usize, 0);
-            let gm = pool.guest_memory();
-            let mut offset = 0;
-            for segment in self.state.tx_avail.drain(..meta.segment_count as usize) {
-                let dest = &mut buf[offset..offset + segment.len as usize];
-                if let Err(err) = gm.read_at(segment.gpa, dest) {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "memory write failure"
-                    );
-                }
-                offset += segment.len as usize;
-            }
-
-            if let Err(err) = self.with_consomme(pool, |c| c.send(&buf, &checksum)) {
-                tracing::debug!(error = &err as &dyn std::error::Error, "tx packet ignored");
-                match err {
-                    consomme::DropReason::SendBufferFull
-                    | consomme::DropReason::DestinationNotAllowed => {
-                        self.stats.tx_dropped.increment()
-                    }
-                    consomme::DropReason::UnsupportedEthertype(_)
-                    | consomme::DropReason::UnsupportedIpProtocol(_)
-                    | consomme::DropReason::UnsupportedIcmpv6(_)
-                    | consomme::DropReason::UnsupportedDhcp(_)
-                    | consomme::DropReason::UnsupportedArp
-                    | consomme::DropReason::UnsupportedDhcpv6(_)
-                    | consomme::DropReason::UnsupportedNdp(_) => self.stats.tx_unknown.increment(),
-                    consomme::DropReason::Packet(_)
-                    | consomme::DropReason::Ipv4Checksum
-                    | consomme::DropReason::Io(_)
-                    | consomme::DropReason::BadTcpState(_)
-                    | consomme::DropReason::FragmentedPacket
-                    | consomme::DropReason::IpLengthMismatch
-                    | consomme::DropReason::MalformedPacket => self.stats.tx_errors.increment(),
-                }
-            }
-            self.state.tx_scratch = buf;
-
-            self.state.tx_ready.push_back(tx_id);
-        }
+        self.process_tx(pool);
 
         // TODO: handle messages asynchronously from any queue processing, since
         // there is no guarantee the queue will be processed at all (e.g., if
@@ -773,6 +801,7 @@ struct Client<'a> {
     stats: &'a mut Stats,
     driver: &'a dyn Driver,
     pool: &'a mut dyn BufferAccess,
+    enabled_rx_offloads: RxOffloadSupport,
 }
 
 /// Minimal client for consomme operations that don't need BufferAccess
@@ -799,6 +828,10 @@ impl consomme::Client for Client<'_> {
     }
 
     fn recv(&mut self, data: &[u8], checksum: &ChecksumState) {
+        self.recv_segments(&[data], checksum);
+    }
+
+    fn recv_segments(&mut self, segments: &[&[u8]], checksum: &ChecksumState) {
         let Some(rx_id) = self.state.rx_avail.pop_front() else {
             // This should be rare, only affecting unbuffered protocols. TCP and
             // UDP are buffered and they won't indicate packets unless rx_mtu()
@@ -807,18 +840,50 @@ impl consomme::Client for Client<'_> {
             return;
         };
         let max = self.pool.capacity(rx_id) as usize;
-        if data.len() <= max {
-            self.pool.write_packet(
+        let len: usize = segments.iter().map(|s| s.len()).sum();
+        if len <= max {
+            let offload = if let Some(mss) = checksum.tso {
+                // Consomme-generated TCP frames have fixed Ethernet/IP headers,
+                // and the first segment contains the entire TCP header.
+                let (protocol, start) = if checksum.ipv4 {
+                    (RxGsoProtocol::TcpV4, ETHERNET_HEADER_LEN + IPV4_HEADER_LEN)
+                } else {
+                    (RxGsoProtocol::TcpV6, ETHERNET_HEADER_LEN + IPV6_HEADER_LEN)
+                };
+                assert!(checksum.tcp && self.rx_gso_supported(!checksum.ipv4));
+                let tcp_header_len =
+                    u16::from(TcpPacket::new_unchecked(&segments[0][start..]).header_len());
+                RxOffload::tcp_gso(
+                    protocol,
+                    start as u16 + tcp_header_len,
+                    mss,
+                    Some(start as u16),
+                )
+            } else if checksum.partial {
+                assert!(self.rx_checksum_supported() && (checksum.tcp != checksum.udp));
+                let start = ETHERNET_HEADER_LEN
+                    + if checksum.ipv4 {
+                        IPV4_HEADER_LEN
+                    } else {
+                        IPV6_HEADER_LEN
+                    };
+                RxOffload::checksum(start as u16, if checksum.tcp { 16 } else { 6 })
+            } else {
+                RxOffload::default()
+            };
+            self.pool.write_packet_segments(
                 rx_id,
                 &RxMetadata {
                     offset: 0,
-                    len: data.len(),
+                    len,
                     ip_checksum: if checksum.ipv4 {
                         RxChecksumState::Good
                     } else {
                         RxChecksumState::Unknown
                     },
-                    l4_checksum: if checksum.tcp || checksum.udp {
+                    l4_checksum: if checksum.partial {
+                        RxChecksumState::Unknown
+                    } else if checksum.tcp || checksum.udp {
                         RxChecksumState::Good
                     } else {
                         RxChecksumState::Unknown
@@ -830,13 +895,14 @@ impl consomme::Client for Client<'_> {
                     } else {
                         L4Protocol::Unknown
                     },
+                    offload,
                     vlan: None,
                 },
-                data,
+                segments,
             );
             self.state.rx_ready.push_back(rx_id);
         } else {
-            tracing::warn!(len = data.len(), max, "dropping rx packet: too large");
+            tracing::warn!(len, max, "dropping rx packet: too large");
             self.state.rx_avail.push_front(rx_id);
         }
     }
@@ -847,5 +913,18 @@ impl consomme::Client for Client<'_> {
         } else {
             0
         }
+    }
+
+    fn rx_checksum_supported(&self) -> bool {
+        self.enabled_rx_offloads.checksum
+    }
+
+    fn rx_gso_supported(&self, ipv6: bool) -> bool {
+        self.rx_checksum_supported()
+            && if ipv6 {
+                self.enabled_rx_offloads.tcpv6_gso
+            } else {
+                self.enabled_rx_offloads.tcpv4_gso
+            }
     }
 }

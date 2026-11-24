@@ -49,6 +49,10 @@ pub enum OpenhclIgvmOutput {
         #[serde(rename = "openhcl-x64-test-linux-direct.bin")]
         igvm_bin: PathBuf,
     },
+    X64TestSivm {
+        #[serde(rename = "openhcl-x64-test-sivm.bin")]
+        igvm_bin: PathBuf,
+    },
     X64TestLinuxDirectDevkern {
         #[serde(rename = "openhcl-x64-test-linux-direct-devkern.bin")]
         igvm_bin: PathBuf,
@@ -57,13 +61,13 @@ pub enum OpenhclIgvmOutput {
         #[serde(rename = "openhcl-x64-cvm.bin")]
         igvm_bin: PathBuf,
         #[serde(flatten)]
-        endorsements: OpenhclIgvmEndorsements,
+        endorsements: Option<OpenhclIgvmEndorsements>,
     },
     X64CvmDevkern {
         #[serde(rename = "openhcl-x64-cvm-devkern.bin")]
         igvm_bin: PathBuf,
         #[serde(flatten)]
-        endorsements: OpenhclIgvmEndorsements,
+        endorsements: Option<OpenhclIgvmEndorsements>,
     },
     Aarch64 {
         #[serde(rename = "openhcl-aarch64.bin")]
@@ -88,6 +92,22 @@ pub enum OpenhclIgvmEndorsements {
         #[serde(rename = "openhcl-vbs.json")]
         #[serde(skip_serializing_if = "Option::is_none")]
         igvm_vbs_json: Option<PathBuf>,
+        /// The unsigned SNP ID block signing payload emitted by `manifest`.
+        /// This travels with the endorsements (rather than the debug-symbol
+        /// extras) because it is a release/signing input consumed alongside the
+        /// `.json` identity documents. SNP-only, so absent for other platforms.
+        #[serde(rename = "openhcl-snp.idblock")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_snp_idblock: Option<PathBuf>,
+        #[serde(rename = "openhcl-tdx.cbor")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_tdx_corim: Option<PathBuf>,
+        #[serde(rename = "openhcl-snp.cbor")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_snp_corim: Option<PathBuf>,
+        #[serde(rename = "openhcl-vbs.cbor")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        igvm_vbs_corim: Option<PathBuf>,
     },
 }
 
@@ -98,7 +118,21 @@ impl OpenhclIgvmEndorsements {
                 igvm_tdx_json,
                 igvm_snp_json,
                 igvm_vbs_json,
-            } => igvm_tdx_json.is_some() && igvm_snp_json.is_some() && igvm_vbs_json.is_some(),
+                igvm_tdx_corim,
+                igvm_snp_corim,
+                igvm_vbs_corim,
+                // Not part of completeness: the SNP ID block signing payload is
+                // an optional, SNP-only signing input, not a per-platform
+                // release endorsement.
+                igvm_snp_idblock: _,
+            } => {
+                igvm_tdx_json.is_some()
+                    && igvm_snp_json.is_some()
+                    && igvm_vbs_json.is_some()
+                    && igvm_tdx_corim.is_some()
+                    && igvm_snp_corim.is_some()
+                    && igvm_vbs_corim.is_some()
+            }
         }
     }
 }
@@ -112,6 +146,7 @@ impl OpenhclIgvmOutput {
             | OpenhclIgvmOutput::X64 { igvm_bin }
             | OpenhclIgvmOutput::X64Devkern { igvm_bin }
             | OpenhclIgvmOutput::X64TestLinuxDirect { igvm_bin }
+            | OpenhclIgvmOutput::X64TestSivm { igvm_bin }
             | OpenhclIgvmOutput::X64TestLinuxDirectDevkern { igvm_bin }
             | OpenhclIgvmOutput::X64Cvm { igvm_bin, .. }
             | OpenhclIgvmOutput::X64CvmDevkern { igvm_bin, .. }
@@ -122,9 +157,9 @@ impl OpenhclIgvmOutput {
 
     pub fn endorsements(&self) -> Option<&OpenhclIgvmEndorsements> {
         match self {
-            OpenhclIgvmOutput::LocalOnlyCustom { endorsements, .. } => endorsements.as_ref(),
-            OpenhclIgvmOutput::X64Cvm { endorsements, .. }
-            | OpenhclIgvmOutput::X64CvmDevkern { endorsements, .. } => Some(endorsements),
+            OpenhclIgvmOutput::LocalOnlyCustom { endorsements, .. }
+            | OpenhclIgvmOutput::X64Cvm { endorsements, .. }
+            | OpenhclIgvmOutput::X64CvmDevkern { endorsements, .. } => endorsements.as_ref(),
             _ => None,
         }
     }
@@ -137,6 +172,7 @@ impl OpenhclIgvmOutput {
             OpenhclIgvmOutput::X64TestLinuxDirect { .. } => {
                 Some(OpenhclIgvmRecipe::X64TestLinuxDirect)
             }
+            OpenhclIgvmOutput::X64TestSivm { .. } => Some(OpenhclIgvmRecipe::X64TestSivm),
             OpenhclIgvmOutput::X64TestLinuxDirectDevkern { .. } => {
                 Some(OpenhclIgvmRecipe::X64TestLinuxDirectDevkern)
             }
@@ -154,17 +190,28 @@ impl OpenhclIgvmOutput {
             igvm_tdx_json,
             igvm_snp_json,
             igvm_vbs_json,
+            igvm_snp_idblock,
+            igvm_tdx_corim,
+            igvm_snp_corim,
+            igvm_vbs_corim,
         } = igvm;
-        let mut endorsements =
-            if igvm_tdx_json.is_some() || igvm_snp_json.is_some() || igvm_vbs_json.is_some() {
-                Some(OpenhclIgvmEndorsements::X64 {
-                    igvm_tdx_json,
-                    igvm_snp_json,
-                    igvm_vbs_json,
-                })
-            } else {
-                None
-            };
+        let mut endorsements = if igvm_tdx_json.is_some()
+            || igvm_snp_json.is_some()
+            || igvm_vbs_json.is_some()
+            || igvm_snp_idblock.is_some()
+        {
+            Some(OpenhclIgvmEndorsements::X64 {
+                igvm_tdx_json,
+                igvm_snp_json,
+                igvm_vbs_json,
+                igvm_snp_idblock,
+                igvm_tdx_corim,
+                igvm_snp_corim,
+                igvm_vbs_corim,
+            })
+        } else {
+            None
+        };
         match recipe {
             None => OpenhclIgvmOutput::LocalOnlyCustom {
                 igvm_bin,
@@ -177,22 +224,27 @@ impl OpenhclIgvmOutput {
                     OpenhclIgvmRecipe::X64TestLinuxDirect => {
                         OpenhclIgvmOutput::X64TestLinuxDirect { igvm_bin }
                     }
+                    OpenhclIgvmRecipe::X64TestSivm => OpenhclIgvmOutput::X64TestSivm { igvm_bin },
                     OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => {
                         OpenhclIgvmOutput::X64TestLinuxDirectDevkern { igvm_bin }
                     }
                     OpenhclIgvmRecipe::X64Cvm => OpenhclIgvmOutput::X64Cvm {
                         igvm_bin,
-                        endorsements: endorsements
-                            .take()
-                            .filter(OpenhclIgvmEndorsements::is_complete)
-                            .expect("missing endorsements"),
+                        endorsements: Some(
+                            endorsements
+                                .take()
+                                .filter(OpenhclIgvmEndorsements::is_complete)
+                                .expect("missing endorsements"),
+                        ),
                     },
                     OpenhclIgvmRecipe::X64CvmDevkern => OpenhclIgvmOutput::X64CvmDevkern {
                         igvm_bin,
-                        endorsements: endorsements
-                            .take()
-                            .filter(OpenhclIgvmEndorsements::is_complete)
-                            .expect("missing endorsements"),
+                        endorsements: Some(
+                            endorsements
+                                .take()
+                                .filter(OpenhclIgvmEndorsements::is_complete)
+                                .expect("missing endorsements"),
+                        ),
                     },
                     OpenhclIgvmRecipe::Aarch64 => OpenhclIgvmOutput::Aarch64 { igvm_bin },
                     OpenhclIgvmRecipe::Aarch64Devkern => {
@@ -242,9 +294,12 @@ pub enum Vtl0KernelType {
     LocalOnlyCustom(PathBuf),
 }
 
+/// The in-tree manifest directory, relative to the repository root.
+pub const IN_TREE_MANIFESTS_DIR: &str = "vm/loader/manifests";
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum IgvmManifestPath {
-    /// Name of an in-tree manifest (located under `vm/loader/manifests`)
+    /// Name of an in-tree manifest (located under [`IN_TREE_MANIFESTS_DIR`])
     InTree(String),
     /// An absolute path to a custom manifest (for local use only)
     LocalOnlyCustom(PathBuf),
@@ -288,6 +343,7 @@ pub enum OpenhclIgvmRecipe {
     X64,
     X64Devkern,
     X64TestLinuxDirect,
+    X64TestSivm,
     X64TestLinuxDirectDevkern,
     X64Cvm,
     X64CvmDevkern,
@@ -313,6 +369,33 @@ impl ArtifactType for OpenhclIgvmRecipe {
 }
 
 impl OpenhclIgvmRecipe {
+    pub fn common_arch(&self) -> CommonArch {
+        match self {
+            OpenhclIgvmRecipe::X64
+            | OpenhclIgvmRecipe::X64Devkern
+            | OpenhclIgvmRecipe::X64TestLinuxDirect
+            | OpenhclIgvmRecipe::X64TestSivm
+            | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
+            | OpenhclIgvmRecipe::X64Cvm
+            | OpenhclIgvmRecipe::X64CvmDevkern => CommonArch::X86_64,
+            OpenhclIgvmRecipe::Aarch64 | OpenhclIgvmRecipe::Aarch64Devkern => CommonArch::Aarch64,
+        }
+    }
+
+    pub fn uses_dev_kernel(&self) -> bool {
+        match self {
+            Self::X64
+            | Self::X64TestLinuxDirect
+            | Self::X64TestSivm
+            | Self::X64Cvm
+            | Self::Aarch64 => false,
+            Self::X64Devkern
+            | Self::X64TestLinuxDirectDevkern
+            | Self::X64CvmDevkern
+            | Self::Aarch64Devkern => true,
+        }
+    }
+
     pub fn non_production_tag(&self) -> String {
         let mut tag = self.arch().to_string();
         if let Some(flavor) = self.flavor() {
@@ -331,6 +414,7 @@ impl OpenhclIgvmRecipe {
             OpenhclIgvmRecipe::X64 | OpenhclIgvmRecipe::Aarch64 => None,
             OpenhclIgvmRecipe::X64Devkern | OpenhclIgvmRecipe::Aarch64Devkern => Some("devkern"),
             OpenhclIgvmRecipe::X64TestLinuxDirect => Some("test-linux-direct"),
+            OpenhclIgvmRecipe::X64TestSivm => Some("test-sivm"),
             OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => Some("test-linux-direct-devkern"),
             OpenhclIgvmRecipe::X64Cvm => Some("cvm"),
             OpenhclIgvmRecipe::X64CvmDevkern => Some("cvm-devkern"),
@@ -338,14 +422,9 @@ impl OpenhclIgvmRecipe {
     }
 
     fn arch(&self) -> &'static str {
-        match self {
-            OpenhclIgvmRecipe::X64
-            | OpenhclIgvmRecipe::X64Devkern
-            | OpenhclIgvmRecipe::X64TestLinuxDirect
-            | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
-            | OpenhclIgvmRecipe::X64Cvm
-            | OpenhclIgvmRecipe::X64CvmDevkern => "x64",
-            OpenhclIgvmRecipe::Aarch64 | OpenhclIgvmRecipe::Aarch64Devkern => "aarch64",
+        match self.common_arch() {
+            CommonArch::X86_64 => "x64",
+            CommonArch::Aarch64 => "aarch64",
         }
     }
 }
@@ -400,9 +479,15 @@ impl OpenhclIgvmRecipe {
         };
 
         match self {
+            Self::X64TestSivm => {
+                let mut details = Self::X64.recipe_details(release_cfg);
+                details.igvm_manifest =
+                    IgvmManifestPath::InTree("openhcl-x64-test-sivm.toml".into());
+                details
+            }
             Self::X64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
-                igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
+                igvm_manifest: in_repo_template("openhcl-x64-dev.toml", "openhcl-x64-release.toml"),
                 openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
                 target: CommonTriple::X86_64_LINUX_MUSL,
@@ -414,7 +499,7 @@ impl OpenhclIgvmRecipe {
             },
             Self::X64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
-                igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
+                igvm_manifest: in_repo_template("openhcl-x64-dev.toml", "openhcl-x64-release.toml"),
                 openhcl_kernel_package: OpenhclKernelPackage::Dev,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
                 target: CommonTriple::X86_64_LINUX_MUSL,
@@ -427,8 +512,8 @@ impl OpenhclIgvmRecipe {
             Self::X64CvmDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-x64-cvm-dev.json",
-                    "openhcl-x64-cvm-release.json",
+                    "openhcl-x64-cvm-dev.toml",
+                    "openhcl-x64-cvm-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::CvmDev,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -442,8 +527,8 @@ impl OpenhclIgvmRecipe {
             Self::X64TestLinuxDirect => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-x64-direct-dev.json",
-                    "openhcl-x64-direct-release.json",
+                    "openhcl-x64-direct-dev.toml",
+                    "openhcl-x64-direct-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -457,8 +542,8 @@ impl OpenhclIgvmRecipe {
             Self::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-x64-direct-dev.json",
-                    "openhcl-x64-direct-release.json",
+                    "openhcl-x64-direct-dev.toml",
+                    "openhcl-x64-direct-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Dev,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -472,8 +557,8 @@ impl OpenhclIgvmRecipe {
             Self::X64Cvm => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-x64-cvm-dev.json",
-                    "openhcl-x64-cvm-release.json",
+                    "openhcl-x64-cvm-dev.toml",
+                    "openhcl-x64-cvm-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Cvm,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -487,8 +572,8 @@ impl OpenhclIgvmRecipe {
             Self::Aarch64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-aarch64-dev.json",
-                    "openhcl-aarch64-release.json",
+                    "openhcl-aarch64-dev.toml",
+                    "openhcl-aarch64-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Main,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -502,8 +587,8 @@ impl OpenhclIgvmRecipe {
             Self::Aarch64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
-                    "openhcl-aarch64-dev.json",
-                    "openhcl-aarch64-release.json",
+                    "openhcl-aarch64-dev.toml",
+                    "openhcl-aarch64-release.toml",
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Dev,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
@@ -527,6 +612,10 @@ flowey_request! {
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
         pub disable_secure_avic: bool,
+        pub uefi_firmware_flavor: Option<crate::download_uefi_mu_msvm::FirmwareFlavor>,
+        /// Add the confidential debug flag to the measured OpenHCL command
+        /// line, enabling confidential diagnostics on CVM builds.
+        pub confidential_debug: bool,
 
         pub openhcl_igvm: WriteVar<OpenhclIgvmOutput>,
         pub openhcl_igvm_extras: WriteVar<OpenhclIgvmExtrasOutput>,
@@ -562,6 +651,8 @@ impl SimpleFlowNode for Node {
             custom_target,
             extra_features,
             disable_secure_avic,
+            uefi_firmware_flavor,
+            confidential_debug,
             openhcl_igvm,
             openhcl_igvm_extras,
         } = request;
@@ -649,8 +740,11 @@ impl SimpleFlowNode for Node {
             );
 
         let uefi_resource: Option<UefiResource> = with_uefi.then(|| UefiResource {
-            msvm_fd: ctx
-                .reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v }),
+            msvm_fd: ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch,
+                flavor: uefi_firmware_flavor,
+                msvm_fd,
+            }),
         });
 
         let vtl0_kernel_resource = vtl0_kernel_type.map(|typ| {
@@ -899,7 +993,7 @@ impl SimpleFlowNode for Node {
 
         let manifest = match igvm_manifest {
             IgvmManifestPath::InTree(path) => {
-                openvmm_repo_path.map(ctx, |p| p.join("vm/loader/manifests").join(path))
+                openvmm_repo_path.map(ctx, |p| p.join(IN_TREE_MANIFESTS_DIR).join(path))
             }
             IgvmManifestPath::LocalOnlyCustom(p) => ReadVar::from_static(p),
         };
@@ -909,6 +1003,11 @@ impl SimpleFlowNode for Node {
             manifest,
             resources,
             disable_secure_avic,
+            confidential_debug,
+            // Open-source builds embed a temporary-key SNP ID block so the file
+            // launches with `id_block_en = 1`; production pipelines add a
+            // real-key ID block out-of-band instead.
+            add_temp_snp_id_block: true,
             igvm: v,
         });
 
@@ -1000,5 +1099,80 @@ impl Vtl0KernelResource<VarClaimed> {
         let initrd = rt.read(self.initrd);
         resources.insert(ResourceType::LinuxKernel, kernel);
         resources.insert(ResourceType::LinuxInitrd, initrd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    /// Every OpenHCL recipe. Recipes have no built-in list, so the test keeps
+    /// its own; `_all_recipes_listed` keeps it complete.
+    const ALL_RECIPES: [OpenhclIgvmRecipe; 9] = [
+        OpenhclIgvmRecipe::X64,
+        OpenhclIgvmRecipe::X64Devkern,
+        OpenhclIgvmRecipe::X64TestLinuxDirect,
+        OpenhclIgvmRecipe::X64TestSivm,
+        OpenhclIgvmRecipe::X64TestLinuxDirectDevkern,
+        OpenhclIgvmRecipe::X64Cvm,
+        OpenhclIgvmRecipe::X64CvmDevkern,
+        OpenhclIgvmRecipe::Aarch64,
+        OpenhclIgvmRecipe::Aarch64Devkern,
+    ];
+
+    // Fails to compile when a recipe is added, as a reminder to add it to
+    // `ALL_RECIPES`. Without this, a new recipe's manifest would go unchecked.
+    fn _all_recipes_listed(recipe: OpenhclIgvmRecipe) {
+        match recipe {
+            OpenhclIgvmRecipe::X64
+            | OpenhclIgvmRecipe::X64Devkern
+            | OpenhclIgvmRecipe::X64TestLinuxDirect
+            | OpenhclIgvmRecipe::X64TestSivm
+            | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
+            | OpenhclIgvmRecipe::X64Cvm
+            | OpenhclIgvmRecipe::X64CvmDevkern
+            | OpenhclIgvmRecipe::Aarch64
+            | OpenhclIgvmRecipe::Aarch64Devkern => {}
+        }
+    }
+
+    /// Parses an in-tree manifest, failing with the name of the recipe
+    /// that uses it.
+    fn parse_in_tree_manifest(name: &str, user: &str) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(IN_TREE_MANIFESTS_DIR)
+            .join(name);
+        let text = fs_err::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{user}: manifest {name} not found: {error}"));
+        toml_edit::de::from_str::<igvmfilegen_config::Config>(&text)
+            .unwrap_or_else(|error| panic!("{user}: manifest {name} doesn't parse: {error}"));
+    }
+
+    /// Recipes name their manifests as plain strings, which the compiler can't
+    /// check. A misspelled or renamed manifest, such as a recipe still naming
+    /// a `.json` file after the TOML migration, otherwise fails only when that
+    /// recipe is built, possibly in a pipeline that runs rarely. This checks
+    /// every recipe, with and without `--release-cfg`, and the SNP
+    /// Linux-direct test manifest, in seconds.
+    #[test]
+    fn recipe_manifests_exist_and_parse() {
+        for recipe in ALL_RECIPES {
+            for release_cfg in [false, true] {
+                let IgvmManifestPath::InTree(name) =
+                    recipe.recipe_details(release_cfg).igvm_manifest
+                else {
+                    panic!(
+                        "{recipe:?} (release_cfg={release_cfg}) doesn't use an in-tree manifest"
+                    );
+                };
+                parse_in_tree_manifest(&name, &format!("{recipe:?} (release_cfg={release_cfg})"));
+            }
+        }
+        parse_in_tree_manifest(
+            crate::build_snp_linux_direct_igvm::SNP_LINUX_DIRECT_MANIFEST,
+            "build_snp_linux_direct_igvm",
+        );
     }
 }

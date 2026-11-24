@@ -62,10 +62,20 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
         None
     }
 
-    /// Optionally returns a trait object which implements TDISP host
-    /// communication.
+    /// Optionally returns a trait object which advertises that the
+    /// ChipsetDevice can respond to tdisp requests as a physical device (not
+    /// relayed) in the host (openvmm).
     #[inline(always)]
-    fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+    fn supports_tdisp_host(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+        None
+    }
+
+    /// Optionally returns a trait object which advertises that the
+    /// ChipsetDevice is paravirtualizing a device's TDISP interface in the
+    /// guest. This should only be implemented within a guest as part of a
+    /// virtual bus (VPCI, EPCI).
+    #[inline(always)]
+    fn supports_tdisp_relay(&mut self) -> Option<&mut dyn tdisp::TdispRelayedDeviceTarget> {
         None
     }
 }

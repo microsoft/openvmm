@@ -3,14 +3,25 @@
 
 //! Support for loading a TMK into VM memory.
 
+cfg_select! {
+    guest_arch = "x86_64" => {
+        pub use load_x86 as load;
+        use loader::importer::X86Register;
+        use vm_topology::processor::x86::X86Topology;
+        use zerocopy::FromZeros;
+    }
+    guest_arch = "aarch64" => {
+        pub use load_aarch64 as load;
+        use vm_topology::processor::aarch64::Aarch64Topology;
+    }
+}
+
 use anyhow::Context as _;
 use fs_err::File;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use loader::importer::GuestArch;
 use loader::importer::ImageLoad;
-#[cfg(guest_arch = "x86_64")]
-use loader::importer::X86Register;
 use object::Endianness;
 use object::Object;
 use object::ObjectSection;
@@ -20,13 +31,7 @@ use std::sync::Arc;
 use virt::VpIndex;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
-#[cfg(guest_arch = "aarch64")]
-use vm_topology::processor::aarch64::Aarch64Topology;
-#[cfg(guest_arch = "x86_64")]
-use vm_topology::processor::x86::X86Topology;
 use zerocopy::FromBytes as _;
-#[cfg(guest_arch = "x86_64")]
-use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 /// Loads a TMK, returning the initial registers for the BSP.
@@ -176,6 +181,8 @@ struct LoadInfo {
 pub struct TestInfo {
     pub name: String,
     pub index: u64,
+    pub expected_failure: bool,
+    pub linux_only: bool,
 }
 
 /// Enumerate the tests from a TMK binary.
@@ -228,6 +235,8 @@ pub fn enumerate_tests(tmk: &File) -> anyhow::Result<Vec<TestInfo>> {
         tests.push(TestInfo {
             name: name.to_string(),
             index: i as u64,
+            expected_failure: t.flags.expected_failure(),
+            linux_only: t.flags.linux_only(),
         });
     }
 

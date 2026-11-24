@@ -1,9 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod fragments;
+mod limits;
+
 use super::*;
 use pal_async::DefaultDriver;
+use pal_async::DefaultPool;
 use smoltcp::phy::ChecksumCapabilities;
+use smoltcp::wire::DnsQueryType;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::IpProtocol;
@@ -13,16 +18,31 @@ use smoltcp::wire::Ipv6Packet;
 use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::TcpPacket;
 use smoltcp::wire::TcpRepr;
+use smoltcp::wire::UDP_HEADER_LEN;
+use smoltcp::wire::UdpPacket;
+use socket2::Domain;
+use socket2::Socket;
+use socket2::Type;
+use std::net::TcpStream;
+use std::net::UdpSocket;
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::task::Waker;
+use test_with_tracing::test as tracing_test;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 
-struct TestClient {
-    driver: DefaultDriver,
+pub(super) struct TestClient {
+    pub(super) driver: DefaultDriver,
+    pub(super) received_packets: Vec<Vec<u8>>,
 }
 
 impl TestClient {
-    fn new(driver: DefaultDriver) -> Self {
-        Self { driver }
+    pub(super) fn new(driver: DefaultDriver) -> Self {
+        Self {
+            driver,
+            received_packets: Vec::new(),
+        }
     }
 }
 
@@ -31,11 +51,218 @@ impl Client for TestClient {
         &self.driver
     }
 
-    fn recv(&mut self, _data: &[u8], _checksum: &ChecksumState) {}
+    fn recv(&mut self, data: &[u8], _checksum: &ChecksumState) {
+        self.received_packets.push(data.to_vec());
+    }
 
     fn rx_mtu(&mut self) -> usize {
         1514
     }
+}
+
+pub(super) struct DriverThread {
+    thread: std::thread::JoinHandle<()>,
+    exited: mpsc::Receiver<()>,
+}
+
+impl DriverThread {
+    pub(super) fn new() -> (Self, DefaultDriver) {
+        let pool = DefaultPool::new();
+        let driver = pool.driver();
+        let (send, exited) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            pool.run();
+            let _ = send.send(());
+        });
+        (Self { thread, exited }, driver)
+    }
+
+    pub(super) fn join(self) {
+        self.exited
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the old driver thread must exit without dropping Consomme");
+        self.thread.join().unwrap();
+    }
+}
+
+pub(super) struct WakeChannel {
+    waker: Waker,
+    recv: mpsc::Receiver<()>,
+}
+
+impl WakeChannel {
+    pub(super) fn new() -> Self {
+        struct Notify(mpsc::Sender<()>);
+
+        impl futures::task::ArcWake for Notify {
+            fn wake_by_ref(this: &Arc<Self>) {
+                let _ = this.0.send(());
+            }
+        }
+
+        let (send, recv) = mpsc::channel();
+        Self {
+            waker: futures::task::waker(Arc::new(Notify(send))),
+            recv,
+        }
+    }
+
+    pub(super) fn poll(&self, consomme: &mut Consomme, client: &mut TestClient) {
+        consomme
+            .access(client)
+            .poll(&mut Context::from_waker(&self.waker));
+    }
+
+    pub(super) fn wait_for_packet(
+        &self,
+        consomme: &mut Consomme,
+        client: &mut TestClient,
+        matches: impl Fn(&[u8]) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            self.recv
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("the replacement driver must wake the packet poller");
+            self.poll(consomme, client);
+            if client.received_packets.iter().any(|packet| matches(packet)) {
+                return;
+            }
+        }
+    }
+}
+
+fn port_forward_survives_driver_refresh(socket_type: Type, local_ip: IpAddr) {
+    let (old_thread, old_driver) = DriverThread::new();
+    let (new_thread, new_driver) = DriverThread::new();
+    let mut params = ConsommeParams::new().unwrap();
+    params.skip_ipv6_checks = true;
+    params.client_ip_ipv6 = Some("fe80::2".parse().unwrap());
+    params.client_ip_ipv6_routable = Some("2001:db8::2".parse().unwrap());
+    let mut consomme = Consomme::new(params);
+    let mut client = TestClient::new(old_driver);
+    let socket = Socket::new(
+        if local_ip.is_ipv4() {
+            Domain::IPV4
+        } else {
+            Domain::IPV6
+        },
+        socket_type,
+        None,
+    )
+    .unwrap();
+    socket.bind(&SocketAddr::new(local_ip, 0).into()).unwrap();
+    let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+    let guest_port = 7777;
+    let family = if local_ip.is_ipv4() {
+        IpVersion::Ipv4
+    } else {
+        IpVersion::Ipv6
+    };
+    if socket_type == Type::STREAM {
+        consomme
+            .access(&mut client)
+            .bind_tcp_port(socket, guest_port)
+            .unwrap();
+    } else {
+        consomme
+            .access(&mut client)
+            .bind_udp_port(socket, guest_port)
+            .unwrap();
+    }
+
+    let old_wake = WakeChannel::new();
+    old_wake.poll(&mut consomme, &mut client);
+    assert!(client.received_packets.is_empty());
+
+    let send = || {
+        if socket_type == Type::STREAM {
+            let stream = TcpStream::connect_timeout(&host_addr, Duration::from_secs(5)).unwrap();
+            let port = stream.local_addr().unwrap().port();
+            (Some(stream), port)
+        } else {
+            let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).unwrap();
+            socket.send_to(b"forwarded", host_addr).unwrap();
+            (None, socket.local_addr().unwrap().port())
+        }
+    };
+    let matches_packet = |packet: &[u8], source_port| {
+        let frame = EthernetFrame::new_checked(packet).unwrap();
+        let payload = if local_ip.is_ipv4() {
+            &frame.payload()[Ipv4Packet::new_checked(frame.payload())
+                .unwrap()
+                .header_len() as usize..]
+        } else {
+            &frame.payload()[smoltcp::wire::IPV6_HEADER_LEN..]
+        };
+        if socket_type == Type::STREAM {
+            let tcp = TcpPacket::new_checked(payload).unwrap();
+            tcp.syn() && tcp.src_port() == source_port && tcp.dst_port() == guest_port
+        } else {
+            let udp = UdpPacket::new_checked(payload).unwrap();
+            udp.src_port() == source_port
+                && udp.dst_port() == guest_port
+                && udp.payload() == b"forwarded"
+        }
+    };
+
+    // Leave traffic queued on the bound socket while its executor is replaced.
+    let (queued_connection, queued_port) = send();
+    client.driver = new_driver;
+    old_thread.join();
+    consomme.access(&mut client).refresh_driver();
+    consomme.access(&mut client).refresh_driver();
+    let wake = WakeChannel::new();
+    wake.poll(&mut consomme, &mut client);
+    if !client
+        .received_packets
+        .iter()
+        .any(|packet| matches_packet(packet, queued_port))
+    {
+        wake.wait_for_packet(&mut consomme, &mut client, |packet| {
+            matches_packet(packet, queued_port)
+        });
+    }
+
+    client.received_packets.clear();
+    wake.poll(&mut consomme, &mut client);
+    let (new_connection, new_port) = send();
+    wake.wait_for_packet(&mut consomme, &mut client, |packet| {
+        matches_packet(packet, new_port)
+    });
+    if socket_type == Type::STREAM {
+        consomme
+            .access(&mut client)
+            .unbind_tcp_port(family, guest_port)
+            .unwrap();
+    } else {
+        consomme
+            .access(&mut client)
+            .unbind_udp_port(family, guest_port)
+            .unwrap();
+    }
+    drop((queued_connection, new_connection, consomme, client));
+    new_thread.join();
+}
+
+#[tracing_test]
+fn tcp_ipv4_port_forward_survives_driver_refresh() {
+    port_forward_survives_driver_refresh(Type::STREAM, IpAddr::V4(Ipv4Addr::LOCALHOST));
+}
+
+#[tracing_test]
+fn tcp_ipv6_port_forward_survives_driver_refresh() {
+    port_forward_survives_driver_refresh(Type::STREAM, IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
+}
+
+#[tracing_test]
+fn udp_ipv4_port_forward_survives_driver_refresh() {
+    port_forward_survives_driver_refresh(Type::DGRAM, IpAddr::V4(Ipv4Addr::LOCALHOST));
+}
+
+#[tracing_test]
+fn udp_ipv6_port_forward_survives_driver_refresh() {
+    port_forward_survives_driver_refresh(Type::DGRAM, IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
 }
 
 /// Build a minimal TCP SYN packet inside an Ethernet/IPv4 frame.
@@ -472,4 +699,323 @@ fn handle_ipv6_updates_link_local_from_traffic() {
     learn_from_ipv6_traffic(&mut params, second_address);
 
     assert_eq!(params.client_ip_ipv6, Some(second_address));
+}
+
+#[test]
+fn create_virtual_address_allocates_subnet_address() {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+
+    // Expect 10.0.0.254 since the default subnet is 10.0.0/24.
+    let addr = consomme
+        .create_virtual_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .unwrap();
+    assert_eq!(addr, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 254)));
+
+    // Requesting a virtual address for the same destination returns the same
+    // address.
+    let addr_again = consomme
+        .create_virtual_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .unwrap();
+    assert_eq!(addr, addr_again);
+
+    // Validate that a different destination gets a different address.
+    let other = consomme
+        .create_virtual_address(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)))
+        .unwrap();
+    assert_eq!(other, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 253)));
+}
+
+#[test]
+fn create_virtual_address_allocates_ipv6_link_local() {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+
+    let addr = consomme
+        .create_virtual_address(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))
+        .unwrap();
+    // IPv6 virtual addresses are allocated from the fe80::ff:fe00:NNNN:1 range.
+    assert_eq!(
+        addr,
+        IpAddr::V6(std::net::Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 0x00ff, 0xfe00, 0x0001, 0x0001
+        ))
+    );
+}
+
+/// Build a DNS `A`-record query for `name` (transaction id `id`, RD=1).
+fn build_dns_a_query(id: u16, name: &str) -> Vec<u8> {
+    dns_resolver::build_query(id, name, DnsQueryType::A)
+}
+
+/// Build an Ethernet/IPv4/UDP frame carrying `dns_payload` from the guest to
+/// the gateway's DNS port (53). Returns the total frame length.
+fn build_ipv4_dns_query(
+    buf: &mut [u8],
+    src_mac: EthernetAddress,
+    dst_mac: EthernetAddress,
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+    src_port: u16,
+    dns_payload: &[u8],
+) -> usize {
+    let mut eth = EthernetFrame::new_unchecked(buf);
+    eth.set_src_addr(src_mac);
+    eth.set_dst_addr(dst_mac);
+    eth.set_ethertype(EthernetProtocol::Ipv4);
+
+    let ip_repr = Ipv4Repr {
+        src_addr: src_ip,
+        dst_addr: dst_ip,
+        next_header: IpProtocol::Udp,
+        payload_len: UDP_HEADER_LEN + dns_payload.len(),
+        hop_limit: 64,
+    };
+    let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
+    ip_repr.emit(&mut ipv4, &ChecksumCapabilities::default());
+
+    let mut udp = UdpPacket::new_unchecked(ipv4.payload_mut());
+    udp.set_src_port(src_port);
+    udp.set_dst_port(DNS_PORT);
+    udp.set_len((UDP_HEADER_LEN + dns_payload.len()) as u16);
+    udp.payload_mut().copy_from_slice(dns_payload);
+    udp.fill_checksum(&src_ip.into(), &dst_ip.into());
+
+    ETHERNET_HEADER_LEN + ipv4.total_len() as usize
+}
+
+/// A [`Client`] that records every frame consomme delivers to the guest.
+struct CapturingClient {
+    driver: DefaultDriver,
+    received: Vec<Vec<u8>>,
+}
+
+impl CapturingClient {
+    fn new(driver: DefaultDriver) -> Self {
+        Self {
+            driver,
+            received: Vec::new(),
+        }
+    }
+}
+
+impl Client for CapturingClient {
+    fn driver(&self) -> &dyn Driver {
+        &self.driver
+    }
+
+    fn recv(&mut self, data: &[u8], _checksum: &ChecksumState) {
+        self.received.push(data.to_vec());
+    }
+
+    fn rx_mtu(&mut self) -> usize {
+        1514
+    }
+}
+
+/// End to end validation for a static DNS A record.
+#[pal_async::async_test]
+async fn static_dns_a_record_answered(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme
+        .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
+        .unwrap();
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac;
+    let guest_ip = consomme.params_mut().client_ip;
+    let gateway_ip = consomme.params_mut().gateway_ip;
+
+    let query = build_dns_a_query(0x1234, "example.com");
+    let query_src_port = 40000u16;
+    let mut buf = vec![0u8; 1514];
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        gateway_ip,
+        query_src_port,
+        &query,
+    );
+
+    let mut client = CapturingClient::new(driver);
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("static DNS query should be handled");
+
+    // Exactly one response frame should have been delivered to the guest.
+    assert_eq!(client.received.len(), 1, "expected one DNS response frame");
+
+    // Parse the Ethernet/IPv4/UDP framing back off the wire.
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    assert_eq!(eth.ethertype(), EthernetProtocol::Ipv4);
+    assert_eq!(eth.src_addr(), gateway_mac);
+    assert_eq!(eth.dst_addr(), guest_mac);
+
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    assert_eq!(ipv4.next_header(), IpProtocol::Udp);
+    assert_eq!(ipv4.src_addr(), gateway_ip);
+    assert_eq!(ipv4.dst_addr(), guest_ip);
+
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    assert_eq!(udp.src_port(), DNS_PORT, "answered from the DNS port");
+    assert_eq!(
+        udp.dst_port(),
+        query_src_port,
+        "back to the query source port"
+    );
+
+    // Validate the DNS answer itself.
+    let dns = udp.payload();
+    assert_eq!(&dns[0..2], &[0x12, 0x34], "transaction id echoed");
+    assert_eq!(dns[2], 0x85, "QR + AA + RD set");
+    assert_eq!(dns[3], 0x80, "RA set, RCODE 0");
+    assert_eq!(
+        u16::from_be_bytes([dns[6], dns[7]]),
+        1,
+        "exactly one answer"
+    );
+    assert_eq!(&dns[dns.len() - 4..], &[10, 0, 0, 5], "answer address");
+    assert_eq!(
+        u16::from_be_bytes([dns[dns.len() - 6], dns[dns.len() - 5]]),
+        4,
+        "RDLENGTH == 4"
+    );
+}
+
+#[pal_async::async_test]
+async fn static_dns_aaaa_query_answered_without_data(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme.dns =
+        dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+    consomme
+        .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
+        .unwrap();
+
+    let query = dns_resolver::build_query(0x1234, "example.com", DnsQueryType::Aaaa);
+    let mut buf = vec![0u8; 1514];
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        consomme.params_mut().client_mac,
+        consomme.params_mut().gateway_mac,
+        consomme.params_mut().client_ip,
+        consomme.params_mut().gateway_ip,
+        40000,
+        &query,
+    );
+    let mut client = CapturingClient::new(driver);
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("static AAAA query should be handled locally");
+
+    assert_eq!(client.received.len(), 1);
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    let response = udp.payload();
+    assert_eq!(&response[..2], &query[..2]);
+    assert_eq!(&response[2..4], &[0x85, 0x80]);
+    assert_eq!(&response[4..6], &[0, 1]);
+    assert_eq!(&response[6..12], &[0; 6]);
+    assert_eq!(&response[12..], &query[12..]);
+}
+
+/// Static records are still inspected when the platform resolver backend is
+/// unavailable and the guest is using the advertised external DNS server.
+#[pal_async::async_test]
+async fn static_dns_fallback_intercepts_matches_only(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme.dns =
+        dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+    consomme
+        .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
+        .unwrap();
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac;
+    let guest_ip = consomme.params_mut().client_ip;
+    let dns_ip = Ipv4Address::new(192, 0, 2, 53);
+    consomme.params_mut().nameservers = vec![dns_ip.into()];
+    let mut client = CapturingClient::new(driver);
+    consomme.access(&mut client).update_dns_nameservers();
+    assert_eq!(consomme.params_mut().nameservers, vec![dns_ip.into()]);
+
+    let mut buf = vec![0u8; 1514];
+
+    let query = build_dns_a_query(0x1234, "example.com");
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        dns_ip,
+        40000,
+        &query,
+    );
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("matching static DNS query should be handled locally");
+
+    assert_eq!(client.received.len(), 1);
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    assert_eq!(ipv4.src_addr(), dns_ip);
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    assert_eq!(udp.payload()[3] & 0x0f, 0);
+    assert_eq!(u16::from_be_bytes([udp.payload()[6], udp.payload()[7]]), 1);
+}
+
+/// A gateway-destined DNS query is answered with SERVFAIL when there is no
+/// resolver backend and no matching static record.
+#[pal_async::async_test]
+async fn dns_static_miss_without_backend_returns_servfail(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme.dns =
+        dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac;
+    let guest_ip = consomme.params_mut().client_ip;
+    let gateway_ip = consomme.params_mut().gateway_ip;
+
+    let query = build_dns_a_query(0x5678, "missing.example");
+    let query_src_port = 40001u16;
+    let mut buf = vec![0u8; 1514];
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        gateway_ip,
+        query_src_port,
+        &query,
+    );
+
+    let mut client = CapturingClient::new(driver);
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("DNS query should be handled locally");
+
+    assert_eq!(client.received.len(), 1, "expected one DNS response frame");
+
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    assert_eq!(eth.src_addr(), gateway_mac);
+    assert_eq!(eth.dst_addr(), guest_mac);
+
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    assert_eq!(ipv4.src_addr(), gateway_ip);
+    assert_eq!(ipv4.dst_addr(), guest_ip);
+
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    assert_eq!(udp.src_port(), DNS_PORT);
+    assert_eq!(udp.dst_port(), query_src_port);
+
+    let dns = udp.payload();
+    assert_eq!(&dns[0..2], &[0x56, 0x78], "transaction id echoed");
+    assert_eq!(dns[2] & 0x80, 0x80, "response bit set");
+    assert_eq!(dns[3] & 0x0f, 2, "SERVFAIL response code");
+    assert_eq!(u16::from_be_bytes([dns[6], dns[7]]), 0, "no answers");
 }

@@ -15,25 +15,24 @@
     symcrypt
 ))]
 
-#[cfg(openssl)]
-mod ossl;
-#[cfg(openssl)]
-use ossl as sys;
-
-#[cfg(all(native, windows))]
-mod win;
-#[cfg(all(native, windows))]
-use win as sys;
-
-#[cfg(all(native, target_os = "macos"))]
-mod mac;
-#[cfg(all(native, target_os = "macos"))]
-use mac as sys;
-
-#[cfg(any(rust, symcrypt))]
-mod symcrypt_rust;
-#[cfg(any(rust, symcrypt))]
-use symcrypt_rust as sys;
+cfg_select! {
+    openssl => {
+        mod ossl;
+        use ossl as sys;
+    }
+    all(native, windows) => {
+        mod win;
+        use win as sys;
+    }
+    all(native, target_os = "macos") => {
+        mod mac;
+        use mac as sys;
+    }
+    any(rust, symcrypt) => {
+        mod symcrypt_rust;
+        use symcrypt_rust as sys;
+    }
+}
 
 use crate::x509::X509Certificate;
 use thiserror::Error;
@@ -44,13 +43,13 @@ pub struct Pkcs7SignedData(sys::Pkcs7SignedDataInner);
 /// An error for PKCS#7 operations.
 #[cfg(not(rust))]
 #[derive(Clone, Debug, Error)]
-#[error("PKCS#7 error")]
+#[error("PKCS#7 operation failed")]
 pub struct Pkcs7Error(#[source] super::BackendError);
 
 /// An error for PKCS#7 operations.
 #[cfg(rust)]
 #[derive(Clone, Debug, Error)]
-#[error("PKCS#7 error during {1}")]
+#[error("PKCS#7 operation failed while {1}")]
 pub struct Pkcs7Error(#[source] der::Error, &'static str);
 
 /// An error encountered while verifying a PKCS#7 signed data object.
@@ -58,14 +57,17 @@ pub struct Pkcs7Error(#[source] der::Error, &'static str);
 #[derive(Debug, Error)]
 pub enum Pkcs7VerifyError {
     /// A PKCS#7 parsing or structural error.
-    #[error("PKCS#7 error")]
+    #[error("failed to process the PKCS#7 signed data")]
     Pkcs7(#[from] Pkcs7Error),
     /// An RSA signature verification error.
-    #[error("RSA error")]
+    #[error("failed to verify a signature")]
     Rsa(#[from] crate::rsa::RsaError),
     /// An X.509 certificate error.
-    #[error("X509 error")]
+    #[error("failed to process a certificate")]
     X509(#[from] crate::x509::X509Error),
+    /// An X.509 certificate signature verification error.
+    #[error("failed to verify a certificate signature")]
+    X509Verify(#[from] crate::x509::X509VerifyError),
 }
 
 impl Pkcs7SignedData {
@@ -134,6 +136,8 @@ fn verify_inner(
 
 /// Shared UEFI PKCS#7 verification flow.
 ///
+/// Only RSA signer and issuer keys are supported.
+///
 /// 1. Require exactly one signer.
 /// 2. Verify the signer's signature over the detached content.
 /// 3. Walk the chain starting at the signer cert: at each step, succeed
@@ -146,11 +150,14 @@ fn verify_inner(
     signed_content: &[u8],
 ) -> Result<bool, Pkcs7VerifyError> {
     let (signer, signature) = p7.signer_cert_sig()?;
-    if !signer.public_key()?.pkcs1_verify(
-        signed_content,
-        &signature,
-        crate::HashAlgorithm::Sha256,
-    )? {
+    // This backend only verifies RSA signatures. A signer key that cannot be
+    // extracted (unsupported key type or backend failure) or is not RSA is a
+    // verification failure, returned as `Ok(false)` per `verify_uefi`'s
+    // documented contract rather than surfaced as an error.
+    let Some(signer_key) = signer.public_key().ok().and_then(|key| key.rsa()) else {
+        return Ok(false);
+    };
+    if !signer_key.pkcs1_verify(signed_content, &signature, crate::HashAlgorithm::Sha256)? {
         return Ok(false);
     }
 
@@ -183,15 +190,23 @@ fn verify_inner(
 
         for trusted in trusted_certs {
             let trusted_id = make_id(trusted)?;
-            if trusted_id == current_id
-                || (trusted.issued(current)? && current.verify(&trusted.public_key()?)?)
-            {
+            let issuer_verifies = trusted.issued(current)?
+                && match trusted.public_key()?.rsa() {
+                    Some(key) => current.verify(&crate::x509::X509PublicKey::Rsa(key))?,
+                    None => false,
+                };
+            if trusted_id == current_id || issuer_verifies {
                 return Ok(true);
             }
         }
 
         for candidate in &embedded {
-            if candidate.issued(current)? && current.verify(&candidate.public_key()?)? {
+            let issuer_verifies = candidate.issued(current)?
+                && match candidate.public_key()?.rsa() {
+                    Some(key) => current.verify(&crate::x509::X509PublicKey::Rsa(key))?,
+                    None => false,
+                };
+            if issuer_verifies {
                 current = candidate;
                 continue 'outer;
             }
@@ -205,6 +220,7 @@ fn verify_inner(
 mod tests {
     use super::*;
     use crate::rsa::RsaKeyPair;
+    use crate::x509::X509SelfSignedOptions;
 
     /// The detached content used by the cross-backend verification tests.
     const SIGNED_CONTENT: &[u8] = b"openvmm pkcs7 cross-backend test data";
@@ -214,15 +230,7 @@ mod tests {
     /// rather than reading them from disk.
     fn make_fixture() -> (X509Certificate, Pkcs7SignedData) {
         let key = RsaKeyPair::generate(2048).unwrap();
-        let cert = X509Certificate::build_self_signed(
-            &key,
-            "US",
-            "WA",
-            "Redmond",
-            "OpenVMM Test",
-            "pkcs7.test.openvmm",
-        )
-        .unwrap();
+        let cert = X509Certificate::build_self_signed((&key).into(), &Default::default()).unwrap();
         let p7 = Pkcs7SignedData::sign(&cert, &key, SIGNED_CONTENT).unwrap();
         (cert, p7)
     }
@@ -290,12 +298,11 @@ mod tests {
         let (cert, p7) = make_fixture();
         let key = RsaKeyPair::generate(2048).unwrap();
         let other = X509Certificate::build_self_signed(
-            &key,
-            "US",
-            "WA",
-            "Redmond",
-            "Other",
-            "other.test.openvmm",
+            (&key).into(),
+            &X509SelfSignedOptions {
+                common_name: "other.test.openvmm",
+                ..Default::default()
+            },
         )
         .unwrap();
         let certs = vec![other, cert];
@@ -310,12 +317,11 @@ mod tests {
         let (_cert, p7) = make_fixture();
         let key = RsaKeyPair::generate(2048).unwrap();
         let other = X509Certificate::build_self_signed(
-            &key,
-            "US",
-            "WA",
-            "Redmond",
-            "Other",
-            "other.test.openvmm",
+            (&key).into(),
+            &X509SelfSignedOptions {
+                common_name: "other.test.openvmm",
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_verify_rejected(p7.verify_uefi(&[other], SIGNED_CONTENT));
@@ -325,15 +331,7 @@ mod tests {
     #[test]
     fn sign_verify_roundtrip() {
         let key = RsaKeyPair::generate(2048).unwrap();
-        let cert = X509Certificate::build_self_signed(
-            &key,
-            "US",
-            "WA",
-            "Redmond",
-            "Roundtrip",
-            "roundtrip.test.openvmm",
-        )
-        .unwrap();
+        let cert = X509Certificate::build_self_signed((&key).into(), &Default::default()).unwrap();
         let content = b"hello pkcs7 roundtrip";
         let p7 = Pkcs7SignedData::sign(&cert, &key, content).unwrap();
         assert!(p7.verify_uefi(&[cert], content).unwrap());
@@ -344,23 +342,15 @@ mod tests {
     #[test]
     fn sign_verify_rejects_wrong_store() {
         let signer_key = RsaKeyPair::generate(2048).unwrap();
-        let signer_cert = X509Certificate::build_self_signed(
-            &signer_key,
-            "US",
-            "WA",
-            "Redmond",
-            "Signer",
-            "signer.test.openvmm",
-        )
-        .unwrap();
+        let signer_cert =
+            X509Certificate::build_self_signed((&signer_key).into(), &Default::default()).unwrap();
         let other_key = RsaKeyPair::generate(2048).unwrap();
         let other_cert = X509Certificate::build_self_signed(
-            &other_key,
-            "US",
-            "WA",
-            "Redmond",
-            "Other",
-            "other.test.openvmm",
+            (&other_key).into(),
+            &X509SelfSignedOptions {
+                common_name: "other.test.openvmm",
+                ..Default::default()
+            },
         )
         .unwrap();
         let content = b"wrong-store content";

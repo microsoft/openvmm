@@ -131,7 +131,7 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let version = version.expect("local requests handled above");
+        let version = version.context("missing config: version")?;
 
         let tag = format!("v{version}");
         let file_name = format!(

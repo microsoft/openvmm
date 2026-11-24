@@ -13,7 +13,7 @@ vmcore.workspace = true
 virt.workspace = true
 x86defs.workspace = true
 
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 inspect_counters.workspace = true
 test_with_tracing.workspace = true
 tracelimit.workspace = true

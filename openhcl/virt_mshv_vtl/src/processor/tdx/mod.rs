@@ -478,8 +478,9 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
         state.update_deadline = 0;
     }
 
-    /// Synchronize armed deadline state in the processor context.
-    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
+    fn begin_vtl_transition(&self, _vp: &mut UhProcessor<'_, TdxBacked>, _vtl: GuestVtl) {}
+
+    fn end_vtl_transition(&self, vp: &mut UhProcessor<'_, TdxBacked>, _vtl: GuestVtl) {
         let vp_state = vp
             .backing
             .tsc_deadline_state
@@ -558,6 +559,7 @@ struct TdxVtl {
 pub struct TdxEmulationCache {
     segs: [Option<SegmentRegister>; 6],
     cr0: Option<u64>,
+    cr4: Option<u64>,
 }
 
 #[derive(Inspect, Default)]
@@ -993,9 +995,11 @@ impl hv1_emulator::VtlProtectAccess for UntrustedSynicVtlProts<'_> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
+        // Overlay pages are written through the returned locked pages, so lock
+        // them for write.
         self.0
-            .lock_gpns(false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
             .map_err(|_| HvError::OperationFailed)
     }
 
@@ -1733,6 +1737,8 @@ impl UhProcessor<'_, TdxBacked> {
 
         *self.runner.offload_flags_mut() = offload_flags;
 
+        self.shared.guest_timer.begin_vtl_transition(self, next_vtl);
+
         self.runner
             .write_private_regs(&self.backing.vtls[next_vtl].private_regs);
 
@@ -1750,8 +1756,9 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
 
-        // Synchronize timer deadline state
-        self.shared.guest_timer.sync_deadline_state(self);
+        self.shared
+            .guest_timer
+            .end_vtl_transition(self, entered_from_vtl);
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {
@@ -2117,7 +2124,7 @@ impl UhProcessor<'_, TdxBacked> {
 
                     UhHypercallHandler::TDX_DISPATCHER.dispatch(
                         guest_memory,
-                        hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
+                        hv1_hypercall::X64RegisterIo::new(handler, is_64bit, true),
                     );
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.vmcall
@@ -2840,6 +2847,8 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn write_msr_tdx(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
+        hardware_cvm::validate_cvm_msr_write(msr, value, &self.partition.caps.xsave)?;
+
         let state = &mut self.backing.vtls[vtl].private_regs;
 
         match msr {
@@ -3030,6 +3039,13 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             .cr0
             .get_or_insert_with(|| self.vp.backing.vtls[self.vtl].cr0.read(&self.vp.runner));
         *reg
+    }
+
+    fn cr4(&mut self) -> u64 {
+        *self
+            .cache
+            .cr4
+            .get_or_insert_with(|| self.vp.backing.vtls[self.vtl].cr4.read(&self.vp.runner))
     }
 
     fn rflags(&mut self) -> RFlags {
@@ -4184,6 +4200,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         Err(vp_state::Error::Unimplemented("tsc"))
     }
 
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
+    }
+
+    fn set_tsc_deadline(&mut self, _value: &vp::TscDeadline) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
+    }
+
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {
         Ok(vp::TscAux {
             value: self.vp.backing.vtls[self.vtl].private_regs.msr_tsc_aux,
@@ -4273,9 +4297,7 @@ fn top_vector(reg: &[ApicRegisterValue; 8]) -> u8 {
     reg.iter()
         .enumerate()
         .rev()
-        .find_map(|(i, r)| {
-            (r.value != 0).then(|| (i as u32 * 32 + (31 - r.value.leading_zeros())) as u8)
-        })
+        .find_map(|(i, r)| r.value.highest_one().map(|bit| (i as u32 * 32 + bit) as u8))
         .unwrap_or(0)
 }
 
@@ -4360,7 +4382,7 @@ impl HypercallIo for TdHypercall<'_, '_> {
 impl hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, TdxBacked> {
     fn advance_ip(&mut self) {
         let long_mode = self.vp.long_mode(self.intercepted_vtl);
-        let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode);
+        let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode, true);
         io.advance_ip();
     }
 

@@ -1,12 +1,23 @@
 # CLI
 
-```admonish danger title="Disclaimer"
-The following list is not exhaustive, and may be out of date.
-
-The most up to date reference is always the [code itself](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html),
-as well as the generated CLI help (via `cargo run -- --help`).
+```admonish note title="CLI compatibility and reference"
+The CLI is not a stable compatibility interface and may change between
+releases. This page summarizes OpenVMM's command-line options. The generated
+`openvmm --help` output is authoritative for the binary being run, and the
+[`Options` rustdoc](https://openvmm.dev/rustdoc/linux/openvmm_entry/struct.Options.html)
+describes the source definitions.
 ```
 
+* `--version`, `-V`: Print the OpenVMM build identity and exit. `-V` prints
+  the concise identity. `--version` also prints the upstream product version,
+  full Git revision when available, and build target. An ordinary checkout
+  reports `MAJOR.MINOR.PATCH+g<SHORT_REVISION>`. This includes an exact
+  checkout of an `openvmm-vMAJOR.MINOR.PATCH` release tag. A checkout detected
+  with tracked changes appends `.dirty`; staged changes refresh this reliably,
+  while an unstaged-only transition may remain cached until another
+  build-script input changes. A Git-free source tree reports
+  `MAJOR.MINOR.PATCH`. On Windows, the executable's `VERSIONINFO` uses the
+  product version as `MAJOR.MINOR.PATCH.0`.
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
@@ -16,20 +27,27 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory size=4G,shared=on,prefetch=off
   ```
 
+  The keys below select the guest RAM **memory backing**. For an explanation
+  of shared vs. private memory, prefetch, huge pages, and file-backed RAM —
+  and how to choose between them — see
+  [Memory Backing](../../architecture/openvmm/memory-backing.md).
+
   Supported keys:
   * `size=<SIZE>` - guest RAM size. Sizes accept `K`, `M`, `G`, and
     `T` suffixes, optionally followed by `B`.
-  * `shared=on|off` - use shared file-backed guest RAM. The default is
+  * `shared[=on|off]` - use shared file-backed guest RAM. The default is
     `on`; `off` uses private anonymous memory.
-  * `prefetch=on|off` - pre-populate shared guest RAM mappings.
-  * `thp=on|off` - mark private guest RAM as Transparent Huge Page
-    eligible. Requires `shared=off`.
-  * `hugepages=on|off` - allocate guest RAM from Linux hugetlb pages.
-    This is Linux-only, requires shared memory, and cannot be combined
-    with file-backed memory or PCAT/legacy x86 RAM splitting.
-  * `hugepage_size=<SIZE>` - request a specific hugetlb page size, such
-    as `2MB` or `1GB`. Requires `hugepages=on`; if omitted,
-    OpenVMM uses 2 MB pages.
+  * `prefetch[=on|off]` - pre-populate guest RAM mappings up front.
+    Only has an effect under WHP; a no-op on KVM/mshv.
+  * `thp[=on|off]` - mark guest RAM (shared or private) as Transparent Huge
+    Page eligible. Linux-only, best-effort, and on by default; pass `thp=off` to
+    opt out.
+  * `hugepages[=on|off]` - allocate guest RAM from explicit large/huge pages
+    (Linux hugetlb pages or a Windows `SEC_LARGE_PAGES` section). Requires
+    shared memory.
+  * `hugepage_size=<SIZE>` - request a specific large-page size, such
+    as `2MB` or `1GB`. Requires `hugepages=on`; defaults to 2 MB. On
+    Windows only 2 MB is supported.
   * `file=<PATH>` - use an existing file as the guest RAM backing file.
     This is used by snapshots.
 
@@ -39,11 +57,18 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory 4G
   --memory size=64GB,hugepages=on,hugepage_size=2MB
   --memory size=4G,file=path/to/memory.bin
-  --memory size=4G,shared=off,thp=on
+  --memory size=4G,thp=off
   ```
+* `--restore-snapshot <DIR>`: Restore RAM and device state from a snapshot.
+  Pass the same boot and device flags used at save time. Uses
+  `<DIR>/memory.bin` and conflicts with explicit memory backing files.
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
   enlightenments.
+* `--no-hv`: Boots AArch64 UEFI without exposing Hyper-V enlightenments.
+  By default, UEFI exposes the enlightenments. This option requires
+  `--no-vmbus`, is not supported for x86_64 UEFI, and conflicts with `--hv`,
+  `--vtl2`, `--get`, and `--pcat`.
 * `--no-vmbus`: Disables the VMBus server and all VMBus devices, even when
   `--hv` or `--uefi` is active. The guest boots using only standard PCIe
   devices and virtio transports. Incompatible with `--disk`, `--pcat`,
@@ -66,30 +91,118 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --hypervisor whp:user_mode_apic,no_enlightenments
   --hypervisor kvm
   ```
+* `--isolation <MODE>`: Enable a confidential or isolated VM mode.
+  Supported modes include `vbs` and, for `x86_64` guests on KVM or MSHV,
+  `snp`.
+
+  SNP support is currently limited to Linux direct boot and is intended for
+  bring-up. It supports either loader-based kernel/initrd boot or an SNP IGVM
+  selected with `--igvm firmware=<FILE>,personality=linux-direct`.
+  MSHV SNP can expose Hyper-V
+  enlightenments with `--hv --no-vmbus`; VMBus devices remain unsupported.
+  KVM SNP does not support Hyper-V enlightenments.
+  The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
+
+  For SNP Linux-direct IGVM images, see
+  [SEV-SNP IGVM Boot](../../devices/firmware/linux_direct.md#sev-snp-igvm-boot).
+
+  SNP does not support UEFI, VTL2, or hugetlb-backed memory. In addition to
+  the minimal emulated chipset and serial console, optional devices are
+  limited to virtio devices attached through PCIe.
+
+  A minimal MSHV IGVM invocation is:
+
+  ```bash
+  openvmm --hypervisor mshv --isolation snp \
+    --igvm firmware=path/to/snp-linux-direct.bin,personality=linux-direct \
+    --com1 console \
+    --hv --no-vmbus -m 160MB -p 1
+  ```
+* `--snp-restricted-injection`: Enable restricted interrupt injection in the
+  MSHV partition and loader-generated SNP VMSA. This is only supported on mshv
+  today.
+* `--hypervisor mshv:snp_disable_cpuid_offload=true`: Disable MSHV handling of
+  SNP GHCB CPUID requests so they are forwarded to OpenVMM. The default is
+  offloading enabled. This diagnostic parameter is meaningful only with
+  `--isolation snp`.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
-  and only by backends that support nested virtualization (currently WHP and
-  KVM); requesting it with a backend that does not support it fails early. The
-  host must expose virtualization extensions to the VM running OpenVMM. When
-  enabled, a guest may detect nested virtualization and turn on features such
-  as Virtual Secure Mode (VSM), which can hurt performance and interfere with
-  VMBus devices; nested virt cannot currently be combined with `--hv`/VMBus or
+  and only by backends that support nested virtualization (currently WHP,
+  KVM, and MSHV); requesting it with a backend that does not support it fails
+  early.
+  The host must expose virtualization extensions to the VM running OpenVMM.
+  When enabled, a guest may detect nested virtualization and turn on features
+  such as Virtual Secure Mode (VSM), which can hurt performance and interfere
+  with VMBus devices; nested virt cannot currently be combined with
+  `--hv`/VMBus or
   `--hypervisor whp:user_mode_apic`.
-* `--uefi`: Boot using `mu_msvm` UEFI
-* `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
+* `--uefi [OPTIONS]`: Boot using `mu_msvm` UEFI. Options are comma-separated:
+  * `firmware=<FILE>`: Path to the UEFI firmware file (`MSVM.fd`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE`, then from `X86_64_OPENVMM_UEFI_FIRMWARE` or `AARCH64_OPENVMM_UEFI_FIRMWARE`.
+  * `debug`: Enable UEFI debugging on COM1.
+  * `enable_memory_protections`: Enable UEFI memory protections.
+  * `force_dma_bounce`: Force UEFI to bounce-buffer all DMA traffic.
+  * `force_firmware_version`: Continue when a present version record is malformed or declares an incompatible interface version. A missing record only produces a warning.
+  * `disable_frontpage`: Shut down instead of showing the UEFI front page.
+  * `console=<default|com1|com2|none>`: Select the UEFI console.
+  * `diagnostics=<default|info|full>`: Select the EFI diagnostics log level.
+  * `default_boot_always_attempt`: Attempt the default boot path even if configured boot entries exist and fail.
+
+  With IGVM `personality=openhcl`, `--uefi` configures the UEFI firmware
+  that OpenHCL loads into VTL0. All options except `firmware` and
+  `force_firmware_version` are supported in this mode. Those options apply
+  only when OpenVMM loads an external firmware image and are rejected with
+  `--igvm`. Explicit non-VTL2 IGVM personalities do not accept `--uefi`.
+
+  The previous standalone UEFI options remain accepted but are deprecated.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
+* `--igvm <OPTIONS>`: Boot from an IGVM file. Options are comma-separated:
+  * `firmware=<FILE>`: Path to the IGVM file.
+  * `personality=<openhcl|uefi|linux-direct>`: Select the chipset and device
+    shape for the IGVM boot.
+
+  Both options are required; neither has a default. For example:
+
+  ```bash
+  openvmm --hv --vtl2 \
+    --igvm firmware=path/to/openhcl.igvm,personality=openhcl
+  ```
+
+  The personality does not select the isolation platform. Use `--isolation`
+  separately when required by the IGVM.
+
+  The `uefi` personality uses the Gen2 device shape, but firmware is loaded
+  from the IGVM. It does not select the normal external-UEFI load path. The
+  `linux-direct` personality enables Hyper-V enlightenments only when `--hv`
+  is also specified. The UEFI personality requires Hyper-V enlightenments and
+  fails explicitly on backend and isolation combinations that cannot provide
+  them.
+
+  The `openhcl` personality hosts the OpenHCL paravisor in VTL2 and requires
+  explicit `--hv --vtl2`. OpenHCL loads the VTL0 firmware; OpenVMM does not
+  add a host UEFI device. You can pass `--uefi` settings for the firmware
+  loaded by OpenHCL.
+
+  On x86, the IGVM device tree describes only some COM ports. See
+  [Device Tree](../../architecture/openvmm/device-tree.md).
+* `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
+  `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
+  are also accepted.
 * `--vmbus-scsi id=<name>[,sub_channels=<N>][,vtl2]`: Creates a
   named VMBus SCSI controller. Use with `--disk ...,on=<name>` to
   attach disks.
 * `--disk file:<DISK>,on=<name>`: Attaches a disk to the named
   controller. The `DISK` argument can be:
   * A flat binary disk image
-  * A VHD file with an extension of .vhd (Windows host only)
-  * A VHDX file with an extension of .vhdx (Windows host only)
+  * A fixed VHD1 file with a `.vhd` extension on any supported host
+  * A dynamic or differencing VHD1 file with a `.vhd` extension on Windows
+  * A VHDX file with a `.vhdx` extension
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
   bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,on=scsi0`.
+  OpenVMM selects VHD handling from the file extension. Fixed VHD1 disks
+  require the default cached I/O mode on every host. VHDX disks also require
+  cached I/O on Linux.
 * `--numa <PARAMS>`: Configure a guest NUMA node (repeatable, one per
   node). Mutually exclusive with `--memory`. Each `--numa` specifies one
   guest NUMA node with its own memory backing and optional VP assignment.
@@ -127,6 +240,19 @@ as well as the generated CLI help (via `cargo run -- --help`).
   `--memory-backing-file <PATH>`: Deprecated aliases for `--memory`
   parameters. Prefer `shared=off`, `prefetch=on`, `thp=on`, and
   `file=<PATH>`.
+* `--smbios <PARAMS>`: Override the SMBIOS (DMI) identity reported to the
+  guest (repeatable), using `type=N,key=value[,key=value...]`.
+  Type 0 supports `vendor`, `version`, `date`, and `release`; Type 1 supports
+  `manufacturer`, `product`, `version`, `serial`, `uuid`, `sku`, and `family`.
+  Use `uuid=random` to generate a per-VM system UUID.
+
+  OpenVMM Linux direct boot supports both types. OpenHCL Linux direct and UEFI
+  support Type 1 only. PCAT supports only Type 1 `serial` and `uuid`.
+  Unsupported fields are rejected.
+
+  ```bash
+  --smbios type=1,manufacturer=Contoso,product="Virtual Machine"
+  ```
 * `--pidfile <PATH>`: Write the process ID to the specified file on startup,
   and remove it on clean exit. If the process is killed with `SIGKILL` or
   crashes, the pidfile is not removed — consumers should verify the PID is
@@ -148,10 +274,39 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--virtio-fs`: Expose a virtio-fs file system. The format is the same as `--virtio-9p`. The
   file system can be mounted in a Linux guest using `mount -t virtiofs tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
+* `--virtio-fs-bus <BUS>`: Select the bus for `--virtio-fs` and
+  `--virtio-fs-shmem` devices. Accepted values are `auto`, `mmio`, `pci`,
+  `pcie:PORT`, and `vpci`. Defaults to `auto`. A `pcie_port` prefix on either
+  device option overrides this setting. Each PCIe port may be assigned to only
+  one device, whether selected by `pcie:PORT` or a `pcie_port` prefix.
 * `--virtio-rng`: Add a virtio entropy (RNG) device, exposing `/dev/hwrng` in the Linux guest.
   The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
-* `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
-  Defaults to `auto`.
+* `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device. Accepted
+  values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
+  `auto`. `--virtio-rng-pcie-port` overrides this option.
+* `--virtio-rtc [bus=BUS]`: Add a Virtio 1.4 RTC device with one read-only
+  `UTC_MAYBE_SMEARED` clock backed by host wall time. Readings use nanosecond
+  units; cross-timestamping and alarms are not supported. The guest needs a
+  Virtio RTC driver. The optional `bus` accepts `auto`, `mmio`, `pci`,
+  `pcie:PORT`, or `vpci`; bare `--virtio-rtc` uses `auto`. No device is added
+  unless the option is supplied. For example, use
+  `--virtio-rtc bus=pcie:rp0` to attach it to the named PCIe port `rp0`.
+* `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
+  hybrid Unix socket relay.
+* `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
+  virtio-vsock device created by `--virtio-vsock-path` or
+  `--virtio-vsock-vhost-cid`. When omitted, OpenVMM selects the bus
+  automatically. The `pcie` value uses the root port named `vsock`. Use
+  `pcie:PORT` to select another root port.
+* `--virtio-vsock-vhost-cid <CID>`: Add a virtio-vsock device backed by the
+  Linux kernel's `vhost_vsock` implementation. This makes the guest reachable
+  from host applications through `AF_VSOCK` at `CID`, which must be between 3
+  and 4294967294 (CIDs 0-2 are reserved for the hypervisor, loopback, and host,
+  respectively, and u32::MAX is the ANY wildcard). This option requires
+  `/dev/vhost-vsock`, the `vhost_vsock` kernel module, and shared file-backed
+  guest RAM (the default memory backing). It uses identity-mapped DMA and
+  does not support a non-identity virtual IOMMU. It conflicts with
+  `--virtio-vsock-path`.
 * `--vhost-user <SOCKET_PATH>,type=<TYPE>[,tag=<NAME>][,num_queues=<N>][,queue_size=<N>][,pcie_port=<PORT>]`: Attach a
   vhost-user device backed by an external process over a Unix socket (Linux
   only). The backend process must already be listening on `SOCKET_PATH`.
@@ -174,12 +329,24 @@ as well as the generated CLI help (via `cargo run -- --help`).
 Serial devices can be configured to appear as different devices inside the guest:
 
 * `--com1/com2 <BACKEND>`: Configure a COM port serial device.
+* `--com1 debugger-mode:<BACKEND>`: Prefix any COM port binding with
+  `debugger-mode:` to run that port in debugger mode for WinDbg kernel
+  debugging over serial (KD), e.g. `--com1 debugger-mode:listen=<PATH>` or
+  `--com1 debugger-mode:listen=tcp:<IP>:<PORT>`. In this mode OpenVMM keeps that
+  port's backend drained and may drop bytes instead of applying backpressure, so
+  the KD transport does not deadlock across guest resets or reboots; KD recovers
+  dropped bytes with its own retransmission. Debugger mode is chosen
+  independently per COM port, so one port can talk to WinDbg while another
+  behaves normally.
 * `--virtio-console <BACKEND>`: Expose a virtio console device (appears as
   `/dev/hvc0` inside the guest).
 
 The `BACKEND` argument is the same for all serial devices:
 
-  * `none`: Serial output is dropped.
+  * `none`: No serial backend is configured. Depending on the chipset, the
+      serial device is either omitted or present with a disconnected backend.
+  * `null`: A connected serial backend accepts and discards all output and
+      never provides input.
   * `console`: Serial input is read and output is written to the console.
   * `stderr`: Serial output is written to stderr.
   * `listen=PATH`: A named pipe (on Windows) or Unix socket (on Linux) is set
@@ -216,10 +383,16 @@ status code as `exit:<code>` (0-255); a bare `exit` uses 0:
 A bare `exit` exits with status 0; `exit:<code>` exits with that code instead, so
 a supervisor can tell the exit reasons apart.
 
-`--disable-frontpage`: when booting UEFI, power the VM off instead of showing the
-firmware frontpage (the menu shown when there is no bootable device). Combined
-with `--guest-shutdown-action exit`, a guest with no boot device exits the VMM.
-Requires `--uefi`.
+* `--crash-dump-path <PATH>`: when the guest triple-faults, write a
+  WinDbg-compatible `.vmrs` dump of the VM's processor state and guest memory to
+  `PATH` before the `--guest-crash-action` is applied (see
+  [VM Memory Dumps](../../../user_guide/openvmm/vm_memory_dumps.md)). This is a
+  host-side, whole-VM dump, distinct from `--openhcl-dump-path` (OpenHCL's
+  in-guest crash dump device driven by the guest OS).
+
+The `--uefi disable_frontpage` option powers the VM off instead of showing the
+firmware frontpage when there is no bootable device. Combined with
+`--guest-shutdown-action exit`, a guest with no boot device exits the VMM.
 
 ## PCIe Device Support
 
@@ -268,6 +441,13 @@ complex name:
   this via the ACPI `_PXM` object. When omitted, no `_PXM` is emitted
   and the guest uses its default allocation policy.
 
+By default, PCIe ECAM is placed above 4 GiB to preserve low MMIO space for
+device BARs. Use `--pcie-ecam-below-4gb` to place every PCI segment's ECAM in
+32-bit MMIO instead. This compatibility workaround is intended for direct-boot
+guest kernels that cannot discover high ECAM without firmware interfaces
+available during a conventional boot. The flag defaults to off and requires
+`--pcie-root-complex`.
+
 ### Root port and switch options
 
 `--pcie-root-port` accepts optional comma-separated options after the port
@@ -287,6 +467,8 @@ name:
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
   Use `acs=0` to disable ACS for a root port.
 - `cxl`: marks the root port as CXL-capable.
+- `pasid`: advertises support for TLP prefixing (such as for guest PASID
+  behind a virtual IOMMU)
 
 `--pcie-switch` accepts optional comma-separated options as well:
 
@@ -299,6 +481,8 @@ name:
 - `acs=<mask>`: ACS capability mask requested for downstream switch ports.
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.
+- `pasid`: advertises support for TLP prefixing (such as for guest PASID
+  behind a virtual IOMMU)
 
 ### Generic initiators
 
@@ -335,9 +519,40 @@ PCIe root port. The syntax varies slightly between device types:
 **Disks** (comma-separated option): `--nvme-pci` + `--disk`, `--virtio-blk`
 
 ```sh
---virtio-blk file:/path/to/disk.raw,pcie_port=rp0
+--virtio-blk file:/path/to/disk.raw,pcie_port=rp0,serial=DATA-DISK
 --nvme-pci id=nvme0,pcie_port=rp0 --disk file:/path/to/disk.raw,on=nvme0
 ```
+
+The optional `serial` value accepts 1-20 printable ASCII bytes except commas
+and brackets. If omitted, OpenVMM uses the disk ID or `openvmm-virtio-blk`.
+
+Native virtio-blk concurrency is opt-in. Each disk accepts `num_queues=<COUNT>`
+to select 1-256 request queues. When omitted, `--virtio-blk-queues <COUNT>`
+supplies the default (1). `--virtio-blk-io-depth <COUNT>` limits in-flight
+requests per queue (default 64). Additional queues require the guest to negotiate
+`VIRTIO_BLK_F_MQ`; guests without it use queue 0. Queues use the default shared
+executor. These options apply to native `--virtio-blk` disks, not vhost-user
+devices.
+
+For example, four queues with the same aggregate 64-request limit per disk
+as the default configuration:
+
+```sh
+--virtio-blk-queues 4 --virtio-blk-io-depth 16
+```
+
+Different disks can override the default independently, including selecting
+a single queue:
+
+```sh
+--virtio-blk-queues 4 \
+  --virtio-blk file:/path/to/boot.raw,num_queues=1 \
+  --virtio-blk file:/path/to/data.raw,num_queues=8
+```
+
+The in-flight limit is per queue: eight queues at the default depth 64 allow
+512 concurrent requests per disk. This limit is separate from the virtqueue
+descriptor-ring size.
 
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 
@@ -352,10 +567,15 @@ The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
 **NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
 
 ```sh
+--net mac=00-15-5d-12-12-13:consomme
 --virtio-net pcie_port=rp0:tap:tap0  # TAP is Linux-only
 --net pcie_port=rp0:consomme
 --mana pcie_port=rp0:tap:tap0        # TAP is Linux-only
 ```
+
+Use `mac=<XX-XX-XX-XX-XX-XX>:` to set the MAC address exposed to the guest.
+If it is omitted, OpenVMM generates a random MAC address. This prefix can be
+combined with the other NIC prefixes.
 
 **Filesystems and other virtio devices** (colon-prefixed):
 `--virtio-fs`, `--virtio-fs-shmem`, `--virtio-9p`, `--virtio-pmem`
@@ -372,6 +592,12 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 ```sh
 --virtio-rng --virtio-rng-pcie-port rp0
 --virtio-console console --virtio-console-pcie-port rp0
+```
+
+For `--virtio-rtc`, select the named PCIe port in its options:
+
+```sh
+--virtio-rtc bus=pcie:rp0
 ```
 
 **vhost-user devices** (comma-separated option, Linux only): `--vhost-user`
@@ -391,26 +617,61 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 --iommu id=iommu0 --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
 
 # Pin BAR0 to its physical address for P2P DMA:
---vfio host=0000:01:00.0,port=rp0,bar0=pt
+--vfio host=0000:01:00.0,port=rp0,bar0=host
 ```
 
 ### SMMU (aarch64 only)
 
-`--smmu <RC_NAME>` enables an emulated Arm SMMUv3 IOMMU for the named
-root complex. The flag is repeatable — use one `--smmu` per root complex
-that should have an SMMU. Devices behind a covered root complex get
-software IOVA→GPA translation for DMA and MSI addresses.
+`--smmu` enables an emulated Arm SMMUv3 IOMMU for a named PCIe root
+complex. The flag is repeatable — use one `--smmu` per root complex that
+should have an SMMU. Devices behind a covered root complex get IOVA→GPA
+translation for DMA and MSI addresses. See
+[Arm SMMUv3](../../emulated/iommu/smmuv3.md) for the device reference.
 
-```sh
-# Enable SMMU on root complex rc0
---smmu rc0
+The syntax is a comma-separated key/value list:
 
-# Multiple root complexes
---smmu rc0 --smmu rc1
+```bash
+--smmu rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]
 ```
 
-VFIO devices cannot currently be placed behind an SMMU-covered root
-complex because iommufd nested translation is not yet available.
+- `rc=<name>` (required): the PCIe root complex this SMMU covers.
+- `accel` (optional): delegate stage-1 translation to the host IOMMU via
+  iommufd nesting, so VFIO-assigned devices behind this root complex are
+  translated in hardware. Requires ACPI, a nesting-capable host SMMUv3, and
+  that the devices use the `--iommu` cdev path with a single shared context.
+  Without it, assigning a VFIO device behind an SMMU is rejected.
+- `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
+  `auto` (the default) starts at 48 bits, which covers typical configurations.
+  Under `accel`, a cold-plug device changes it to the physical SMMU's OAS.
+  Device start freezes the value, so later hotplug validates against it rather
+  than changing it. Very large RAM or an explicitly pinned
+  high MMIO/ECAM base can exceed 48 bits, requiring an explicit larger `oas=`
+  (e.g. `oas=52`). A fixed `N` must be one of the SMMUv3-legal encodings: `32`,
+  `36`, `40`, `42`, `44`, `48`, or `52`, and cannot exceed the physical
+  SMMU's OAS under `accel`.
+- `ssidsize=auto|N` (optional): the SMMU's SubstreamID width in bits,
+  advertised in `IDR1.SSIDSIZE`. `auto` (the default) uses 0 in software mode
+  or the cold-plug host SMMU's width under `accel`. A fixed `N` is 0–20,
+  where 0 disables substreams, and must not exceed the host's width under
+  `accel`. The advertised width is fixed at device start.
+
+```bash
+# Enable an emulated SMMU on root complex rc0
+--smmu rc=rc0
+
+# Multiple root complexes
+--smmu rc=rc0 --smmu rc=rc1
+
+# Pin the output address size to 48 bits
+--smmu rc=rc0,oas=48
+
+# Disable substreams even when the host supports them
+--smmu rc=rc0,accel,ssidsize=0
+
+# Assign a VFIO device behind an accelerated SMMU
+--smmu rc=rc0,accel --iommu id=iommu0 \
+  --vfio host=0000:01:00.0,port=rp0,iommu=iommu0
+```
 
 ### AMD IOMMU (x86_64 only)
 
@@ -434,7 +695,7 @@ named root complex. The flag is repeatable — use one `--intel-vtd` per
 root complex that should have an IOMMU. The guest discovers VT-d units
 via the ACPI DMAR table (not PCI config space).
 
-```sh
+```bash
 # Enable Intel VT-d on root complex rc0
 --intel-vtd rc0
 
@@ -444,3 +705,45 @@ via the ACPI DMAR table (not PCI config space).
 
 Mutually exclusive with `--amd-iommu` within the same VM (only one x86
 IOMMU type can be active).
+
+VT-d advertises legacy and scalable second-stage translation by default;
+there is no separate scalable-mode or accessed/dirty CLI flag. Both modes
+support 39-bit (3-level) and 48-bit (4-level) addresses, 4KB/2MB/1GB pages,
+pass-through, and interrupt remapping for MSI and IOAPIC routes. Legacy mode
+accepts 128-bit or 256-bit queued invalidations; scalable mode requires
+256-bit descriptors.
+
+The scalable profile advertises SMTS, SSTS, SMPWCS, SSADS, and RPS. Requests
+without a PASID use the context entry's implied `RID_PASID`, including
+nonzero values. Explicitly PASID-tagged requests, first-stage and nested
+translation, ATS, PRI, and supervisor requests are not supported. The
+implementation version remains 1.0; use CAP/ECAP, not VER, for discovery.
+
+Accessed/dirty tracking is optional and controlled by each PASID table
+entry's `SSADE` bit. With tracking enabled, translation atomically sets
+accessed (bit 8) on visited second-stage entries and dirty (bit 9) on an
+accepted write's leaf, before performing DMA. A later DMA operation failure
+does not undo those flags. Legacy translation and pass-through never set
+them. Updates require coherent page-table access (`PWSNP=1`); a required
+non-snooping update faults with reason `0x7c`, and an atomic-update failure
+faults with `0x7d`.
+
+Flags are sticky until guest software clears them. Quiesce relevant DMA,
+clear the flags, perform the required translation-cache invalidations, and
+wait for completion before resuming DMA. The emulator does not cache page
+walks, but software must still follow the architectural invalidation
+protocol. Unsynchronized clearing or reading does not provide a race-free
+dirty snapshot, and no migration bitmap API is provided.
+
+Linux 6.18 and Ubuntu 24.04's 6.8 kernel document `intel_iommu=on,sm_on`
+to request scalable mode and `intel_iommu=on,sm_off` to force legacy mode.
+These are guest kernel options, not OpenVMM options. For UEFI boots, configure
+them in the guest bootloader; a direct-boot kernel command line does not
+configure the disk's kernel. Scalable mode alone does not enable `SSADE`.
+OpenVMM inspection exposes the SRTP-latched `translation_table_mode` (0 for
+legacy, 1 for scalable), rather than just the pending RTADDR value.
+
+See the [`intel_vtd` crate documentation][intel-vtd-rustdoc] for implementation
+details.
+
+[intel-vtd-rustdoc]: https://openvmm.dev/rustdoc/linux/intel_vtd/index.html

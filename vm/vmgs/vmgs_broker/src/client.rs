@@ -25,6 +25,9 @@ pub enum VmgsClientError {
     /// VMGS error
     #[error("vmgs error")]
     Vmgs(#[source] VmgsBrokerError),
+    /// The broker returned a key with an unexpected size.
+    #[error("invalid active encryption key length: {0}")]
+    InvalidActiveKeyLength(usize),
 }
 
 impl From<RpcError> for VmgsClientError {
@@ -53,7 +56,7 @@ pub struct VmgsClient {
 
 impl VmgsClient {
     /// Get allocated and valid bytes from File Control Block for file_id.
-    #[instrument(skip_all, fields(file_id))]
+    #[instrument(skip_all, fields(file_id = %file_id))]
     pub async fn get_file_info(&self, file_id: FileId) -> Result<VmgsFileInfo, VmgsClientError> {
         let res = self
             .control
@@ -64,7 +67,7 @@ impl VmgsClient {
     }
 
     /// Reads the specified `file_id`.
-    #[instrument(skip_all, fields(file_id))]
+    #[instrument(skip_all, fields(file_id = %file_id))]
     pub async fn read_file(&self, file_id: FileId) -> Result<Vec<u8>, VmgsClientError> {
         let res = self
             .control
@@ -78,10 +81,69 @@ impl VmgsClient {
     ///
     /// NOTE: It is an error to overwrite a previously encrypted FileId with
     /// plaintext data.
-    #[instrument(skip_all, fields(file_id))]
+    #[instrument(skip_all, fields(file_id = %file_id))]
     pub async fn write_file(&self, file_id: FileId, buf: Vec<u8>) -> Result<(), VmgsClientError> {
         self.control
             .call_failable(VmgsBrokerRpc::WriteFile, (file_id.into(), buf))
+            .await?;
+
+        Ok(())
+    }
+
+    /// Returns a copy of the active root encryption key of an unlocked VMGS.
+    ///
+    /// This key is sensitive and must not be logged or inspected. It may become
+    /// stale after this call; use [`Self::write_file_if_active_key_matches`]
+    /// to publish data that depends on it.
+    #[cfg(feature = "encryption")]
+    #[instrument(skip_all)]
+    pub async fn active_encryption_key(&self) -> Result<[u8; 32], VmgsClientError> {
+        let key = self
+            .control
+            .call_failable(VmgsBrokerRpc::ActiveEncryptionKey, ())
+            .await?;
+        key.try_into()
+            .map_err(|key: Vec<u8>| VmgsClientError::InvalidActiveKeyLength(key.len()))
+    }
+
+    /// Writes plaintext `buf` only if `expected_key` is still the active root key.
+    ///
+    /// The key comparison is a defensive stale-key guard, not a request to
+    /// encrypt the entry. The broker currently exposes no key-rotation RPC;
+    /// this guard protects callers if concurrent rotation is added later.
+    ///
+    /// The comparison, write, and flush are processed as one serial broker
+    /// operation. Returns `false` for a stale key without writing or flushing,
+    /// and `true` only after both the write and final flush succeed. A locked or
+    /// plaintext store returns an error, as does overwriting an encrypted file.
+    /// A flush error does not roll back a completed write.
+    #[cfg(feature = "encryption")]
+    #[instrument(skip_all, fields(file_id = %file_id))]
+    pub async fn write_file_if_active_key_matches(
+        &self,
+        file_id: FileId,
+        buf: Vec<u8>,
+        expected_key: [u8; 32],
+    ) -> Result<bool, VmgsClientError> {
+        match self
+            .control
+            .call_failable(
+                VmgsBrokerRpc::WriteFileIfActiveKeyMatches,
+                (file_id.into(), buf, expected_key),
+            )
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(RpcError::Call(VmgsBrokerError::ActiveKeyMismatch)) => Ok(false),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Deletes the specified `file_id`.
+    #[instrument(skip_all, fields(file_id = %file_id))]
+    pub async fn delete_file(&self, file_id: FileId) -> Result<(), VmgsClientError> {
+        self.control
+            .call_failable(VmgsBrokerRpc::DeleteFile, file_id.into())
             .await?;
 
         Ok(())
@@ -91,7 +153,7 @@ impl VmgsClient {
     /// the specified `file_id`. Otherwise, perform a regular plaintext write
     /// instead.
     #[cfg(feature = "encryption")]
-    #[instrument(skip_all, fields(file_id))]
+    #[instrument(skip_all, fields(file_id = %file_id))]
     pub async fn write_file_encrypted(
         &self,
         file_id: FileId,

@@ -6,6 +6,7 @@
 mod cfg_target_arch;
 mod copyright;
 mod crate_name_nodash;
+mod orphaned_rs;
 mod package_info;
 mod repr_packed;
 mod trailing_newline;
@@ -292,6 +293,7 @@ fn lint_workspace(
         Box::new(cfg_target_arch::CfgTargetArch::new(&lint_ctx)),
         Box::new(copyright::Copyright::new(&lint_ctx)),
         Box::new(crate_name_nodash::CrateNameNoDash::new(&lint_ctx)),
+        Box::new(orphaned_rs::OrphanedRustFiles::new(&lint_ctx)),
         Box::new(package_info::PackageInfo::new(&lint_ctx)),
         Box::new(repr_packed::ReprPacked::new(&lint_ctx)),
         Box::new(trailing_newline::TrailingNewline::new(&lint_ctx)),

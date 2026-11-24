@@ -1,0 +1,122 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! SHA-384 hashing.
+
+#![cfg(any(
+    openssl,
+    rust,
+    symcrypt,
+    all(native, windows),
+    all(native, target_os = "macos")
+))]
+
+cfg_select! {
+    openssl => {
+        mod ossl;
+        use ossl as sys;
+    }
+    rust => {
+        mod rust;
+        use rust as sys;
+    }
+    symcrypt => {
+        mod symcrypt;
+        use symcrypt as sys;
+    }
+    all(native, windows) => {
+        mod win;
+        use win as sys;
+    }
+    all(native, target_os = "macos") => {
+        mod mac;
+        use mac as sys;
+    }
+}
+
+/// The size of a SHA-384 digest in bytes.
+pub const SHA_384_OUTPUT_SIZE_BYTES: usize = 48;
+
+/// Compute the SHA-384 hash of `data`.
+pub fn sha_384(data: &[u8]) -> [u8; SHA_384_OUTPUT_SIZE_BYTES] {
+    let mut hasher = Sha384::new();
+    hasher.update(data);
+    hasher.finish()
+}
+
+/// Incremental SHA-384 hasher.
+///
+/// Equivalent to [`sha_384`] when all data is hashed in a single [`update`](Self::update)
+/// call, but allows the data to be hashed in multiple chunks.
+pub struct Sha384(sys::Sha384);
+
+impl Sha384 {
+    /// Create a new incremental SHA-384 hasher.
+    pub fn new() -> Self {
+        Self(sys::Sha384::new())
+    }
+
+    /// Append `data` to the hash.
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    /// Consume the hasher and return the final SHA-384 digest.
+    pub fn finish(self) -> [u8; SHA_384_OUTPUT_SIZE_BYTES] {
+        self.0.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sha_384_known_vectors() {
+        const EMPTY_HASH: [u8; SHA_384_OUTPUT_SIZE_BYTES] = [
+            0x38, 0xb0, 0x60, 0xa7, 0x51, 0xac, 0x96, 0x38, 0x4c, 0xd9, 0x32, 0x7e, 0xb1, 0xb1,
+            0xe3, 0x6a, 0x21, 0xfd, 0xb7, 0x11, 0x14, 0xbe, 0x07, 0x43, 0x4c, 0x0c, 0xc7, 0xbf,
+            0x63, 0xf6, 0xe1, 0xda, 0x27, 0x4e, 0xde, 0xbf, 0xe7, 0x6f, 0x65, 0xfb, 0xd5, 0x1a,
+            0xd2, 0xf1, 0x48, 0x98, 0xb9, 0x5b,
+        ];
+
+        let hash = sha_384(&[]);
+        assert_eq!(hash, EMPTY_HASH);
+
+        const PANGRAM: [u8; SHA_384_OUTPUT_SIZE_BYTES] = [
+            0xca, 0x73, 0x7f, 0x10, 0x14, 0xa4, 0x8f, 0x4c, 0x0b, 0x6d, 0xd4, 0x3c, 0xb1, 0x77,
+            0xb0, 0xaf, 0xd9, 0xe5, 0x16, 0x93, 0x67, 0x54, 0x4c, 0x49, 0x40, 0x11, 0xe3, 0x31,
+            0x7d, 0xbf, 0x9a, 0x50, 0x9c, 0xb1, 0xe5, 0xdc, 0x1e, 0x85, 0xa9, 0x41, 0xbb, 0xee,
+            0x3d, 0x7f, 0x2a, 0xfb, 0xc9, 0xb1,
+        ];
+
+        let hash = sha_384(b"The quick brown fox jumps over the lazy dog");
+        assert_eq!(hash, PANGRAM);
+    }
+
+    #[test]
+    fn sha_384_incremental_known_vectors() {
+        const EMPTY_HASH: [u8; SHA_384_OUTPUT_SIZE_BYTES] = [
+            0x38, 0xb0, 0x60, 0xa7, 0x51, 0xac, 0x96, 0x38, 0x4c, 0xd9, 0x32, 0x7e, 0xb1, 0xb1,
+            0xe3, 0x6a, 0x21, 0xfd, 0xb7, 0x11, 0x14, 0xbe, 0x07, 0x43, 0x4c, 0x0c, 0xc7, 0xbf,
+            0x63, 0xf6, 0xe1, 0xda, 0x27, 0x4e, 0xde, 0xbf, 0xe7, 0x6f, 0x65, 0xfb, 0xd5, 0x1a,
+            0xd2, 0xf1, 0x48, 0x98, 0xb9, 0x5b,
+        ];
+
+        let hasher = Sha384::new();
+        assert_eq!(hasher.finish(), EMPTY_HASH);
+
+        const PANGRAM: [u8; SHA_384_OUTPUT_SIZE_BYTES] = [
+            0xca, 0x73, 0x7f, 0x10, 0x14, 0xa4, 0x8f, 0x4c, 0x0b, 0x6d, 0xd4, 0x3c, 0xb1, 0x77,
+            0xb0, 0xaf, 0xd9, 0xe5, 0x16, 0x93, 0x67, 0x54, 0x4c, 0x49, 0x40, 0x11, 0xe3, 0x31,
+            0x7d, 0xbf, 0x9a, 0x50, 0x9c, 0xb1, 0xe5, 0xdc, 0x1e, 0x85, 0xa9, 0x41, 0xbb, 0xee,
+            0x3d, 0x7f, 0x2a, 0xfb, 0xc9, 0xb1,
+        ];
+
+        let mut hasher = Sha384::new();
+        hasher.update(b"The quick brown fox ");
+        hasher.update(b"jumps over ");
+        hasher.update(b"the lazy dog");
+        assert_eq!(hasher.finish(), PANGRAM);
+    }
+}

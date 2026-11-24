@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use super::CxlComponentRegister;
-use crate::spec::CxlComponentRegisterType;
+use cxl_spec::CxlComponentRegisterType;
 use inspect::Inspect;
 
 /// Simple in-memory component register block used by unit tests.

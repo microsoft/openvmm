@@ -112,7 +112,7 @@ impl NodeId {
 
 impl Debug for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "N-{:?}", &self.0)
+        write!(f, "N-{:?}", self.0)
     }
 }
 
@@ -135,7 +135,7 @@ impl PortId {
 
 impl Debug for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "P-{:?}", &self.0)
+        write!(f, "P-{:?}", self.0)
     }
 }
 
@@ -154,7 +154,7 @@ impl Address {
 
 impl Debug for Address {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}.{:?}", &self.node, &self.port)
+        write!(f, "{:?}.{:?}", self.node, self.port)
     }
 }
 

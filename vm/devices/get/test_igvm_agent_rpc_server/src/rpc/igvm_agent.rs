@@ -10,15 +10,16 @@
 //! names do not match any known pattern.
 //!
 //! **Naming convention** – Hyper-V VM names are capped at 100 characters
-//! (see `petri::vm::make_vm_safe_name`).  The prefix added by the test
-//! macro can consume ~85 characters on the worst-case image name, leaving
-//! only ~15 characters for the test function name.  Keep test function
-//! names short (≤ 15 chars) so the distinctive part is never truncated.
+//! (see `make_vm_safe_name`).  Longer names retain only the first
+//! 96 characters followed by a four-character hash.  Include the module
+//! prefix when checking lengths: the Windows CVM `cvm_guest` names are
+//! 94 characters in `multiarch::tpm` and 97 in `multiarch::tpm138`.
 
 use get_resources::ged::IgvmAttestTestConfig;
 use guid::Guid;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use test_igvm_agent_lib::Error;
 use test_igvm_agent_lib::IgvmAgentTestSetting;
@@ -41,8 +42,9 @@ struct AgentRegistry {
     /// Default setting (from CLI `--test_config`), applied to VMs that
     /// don't match any hardcoded pattern.
     default_setting: Option<IgvmAgentTestSetting>,
-    /// Live per-VM agents, lazily created on first request.
-    agents: HashMap<String, TestIgvmAgent>,
+    /// Live per-VM agents, lazily created on first request. Each agent has its
+    /// own lock so request processing for unrelated VMs can run concurrently.
+    agents: HashMap<String, Arc<Mutex<TestIgvmAgent>>>,
     /// Maps a VM's `VmId` GUID to its resolved test config.
     ///
     /// The two RPC entry points receive different `VmName` values: the IGVM
@@ -83,10 +85,10 @@ fn registry() -> &'static Mutex<AgentRegistry> {
 /// though they may require different plans.  Enumerating every
 /// combination ensures each VM is mapped unambiguously.
 ///
-/// Hyper-V truncates VM names to 100 characters, and the test macro
-/// prefix can consume ~85 characters on worst-case image names.  Keep
-/// `{test_fn}` names short (<= 15 characters) so the distinctive part
-/// is never truncated.
+/// Petri strips the crate name from the module path, leaving prefixes such
+/// as `multiarch::tpm::` and `multiarch::tpm138::`.  Names over 100 characters
+/// are truncated to 96 characters plus a four-character hash.  Keep
+/// `{test_fn}` short enough that the full pattern survives this conversion.
 ///
 /// When adding a new image or isolation variant for an existing test
 /// function, add a corresponding entry here.
@@ -94,6 +96,30 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
     /// (substring, config) pairs — order does not matter since each
     /// pattern is unique.
     const KNOWN_TEST_CONFIGS: &[(&str, IgvmAttestTestConfig)] = &[
+        (
+            "ubuntu_2504_server_x64_vbs_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_cvm_guest",
+            IgvmAttestTestConfig::AkCertNoRenewal,
+        ),
         (
             "ubuntu_2504_server_x64_ak_cert_retry",
             IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
@@ -167,11 +193,27 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
         ),
         (
+            "ubuntu_2504_server_x64_tdx_skip_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_skip_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
             "ubuntu_2504_server_x64_snp_use_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailure,
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_use_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailure,
         ),
         (
@@ -204,6 +246,129 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_hw_ak_stable",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        // `multiarch::tpm138` runs the same tests against the 1.38 vTPM. Its
+        // test-function names are abbreviated to keep VM names under the
+        // 100-character limit, so they need their own patterns here.
+        (
+            "ubuntu_2504_server_x64_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2022_x64_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2022_x64_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_skip_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_skip_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_use_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_use_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_refresh",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_hw_ak_stbl",
+            IgvmAttestTestConfig::StateRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_hw_ak_stbl",
             IgvmAttestTestConfig::StateRefresh,
         ),
     ];
@@ -264,36 +429,126 @@ pub fn process_igvm_attest(
     vm_name: &str,
     report: &[u8],
 ) -> TestAgentResult<Vec<u8>> {
-    let mut reg = registry().lock();
+    let agent = {
+        let mut reg = registry().lock();
 
-    // Clone the default setting before entering the entry API so the
-    // borrow checker is happy.
-    let default_setting = reg.default_setting.clone();
+        // Clone the default setting before entering the entry API so the
+        // borrow checker is happy.
+        let default_setting = reg.default_setting.clone();
 
-    // Record the resolved config keyed by `vm_id` for the GSP RPC path.
-    if let Some(vm_id) = vm_id {
-        if let Some(setting) = resolve_test_config(vm_name).or_else(|| default_setting.clone()) {
-            reg.vm_id_settings.insert(vm_id, setting);
+        // Record the resolved config keyed by `vm_id` for the GSP RPC path.
+        if let Some(vm_id) = vm_id {
+            if let Some(setting) = resolve_test_config(vm_name).or_else(|| default_setting.clone())
+            {
+                reg.vm_id_settings.insert(vm_id, setting);
+            }
         }
-    }
 
-    let agent = reg.agents.entry(vm_name.to_owned()).or_insert_with(|| {
-        let mut agent = TestIgvmAgent::new(vm_name);
-        if let Some(setting) = resolve_test_config(vm_name) {
-            agent.install_plan_from_setting(&setting);
-        } else if let Some(ref default) = default_setting {
-            agent.install_plan_from_setting(default);
-        }
-        tracing::info!(vm_name, "created per-VM test agent");
-        agent
-    });
+        reg.agents
+            .entry(vm_name.to_owned())
+            .or_insert_with(|| {
+                let mut agent = TestIgvmAgent::new(vm_name);
+                if let Some(setting) = resolve_test_config(vm_name) {
+                    agent.install_plan_from_setting(&setting);
+                } else if let Some(ref default) = default_setting {
+                    agent.install_plan_from_setting(default);
+                }
+                tracing::info!(vm_name, "created per-VM test agent");
+                Arc::new(Mutex::new(agent))
+            })
+            .clone()
+    };
 
-    let (payload, expected_len) = agent.handle_request(report).map_err(|err| match err {
-        Error::InvalidIgvmAttestRequest => TestAgentFacadeError::InvalidRequest,
-        _ => TestAgentFacadeError::AgentFailure,
-    })?;
+    // Key generation and response encryption can be expensive. Keep them
+    // outside the registry lock while preserving request order for this VM.
+    let (payload, expected_len) = agent
+        .lock()
+        .handle_request(report)
+        .map_err(|err| match err {
+            Error::InvalidIgvmAttestRequest => TestAgentFacadeError::InvalidRequest,
+            _ => TestAgentFacadeError::AgentFailure,
+        })?;
     if payload.len() != expected_len as usize {
         return Err(TestAgentFacadeError::InvalidRequest);
     }
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use test_with_tracing::test;
+
+    // Mirror petri/src/vm/mod.rs::make_vm_safe_name, which is private, without
+    // pulling the VMM test framework into this RPC server's unit tests.
+    fn make_vm_safe_name(name: &str) -> String {
+        if name.len() <= 100 {
+            name.to_owned()
+        } else {
+            let mut hasher = DefaultHasher::new();
+            name.hash(&mut hasher);
+            format!("{}{:04x}", &name[..96], hasher.finish() & 0xffff)
+        }
+    }
+
+    #[test]
+    fn resolve_cvm_guest_config() {
+        // vmm_test_macros::ResolvedConfig::name_prefix adds the backend,
+        // firmware, arch, image and isolation before the function name.
+        // petri::test::Test::name strips only the crate name, not these modules.
+        for (module, extra_len) in [("multiarch::tpm", 0), ("multiarch::tpm138", 3)] {
+            for (image, base_len) in [
+                ("ubuntu_2504_server_x64", 76),
+                ("windows_datacenter_core_2025_x64_prepped", 94),
+            ] {
+                for isolation in ["vbs", "snp", "tdx"] {
+                    let full_name =
+                        format!("{module}::hyperv_openhcl_uefi_x64_{image}_{isolation}_cvm_guest");
+                    assert_eq!(full_name.len(), base_len + extra_len, "{full_name}");
+                    let vm_name = make_vm_safe_name(&full_name);
+                    // All 12 real names fit, including the 97-character
+                    // Windows tpm138 names: 96..=100 must NOT be truncated.
+                    assert_eq!(vm_name, full_name);
+                    assert!(
+                        matches!(
+                            resolve_test_config(&vm_name),
+                            Some(IgvmAgentTestSetting::TestConfig(
+                                IgvmAttestTestConfig::AkCertNoRenewal
+                            ))
+                        ),
+                        "{vm_name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_truncated_windows_cvm_guest_config() {
+        for isolation in ["vbs", "snp", "tdx"] {
+            let full_name = format!(
+                "multiarch::tpm::hyperv_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_{isolation}_cvm_guest"
+            );
+            // Synthetic suffix exercises truncation; the actual cvm_guest
+            // names above do not need it. The 94-character pattern survives
+            // in the 96-character prefix, followed by the four-character hash.
+            let extended_name = format!("{full_name}_variant");
+            assert_eq!(extended_name.len(), 102);
+            let vm_name = make_vm_safe_name(&extended_name);
+            assert_eq!(vm_name.len(), 100);
+            assert_eq!(&vm_name[..96], &extended_name[..96]);
+            assert!(vm_name[96..].bytes().all(|b| b.is_ascii_hexdigit()));
+            assert!(
+                matches!(
+                    resolve_test_config(&vm_name),
+                    Some(IgvmAgentTestSetting::TestConfig(
+                        IgvmAttestTestConfig::AkCertNoRenewal
+                    ))
+                ),
+                "{vm_name}"
+            );
+        }
+    }
 }

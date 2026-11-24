@@ -1,0 +1,21 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+guest_arch = "aarch64"
+
+# ----------------------------------------------------------------------------
+# No isolation
+# ----------------------------------------------------------------------------
+[guest_configs.none]
+guest_svn = 1
+max_vtl = 2
+
+[guest_configs.none.image.openhcl]
+memory_page_count = 131072
+command_line = "console=null OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=debug"
+uefi = true
+
+[guest_configs.none.image.openhcl.product_policy.policy.azure.device_policy]
+devices = "policies/devices.toml"
+allowed_pci_devices = ["nvme", "mana", "azure-integrated-hsm"]
+vpci_relay = "default_off"

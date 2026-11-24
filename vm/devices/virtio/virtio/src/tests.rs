@@ -13,6 +13,7 @@ use crate::QueueResources;
 use crate::VirtioDevice;
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
+use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
 use crate::spec::pci::*;
@@ -20,6 +21,8 @@ use crate::spec::queue::*;
 use crate::spec::*;
 use crate::transport::VirtioMmioDevice;
 use crate::transport::VirtioPciDevice;
+use chipset_device::io::IoError;
+use chipset_device::io::IoResult;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
@@ -91,20 +94,6 @@ async fn must_recv_in_timeout<T: 'static + Send>(
         .unwrap()
 }
 
-async fn assert_no_recv_in_timeout<T: 'static + Send>(
-    recv: &mut mesh::Receiver<T>,
-    timeout: Duration,
-) {
-    if mesh::CancelContext::new()
-        .with_timeout(timeout)
-        .until_cancelled(recv.next())
-        .await
-        .is_ok()
-    {
-        panic!("Expected timeout, but received a value");
-    }
-}
-
 /// Yield execution to the async executor, allowing spawned tasks to run.
 async fn yield_now() {
     let mut yielded = false;
@@ -132,7 +121,28 @@ async fn yield_and_poll_device(dev: &mut impl PollDevice) {
 #[derive(Default)]
 struct VirtioTestMemoryAccess {
     memory_map: Mutex<MemoryMap>,
+    failed_write_range: Mutex<Option<std::ops::Range<u64>>>,
     doorbell_count: AtomicUsize,
+    /// The doorbells that are currently INSTALLED, i.e. whose registration
+    /// object is still alive.
+    ///
+    /// Kept alongside `doorbell_count` because a count of registration calls
+    /// cannot answer the question a restore poses: it says a registration
+    /// happened, not that a doorbell exists NOW at the address the guest kicks.
+    /// Behind an `Arc` so each handed-out registration can remove its own entry
+    /// when it is dropped.
+    live_doorbells: Arc<Mutex<Vec<DoorbellSpec>>>,
+}
+
+/// A doorbell registration as the transport asked for it.
+///
+/// PCI queues have dedicated addresses; MMIO queues share an address and
+/// are distinguished by a value match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DoorbellSpec {
+    address: u64,
+    value: Option<u64>,
+    length: Option<u32>,
 }
 
 #[derive(Default)]
@@ -196,6 +206,13 @@ impl VirtioTestMemoryAccess {
         Default::default()
     }
 
+    /// The doorbells installed right now, in a stable order for comparison.
+    fn installed_doorbells(&self) -> Vec<DoorbellSpec> {
+        let mut specs = self.live_doorbells.lock().clone();
+        specs.sort_unstable();
+        specs
+    }
+
     fn modify_memory_map(&self, address: u64, data: &[u8], writeable: bool) {
         self.memory_map.lock().insert(address, data, writeable);
     }
@@ -252,6 +269,18 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
         src: *const u8,
         len: usize,
     ) -> Result<(), GuestMemoryBackingError> {
+        let end = address.saturating_add(len as u64);
+        if self
+            .failed_write_range
+            .lock()
+            .as_ref()
+            .is_some_and(|range| address < range.end && range.start < end)
+        {
+            return Err(GuestMemoryBackingError::other(
+                address,
+                io::Error::other("injected guest-memory write failure"),
+            ));
+        }
         match self.memory_map.lock().get(address, len) {
             Some((true, value)) => {
                 // SAFETY: guaranteed by caller
@@ -281,18 +310,41 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
     }
 }
 
-struct DoorbellEntry;
+/// The handle a doorbell registration hands back. Dropping it is what
+/// UNINSTALLS the doorbell, so it de-registers itself from `live_doorbells`.
+struct DoorbellEntry {
+    live: Arc<Mutex<Vec<DoorbellSpec>>>,
+    spec: DoorbellSpec,
+}
+
+impl Drop for DoorbellEntry {
+    fn drop(&mut self) {
+        let mut live = self.live.lock();
+        if let Some(i) = live.iter().position(|s| *s == self.spec) {
+            live.remove(i);
+        }
+    }
+}
 
 impl DoorbellRegistration for VirtioTestMemoryAccess {
     fn register_doorbell(
         &self,
-        _: u64,
-        _: Option<u64>,
-        _: Option<u32>,
+        address: u64,
+        value: Option<u64>,
+        length: Option<u32>,
         _: &Event,
     ) -> io::Result<Box<dyn Send + Sync>> {
         self.doorbell_count.fetch_add(1, Ordering::Relaxed);
-        Ok(Box::new(DoorbellEntry))
+        let spec = DoorbellSpec {
+            address,
+            value,
+            length,
+        };
+        self.live_doorbells.lock().push(spec);
+        Ok(Box::new(DoorbellEntry {
+            live: self.live_doorbells.clone(),
+            spec,
+        }))
     }
 }
 
@@ -520,7 +572,12 @@ impl VirtioTestGuest {
         }
         dev.write_u32(112, VIRTIO_DRIVER_OK);
         yield_and_poll_device(dev).await;
-        assert_eq!(dev.read_u32(0xfc), 2);
+        assert_eq!(dev.read_u32(0xfc), 1);
+        assert_eq!(
+            dev.read_u32(96) & 0x2,
+            0,
+            "DRIVER_OK must not signal a config-change interrupt"
+        );
     }
 
     async fn setup_pci_device(
@@ -649,7 +706,12 @@ impl VirtioTestGuest {
             .write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
         yield_and_poll_device(&mut dev.pci_device).await;
         let config_generation = (dev.pci_device.read_u32(20) >> 8) & 0xff;
-        assert_eq!(config_generation, 2);
+        assert_eq!(config_generation, 1);
+        assert_eq!(
+            dev.pci_device.read_u32(60) & 0x2,
+            0,
+            "DRIVER_OK must not signal a config-change interrupt"
+        );
     }
 
     fn get_queue_descriptor(&self, queue_index: u16, descriptor_index: u16) -> u64 {
@@ -1301,8 +1363,16 @@ impl VirtioDevice for TestDevice {
         self.traits.clone()
     }
 
-    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
-        0
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
+        // Return a recognizable, offset-encoded value: the byte at
+        // device-config offset `N` reads back as `N`. This lets tests verify
+        // the positioning of device-config accesses routed through this task.
+        u32::from_le_bytes([
+            offset as u8,
+            offset.wrapping_add(1) as u8,
+            offset.wrapping_add(2) as u8,
+            offset.wrapping_add(3) as u8,
+        ])
     }
 
     async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
@@ -1412,6 +1482,16 @@ impl VirtioPciTestDevice {
         test_mem: &Arc<VirtioTestMemoryAccess>,
         queue_work: Option<TestDeviceQueueWorkFn>,
     ) -> Self {
+        Self::new_with_register_length(driver, num_queues, test_mem, queue_work, 12)
+    }
+
+    fn new_with_register_length(
+        driver: &DefaultDriver,
+        num_queues: u16,
+        test_mem: &Arc<VirtioTestMemoryAccess>,
+        queue_work: Option<TestDeviceQueueWorkFn>,
+        device_register_length: u32,
+    ) -> Self {
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
         let mem = GuestMemory::new("test", test_mem.clone());
         let msi_conn = MsiConnection::new();
@@ -1426,7 +1506,7 @@ impl VirtioPciTestDevice {
                         .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
                         .with_bank(1, VIRTIO_F_RING_PACKED),
                     max_queues: num_queues,
-                    device_register_length: 12,
+                    device_register_length,
                     ..Default::default()
                 },
                 queue_work,
@@ -1743,11 +1823,19 @@ async fn verify_pci_config(driver: DefaultDriver) {
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
         )
         .unwrap();
-    assert_eq!(buf, 0x38);
+    assert_eq!(buf, 0x4c);
     pci_test_device
         .pci_device
         .pci_cfg_read(
             next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 4);
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 16,
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
         )
         .unwrap();
@@ -1831,7 +1919,440 @@ async fn verify_pci_config(driver: DefaultDriver) {
         .unwrap();
     assert_eq!(buf, 12);
     next_cap_offset = header[1] as u32;
+    assert_ne!(next_cap_offset, 0);
+
+    // The final capability is VIRTIO_PCI_CAP_PCI_CFG (the PCI configuration
+    // access capability). Its length is 20 bytes: the 16-byte virtio_pci_cap
+    // header plus the trailing 4-byte pci_cfg_data window.
+    let mut header = 0;
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
+        .unwrap();
+    let header = header.to_le_bytes();
+    assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
+    assert_eq!(header[3], VirtioPciCapType::PCI_CFG.0);
+    assert_eq!(header[2], 20);
+    // bar/id/offset/length are all zero until the driver programs them.
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 0);
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 0);
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            next_cap_offset as u16 + 12,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf),
+        )
+        .unwrap();
+    assert_eq!(buf, 0);
+    next_cap_offset = header[1] as u32;
     assert_eq!(next_cap_offset, 0);
+}
+
+/// Walk the capability list and return the config-space offset of the
+/// VIRTIO_PCI_CAP_PCI_CFG capability (identified by cfg_type == PCI_CFG).
+fn find_pci_cfg_cap_offset(dev: &mut VirtioPciDevice) -> u16 {
+    find_virtio_pci_cap_offset(dev, VirtioPciCapType::PCI_CFG)
+}
+
+fn find_virtio_pci_cap_offset(dev: &mut VirtioPciDevice, typ: VirtioPciCapType) -> u16 {
+    let mut next = 0;
+    dev.pci_cfg_read(
+        0x34,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut next),
+    )
+    .unwrap();
+    while next != 0 {
+        let mut header = 0;
+        dev.pci_cfg_read(
+            next as u16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        )
+        .unwrap();
+        let header = header.to_le_bytes();
+        if header[0] == CapabilityId::VENDOR_SPECIFIC.0 && header[3] == typ.0 {
+            return next as u16;
+        }
+        next = header[1] as u32;
+    }
+    panic!("virtio PCI capability {typ:?} not found");
+}
+
+fn pci_notification_address(dev: &mut VirtioPciTestDevice, queue: u16) -> u64 {
+    let cap = find_virtio_pci_cap_offset(&mut dev.pci_device, VirtioPciCapType::NOTIFY_CFG);
+    let mut offset = 0;
+    let mut multiplier = 0;
+    dev.pci_device
+        .pci_cfg_read(
+            cap + 8,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut offset),
+        )
+        .unwrap();
+    dev.pci_device
+        .pci_cfg_read(
+            cap + 16,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut multiplier),
+        )
+        .unwrap();
+    assert_eq!(multiplier, 4);
+    let status = dev.read_u32(0x10000000000 + 20) & 0xffff;
+    dev.write_u32(0x10000000000 + 20, u32::from(queue) << 16 | status);
+    let queue_notify_off = dev.read_u32(0x10000000000 + 28) >> 16;
+    assert_eq!(queue_notify_off, u32::from(queue));
+    0x10000000000 + u64::from(offset) + u64::from(multiplier) * u64::from(queue_notify_off)
+}
+
+/// Exercise the VIRTIO_PCI_CAP_PCI_CFG `pci_cfg_data` window: program the
+/// bar/offset/length fields via config space, then read/write BAR regions
+/// through the window and confirm the accesses reach the same registers as
+/// direct MMIO.
+#[async_test]
+async fn verify_pci_cfg_access_window(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // Program the window to point at BAR0 offset 0 (device_feature_select), a
+    // 4-byte access.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // bar = 0, id = 0
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // offset = 0
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+
+    // Reading the window returns the current device_feature_select (0).
+    let mut val = 0xdead_beef;
+    dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    )
+    .unwrap();
+    assert_eq!(val, 0);
+
+    // Writing the window updates device_feature_select; a direct MMIO read of
+    // the same register must observe the change.
+    dev.pci_cfg_write(data_off, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap();
+    let mut val = 0;
+    dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    )
+    .unwrap();
+    assert_eq!(val, 2);
+
+    // Verify the write went to the real register by mapping BAR0 and reading
+    // device_feature_select directly.
+    let bar_address1: u64 = 0x2000000000;
+    dev.pci_cfg_write(
+        0x14,
+        ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x10,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
+    )
+    .unwrap();
+    dev.pci_cfg_write(
+        0x4,
+        ByteEnabledDwordWrite::new(
+            cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32,
+            PciConfigByteEnable::LOW_WORD,
+        ),
+    )
+    .unwrap();
+    let mut mmio = [0u8; 4];
+    dev.mmio_read(bar_address1, &mut mmio).unwrap();
+    assert_eq!(u32::from_le_bytes(mmio), 2);
+
+    // An invalid length (per spec must be 1, 2, or 4) is rejected with an
+    // access-size error; a non-multiple offset is rejected as unaligned. Both
+    // paths return an error without panicking.
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // offset = 0
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(3))
+        .unwrap(); // length = 3 (invalid)
+    let mut val = 0;
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::InvalidAccessSize)
+    ));
+    assert!(matches!(
+        dev.pci_cfg_write(data_off, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+            .now_or_never(),
+        Err(IoError::InvalidAccessSize)
+    ));
+
+    // A valid length with a misaligned offset is rejected as unaligned.
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // offset = 2
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::UnalignedAccess)
+    ));
+}
+
+/// A `pci_cfg_data` access whose `cap.offset`/`cap.length` falls outside the
+/// selected BAR must be rejected as `InvalidRegister`, rather than truncating
+/// the offset to `u16` or routing past the end of the BAR.
+#[async_test]
+async fn verify_pci_cfg_access_window_bounds(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // A BAR0 offset far past the end of the transport + device-config region.
+    // This value fits in a u16, so it exercises the BAR-size check rather than
+    // the u16 bound.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // bar = 0
+    dev.pci_cfg_write(
+        cap + 8,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(0xf000),
+    )
+    .unwrap(); // offset = 0xf000
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+    let mut val = 0;
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::InvalidRegister)
+    ));
+    assert!(matches!(
+        dev.pci_cfg_write(data_off, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+            .now_or_never(),
+        Err(IoError::InvalidRegister)
+    ));
+
+    // A BAR that the window cannot reach is rejected as well.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(1))
+        .unwrap(); // bar = 1
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // offset = 0
+    assert!(matches!(
+        dev.pci_cfg_read(
+            data_off,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut val)
+        )
+        .now_or_never(),
+        Err(IoError::InvalidRegister)
+    ));
+}
+
+/// Regression test for sub-dword (`cap.length` < 4) accesses through the
+/// `VIRTIO_PCI_CAP_PCI_CFG` `pci_cfg_data` window.
+///
+/// Per the virtio spec (4.1.4.9.1) the device stores/uses the *first*
+/// `cap.length` bytes of `pci_cfg_data`, regardless of how `cap.offset` is
+/// aligned within its containing DWORD. So a 2-byte access at a BAR offset
+/// whose low bits are `2` must still land in the low two bytes of
+/// `pci_cfg_data` — not bytes 2..4.
+#[async_test]
+async fn verify_pci_cfg_access_window_subdword(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // Seed device_feature_select (a 4-byte BAR0 register at offset 0) so its
+    // upper 16 bits hold a recognizable value.
+    dev.write_u32(0, 0xbbbb_aaaa);
+
+    // Program the window for a 2-byte access at BAR0 offset 2 (the upper half
+    // of device_feature_select); `offset & 3 == 2`.
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap(); // bar = 0, id = 0
+    dev.pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // offset = 2
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // length = 2
+
+    // A read through the window must return the accessed bytes in the low two
+    // bytes of pci_cfg_data.
+    let mut val = 0;
+    dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    )
+    .unwrap();
+    assert_eq!(
+        val & 0xffff,
+        0xbbbb,
+        "read data must occupy the first cap.length bytes of pci_cfg_data (got {val:#010x})",
+    );
+
+    // A write through the window must take its value from the low two bytes of
+    // pci_cfg_data and store it at BAR0 offset 2.
+    dev.pci_cfg_write(
+        data_off,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(0x0000_cccc),
+    )
+    .unwrap();
+    assert_eq!(
+        dev.read_u32(0) >> 16,
+        0xcccc,
+        "written data must be taken from the first cap.length bytes of pci_cfg_data",
+    );
+}
+
+/// Exercise the *deferred* device-config path of the `pci_cfg_data` window.
+///
+/// Device-specific config registers are owned by the async device task, so an
+/// access through the window at `cap.offset >= BAR0_DEVICE_CFG_OFFSET` is
+/// deferred. The PCI config bus polls the deferred read with a 4-byte dword
+/// buffer, so the completion must be a full dword with the accessed
+/// `cap.length` bytes left-aligned into the low bytes of `pci_cfg_data`.
+///
+/// The test device reports byte `N` at device-config offset `N`.
+#[async_test]
+async fn verify_pci_cfg_access_window_deferred(driver: DefaultDriver) {
+    let mut pci_test_device =
+        VirtioPciTestDevice::new(&driver, 1, &VirtioTestMemoryAccess::new(), None);
+    let dev = &mut pci_test_device.pci_device;
+
+    let cap = find_pci_cfg_cap_offset(dev);
+    let data_off = cap + 16;
+
+    // Device config starts after the common (56), notify (4), and ISR (4)
+    // regions in BAR0.
+    const DEVICE_CFG_BAR0_OFFSET: u32 = 56 + 4 + 4;
+
+    // Point the window at BAR0 (bar = 0, id = 0).
+    dev.pci_cfg_write(cap + 4, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap();
+
+    // Aligned 4-byte read at device-config offset 0 => bytes [0, 1, 2, 3].
+    dev.pci_cfg_write(
+        cap + 8,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(DEVICE_CFG_BAR0_OFFSET),
+    )
+    .unwrap(); // offset = device cfg + 0
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+        .unwrap(); // length = 4
+
+    let mut val = 0;
+    let mut buf = [0u8; 4];
+    match dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    ) {
+        IoResult::Defer(token) => token.read_future(&mut buf).await.unwrap(),
+        other => panic!("expected a deferred read, got {other:?}"),
+    }
+    assert_eq!(buf, [0, 1, 2, 3]);
+
+    // Sub-dword 2-byte read at device-config offset 2 (`offset & 3 == 2`). The
+    // accessed bytes [2, 3] must land in the low two bytes of pci_cfg_data.
+    dev.pci_cfg_write(
+        cap + 8,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(DEVICE_CFG_BAR0_OFFSET + 2),
+    )
+    .unwrap(); // offset = device cfg + 2
+    dev.pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap(); // length = 2
+
+    let mut val = 0;
+    let mut buf = [0u8; 4];
+    match dev.pci_cfg_read(
+        data_off,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut val),
+    ) {
+        IoResult::Defer(token) => token.read_future(&mut buf).await.unwrap(),
+        other => panic!("expected a deferred read, got {other:?}"),
+    }
+    assert_eq!(
+        u32::from_le_bytes(buf) & 0xffff,
+        0x0302,
+        "deferred device-config bytes must be left-aligned in pci_cfg_data",
+    );
+}
+
+#[async_test]
+async fn verify_pci_config_no_device_cfg(driver: DefaultDriver) {
+    // A virtio device with no device-specific config (device_register_length == 0)
+    // must not emit a DEVICE_CFG capability, since a zero-length virtio capability
+    // is rejected by drivers (e.g. Linux: "virtio_pci: bad capability len 0").
+    let mut pci_test_device = VirtioPciTestDevice::new_with_register_length(
+        &driver,
+        1,
+        &VirtioTestMemoryAccess::new(),
+        None,
+        0,
+    );
+
+    // Walk the PCI capability list and ensure no DEVICE_CFG virtio capability
+    // is present.
+    let mut next_cap_offset = 0;
+    pci_test_device
+        .pci_device
+        .pci_cfg_read(
+            0x34,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut next_cap_offset),
+        )
+        .unwrap();
+    assert_ne!(next_cap_offset, 0);
+
+    while next_cap_offset != 0 {
+        let mut header = 0;
+        pci_test_device
+            .pci_device
+            .pci_cfg_read(
+                next_cap_offset as u16,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+            )
+            .unwrap();
+        let header = header.to_le_bytes();
+        if header[0] == CapabilityId::VENDOR_SPECIFIC.0 {
+            assert_ne!(
+                header[3],
+                VirtioPciCapType::DEVICE_CFG.0,
+                "DEVICE_CFG capability must not be emitted when device_register_length is 0"
+            );
+        }
+        next_cap_offset = header[1] as u32;
+    }
 }
 
 #[async_test]
@@ -2070,16 +2591,21 @@ async fn verify_packed_queue_simple(driver: DefaultDriver) {
 }
 
 async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest, with_index: bool) {
+    const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
+
     let (tx, mut rx) = mesh::mpsc_channel();
+    let (completed, mut completions) = mesh::mpsc_channel();
     let event = Event::new();
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
+        let completed = completed.clone();
         CreateDirectQueueParams {
             process_work: Box::new(
                 move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
                     assert_eq!(work.payload.len(), 1);
                     assert_eq!(work.payload[0].length, 0x1000);
                     queue.complete(work, 123);
+                    completed.send(());
                 },
             ),
             notify: Interrupt::from_fn(move || {
@@ -2094,10 +2620,13 @@ async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest,
         guest.enable_interrupt(0, Some(1));
         guest.add_to_avail_queue(0);
         event.signal();
-        assert_no_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+        must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+        assert!(matches!(rx.try_recv(), Err(mesh::TryRecvError::Empty)));
         guest.add_to_avail_queue(0);
         event.signal();
-        must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+        must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+        assert_eq!(rx.try_recv().unwrap(), 0);
+        assert!(matches!(rx.try_recv(), Err(mesh::TryRecvError::Empty)));
 
         let (_, len) = guest.get_next_completed(0).unwrap();
         assert_eq!(len, 123);
@@ -2109,7 +2638,9 @@ async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest,
     guest.enable_interrupt(0, None);
     guest.add_to_avail_queue(0);
     event.signal();
-    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+    assert_eq!(rx.try_recv().unwrap(), 0);
+    assert!(matches!(rx.try_recv(), Err(mesh::TryRecvError::Empty)));
     let (_, len) = guest.get_next_completed(0).unwrap();
     assert_eq!(len, 123);
     assert_eq!(guest.get_next_completed(0).is_none(), true);
@@ -2119,7 +2650,9 @@ async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest,
     guest.add_to_avail_queue(0);
     guest.add_to_avail_queue(0);
     event.signal();
-    assert_no_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+    must_recv_in_timeout(&mut completions, COMPLETION_TIMEOUT).await;
+    assert!(matches!(rx.try_recv(), Err(mesh::TryRecvError::Empty)));
     let (_, len) = guest.get_next_completed(0).unwrap();
     assert_eq!(len, 123);
     let (_, len) = guest.get_next_completed(0).unwrap();
@@ -2686,13 +3219,7 @@ async fn verify_device_queue_simple_inner(
     .unwrap();
 
     guest.setup_chipset_device(&mut dev, features).await;
-    expect_mmio_interrupt(
-        &mut dev,
-        &target,
-        VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE,
-        false,
-    )
-    .await;
+
     guest.add_to_avail_queue(0);
     // notify device
     dev.write_u32(80, 0);
@@ -2774,13 +3301,7 @@ async fn verify_device_multi_queue_inner(
     )
     .unwrap();
     guest.setup_chipset_device(&mut dev, features).await;
-    expect_mmio_interrupt(
-        &mut dev,
-        &target,
-        VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE,
-        false,
-    )
-    .await;
+
     for i in 0..num_queues {
         guest.add_to_avail_queue(i);
         // notify device
@@ -2859,16 +3380,42 @@ async fn verify_device_multi_queue_pci_inner(
 
     let mut timer = PolledTimer::new(&driver);
 
-    // expect a config generation interrupt
-    timer.sleep(Duration::from_millis(100)).await;
-    let delivered = dev.test_intc.get_next_interrupt().unwrap();
-    assert_eq!(delivered.0, 0);
+    // verify no spurious interrupts were delivered during setup
     assert!(dev.test_intc.get_next_interrupt().is_none());
 
     for i in 0..num_queues {
         guest.add_to_avail_queue(i);
-        // notify device
-        dev.write_u32(0x10000000000 + 0x38, i as u32);
+        let address = pci_notification_address(&mut dev, i);
+        if i % 3 == 0 {
+            dev.pci_device
+                .mmio_write(address, &0u16.to_le_bytes())
+                .unwrap();
+        } else if i % 3 == 1 {
+            dev.write_u32(address, 0);
+        } else {
+            let cap = find_pci_cfg_cap_offset(&mut dev.pci_device);
+            for (offset, value) in [
+                (4, 0),
+                (8, (address - 0x10000000000) as u32),
+                (12, 2),
+                (16, 0),
+            ] {
+                dev.pci_device
+                    .pci_cfg_write(
+                        cap + offset,
+                        ByteEnabledDwordWrite::with_all_bytes_enabled(value),
+                    )
+                    .unwrap();
+            }
+            let mut value = !0;
+            dev.pci_device
+                .pci_cfg_read(
+                    cap + 16,
+                    ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+                )
+                .unwrap();
+            assert_eq!(value, 0);
+        }
     }
     // verify all queue processing finished
     timer.sleep(Duration::from_millis(100)).await;
@@ -2911,6 +3458,32 @@ async fn verify_device_packed_multi_queue_pci(driver: DefaultDriver) {
         .with_bank(0, VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | 2)
         .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
     verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
+}
+
+#[async_test]
+async fn pci_notification_rejects_invalid_accesses(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 2, 4, true);
+    let mut dev = VirtioPciTestDevice::new(&driver, 2, &test_mem, None);
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    let address = pci_notification_address(&mut dev, 1);
+    assert!(matches!(
+        dev.pci_device.mmio_write(address + 2, &[0; 2]),
+        IoResult::Err(IoError::UnalignedAccess)
+    ));
+    for data in [&[0; 1][..], &[0; 8][..]] {
+        assert!(matches!(
+            dev.pci_device.mmio_write(address, data),
+            IoResult::Err(IoError::InvalidAccessSize)
+        ));
+    }
+    assert!(matches!(
+        dev.pci_device.mmio_write(address + 4, &[0; 2]),
+        IoResult::Err(IoError::InvalidRegister)
+    ));
+    dev.pci_device.stop().await;
 }
 
 #[async_test]
@@ -3745,6 +4318,7 @@ trait TestTransport {
     fn stop(&mut self) -> impl Future<Output = ()>;
     /// Drive ChangeDeviceState::start().
     fn start(&mut self);
+    fn teardown(self) -> impl Future<Output = ()>;
 }
 
 /// Yield to the executor and poll the transport once. This ensures the device
@@ -3818,6 +4392,9 @@ impl TestTransport for MmioTestTransport {
     }
     fn start(&mut self) {
         ChangeDeviceState::start(&mut self.dev);
+    }
+    async fn teardown(self) {
+        self.dev.teardown().await;
     }
 }
 
@@ -3956,6 +4533,9 @@ impl TestTransport for PciTestTransport {
     }
     fn start(&mut self) {
         ChangeDeviceState::start(&mut self.dev);
+    }
+    async fn teardown(self) {
+        self.dev.teardown().await;
     }
 }
 
@@ -4229,7 +4809,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
 #[async_test]
 async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
 
@@ -4244,7 +4824,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     dev.pci_device.stop().await;
 
     // Save state.
-    let saved = dev.pci_device.save().expect("save should succeed");
+    let saved = dev.pci_device.save().await.expect("save should succeed");
 
     // Verify saved state has expected values.
     assert_eq!(
@@ -4264,6 +4844,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
     dev2.pci_device
         .restore(saved)
+        .await
         .expect("restore should succeed");
 
     // Verify stop is a no-op — restore must not start queues.
@@ -4356,7 +4937,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
 #[async_test]
 async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
     let mem = GuestMemory::new("test", test_mem.clone());
@@ -4371,7 +4952,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     guest.setup_pci_device(&mut dev, driver_features).await;
 
     dev.pci_device.stop().await;
-    let saved = dev.pci_device.save().expect("save should succeed");
+    let saved = dev.pci_device.save().await.expect("save should succeed");
     // Confirm saved state includes the device-specific feature bit.
     assert_ne!(saved.common.driver_feature_banks[0] & 2, 0);
 
@@ -4399,7 +4980,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     )
     .unwrap();
 
-    let result = dev2.restore(saved);
+    let result = dev2.restore(saved).await;
     assert!(
         result.is_err(),
         "restore should fail with incompatible features"
@@ -4408,7 +4989,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_save_not_supported_device(_driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let msi_conn = MsiConnection::new();
 
@@ -4432,7 +5013,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
     )
     .unwrap();
 
-    let result = dev.save();
+    let result = dev.save().await;
     assert!(result.is_err(), "save should fail for unsupported device");
 }
 
@@ -4467,65 +5048,69 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
+
+    const QUEUE_COUNT: u16 = 2;
+    // What `setup_pci_device` programs BAR0 to.
+    const BAR0_BASE: u64 = 0x10000000000;
+    // The test device has 12 bytes of device config after the first 64 bytes.
+    let notify_address: u64 = BAR0_BASE + 76;
 
     let test_mem = VirtioTestMemoryAccess::new();
 
-    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, QUEUE_COUNT, 4, true);
 
-    let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+    let mut dev = VirtioPciTestDevice::new(&driver, QUEUE_COUNT, &test_mem, None);
     guest
         .setup_pci_device(&mut dev, guest.queue_features())
         .await;
 
-    // After setup, doorbells should be registered.
-    let doorbells_after_setup = test_mem.doorbell_count.load(Ordering::Relaxed);
-    assert!(
-        doorbells_after_setup > 0,
-        "doorbells should be registered after setup"
+    // What the running device serves, and what the restore has to come back
+    // with. Spelled out rather than just counted so a doorbell installed at the
+    // wrong address, or one queue short, cannot pass.
+    let expected: Vec<DoorbellSpec> = (0..QUEUE_COUNT)
+        .map(|i| DoorbellSpec {
+            address: notify_address + u64::from(i) * 4,
+            value: None,
+            length: None,
+        })
+        .collect();
+    assert_eq!(
+        test_mem.installed_doorbells(),
+        expected,
+        "the live device should serve one address-only doorbell per queue"
     );
 
-    // Stop, save, restore into a new device.
     dev.pci_device.stop().await;
-    let saved = dev.pci_device.save().expect("save should succeed");
+    let saved = dev.pci_device.save().await.expect("save should succeed");
 
-    let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
-    // Configure BARs on the target device so doorbells can be registered.
-    let bar_address1: u64 = 0x10000000000;
-    dev2.pci_device
-        .pci_cfg_write(
-            0x14,
-            ByteEnabledDwordWrite::with_all_bytes_enabled((bar_address1 >> 32) as u32),
-        )
-        .unwrap();
-    dev2.pci_device
-        .pci_cfg_write(
-            0x10,
-            ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address1 as u32),
-        )
-        .unwrap();
-    dev2.pci_device
-        .pci_cfg_write(
-            0x4,
-            ByteEnabledDwordWrite::new(
-                cfg_space::Command::new()
-                    .with_mmio_enabled(true)
-                    .into_bits() as u32,
-                PciConfigByteEnable::LOW_WORD,
-            ),
-        )
-        .unwrap();
-    // Reset counter to isolate restore behavior.
-    test_mem.doorbell_count.store(0, Ordering::Relaxed);
+    // Drop the saved device before restoring, so what the assertions below see
+    // can only be the RESTORED device's doorbells and not the original's.
+    drop(dev);
+    assert!(
+        test_mem.installed_doorbells().is_empty(),
+        "dropping the saved device should uninstall its doorbells"
+    );
+
+    // Restore into a device that is FRESH, with nothing having programmed its
+    // BARs - which is the real restore: the guest is resumed mid-flight and never
+    // writes its BARs or DRIVER_OK again, so the config space can only come back
+    // from the saved state. This test used to program the BARs here by hand
+    // before restoring, and that is precisely what hid #159: the doorbells were
+    // installed from an address the production path does not have yet at that
+    // point, so the assertion held while every restored VM ran without a single
+    // doorbell.
+    let mut dev2 = VirtioPciTestDevice::new(&driver, QUEUE_COUNT, &test_mem, None);
     dev2.pci_device
         .restore(saved)
+        .await
         .expect("restore should succeed");
 
-    // Doorbells must be reinstalled during restore.
-    let doorbells_after_restore = test_mem.doorbell_count.load(Ordering::Relaxed);
-    assert!(
-        doorbells_after_restore > 0,
-        "doorbells should be reinstalled after restore, got {doorbells_after_restore}"
+    assert_eq!(
+        test_mem.installed_doorbells(),
+        expected,
+        "restore must reinstall every queue's dedicated doorbell; \
+         without them each kick is an MMIO exit to userspace instead of the ioeventfd"
     );
 
     dev2.pci_device.stop().await;
@@ -4733,4 +5318,1069 @@ async fn stop_during_failed_enable_resets_config_pci(_driver: DefaultDriver) {
     let mut transport =
         PciTestTransport::new(Box::new(PartialFailTestDevice::new(1, 0)), &_driver, 1);
     verify_stop_during_failed_enable_resets_config(&mut transport).await;
+}
+
+/// Test for the `write_at_offset` address-overflow hardening gap.
+///
+/// The readable-payload reader (`read_from_payload_at_offset`) uses
+/// `saturating_add` so a guest-supplied descriptor address that overflows when
+/// the device's write offset is added lands out of range instead of wrapping
+/// to a low GPA. The writable path (`write_at_offset`) uses a plain `+`, so a
+/// descriptor whose `address + offset` overflows `u64` either panics (debug)
+/// or wraps into an unrelated low guest page (release), corrupting memory the
+/// request never described.
+///
+/// Here a writable descriptor sits at `u64::MAX - 0x800` and the device writes
+/// at offset `0x900`, so `address + offset` wraps to GPA `0xFF`. A correct
+/// implementation must fail the write (its real target is out of range) and
+/// MUST NOT touch `0xFF`.
+#[async_test]
+async fn write_at_offset_overflow_does_not_wrap_to_low_gpa(driver: DefaultDriver) {
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let size: u16 = 4;
+
+    init_avail_ring(&mem, avail_addr);
+    init_used_ring(&mem, used_addr);
+
+    // Sentinel in the low page that the wrapped address (0xFF) would land on.
+    mem.write_at(0xFF, &[0x11]).unwrap();
+
+    // Writable descriptor whose address plus the write offset overflows u64:
+    //   (u64::MAX - 0x800) + 0x900 == 0xFF  (mod 2^64)
+    let overflow_addr = u64::MAX - 0x800;
+    write_descriptor(
+        &mem,
+        desc_addr,
+        0,
+        overflow_addr,
+        0x1000,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    let mut avail_idx = 0;
+    make_available(&mem, avail_addr, size, 0, &mut avail_idx);
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let queue_event = PolledWait::new(&driver, Event::new()).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        params,
+        mem.clone(),
+        Interrupt::null(),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    let work = queue.try_next().unwrap().expect("descriptor available");
+
+    // Writing one byte at offset 0x900 targets `overflow_addr + 0x900`, which
+    // overflows u64. A correct implementation rejects it as out of range; the
+    // buggy one panics (debug) or wraps to GPA 0xFF (release).
+    let result = work.write_at_offset(0x900, &mem, &[0xAB]);
+    assert!(
+        result.is_err(),
+        "write to an address that overflows u64 must fail, not wrap around"
+    );
+
+    let mut byte = [0u8; 1];
+    mem.read_at(0xFF, &mut byte).unwrap();
+    assert_eq!(
+        byte[0], 0x11,
+        "overflowing write must not corrupt the wrapped-to low GPA"
+    );
+}
+
+/// Test for the packed-ring full-ring wrap-counter bug.
+///
+/// A single descriptor chain may legally span the entire ring (the maximum
+/// length the spec permits). Consuming and completing such a buffer advances
+/// both the avail and used cursors by `queue_size` — a full lap — which MUST
+/// toggle the respective wrap counters. The device's `(next + count) % size` /
+/// `next < old` check misses the exact-wrap case (`next == old`), leaving both
+/// wrap counters stale; after that, a conformant driver's next (correctly
+/// wrapped) descriptor is invisible to the device.
+///
+/// This drives a real packed `VirtioQueue` through the public API: a
+/// conformant driver makes a full-ring 4-descriptor chain available, the
+/// device consumes and completes it, and the saved queue state must show both
+/// wrap counters flipped.
+#[async_test]
+async fn packed_full_ring_chain_toggles_wrap_counters(driver: DefaultDriver) {
+    // Packed descriptor: address(u64)@0, length(u32)@8, buffer_id(u16)@12,
+    // flags(u16)@14.
+    fn write_packed_desc(
+        mem: &GuestMemory,
+        desc_addr: u64,
+        index: u16,
+        addr: u64,
+        len: u32,
+        buffer_id: u16,
+        flags: DescriptorFlags,
+    ) {
+        let base = desc_addr + index as u64 * 16;
+        mem.write_at(base, &addr.to_le_bytes()).unwrap();
+        mem.write_at(base + 8, &len.to_le_bytes()).unwrap();
+        mem.write_at(base + 12, &buffer_id.to_le_bytes()).unwrap();
+        mem.write_at(base + 14, &flags.into_bits().to_le_bytes())
+            .unwrap();
+    }
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let data_addr = 0x4000;
+    let size: u16 = 4;
+
+    // Conformant driver, wrap counter = 1: make a chain spanning all `size`
+    // descriptors available (AVAIL=1, USED=0). The buffer id lives on the last
+    // descriptor; every descriptor but the last sets NEXT.
+    for i in 0..size {
+        let last = i == size - 1;
+        let flags = DescriptorFlags::new().with_available(true).with_next(!last);
+        let buffer_id = if last { 42 } else { 0 };
+        write_packed_desc(
+            &mem,
+            desc_addr,
+            i,
+            data_addr + i as u64 * 0x1000,
+            0x1000,
+            buffer_id,
+            flags,
+        );
+    }
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let queue_event = PolledWait::new(&driver, Event::new()).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new().with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED),
+        params,
+        mem.clone(),
+        Interrupt::null(),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    // The device consumes the full-ring buffer (all four descriptors) and
+    // completes it.
+    let work = queue
+        .try_next()
+        .unwrap()
+        .expect("full-ring buffer available");
+    assert_eq!(
+        work.payload.len(),
+        4,
+        "chain should span all four descriptors"
+    );
+    queue.complete(work, 4);
+
+    // After one full lap a spec-conformant device must have toggled both wrap
+    // counters. The packed queue state encodes the wrap bit at bit 15, so a
+    // correct device reports 0 for both; the buggy device leaves them at
+    // 0x8000.
+    let state = queue.queue_state();
+    assert_eq!(
+        state.avail_index, 0,
+        "avail wrap counter must toggle after a full-ring lap"
+    );
+    assert_eq!(
+        state.used_index, 0,
+        "used wrap counter must toggle after a full-ring lap"
+    );
+}
+
+/// Directly exercises the in-order completion helper: with it in front of the
+/// queue, descriptors completed out of order are published to the used ring
+/// strictly in avail (consumption) order.
+#[async_test]
+async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::read_used;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let data_addr = 0x4000;
+    let size: u16 = 8;
+
+    init_avail_ring(&mem, avail_addr);
+    init_used_ring(&mem, used_addr);
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let event = Event::new();
+    let interrupt_event = Event::new();
+    let notify = Interrupt::from_event(interrupt_event);
+    let queue_event = PolledWait::new(&driver, event).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        params,
+        mem.clone(),
+        notify,
+        queue_event,
+        None,
+    )
+    .unwrap();
+    let mut in_order = InOrderCompletion::new(size);
+
+    // Make three writeable descriptors available.
+    let mut avail_idx = 0;
+    for i in 0..3u16 {
+        write_descriptor(
+            &mem,
+            desc_addr,
+            i,
+            data_addr + i as u64 * 0x100,
+            0x100,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(&mem, avail_addr, size, i, &mut avail_idx);
+    }
+
+    let w0 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w1 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w2 = in_order.try_next(&mut queue).unwrap().unwrap();
+
+    let mut used_idx = 0;
+
+    // Complete the last descriptor first: nothing may be published yet.
+    in_order.complete(&mut queue, w2.into_completion(), 22);
+    assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
+
+    // Complete descriptor 0: it publishes, but descriptor 2 must wait for 1.
+    in_order.complete(&mut queue, w0.into_completion(), 10);
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((0, 10))
+    );
+    assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
+
+    // Complete descriptor 1: now 1 and the already-filled 2 flush in order.
+    in_order.complete(&mut queue, w1.into_completion(), 11);
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((1, 11))
+    );
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((2, 22))
+    );
+}
+
+#[async_test]
+async fn in_order_rejects_reuse_until_published(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::read_used;
+
+    for buffered in [false, true] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+        let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+        let mut avail = 0;
+        for id in [3, 0, 0] {
+            make_available(
+                &mem,
+                BOUND_TEST_AVAIL_ADDR,
+                BOUND_TEST_QUEUE_SIZE,
+                id,
+                &mut avail,
+            );
+        }
+        let first = in_order.try_next(&mut queue).unwrap().unwrap();
+        let mut second = Some(in_order.try_next(&mut queue).unwrap().unwrap());
+        if buffered {
+            in_order.complete(&mut queue, second.take().unwrap().into_completion(), 0);
+        }
+        let state = queue.queue_state();
+        let error = in_order
+            .try_next(&mut queue)
+            .err()
+            .expect("outstanding descriptor reuse must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(queue.queue_state(), state, "duplicate must not be consumed");
+        assert_eq!(in_order.outstanding(), 2);
+
+        if let Some(second) = second {
+            in_order.complete(&mut queue, second.into_completion(), 0);
+        }
+        in_order.complete(&mut queue, first.into_completion(), 0);
+        let mut used = 0;
+        for id in [3, 0] {
+            assert_eq!(
+                read_used(&mem, BOUND_TEST_USED_ADDR, BOUND_TEST_QUEUE_SIZE, &mut used),
+                Some((id, 0))
+            );
+        }
+        let reused = in_order.try_next(&mut queue).unwrap().unwrap();
+        assert_eq!(reused.descriptor_index(), 0);
+        in_order.complete(&mut queue, reused.into_completion(), 0);
+        assert_eq!(in_order.outstanding(), 0);
+
+        // Publication frees the ID on both the buffered and direct paths.
+        make_available(
+            &mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            0,
+            &mut avail,
+        );
+        let reused = in_order.try_next(&mut queue).unwrap().unwrap();
+        in_order.complete(&mut queue, reused.into_completion(), 0);
+        for _ in 0..2 {
+            assert_eq!(
+                read_used(&mem, BOUND_TEST_USED_ADDR, BOUND_TEST_QUEUE_SIZE, &mut used),
+                Some((0, 0))
+            );
+        }
+    }
+}
+
+#[async_test]
+async fn in_order_packed_reuse_after_publication_and_wrap(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+
+    for buffered in [false, true] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+        let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+
+        for wrap in [true, false, true] {
+            let mut work = Vec::new();
+            for index in 0..BOUND_TEST_QUEUE_SIZE {
+                write_packed_descriptor(
+                    &mem,
+                    index,
+                    BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                    BOUND_TEST_QUEUE_SIZE - 1 - index,
+                    DescriptorFlags::new()
+                        .with_write(true)
+                        .with_available(wrap)
+                        .with_used(!wrap),
+                );
+                work.push(in_order.try_next(&mut queue).unwrap().unwrap());
+            }
+            assert_eq!(in_order.outstanding(), usize::from(BOUND_TEST_QUEUE_SIZE));
+            assert_eq!(queue.queue_state().avail_index, u16::from(!wrap) << 15);
+
+            if buffered {
+                work.reverse();
+            }
+            for work in work {
+                let index = work.descriptor_index();
+                in_order.complete(&mut queue, work.into_completion(), u32::from(index) + 1);
+                if buffered && index != 0 {
+                    assert_eq!(queue.queue_state().used_index, u16::from(wrap) << 15);
+                    assert_eq!(in_order.outstanding(), usize::from(BOUND_TEST_QUEUE_SIZE));
+                }
+            }
+            assert_eq!(in_order.outstanding(), 0);
+            assert_eq!(queue.queue_state().used_index, u16::from(!wrap) << 15);
+
+            for index in 0..BOUND_TEST_QUEUE_SIZE {
+                let descriptor = mem
+                    .read_plain::<PackedDescriptor>(
+                        BOUND_TEST_DESC_ADDR
+                            + u64::from(index) * size_of::<PackedDescriptor>() as u64,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    descriptor.buffer_id.get(),
+                    BOUND_TEST_QUEUE_SIZE - 1 - index
+                );
+                assert_eq!(descriptor.length.get(), u32::from(index) + 1);
+                assert_eq!(descriptor.flags().available(), wrap);
+                assert_eq!(descriptor.flags().used(), wrap);
+            }
+            assert!(in_order.try_next(&mut queue).unwrap().is_none());
+        }
+    }
+}
+
+/// Completing the same descriptor twice while it is still outstanding is an
+/// internal invariant violation (`try_next` rejects guest-induced duplicates),
+/// so the in-order helper must fail fast rather than silently
+/// stalling the used ring.
+#[async_test]
+#[should_panic(expected = "completed more than once")]
+async fn in_order_double_complete_panics(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let data_addr = 0x4000;
+    let size: u16 = 8;
+
+    init_avail_ring(&mem, avail_addr);
+    init_used_ring(&mem, used_addr);
+
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let event = Event::new();
+    let notify = Interrupt::from_event(Event::new());
+    let queue_event = PolledWait::new(&driver, event).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        params,
+        mem.clone(),
+        notify,
+        queue_event,
+        None,
+    )
+    .unwrap();
+    let mut in_order = InOrderCompletion::new(size);
+
+    // Descriptors 0 and 1, with 1 made available twice so two works share
+    // descriptor index 1.
+    let mut avail_idx = 0;
+    for i in 0..2u16 {
+        write_descriptor(
+            &mem,
+            desc_addr,
+            i,
+            data_addr + i as u64 * 0x100,
+            0x100,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(&mem, avail_addr, size, i, &mut avail_idx);
+    }
+    make_available(&mem, avail_addr, size, 1, &mut avail_idx);
+
+    let _w0 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w1a = in_order.try_next(&mut queue).unwrap().unwrap();
+    // Bypass the tracker to model an internal caller violating the completion
+    // contract; its normal consume path rejects this guest descriptor reuse.
+    let w1b = queue.try_next().unwrap().unwrap();
+
+    // w0 (descriptor 0) is never completed, so descriptor 1 stays buffered
+    // behind it; completing index 1 twice while buffered must panic.
+    in_order.complete(&mut queue, w1a.into_completion(), 1);
+    in_order.complete(&mut queue, w1b.into_completion(), 1);
+}
+
+#[async_test]
+async fn completion_write_failure_releases_queue_capacity(driver: DefaultDriver) {
+    use crate::test_helpers::read_used_idx;
+
+    for prepared in [false, true] {
+        for offset in [USED_OFFSET_RING, USED_OFFSET_IDX] {
+            let access = VirtioTestMemoryAccess::new();
+            access.modify_memory_map(BOUND_TEST_DESC_ADDR, &vec![0; 0x4000], true);
+            let mem = GuestMemory::new("completion-write-failure", access.clone());
+            let (mem, mut queue) =
+                new_bound_test_queue_with_memory(&driver, false, None, mem).unwrap();
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, 0);
+            let work: Vec<_> = (0..BOUND_TEST_QUEUE_SIZE)
+                .map(|_| queue.try_next().unwrap().unwrap())
+                .collect();
+            let failed_address = BOUND_TEST_USED_ADDR + offset;
+            *access.failed_write_range.lock() = Some(failed_address..failed_address + 2);
+
+            for work in work {
+                if prepared {
+                    queue.complete_prepared(work.into_completion(), 0);
+                } else {
+                    queue.complete(work, 0);
+                }
+            }
+            assert_eq!(read_used_idx(&mem, BOUND_TEST_USED_ADDR), 0);
+
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, BOUND_TEST_QUEUE_SIZE);
+            for _ in 0..BOUND_TEST_QUEUE_SIZE {
+                assert!(
+                    queue.try_next().unwrap().is_some(),
+                    "failed publication must not strand host queue capacity"
+                );
+            }
+        }
+    }
+}
+
+#[async_test]
+async fn in_order_write_failure_releases_ownership_and_capacity(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::read_used_idx;
+
+    for buffered in [false, true] {
+        for offset in [USED_OFFSET_RING, USED_OFFSET_IDX] {
+            let access = VirtioTestMemoryAccess::new();
+            access.modify_memory_map(BOUND_TEST_DESC_ADDR, &vec![0; 0x4000], true);
+            let mem = GuestMemory::new("in-order-write-failure", access.clone());
+            let (mem, mut queue) =
+                new_bound_test_queue_with_memory(&driver, false, None, mem).unwrap();
+            let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, 0);
+            let mut work: Vec<_> = (0..BOUND_TEST_QUEUE_SIZE)
+                .map(|_| in_order.try_next(&mut queue).unwrap().unwrap())
+                .collect();
+            let failed_address = BOUND_TEST_USED_ADDR + offset;
+            *access.failed_write_range.lock() = Some(failed_address..failed_address + 2);
+
+            if buffered {
+                work.reverse();
+            }
+            for work in work {
+                in_order.complete(&mut queue, work.into_completion(), 0);
+            }
+            assert_eq!(read_used_idx(&mem, BOUND_TEST_USED_ADDR), 0);
+            assert_eq!(in_order.outstanding(), 0);
+
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, BOUND_TEST_QUEUE_SIZE);
+            for _ in 0..BOUND_TEST_QUEUE_SIZE {
+                assert!(
+                    in_order.try_next(&mut queue).unwrap().is_some(),
+                    "failed publication must not strand host descriptor ownership or capacity"
+                );
+            }
+        }
+    }
+}
+
+const BOUND_TEST_QUEUE_SIZE: u16 = 4;
+const BOUND_TEST_DESC_ADDR: u64 = 0x1000;
+const BOUND_TEST_AVAIL_ADDR: u64 = 0x2000;
+const BOUND_TEST_USED_ADDR: u64 = 0x3000;
+const BOUND_TEST_DATA_ADDR: u64 = 0x4000;
+
+fn bound_test_params(size: u16) -> QueueParams {
+    QueueParams {
+        size,
+        enable: true,
+        desc_addr: BOUND_TEST_DESC_ADDR,
+        avail_addr: BOUND_TEST_AVAIL_ADDR,
+        used_addr: BOUND_TEST_USED_ADDR,
+    }
+}
+
+fn new_bound_test_queue(
+    driver: &DefaultDriver,
+    packed: bool,
+    initial_state: Option<QueueState>,
+) -> (GuestMemory, VirtioQueue) {
+    new_bound_test_queue_result(driver, packed, initial_state).unwrap()
+}
+
+fn new_bound_test_queue_result(
+    driver: &DefaultDriver,
+    packed: bool,
+    initial_state: Option<QueueState>,
+) -> Result<(GuestMemory, VirtioQueue), QueueError> {
+    new_bound_test_queue_with_memory(
+        driver,
+        packed,
+        initial_state,
+        GuestMemory::allocate(0x10000),
+    )
+}
+
+fn new_bound_test_queue_with_memory(
+    driver: &DefaultDriver,
+    packed: bool,
+    initial_state: Option<QueueState>,
+    mem: GuestMemory,
+) -> Result<(GuestMemory, VirtioQueue), QueueError> {
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::write_descriptor;
+
+    init_avail_ring(&mem, BOUND_TEST_AVAIL_ADDR);
+    init_used_ring(&mem, BOUND_TEST_USED_ADDR);
+    if !packed {
+        for index in 0..BOUND_TEST_QUEUE_SIZE {
+            write_descriptor(
+                &mem,
+                BOUND_TEST_DESC_ADDR,
+                index,
+                BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                0x100,
+                DescriptorFlags::new().with_write(true),
+                0,
+            );
+        }
+    }
+    let features = if packed {
+        VirtioDeviceFeatures::new().with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED)
+    } else {
+        VirtioDeviceFeatures::new()
+    };
+    let queue = VirtioQueue::new(
+        features,
+        bound_test_params(BOUND_TEST_QUEUE_SIZE),
+        mem.clone(),
+        Interrupt::from_event(Event::new()),
+        PolledWait::new(driver, Event::new()).unwrap(),
+        initial_state,
+    )?;
+    Ok((mem, queue))
+}
+
+fn queue_error(error: &io::Error) -> Option<&QueueError> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<QueueError>())
+}
+
+fn assert_in_flight_error(error: io::Error, in_flight: u16, requested: u16) {
+    assert!(matches!(
+        queue_error(&error),
+        Some(QueueError::TooManyInFlightDescriptors {
+            in_flight: actual_in_flight,
+            requested: actual_requested,
+            queue_size: BOUND_TEST_QUEUE_SIZE,
+        }) if *actual_in_flight == in_flight && *actual_requested == requested
+    ));
+}
+
+/// Points descriptor 0 at itself and makes it available. The chain never
+/// terminates, so the queue rejects it with [`QueueError::TooLong`].
+fn make_split_cyclic_chain(mem: &GuestMemory) {
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::write_descriptor;
+
+    write_descriptor(
+        mem,
+        BOUND_TEST_DESC_ADDR,
+        0,
+        BOUND_TEST_DATA_ADDR,
+        0x100,
+        DescriptorFlags::new().with_write(true).with_next(true),
+        0,
+    );
+    let mut avail_idx = 0;
+    make_available(
+        mem,
+        BOUND_TEST_AVAIL_ADDR,
+        BOUND_TEST_QUEUE_SIZE,
+        0,
+        &mut avail_idx,
+    );
+}
+
+fn next_error(queue: &mut VirtioQueue) -> io::Error {
+    match queue.try_next() {
+        Err(error) => error,
+        Ok(_) => panic!("queue accepted too many in-flight descriptors"),
+    }
+}
+
+fn make_split_bound_test_work(mem: &GuestMemory, count: u16, initial_avail: u16) {
+    use crate::test_helpers::make_available;
+
+    let mut avail = initial_avail;
+    for index in 0..count {
+        make_available(
+            mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            index % BOUND_TEST_QUEUE_SIZE,
+            &mut avail,
+        );
+    }
+}
+
+fn write_packed_descriptor(
+    mem: &GuestMemory,
+    index: u16,
+    addr: u64,
+    buffer_id: u16,
+    flags: DescriptorFlags,
+) {
+    let base = BOUND_TEST_DESC_ADDR + size_of::<PackedDescriptor>() as u64 * u64::from(index);
+    for (offset, bytes) in [
+        (
+            std::mem::offset_of!(PackedDescriptor, address),
+            addr.to_le_bytes().as_slice(),
+        ),
+        (
+            std::mem::offset_of!(PackedDescriptor, buffer_id),
+            buffer_id.to_le_bytes().as_slice(),
+        ),
+        (
+            std::mem::offset_of!(PackedDescriptor, flags_raw),
+            u16::from(flags).to_le_bytes().as_slice(),
+        ),
+    ] {
+        mem.write_at(base + offset as u64, bytes).unwrap();
+    }
+    mem.write_at(
+        base + std::mem::offset_of!(PackedDescriptor, length) as u64,
+        &0x100u32.to_le_bytes(),
+    )
+    .unwrap();
+}
+
+#[async_test]
+async fn split_queue_rejects_out_of_range_descriptor_head(driver: DefaultDriver) {
+    use crate::test_helpers::make_available;
+
+    for head in [BOUND_TEST_QUEUE_SIZE, u16::MAX] {
+        for peek in [false, true] {
+            let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+            let mut avail = 0;
+            make_available(
+                &mem,
+                BOUND_TEST_AVAIL_ADDR,
+                BOUND_TEST_QUEUE_SIZE,
+                head,
+                &mut avail,
+            );
+
+            let result = if peek {
+                queue.try_peek().map(|_| ())
+            } else {
+                queue.try_next().map(|_| ())
+            };
+            let error = result.expect_err("an out-of-range descriptor head must be rejected");
+            assert!(matches!(
+                queue_error(&error),
+                Some(QueueError::InvalidDescriptorIndex(index)) if *index == head
+            ));
+            assert!(matches!(queue.try_next(), Ok(None)));
+            assert!(matches!(queue.try_peek(), Ok(None)));
+        }
+    }
+}
+
+#[async_test]
+async fn split_queue_accepts_descriptor_head_boundaries(driver: DefaultDriver) {
+    use crate::test_helpers::make_available;
+
+    for head in [0, BOUND_TEST_QUEUE_SIZE - 1] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+        let mut avail = 0;
+        make_available(
+            &mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            head,
+            &mut avail,
+        );
+
+        assert!(queue.try_peek().unwrap().is_some());
+        let work = queue.try_next().unwrap().unwrap();
+        assert_eq!(work.descriptor_index(), head);
+        queue.complete(work, 0);
+        assert!(queue.try_next().unwrap().is_none());
+    }
+}
+
+#[async_test]
+async fn split_queue_rejects_too_many_in_flight(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE + 1, 0);
+
+    for _ in 0..BOUND_TEST_QUEUE_SIZE {
+        let _ = queue.try_next().unwrap().unwrap();
+    }
+    assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+}
+
+#[async_test]
+async fn packed_queue_rejects_restamped_slots(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+    let available = DescriptorFlags::new().with_write(true).with_available(true);
+    for index in 0..BOUND_TEST_QUEUE_SIZE {
+        write_packed_descriptor(
+            &mem,
+            index,
+            BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+            index,
+            available,
+        );
+        let _ = queue.try_next().unwrap().unwrap();
+    }
+
+    write_packed_descriptor(
+        &mem,
+        0,
+        BOUND_TEST_DATA_ADDR,
+        0,
+        DescriptorFlags::new().with_write(true).with_used(true),
+    );
+    assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+}
+
+#[async_test]
+async fn packed_queue_rejects_chain_exceeding_free_space(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+    let available = DescriptorFlags::new().with_write(true).with_available(true);
+    let write = |index, flags| {
+        write_packed_descriptor(
+            &mem,
+            index,
+            BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+            index,
+            flags,
+        );
+    };
+    write(0, available.with_next(true));
+    write(1, available);
+    let _ = queue.try_next().unwrap().unwrap();
+
+    write(2, available.with_next(true));
+    write(3, available.with_next(true));
+    write(0, available);
+    assert_in_flight_error(next_error(&mut queue), 2, 3);
+}
+
+/// Oversubscribing the ring retires the queue like any other protocol
+/// violation. Completing outstanding work frees ring capacity but does not
+/// revive it: the rejected chain was never consumed, so the queue would hand
+/// out a descriptor the guest had already oversubscribed.
+#[async_test]
+async fn split_queue_stays_retired_after_capacity_error(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE + 1, 0);
+
+    let mut works = Vec::new();
+    for _ in 0..BOUND_TEST_QUEUE_SIZE {
+        works.push(queue.try_next().unwrap().expect("within queue size"));
+    }
+    assert_in_flight_error(next_error(&mut queue), BOUND_TEST_QUEUE_SIZE, 1);
+
+    // Completions still publish to the used ring, so a device can drain its
+    // in-flight work after the failure.
+    queue.complete(works.remove(0), 1);
+    assert!(
+        matches!(queue.try_next(), Ok(None)),
+        "freeing capacity must not revive a retired queue"
+    );
+}
+
+#[async_test]
+async fn split_queue_restore_seeds_in_flight(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(
+        &driver,
+        false,
+        Some(QueueState {
+            avail_index: 3,
+            used_index: 1,
+        }),
+    );
+    make_split_bound_test_work(&mem, 3, 3);
+
+    for _ in 0..2 {
+        let _ = queue.try_next().unwrap().unwrap();
+    }
+    assert_in_flight_error(next_error(&mut queue), 4, 1);
+}
+
+#[async_test]
+async fn packed_queue_new_rejects_oversized_size(driver: DefaultDriver) {
+    let mem = GuestMemory::allocate(0x110000);
+    let params = QueueParams {
+        size: (1 << 15) + 1,
+        enable: true,
+        desc_addr: 0x1000,
+        avail_addr: 0x100000,
+        used_addr: 0x101000,
+    };
+    let features =
+        VirtioDeviceFeatures::new().with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    let queue_event = PolledWait::new(&driver, Event::new()).unwrap();
+    assert!(matches!(
+        VirtioQueue::new(
+            features,
+            params,
+            mem,
+            Interrupt::from_event(Event::new()),
+            queue_event,
+            None,
+        ),
+        Err(QueueError::InvalidQueueSize(size)) if size == (1 << 15) + 1
+    ));
+}
+
+#[async_test]
+async fn queue_new_rejects_corrupt_saved_state(driver: DefaultDriver) {
+    let cases = [
+        (false, 10, 0),
+        (true, 1, 6),
+        (true, BOUND_TEST_QUEUE_SIZE, 0),
+        (true, 0, BOUND_TEST_QUEUE_SIZE),
+    ];
+    for (packed, avail_index, used_index) in cases {
+        assert!(matches!(
+            new_bound_test_queue_result(
+                &driver,
+                packed,
+                Some(QueueState {
+                    avail_index,
+                    used_index,
+                }),
+            ),
+            Err(QueueError::InvalidSavedState {
+                avail_index: actual_avail,
+                used_index: actual_used,
+                queue_size: BOUND_TEST_QUEUE_SIZE,
+            }) if actual_avail == avail_index && actual_used == used_index
+        ));
+    }
+}
+
+/// A rejected descriptor chain is never consumed, so the available index does
+/// not move and the same chain would be re-read on the next call. Report the
+/// failure once and then report the queue as empty, so that a device worker
+/// which logs the error and keeps polling makes no further progress instead of
+/// spinning on the same bad chain forever.
+#[async_test]
+async fn queue_reports_failure_only_once(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_cyclic_chain(&mem);
+
+    let Err(error) = queue.try_next() else {
+        panic!("a cyclic descriptor chain must be rejected");
+    };
+    assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
+
+    assert!(
+        matches!(queue.try_next(), Ok(None)),
+        "failed queue must report no work rather than repeat the error"
+    );
+    assert!(
+        matches!(queue.try_peek(), Ok(None)),
+        "failed queue must report no work rather than repeat the error"
+    );
+}
+
+/// Driven as a stream, a failed queue must park rather than yield the same
+/// error on every poll. It must not end the stream either: `None` would be
+/// ready synchronously on every poll, so a caller looping over the stream
+/// would spin on it exactly as it would on the repeated error.
+#[async_test]
+async fn queue_stream_parks_after_failure(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+    make_split_cyclic_chain(&mem);
+
+    let Some(Err(error)) = queue.next().await else {
+        panic!("the stream must yield the failure");
+    };
+    assert!(matches!(queue_error(&error), Some(QueueError::TooLong)));
+
+    assert!(
+        poll_fn(|cx| std::task::Poll::Ready(queue.poll_next_unpin(cx)))
+            .await
+            .is_pending(),
+        "failed queue must park rather than repeat the error or end the stream"
+    );
+}
+
+#[derive(InspectMut)]
+#[inspect(skip)]
+struct DropTrackingDevice(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DropTrackingDevice {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+impl VirtioDevice for DropTrackingDevice {
+    fn traits(&self) -> DeviceTraits {
+        DeviceTraits {
+            device_id: VirtioDeviceType::BLK,
+            max_queues: 1,
+            ..Default::default()
+        }
+    }
+
+    async fn read_registers_u32(&mut self, _: u16) -> u32 {
+        0
+    }
+
+    async fn write_registers_u32(&mut self, _: u16, _: u32) {}
+
+    async fn start_queue(
+        &mut self,
+        _: u16,
+        _: QueueResources,
+        _: &VirtioDeviceFeatures,
+        _: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn stop_queue(&mut self, _: u16) -> Option<QueueState> {
+        None
+    }
+}
+
+async fn verify_teardown_drops_backend(
+    mut transport: impl TestTransport,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+    started: bool,
+) {
+    if started {
+        transport.write_driver_ok();
+        transport.stop().await;
+    }
+    assert!(!dropped.load(Ordering::SeqCst));
+    transport.teardown().await;
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "teardown returned before the backend was destroyed"
+    );
+}
+
+#[async_test]
+async fn teardown_drops_backend_pci(driver: DefaultDriver) {
+    for started in [false, true] {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport =
+            PciTestTransport::new(Box::new(DropTrackingDevice(dropped.clone())), &driver, 1);
+        verify_teardown_drops_backend(transport, dropped, started).await;
+    }
+}
+
+#[async_test]
+async fn teardown_drops_backend_mmio(driver: DefaultDriver) {
+    for started in [false, true] {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport =
+            MmioTestTransport::new(Box::new(DropTrackingDevice(dropped.clone())), &driver, 1);
+        verify_teardown_drops_backend(transport, dropped, started).await;
+    }
 }

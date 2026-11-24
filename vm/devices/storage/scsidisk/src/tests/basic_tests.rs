@@ -3,6 +3,7 @@
 
 //! ScsiDisk basic tests.
 
+use super::test_helpers::check_execute_scsi_failed_with_result;
 use super::test_helpers::check_execute_scsi_pass;
 use super::test_helpers::check_execute_scsi_pass_with_tx;
 use super::test_helpers::check_guest_memory;
@@ -21,9 +22,11 @@ use scsi::AdditionalSenseCode;
 use scsi::ScsiOp;
 use scsi::ScsiStatus;
 use scsi::SenseKey;
+use scsi::srb::SrbStatus;
 use scsi_buffers::OwnedRequestBuffers;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
+use scsi_core::ScsiResult;
 use scsi_core::ScsiSaveRestore;
 use scsi_core::save_restore::SavedSenseData;
 use scsi_core::save_restore::ScsiDiskSavedState;
@@ -33,6 +36,58 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
+
+#[async_test]
+async fn logical_block_provisioning_threshold_boundaries() {
+    let response_len =
+        size_of::<scsi::VpdPageHeader>() + size_of::<scsi::VpdLogicalBlockProvisioningPage>();
+    let inquiry = scsi::CdbInquiry {
+        operation_code: ScsiOp::INQUIRY.0,
+        flags: scsi::InquiryFlags::new().with_vpd(true),
+        page_code: scsi::VPD_LOGICAL_BLOCK_PROVISIONING,
+        allocation_length: (response_len as u16).into(),
+        control: 0,
+    };
+    let mut cdb = [0; 16];
+    cdb[..size_of_val(&inquiry)].copy_from_slice(inquiry.as_bytes());
+    let request = Request { cdb, srb_flags: 0 };
+
+    for (sector_count, expected) in [
+        (0, 1),
+        (1, 1),
+        ((1 << 32) - 1, 1),
+        (1 << 32, 1),
+        ((2 << 32) - 1, 1),
+        (2 << 32, 2),
+        ((2 << 32) + 1, 2),
+        (3 << 32, 2),
+        ((4 << 32) - 1, 2),
+        (4 << 32, 3),
+        ((4 << 32) + 1, 3),
+        (5 << 32, 3),
+        (u64::MAX, 32),
+    ] {
+        let (mut disk, _) = new_scsi_disk(512, 512, sector_count, false, false, false);
+        disk.scsi_parameters.support_unmap = true;
+        let memory = GuestMemory::allocate(response_len);
+        let buffers = OwnedRequestBuffers::linear(0, response_len, true);
+        check_execute_scsi_pass_with_tx(&disk, &buffers.buffer(&memory), &request, response_len)
+            .await;
+
+        let mut response = vec![0; response_len];
+        memory.read_at(0, &mut response).unwrap();
+        let page = scsi::VpdLogicalBlockProvisioningPage::read_from_prefix(
+            &response[size_of::<scsi::VpdPageHeader>()..],
+        )
+        .unwrap()
+        .0;
+        assert_eq!(page.threshold_exponent, expected, "{sector_count}");
+        assert!(
+            u128::from(sector_count) < (1u128 << (32 + page.threshold_exponent)),
+            "{sector_count}"
+        );
+    }
+}
 
 fn save_scsi_disk(scsi_disk: &SimpleScsiDisk) -> ScsiDiskSavedState {
     let saved_state = if let Some(ScsiSavedState::ScsiDisk(saved_state)) = scsi_disk.save().unwrap()
@@ -232,6 +287,64 @@ async fn validate_report_pending_unit_attention() {
 async fn validate_async_write_same() {
     write_same(512, 4096, 512, false, false).await;
     write_same(512, 4096, 512, false, true).await;
+}
+
+/// UNMAP on a read-only disk fails with the same sense as a write.
+#[async_test]
+async fn unmap_read_only_disk() {
+    let descriptor = scsi::UnmapBlockDescriptor {
+        start_lba: 0.into(),
+        lba_count: 8.into(),
+        reserved: [0; 4],
+    };
+    let header = scsi::UnmapListHeader {
+        data_length: ((size_of::<scsi::UnmapListHeader>() + size_of_val(&descriptor) - 2) as u16)
+            .into(),
+        block_descriptor_data_length: (size_of_val(&descriptor) as u16).into(),
+        reserved: [0; 4],
+    };
+    let mut data = header.as_bytes().to_vec();
+    data.extend_from_slice(descriptor.as_bytes());
+
+    let cdb = scsi::Unmap {
+        operation_code: ScsiOp::UNMAP,
+        anchor: 0,
+        reserved2: [0; 4],
+        group_number: 0,
+        allocation_length: (data.len() as u16).into(),
+        control: 0,
+    };
+    let mut request = Request {
+        cdb: [0; 16],
+        srb_flags: 0,
+    };
+    request.cdb[..size_of_val(&cdb)].copy_from_slice(cdb.as_bytes());
+
+    let guest_mem = make_guest_memory(&data);
+    let external_data = OwnedRequestBuffers::linear(0, data.len(), false);
+
+    let (mut disk, _) = new_scsi_disk(512, 512, 1024, false, false, false);
+    disk.scsi_parameters.support_unmap = true;
+    check_execute_scsi_pass(&disk, &external_data.buffer(&guest_mem), &request).await;
+
+    let (mut disk, _) = new_scsi_disk(512, 512, 1024, true, false, false);
+    disk.scsi_parameters.support_unmap = true;
+    check_execute_scsi_failed_with_result(
+        &disk,
+        &external_data.buffer(&guest_mem),
+        &request,
+        &ScsiResult {
+            scsi_status: ScsiStatus::CHECK_CONDITION,
+            srb_status: SrbStatus::ERROR,
+            tx: 0,
+            sense_data: Some(scsi::SenseData::new(
+                SenseKey::DATA_PROTECT,
+                AdditionalSenseCode::WRITE_PROTECT,
+                0,
+            )),
+        },
+    )
+    .await;
 }
 
 #[test]

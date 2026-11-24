@@ -209,26 +209,24 @@ impl CommonState {
     }
 
     pub async fn new(driver: DefaultDriver, opts: Options) -> anyhow::Result<Self> {
-        #[cfg(guest_arch = "x86_64")]
-        let processor_topology = TopologyBuilder::new_x86()
-            .x2apic(vm_topology::processor::x86::X2ApicState::Supported)
-            .build(1)
-            .context("failed to build processor topology")?;
-
-        #[cfg(guest_arch = "aarch64")]
-        let processor_topology =
-            TopologyBuilder::new_aarch64(vm_topology::processor::arch::Aarch64PlatformConfig {
-                gic_distributor_base: 0xff000000,
-                gic_version: vm_topology::processor::aarch64::GicVersion::V3 {
-                    redistributors_base: 0xff020000,
-                },
-                gic_msi: vm_topology::processor::aarch64::GicMsiController::None,
-                pmu_gsiv: None,
-                virt_timer_ppi: 20, // DEFAULT_VIRT_TIMER_PPI
-                gic_nr_irqs: 256,
-            })
-            .build(1)
-            .context("failed to build processor topology")?;
+        let processor_topology = cfg_select! {
+            guest_arch = "x86_64" => TopologyBuilder::new_x86()
+                .x2apic(vm_topology::processor::x86::X2ApicState::Supported),
+            guest_arch = "aarch64" => {
+                TopologyBuilder::new_aarch64(vm_topology::processor::arch::Aarch64PlatformConfig {
+                    gic_distributor_base: 0xff000000,
+                    gic_version: vm_topology::processor::aarch64::GicVersion::V3 {
+                        redistributors_base: 0xff020000,
+                    },
+                    gic_msi: vm_topology::processor::aarch64::GicMsiController::None,
+                    pmu_gsiv: None,
+                    virt_timer_ppi: 20, // DEFAULT_VIRT_TIMER_PPI
+                    gic_nr_irqs: 256,
+                })
+            }
+        }
+        .build(1)
+        .context("failed to build processor topology")?;
 
         let ram_size = 0x400000;
 
@@ -276,6 +274,11 @@ impl CommonState {
         for test in &tests {
             tracing::info!(target: "test", name = test.name, "test started");
 
+            if test.linux_only && !cfg!(target_os = "linux") {
+                tracing::info!(target: "test", name = test.name, "test skipped, incompatible os");
+                continue;
+            }
+
             let mut vmtime_keeper = VmTimeKeeper::new(&self.driver, VmTime::from_100ns(0));
             let vmtime_source = vmtime_keeper.builder().build(&self.driver).await.unwrap();
             let mut ctx = RunContext {
@@ -291,19 +294,40 @@ impl CommonState {
 
             vmtime_keeper.stop().await;
 
-            match r {
-                TestResult::Passed => {
+            match (r, test.expected_failure) {
+                (TestResult::Passed, false) => {
                     tracing::info!(target: "test", name = test.name, "test passed");
                 }
-                TestResult::Failed => {
+                (TestResult::Passed, true) => {
+                    tracing::error!(
+                        target: "test",
+                        name = test.name,
+                        expected_failure = true,
+                        "test unexpectedly passed"
+                    );
+                    success = false;
+                }
+                (TestResult::Failed, false) => {
                     tracing::error!(target: "test", name = test.name, reason = "explicit failure", "test failed");
                     success = false;
                 }
-                TestResult::Faulted {
-                    vp_index,
-                    reason,
-                    regs,
-                } => {
+                (TestResult::Failed, true) => {
+                    tracing::info!(
+                        target: "test",
+                        name = test.name,
+                        expected_failure = true,
+                        reason = "explicit failure",
+                        "test passed"
+                    );
+                }
+                (
+                    TestResult::Faulted {
+                        vp_index,
+                        reason,
+                        regs,
+                    },
+                    false,
+                ) => {
                     tracing::error!(
                         target: "test",
                         name = test.name,
@@ -313,6 +337,24 @@ impl CommonState {
                         "test failed"
                     );
                     success = false;
+                }
+                (
+                    TestResult::Faulted {
+                        vp_index,
+                        reason,
+                        regs,
+                    },
+                    true,
+                ) => {
+                    tracing::info!(
+                        target: "test",
+                        name = test.name,
+                        expected_failure = true,
+                        vp_index = vp_index.index(),
+                        reason,
+                        regs = format_args!("{:#x?}", regs),
+                        "test passed"
+                    );
                 }
             }
         }
@@ -335,30 +377,14 @@ impl RunContext<'_> {
 
         // Load the TMK.
         let tmk = fs_err::File::open(&self.state.opts.tmk).context("failed to open tmk")?;
-        let regs = {
-            #[cfg(guest_arch = "x86_64")]
-            {
-                load::load_x86(
-                    &self.state.memory_layout,
-                    guest_memory,
-                    &self.state.processor_topology,
-                    caps,
-                    &tmk,
-                    test,
-                )?
-            }
-            #[cfg(guest_arch = "aarch64")]
-            {
-                load::load_aarch64(
-                    &self.state.memory_layout,
-                    guest_memory,
-                    &self.state.processor_topology,
-                    caps,
-                    &tmk,
-                    test,
-                )?
-            }
-        };
+        let regs = load::load(
+            &self.state.memory_layout,
+            guest_memory,
+            &self.state.processor_topology,
+            caps,
+            &tmk,
+            test,
+        )?;
 
         start_vp(
             self,
@@ -543,25 +569,25 @@ impl RunnerBuilder {
     pub fn build<P: Processor>(&mut self, mut vp: P) -> anyhow::Result<Runner<'_, P>> {
         {
             let mut state = vp.access_state(Vtl::Vtl0);
-            #[cfg(guest_arch = "x86_64")]
-            {
-                let virt::x86::X86InitialRegs {
-                    registers,
-                    mtrrs,
-                    pat,
-                } = self.regs.as_ref();
-                state.set_registers(registers)?;
-                state.set_mtrrs(mtrrs)?;
-                state.set_pat(pat)?;
-            }
-            #[cfg(guest_arch = "aarch64")]
-            {
-                let virt::aarch64::Aarch64InitialRegs {
-                    registers,
-                    system_registers,
-                } = self.regs.as_ref();
-                state.set_registers(registers)?;
-                state.set_system_registers(system_registers)?;
+            cfg_select! {
+                guest_arch = "x86_64" => {
+                    let virt::x86::X86InitialRegs {
+                        registers,
+                        mtrrs,
+                        pat,
+                    } = self.regs.as_ref();
+                    state.set_registers(registers)?;
+                    state.set_mtrrs(mtrrs)?;
+                    state.set_pat(pat)?;
+                }
+                guest_arch = "aarch64" => {
+                    let virt::aarch64::Aarch64InitialRegs {
+                        registers,
+                        system_registers,
+                    } = self.regs.as_ref();
+                    state.set_registers(registers)?;
+                    state.set_system_registers(system_registers)?;
+                }
             }
             state.commit()?;
         }

@@ -25,6 +25,7 @@ use net_backend::TxSegment;
 use net_backend::next_packet;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::task::Context;
@@ -69,8 +70,14 @@ impl Endpoint for DioEndpoint {
         Ok(())
     }
 
-    async fn stop(&mut self) {
-        assert!(self.nic.lock().is_some(), "the queue has not been dropped");
+    // Dropping the queue cancels and waits for outstanding DirectIO operations.
+    async fn stop(&mut self) {}
+
+    fn is_ordered(&self) -> bool {
+        // RX buffers are filled and TX packets are completed in the order they
+        // were made available (see `DioQueue`: `free` is drained FIFO, and
+        // `tx_avail` completes synchronously in order).
+        true
     }
 }
 
@@ -78,7 +85,7 @@ impl Endpoint for DioEndpoint {
 pub struct DioQueue {
     slot: Arc<Mutex<Option<dio::DioNic>>>,
     nic: Option<dio::DioQueue>,
-    free: Vec<RxId>,
+    free: VecDeque<RxId>,
 }
 
 impl InspectMut for DioQueue {
@@ -100,14 +107,18 @@ impl DioQueue {
         Self {
             slot,
             nic: nic.map(|nic| dio::DioQueue::new(driver, nic)),
-            free: Vec::new(),
+            free: VecDeque::new(),
         }
     }
 }
 
 impl Queue for DioQueue {
     fn poll_ready(&mut self, cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
-        if let Some(nic) = &mut self.nic {
+        // TX completes synchronously. Without RX buffers, readable input cannot
+        // make progress and would leave a TX-only queue continuously ready.
+        if !self.free.is_empty()
+            && let Some(nic) = &mut self.nic
+        {
             nic.poll_read_ready(cx)
         } else {
             Poll::Pending
@@ -127,7 +138,7 @@ impl Queue for DioQueue {
         if let Some(nic) = &mut self.nic {
             // Transmit incoming packets to the guest until there are no more available.
             for done_id in packets {
-                let id = if let Some(&id) = self.free.last() {
+                let id = if let Some(&id) = self.free.front() {
                     id
                 } else {
                     break;
@@ -144,7 +155,7 @@ impl Queue for DioQueue {
                     );
                 });
                 match result {
-                    Ok(()) => self.free.pop(),
+                    Ok(()) => self.free.pop_front(),
                     Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                     Err(e) => {
                         // The DIO endpoint is in a bad state.
@@ -195,5 +206,37 @@ impl Queue for DioQueue {
         _done: &mut [TxId],
     ) -> Result<usize, TxError> {
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+
+    #[async_test]
+    async fn disconnected_queue_can_stop_and_restart(driver: DefaultDriver) {
+        // Model the disconnected NIC state left by a receive error.
+        let mut endpoint = DioEndpoint {
+            nic: Arc::new(Mutex::new(None)),
+        };
+        for _ in 0..2 {
+            let mut queues = Vec::new();
+            endpoint
+                .get_queues(
+                    vec![QueueConfig {
+                        driver: Box::new(driver.clone()),
+                        enabled_rx_offloads: Default::default(),
+                    }],
+                    None,
+                    &mut queues,
+                )
+                .await
+                .unwrap();
+            drop(queues);
+            endpoint.stop().await;
+        }
     }
 }

@@ -55,15 +55,13 @@ fn print_system_info(rt: &mut RustRuntimeServices<'_>) {
         .collect::<Vec<_>>();
 
     let mut cpus = BTreeMap::new();
-    for (vendor, name, freq) in cpu_list {
-        let (count, freq_sum) = cpus.entry((vendor, name)).or_insert((0u64, 0u64));
+    for key in cpu_list {
+        let count = cpus.entry(key).or_insert(0u64);
         *count += 1;
-        *freq_sum += freq;
     }
 
-    for ((vendor, name), (count, freq_sum)) in cpus {
-        let avg_freq = freq_sum / count;
-        log::info!("CPU: {vendor} [{name}] @ {avg_freq} MHz × {count}");
+    for ((vendor, brand, freq), count) in cpus {
+        log::info!("CPU: {vendor} [{brand}] @ {freq} MHz × {count}");
     }
 
     let os_info = [
@@ -77,6 +75,11 @@ fn print_system_info(rt: &mut RustRuntimeServices<'_>) {
     .join(" ");
     log::info!("OS: {}", os_info);
     log::info!("Hostname: {}", System::host_name().unwrap_or_default());
+
+    match azure_vm_id(rt) {
+        Ok(vm_id) => log::info!("Azure VM ID: {vm_id:?}"),
+        Err(err) => log::info!("Azure VM ID unavailable: {err:#}"),
+    }
 
     let disks = Disks::new_with_refreshed_list();
     for disk in &disks {
@@ -115,5 +118,81 @@ fn print_system_info(rt: &mut RustRuntimeServices<'_>) {
         Some(true) => log::info!("Using UEFI firmware"),
         Some(false) => log::info!("Not using UEFI firmware"),
         None => log::info!("Unknown firmware"),
+    }
+}
+
+fn azure_vm_id(rt: &mut RustRuntimeServices<'_>) -> anyhow::Result<String> {
+    let output = flowey::shell_cmd!(rt, "curl")
+        .args([
+            "--disable",
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--noproxy",
+            "*",
+            "--connect-timeout",
+            "1",
+            "--max-time",
+            "2",
+            "--header",
+            "Metadata:true",
+            "http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01",
+        ])
+        .quiet()
+        .ignore_status()
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "IMDS request failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    parse_azure_vm_id(&output.stdout)
+}
+
+fn parse_azure_vm_id(json: &[u8]) -> anyhow::Result<String> {
+    #[derive(serde::Deserialize)]
+    struct ComputeMetadata {
+        #[serde(rename = "vmId")]
+        vm_id: String,
+    }
+
+    let metadata: ComputeMetadata =
+        serde_json::from_slice(json).context("invalid IMDS compute metadata")?;
+    let vm_id = metadata.vm_id.trim();
+    anyhow::ensure!(!vm_id.is_empty(), "IMDS compute metadata has no VM ID");
+    Ok(vm_id.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_azure_vm_id;
+    use test_with_tracing::test;
+
+    #[test]
+    fn azure_vm_id_from_compute_metadata() {
+        let json = br#"{
+            "vmId": " c6d5526c-5ac2-4200-b6e2-56f2b70c5ab2 ",
+            "name": "different-id",
+            "resourceId": "/subscriptions/example/virtualMachines/example"
+        }"#;
+        assert_eq!(
+            parse_azure_vm_id(json).unwrap(),
+            "c6d5526c-5ac2-4200-b6e2-56f2b70c5ab2"
+        );
+    }
+
+    #[test]
+    fn azure_vm_id_missing_or_empty() {
+        for json in [r#"{}"#, r#"{"vmId": ""}"#, r#"{"vmId": " "}"#] {
+            assert!(parse_azure_vm_id(json.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn azure_vm_id_invalid_metadata() {
+        for json in [r#"{"vmId":"#, r#"{"vmId": null}"#, r#"{"vmId": 123}"#] {
+            assert!(parse_azure_vm_id(json.as_bytes()).is_err());
+        }
     }
 }

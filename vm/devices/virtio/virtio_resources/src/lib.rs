@@ -51,15 +51,44 @@ pub mod fs {
         pub fs: VirtioFsBackend,
     }
 
+    #[derive(MeshPayload, Default)]
+    pub struct VirtioFsWindowsOptions {
+        /// Access token to impersonate for host file system access. `None`
+        /// uses the VMM process token.
+        #[cfg(windows)]
+        pub user_token: Option<std::os::windows::io::OwnedHandle>,
+        /// Expose shared-memory section objects instead of host files. Only
+        /// supported on Windows.
+        pub shared_mem: bool,
+    }
+
     #[derive(MeshPayload)]
     pub enum VirtioFsBackend {
         HostFs {
             root_path: String,
             mount_options: String,
+            windows_options: Option<VirtioFsWindowsOptions>,
         },
         SectionFs {
             root_path: String,
         },
+        /// Expose multiple host folders behind a single device, each as a named
+        /// child of a synthetic root. Lets one virtio-fs device (one tag, one
+        /// PCI/MMIO footprint) serve many shares.
+        Aggregate {
+            children: Vec<VirtioFsAggregateChild>,
+        },
+    }
+
+    /// A single host folder exposed as a named child of a [`VirtioFsBackend::Aggregate`].
+    #[derive(MeshPayload)]
+    pub struct VirtioFsAggregateChild {
+        /// Name of this child's directory under the aggregate's synthetic root;
+        /// the guest bind-mounts `<aggregate-mount>/<name>` onto the user's
+        /// target path.
+        pub name: String,
+        pub root_path: String,
+        pub mount_options: String,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioFsHandle {
@@ -75,6 +104,7 @@ pub mod pmem {
     #[derive(MeshPayload)]
     pub struct VirtioPmemHandle {
         pub path: String,
+        pub read_only: bool,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioPmemHandle {
@@ -95,6 +125,19 @@ pub mod rng {
     }
 }
 
+pub mod rtc {
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioRtcHandle;
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioRtcHandle {
+        const ID: &'static str = "virtio-rtc";
+    }
+}
+
 pub mod blk {
     use mesh::MeshPayload;
     use vm_resource::Resource;
@@ -106,6 +149,24 @@ pub mod blk {
     pub struct VirtioBlkHandle {
         pub disk: Resource<DiskHandleKind>,
         pub read_only: bool,
+        pub serial: Option<String>,
+        pub options: VirtioBlkOptions,
+    }
+
+    /// Request queue concurrency for a native virtio-blk device.
+    #[derive(Clone, Copy, MeshPayload)]
+    pub struct VirtioBlkOptions {
+        pub queue_count: u16,
+        pub io_depth: u16,
+    }
+
+    impl Default for VirtioBlkOptions {
+        fn default() -> Self {
+            Self {
+                queue_count: 1,
+                io_depth: 64,
+            }
+        }
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioBlkHandle {
@@ -124,6 +185,8 @@ pub mod net {
     #[derive(MeshPayload)]
     pub struct VirtioNetHandle {
         pub max_queues: Option<u16>,
+        /// Advertise guest TCP segmentation offload when the backend supports it.
+        pub enable_rx_gso: bool,
         pub mac_address: MacAddress,
         pub endpoint: Resource<NetEndpointHandleKind>,
     }
@@ -220,6 +283,8 @@ pub mod vhost_user {
 
 pub mod vsock {
     use mesh::MeshPayload;
+    #[cfg(target_os = "linux")]
+    use std::os::fd::OwnedFd;
     use unix_socket::UnixListener;
     use vm_resource::ResourceId;
     use vm_resource::kind::VirtioDeviceHandle;
@@ -233,5 +298,25 @@ pub mod vsock {
 
     impl ResourceId<VirtioDeviceHandle> for VirtioVsockHandle {
         const ID: &'static str = "virtio-vsock";
+    }
+
+    /// A virtio-vsock device backed by the Linux kernel's `vhost_vsock`
+    /// implementation.
+    #[cfg(target_os = "linux")]
+    #[derive(MeshPayload)]
+    pub struct VirtioVsockVhostHandle {
+        /// A pre-opened `/dev/vhost-vsock` file descriptor.
+        ///
+        /// The device resolver takes ownership and configures the vhost owner
+        /// and guest CID.
+        pub vhost: OwnedFd,
+        /// The CID used to address the guest from the host's `AF_VSOCK`
+        /// namespace.
+        pub guest_cid: u32,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl ResourceId<VirtioDeviceHandle> for VirtioVsockVhostHandle {
+        const ID: &'static str = "virtio-vsock-vhost";
     }
 }

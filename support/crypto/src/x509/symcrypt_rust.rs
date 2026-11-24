@@ -4,8 +4,12 @@
 //! X.509 certificate parsing and verification using the `x509-cert` RustCrypto crate.
 
 use super::X509Error;
+use super::X509PublicKey;
+use super::X509VerifyError;
 use der::Decode;
 use der::Encode;
+#[cfg(symcrypt)]
+use der::referenced::OwnedToRef;
 use x509_cert::Certificate;
 
 #[cfg(symcrypt)]
@@ -13,64 +17,95 @@ fn der_err(err: der::Error, op: &'static str) -> X509Error {
     X509Error(crate::BackendError::Der(err, op))
 }
 
-#[cfg(symcrypt)]
-fn rsa_der_err(err: der::Error, op: &'static str) -> crate::rsa::RsaError {
-    crate::rsa::RsaError(crate::BackendError::Der(err, op))
-}
-
 #[cfg(rust)]
 fn der_err(err: der::Error, op: &'static str) -> X509Error {
     X509Error(err, op)
 }
 
+/// Convert an error from constructing an RSA public key into an [`X509Error`].
+#[cfg(symcrypt)]
+fn rsa_to_x509(crate::rsa::RsaError(e): crate::rsa::RsaError) -> X509Error {
+    X509Error(e)
+}
+
+/// Convert an error from constructing an RSA public key into an [`X509Error`].
+/// The RustCrypto RSA error type does not fit the DER-based `X509Error`, so the
+/// specific cause is folded into a generic failure (the RustCrypto backend is
+/// test-only).
 #[cfg(rust)]
-fn rsa_der_err(err: der::Error, op: &'static str) -> crate::rsa::RsaError {
-    crate::rsa::RsaError(rsa::Error::Pkcs1(pkcs1::Error::Asn1(err)), op)
+fn rsa_to_x509(_e: crate::rsa::RsaError) -> X509Error {
+    der_err(
+        der::ErrorKind::Failed.into(),
+        "constructing the RSA public key",
+    )
 }
 
 pub(crate) struct X509CertificateInner(pub(crate) Certificate);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
-        let cert =
-            Certificate::from_der(data).map_err(|e| der_err(e, "parsing DER certificate"))?;
+        use der::Reader;
+
+        let encoded = der::SliceReader::new(data)
+            .and_then(|mut reader| reader.tlv_bytes())
+            .map_err(|e| der_err(e, "reading the DER certificate prefix"))?;
+        let cert = Certificate::from_der(encoded)
+            .map_err(|e| der_err(e, "parsing the DER certificate"))?;
         Ok(Self(cert))
     }
 
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
-        // Currently we only expect RSA public keys.
-        // If someday we need to support other public key types, the return
-        // type of this function will need to change.
-        let key = pkcs1::RsaPublicKey::from_der(
-            self.0
-                .tbs_certificate()
-                .subject_public_key_info()
-                .subject_public_key
-                .raw_bytes(),
-        )
-        .map_err(|e| rsa_der_err(e, "parsing PKCS#1 RSA public key"))?;
-        crate::rsa::RsaPublicKey::from_components(
-            key.modulus.as_bytes(),
-            key.public_exponent.as_bytes(),
-        )
+    pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
+        let spki = self.0.tbs_certificate().subject_public_key_info();
+
+        if spki.algorithm.oid == pkcs1::ALGORITHM_OID {
+            let rsa = crate::rsa::RsaPublicKey::from_pkcs1_der(spki.subject_public_key.raw_bytes())
+                .map_err(rsa_to_x509)?;
+            return Ok(X509PublicKey::Rsa(rsa));
+        }
+
+        // On the `symcrypt` backend we can also extract ECDSA keys; the `rust`
+        // backend has no ECDSA support, so any non-RSA key is rejected below.
+        #[cfg(symcrypt)]
+        if spki.algorithm.oid == const_oid::db::rfc5912::ID_EC_PUBLIC_KEY {
+            let key = crate::ecdsa::symcrypt::EcdsaPublicKeyInner::from_public_key_info(
+                &spki.owned_to_ref(),
+            )
+            .map_err(|e| X509Error(e.0))?;
+            return Ok(X509PublicKey::Ecdsa(crate::ecdsa::EcdsaPublicKey(key)));
+        }
+
+        Err(der_err(
+            der::ErrorKind::Failed.into(),
+            "extracting the certificate public key",
+        ))
     }
 
-    pub fn verify(
-        &self,
-        issuer_public_key: &crate::rsa::RsaPublicKey,
-    ) -> Result<bool, crate::rsa::RsaError> {
+    pub fn verify(&self, issuer_public_key: &X509PublicKey) -> Result<bool, X509VerifyError> {
         let oid = self.0.signature_algorithm().oid;
-        let hash = crate::HashAlgorithm::try_from(oid)
-            .map_err(|e| rsa_der_err(e, "unrecognized signature algorithm OID"))?;
-
         let tbs_der = self
             .0
             .tbs_certificate()
             .to_der()
-            .map_err(|e| rsa_der_err(e, "encoding TBS certificate"))?;
+            .map_err(|e| der_err(e, "encoding the TBS certificate"))?;
         let signature = self.0.signature().raw_bytes();
 
-        issuer_public_key.pkcs1_verify(&tbs_der, signature, hash)
+        match issuer_public_key {
+            X509PublicKey::Rsa(key) => {
+                let hash = crate::HashAlgorithm::from_rsa_signature_oid(oid)
+                    .map_err(|e| der_err(e, "reading the RSA certificate signature algorithm"))?;
+                Ok(key.pkcs1_verify(&tbs_der, signature, hash)?)
+            }
+            #[cfg(symcrypt)]
+            X509PublicKey::Ecdsa(key) => {
+                let hash = crate::HashAlgorithm::from_ecdsa_signature_oid(oid)
+                    .map_err(|e| der_err(e, "reading the ECDSA certificate signature algorithm"))?;
+                let signature = crate::ecdsa::EcdsaSignature::from_der(
+                    crate::ecdsa::EcdsaCurve::P384,
+                    signature,
+                )?;
+                Ok(key.verify(&tbs_der, &signature, hash)?)
+            }
+        }
     }
 
     pub fn issued(&self, subject: &X509CertificateInner) -> Result<bool, X509Error> {
@@ -91,7 +126,7 @@ impl X509CertificateInner {
         // signing other certificates.
         let ku = issuer_tbs
             .get_extension::<KeyUsage>()
-            .map_err(|e| der_err(e, "parsing KeyUsage extension"))?;
+            .map_err(|e| der_err(e, "parsing the KeyUsage extension"))?;
         if let Some((_crit, ku)) = ku
             && !ku.key_cert_sign()
         {
@@ -102,12 +137,12 @@ impl X509CertificateInner {
         // populated fields against this certificate (the candidate issuer).
         let akid = subject_tbs
             .get_extension::<AuthorityKeyIdentifier>()
-            .map_err(|e| der_err(e, "parsing AuthorityKeyIdentifier extension"))?;
+            .map_err(|e| der_err(e, "parsing the AuthorityKeyIdentifier extension"))?;
         if let Some((_crit, akid)) = akid {
             if let Some(akid_key_id) = &akid.key_identifier {
                 let skid = issuer_tbs
                     .get_extension::<SubjectKeyIdentifier>()
-                    .map_err(|e| der_err(e, "parsing SubjectKeyIdentifier extension"))?;
+                    .map_err(|e| der_err(e, "parsing the SubjectKeyIdentifier extension"))?;
                 match skid {
                     Some((_crit, ski)) => {
                         if akid_key_id != &ski.0 {
@@ -143,43 +178,70 @@ impl X509CertificateInner {
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.0
             .to_der()
-            .map_err(|e| der_err(e, "encoding certificate as DER"))
+            .map_err(|e| der_err(e, "encoding the certificate as DER"))
     }
 
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
-        key: &crate::rsa::RsaKeyPair,
-        country: &str,
-        state: &str,
-        locality: &str,
-        organization: &str,
-        common_name: &str,
+        key: super::X509KeyPair<'_>,
+        options: &super::X509SelfSignedOptions<'_>,
     ) -> anyhow::Result<Self> {
         use x509_cert::builder::Builder;
-
-        let (builder, _pkcs1_der) = super::builder::self_signed_builder(
-            key,
-            country,
-            state,
-            locality,
-            organization,
-            common_name,
-        )?;
+        let (builder, _public_key_der) = super::builder::self_signed_builder(key, options)?;
 
         #[cfg(symcrypt)]
-        let cert = builder.build(&super::builder::rsa_keypair_signer::RsaKeyPairSigner {
+        let cert = builder.build(&super::builder::keypair_signer::KeyPairSigner {
             key,
-            pkcs1_der: _pkcs1_der,
+            public_key_der: _public_key_der,
         })?;
         #[cfg(rust)]
-        let cert = builder.build(&rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(
-            key.0.0.clone(),
-        ))?;
+        let cert = {
+            let super::X509KeyPair::Rsa(key) = key;
+            builder.build(&rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(
+                key.0.0.clone(),
+            ))?
+        };
         Ok(Self(cert))
     }
 
     pub fn issuer_dn(&self) -> Result<String, X509Error> {
         Ok(self.0.tbs_certificate().issuer().to_string())
+    }
+
+    pub fn issuer_common_name(&self) -> Result<Option<String>, X509Error> {
+        Ok(self
+            .0
+            .tbs_certificate()
+            .issuer()
+            .common_name()
+            .map_err(|e| der_err(e, "reading the issuer common name"))?
+            .map(|name| name.value().into_owned()))
+    }
+
+    pub fn validity(
+        &self,
+    ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), super::X509ValidityError> {
+        let tbs = self.0.tbs_certificate();
+        let validity = tbs.validity();
+        let time = |time: x509_cert::time::Time| {
+            jiff::tz::Offset::UTC
+                .to_datetime(jiff::Timestamp::UNIX_EPOCH)
+                .checked_add(time.to_unix_duration())
+        };
+        Ok((time(validity.not_before)?, time(validity.not_after)?))
+    }
+
+    pub fn authority_key_identifier(&self) -> Result<Option<Vec<u8>>, X509Error> {
+        use x509_cert::ext::pkix::AuthorityKeyIdentifier;
+        let Some((_, aki)) = self
+            .0
+            .tbs_certificate()
+            .get_extension::<AuthorityKeyIdentifier>()
+            .map_err(|e| der_err(e, "reading authority key identifier"))?
+        else {
+            return Ok(None);
+        };
+        Ok(aki.key_identifier.map(|id| id.as_bytes().to_vec()))
     }
 
     pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
@@ -192,7 +254,7 @@ impl X509CertificateInner {
             .tbs_certificate()
             .subject()
             .common_name()
-            .map_err(|e| der_err(e, "getting common_name"))?
+            .map_err(|e| der_err(e, "reading the subject common name"))?
             .map(|s| s.value().into_owned()))
     }
 }

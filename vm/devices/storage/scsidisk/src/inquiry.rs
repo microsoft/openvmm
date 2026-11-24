@@ -408,11 +408,8 @@ impl SimpleScsiDisk {
         // the threshold exponent is calculated according to this:
         //     ((LastLBA + 1) / 2^(threshold exponent)) < 2^32
         //
-        // and the exponent must be at least 1
-        let threshold_exponent = (sector_count >> 32)
-            .next_power_of_two()
-            .trailing_zeros()
-            .max(1) as u8;
+        // and the exponent must be at least 1.
+        let threshold_exponent = (sector_count >> 32).bit_width().max(1) as u8;
 
         let mut page = scsi::VpdLogicalBlockProvisioningPage {
             threshold_exponent,

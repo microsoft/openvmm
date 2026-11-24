@@ -4,14 +4,18 @@
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
+use net_backend::ETHERNET_HEADER_LEN;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
 use net_backend::MultiQueueSupport;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxChecksumState;
+use net_backend::RxGsoProtocol;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::RxOffload;
+use net_backend::RxOffloadSupport;
 use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
@@ -47,6 +51,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 
 use crate::Device;
 
+use crate::BITS_PER_MEGABIT;
 use crate::NetworkFeaturesBank0;
 use crate::NetworkFeaturesBank1;
 use crate::VirtioNetHeader;
@@ -55,6 +60,7 @@ use crate::VirtioNetHeaderGso;
 use crate::VirtioNetHeaderGsoProtocol;
 use crate::Worker;
 use crate::header_size;
+use crate::negotiated_rx_offload_support;
 
 // --- Constants ---
 
@@ -114,7 +120,7 @@ struct MockQueue {
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
     rx_pending: Arc<Mutex<VecDeque<RxId>>>,
-    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata)>>>,
+    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata, bool)>>>,
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Sender<()>,
     tx_avail_notify: mesh::Sender<()>,
@@ -162,8 +168,13 @@ impl net_backend::Queue for MockQueue {
         let mut ready = self.rx_ready.lock();
         let n = ready.len().min(packets.len());
         for packet in packets.iter_mut().take(n) {
-            let (rx_id, data, metadata) = ready.pop_front().unwrap();
-            pool.write_packet(rx_id, &metadata, &data);
+            let (rx_id, data, metadata, header_first) = ready.pop_front().unwrap();
+            if header_first {
+                pool.write_header(rx_id, &metadata);
+                pool.write_data(rx_id, &data);
+            } else {
+                pool.write_packet(rx_id, &metadata, &data);
+            }
             *packet = rx_id;
         }
         Ok(n)
@@ -228,7 +239,7 @@ struct MockQueueHandle {
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
     rx_pending: Arc<Mutex<VecDeque<RxId>>>,
-    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata)>>>,
+    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata, bool)>>>,
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Receiver<()>,
     tx_avail_notify: mesh::Receiver<()>,
@@ -272,7 +283,54 @@ impl MockQueueHandle {
             .expect("no pending RX buffer available");
         self.rx_ready
             .lock()
-            .push_back((rx_id, data.to_vec(), *metadata));
+            .push_back((rx_id, data.to_vec(), *metadata, false));
+        if let Some(waker) = self.ready_waker.lock().take() {
+            waker.wake();
+        }
+    }
+
+    fn inject_rx_packet_header_first(&self, data: &[u8]) {
+        let rx_id = self
+            .rx_pending
+            .lock()
+            .pop_front()
+            .expect("no pending RX buffer available");
+        self.rx_ready.lock().push_back((
+            rx_id,
+            data.to_vec(),
+            RxMetadata {
+                offset: 0,
+                len: data.len(),
+                ..Default::default()
+            },
+            true,
+        ));
+        if let Some(waker) = self.ready_waker.lock().take() {
+            waker.wake();
+        }
+    }
+
+    /// Inject an RX packet into a *specific* pending RX buffer, identified by
+    /// its `RxId`. Unlike [`inject_rx_packet`], which uses the oldest pending
+    /// buffer, this lets tests complete buffers out of order.
+    fn inject_rx_packet_for(&self, rx_id: RxId, data: &[u8]) {
+        let mut pending = self.rx_pending.lock();
+        let pos = pending
+            .iter()
+            .position(|id| id.0 == rx_id.0)
+            .expect("rx_id not pending");
+        pending.remove(pos);
+        drop(pending);
+        self.rx_ready.lock().push_back((
+            rx_id,
+            data.to_vec(),
+            RxMetadata {
+                offset: 0,
+                len: data.len(),
+                ..Default::default()
+            },
+            false,
+        ));
         if let Some(waker) = self.ready_waker.lock().take() {
             waker.wake();
         }
@@ -336,6 +394,9 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
 
 struct MockEndpoint {
     queue_tx: mesh::Sender<MockQueueHandle>,
+    queue_config_tx: mesh::Sender<RxOffloadSupport>,
+    endpoint_action_rx: mesh::Receiver<EndpointAction>,
+    is_ordered: bool,
 }
 
 impl InspectMut for MockEndpoint {
@@ -352,10 +413,12 @@ impl Endpoint for MockEndpoint {
 
     async fn get_queues(
         &mut self,
-        _config: Vec<QueueConfig>,
+        config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
+        assert_eq!(config.len(), 1);
+        self.queue_config_tx.send(config[0].enabled_rx_offloads);
         let (queue, handle) = new_mock_queue();
         self.queue_tx.send(handle);
         queues.push(Box::new(queue));
@@ -365,7 +428,7 @@ impl Endpoint for MockEndpoint {
     async fn stop(&mut self) {}
 
     fn is_ordered(&self) -> bool {
-        false
+        self.is_ordered
     }
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
@@ -384,7 +447,10 @@ impl Endpoint for MockEndpoint {
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
-        pending().await
+        self.endpoint_action_rx
+            .next()
+            .await
+            .expect("endpoint action channel closed")
     }
 }
 
@@ -432,6 +498,8 @@ struct TestHarness {
     mem: GuestMemory,
     driver: DefaultDriver,
     queue_handle_rx: mesh::Receiver<MockQueueHandle>,
+    queue_config_rx: mesh::Receiver<RxOffloadSupport>,
+    endpoint_action_tx: mesh::Sender<EndpointAction>,
     rx_event: Event,
     rx_interrupt_event: Event,
     tx_event: Event,
@@ -457,11 +525,21 @@ impl TestHarness {
 
         // Create mock endpoint with channel
         let (queue_tx, queue_handle_rx) = mesh::channel();
-        let endpoint = MockEndpoint { queue_tx };
+        let (queue_config_tx, queue_config_rx) = mesh::channel();
+        let (endpoint_action_tx, endpoint_action_rx) = mesh::channel();
+        let endpoint = MockEndpoint {
+            queue_tx,
+            queue_config_tx,
+            endpoint_action_rx,
+            is_ordered: true,
+        };
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
-        let device = Device::builder().build(&driver_source, Box::new(endpoint), mac);
+        let device = Device::builder()
+            .enable_rx_gso(true)
+            .build(&driver_source, Box::new(endpoint), mac)
+            .unwrap();
 
         let rx_event = Event::new();
         let rx_interrupt_event = Event::new();
@@ -473,6 +551,8 @@ impl TestHarness {
             mem,
             driver: driver.clone(),
             queue_handle_rx,
+            queue_config_rx,
+            endpoint_action_tx,
             rx_event,
             rx_interrupt_event,
             tx_event,
@@ -549,6 +629,29 @@ impl TestHarness {
             .until_cancelled(self.queue_handle_rx.next())
             .await
             .expect("timed out waiting for mock queue handle")
+            .expect("channel closed")
+    }
+
+    async fn wait_for_queue_config(&mut self) -> RxOffloadSupport {
+        mesh::CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(self.queue_config_rx.next())
+            .await
+            .expect("timed out waiting for queue config")
+            .expect("channel closed")
+    }
+
+    fn request_endpoint_restart(&self) {
+        self.endpoint_action_tx
+            .send(EndpointAction::RestartRequired);
+    }
+
+    async fn wait_for_recreated_queue(&mut self) -> MockQueueHandle {
+        mesh::CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(self.queue_handle_rx.next())
+            .await
+            .expect("timed out waiting for recreated mock queue handle")
             .expect("channel closed")
     }
 
@@ -650,6 +753,25 @@ impl TestHarness {
             &mut self.rx_used_idx,
         )
         .await
+    }
+
+    /// Non-blocking read of the next RX used ring entry, if any.
+    fn try_read_rx_used(&mut self) -> Option<(u16, u32)> {
+        read_used(&self.mem, RX_USED_ADDR, QUEUE_SIZE, &mut self.rx_used_idx)
+    }
+
+    /// Non-blocking read of the next TX used ring entry, if any.
+    fn try_read_tx_used(&mut self) -> Option<(u16, u32)> {
+        read_used(&self.mem, TX_USED_ADDR, QUEUE_SIZE, &mut self.tx_used_idx)
+    }
+
+    /// Sleep for a bounded duration to let the worker make progress. Used by
+    /// tests that assert a completion has *not* been published yet.
+    async fn settle(&self) {
+        let _ = mesh::CancelContext::new()
+            .with_timeout(Duration::from_millis(250))
+            .until_cancelled(pending::<()>())
+            .await;
     }
 
     /// Disable the device (stops all queues).
@@ -755,10 +877,11 @@ async fn async_completion_single_packet(driver: DefaultDriver) {
 }
 
 /// Submit a descriptor index that is already in-flight (async completion
-/// pending). The duplicate should be dropped immediately and the original
-/// should still complete normally.
+/// pending). A duplicate descriptor index cannot be tracked (the pending slot
+/// is already taken), so the device treats it as a fatal protocol violation:
+/// the queue worker stops and no further completions are published.
 #[async_test]
-async fn duplicate_descriptor_index_dropped(driver: DefaultDriver) {
+async fn duplicate_descriptor_index_is_fatal(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     let mut handle = harness.enable_and_get_handle().await;
 
@@ -778,29 +901,380 @@ async fn duplicate_descriptor_index_dropped(driver: DefaultDriver) {
     assert_eq!(log.len(), 1);
 
     // Now post the same descriptor index again. The device should detect the
-    // duplicate and complete it immediately without forwarding to the backend.
+    // duplicate and treat it as a fatal queue protocol violation, stopping the
+    // worker.
     harness.post_tx_and_signal(desc_index, data_len);
+    harness.settle().await;
 
-    // The duplicate gets completed immediately (dropped).
-    let (used_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_id, desc_index);
-    assert_eq!(used_len, 0);
+    // The duplicate must NOT be completed (old behavior dropped it with len 0).
+    assert_eq!(
+        harness.try_read_tx_used(),
+        None,
+        "duplicate descriptor must not produce a used ring entry"
+    );
 
-    // The backend should NOT have received a second tx_avail call for the
-    // duplicate packet's segments.
+    // The backend should NOT have received a second tx_avail call.
     let log = handle.take_tx_avail_log();
     assert!(
         log.is_empty(),
         "duplicate packet should not reach the backend"
     );
 
-    // Now complete the original packet.
+    // Because the worker stopped, even completing the original in-flight packet
+    // does not publish anything further.
     handle.complete_tx(vec![TxId(desc_index as u32)]);
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_tx_used(),
+        None,
+        "no completions should be published after the fatal violation"
+    );
+}
 
-    // The original completion should appear in the used ring.
-    let (used_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_id, desc_index);
-    assert_eq!(used_len, 0);
+/// An unordered network backend is rejected at device creation with a clear
+/// error, rather than the device coming up and wedging when the guest activates
+/// it.
+#[async_test]
+async fn unordered_backend_rejected(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
+    let (queue_tx, _queue_handle_rx) = mesh::channel();
+    let (queue_config_tx, _queue_config_rx) = mesh::channel();
+    let (_endpoint_action_tx, endpoint_action_rx) = mesh::channel();
+    let endpoint = MockEndpoint {
+        queue_tx,
+        queue_config_tx,
+        endpoint_action_rx,
+        is_ordered: false,
+    };
+
+    let err = Device::builder()
+        .build(&driver_source, Box::new(endpoint), mac)
+        .err()
+        .expect("build must fail on an unordered backend");
+    assert!(
+        err.to_string().contains("ordered backend"),
+        "unexpected error: {err}"
+    );
+}
+
+/// A backend that completes RX buffers out of order must still result in the
+/// used ring being published strictly in avail (consumption) order.
+#[async_test]
+async fn rx_out_of_order_completion_published_in_order(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let buffer_size: u32 = 512;
+    let mut gpas = Vec::new();
+    for i in 0u16..3 {
+        gpas.push(harness.post_rx_buffer_and_signal(i, buffer_size));
+    }
+    for _ in 0..3 {
+        handle.wait_for_rx_pending().await;
+    }
+
+    let payloads: [&[u8]; 3] = [b"packet-zero", b"packet-one!!", b"pkt-two"];
+
+    // Complete the last buffer first. Because descriptor 0 (and 1) are still
+    // outstanding, nothing may be published yet.
+    handle.inject_rx_packet_for(RxId(2), payloads[2]);
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "descriptor 2 must not be published ahead of earlier outstanding buffers"
+    );
+
+    // Complete descriptor 0: it publishes, but descriptor 1 is still
+    // outstanding so descriptor 2 must not follow yet.
+    handle.inject_rx_packet_for(RxId(0), payloads[0]);
+    let (id0, len0) = harness.wait_for_rx_used().await;
+    assert_eq!(id0, 0);
+    assert_eq!(len0, NET_HEADER_SIZE + payloads[0].len() as u32);
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "descriptor 2 must not be published while descriptor 1 is outstanding"
+    );
+
+    // Complete descriptor 1: now 1 and the already-filled 2 both flush in order.
+    handle.inject_rx_packet_for(RxId(1), payloads[1]);
+    let (id1, len1) = harness.wait_for_rx_used().await;
+    assert_eq!(id1, 1);
+    assert_eq!(len1, NET_HEADER_SIZE + payloads[1].len() as u32);
+    let (id2, len2) = harness.wait_for_rx_used().await;
+    assert_eq!(id2, 2);
+    assert_eq!(len2, NET_HEADER_SIZE + payloads[2].len() as u32);
+
+    // Verify data integrity for each buffer.
+    for (i, payload) in payloads.iter().enumerate() {
+        let mut readback = vec![0u8; payload.len()];
+        harness
+            .mem
+            .read_at(gpas[i] + NET_HEADER_SIZE as u64, &mut readback)
+            .unwrap();
+        assert_eq!(&readback, payload, "buffer {i} data mismatch");
+    }
+}
+
+/// RX buffers without room for an Ethernet header are dropped, but their
+/// completions are published in their avail-order positions — never ahead of
+/// an earlier still-outstanding buffer.
+#[async_test]
+async fn rx_malformed_completed_in_order(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    // Descriptor 0: normal. Descriptors 1 through 3 have zero, one, and one
+    // less than the Ethernet header length, respectively, and will be dropped.
+    // Descriptor 4 has exactly the minimum valid capacity.
+    harness.post_rx_buffer_and_signal(0, 512);
+    harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE);
+    harness.post_rx_buffer_and_signal(2, NET_HEADER_SIZE + 1);
+    harness.post_rx_buffer_and_signal(3, NET_HEADER_SIZE + ETHERNET_HEADER_LEN - 1);
+    harness.post_rx_buffer_and_signal(4, NET_HEADER_SIZE + ETHERNET_HEADER_LEN);
+
+    // Descriptors 0 and 4 are posted to the backend (descriptors 1 through 3
+    // are dropped).
+    handle.wait_for_rx_pending().await;
+    handle.wait_for_rx_pending().await;
+    harness.settle().await;
+
+    // The malformed descriptors have been completed internally but are held
+    // behind the still-outstanding descriptor 0, so nothing is published yet.
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "malformed descriptor must not be published ahead of descriptor 0"
+    );
+
+    // Complete descriptor 4 out of order — still nothing publishes.
+    let minimum_frame = [0u8; ETHERNET_HEADER_LEN as usize];
+    handle.inject_rx_packet_for(RxId(4), &minimum_frame);
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "descriptor 4 must not be published ahead of descriptors 0/1/2/3"
+    );
+
+    // Complete descriptor 0: now 0, the dropped 1 through 3 (len 0), and 4
+    // flush in order.
+    handle.inject_rx_packet_for(RxId(0), b"packet-zero");
+
+    let (id0, len0) = harness.wait_for_rx_used().await;
+    assert_eq!(id0, 0);
+    assert_eq!(len0, NET_HEADER_SIZE + b"packet-zero".len() as u32);
+
+    let (id1, len1) = harness.wait_for_rx_used().await;
+    assert_eq!(
+        id1, 1,
+        "malformed descriptor completes in avail-order position"
+    );
+    assert_eq!(len1, 0, "malformed descriptor is dropped with len 0");
+
+    let (id2, len2) = harness.wait_for_rx_used().await;
+    assert_eq!(
+        id2, 2,
+        "malformed descriptor completes in avail-order position"
+    );
+    assert_eq!(len2, 0, "malformed descriptor is dropped with len 0");
+
+    let (id3, len3) = harness.wait_for_rx_used().await;
+    assert_eq!(
+        id3, 3,
+        "malformed descriptor completes in avail-order position"
+    );
+    assert_eq!(len3, 0, "malformed descriptor is dropped with len 0");
+
+    let (id4, len4) = harness.wait_for_rx_used().await;
+    assert_eq!(id4, 4);
+    assert_eq!(len4, NET_HEADER_SIZE + ETHERNET_HEADER_LEN);
+}
+
+/// A malformed descriptor completed behind earlier work remains owned until
+/// its used entry is published, so reusing its head stops the queue without
+/// reaching a duplicate-completion assertion.
+#[async_test]
+async fn duplicate_malformed_rx_descriptor_is_fatal(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    harness.post_rx_buffer_and_signal(0, 1500);
+    harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE + ETHERNET_HEADER_LEN - 1);
+    handle.wait_for_rx_pending().await;
+    harness.settle().await;
+
+    assert_eq!(harness.try_read_rx_used(), None);
+
+    harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE + ETHERNET_HEADER_LEN - 1);
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "duplicate malformed descriptor must not produce a used entry"
+    );
+
+    handle.inject_rx_packet_for(RxId(0), b"packet-zero");
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "queue worker must stop after the duplicate descriptor"
+    );
+}
+
+/// Backend completion does not release a descriptor head while its used entry
+/// is still waiting behind earlier work.
+#[async_test]
+async fn duplicate_backend_completed_rx_descriptor_is_fatal(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    harness.post_rx_buffer_and_signal(0, 1500);
+    harness.post_rx_buffer_and_signal(1, 1500);
+    handle.wait_for_rx_pending().await;
+    handle.wait_for_rx_pending().await;
+
+    handle.inject_rx_packet_for(RxId(1), b"packet-one");
+    harness.settle().await;
+    assert_eq!(harness.try_read_rx_used(), None);
+
+    harness.post_rx_buffer_and_signal(1, 1500);
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "backend-completed duplicate must not produce a used entry"
+    );
+
+    handle.inject_rx_packet_for(RxId(0), b"packet-zero");
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "queue worker must stop after the duplicate descriptor"
+    );
+}
+
+/// Publishing the used entry releases ownership and permits normal descriptor
+/// head reuse.
+#[async_test]
+async fn rx_descriptor_can_be_reused_after_publication(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    for payload in [b"first".as_slice(), b"second".as_slice()] {
+        harness.post_rx_buffer_and_signal(0, 1500);
+        handle.wait_for_rx_pending().await;
+        handle.inject_rx_packet(payload);
+
+        let (used_id, used_len) = harness.wait_for_rx_used().await;
+        assert_eq!(used_id, 0);
+        assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+    }
+}
+
+/// Queue teardown discards buffered completions and outstanding ownership; a
+/// recreated queue accepts the same head without publishing stale work.
+#[async_test]
+async fn rx_reset_discards_buffered_completion_ownership(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    harness.post_rx_buffer_and_signal(0, 1500);
+    harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE + ETHERNET_HEADER_LEN - 1);
+    handle.wait_for_rx_pending().await;
+    harness.settle().await;
+    assert_eq!(harness.try_read_rx_used(), None);
+
+    drop(handle);
+    harness.disable().await;
+    harness.reset_rings();
+    handle = harness.enable_and_get_handle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "recreated queue must not publish the old buffered completion"
+    );
+
+    harness.post_rx_buffer_and_signal(1, 1500);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet(b"after-reset");
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 1);
+    assert_eq!(used_len, NET_HEADER_SIZE + b"after-reset".len() as u32);
+}
+
+/// A backend packet larger than the posted receive buffer is dropped without
+/// publishing a partially written packet to the guest.
+#[async_test]
+async fn rx_oversized_packet_is_dropped(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    harness.post_rx_buffer_and_signal(0, NET_HEADER_SIZE + 64);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet(&[0xaa; 128]);
+
+    let (id, len) = harness.wait_for_rx_used().await;
+    assert_eq!(id, 0);
+    assert_eq!(len, 0, "oversized packet must not be published");
+}
+
+/// A backend that writes the header before a failing payload write must not
+/// publish the header's packet length as a successful receive.
+#[async_test]
+async fn rx_header_first_payload_failure_is_dropped(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let header_gpa = harness.alloc_data(NET_HEADER_SIZE);
+    harness
+        .mem
+        .write_at(header_gpa, &vec![0u8; NET_HEADER_SIZE as usize])
+        .unwrap();
+    let flags = DescriptorFlags::new().with_write(true).with_next(true);
+    write_descriptor(
+        &harness.mem,
+        RX_DESC_ADDR,
+        0,
+        header_gpa,
+        NET_HEADER_SIZE,
+        flags,
+        1,
+    );
+    write_descriptor(
+        &harness.mem,
+        RX_DESC_ADDR,
+        1,
+        TOTAL_MEM_SIZE as u64,
+        128,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    make_available(
+        &harness.mem,
+        RX_AVAIL_ADDR,
+        QUEUE_SIZE,
+        0,
+        &mut harness.rx_avail_idx,
+    );
+    harness.rx_event.signal();
+
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_header_first(&[0xaa; 128]);
+
+    let (id, len) = harness.wait_for_rx_used().await;
+    assert_eq!(id, 0);
+    assert_eq!(len, 0, "failed payload write must not be published");
+    assert_eq!(
+        read_virtio_header(&harness.mem, header_gpa).num_buffers,
+        1,
+        "header write should succeed before the payload write fails"
+    );
 }
 
 /// Post 3 TX packets one at a time, each completing synchronously.
@@ -1057,6 +1531,34 @@ async fn disable_and_reenable(driver: DefaultDriver) {
     let (used_id, _) = harness.wait_for_used().await;
     assert_eq!(used_id, 0);
     drop(handle);
+}
+
+/// Queue recreation must reuse the receive-offload policy negotiated when the
+/// virtio queues were activated rather than falling back to the default.
+#[async_test]
+async fn rx_offload_policy_survives_queue_recreation(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let features = VirtioDeviceFeatures::new().with_bank(
+        0,
+        NetworkFeaturesBank0::new()
+            .with_guest_csum(true)
+            .with_guest_tso4(true)
+            .into_bits(),
+    );
+
+    let _initial_queue = harness.enable_and_get_handle_with_features(features).await;
+    let initial = harness.wait_for_queue_config().await;
+    assert!(initial.checksum);
+    assert!(initial.tcpv4_gso);
+    assert!(!initial.tcpv6_gso);
+
+    harness.request_endpoint_restart();
+
+    let recreated = harness.wait_for_queue_config().await;
+    let _recreated_queue = harness.wait_for_recreated_queue().await;
+    assert!(recreated.checksum);
+    assert!(recreated.tcpv4_gso);
+    assert!(!recreated.tcpv6_gso);
 }
 
 // --- TX Offload Parsing Tests ---
@@ -1546,6 +2048,128 @@ fn read_virtio_header(mem: &GuestMemory, gpa: u64) -> VirtioNetHeader {
     h
 }
 
+fn assert_rx_payload(mem: &GuestMemory, gpa: u64, expected: &[u8]) {
+    let mut payload = vec![0; expected.len()];
+    mem.read_at(gpa + NET_HEADER_SIZE as u64, &mut payload)
+        .unwrap();
+    assert_eq!(payload, expected);
+}
+
+#[async_test]
+async fn rx_offload_checksum_header(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let payload = b"checksum-offload";
+    let gpa = harness.post_rx_buffer_and_signal(0, 1500);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_with_metadata(
+        payload,
+        &RxMetadata {
+            offset: 0,
+            len: payload.len(),
+            ip_checksum: RxChecksumState::Good,
+            l4_checksum: RxChecksumState::Good,
+            offload: RxOffload::checksum(34, 16),
+            ..Default::default()
+        },
+    );
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    assert!(flags.needs_csum());
+    assert!(!flags.data_valid());
+    assert_eq!(
+        VirtioNetHeaderGso::from(hdr.gso_type).protocol(),
+        VirtioNetHeaderGsoProtocol::NONE
+    );
+    assert_eq!(hdr.hdr_len, 0);
+    assert_eq!(hdr.gso_size, 0);
+    assert_eq!(hdr.csum_start, 34);
+    assert_eq!(hdr.csum_offset, 16);
+    assert_rx_payload(&harness.mem, gpa, payload);
+}
+
+#[async_test]
+async fn rx_offload_tcpv4_gso_header(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let payload = b"tcpv4-gso";
+    let gpa = harness.post_rx_buffer_and_signal(0, 65535);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_with_metadata(
+        payload,
+        &RxMetadata {
+            offset: 0,
+            len: payload.len(),
+            offload: RxOffload::tcp_gso(RxGsoProtocol::TcpV4, 54, 1460, Some(34)),
+            ..Default::default()
+        },
+    );
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    assert!(flags.needs_csum());
+    assert!(!flags.data_valid());
+    assert_eq!(
+        VirtioNetHeaderGso::from(hdr.gso_type).protocol(),
+        VirtioNetHeaderGsoProtocol::TCPV4
+    );
+    assert_eq!(hdr.hdr_len, 54);
+    assert_eq!(hdr.gso_size, 1460);
+    assert_eq!(hdr.csum_start, 34);
+    assert_eq!(hdr.csum_offset, 16);
+    assert_rx_payload(&harness.mem, gpa, payload);
+}
+
+#[async_test]
+async fn rx_offload_tcpv6_data_valid_gso_header(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let payload = b"tcpv6-data-valid-gso";
+    let gpa = harness.post_rx_buffer_and_signal(0, 65535);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_with_metadata(
+        payload,
+        &RxMetadata {
+            offset: 0,
+            len: payload.len(),
+            ip_checksum: RxChecksumState::Good,
+            l4_checksum: RxChecksumState::Good,
+            offload: RxOffload::tcp_gso(RxGsoProtocol::TcpV6, 74, 1440, None),
+            ..Default::default()
+        },
+    );
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    assert!(!flags.needs_csum());
+    assert!(flags.data_valid());
+    assert_eq!(
+        VirtioNetHeaderGso::from(hdr.gso_type).protocol(),
+        VirtioNetHeaderGsoProtocol::TCPV6
+    );
+    assert_eq!(hdr.hdr_len, 74);
+    assert_eq!(hdr.gso_size, 1440);
+    assert_eq!(hdr.csum_start, 0);
+    assert_eq!(hdr.csum_offset, 0);
+    assert_rx_payload(&harness.mem, gpa, payload);
+}
+
 /// RX packet with both IP and L4 checksums Good → data_valid should be set.
 #[async_test]
 async fn rx_offload_data_valid_set(driver: DefaultDriver) {
@@ -1678,14 +2302,36 @@ async fn rx_offload_data_valid_validated_but_wrong(driver: DefaultDriver) {
 
 // --- Feature Negotiation Tests ---
 
+#[test]
+fn guest_tso_requires_guest_csum() {
+    let without_checksum = negotiated_rx_offload_support(
+        NetworkFeaturesBank0::new()
+            .with_guest_tso4(true)
+            .with_guest_tso6(true),
+    );
+    assert!(!without_checksum.checksum);
+    assert!(!without_checksum.tcpv4_gso);
+    assert!(!without_checksum.tcpv6_gso);
+
+    let with_checksum = negotiated_rx_offload_support(
+        NetworkFeaturesBank0::new()
+            .with_guest_csum(true)
+            .with_guest_tso4(true)
+            .with_guest_tso6(true),
+    );
+    assert!(with_checksum.checksum);
+    assert!(with_checksum.tcpv4_gso);
+    assert!(with_checksum.tcpv6_gso);
+}
+
 /// Verify that the device advertises CSUM, HOST_TSO, and HOST_USO features
 /// when the endpoint supports TCP/UDP/TSO/USO offloads.
 #[async_test]
-async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
+async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
 
-    let endpoint = MockEndpointWithOffloads {
+    let endpoint = MockEndpointWithTxOffloads {
         offloads: TxOffloadSupport {
             ipv4_header: true,
             tcp: true,
@@ -1693,18 +2339,25 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
             tso: true,
             uso: true,
         },
+        link_speed: 10_000 * BITS_PER_MEGABIT,
     };
 
-    let device = Device::builder().build(&driver_source, Box::new(endpoint), mac);
+    let device = Device::builder()
+        .enable_rx_gso(true)
+        .build(&driver_source, Box::new(endpoint), mac)
+        .unwrap();
     let traits = device.traits();
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
     assert!(bank0.mac(), "MAC feature should always be set");
+    assert!(bank0.mtu(), "MTU feature should always be set");
     assert!(
         bank0.csum(),
         "CSUM should be set when tcp+udp offloads supported"
     );
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
+    assert!(bank0.guest_tso4(), "GUEST_TSO4 should always be set");
+    assert!(bank0.guest_tso6(), "GUEST_TSO6 should always be set");
     assert!(
         bank0.host_tso4(),
         "HOST_TSO4 should be set when tso+tcp+ipv4_header supported"
@@ -1716,28 +2369,107 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
 
     let bank1 = NetworkFeaturesBank1::from(traits.device_features.bank(1));
     assert!(
+        bank1.speed_duplex(),
+        "SPEED_DUPLEX feature should always be set"
+    );
+    assert!(
+        bank1.guest_hdrlen(),
+        "GUEST_HDRLEN feature should always be set"
+    );
+    assert!(
         bank1.host_uso(),
         "HOST_USO should be set when uso+udp offloads supported"
     );
+    assert_eq!(device.registers.mtu, 1500);
+    assert_eq!(device.registers.speed, 10_000);
+    assert_eq!(device.registers.duplex, 0xff);
 }
 
-/// Verify that the device does NOT advertise offload features when the
-/// endpoint supports none.
+/// Receive GSO is opt-in until virtio-net supports mergeable receive buffers.
+#[async_test]
+async fn receive_gso_is_disabled_by_default(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
+
+    let endpoint = MockEndpointWithTxOffloads {
+        offloads: TxOffloadSupport::default(),
+        link_speed: 10_000 * BITS_PER_MEGABIT,
+    };
+
+    let device = Device::builder()
+        .build(&driver_source, Box::new(endpoint), mac)
+        .unwrap();
+    let bank0 = NetworkFeaturesBank0::from(device.traits().device_features.bank(0));
+
+    assert!(
+        bank0.guest_csum(),
+        "checksum receive offload remains available"
+    );
+    assert!(!bank0.guest_tso4(), "GUEST_TSO4 must be opt-in");
+    assert!(!bank0.guest_tso6(), "GUEST_TSO6 must be opt-in");
+}
+
+/// The device advertises VIRTIO_F_IN_ORDER, since it guarantees in-order
+/// descriptor completion per queue.
+#[async_test]
+async fn advertises_in_order(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
+    let endpoint = MockEndpointWithTxOffloads {
+        offloads: TxOffloadSupport::default(),
+        link_speed: 10_000 * BITS_PER_MEGABIT,
+    };
+    let device = Device::builder()
+        .build(&driver_source, Box::new(endpoint), mac)
+        .unwrap();
+    assert!(
+        device.traits().device_features.in_order(),
+        "VIRTIO_F_IN_ORDER must be advertised"
+    );
+}
+
+/// With VIRTIO_F_IN_ORDER negotiated, the RX path still round-trips a packet
+/// (negotiating the feature must not break queue setup or completion).
+#[async_test]
+async fn in_order_negotiated_rx_roundtrip(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness
+        .enable_and_get_handle_with_features(VirtioDeviceFeatures::new().with_in_order(true))
+        .await;
+
+    let _gpa = harness.post_rx_buffer_and_signal(0, 1500);
+    handle.wait_for_rx_pending().await;
+    let payload = b"in-order rx";
+    handle.inject_rx_packet(payload);
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+}
+
+/// Verify that the device does not advertise transmit offloads without
+/// backend support, while receive GSO remains disabled by default.
 #[async_test]
 async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
 
-    let endpoint = MockEndpointWithOffloads {
+    let endpoint = MockEndpointWithTxOffloads {
         offloads: TxOffloadSupport::default(),
+        link_speed: 10_000 * BITS_PER_MEGABIT,
     };
 
-    let device = Device::builder().build(&driver_source, Box::new(endpoint), mac);
+    let device = Device::builder()
+        .build(&driver_source, Box::new(endpoint), mac)
+        .unwrap();
     let traits = device.traits();
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
     assert!(bank0.mac());
+    assert!(bank0.mtu(), "MTU feature should always be set");
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
+    assert!(!bank0.guest_tso4(), "GUEST_TSO4 requires explicit opt-in");
+    assert!(!bank0.guest_tso6(), "GUEST_TSO6 requires explicit opt-in");
     assert!(!bank0.csum(), "CSUM should not be set without offloads");
     assert!(
         !bank0.host_tso4(),
@@ -1750,24 +2482,65 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
 
     let bank1 = NetworkFeaturesBank1::from(traits.device_features.bank(1));
     assert!(
+        bank1.speed_duplex(),
+        "SPEED_DUPLEX feature should always be set"
+    );
+    assert!(
+        bank1.guest_hdrlen(),
+        "GUEST_HDRLEN feature should always be set"
+    );
+    assert!(
         !bank1.host_uso(),
         "HOST_USO should not be set without USO offloads"
     );
 }
 
-// Mock endpoint that reports specific offload support.
-struct MockEndpointWithOffloads {
-    offloads: TxOffloadSupport,
+#[async_test]
+async fn link_speed_boundaries(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
+    let build_device = |link_speed| {
+        Device::builder()
+            .build(
+                &driver_source,
+                Box::new(MockEndpointWithTxOffloads {
+                    offloads: TxOffloadSupport::default(),
+                    link_speed,
+                }),
+                mac,
+            )
+            .unwrap()
+    };
+
+    let max_valid_speed = i32::MAX as u64;
+    assert_eq!(
+        build_device(max_valid_speed * BITS_PER_MEGABIT)
+            .registers
+            .speed,
+        max_valid_speed as u32
+    );
+    assert_eq!(
+        build_device((max_valid_speed + 1) * BITS_PER_MEGABIT)
+            .registers
+            .speed,
+        u32::MAX
+    );
 }
 
-impl InspectMut for MockEndpointWithOffloads {
+// Mock endpoint that reports specific transmit offload support.
+struct MockEndpointWithTxOffloads {
+    offloads: TxOffloadSupport,
+    link_speed: u64,
+}
+
+impl InspectMut for MockEndpointWithTxOffloads {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.ignore();
     }
 }
 
 #[async_trait]
-impl Endpoint for MockEndpointWithOffloads {
+impl Endpoint for MockEndpointWithTxOffloads {
     fn endpoint_type(&self) -> &'static str {
         "mock-offloads"
     }
@@ -1783,8 +2556,16 @@ impl Endpoint for MockEndpointWithOffloads {
 
     async fn stop(&mut self) {}
 
+    fn is_ordered(&self) -> bool {
+        true
+    }
+
     fn tx_offload_support(&self) -> TxOffloadSupport {
         self.offloads
+    }
+
+    fn link_speed(&self) -> u64 {
+        self.link_speed
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {

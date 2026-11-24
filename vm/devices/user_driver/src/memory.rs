@@ -88,7 +88,7 @@ unsafe impl MappedDmaTarget for RestrictedView {
     fn view(&self, offset: usize, len: usize) -> Option<MemoryBlock> {
         Some(MemoryBlock::new(RestrictedView::new(
             self.mem.clone(),
-            self.offset.checked_add(offset).unwrap(),
+            self.offset.strict_add(offset),
             len,
         )))
     }
@@ -161,7 +161,7 @@ impl MemoryBlock {
     /// TODO: Fallback allocations are here for now, but we should eventually
     /// allow the caller to require these. See `DmaClient::allocate_dma_buffer`.
     pub fn contiguous_pfns(&self) -> bool {
-        for (curr, next) in self.pfns().iter().zip(self.pfns().iter().skip(1)) {
+        for [curr, next] in self.pfns().array_windows() {
             if *curr + 1 != *next {
                 return false;
             }

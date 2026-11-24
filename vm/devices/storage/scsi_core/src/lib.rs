@@ -47,7 +47,7 @@ pub struct ResolveScsiDeviceHandleParams<'a> {
 
 /// The amount of space reserved for an AsyncScsiDisk-returned future
 ///
-/// This was chosen by running `cargo test --package scsidisk --lib -- --exact --nocapture` and looking at the required
+/// This was chosen by running `cargo test --package scsidisk --lib -- --exact --no-capture` and looking at the required
 /// size that was given in the failure message
 pub const ASYNC_SCSI_DISK_STACK_SIZE: usize = 1256 + 336;
 
@@ -59,6 +59,21 @@ pub trait AsyncScsiDisk: Send + Sync + Inspect + ScsiSaveRestore {
         external_data: &'a RequestBuffers<'a>,
         request: &'a Request,
     ) -> StackFuture<'a, ScsiResult, { ASYNC_SCSI_DISK_STACK_SIZE }>;
+
+    /// Drops the state that belongs to the initiator, called when the I_T nexus
+    /// is lost.
+    ///
+    /// SAM defines several pieces of device state as scoped to the nexus rather
+    /// than to the device: pending sense data, unit attention conditions, and
+    /// the PREVENT ALLOW MEDIUM REMOVAL setting. When the initiator goes away,
+    /// so should they, or the next initiator inherits decisions it never made.
+    ///
+    /// State describing the DEVICE rather than the nexus does not belong here.
+    /// An ejected tray stays ejected and a persistent reservation survives,
+    /// which is what real hardware does across a bus reset.
+    ///
+    /// The default does nothing, for a device holding no nexus-scoped state.
+    fn clear_nexus_state(&self) {}
 }
 
 /// A SCSI request.

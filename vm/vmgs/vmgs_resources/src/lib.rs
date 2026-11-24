@@ -45,7 +45,7 @@ pub enum VmgsResource {
     /// Use disk to store guest state, reformatting if corrupted.
     ReprovisionOnFailure(VmgsDisk),
     /// Format and use disk to store guest state
-    Reprovision(VmgsDisk),
+    ReprovisionSingle(VmgsDisk),
     /// Store guest state in memory
     Ephemeral,
 }
@@ -56,7 +56,7 @@ impl VmgsResource {
         match self {
             VmgsResource::Disk(vmgs)
             | VmgsResource::ReprovisionOnFailure(vmgs)
-            | VmgsResource::Reprovision(vmgs) => vmgs.encryption_policy,
+            | VmgsResource::ReprovisionSingle(vmgs) => vmgs.encryption_policy,
             VmgsResource::Ephemeral => GuestStateEncryptionPolicy::None(true),
         }
     }

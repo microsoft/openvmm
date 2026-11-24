@@ -68,14 +68,19 @@ impl CargoDocCommands {
                         filename
                             .file_name()
                             .is_some_and(|f| f == "index.html")
-                            .then(|| filename.parent().unwrap().parent().unwrap())
+                            .then(|| filename.parent().and_then(Path::parent))
+                            .flatten()
                     })
                 }
                 _ => None,
             })
             .context("could not find cargo doc output directory")?;
 
-        assert_eq!(cargo_out_dir.file_name().unwrap(), "doc");
+        anyhow::ensure!(
+            cargo_out_dir.file_name().is_some_and(|name| name == "doc"),
+            "unexpected cargo doc output directory {}",
+            cargo_out_dir.display()
+        );
 
         let final_dir = out_dir.join("cargo-doc-out");
         fs_err::rename(cargo_out_dir, &final_dir)?;

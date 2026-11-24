@@ -4,8 +4,8 @@
 //! Overlay page management for synthetic registers backed by guest pages.
 
 use crate::VtlProtectAccess;
-use guestmem::LockedPages;
 use guestmem::Page;
+use guestmem::UserLockedPages;
 use hvdef::HvMapGpaFlags;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;
@@ -14,14 +14,14 @@ use std::sync::atomic::AtomicU8;
 
 /// A single guest page locked into memory, tracked by its GPN.
 pub struct LockedPage {
-    page: LockedPages,
+    page: UserLockedPages,
     /// The guest page number that backs this locked page.
     pub gpn: u64,
 }
 
 impl LockedPage {
-    /// Creates a new locked page from a single-page [`LockedPages`] and its GPN.
-    pub fn new(gpn: u64, page: LockedPages) -> Self {
+    /// Creates a new locked page from a single-page [`UserLockedPages`] and its GPN.
+    pub fn new(gpn: u64, page: UserLockedPages) -> Self {
         assert!(page.pages().len() == 1);
         Self { page, gpn }
     }
@@ -111,6 +111,16 @@ impl OverlayPage {
         self.unlock_prev_gpn(prot_access);
 
         *self = OverlayPage::Local(new_page);
+    }
+
+    /// Releases any mapped guest page and returns the overlay to its initial
+    /// unmapped, zeroed state.
+    ///
+    /// Unlike [`unmap`](Self::unmap), the contents are discarded rather than
+    /// carried into the VMM-owned buffer, since a reset clears them anyway.
+    pub fn reset(&mut self, prot_access: &mut dyn VtlProtectAccess) {
+        self.unlock_prev_gpn(prot_access);
+        *self = Self::default();
     }
 
     fn unlock_prev_gpn(&mut self, prot_access: &mut dyn VtlProtectAccess) {

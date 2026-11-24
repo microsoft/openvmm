@@ -14,6 +14,7 @@ pub mod aspt;
 pub mod dmar;
 pub mod fadt;
 pub mod gtdt;
+pub mod hyperv;
 pub mod iort;
 pub mod ivrs;
 pub mod madt;

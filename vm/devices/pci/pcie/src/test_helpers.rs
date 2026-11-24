@@ -6,8 +6,11 @@ use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pio::ControlPortIoIntercept;
+use chipset_device::pio::RegisterPortIoIntercept;
 use pci_bus::GenericPciBusDevice;
 use std::fmt::Debug;
+use std::sync::mpsc;
 
 pub struct TestPcieMmioRegistration {}
 
@@ -60,6 +63,96 @@ impl ControlMmioIntercept for TestPcieControlMmioIntercept {
 
     fn region_name(&self) -> &str {
         "???"
+    }
+}
+
+pub struct TestPciePioRegistration;
+
+impl RegisterPortIoIntercept for TestPciePioRegistration {
+    fn new_io_region(&mut self, _debug_name: &str, len: u16) -> Box<dyn ControlPortIoIntercept> {
+        Box::new(TestPcieControlPioIntercept { mapping: None, len })
+    }
+}
+
+struct TestPcieControlPioIntercept {
+    mapping: Option<u16>,
+    len: u16,
+}
+
+impl ControlPortIoIntercept for TestPcieControlPioIntercept {
+    fn map(&mut self, addr: u16) {
+        assert!(self.mapping.replace(addr).is_none());
+    }
+
+    fn unmap(&mut self) {
+        assert!(self.mapping.take().is_some());
+    }
+
+    fn addr(&self) -> Option<u16> {
+        self.mapping
+    }
+
+    fn len(&self) -> u16 {
+        self.len
+    }
+
+    fn offset_of(&self, addr: u16) -> Option<u16> {
+        let base = self.mapping?;
+        let end = base.checked_add(self.len)?;
+        (base..end).contains(&addr).then(|| addr - base)
+    }
+
+    fn region_name(&self) -> &str {
+        "test-pio"
+    }
+}
+
+pub struct TestPciDevice;
+
+impl GenericPciBusDevice for TestPciDevice {
+    fn pci_cfg_read(&mut self, _offset: u16, _value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
+        Some(IoResult::Ok)
+    }
+
+    fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> Option<IoResult> {
+        Some(IoResult::Ok)
+    }
+}
+
+pub struct BlockingEndpoint {
+    access_started: mpsc::Sender<()>,
+    release_access: mpsc::Receiver<()>,
+}
+
+impl BlockingEndpoint {
+    pub fn new() -> (Self, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (access_started, access_started_rx) = mpsc::channel();
+        let (release_access, release_access_rx) = mpsc::channel();
+        (
+            Self {
+                access_started,
+                release_access: release_access_rx,
+            },
+            access_started_rx,
+            release_access,
+        )
+    }
+}
+
+impl GenericPciBusDevice for BlockingEndpoint {
+    fn pci_cfg_read(
+        &mut self,
+        _offset: u16,
+        mut value: ByteEnabledDwordRead<'_>,
+    ) -> Option<IoResult> {
+        self.access_started.send(()).unwrap();
+        self.release_access.recv().unwrap();
+        value.set(0x1234_5678);
+        Some(IoResult::Ok)
+    }
+
+    fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> Option<IoResult> {
+        Some(IoResult::Ok)
     }
 }
 

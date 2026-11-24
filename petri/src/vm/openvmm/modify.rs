@@ -36,6 +36,12 @@ use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
 
 impl PetriVmConfigOpenVmm {
+    /// Skip automatic save/restore verification for devices that do not support it.
+    pub fn without_save_restore(mut self) -> Self {
+        self.skip_save_restore = true;
+        self
+    }
+
     /// Enable the VTL0 alias map.
     // TODO: Remove once #912 is fixed.
     pub fn with_vtl0_alias_map(mut self) -> Self {
@@ -84,13 +90,41 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Override the SMBIOS identity delivered to the guest, regardless of how
+    /// the VM is loaded.
+    ///
+    /// For OpenHCL the identity is forwarded to the paravisor over the Guest
+    /// Emulation Transport (GET), which synthesizes the guest's DMI tables from
+    /// it. For direct OpenVMM boot (Linux direct, UEFI, or PCAT) it is applied
+    /// to the loader's SMBIOS config. Each load path honors only the subset of
+    /// fields it can express and fails closed on the rest.
+    pub fn with_smbios(mut self, f: impl FnOnce(&mut smbios_defs::SmbiosConfig)) -> Self {
+        if self.resources.properties.is_openhcl {
+            let ged = self.ged.as_mut().expect("OpenHCL config must have a GED.");
+            f(&mut ged.smbios);
+        } else {
+            let smbios = match &mut self.config.load_mode {
+                LoadMode::Linux { smbios, .. }
+                | LoadMode::Uefi { smbios, .. }
+                | LoadMode::Pcat { smbios, .. } => &mut **smbios,
+                LoadMode::Igvm { .. } | LoadMode::None => {
+                    panic!("SMBIOS configuration is not supported for this load mode.")
+                }
+            };
+            f(smbios);
+        }
+        self
+    }
+
     /// Enable a synthnic for the VM.
     ///
     /// Uses a mana emulator and the paravisor if a paravisor is present.
     pub fn with_nic(mut self) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: Vec::new(),
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -132,11 +166,64 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Add a single-vport MANA VF to VTL2 and expose its synthetic NIC to VTL0.
+    pub fn with_mana_vf(self, instance_id: Guid, mac_address: MacAddress) -> Self {
+        self.with_mana_vf_vports(instance_id, [mac_address])
+    }
+
+    /// Add a MANA VF to VTL2 and expose one synthetic NIC per vport to VTL0.
+    pub fn with_mana_vf_vports(
+        mut self,
+        instance_id: Guid,
+        mac_addresses: impl IntoIterator<Item = MacAddress>,
+    ) -> Self {
+        let vtl2_settings = self
+            .runtime_config
+            .vtl2_settings
+            .as_mut()
+            .expect("a VTL2 MANA VF requires OpenHCL firmware");
+
+        let vports = mac_addresses
+            .into_iter()
+            .map(|mac_address| VportDefinition {
+                mac_address,
+                endpoint: net_backend_resources::consomme::ConsommeHandle {
+                    cidr: None,
+                    params: Default::default(),
+                    ports: Vec::new(),
+                    internal_dns: true,
+                    recv: None,
+                }
+                .into_resource(),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!vports.is_empty(), "a MANA VF requires at least one vport");
+
+        self.config.vpci_devices.push(VpciDeviceConfig {
+            vtl: DeviceVtl::Vtl2,
+            instance_id,
+            resource: GdmaDeviceHandle { vports }.into_resource(),
+            vnode: None,
+        });
+        vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
+            vtl2_settings_proto::NicDeviceLegacy {
+                instance_id: instance_id.to_string(),
+                subordinate_instance_id: None,
+                max_sub_channels: None,
+            },
+        );
+
+        self
+    }
+
     /// Add a PCIe NIC to the VM using the MANA emulator.
     pub fn with_pcie_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: Vec::new(),
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -183,10 +270,22 @@ impl PetriVmConfigOpenVmm {
     ///
     /// This exposes a virtio-net device on a PCIe root port, suitable for
     /// guests running virtio drivers (e.g. Linux with UEFI boot).
-    pub fn with_virtio_nic(mut self, port_name: &str) -> Self {
+    pub fn with_virtio_nic(self, port_name: &str, mac_address: MacAddress) -> Self {
+        self.with_virtio_nic_rx_gso(port_name, mac_address, false)
+    }
+
+    /// Enable a Consomme-backed virtio-net NIC with configurable receive GSO.
+    pub fn with_virtio_nic_rx_gso(
+        mut self,
+        port_name: &str,
+        mac_address: MacAddress,
+        enable_rx_gso: bool,
+    ) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: Vec::new(),
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -196,7 +295,8 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
-                    mac_address: NIC_MAC_ADDRESS,
+                    enable_rx_gso,
+                    mac_address,
                     endpoint,
                 }
                 .into_resource(),
@@ -214,10 +314,11 @@ impl PetriVmConfigOpenVmm {
     /// This configures consomme to forward the pipette TCP port from the
     /// host into the guest, so the petri framework can connect to the
     /// pipette agent over TCP.
-    pub fn with_tcp_pipette_nic(mut self, port_name: &str) -> Self {
+    pub fn with_tcp_pipette_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let (port_send, port_recv) = mesh::oneshot();
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: vec![net_backend_resources::consomme::HostPortConfig {
                 protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
                 host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
@@ -226,6 +327,7 @@ impl PetriVmConfigOpenVmm {
                 host_port: net_backend_resources::consomme::HostPort::Dynamic(port_send),
                 guest_port: pipette_client::PIPETTE_PORT as u16,
             }],
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -234,7 +336,8 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
-                    mac_address: NIC_MAC_ADDRESS,
+                    enable_rx_gso: false,
+                    mac_address,
                     endpoint,
                 }
                 .into_resource(),
@@ -335,17 +438,47 @@ impl PetriVmConfigOpenVmm {
     /// The file at the given path will be created (or opened) and sized to
     /// match the VM's configured memory. Guest memory is then backed by
     /// this file, which persists across snapshot save/restore.
+    ///
+    /// This forces shared (non-private) memory, since a file-backed mapping
+    /// is incompatible with private anonymous RAM. Panics if the caller
+    /// explicitly requested private memory via
+    /// [`MemoryConfig::private_memory`](crate::MemoryConfig::private_memory),
+    /// rather than silently downgrading it.
     pub fn with_memory_backing_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        assert_ne!(
+            self.requested_private_memory,
+            Some(true),
+            "with_memory_backing_file forces shared memory, which conflicts with \
+             the explicitly requested private memory"
+        );
         self.memory_backing_file = Some(path.into());
+        for node in &mut self.config.numa.nodes {
+            if let Some(mem) = &mut node.mem {
+                mem.private_memory = false;
+            }
+        }
         self
     }
 
     /// Use explicit hugetlb-backed guest memory.
+    ///
+    /// This forces shared (non-private) memory, since hugetlb backing
+    /// requires a file-backed mapping rather than private anonymous RAM.
+    /// Panics if the caller explicitly requested private memory via
+    /// [`MemoryConfig::private_memory`](crate::MemoryConfig::private_memory),
+    /// rather than silently downgrading it.
     pub fn with_hugepages(mut self, hugepage_size: Option<u64>) -> Self {
+        assert_ne!(
+            self.requested_private_memory,
+            Some(true),
+            "with_hugepages forces shared memory, which conflicts with the \
+             explicitly requested private memory"
+        );
         for node in &mut self.config.numa.nodes {
             if let Some(mem) = &mut node.mem {
                 mem.hugepages = true;
                 mem.hugepage_size = hugepage_size;
+                mem.private_memory = false;
             }
         }
         self
@@ -356,20 +489,76 @@ impl PetriVmConfigOpenVmm {
     /// All root ports are named according to their index within their parent
     /// using the naming scheme `sXrcYrpZ`. For example, the third root port on
     /// the fourth root complex in segment 0 would be named `s0rc3rp2`.
+    ///
+    /// This may be called multiple times to build asymmetric topologies (e.g. a
+    /// different number of root complexes per segment). Each call appends its
+    /// root complexes to segments numbered after any added by previous calls,
+    /// so the segment numbers in the `sXrcY` names continue from where the last
+    /// call left off.
     pub fn with_pcie_root_topology(
-        mut self,
+        self,
         segment_count: u64,
         root_complex_per_segment: u64,
         root_ports_per_root_complex: u64,
     ) -> Self {
-        const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
-        const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
+        if segment_count == 0 {
+            return self;
+        }
+        // Offset the segments and global indices added by this call so that it
+        // can be called multiple times. New segments are numbered after any
+        // existing ones, and the global index continues from the existing
+        // root complex count.
+        let segment_base = self
+            .config
+            .pcie_root_complexes
+            .iter()
+            .map(|rc| u64::from(rc.segment) + 1)
+            .max()
+            .unwrap_or(0);
+        self.with_pcie_root_topology_at(
+            segment_base,
+            segment_count,
+            root_complex_per_segment,
+            root_ports_per_root_complex,
+        )
+    }
+
+    /// Append a topology starting at an explicit PCI segment, without
+    /// renumbering existing root complexes or their ports.
+    pub fn with_pcie_root_topology_at(
+        mut self,
+        segment_base: u64,
+        segment_count: u64,
+        root_complex_per_segment: u64,
+        root_ports_per_root_complex: u64,
+    ) -> Self {
+        let segment_end = segment_base
+            .checked_add(segment_count)
+            .filter(|end| *end <= u16::MAX as u64 + 1)
+            .expect("PCI segment range exceeds u16");
+        assert!(
+            !self
+                .config
+                .pcie_root_complexes
+                .iter()
+                .any(|rc| (segment_base..segment_end).contains(&u64::from(rc.segment))),
+            "PCI segment range overlaps an existing root complex"
+        );
+        assert!(
+            (1..=256).contains(&root_complex_per_segment),
+            "PCI topology requires between 1 and 256 root complexes per segment"
+        );
+        const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
+        const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
+        let index_base = self.config.pcie_root_complexes.len() as u64;
 
         // Add the root complexes to the VM
-        for segment in 0..segment_count {
+        for segment_offset in 0..segment_count {
+            let segment = segment_base + segment_offset;
             let bus_count_per_rc = 256 / root_complex_per_segment;
             for rc_index_in_segment in 0..root_complex_per_segment {
-                let index = segment * root_complex_per_segment + rc_index_in_segment;
+                let index =
+                    index_base + segment_offset * root_complex_per_segment + rc_index_in_segment;
                 let name = format!("s{}rc{}", segment, rc_index_in_segment);
 
                 let start_bus = rc_index_in_segment * bus_count_per_rc;
@@ -382,6 +571,7 @@ impl PetriVmConfigOpenVmm {
                         hotplug: true,
                         acs_capabilities_supported: Some(0),
                         cxl: false,
+                        pasid: false,
                     })
                     .collect();
 
@@ -391,6 +581,7 @@ impl PetriVmConfigOpenVmm {
                     segment: segment.try_into().unwrap(),
                     start_bus: start_bus.try_into().unwrap(),
                     end_bus: end_bus.try_into().unwrap(),
+                    legacy_pci_config_io: false,
                     low_mmio: PcieMmioRangeConfig::Dynamic {
                         size: LOW_MMIO_SIZE,
                     },
@@ -406,6 +597,72 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
+        self
+    }
+
+    pub(super) fn with_private_virtio_devices(mut self) -> Self {
+        if self.guest_shares.is_empty() && self.private_virtio_devices.is_empty() {
+            return self;
+        }
+        if self.config.pcie_root_complexes.is_empty() {
+            self = self.with_pcie_root_topology(1, 1, 0);
+        }
+        // Prefer an existing nonzero segment for guests that cannot use segment zero.
+        let root_index = self
+            .config
+            .pcie_root_complexes
+            .iter()
+            .position(|rc| rc.segment != 0)
+            .unwrap_or(0);
+        let mut port_names = self
+            .config
+            .pcie_root_complexes
+            .iter()
+            .flat_map(|rc| &rc.ports)
+            .chain(self.config.pcie_switches.iter().flat_map(|s| &s.ports))
+            .map(|p| p.name.clone())
+            .chain(self.config.pcie_devices.iter().map(|d| d.port_name.clone()))
+            .collect::<std::collections::HashSet<_>>();
+        let mut shares = std::mem::take(&mut self.guest_shares)
+            .into_iter()
+            .collect::<Vec<_>>();
+        shares.sort_by(|a, b| a.0.cmp(&b.0));
+        for (tag, share) in shares {
+            let root_path = share
+                .host_path
+                .into_os_string()
+                .into_string()
+                .expect("guest share path must be UTF-8");
+            self.private_virtio_devices.push((
+                "petri-share-",
+                virtio_resources::p9::VirtioPlan9Handle {
+                    tag,
+                    root_path,
+                    debug: false,
+                }
+                .into_resource(),
+            ));
+        }
+        for (prefix, resource) in std::mem::take(&mut self.private_virtio_devices) {
+            let port_name = (0..)
+                .map(|i| format!("{prefix}{i}"))
+                .find(|name| port_names.insert(name.clone()))
+                .unwrap();
+            self.config.pcie_root_complexes[root_index]
+                .ports
+                .push(PciePortConfig {
+                    name: port_name.clone(),
+                    devfn: None,
+                    hotplug: false,
+                    acs_capabilities_supported: Some(0),
+                    cxl: false,
+                    pasid: false,
+                });
+            self.config.pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: virtio_resources::VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        }
         self
     }
 
@@ -427,6 +684,7 @@ impl PetriVmConfigOpenVmm {
                     hotplug,
                     acs_capabilities_supported: Some(0),
                     cxl: false,
+                    pasid: false,
                 })
                 .collect(),
         });
@@ -441,8 +699,36 @@ impl PetriVmConfigOpenVmm {
     /// complexes.
     pub fn with_smmu(mut self, rc_names: &[&str]) -> Self {
         for name in rc_names {
-            self.pending_iommu
-                .push((name.to_string(), PcieIommuConfig::Smmu));
+            self.pending_iommu.push((
+                name.to_string(),
+                PcieIommuConfig::Smmu {
+                    accel: false,
+                    oas: openvmm_defs::config::SmmuOas::Auto,
+                    ssidsize: openvmm_defs::config::SmmuSsidSize::Auto,
+                },
+            ));
+        }
+        self
+    }
+
+    /// Enable an accelerated (iommufd-nested) SMMUv3 on the specified root
+    /// complexes (aarch64 only).
+    ///
+    /// Like [`with_smmu`](Self::with_smmu), but the SMMU programs the host
+    /// IOMMU for hardware nested stage-1 translation, so VFIO devices behind
+    /// these root complexes are permitted (and their guest-programmed stage-1
+    /// tables are honored via a host nested HWPT). Requires a host SMMU that
+    /// supports iommufd nesting.
+    pub fn with_smmu_accel(mut self, rc_names: &[&str]) -> Self {
+        for name in rc_names {
+            self.pending_iommu.push((
+                name.to_string(),
+                PcieIommuConfig::Smmu {
+                    accel: true,
+                    oas: openvmm_defs::config::SmmuOas::Auto,
+                    ssidsize: openvmm_defs::config::SmmuSsidSize::Auto,
+                },
+            ));
         }
         self
     }

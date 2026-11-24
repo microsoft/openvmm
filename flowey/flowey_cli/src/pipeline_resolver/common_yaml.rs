@@ -3,8 +3,10 @@
 
 //! Shared functionality for emitting a pipeline as ADO/GitHub YAML files
 
+use crate::cli::FlowBackendCli;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::SerializedRequest;
+use crate::cli::exec_snippet::construct_exec_snippet_cli;
 use crate::cli::pipeline::CheckMode;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
@@ -17,6 +19,25 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
+
+const GITHUB_WORKFLOW_MAX_BYTES: usize = 500 * 1024;
+
+fn check_generated_yaml_size(
+    yaml: &str,
+    backend: FlowBackendCli,
+    pipeline_file: &Path,
+) -> anyhow::Result<()> {
+    if matches!(backend, FlowBackendCli::Github) && yaml.len() > GITHUB_WORKFLOW_MAX_BYTES {
+        anyhow::bail!(
+            "GitHub workflow '{}' is {} bytes, exceeding the 500 KB ({} byte) limit. Reduce the generated workflow size.",
+            pipeline_file.display(),
+            yaml.len(),
+            GITHUB_WORKFLOW_MAX_BYTES,
+        );
+    }
+
+    Ok(())
+}
 
 /// The output of resolving a flow into a sequence of YAML steps (shared by ADO
 /// and GitHub resolvers).
@@ -191,6 +212,12 @@ where
     );
     let generated_yaml = generated_yaml.trim_start();
 
+    check_generated_yaml_size(
+        generated_yaml,
+        pipeline_static_db.flow_backend,
+        pipeline_file,
+    )?;
+
     let generated_json =
         serde_json::to_string_pretty(pipeline_static_db).context("while emitting pipeline json")?;
 
@@ -282,10 +309,20 @@ where
 
 /// Merges a list of bash commands into a single YAML step.
 pub(crate) struct BashCommands {
-    commands: Vec<String>,
+    commands: Vec<BashCommand>,
     label: Option<String>,
     can_merge: bool,
     github: bool,
+}
+
+enum BashCommand {
+    Script(String),
+    ExecSnippet {
+        flowey_bin: String,
+        node_modpath: String,
+        snippet_idx: usize,
+        job_idx: usize,
+    },
 }
 
 impl BashCommands {
@@ -314,6 +351,38 @@ impl BashCommands {
         can_merge: bool,
         mut cmd: String,
     ) -> Option<Value> {
+        cmd.truncate(cmd.trim_end().len());
+        self.push_command(label, can_merge, BashCommand::Script(cmd))
+    }
+
+    #[must_use]
+    pub fn push_exec_snippet(
+        &mut self,
+        label: Option<String>,
+        can_merge: bool,
+        flowey_bin: &str,
+        node_modpath: &str,
+        snippet_idx: usize,
+        job_idx: usize,
+    ) -> Option<Value> {
+        self.push_command(
+            label,
+            can_merge,
+            BashCommand::ExecSnippet {
+                flowey_bin: flowey_bin.into(),
+                node_modpath: node_modpath.into(),
+                snippet_idx,
+                job_idx,
+            },
+        )
+    }
+
+    fn push_command(
+        &mut self,
+        label: Option<String>,
+        can_merge: bool,
+        cmd: BashCommand,
+    ) -> Option<Value> {
         let val = if !can_merge && !self.can_merge {
             self.flush()
         } else {
@@ -322,7 +391,6 @@ impl BashCommands {
         if !can_merge || self.label.is_none() {
             self.label = label;
         }
-        cmd.truncate(cmd.trim_end().len());
         self.commands.push(cmd);
         self.can_merge &= can_merge;
         val
@@ -330,6 +398,41 @@ impl BashCommands {
 
     pub fn push_minor(&mut self, cmd: String) {
         assert!(self.push(None, true, cmd).is_none());
+    }
+
+    fn render_commands(&self) -> String {
+        let mut commands: Vec<String> = Vec::new();
+        let mut previous_snippet = None;
+
+        for command in &self.commands {
+            match command {
+                BashCommand::Script(script) => {
+                    commands.push(script.clone());
+                    previous_snippet = None;
+                }
+                BashCommand::ExecSnippet {
+                    flowey_bin,
+                    node_modpath,
+                    snippet_idx,
+                    job_idx,
+                } => {
+                    if previous_snippet == Some((flowey_bin.as_str(), *job_idx)) {
+                        let command = commands.last_mut().unwrap();
+                        command.push_str(&format!(" {node_modpath} {snippet_idx}"));
+                    } else {
+                        commands.push(construct_exec_snippet_cli(
+                            flowey_bin,
+                            node_modpath,
+                            *snippet_idx,
+                            *job_idx,
+                        ));
+                    }
+                    previous_snippet = Some((flowey_bin.as_str(), *job_idx));
+                }
+            }
+        }
+
+        commands.join("\n")
     }
 
     #[must_use]
@@ -343,8 +446,8 @@ impl BashCommands {
             None
         };
         let label = label.unwrap_or_else(|| "🦀 flowey rust steps".into());
+        let commands = self.render_commands();
         let map = if self.github {
-            let commands = self.commands.join("\n");
             serde_yaml::Mapping::from_iter([
                 ("name".into(), label.into()),
                 ("run".into(), commands.into()),
@@ -352,11 +455,10 @@ impl BashCommands {
             ])
         } else {
             let commands = if self.commands.len() == 1 {
-                self.commands.drain(..).next().unwrap()
+                commands
             } else {
                 // ADO doesn't automatically fail on error on multi-line scripts.
-                self.commands.insert(0, "set -e".into());
-                self.commands.join("\n")
+                format!("set -e\n{commands}")
             };
             serde_yaml::Mapping::from_iter([
                 ("bash".into(), commands.into()),

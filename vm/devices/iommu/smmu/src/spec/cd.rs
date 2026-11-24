@@ -6,6 +6,7 @@
 //! Each CD is 64 bytes (512 bits). The CD contains stage 1 translation table
 //! pointers and ASID for a given stream/substream.
 
+use super::AddrSize;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
@@ -59,8 +60,8 @@ impl Cd {
     }
 
     /// Returns IPS (intermediate physical address size).
-    pub fn ips(&self) -> Ips {
-        Ips(self.qw0.ips())
+    pub fn ips(&self) -> AddrSize {
+        self.qw0.ips()
     }
 
     /// Returns the ASID.
@@ -123,7 +124,7 @@ pub struct CdDw0 {
     pub v: bool,
     /// Intermediate physical address size.
     #[bits(3)]
-    pub ips: u8,
+    pub ips: AddrSize,
     /// Access flag fault disable.
     pub affd: bool,
     /// Write implies XN.
@@ -184,58 +185,6 @@ open_enum! {
         GRAN_64K = 0b01,
         /// 16KB granule.
         GRAN_16K = 0b10,
-    }
-}
-
-open_enum! {
-    /// Intermediate Physical Address Size (CD DW0 IPS field).
-    pub enum Ips: u8 {
-        /// 32-bit (4GB).
-        IPS_32 = 0b000,
-        /// 36-bit (64GB).
-        IPS_36 = 0b001,
-        /// 40-bit (1TB).
-        IPS_40 = 0b010,
-        /// 42-bit (4TB).
-        IPS_42 = 0b011,
-        /// 44-bit (16TB).
-        IPS_44 = 0b100,
-        /// 48-bit (256TB).
-        IPS_48 = 0b101,
-        /// 52-bit (4PB).
-        IPS_52 = 0b110,
-    }
-}
-
-impl Ips {
-    /// Returns the number of physical address bits for this IPS value,
-    /// or `None` if the value is not a recognized encoding.
-    pub fn bits(self) -> Option<u8> {
-        Some(match self {
-            Self::IPS_32 => 32,
-            Self::IPS_36 => 36,
-            Self::IPS_40 => 40,
-            Self::IPS_42 => 42,
-            Self::IPS_44 => 44,
-            Self::IPS_48 => 48,
-            Self::IPS_52 => 52,
-            _ => return None,
-        })
-    }
-
-    /// Returns the IPS encoding for a given number of address bits.
-    /// Rounds down to the nearest supported encoding if the value is
-    /// not an exact match (e.g., 39 → 36-bit).
-    pub fn from_bits(bits: u8) -> Self {
-        match bits {
-            52..=u8::MAX => Self::IPS_52,
-            48..=51 => Self::IPS_48,
-            44..=47 => Self::IPS_44,
-            42..=43 => Self::IPS_42,
-            40..=41 => Self::IPS_40,
-            36..=39 => Self::IPS_36,
-            _ => Self::IPS_32,
-        }
     }
 }
 
@@ -349,18 +298,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ips_bits() {
-        assert_eq!(Ips::IPS_32.bits(), Some(32));
-        assert_eq!(Ips::IPS_36.bits(), Some(36));
-        assert_eq!(Ips::IPS_40.bits(), Some(40));
-        assert_eq!(Ips::IPS_42.bits(), Some(42));
-        assert_eq!(Ips::IPS_44.bits(), Some(44));
-        assert_eq!(Ips::IPS_48.bits(), Some(48));
-        assert_eq!(Ips::IPS_52.bits(), Some(52));
-        assert_eq!(Ips(0b111).bits(), None);
-    }
-
-    #[test]
     fn test_cd_epd0_disables_walk() {
         let cd = Cd {
             qw0: CdDw0::new().with_v(true).with_epd0(true),
@@ -377,7 +314,7 @@ mod tests {
             qw0: CdDw0::new()
                 .with_t0sz(16) // 48-bit VA
                 .with_tg0(Tg0::GRAN_4K.0)
-                .with_ips(Ips::IPS_48.0)
+                .with_ips(AddrSize::BITS_48)
                 .with_v(true)
                 .with_aa64(true),
             ..new_cd()

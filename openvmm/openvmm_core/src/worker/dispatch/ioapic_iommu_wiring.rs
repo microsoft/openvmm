@@ -90,9 +90,6 @@ struct IoApicRoutingState {
 struct Route {
     /// Raw (pre-remapping) MSI request from the IOAPIC.
     raw: Option<MsiRequest>,
-    /// Last translated route programmed into `hv_routing`. Used to skip
-    /// redundant `set_irq_route` calls.
-    programmed: Option<MsiRequest>,
 }
 
 struct RemapState {
@@ -147,14 +144,14 @@ impl IoApicRoutingConnection {
 
 impl IoApicRoutingInner {
     /// Translate the cached raw route for `irq` through the remapper (if any)
-    /// and program it into `hv_routing`, skipping the call if unchanged.
+    /// and program it into `hv_routing`.
     ///
     /// This is the delivery-time translation: the remapper's IRTE lookup
     /// (which may record a fault) runs here, so callers must only invoke it
     /// when the interrupt is actually being delivered. Must be called with
     /// `state` held; clears the route's dirty bit.
-    fn set_route(&self, state: &mut IoApicRoutingState, irq: u8) {
-        let route = &mut state.routes[irq as usize];
+    fn set_route(&self, state: &IoApicRoutingState, irq: u8) {
+        let route = &state.routes[irq as usize];
         let translated = match &state.remap {
             Some(remap) => route.raw.and_then(|r| {
                 remap
@@ -164,10 +161,8 @@ impl IoApicRoutingInner {
             }),
             None => route.raw,
         };
-        if route.programmed != translated {
-            route.programmed = translated;
-            self.hv_routing.set_irq_route(irq, translated);
-        }
+        // Reset may have cleared the backend route even if the MSI is unchanged.
+        self.hv_routing.set_irq_route(irq, translated);
         self.clear_dirty(1 << irq);
     }
 
@@ -201,16 +196,16 @@ impl IoApicRouting for IoApicRoutingInner {
             self.mark_dirty(1 << irq);
         } else {
             // Passthrough mode: no IOMMU, so program the route directly.
-            self.set_route(&mut state, irq);
+            self.set_route(&state, irq);
         }
     }
 
     fn assert_irq(&self, irq: u8) {
         if self.dirty.load(Ordering::Relaxed) & (1 << irq) != 0 {
-            let mut state = self.state.lock();
+            let state = self.state.lock();
             // Re-check under the lock: another thread may have translated it.
             if self.dirty.load(Ordering::Relaxed) & (1 << irq) != 0 {
-                self.set_route(&mut state, irq);
+                self.set_route(&state, irq);
             }
         }
         self.hv_routing.assert_irq(irq);
@@ -243,29 +238,44 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+    use virt::irqcon::IrqRoutes;
 
     #[derive(Default)]
     struct RecordingIoApicRouting {
-        routes: Mutex<Vec<(u8, Option<MsiRequest>)>>,
+        routes: IrqRoutes,
+        route_updates: Mutex<Vec<(u8, Option<MsiRequest>)>>,
+        deliveries: Mutex<Vec<(u8, MsiRequest)>>,
     }
 
     impl RecordingIoApicRouting {
         fn last_route(&self, irq: u8) -> Option<MsiRequest> {
-            self.routes
+            self.route_updates
                 .lock()
                 .iter()
                 .rev()
                 .find(|(route_irq, _)| *route_irq == irq)
                 .and_then(|(_, request)| *request)
         }
+
+        fn reset_routes(&self) {
+            // MSHV clears the backend table without notifying the wrapper.
+            for irq in 0..IRQ_LINES as u8 {
+                self.routes.set_irq_route(irq, None);
+            }
+        }
     }
 
     impl IoApicRouting for RecordingIoApicRouting {
         fn set_irq_route(&self, irq: u8, request: Option<MsiRequest>) {
-            self.routes.lock().push((irq, request));
+            self.routes.set_irq_route(irq, request);
+            self.route_updates.lock().push((irq, request));
         }
 
-        fn assert_irq(&self, _irq: u8) {}
+        fn assert_irq(&self, irq: u8) {
+            self.routes
+                .assert_irq(irq, |request| self.deliveries.lock().push((irq, request)));
+        }
     }
 
     struct TestRemapper {
@@ -367,6 +377,90 @@ mod tests {
     }
 
     #[test]
+    fn same_remapped_route_is_delivered_after_backend_reset() {
+        let hv_routing = Arc::new(RecordingIoApicRouting::default());
+        let connection = IoApicRoutingConnection::new(hv_routing.clone());
+        let target = connection.target();
+        let remapper = Arc::new(TestRemapper::new(1));
+        connection.connect_remapper(0x00A0, remapper.clone());
+        let raw = MsiRequest {
+            address: 0xFEE0_0000,
+            data: 0x20,
+        };
+        let remapped = MsiRequest {
+            address: raw.address + 0x1000,
+            data: raw.data + 1,
+        };
+
+        target.set_irq_route(4, Some(raw));
+        target.assert_irq(4);
+        assert_eq!(*hv_routing.deliveries.lock(), [(4, remapped)]);
+
+        for delivery_count in 2..=3 {
+            hv_routing.reset_routes();
+            target.set_irq_route(4, Some(raw));
+            assert_eq!(remapper.seen_device_ids.lock().len(), delivery_count - 1);
+
+            target.assert_irq(4);
+            assert_eq!(
+                *hv_routing.deliveries.lock(),
+                vec![(4, remapped); delivery_count]
+            );
+        }
+    }
+
+    #[test]
+    fn invalidation_restores_unchanged_route_after_backend_reset() {
+        let hv_routing = Arc::new(RecordingIoApicRouting::default());
+        let connection = IoApicRoutingConnection::new(hv_routing.clone());
+        let target = connection.target();
+        let remapper = Arc::new(TestRemapper::new(1));
+        connection.connect_remapper(0x00A0, remapper.clone());
+        let raw = MsiRequest {
+            address: 0xFEE0_0000,
+            data: 0x20,
+        };
+        let remapped = MsiRequest {
+            address: raw.address + 0x1000,
+            data: raw.data + 1,
+        };
+
+        target.set_irq_route(4, Some(raw));
+        target.assert_irq(4);
+        assert_eq!(*hv_routing.deliveries.lock(), [(4, remapped)]);
+
+        hv_routing.reset_routes();
+        remapper.routes.invalidate(None);
+        assert_eq!(remapper.seen_device_ids.lock().len(), 1);
+
+        target.assert_irq(4);
+        assert_eq!(
+            *hv_routing.deliveries.lock(),
+            [(4, remapped), (4, remapped)]
+        );
+    }
+
+    #[test]
+    fn same_passthrough_route_is_delivered_after_backend_reset() {
+        let hv_routing = Arc::new(RecordingIoApicRouting::default());
+        let connection = IoApicRoutingConnection::new(hv_routing.clone());
+        let target = connection.target();
+        let raw = MsiRequest {
+            address: 0xFEE0_0000,
+            data: 0x20,
+        };
+
+        target.set_irq_route(4, Some(raw));
+        target.assert_irq(4);
+        assert_eq!(*hv_routing.deliveries.lock(), [(4, raw)]);
+
+        hv_routing.reset_routes();
+        target.set_irq_route(4, Some(raw));
+        target.assert_irq(4);
+        assert_eq!(*hv_routing.deliveries.lock(), [(4, raw), (4, raw)]);
+    }
+
+    #[test]
     fn translation_is_deferred_until_delivery() {
         let hv_routing = Arc::new(RecordingIoApicRouting::default());
         let connection = IoApicRoutingConnection::new(hv_routing.clone());
@@ -399,25 +493,30 @@ mod tests {
         let connection = IoApicRoutingConnection::new(hv_routing.clone());
         let target = connection.target();
         let remapper = Arc::new(TestRemapper::new(1));
-        remapper.fault.store(true, Ordering::SeqCst);
         connection.connect_remapper(0x00A0, remapper.clone());
+        let raw = MsiRequest {
+            address: 0xFEE0_0000,
+            data: 0x20,
+        };
+        let remapped = MsiRequest {
+            address: raw.address + 0x1000,
+            data: raw.data + 1,
+        };
 
-        // Program an unmasked route whose lookup will fault. Because it is
-        // never delivered, the remapper must not be consulted — this is what
-        // keeps a never-firing entry from recording a spurious remapping fault.
-        target.set_irq_route(
-            4,
-            Some(MsiRequest {
-                address: 0xFEE0_0000,
-                data: 0x20,
-            }),
-        );
-        assert!(remapper.seen_device_ids.lock().is_empty());
-
-        // On delivery the lookup runs and, faulting, masks the hv route.
+        target.set_irq_route(4, Some(raw));
         target.assert_irq(4);
+        assert_eq!(*hv_routing.deliveries.lock(), [(4, remapped)]);
+
+        hv_routing.reset_routes();
+        remapper.fault.store(true, Ordering::SeqCst);
+        target.set_irq_route(4, Some(raw));
         assert_eq!(remapper.seen_device_ids.lock().len(), 1);
+
+        // A fault on the new boot must not replay the previous boot's MSI.
+        target.assert_irq(4);
+        assert_eq!(remapper.seen_device_ids.lock().len(), 2);
         assert_eq!(hv_routing.last_route(4), None);
+        assert_eq!(*hv_routing.deliveries.lock(), [(4, remapped)]);
     }
 
     #[test]
@@ -427,12 +526,24 @@ mod tests {
         let target = connection.target();
         let remapper = Arc::new(TestRemapper::new(1));
         connection.connect_remapper(0x00A0, remapper.clone());
+        let raw = MsiRequest {
+            address: 0xFEE0_0000,
+            data: 0x20,
+        };
+        let remapped = MsiRequest {
+            address: raw.address + 0x1000,
+            data: raw.data + 1,
+        };
 
-        // A masked (None) route must never invoke the remapper, even on
-        // delivery.
+        target.set_irq_route(4, Some(raw));
+        target.assert_irq(4);
+        assert_eq!(*hv_routing.deliveries.lock(), [(4, remapped)]);
+
+        hv_routing.reset_routes();
         target.set_irq_route(4, None);
         target.assert_irq(4);
-        assert!(remapper.seen_device_ids.lock().is_empty());
+        assert_eq!(remapper.seen_device_ids.lock().len(), 1);
+        assert_eq!(*hv_routing.deliveries.lock(), [(4, remapped)]);
     }
 
     #[test]

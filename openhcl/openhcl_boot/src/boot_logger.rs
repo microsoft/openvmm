@@ -9,9 +9,9 @@
 //! sensitive.
 
 #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-use crate::arch::snp::SnpIoAccess;
+use crate::arch::snp::SnpSerialBackend;
 #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-use crate::arch::tdx::TdxIoAccess;
+use crate::arch::tdx::TdxSerialBackend;
 use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
 use core::cell::RefCell;
@@ -19,22 +19,51 @@ use core::fmt;
 use core::fmt::Write;
 use host_fdt_parser::ComInfo;
 use memory_range::MemoryRange;
-#[cfg(target_arch = "x86_64")]
-use minimal_rt::arch::InstrIoAccess;
+#[cfg(target_arch = "aarch64")]
 use minimal_rt::arch::Serial;
 use string_page_buf::StringBuffer;
+#[cfg(target_arch = "x86_64")]
+use uart_16550::BaudRate;
+#[cfg(target_arch = "x86_64")]
+use uart_16550::Config;
+#[cfg(target_arch = "x86_64")]
+use uart_16550::Uart16550;
+#[cfg(target_arch = "x86_64")]
+use uart_16550::Uart16550Tty;
+#[cfg(target_arch = "x86_64")]
+use uart_16550::backend::Backend;
+#[cfg(target_arch = "x86_64")]
+use uart_16550::backend::PioBackend;
 
 enum Logger {
     #[cfg(target_arch = "x86_64")]
-    Serial(Serial<InstrIoAccess>),
+    Serial(Uart16550Tty<PioBackend>),
     #[cfg(target_arch = "aarch64")]
     #[expect(dead_code)]
     Serial(Serial),
     #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-    TdxSerial(Serial<TdxIoAccess>),
+    TdxSerial(Uart16550Tty<TdxSerialBackend>),
     #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-    SnpSerial(Serial<SnpIoAccess>),
+    SnpSerial(Uart16550Tty<SnpSerialBackend>),
     None,
+}
+
+/// Initializes the serial device at the speed advertised by the host, which
+/// is also passed to Linux. Returns `None` if the device isn't present or the
+/// speed is invalid.
+#[cfg(target_arch = "x86_64")]
+fn init_serial<B: Backend>(mut uart: Uart16550<B>, baud_rate: u32) -> Option<Uart16550Tty<B>> {
+    // The host controls the speed, and uart_16550 debug-asserts that it is
+    // non-zero.
+    if baud_rate == 0 {
+        return None;
+    }
+    let config = Config {
+        baud_rate: BaudRate::Custom(baud_rate),
+        ..Config::DEFAULT
+    };
+    uart.init(config).ok()?;
+    Some(Uart16550Tty::from_inner(uart))
 }
 
 impl Logger {
@@ -91,20 +120,29 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
 
     *logger = match (isolation_type, com3_serial_available) {
         #[cfg(target_arch = "x86_64")]
-        (IsolationType::None | IsolationType::Vbs, ComInfo::Ns16550 { .. }) => {
-            Logger::Serial(Serial::init(InstrIoAccess))
+        (IsolationType::None | IsolationType::Vbs, ComInfo::Ns16550 { current_speed, .. }) => {
+            init_serial(minimal_rt::arch::com3(), current_speed)
+                .map_or(Logger::None, Logger::Serial)
         }
         // TODO: fix the PL011 minimal_rt driver. Currently hangs even if
         // the MMIO address is correctly configured.
         // #[cfg(target_arch = "aarch64")]
         // (IsolationType::None, ComInfo::Pl011 { .. }) => Logger::Serial(Serial::init()),
         #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-        (IsolationType::Tdx, ComInfo::Ns16550 { .. }) => {
-            Logger::TdxSerial(Serial::init(TdxIoAccess))
+        (IsolationType::Tdx, ComInfo::Ns16550 { current_speed, .. }) => {
+            let backend = TdxSerialBackend(minimal_rt::arch::COM3);
+            // SAFETY: COM3 is a valid I/O port, which is used for debug output
+            // only.
+            let uart = unsafe { Uart16550::new_with_backend(backend) };
+            init_serial(uart, current_speed).map_or(Logger::None, Logger::TdxSerial)
         }
         #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-        (IsolationType::Snp, ComInfo::Ns16550 { .. }) => {
-            Logger::SnpSerial(Serial::init(SnpIoAccess))
+        (IsolationType::Snp, ComInfo::Ns16550 { current_speed, .. }) => {
+            let backend = SnpSerialBackend(minimal_rt::arch::COM3);
+            // SAFETY: COM3 is a valid I/O port, which is used for debug output
+            // only.
+            let uart = unsafe { Uart16550::new_with_backend(backend) };
+            init_serial(uart, current_speed).map_or(Logger::None, Logger::SnpSerial)
         }
         _ => Logger::None,
     };

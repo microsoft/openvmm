@@ -9,12 +9,13 @@ rust-version.workspace = true
 [features]
 default = []
 mesh = ["mesh_protobuf"]
+getrandom = ["dep:getrandom"]
 
 [dependencies]
 inspect = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }
 
-getrandom.workspace = true
+getrandom = { workspace = true, optional = true }
 thiserror.workspace = true
 zerocopy.workspace = true
 [target.'cfg(windows)'.dependencies]

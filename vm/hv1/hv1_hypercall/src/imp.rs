@@ -259,6 +259,9 @@ impl<T: StartVirtualProcessor<defs::InitialVpContextX64>>
 {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvX64StartVirtualProcessor::run(params, |input| {
+            if input.rsvd0 != 0 || input.rsvd1 != 0 {
+                return Err(HvError::InvalidParameter);
+            }
             self.start_virtual_processor(
                 input.partition_id,
                 input.vp_index,

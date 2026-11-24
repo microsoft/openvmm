@@ -14,13 +14,16 @@ vmswitch.workspace = true
 vm_resource.workspace = true
 
 inspect.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 pal_async.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

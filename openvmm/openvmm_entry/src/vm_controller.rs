@@ -55,8 +55,8 @@ pub enum VmControllerRpc {
     RemoveVtl0ScsiDiskByNvmeNsid(
         Rpc<RemoveVtl0ScsiDiskByNvmeNsidParams, Result<Option<u32>, mesh::error::RemoteError>>,
     ),
-    /// Save a VM snapshot to a directory.
-    SaveSnapshot(Rpc<String, Result<(), mesh::error::RemoteError>>),
+    /// Save a VM snapshot to a directory. Returns the generated snapshot ID.
+    SaveSnapshot(Rpc<String, Result<Guid, mesh::error::RemoteError>>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     DumpState(Rpc<String, Result<(), mesh::error::RemoteError>>),
     /// Service (update) the VTL2 firmware.
@@ -125,6 +125,7 @@ pub struct VmController {
     pub(crate) memory: u64,
     pub(crate) processors: u32,
     pub(crate) log_file: Option<PathBuf>,
+    pub(crate) crash_dump_path: Option<PathBuf>,
     pub(crate) guest_power_actions: GuestPowerActions,
 }
 
@@ -275,6 +276,25 @@ impl VmController {
                 },
                 Event::Halt(reason) => {
                     tracing::info!(?reason, "guest halted");
+                    // On a guest crash, write a `.vmrs` dump (if configured)
+                    // before applying the crash action, since a `Reset` action
+                    // would wipe the guest state we want to capture.
+                    if matches!(&reason, HaltReason::TripleFault { .. }) {
+                        if let Some(path) = self.crash_dump_path.clone() {
+                            tracing::info!(path = %path.display(), "dumping VM state on guest crash");
+                            match self.handle_dump_state(&path).await {
+                                Ok(()) => tracing::info!(
+                                    path = %path.display(),
+                                    "VM state dumped to VMRS file on guest crash"
+                                ),
+                                Err(err) => tracing::error!(
+                                    error = err.as_ref() as &dyn std::error::Error,
+                                    path = %path.display(),
+                                    "failed to write VM crash dump"
+                                ),
+                            }
+                        }
+                    }
                     let action = action_for(&reason, &self.guest_power_actions);
                     match action {
                         GuestPowerAction::Exit(code) => {
@@ -288,10 +308,7 @@ impl VmController {
                             return;
                         }
                         GuestPowerAction::Reset => {
-                            // Reboot the VM in place. A guest reset with the default
-                            // action is handled by `automatic_guest_reset` and never
-                            // reaches here; this path covers a reset chosen for a
-                            // power-off or crash.
+                            // Reboot the VM in place.
                             tracing::info!("resetting VM on guest power event");
                             if let Err(err) = self.vm_rpc.call_failable(VmRpc::Reset, ()).await {
                                 tracing::error!(
@@ -442,11 +459,19 @@ impl VmController {
         deferred.inspect(obj);
     }
 
-    async fn handle_save_snapshot(&self, dir: &Path) -> anyhow::Result<()> {
+    async fn handle_save_snapshot(&self, dir: &Path) -> anyhow::Result<Guid> {
         let memory_file_path = self
             .memory_backing_file
             .as_ref()
             .context("save-snapshot requires --memory-backing-file")?;
+
+        // Reject an existing destination before touching the VM, so a rejected
+        // save leaves the VM running. This check is best-effort: the
+        // destination could still be created before the snapshot is written.
+        // `write_snapshot` claims it atomically with `create_dir` and never
+        // overwrites existing data, so in that case the save just fails later,
+        // with the VM paused.
+        openvmm_helpers::snapshot::check_snapshot_destination(dir)?;
 
         // Pause the VM.
         self.vm_rpc
@@ -464,13 +489,16 @@ impl VmController {
         // Serialize the ProtobufMessage to bytes for writing to disk.
         let saved_state_bytes = mesh::payload::encode(saved_state_msg);
 
-        // Fsync the memory backing file.
-        let memory_file = fs_err::File::open(memory_file_path)?;
+        // Open for write: Windows FlushFileBuffers requires write access.
+        let memory_file = fs_err::OpenOptions::new()
+            .write(true)
+            .open(memory_file_path)?;
         memory_file
             .sync_all()
             .context("failed to fsync memory backing file")?;
 
         // Build manifest.
+        let snapshot_id = Guid::new_random();
         let manifest = openvmm_helpers::snapshot::SnapshotManifest {
             version: openvmm_helpers::snapshot::MANIFEST_VERSION,
             created_at: std::time::SystemTime::now().into(),
@@ -479,6 +507,7 @@ impl VmController {
             vp_count: self.processors,
             page_size: crate::system_page_size(),
             architecture: crate::GUEST_ARCH.to_string(),
+            snapshot_id,
         };
 
         // Write snapshot directory.
@@ -490,7 +519,7 @@ impl VmController {
         )?;
 
         // VM stays paused. Do NOT resume.
-        Ok(())
+        Ok(snapshot_id)
     }
 
     async fn handle_dump_state(&self, path: &Path) -> anyhow::Result<()> {

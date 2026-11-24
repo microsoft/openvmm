@@ -144,15 +144,22 @@ impl NvmeWorkers {
     }
 
     pub fn poll_controller_reset(&mut self) -> bool {
-        if let EnableState::Resetting(recv) = &mut self.state {
+        let Self {
+            _task: _,
+            send: _,
+            doorbells,
+            state,
+        } = self;
+        if let EnableState::Resetting(recv) = state {
             if recv.now_or_never().is_some() {
-                self.state = EnableState::Disabled;
+                *state = EnableState::Disabled;
+                doorbells.write().reset();
                 true
             } else {
                 false
             }
         } else {
-            panic!("not resetting: {:?}", self.state)
+            panic!("not resetting: {:?}", state)
         }
     }
 
@@ -174,6 +181,7 @@ impl NvmeWorkers {
                 }
             }
         }
+        self.doorbells.write().reset();
     }
 }
 

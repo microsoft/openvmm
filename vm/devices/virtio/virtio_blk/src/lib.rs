@@ -42,6 +42,7 @@ use virtio::regions::data_regions;
 use virtio::regions::try_build_gpn_list;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::blk::*;
+use virtio_resources::blk::VirtioBlkOptions;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
@@ -56,18 +57,30 @@ use zerocopy::IntoBytes;
 /// byte, so the data segment limit is `DEFAULT_QUEUE_SIZE - 2`.
 const DEFAULT_SEG_MAX: u32 = virtio::DEFAULT_QUEUE_SIZE as u32 - 2;
 
-const MAX_IO_DEPTH: usize = 64;
-
 /// The virtio-blk device.
-#[derive(InspectMut)]
 pub struct VirtioBlkDevice {
+    workers: Vec<QueueWorker>,
+    read_only: bool,
+    supports_discard: bool,
+    config: VirtioBlkConfig,
+}
+
+impl InspectMut for VirtioBlkDevice {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.respond()
+            .field("read_only", self.read_only)
+            .field("supports_discard", self.supports_discard)
+            .field("config", &self.config)
+            .fields_mut("workers", self.workers.iter_mut().enumerate());
+    }
+}
+
+#[derive(InspectMut)]
+struct QueueWorker {
     #[inspect(flatten, mut)]
     worker: TaskControl<BlkWorker, BlkQueueState>,
     #[inspect(skip)]
     driver: VmTaskDriver,
-    read_only: bool,
-    supports_discard: bool,
-    config: VirtioBlkConfig,
 }
 
 /// Persistent worker state. Survives across enable/disable cycles.
@@ -81,6 +94,8 @@ pub struct VirtioBlkDevice {
 struct BlkWorker {
     disk: Disk,
     read_only: bool,
+    io_depth: u16,
+    serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
     stats: WorkerStats,
     #[inspect(with = "FuturesUnordered::len")]
     ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoCompletion> + Send>>>,
@@ -168,8 +183,16 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
         stop: &mut StopTask<'_>,
         state: &mut BlkQueueState,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
-            loop {
+            // Set once the queue can no longer produce work, because the guest
+            // violated the queue protocol. Fetching stops, but in-flight IOs
+            // keep draining so their descriptors are still completed; the
+            // worker exits once they are done.
+            let mut queue_done = false;
+
+            while !(queue_done && self.ios.is_empty()) {
+                check.check()?;
                 enum Event {
                     NewWork(Result<VirtioQueueCallbackWork, std::io::Error>),
                     Completed(IoCompletion),
@@ -181,7 +204,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                         return Poll::Ready(Event::Completed(completion));
                     }
                     // Accept new work if under the depth limit.
-                    if self.ios.len() < MAX_IO_DEPTH {
+                    if !queue_done && self.ios.len() < usize::from(self.io_depth) {
                         if let Poll::Ready(item) = state.queue.poll_next_unpin(cx) {
                             let item = item.expect("virtio queue stream never ends");
                             return Poll::Ready(Event::NewWork(item));
@@ -196,29 +219,65 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                         let disk = self.disk.clone();
                         let mem = state.memory.clone();
                         let read_only = self.read_only;
+                        let serial = self.serial;
                         self.ios.push(Box::pin(async move {
-                            process_request(&disk, &mem, read_only, work).await
+                            process_request(&disk, &mem, read_only, serial, work).await
                         }));
                     }
                     Event::NewWork(Err(err)) => {
+                        // The queue is retired: the rejected chain is never
+                        // consumed, so retrying would fail identically forever.
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
-                            "error reading from virtio queue"
+                            "error reading from virtio queue, stopping worker"
                         );
+                        queue_done = true;
                     }
                     Event::Completed(completion) => {
                         self.finish_io(&mut state.queue, completion);
                     }
                 }
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 }
 
 impl VirtioBlkDevice {
     /// Creates a new virtio-blk device backed by the given disk.
-    pub fn new(driver_source: &VmTaskDriverSource, disk: Disk, read_only: bool) -> Self {
+    pub fn new(
+        driver_source: &VmTaskDriverSource,
+        disk: Disk,
+        read_only: bool,
+        serial: Option<String>,
+    ) -> anyhow::Result<Self> {
+        Self::with_options(
+            driver_source,
+            disk,
+            read_only,
+            serial,
+            VirtioBlkOptions::default(),
+        )
+    }
+
+    /// Creates a device with explicit request queue concurrency.
+    pub fn with_options(
+        driver_source: &VmTaskDriverSource,
+        disk: Disk,
+        read_only: bool,
+        serial: Option<String>,
+        options: VirtioBlkOptions,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            (1..=256).contains(&options.queue_count),
+            "virtio-blk queue count must be between 1 and 256"
+        );
+        anyhow::ensure!(
+            options.io_depth != 0,
+            "virtio-blk I/O depth must be nonzero"
+        );
+        let serial = serial.map(parse_serial).transpose()?;
         let sector_count = disk.sector_count();
         let sector_size = disk.sector_size();
         let physical_sector_size = disk.physical_sector_size();
@@ -264,8 +323,7 @@ impl VirtioBlkDevice {
             // writeback cache semantics (driver should use FLUSH).
             writeback: 1,
             unused0: 0,
-            // We don't advertise MQ; single queue.
-            num_queues: 1,
+            num_queues: options.queue_count,
             // Discard fields (VIRTIO_BLK_F_DISCARD, spec §5.2.4).
             // u32::MAX × 512 bytes ≈ 2 TiB per segment; no practical limit.
             max_discard_sectors: u32::MAX,
@@ -284,19 +342,42 @@ impl VirtioBlkDevice {
 
         let supports_discard = disk.unmap_behavior() != disk_backend::UnmapBehavior::Ignored;
 
-        Self {
-            worker: TaskControl::new(BlkWorker {
-                disk,
-                read_only,
-                stats: WorkerStats::default(),
-                ios: FuturesUnordered::new(),
-            }),
-            driver: driver_source.simple(),
+        let workers = (0..options.queue_count)
+            .map(|_| QueueWorker {
+                worker: TaskControl::new(BlkWorker {
+                    disk: disk.clone(),
+                    read_only,
+                    io_depth: options.io_depth,
+                    serial,
+                    stats: WorkerStats::default(),
+                    ios: FuturesUnordered::new(),
+                }),
+                driver: driver_source.simple(),
+            })
+            .collect();
+
+        Ok(Self {
+            workers,
             read_only,
             supports_discard,
             config,
-        }
+        })
     }
+}
+
+fn parse_serial(serial: String) -> anyhow::Result<[u8; VIRTIO_BLK_ID_BYTES]> {
+    anyhow::ensure!(!serial.is_empty(), "serial must not be empty");
+    anyhow::ensure!(
+        serial.len() <= VIRTIO_BLK_ID_BYTES,
+        "serial must be at most {VIRTIO_BLK_ID_BYTES} bytes"
+    );
+    anyhow::ensure!(
+        serial.bytes().all(|byte| byte.is_ascii()),
+        "serial must contain only ASCII characters"
+    );
+    let mut bytes = [0; VIRTIO_BLK_ID_BYTES];
+    bytes[..serial.len()].copy_from_slice(serial.as_bytes());
+    Ok(bytes)
 }
 
 impl VirtioDevice for VirtioBlkDevice {
@@ -308,6 +389,9 @@ impl VirtioDevice for VirtioBlkDevice {
 
         if self.read_only {
             features |= VIRTIO_BLK_F_RO;
+        }
+        if self.config.num_queues > 1 {
+            features |= VIRTIO_BLK_F_MQ;
         }
         if self.supports_discard {
             features |= VIRTIO_BLK_F_DISCARD;
@@ -323,7 +407,7 @@ impl VirtioDevice for VirtioBlkDevice {
                 .with_ring_event_idx(true)
                 .with_ring_indirect_desc(true)
                 .with_ring_packed(true),
-            max_queues: 1,
+            max_queues: self.config.num_queues,
             // Config space is 60 bytes (size_of minus 4 bytes of struct padding).
             device_register_length: (size_of::<VirtioBlkConfig>() - 4) as u32,
             shared_memory: DeviceTraitsSharedMemory::default(),
@@ -363,9 +447,19 @@ impl VirtioDevice for VirtioBlkDevice {
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
-        assert_eq!(idx, 0);
-
-        let queue_event = PolledWait::new(&self.driver, resources.event)
+        anyhow::ensure!(
+            idx == 0 || features.device_specific_low() & VIRTIO_BLK_F_MQ != 0,
+            "virtio-blk multiqueue was not negotiated"
+        );
+        let worker = self
+            .workers
+            .get_mut(usize::from(idx))
+            .context("invalid virtio-blk queue index")?;
+        anyhow::ensure!(
+            !worker.worker.has_state(),
+            "virtio-blk queue already started"
+        );
+        let queue_event = PolledWait::new(&worker.driver, resources.event)
             .context("failed to create queue event")?;
 
         let queue = VirtioQueue::new(
@@ -378,33 +472,33 @@ impl VirtioDevice for VirtioBlkDevice {
         )
         .context("failed to create virtio queue")?;
 
-        self.worker.insert(
-            self.driver.clone(),
+        worker.worker.insert(
+            worker.driver.clone(),
             "virtio-blk-worker",
             BlkQueueState {
                 queue,
                 memory: resources.guest_memory,
             },
         );
-        self.worker.start();
+        worker.worker.start();
         Ok(())
     }
 
     async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
-        assert_eq!(idx, 0);
-        if !self.worker.has_state() {
+        let worker = self.workers.get_mut(usize::from(idx))?;
+        if !worker.worker.has_state() {
             return None;
         }
         // Stop the worker task (cancels the run loop via until_stopped).
-        self.worker.stop().await;
+        worker.worker.stop().await;
         // Drain in-flight IOs to completion. The FuturesUnordered lives in
         // BlkWorker and survives the stop — its pending disk IO futures are
         // polled here until all descriptors are completed in the used ring.
-        let (worker, queue_state) = self.worker.get_mut();
+        let (state, queue_state) = worker.worker.get_mut();
         let queue = &mut queue_state.expect("state exists after stop").queue;
-        poll_fn(|cx| worker.poll_drain(queue, cx)).await;
+        poll_fn(|cx| state.poll_drain(queue, cx)).await;
         // Remove the queue state (drops VirtioQueue).
-        let state = self.worker.remove().queue.queue_state();
+        let state = worker.worker.remove().queue.queue_state();
         Some(state)
     }
 
@@ -422,9 +516,10 @@ async fn process_request(
     disk: &Disk,
     mem: &GuestMemory,
     read_only: bool,
+    serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
     work: VirtioQueueCallbackWork,
 ) -> IoCompletion {
-    match process_request_inner(disk, mem, read_only, &work).await {
+    match process_request_inner(disk, mem, read_only, serial, &work).await {
         Ok((bytes_written, stat, bounced)) => {
             if let Err(err) = write_status_byte(mem, &work, VIRTIO_BLK_S_OK) {
                 tracelimit::error_ratelimited!(
@@ -462,6 +557,7 @@ async fn process_request_inner(
     disk: &Disk,
     mem: &GuestMemory,
     read_only: bool,
+    serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
     work: &VirtioQueueCallbackWork,
 ) -> Result<(u32, IoStat, bool), u8> {
     // Read the request header from the first (readable) descriptor.
@@ -499,7 +595,9 @@ async fn process_request_inner(
             Ok((0, IoStat::Flush, false))
         }
         VIRTIO_BLK_T_GET_ID => {
-            let id = if let Some(disk_id) = disk.disk_id() {
+            let id = if let Some(serial) = serial {
+                serial
+            } else if let Some(disk_id) = disk.disk_id() {
                 let mut id_str = [0u8; VIRTIO_BLK_ID_BYTES];
                 let hex: String = disk_id.iter().map(|b| format!("{:02x}", b)).collect();
                 let copy_len = hex.len().min(VIRTIO_BLK_ID_BYTES);

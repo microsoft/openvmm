@@ -78,7 +78,7 @@ hvc serial -c -p 3 -r $VmName
 ```
 
 ```admonish note
-The `flowey` test runner (`install_vmm_tests_deps`) sets this registry key
+The `flowey` test runner (`install_vmm_tests_external_deps`) sets this registry key
 automatically when running VMM tests. If you run `cargo xflowey` to execute
 tests, you'll be prompted to allow the registry change.
 ```

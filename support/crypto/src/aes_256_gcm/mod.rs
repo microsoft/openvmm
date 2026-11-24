@@ -5,20 +5,20 @@
 
 #![cfg(any(openssl, symcrypt, all(native, windows)))]
 
-#[cfg(openssl)]
-mod ossl;
-#[cfg(openssl)]
-use ossl as sys;
-
-#[cfg(all(native, windows))]
-mod win;
-#[cfg(all(native, windows))]
-use win as sys;
-
-#[cfg(symcrypt)]
-mod symcrypt;
-#[cfg(symcrypt)]
-use symcrypt as sys;
+cfg_select! {
+    openssl => {
+        mod ossl;
+        use ossl as sys;
+    }
+    all(native, windows) => {
+        mod win;
+        use win as sys;
+    }
+    symcrypt => {
+        mod symcrypt;
+        use symcrypt as sys;
+    }
+}
 
 use thiserror::Error;
 
@@ -37,7 +37,7 @@ pub struct Aes256Gcm(sys::Aes256GcmInner);
 
 /// An error for AES-256-GCM cryptographic operations.
 #[derive(Clone, Debug, Error)]
-#[error("AES-256-GCM error")]
+#[error("AES-256-GCM operation failed")]
 pub struct Aes256GcmError(#[source] super::BackendError);
 
 impl Aes256Gcm {

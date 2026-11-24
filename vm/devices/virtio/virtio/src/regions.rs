@@ -94,8 +94,9 @@ pub fn try_build_gpn_list(
             continue;
         }
 
+        let end = addr.checked_add(len)?;
         let first_gpn = addr / PAGE_SIZE;
-        let last_gpn = (addr + len - 1) / PAGE_SIZE;
+        let last_gpn = (end - 1) / PAGE_SIZE;
 
         if let Some(pe) = prev_end {
             if addr == pe {
@@ -133,7 +134,7 @@ pub fn try_build_gpn_list(
             }
         }
 
-        prev_end = Some(addr + len);
+        prev_end = Some(end);
         total_len += len;
     }
 
@@ -365,6 +366,30 @@ mod tests {
         assert!(gpns.is_empty());
         assert_eq!(offset, 0);
         assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn gpn_list_region_wrapping_64_bits_is_rejected() {
+        let regions = vec![DataRegion {
+            addr: 0xffff_ffff_ffff_ff00,
+            len: 512,
+        }];
+        assert!(try_build_gpn_list(&regions).is_none());
+    }
+
+    #[test]
+    fn gpn_list_chain_after_wrapping_region_is_rejected() {
+        let regions = vec![
+            DataRegion {
+                addr: 0xffff_ffff_ffff_ff00,
+                len: 512,
+            },
+            DataRegion {
+                addr: 0x100,
+                len: 512,
+            },
+        ];
+        assert!(try_build_gpn_list(&regions).is_none());
     }
 
     #[test]

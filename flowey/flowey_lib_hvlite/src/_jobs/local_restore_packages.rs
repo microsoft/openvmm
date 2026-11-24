@@ -3,6 +3,7 @@
 
 use crate::common::CommonArch;
 use flowey::node::prelude::*;
+use std::collections::BTreeSet;
 
 flowey_request! {
     pub struct Request{
@@ -39,49 +40,20 @@ impl SimpleFlowNode for Node {
             ctx.reqv(crate::init_openvmm_magicpath_virtio_win::Request),
         ];
 
-        for arch in arches {
-            match arch {
-                CommonArch::X86_64 => {
-                    if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
-                        deps.extend_from_slice(&[ctx
-                            .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                                arch: CommonArch::X86_64,
-                                path: v,
-                            })
-                            .into_side_effect()]);
-                    }
-                    deps.extend_from_slice(&[
-                        ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
-                            arch: CommonArch::X86_64,
-                            done,
-                        }),
-                        ctx.reqv(|done| crate::init_openvmm_magicpath_openvmm_deps::Request {
-                            arch: CommonArch::X86_64,
-                            done,
-                        }),
-                    ]);
-                }
-                CommonArch::Aarch64 => {
-                    if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
-                        deps.extend_from_slice(&[ctx
-                            .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                                arch: CommonArch::Aarch64,
-                                path: v,
-                            })
-                            .into_side_effect()]);
-                    }
-                    deps.extend_from_slice(&[
-                        ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
-                            arch: CommonArch::Aarch64,
-                            done,
-                        }),
-                        ctx.reqv(|done| crate::init_openvmm_magicpath_openvmm_deps::Request {
-                            arch: CommonArch::Aarch64,
-                            done,
-                        }),
-                    ]);
-                }
+        for arch in arches.into_iter().collect::<BTreeSet<_>>() {
+            if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
+                deps.push(
+                    ctx.reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
+                        arch,
+                        path: v,
+                    })
+                    .into_side_effect(),
+                );
             }
+            deps.extend([
+                ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request { arch, done }),
+                ctx.reqv(|done| crate::init_openvmm_magicpath_openvmm_deps::Request { arch, done }),
+            ]);
 
             if let Some(release_artifact) = &release_artifact {
                 deps.push(

@@ -3,8 +3,20 @@
 
 //! Socket-related functionality.
 
-#[cfg(unix)]
-use super::fd;
+// UNSAFETY: Reinterpreting an initialized `&mut [u8]` as
+// `&mut [MaybeUninit<u8>]` to pass to `socket2::Socket::peek`.
+#![expect(unsafe_code)]
+
+cfg_select! {
+    unix => {
+        use super::fd;
+        use std::os::unix::prelude::*;
+    }
+    windows => {
+        use std::os::windows::prelude::*;
+    }
+}
+
 use super::interest::InterestSlot;
 use super::interest::PollEvents;
 use crate::driver::Driver;
@@ -19,10 +31,6 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
-#[cfg(unix)]
-use std::os::unix::prelude::*;
-#[cfg(windows)]
-use std::os::windows::prelude::*;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -109,10 +117,10 @@ impl<T: AsSockRef> PolledSocket<T> {
     pub fn new(driver: &(impl ?Sized + Driver), socket: T) -> io::Result<Self> {
         let sock_ref = socket.as_sock_ref();
         sock_ref.set_nonblocking(true)?;
-        #[cfg(windows)]
-        let fd = sock_ref.as_raw_socket();
-        #[cfg(unix)]
-        let fd = sock_ref.as_raw_fd();
+        let fd = cfg_select! {
+            windows => sock_ref.as_raw_socket(),
+            unix => sock_ref.as_raw_fd(),
+        };
         Ok(Self {
             poll: driver.new_dyn_socket_ready(fd)?,
             socket,
@@ -124,6 +132,43 @@ impl<T: AsSockRef> PolledSocket<T> {
         let sock_ref = self.socket.as_sock_ref();
         sock_ref.set_nonblocking(false).unwrap();
         self.socket
+    }
+
+    /// Polls for peeking at incoming data without consuming it.
+    ///
+    /// On success, the peeked bytes are written to the start of `buf` and the
+    /// number of bytes peeked is returned. A return value of `Ok(0)` indicates
+    /// that the peer has closed the connection (or that `buf` was empty).
+    ///
+    /// The peeked data remains in the socket's receive buffer, so a subsequent
+    /// read (or peek) will observe the same bytes.
+    pub fn poll_peek(&mut self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
+        // Short-circuit an empty buffer so the caller gets the documented
+        // `Ok(0)` immediately, rather than blocking on read readiness.
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        self.poll_io(cx, InterestSlot::Read, PollEvents::IN, |this| {
+            // SAFETY: Reinterpreting an initialized `&mut [u8]` as
+            // `&mut [MaybeUninit<u8>]` is sound: every `u8` is a valid
+            // `MaybeUninit<u8>`, and `peek` only writes initialized bytes. The
+            // caller's buffer therefore remains fully initialized.
+            let uninit = unsafe {
+                std::slice::from_raw_parts_mut(
+                    buf.as_mut_ptr().cast::<std::mem::MaybeUninit<u8>>(),
+                    buf.len(),
+                )
+            };
+            this.socket.as_sock_ref().peek(uninit)
+        })
+    }
+
+    /// Peeks at incoming data without consuming it, waiting until at least one
+    /// byte is available or the peer closes the connection.
+    ///
+    /// See [`PolledSocket::poll_peek`] for details.
+    pub async fn peek(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        poll_fn(|cx| self.poll_peek(cx, buf)).await
     }
 }
 
@@ -318,6 +363,11 @@ impl<T: AsSockRef + Read> AsyncRead for PolledSocket<T> {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
+        // Short-circuit an empty buffer so the caller gets `Ok(0)`
+        // immediately, rather than blocking on read readiness.
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
         self.poll_io(cx, InterestSlot::Read, PollEvents::IN, |this| {
             this.socket.read(buf)
         })
@@ -562,6 +612,11 @@ impl<T: AsSockRef> AsyncRead for ReadHalf<T> {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
+        // Short-circuit an empty buffer so the caller gets `Ok(0)`
+        // immediately, rather than blocking on read readiness.
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
         self.poll_io(cx, |this| (&*this.inner.socket.as_sock_ref()).read(buf))
     }
 
@@ -643,5 +698,37 @@ mod tests {
             assert_eq!(&v, b"abcdef");
         };
         futures::future::join(copy, rest).await;
+    }
+
+    #[async_test]
+    async fn peek(driver: DefaultDriver) {
+        let (a, b) = UnixStream::pair().unwrap();
+        let mut a = PolledSocket::new(&driver, a).unwrap();
+        let mut b = PolledSocket::new(&driver, b).unwrap();
+
+        b.write_all(b"abc").await.unwrap();
+
+        // Peeking does not consume the data.
+        let mut buf = [0; 2];
+        let n = a.peek(&mut buf).await.unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(&buf, b"ab");
+
+        // A second peek observes the same bytes.
+        let mut buf = [0; 3];
+        let n = a.peek(&mut buf).await.unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(&buf, b"abc");
+
+        // A subsequent read still observes the peeked bytes.
+        let mut buf = [0; 3];
+        a.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"abc");
+
+        // Peeking after the peer closes returns 0.
+        drop(b);
+        let mut buf = [0; 1];
+        let n = a.peek(&mut buf).await.unwrap();
+        assert_eq!(n, 0);
     }
 }

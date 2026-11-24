@@ -1,7 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Root binary crate for builds of OpenVMM-HCL.
+//! User-mode VMM process that runs inside OpenHCL's Linux VTL2 environment.
+//!
+//! This binary links the OpenHCL resource resolvers and delegates to
+//! `underhill_entry`, which starts the workers that manage the VTL0 guest and
+//! paravisor services. It is a Linux component of the OpenHCL firmware image,
+//! not the host-side `openvmm` CLI.
+//!
+//! The supported build path is `cargo xflowey build-igvm <recipe>`, which
+//! selects features, builds this executable for the OpenHCL userspace, and
+//! packages it with the boot loader, kernel, initrd, and other measured
+//! resources. Non-Linux builds contain only an unsupported-platform stub.
 
 #![forbid(unsafe_code)]
 

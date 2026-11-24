@@ -50,6 +50,7 @@ use net_backend::RxBufferSegment;
 use net_backend::RxChecksumState;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::TxFlags;
 use net_backend::TxId;
 use net_backend::TxMetadata;
 use net_backend::TxSegment;
@@ -391,6 +392,7 @@ impl BasicNic {
                                 .get_queues(
                                     vec![QueueConfig {
                                         driver: Box::new(state.queues.driver.clone()),
+                                        enabled_rx_offloads: Default::default(),
                                     }],
                                     None,
                                     &mut queues,
@@ -501,7 +503,10 @@ impl InspectTaskMut<TxRxTask> for TxRxState {
 }
 
 impl TxRxTask {
-    async fn process(&mut self) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), task_control::Cancelled> {
         let max_rx_buf = 256;
 
         enum Event {
@@ -511,6 +516,7 @@ impl TxRxTask {
         }
 
         loop {
+            check.check()?;
             let event = poll_fn(|cx| {
                 // Fill rx before transmitting to avoid rx buffer starvation
                 // (particularly in tests, but seems reasonable in general).
@@ -529,10 +535,14 @@ impl TxRxTask {
                 Poll::Pending
             })
             .await;
-            match event {
-                Event::Sqe(sqe) => self.process_sqe(sqe)?,
-                Event::Rqe(wqe_offset, wqe) => self.process_rqe(wqe, wqe_offset)?,
-                Event::Ready => self.process_backend()?,
+            let result = match event {
+                Event::Sqe(sqe) => self.process_sqe(sqe),
+                Event::Rqe(wqe_offset, wqe) => self.process_rqe(wqe, wqe_offset),
+                Event::Ready => self.process_backend(),
+            };
+            if let Err(err) = result {
+                tracing::error!(err = err.as_ref() as &dyn std::error::Error, "bnic failure");
+                return Ok(());
             }
         }
     }
@@ -569,16 +579,12 @@ impl TxRxTask {
                 (net_backend::ETHERNET_HEADER_LEN, None)
             };
 
+        let lso = sqe.header.params.client_oob_in_sgl();
         let mut meta = TxMetadata {
             id: TxId(0),
             segment_count: sqe.sgl().len().try_into().unwrap(),
             len: total_len.try_into().unwrap(),
-            flags: net_backend::TxFlags::new()
-                .with_offload_ip_header_checksum(oob.s_oob.comp_iphdr_csum())
-                .with_offload_tcp_checksum(oob.s_oob.comp_tcp_csum())
-                .with_offload_udp_checksum(oob.s_oob.comp_udp_csum())
-                .with_is_ipv4(oob.s_oob.is_outer_ipv4())
-                .with_is_ipv6(oob.s_oob.is_outer_ipv6() && !oob.s_oob.is_outer_ipv4()),
+            flags: tx_flags(&oob.s_oob, lso),
             l2_len: l2_len as u8,
             l3_len: oob.s_oob.trans_off().clamp(l2_len as u16, 255) - l2_len as u16,
             l4_len: 0,
@@ -587,12 +593,11 @@ impl TxRxTask {
             vlan,
         };
 
-        if sqe.header.params.client_oob_in_sgl() {
+        if lso {
             meta.l4_len =
                 sge0.size
                     .saturating_sub(meta.l2_len as u32 + meta.l3_len as u32) as u8;
             meta.max_segment_size = sqe.header.params.gd_client_unit_data();
-            meta.flags.set_offload_tcp_segmentation(true);
         }
 
         // With LSO, the first SGE is the header and the rest are the payload.
@@ -717,6 +722,22 @@ impl TxRxTask {
     }
 }
 
+/// Builds the backend transmit flags for a send WQE.
+///
+/// An LSO send implies TCP and IPv4 header checksum offload, whatever
+/// per-packet checksum bits the guest set, because the NIC writes both
+/// checksums into every segment it produces.
+fn tx_flags(s_oob: &ManaTxShortOob, lso: bool) -> TxFlags {
+    let is_ipv4 = s_oob.is_outer_ipv4();
+    TxFlags::new()
+        .with_offload_ip_header_checksum(s_oob.comp_iphdr_csum() || (lso && is_ipv4))
+        .with_offload_tcp_checksum(s_oob.comp_tcp_csum() || lso)
+        .with_offload_udp_checksum(s_oob.comp_udp_csum())
+        .with_offload_tcp_segmentation(lso)
+        .with_is_ipv4(is_ipv4)
+        .with_is_ipv6(s_oob.is_outer_ipv6() && !is_ipv4)
+}
+
 struct TxRxState;
 
 impl AsyncRun<TxRxTask> for TxRxState {
@@ -725,11 +746,298 @@ impl AsyncRun<TxRxTask> for TxRxState {
         stop: &mut StopTask<'_>,
         task: &mut TxRxTask,
     ) -> Result<(), task_control::Cancelled> {
-        stop.until_stopped(async {
-            if let Err(err) = task.process().await {
-                tracing::error!(err = err.as_ref() as &dyn std::error::Error, "bnic failure");
+        let check = stop.check_handle()?;
+        stop.until_stopped(task.process(&check)).await?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers as helper;
+    use gdma_defs::Cqe;
+    use gdma_defs::WqDoorbellValue;
+    use net_backend::TxError;
+    use pal_async::DefaultPool;
+    use parking_lot::Mutex;
+    use std::task::Context;
+    use test_with_tracing::test;
+
+    #[derive(Default)]
+    struct BackendState {
+        ready_budget: usize,
+        ready_processed: usize,
+        tx_accepted: usize,
+        tx_done: bool,
+        rx: Option<RxId>,
+    }
+
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct TestQueue {
+        state: Arc<Mutex<BackendState>>,
+        tx_hook: Arc<helper::StopHook>,
+        rx_hook: Arc<helper::StopHook>,
+        ready_hook: Arc<helper::StopHook>,
+        synchronous_tx: bool,
+    }
+
+    impl Queue for TestQueue {
+        fn poll_ready(&mut self, _: &mut Context<'_>, _: &mut dyn BufferAccess) -> Poll<()> {
+            let mut state = self.state.lock();
+            if state.ready_budget == 0 {
+                return Poll::Pending;
             }
-        })
-        .await
+            state.ready_budget -= 1;
+            Poll::Ready(())
+        }
+
+        fn rx_avail(&mut self, _: &mut dyn BufferAccess, ids: &[RxId]) {
+            assert_eq!(ids.len(), 1);
+            assert!(self.state.lock().rx.replace(ids[0]).is_none());
+            self.rx_hook.fire();
+        }
+
+        fn rx_poll(
+            &mut self,
+            pool: &mut dyn BufferAccess,
+            packets: &mut [RxId],
+        ) -> anyhow::Result<usize> {
+            let mut state = self.state.lock();
+            state.ready_processed += 1;
+            let count = if let Some(id) = state.rx.take() {
+                let data = [0x5a; 60];
+                pool.write_packet(
+                    id,
+                    &RxMetadata {
+                        len: data.len(),
+                        ..Default::default()
+                    },
+                    &data,
+                );
+                packets[0] = id;
+                1
+            } else {
+                0
+            };
+            drop(state);
+            self.ready_hook.fire();
+            Ok(count)
+        }
+
+        fn tx_avail(
+            &mut self,
+            _: &mut dyn BufferAccess,
+            segments: &[TxSegment],
+        ) -> anyhow::Result<(bool, usize)> {
+            let mut state = self.state.lock();
+            state.tx_accepted += 1;
+            if !self.synchronous_tx {
+                assert!(!std::mem::replace(&mut state.tx_done, true));
+            }
+            drop(state);
+            self.tx_hook.fire();
+            Ok((self.synchronous_tx, segments.len()))
+        }
+
+        fn tx_poll(
+            &mut self,
+            _: &mut dyn BufferAccess,
+            packets: &mut [TxId],
+        ) -> Result<usize, TxError> {
+            if std::mem::take(&mut self.state.lock().tx_done) {
+                packets[0] = TxId(0);
+                Ok(1)
+            } else {
+                Ok(0)
+            }
+        }
+    }
+
+    fn task(queues: Arc<Queues>, epqueue: TestQueue) -> TxRxTask {
+        let sq_id = queues.alloc_wq(true, helper::region(helper::SQ)).unwrap();
+        let rq_id = queues.alloc_wq(false, helper::region(helper::RQ)).unwrap();
+        let eq_id = queues.alloc_eq(helper::region(helper::EQ), 0).unwrap();
+        let cq_id = queues.alloc_cq(helper::region(helper::CQ), eq_id).unwrap();
+        TxRxTask {
+            pool: GuestBuffers {
+                gm: queues.gm.clone(),
+                rx_packets: Slab::new(),
+            },
+            queues,
+            epqueue: Box::new(epqueue),
+            sq_id,
+            sq_cq_id: cq_id,
+            rq_id,
+            rq_cq_id: cq_id,
+            tx_segment_buffer: Vec::new(),
+            rx_buf_count: 0,
+        }
+    }
+
+    fn backend() -> TestQueue {
+        TestQueue {
+            state: Arc::new(Mutex::new(BackendState {
+                ready_budget: 8,
+                ..Default::default()
+            })),
+            tx_hook: Arc::new(helper::StopHook::default()),
+            rx_hook: Arc::new(helper::StopHook::default()),
+            ready_hook: Arc::new(helper::StopHook::default()),
+            synchronous_tx: true,
+        }
+    }
+
+    fn completion(queues: &Queues, index: u64) -> Cqe {
+        queues
+            .gm
+            .read_plain(helper::CQ + index * size_of::<Cqe>() as u64)
+            .unwrap()
+    }
+
+    #[test]
+    fn ready_backend_cancellation_stops_before_the_next_iteration_and_resumes() {
+        let mut pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let epqueue = backend();
+        let state = epqueue.state.clone();
+        let hook = epqueue.ready_hook.clone();
+        let control = Arc::new(Mutex::new(TaskControl::new(TxRxState)));
+        control
+            .lock()
+            .insert(pool.driver(), "gdma-ready", task(queues, epqueue));
+        for expected in 1..=2 {
+            let signal = hook.arm(&control);
+            assert!(control.lock().start());
+            helper::stopped(&mut pool, &control, signal);
+            assert_eq!(state.lock().ready_processed, expected);
+        }
+    }
+
+    #[test]
+    fn accepted_transmit_is_completed_across_cancellation() {
+        for synchronous_tx in [true, false] {
+            let mut pool = DefaultPool::new();
+            let queues = helper::queues(&pool, None);
+            let mut epqueue = backend();
+            epqueue.synchronous_tx = synchronous_tx;
+            let state = epqueue.state.clone();
+            let tx_hook = epqueue.tx_hook.clone();
+            let ready_hook = epqueue.ready_hook.clone();
+            let task = task(queues.clone(), epqueue);
+            let len = helper::write_wqe(
+                &queues,
+                helper::SQ,
+                ManaTxShortOob::new().as_bytes(),
+                0x5000,
+                60,
+            );
+            queues.doorbell_sq(WqDoorbellValue::new().with_id(task.sq_id).with_tail(len));
+            let control = Arc::new(Mutex::new(TaskControl::new(TxRxState)));
+            control.lock().insert(pool.driver(), "gdma-tx", task);
+            let signal = tx_hook.arm(&control);
+            assert!(control.lock().start());
+            helper::stopped(&mut pool, &control, signal);
+            assert_eq!(state.lock().tx_accepted, 1);
+            assert_eq!(state.lock().ready_processed, 0);
+            assert_eq!(
+                completion(&queues, 0).params.owner_count(),
+                u8::from(synchronous_tx)
+            );
+
+            let signal = ready_hook.arm(&control);
+            assert!(control.lock().start());
+            helper::stopped(&mut pool, &control, signal);
+            assert_eq!(state.lock().tx_accepted, 1);
+            let cqe = completion(&queues, 0);
+            assert_eq!(cqe.params.owner_count(), 1);
+            assert!(cqe.params.is_send_wq());
+            let oob = ManaTxCompOob::read_from_prefix(&cqe.data).unwrap().0;
+            assert_eq!(oob.cqe_hdr.cqe_type(), CQE_TX_OKAY);
+            assert_eq!(completion(&queues, 1).params.owner_count(), 0);
+        }
+    }
+
+    #[test]
+    fn accepted_receive_survives_stop_and_publishes_completion_before_cancelling() {
+        let mut pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let epqueue = backend();
+        let rx_hook = epqueue.rx_hook.clone();
+        let ready_hook = epqueue.ready_hook.clone();
+        let task = task(queues.clone(), epqueue);
+        let len = helper::write_wqe(&queues, helper::RQ, &[], 0x5000, 128);
+        queues.doorbell_rq(WqDoorbellValue::new().with_id(task.rq_id).with_tail(len));
+        let control = Arc::new(Mutex::new(TaskControl::new(TxRxState)));
+        control.lock().insert(pool.driver(), "gdma-rx", task);
+        let signal = rx_hook.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        {
+            let control = control.lock();
+            let task = control.state().unwrap();
+            assert_eq!(task.rx_buf_count, 1);
+            assert_eq!(task.pool.rx_packets.len(), 1);
+        }
+        assert_eq!(completion(&queues, 0).params.owner_count(), 0);
+
+        let signal = ready_hook.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        let control = control.lock();
+        let task = control.state().unwrap();
+        assert_eq!(task.rx_buf_count, 0);
+        assert!(task.pool.rx_packets.is_empty());
+        let cqe = completion(&queues, 0);
+        assert_eq!(cqe.params.owner_count(), 1);
+        assert!(!cqe.params.is_send_wq());
+        assert_eq!(cqe.params.wq_number(), task.rq_id);
+        let oob = ManaRxcompOob::read_from_prefix(&cqe.data).unwrap().0;
+        assert_eq!(oob.cqe_hdr.cqe_type(), CQE_RX_OKAY);
+        assert_eq!(oob.ppi[0].pkt_len, 60);
+        assert_eq!(oob.rx_wqe_offset, 0);
+        let mut data = [0; 60];
+        queues.gm.read_at(0x5000, &mut data).unwrap();
+        assert_eq!(data, [0x5a; 60]);
+        assert_eq!(completion(&queues, 1).params.owner_count(), 0);
+    }
+
+    #[test]
+    fn lso_ipv4_offloads_header_checksums_the_guest_did_not_request() {
+        let s_oob = ManaTxShortOob::new().with_is_outer_ipv4(true);
+        let flags = tx_flags(&s_oob, true);
+        assert!(flags.offload_tcp_segmentation());
+        assert!(flags.offload_ip_header_checksum());
+        assert!(flags.offload_tcp_checksum());
+        assert!(!flags.offload_udp_checksum());
+        assert!(flags.is_ipv4());
+        assert!(!flags.is_ipv6());
+    }
+
+    #[test]
+    fn lso_ipv6_has_no_ip_header_checksum() {
+        let s_oob = ManaTxShortOob::new().with_is_outer_ipv6(true);
+        let flags = tx_flags(&s_oob, true);
+        assert!(flags.offload_tcp_segmentation());
+        assert!(!flags.offload_ip_header_checksum());
+        assert!(flags.offload_tcp_checksum());
+        assert!(flags.is_ipv6());
+        assert!(!flags.is_ipv4());
+    }
+
+    #[test]
+    fn non_lso_send_offloads_only_what_the_guest_requested() {
+        let s_oob = ManaTxShortOob::new().with_is_outer_ipv4(true);
+        assert_eq!(
+            tx_flags(&s_oob, false).into_bits(),
+            TxFlags::new().with_is_ipv4(true).into_bits()
+        );
+
+        let s_oob = s_oob.with_comp_iphdr_csum(true).with_comp_udp_csum(true);
+        let flags = tx_flags(&s_oob, false);
+        assert!(flags.offload_ip_header_checksum());
+        assert!(flags.offload_udp_checksum());
+        assert!(!flags.offload_tcp_checksum());
+        assert!(!flags.offload_tcp_segmentation());
     }
 }

@@ -7,6 +7,8 @@
 #![expect(unsafe_code)]
 #![expect(missing_docs)]
 
+use std::ffi::c_void;
+
 use criterion::BenchmarkId;
 
 criterion::criterion_main!(benches);
@@ -15,7 +17,7 @@ criterion::criterion_group!(benches, bench_memcpy);
 
 fn bench_memcpy(c: &mut criterion::Criterion) {
     unsafe extern "C" {
-        fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *mut u8;
+        fn memcpy(dest: *mut c_void, src: *const c_void, len: usize) -> *mut c_void;
     }
     do_bench_memcpy(c.benchmark_group("fast_memcpy"), fast_memcpy::memcpy);
     do_bench_memcpy(c.benchmark_group("system_memcpy"), memcpy);
@@ -23,7 +25,7 @@ fn bench_memcpy(c: &mut criterion::Criterion) {
 
 fn do_bench_memcpy(
     mut group: criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
-    memcpy_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> *mut u8,
+    memcpy_fn: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void,
 ) {
     for &len in &[
         1usize, 2, 3, 4, 7, 8, 12, 24, 32, 48, 64, 256, 1024, 2048, 4096, 8000,

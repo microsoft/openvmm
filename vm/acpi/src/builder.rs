@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::num::Wrapping;
+use alloc::vec::Vec;
+use core::num::Wrapping;
 use zerocopy::IntoBytes;
 
 #[derive(Copy, Clone)]
@@ -155,7 +156,7 @@ impl Builder {
     }
 
     pub fn build(mut self) -> (Vec<u8>, Vec<u8>) {
-        let tables = std::mem::take(&mut self.tables);
+        let tables = core::mem::take(&mut self.tables);
         let xsdt = self.append(&Table {
             signature: *b"XSDT",
             revision: 1,

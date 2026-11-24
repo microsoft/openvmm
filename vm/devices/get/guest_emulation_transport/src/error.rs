@@ -54,6 +54,12 @@ pub struct VpciControlError(pub(crate) get_protocol::VpciDeviceControlStatus);
 #[error("create ram GPA range error: {0:?}")]
 pub struct CreateRamGpaRangeError(pub(crate) get_protocol::CreateRamGpaRangeStatus);
 
+/// Error while invoking a LoadFirmwareRequest: the host rejected it with a
+/// non-success status.
+#[derive(Debug, Error)]
+#[error("load firmware error: {0:?}")]
+pub struct LoadFirmwareError(pub(crate) get_protocol::LoadFirmwareStatus);
+
 /// Error while invoking a GuestStateProtectionByIdRequest
 #[derive(Debug, Error)]
 #[error("malformed response - reported len > actual len: {0} > {1}")]
@@ -89,10 +95,28 @@ pub(crate) trait TryIntoProtocolBool {
 
 impl TryIntoProtocolBool for get_protocol::ProtocolBool {
     fn into_bool(self) -> Result<bool, InvalidProtocolBool> {
-        match self.0 {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(InvalidProtocolBool(self.0)),
+        bool::try_from(self.0).map_err(|_| InvalidProtocolBool(self.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TryIntoProtocolBool;
+    use get_protocol::ProtocolBool;
+    use test_with_tracing::test;
+
+    #[test]
+    fn protocol_bool_valid_values() {
+        assert!(!ProtocolBool(0).into_bool().unwrap());
+        assert!(ProtocolBool(1).into_bool().unwrap());
+    }
+
+    #[test]
+    fn protocol_bool_invalid_values() {
+        for value in 2..=u8::MAX {
+            let err = ProtocolBool(value).into_bool().unwrap_err();
+            assert_eq!(err.0, value);
+            assert_eq!(err.to_string(), format!("expected 0 or 1, found {value}"));
         }
     }
 }

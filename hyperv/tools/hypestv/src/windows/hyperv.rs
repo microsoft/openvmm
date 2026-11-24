@@ -4,6 +4,7 @@
 //! Functions for interacting with Hyper-V VMs.
 
 use anyhow::Context as _;
+use powershell_builder::PowerShellBuilder;
 
 /// Runs hcsdiag with the given arguments.
 pub fn run_hcsdiag(
@@ -37,23 +38,28 @@ pub fn hvc_output(
 ) -> anyhow::Result<String> {
     let mut cmd = std::process::Command::new("hvc.exe");
     f(&mut cmd);
-    let output = cmd.output().expect("failed to launch hvc");
+    let output = cmd.output().context("failed to launch hvc")?;
     if !output.status.success() {
         anyhow::bail!("hvc failed with exit code: {}", output.status);
     }
     String::from_utf8(output.stdout).context("output is not utf-8")
 }
 
+/// Runs a PowerShell script with the given arguments bound to its `param`
+/// block.
+///
+/// `script` is emitted verbatim and is therefore trusted; `args` are quoted
+/// and are not.
 pub fn powershell_script(script: &str, args: &[&str]) -> anyhow::Result<String> {
-    let mut cmd = std::process::Command::new("powershell.exe");
-    cmd.arg("-NoProfile")
-        .arg("-Command")
-        .arg(format!("&{{{script}}}"))
-        .args(
-            args.iter()
-                .map(|arg| format!("\"{}\"", arg.replace('`', "``").replace('"', "`\""))),
-        );
-    let output = cmd.output().expect("failed to launch powershell");
+    let mut cmdlet = PowerShellBuilder::new().cmdlet(format!("&{{{script}}}"));
+    for arg in args {
+        cmdlet = cmdlet.positional(arg);
+    }
+    let output = cmdlet
+        .finish()
+        .build()
+        .output()
+        .context("failed to launch powershell")?;
     if !output.status.success() {
         anyhow::bail!(
             "powershell failed:\n{}",

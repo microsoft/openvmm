@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mshv_host_boot.workspace = true
 pipette_client.workspace = true
 
 openvmm_hypervisors = { workspace = true, features = ["virt_kvm", "virt_mshv", "virt_whp", "virt_hvf"] }
@@ -14,6 +15,7 @@ openvmm_hypervisors = { workspace = true, features = ["virt_kvm", "virt_mshv", "
 petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
+petri_artifact_resolver_openvmm_known_paths.workspace = true
 initrd_cpio.workspace = true
 chipset_device_worker_defs.workspace = true
 chipset_resources.workspace = true
@@ -24,7 +26,6 @@ openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 openvmm_pcat_locator.workspace = true
 hyperv_ic_resources.workspace = true
-hyperv_secure_boot_templates.workspace = true
 gdma_resources.workspace = true
 vmbus_serial_resources.workspace = true
 underhill_confidentiality.workspace = true
@@ -38,10 +39,12 @@ netvsp_resources.workspace = true
 nvme_resources.workspace = true
 scsidisk_resources.workspace = true
 serial_core.workspace = true
+smbios_defs.workspace = true
 serial_16550_resources.workspace = true
 serial_socket.workspace = true
 storvsp_resources.workspace = true
 tpm_resources.workspace = true
+tpm_vmgs.workspace = true
 uidevices_resources.workspace = true
 video_core.workspace = true
 virtio_resources.workspace = true
@@ -53,7 +56,7 @@ vmgs_format.workspace = true
 vmgs_resources.workspace = true
 vmm_core_defs.workspace = true
 vmotherboard.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect = { workspace = true, features = ["initiate"] }
 kmsg.workspace = true
 mesh_process.workspace = true
@@ -83,6 +86,8 @@ parking_lot.workspace = true
 prost.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
+sha2.workspace = true
+target-lexicon.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -96,10 +101,17 @@ vmsocket.workspace = true
 vmswitch.workspace = true
 windows-version.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+vmsocket.workspace = true
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hvdef.workspace = true
 safe_intrinsics.workspace = true
 x86defs.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

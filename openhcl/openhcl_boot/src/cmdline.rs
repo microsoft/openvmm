@@ -92,15 +92,14 @@ impl<S: AsRef<str>> From<S> for Vtl2GpaPoolConfig {
 #[derive(Debug, PartialEq)]
 pub enum SidecarOptions {
     /// Sidecar is enabled (either via command line or by default),
-    /// but should be ignored if this is a restore and the host has
-    /// devices and the number of VPs below the threshold.
+    /// subject to platform support and servicing per-CPU state capacity.
     Enabled {
         enable_logging: bool,
         cpu_threshold: Option<u32>,
     },
-    /// Sidecar is disabled because this is a restore from save state (during servicing),
-    /// and sidecar will not benefit this specific scenario.
-    DisabledServicing,
+    /// Sidecar is disabled because the per-CPU overrides required during
+    /// servicing restore exceed the per-CPU state array capacity.
+    DisabledPerCpuStateCapacity,
     /// Sidecar is explicitly disabled via command line.
     DisabledCommandLine,
 }
@@ -132,7 +131,7 @@ impl BootCommandLineOptions {
             confidential_debug: false,
             enable_vtl2_gpa_pool: Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release), // use the release config by default
             sidecar: SidecarOptions::default(),
-            disable_nvme_keep_alive: true,
+            disable_nvme_keep_alive: false,
             vtl2_gpa_pool_numa_split: false,
         }
     }
@@ -141,9 +140,6 @@ impl BootCommandLineOptions {
 impl BootCommandLineOptions {
     /// Parse arguments from a command line.
     pub fn parse(&mut self, cmdline: &str) {
-        // Workaround for a host side issue: disable NVMe keepalive by default.
-        self.disable_nvme_keep_alive = true;
-
         let mut override_vtl2_gpa_pool: Option<Vtl2GpaPoolConfig> = None;
         for arg in cmdline.split_whitespace() {
             if arg.starts_with(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME) {
@@ -186,8 +182,8 @@ impl BootCommandLineOptions {
                 }
             } else if arg.starts_with(DISABLE_NVME_KEEP_ALIVE) {
                 let arg = arg.split_once('=').map(|(_, arg)| arg);
-                if arg.is_some_and(|a| a == "0") {
-                    self.disable_nvme_keep_alive = false;
+                if arg.is_some_and(|a| a != "0") {
+                    self.disable_nvme_keep_alive = true;
                 }
             } else if arg.starts_with(VTL2_GPA_POOL_NUMA) {
                 if let Some((_, arg)) = arg.split_once('=') {

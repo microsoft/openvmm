@@ -361,7 +361,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             edx: 0,
         };
 
-        let x2_apic_shift = 31 - vps_per_socket.leading_zeros().min(31);
+        let x2_apic_shift = vps_per_socket.highest_one().unwrap_or(0);
 
         let topology_subleaf1 = CpuidResult {
             eax: cpuid::ExtendedTopologyEax::new()
@@ -411,6 +411,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             .with_enable_extended_gva_ranges_flush_va_list(true)
             .with_access_guest_idle_msr(true)
             .with_access_vsm(self.access_vsm)
+            .with_access_vp_registers(true)
             .with_isolation(true)
             .with_fast_hypercall_output(true);
 
@@ -444,7 +445,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             .with_use_apic_msrs(!self.secure_avic)
             .with_long_spin_wait_count(!0)
             .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
-            .with_use_synthetic_cluster_ipi(true);
+            .with_use_synthetic_cluster_ipi(!self.secure_avic);
 
         let hardware_features = hvdef::HvHardwareFeatures::new()
             .with_apic_overlay_assist_in_use(true)

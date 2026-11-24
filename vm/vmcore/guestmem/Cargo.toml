@@ -10,6 +10,7 @@ rust-version.workspace = true
 bitmap = ["dep:minircu"]
 
 [dependencies]
+guestmem_core.workspace = true
 inspect.workspace = true
 pal_event.workspace = true
 sparse_mmap.workspace = true
@@ -25,6 +26,8 @@ harness = false
 
 [dev-dependencies]
 criterion.workspace = true
+parking_lot.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

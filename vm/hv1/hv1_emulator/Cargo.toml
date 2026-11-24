@@ -16,7 +16,7 @@ virt.workspace = true
 vmcore.workspace = true
 x86defs.workspace = true
 
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 tracelimit.workspace = true
 parking_lot.workspace = true
 safeatomic.workspace = true

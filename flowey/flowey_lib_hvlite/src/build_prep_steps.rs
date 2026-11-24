@@ -14,7 +14,7 @@ pub enum PrepStepsOutput {
         #[serde(rename = "prep_steps")]
         bin: PathBuf,
         #[serde(rename = "prep_steps.dbg")]
-        dbg: PathBuf,
+        dbg: Option<PathBuf>,
     },
     WindowsBin {
         #[serde(rename = "prep_steps.exe")]
@@ -73,10 +73,7 @@ impl SimpleFlowNode for Node {
                         PrepStepsOutput::WindowsBin { exe, pdb }
                     }
                     crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                        PrepStepsOutput::LinuxBin {
-                            bin,
-                            dbg: dbg.unwrap(),
-                        }
+                        PrepStepsOutput::LinuxBin { bin, dbg }
                     }
                     _ => unreachable!(),
                 };

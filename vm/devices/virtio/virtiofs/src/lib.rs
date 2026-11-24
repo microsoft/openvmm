@@ -4,6 +4,7 @@
 #![expect(missing_docs)]
 #![cfg(any(windows, target_os = "linux"))]
 
+mod aggregate;
 mod file;
 mod inode;
 #[cfg(test)]
@@ -11,6 +12,8 @@ mod integration_tests;
 pub mod resolver;
 #[cfg(windows)]
 mod section;
+#[cfg(test)]
+mod test_helpers;
 mod util;
 pub mod virtio;
 mod virtio_util;
@@ -18,10 +21,14 @@ mod virtio_util;
 #[cfg(windows)]
 pub use section::SectionFs;
 
+use aggregate::AggregateState;
+use aggregate::SYNTHETIC_ROOT_FH;
 use file::VirtioFsFile;
 use fuse::protocol::*;
 use fuse::*;
+use inode::DedupKey;
 use inode::VirtioFsInode;
+use inode::VirtioFsVolume;
 pub use lxutil::LxVolumeOptions;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -42,11 +49,63 @@ const ATTRIBUTE_TIMEOUT: Duration = Duration::from_millis(1);
 // update the path.
 const ENTRY_TIMEOUT: Duration = Duration::from_secs(0);
 
-/// Implementation of the virtio-fs file system.
-pub struct VirtioFs {
+/// Shared mutable state behind a [`VirtioFs`] handle.
+struct VirtioFsInner {
     inodes: RwLock<InodeMap>,
     files: RwLock<HandleMap<Arc<VirtioFsFile>>>,
-    readonly: bool,
+    mode: VirtioFsMode,
+}
+
+/// Distinguishes a single-share device from a multi-share aggregate.
+///
+/// The read-only setting lives on each volume's inodes, not here, so aggregate
+/// children can differ (see [`AggregateState`]).
+enum VirtioFsMode {
+    /// Single share: node 1 is a real inode at the volume root.
+    Direct,
+    /// Multi-share: node 1 is a synthetic directory whose children are
+    /// independent host folders.
+    Aggregate(AggregateState),
+}
+
+impl VirtioFsInner {
+    /// The aggregate state, or `None` for a direct (single-share) device.
+    fn aggregate(&self) -> Option<&AggregateState> {
+        match &self.mode {
+            VirtioFsMode::Aggregate(state) => Some(state),
+            VirtioFsMode::Direct => None,
+        }
+    }
+}
+
+/// An error constructing or configuring a virtio-fs filesystem.
+#[derive(Debug, thiserror::Error)]
+pub enum CreateError {
+    /// The host filesystem volume could not be initialized.
+    #[error(transparent)]
+    Volume(#[from] lxutil::VolumeError),
+    /// Filesystem metadata or aggregate configuration was invalid or inaccessible.
+    #[error(transparent)]
+    Filesystem(#[from] lx::Error),
+}
+
+fn build_volume(
+    root_path: impl AsRef<Path>,
+    mount_options: Option<&LxVolumeOptions>,
+) -> Result<(lxutil::LxVolume, bool), lxutil::VolumeError> {
+    let readonly = mount_options.is_some_and(|options| options.is_readonly());
+    let options = mount_options.cloned().unwrap_or_default();
+    let volume = options.new_volume(root_path)?;
+    Ok((volume, readonly))
+}
+
+/// Implementation of the virtio-fs file system.
+///
+/// Symlinks are exposed without host-side traversal.
+/// Symbolic links are resolved by the guest, in both direct and aggregate mode.
+#[derive(Clone)]
+pub struct VirtioFs {
+    inner: Arc<VirtioFsInner>,
 }
 
 impl Fuse for VirtioFs {
@@ -73,10 +132,13 @@ impl Fuse for VirtioFs {
     fn get_attr(&self, request: &Request, flags: u32, fh: u64) -> lx::Result<fuse_attr_out> {
         let node_id = request.node_id();
         // If a file handle is specified, get the attributes from the open file. This is faster on
-        // Windows and works if the file was deleted.
-        let attr = if flags & FUSE_GETATTR_FH != 0 {
+        // Windows and works if the file was deleted. The synthetic root's directory handle has no
+        // backing file, so fall through to the node-based branch for it.
+        let attr = if flags & FUSE_GETATTR_FH != 0 && !self.is_synthetic_root_handle(node_id, fh) {
             let file = self.get_file(fh)?;
             file.get_attr()?
+        } else if self.is_synthetic_root(node_id) {
+            self.synthetic_root_attr()
         } else {
             let inode = self.get_inode(node_id)?;
             inode.get_attr()?
@@ -91,14 +153,19 @@ impl Fuse for VirtioFs {
         fh: u64,
         getattr_flags: u32,
         flags: StatxFlags,
-        _mask: lx::StatExMask,
+        mask: lx::StatExMask,
     ) -> lx::Result<fuse_statx_out> {
         let node_id = request.node_id();
         // If a file handle is specified, get the attributes from the open file. This is faster on
-        // Windows and works if the file was deleted.
-        let statx = if getattr_flags & FUSE_GETATTR_FH != 0 {
+        // Windows and works if the file was deleted. The synthetic root's directory handle has no
+        // backing file, so fall through to the node-based branch for it.
+        let statx = if getattr_flags & FUSE_GETATTR_FH != 0
+            && !self.is_synthetic_root_handle(node_id, fh)
+        {
             let file = self.get_file(fh)?;
             file.get_statx()?
+        } else if self.is_synthetic_root(node_id) {
+            self.synthetic_root_statx(mask)
         } else {
             let inode = self.get_inode(node_id)?;
             inode.get_statx()?
@@ -110,13 +177,17 @@ impl Fuse for VirtioFs {
     fn set_attr(&self, request: &Request, arg: &fuse_setattr_in) -> lx::Result<fuse_attr_out> {
         let node_id = request.node_id();
 
+        if self.is_synthetic_root(node_id) {
+            return Err(lx::Error::EROFS);
+        }
+
         // If a file handle is specified, set the attributes on the open file. This is faster on
         // Windows and works if the file was deleted.
         let attr = if arg.valid & FATTR_FH != 0 {
             let file = self.get_file(arg.fh)?;
             // Block truncation and other modifications on readonly filesystems
             if arg.valid & !(FATTR_FH | FATTR_LOCKOWNER) != 0 {
-                self.check_writable()?;
+                self.check_writable(file.inode())?;
             }
             file.set_attr(arg, request.uid())?;
             file.get_attr()?
@@ -124,7 +195,7 @@ impl Fuse for VirtioFs {
             let inode = self.get_inode(node_id)?;
             // Block truncation and other modifications on readonly filesystems
             if arg.valid & !(FATTR_FH | FATTR_LOCKOWNER) != 0 {
-                self.check_writable()?;
+                self.check_writable(&inode)?;
             }
             inode.set_attr(arg, request.uid())?
         };
@@ -133,14 +204,20 @@ impl Fuse for VirtioFs {
     }
 
     fn lookup(&self, request: &Request, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return self.lookup_synthetic_root(name);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.lookup_helper(&inode, name)
     }
 
     fn forget(&self, node_id: u64, lookup_count: u64) {
+        if node_id == FUSE_ROOT_ID {
+            return;
+        }
         // This must be done under lock so an inode can't be resurrected between the lookup count
         // reaching zero and removing it from the list.
-        let mut inodes = self.inodes.write();
+        let mut inodes = self.inner.inodes.write();
         if let Some(inode) = inodes.get(node_id) {
             if inode.forget(node_id, lookup_count) == 0 {
                 tracing::trace!(node_id, "Removing inode");
@@ -150,10 +227,12 @@ impl Fuse for VirtioFs {
     }
 
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
+        let options = util::open_flags(flags)?;
         let inode = self.get_inode(request.node_id())?;
-        self.check_open_readonly(&inode, flags)?;
-        let file = inode.open(flags)?;
-        let fh = self.insert_file(file);
+        self.check_open_readonly(&inode, options)?;
+        let reservation = self.reserve_file()?;
+        let file = inode.open(options)?;
+        let fh = reservation.insert(file)?;
 
         // TODO: Optionally allow caching.
         Ok(fuse_open_out::new(fh, FOPEN_DIRECT_IO))
@@ -165,17 +244,23 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_create_in,
     ) -> lx::Result<CreateOut> {
+        let options = util::create_flags(arg.flags)?;
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
+        let inode_reservation = self.reserve_inode()?;
+        let file_reservation = self.reserve_file()?;
         let (new_inode, attr, file) =
-            inode.create(name, arg.flags, arg.mode, request.uid(), request.gid())?;
+            inode.create(name, options, arg.mode, request.uid(), request.gid())?;
 
         // Insert the newly created inode; this can return an existing inode if it found a match
         // on the inode number (if this is a non-exclusive create), so make sure to associate the
         // file with the returned inode.
-        let (new_inode, node_id) = self.insert_inode(new_inode);
+        let (new_inode, node_id) = inode_reservation.insert(new_inode)?;
         let file = VirtioFsFile::new(file, new_inode);
-        let fh = self.insert_file(file);
+        let fh = file_reservation.insert(file)?;
         Ok(CreateOut {
             entry: fuse_entry_out::new(node_id, ENTRY_TIMEOUT, ATTRIBUTE_TIMEOUT, attr),
             open: fuse_open_out::new(fh, FOPEN_DIRECT_IO),
@@ -188,10 +273,14 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_mkdir_in,
     ) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
+        let reservation = self.reserve_inode()?;
         let (new_inode, attr) = inode.mkdir(name, arg.mode, request.uid(), request.gid())?;
-        let (_, node_id) = self.insert_inode(new_inode);
+        let (_, node_id) = reservation.insert(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -206,12 +295,16 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_mknod_in,
     ) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
+        let reservation = self.reserve_inode()?;
         let (new_inode, attr) =
             inode.mknod(name, arg.mode, request.uid(), request.gid(), arg.rdev)?;
 
-        let (_, node_id) = self.insert_inode(new_inode);
+        let (_, node_id) = reservation.insert(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -226,11 +319,15 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         target: &lx::LxStr,
     ) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
+        let reservation = self.reserve_inode()?;
         let (new_inode, attr) = inode.symlink(name, target, request.uid(), request.gid())?;
 
-        let (_, node_id) = self.insert_inode(new_inode);
+        let (_, node_id) = reservation.insert(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -240,9 +337,12 @@ impl Fuse for VirtioFs {
     }
 
     fn link(&self, request: &Request, name: &lx::LxStr, target: u64) -> lx::Result<fuse_entry_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         let target_inode = self.get_inode(target)?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         let attr = inode.link(name, &target_inode)?;
 
         // Increment the lookup count since we're returning an entry for this inode.
@@ -273,7 +373,7 @@ impl Fuse for VirtioFs {
 
     fn write(&self, request: &Request, arg: &fuse_write_in, data: &[u8]) -> lx::Result<usize> {
         let file = self.get_file(arg.fh)?;
-        self.check_writable()?;
+        self.check_writable(file.inode())?;
         file.write(data, arg.offset, request.uid())
     }
 
@@ -283,21 +383,36 @@ impl Fuse for VirtioFs {
     }
 
     fn open_dir(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
+        if self.is_synthetic_root(request.node_id()) {
+            util::open_flags(flags)?;
+            // The synthetic root has no backing handle; hand out a sentinel that
+            // read_dir/read_dir_plus/release_dir recognize.
+            return Ok(fuse_open_out::new(SYNTHETIC_ROOT_FH, 0));
+        }
         // There is no special handling for directories, so just call open.
         self.open(request, flags)
     }
 
-    fn read_dir(&self, _request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
+    fn read_dir(&self, request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
+        if self.is_synthetic_root_handle(request.node_id(), arg.fh) {
+            return self.read_synthetic_root_dir(arg.offset, arg.size, false);
+        }
         let file = self.get_file(arg.fh)?;
         file.read_dir(self, arg.offset, arg.size, false)
     }
 
-    fn read_dir_plus(&self, _request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
+    fn read_dir_plus(&self, request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
+        if self.is_synthetic_root_handle(request.node_id(), arg.fh) {
+            return self.read_synthetic_root_dir(arg.offset, arg.size, true);
+        }
         let file = self.get_file(arg.fh)?;
         file.read_dir(self, arg.offset, arg.size, true)
     }
 
     fn release_dir(&self, request: &Request, arg: &fuse_release_in) -> lx::Result<()> {
+        if self.is_synthetic_root_handle(request.node_id(), arg.fh) {
+            return Ok(());
+        }
         self.release(request, arg)
     }
 
@@ -317,13 +432,34 @@ impl Fuse for VirtioFs {
         new_name: &lx::LxStr,
         flags: u32,
     ) -> lx::Result<()> {
+        if self.is_synthetic_root(request.node_id()) || self.is_synthetic_root(new_dir) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
         let new_inode = self.get_inode(new_dir)?;
-        self.check_writable()?;
-        inode.rename(name, &new_inode, new_name, flags)
+        // A rename cannot cross aggregated volume boundaries.
+        if inode.volume_id() != new_inode.volume_id() {
+            return Err(lx::Error::EXDEV);
+        }
+        self.check_writable(&inode)?;
+        inode.rename(name, &new_inode, new_name, flags)?;
+        // A rename doesn't preserve inode identity on path-keyed volumes, so
+        // evict both the vacated source path and the overwritten destination
+        // path from the dedup map.
+        let mut inodes = self.inner.inodes.write();
+        if let Some(key) = inode.child_path_dedup_key(name) {
+            inodes.evict_dedup_key(&key);
+        }
+        if let Some(key) = new_inode.child_path_dedup_key(new_name) {
+            inodes.evict_dedup_key(&key);
+        }
+        Ok(())
     }
 
     fn statfs(&self, request: &Request) -> lx::Result<fuse_kstatfs> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Ok(fuse_kstatfs::new(0, 0, 0, 0, 0, 512, 255, 512));
+        }
         let inode = self.get_inode(request.node_id())?;
         inode.stat_fs()
     }
@@ -334,11 +470,16 @@ impl Fuse for VirtioFs {
         file.fsync(data_only)
     }
 
-    fn fsync_dir(&self, request: &Request, fh: u64, flags: u32) -> lx::Result<()> {
-        self.fsync(request, fh, flags)
+    fn fsync_dir(&self, _request: &Request, fh: u64, flags: u32) -> lx::Result<()> {
+        let file = self.get_file(fh)?;
+        let data_only = flags & FUSE_FSYNC_FDATASYNC != 0;
+        file.fsync_dir(data_only)
     }
 
     fn get_xattr(&self, request: &Request, name: &lx::LxStr, size: u32) -> lx::Result<Vec<u8>> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::ENODATA);
+        }
         let inode = self.get_inode(request.node_id())?;
         let mut value = vec![0u8; size as usize];
         let size = inode.get_xattr(name, Some(&mut value))?;
@@ -347,6 +488,9 @@ impl Fuse for VirtioFs {
     }
 
     fn get_xattr_size(&self, request: &Request, name: &lx::LxStr) -> lx::Result<u32> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::ENODATA);
+        }
         let inode = self.get_inode(request.node_id())?;
         let size = inode.get_xattr(name, None)?;
         let size = size.try_into().map_err(|_| lx::Error::E2BIG)?;
@@ -360,12 +504,18 @@ impl Fuse for VirtioFs {
         value: &[u8],
         flags: u32,
     ) -> lx::Result<()> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         inode.set_xattr(name, value, flags)
     }
 
     fn list_xattr(&self, request: &Request, size: u32) -> lx::Result<Vec<u8>> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Ok(Vec::new());
+        }
         let inode = self.get_inode(request.node_id())?;
         let mut list = vec![0u8; size as usize];
         let size = inode.list_xattr(Some(&mut list))?;
@@ -374,6 +524,9 @@ impl Fuse for VirtioFs {
     }
 
     fn list_xattr_size(&self, request: &Request) -> lx::Result<u32> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Ok(0);
+        }
         let inode = self.get_inode(request.node_id())?;
         let size = inode.list_xattr(None)?;
         let size = size.try_into().map_err(|_| lx::Error::E2BIG)?;
@@ -381,22 +534,25 @@ impl Fuse for VirtioFs {
     }
 
     fn remove_xattr(&self, request: &Request, name: &lx::LxStr) -> lx::Result<()> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
+        self.check_writable(&inode)?;
         inode.remove_xattr(name)
     }
 
     fn destroy(&self) {
         // To get the file system ready for re-mount, clean out any open files and leaked inodes.
-        self.files.write().clear();
-        self.inodes.write().clear();
+        self.inner.files.write().clear();
+        self.inner.inodes.write().clear();
     }
 }
 
 impl VirtioFs {
-    /// Check if the filesystem is readonly and return EROFS if so.
-    fn check_writable(&self) -> lx::Result<()> {
-        if self.readonly {
+    /// Check if the inode's volume is readonly and return EROFS if so.
+    fn check_writable(&self, inode: &VirtioFsInode) -> lx::Result<()> {
+        if inode.readonly() {
             Err(lx::Error::EROFS)
         } else {
             Ok(())
@@ -404,8 +560,8 @@ impl VirtioFs {
     }
 
     /// Check whether the open flags are permitted on a read-only filesystem.
-    fn check_open_readonly(&self, inode: &VirtioFsInode, flags: u32) -> lx::Result<()> {
-        if !self.readonly {
+    fn check_open_readonly(&self, inode: &VirtioFsInode, options: i32) -> lx::Result<()> {
+        if !inode.readonly() {
             return Ok(());
         }
 
@@ -415,9 +571,11 @@ impl VirtioFs {
         // If O_CREAT && file_exists => fallthrough to check other checks
         // If O_CREAT && !file_exists => EROFS
         // Other errors that occur while checking file_exists should bubble up
-        if flags & lx::O_CREAT as u32 != 0 {
+        if options & lx::O_CREAT != 0 {
             match inode.get_attr() {
-                Ok(_) if flags & lx::O_EXCL as u32 != 0 => return Err(lx::Error::EEXIST),
+                Ok(_) if options & lx::O_EXCL != 0 => {
+                    return Err(lx::Error::EEXIST);
+                }
                 Ok(_) => {}
                 Err(e) if e == lx::Error::ENOENT => return Err(lx::Error::EROFS),
                 Err(e) => return Err(e),
@@ -426,8 +584,9 @@ impl VirtioFs {
             inode.get_attr()?;
         }
 
-        let access_mode = (flags & lx::O_ACCESS_MASK as u32) as i32;
-        if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR) || flags & lx::O_TRUNC as u32 != 0 {
+        if matches!(options & lx::O_ACCESS_MASK, lx::O_WRONLY | lx::O_RDWR)
+            || options & lx::O_TRUNC != 0
+        {
             return Err(lx::Error::EROFS);
         }
 
@@ -438,27 +597,43 @@ impl VirtioFs {
     pub fn new(
         root_path: impl AsRef<Path>,
         mount_options: Option<&LxVolumeOptions>,
-    ) -> lx::Result<Self> {
-        let readonly = mount_options.is_some_and(|o| o.is_readonly());
-        let volume = if let Some(mount_options) = mount_options {
-            mount_options.new_volume(root_path)
-        } else {
-            lxutil::LxVolume::new(root_path)
-        }?;
-        let mut inodes = InodeMap::new(volume.supports_stable_file_id());
-        let (root_inode, _) = VirtioFsInode::new(Arc::new(volume), PathBuf::new())?;
-        assert!(inodes.insert(root_inode).1 == FUSE_ROOT_ID);
+    ) -> Result<Self, CreateError> {
+        let (volume, readonly) = build_volume(root_path, mount_options)?;
+        let mut inodes = InodeMap::new(false);
+        let volume = Arc::new(VirtioFsVolume::new(volume, 0, readonly));
+        let (root_inode, _) = VirtioFsInode::new(volume, PathBuf::new())?;
+        if inodes.insert(root_inode)?.1 != FUSE_ROOT_ID {
+            return Err(lx::Error::EINVAL.into());
+        }
         Ok(Self {
-            inodes: RwLock::new(inodes),
-            files: RwLock::new(HandleMap::new()),
-            readonly,
+            inner: Arc::new(VirtioFsInner {
+                inodes: RwLock::new(inodes),
+                files: RwLock::new(HandleMap::new()),
+                mode: VirtioFsMode::Direct,
+            }),
         })
     }
 
-    /// Perform lookup on a specified directory inode.
+    /// Create a new, empty aggregate virtio-fs.
+    ///
+    /// Node 1 is a synthetic, read-only directory; use [`Self::add_child`] to
+    /// expose host folders as named children, each with its own read-only
+    /// setting. Children share one superblock, with inode numbers namespaced
+    /// per volume to avoid cross-volume `st_ino` collisions.
+    pub fn new_aggregate() -> Self {
+        Self {
+            inner: Arc::new(VirtioFsInner {
+                // `true` enables aggregate mode: node 1 is synthetic (see `InodeMap`).
+                inodes: RwLock::new(InodeMap::new(true)),
+                files: RwLock::new(HandleMap::new()),
+                mode: VirtioFsMode::Aggregate(AggregateState::new()),
+            }),
+        }
+    }
+
     fn lookup_helper(&self, inode: &VirtioFsInode, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
         let (new_inode, attr) = inode.lookup_child(name)?;
-        let (_, new_inode_nr) = self.insert_inode(new_inode);
+        let (_, new_inode_nr) = self.insert_inode(new_inode)?;
         Ok(fuse_entry_out::new(
             new_inode_nr,
             ENTRY_TIMEOUT,
@@ -469,14 +644,23 @@ impl VirtioFs {
 
     /// Removes a file or directory.
     fn unlink_helper(&self, request: &Request, name: &lx::LxStr, flags: i32) -> lx::Result<()> {
+        if self.is_synthetic_root(request.node_id()) {
+            return Err(lx::Error::EROFS);
+        }
         let inode = self.get_inode(request.node_id())?;
-        self.check_writable()?;
-        inode.unlink(name, flags)
+        self.check_writable(&inode)?;
+        inode.unlink(name, flags)?;
+        // On path-keyed volumes the path is the inode's identity, so evict it
+        // now; a later create at the same path must not alias the removed inode.
+        if let Some(key) = inode.child_path_dedup_key(name) {
+            self.inner.inodes.write().evict_dedup_key(&key);
+        }
+        Ok(())
     }
 
     /// Retrieve the inode with the specified node ID.
     fn get_inode(&self, node_id: u64) -> lx::Result<Arc<VirtioFsInode>> {
-        self.inodes.read().get(node_id).ok_or_else(|| {
+        self.inner.inodes.read().get(node_id).ok_or_else(|| {
             tracing::warn!(node_id, "request for unknown inode");
             lx::Error::EINVAL
         })
@@ -486,13 +670,29 @@ impl VirtioFs {
     ///
     /// If the file system supports stable inode numbers and an inode already existed with this
     /// number, the existing inode is returned, not the passed in one.
-    fn insert_inode(&self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
-        self.inodes.write().insert(inode)
+    fn insert_inode(&self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
+        let mut inodes = self.inner.inodes.write();
+        inodes.insert(inode)
+    }
+
+    /// Reserve an inode ID before performing an operation that creates a host object.
+    fn reserve_inode(&self) -> lx::Result<InodeReservation<'_>> {
+        let reservation = self
+            .inner
+            .inodes
+            .write()
+            .reserve()
+            .ok_or(lx::Error::ENOSPC)?;
+        Ok(InodeReservation {
+            inodes: &self.inner.inodes,
+            reservation,
+            committed: false,
+        })
     }
 
     /// Retrieve the file object with the specified file handle.
     fn get_file(&self, fh: u64) -> lx::Result<Arc<VirtioFsFile>> {
-        let files = self.files.read();
+        let files = self.inner.files.read();
         let file = files.get(fh).ok_or_else(|| {
             tracing::warn!(fh, "Request for unknown file");
             lx::Error::EBADF
@@ -501,21 +701,87 @@ impl VirtioFs {
         Ok(Arc::clone(file))
     }
 
-    /// Insert a new file object, and return the assigned file handle.
-    fn insert_file(&self, file: VirtioFsFile) -> u64 {
-        self.files.write().insert(Arc::new(file))
+    /// Reserve a file handle before opening or creating a host file.
+    fn reserve_file(&self) -> lx::Result<FileReservation<'_>> {
+        let reservation = self
+            .inner
+            .files
+            .write()
+            .reserve()
+            .ok_or(lx::Error::ENOSPC)?;
+        Ok(FileReservation {
+            files: &self.inner.files,
+            reservation,
+            committed: false,
+        })
     }
 
     /// Remove the file with the specified node ID.
     fn remove_file(&self, fh: u64) {
-        self.files.write().remove(fh);
+        self.inner.files.write().remove(fh);
     }
+}
+
+struct InodeReservation<'a> {
+    inodes: &'a RwLock<InodeMap>,
+    reservation: HandleReservation,
+    committed: bool,
+}
+
+impl InodeReservation<'_> {
+    fn insert(mut self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
+        let mut inodes = self.inodes.write();
+        let result = inodes.insert_reserved(&self.reservation, inode)?;
+        self.committed = true;
+        Ok(result)
+    }
+}
+
+impl Drop for InodeReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.inodes.write().release_reservation(&self.reservation);
+        }
+    }
+}
+
+struct FileReservation<'a> {
+    files: &'a RwLock<HandleMap<Arc<VirtioFsFile>>>,
+    reservation: HandleReservation,
+    committed: bool,
+}
+
+impl FileReservation<'_> {
+    fn insert(mut self, file: VirtioFsFile) -> lx::Result<u64> {
+        let mut files = self.files.write();
+        files
+            .insert_reserved(&self.reservation, Arc::new(file))
+            .map_err(|_| lx::Error::ENOSPC)?;
+        self.committed = true;
+        Ok(self.reservation.handle)
+    }
+}
+
+impl Drop for FileReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.files.write().release_reservation(&self.reservation);
+        }
+    }
+}
+
+/// An ID reserved from a [`HandleMap`] in a particular allocation generation.
+struct HandleReservation {
+    handle: u64,
+    generation: Arc<()>,
 }
 
 /// A key/value map where the keys are automatically incremented identifiers.
 struct HandleMap<T> {
     values: HashMap<u64, T>,
+    initial_handle: u64,
     next_handle: u64,
+    generation: Arc<()>,
 }
 
 impl<T> HandleMap<T> {
@@ -528,19 +794,67 @@ impl<T> HandleMap<T> {
     pub fn starting_at(next_handle: u64) -> Self {
         Self {
             values: HashMap::new(),
+            initial_handle: next_handle,
             next_handle,
+            generation: Arc::new(()),
         }
     }
 
     /// Inserts an item into the map, and returns the assigned handle.
-    pub fn insert(&mut self, value: T) -> u64 {
+    pub fn insert(&mut self, value: T) -> Option<u64> {
+        if !self.can_insert() {
+            return None;
+        }
         let handle = self.next_handle;
-        if self.values.insert(handle, value).is_some() {
-            panic!("Inode number reused.");
+        self.values.insert(handle, value);
+        self.next_handle = handle.checked_add(1).unwrap_or(0);
+        Some(handle)
+    }
+
+    /// Reserves and returns the next handle.
+    pub fn reserve(&mut self) -> Option<HandleReservation> {
+        if !self.can_insert() {
+            return None;
+        }
+        let handle = self.next_handle;
+        self.next_handle = handle.checked_add(1).unwrap_or(0);
+        Some(HandleReservation {
+            handle,
+            generation: Arc::clone(&self.generation),
+        })
+    }
+
+    /// Associates a value with a previously reserved handle.
+    pub fn insert_reserved(&mut self, reservation: &HandleReservation, value: T) -> Result<(), T> {
+        if !self.is_current(reservation) {
+            return Err(value);
         }
 
-        self.next_handle += 1;
-        handle
+        match self.values.entry(reservation.handle) {
+            Entry::Vacant(entry) => {
+                entry.insert(value);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(value),
+        }
+    }
+
+    /// Releases a handle reservation, reusing it if no newer handle was allocated.
+    pub fn release_reservation(&mut self, reservation: &HandleReservation) {
+        if self.is_current(reservation)
+            && !self.values.contains_key(&reservation.handle)
+            && self.next_handle == reservation.handle.checked_add(1).unwrap_or(0)
+        {
+            self.next_handle = reservation.handle;
+        }
+    }
+
+    fn is_current(&self, reservation: &HandleReservation) -> bool {
+        Arc::ptr_eq(&self.generation, &reservation.generation)
+    }
+
+    pub fn can_insert(&self) -> bool {
+        self.next_handle != 0 && !self.values.contains_key(&self.next_handle)
     }
 
     /// Retrieves a value from the map.
@@ -562,7 +876,8 @@ impl<T> HandleMap<T> {
     /// Clears the map and resets the handle values.
     pub fn clear(&mut self) {
         self.values.clear();
-        self.next_handle = 1;
+        self.next_handle = self.initial_handle;
+        self.generation = Arc::new(());
     }
 }
 
@@ -575,21 +890,25 @@ impl<T> HandleMap<T> {
 ///   globally unique, whereas inode numbers are per-volume.
 struct InodeMap {
     inodes_by_node_id: HandleMap<Arc<VirtioFsInode>>,
-    inodes_by_inode_nr: Option<HashMap<lx::ino_t, (Arc<VirtioFsInode>, u64)>>,
+    /// Maps a [`DedupKey`] to the registered inode and its FUSE node id, so
+    /// repeated lookups of one host file share a single node id.
+    inodes_by_key: HashMap<DedupKey, (Arc<VirtioFsInode>, u64)>,
+    /// When true, node 1 is synthetic and not stored in this map, so node IDs
+    /// are allocated starting at 2 and `clear` does not preserve a real root.
+    aggregate: bool,
 }
 
 impl InodeMap {
     /// Create a new `InodeMap`.
-    pub fn new(supports_stable_file_id: bool) -> Self {
-        // TODO: Once multiple volumes are supported, the inodes_by_inode_nr map should be per
-        // volume.
+    pub fn new(aggregate: bool) -> Self {
         Self {
-            inodes_by_node_id: HandleMap::new(),
-            inodes_by_inode_nr: if supports_stable_file_id {
-                Some(HashMap::new())
+            inodes_by_node_id: if aggregate {
+                HandleMap::starting_at(FUSE_ROOT_ID + 1)
             } else {
-                None
+                HandleMap::new()
             },
+            inodes_by_key: HashMap::new(),
+            aggregate,
         }
     }
 
@@ -599,54 +918,865 @@ impl InodeMap {
         Some(Arc::clone(inode))
     }
 
+    /// Reserve a node ID before creating a host object.
+    pub fn reserve(&mut self) -> Option<HandleReservation> {
+        self.inodes_by_node_id.reserve()
+    }
+
+    /// Release an unused node ID reservation.
+    pub fn release_reservation(&mut self, reservation: &HandleReservation) {
+        self.inodes_by_node_id.release_reservation(reservation);
+    }
+
     /// Insert an inode into the map, returning its node ID.
-    pub fn insert(&mut self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
-        // If stable inode numbers are supported, look for the inode by its number.
-        if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
-            match inodes_by_inode_nr.entry(inode.inode_nr()) {
-                Entry::Occupied(entry) => {
-                    // Inode found; increment its count and return the existing FUSE node ID.
-                    let new_path = inode.clone_path();
-                    let (inode, node_id) = entry.get();
-                    inode.lookup(new_path);
-                    return (Arc::clone(inode), *node_id);
-                }
-                Entry::Vacant(entry) => {
-                    // Inode not found, so insert it into both maps.
-                    let inode = Arc::new(inode);
-                    let node_id = self.inodes_by_node_id.insert(Arc::clone(&inode));
-                    entry.insert((Arc::clone(&inode), node_id));
-                    return (inode, node_id);
-                }
+    pub fn insert(&mut self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
+        // Reuse an existing node id for the same host file; see `DedupKey`
+        // for how each volume type is keyed.
+        match Self::dedup_entry(&mut self.inodes_by_key, &inode) {
+            Entry::Occupied(entry) => {
+                // Inode found; increment its count and return the existing FUSE node ID.
+                let new_path = inode.clone_path();
+                let (existing, node_id) = entry.get();
+                existing.lookup(new_path);
+                Ok((Arc::clone(existing), *node_id))
+            }
+            Entry::Vacant(entry) => {
+                // Inode not found, so insert it into both maps.
+                let inode = Arc::new(inode);
+                let node_id = self
+                    .inodes_by_node_id
+                    .insert(Arc::clone(&inode))
+                    .ok_or(lx::Error::ENOSPC)?;
+                entry.insert((Arc::clone(&inode), node_id));
+                Ok((inode, node_id))
             }
         }
+    }
 
-        // No support for stable inode numbers, so just use node ID.
-        let inode = Arc::new(inode);
-        let node_id = self.inodes_by_node_id.insert(Arc::clone(&inode));
-        (inode, node_id)
+    /// Insert an inode using a node ID reserved by [`Self::reserve`].
+    pub fn insert_reserved(
+        &mut self,
+        reservation: &HandleReservation,
+        inode: VirtioFsInode,
+    ) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
+        if !self.inodes_by_node_id.is_current(reservation) {
+            return Err(lx::Error::ENOSPC);
+        }
+
+        match Self::dedup_entry(&mut self.inodes_by_key, &inode) {
+            Entry::Occupied(entry) => {
+                self.inodes_by_node_id.release_reservation(reservation);
+                let new_path = inode.clone_path();
+                let (existing, existing_node_id) = entry.get();
+                existing.lookup(new_path);
+                Ok((Arc::clone(existing), *existing_node_id))
+            }
+            Entry::Vacant(entry) => {
+                let inode = Arc::new(inode);
+                self.inodes_by_node_id
+                    .insert_reserved(reservation, Arc::clone(&inode))
+                    .map_err(|_| lx::Error::ENOSPC)?;
+                entry.insert((Arc::clone(&inode), reservation.handle));
+                Ok((inode, reservation.handle))
+            }
+        }
+    }
+
+    /// Returns the dedup entry for `inode`, shared by every insertion path.
+    ///
+    /// An existing entry with a different file type is evicted first, so a
+    /// type-replaced host file gets a fresh node id instead of aliasing the
+    /// stale inode. Only `inodes_by_key` is borrowed, so callers can still
+    /// allocate from `inodes_by_node_id` while holding the entry.
+    fn dedup_entry<'a>(
+        inodes_by_key: &'a mut HashMap<DedupKey, (Arc<VirtioFsInode>, u64)>,
+        inode: &VirtioFsInode,
+    ) -> Entry<'a, DedupKey, (Arc<VirtioFsInode>, u64)> {
+        let key = inode.dedup_key();
+        if inodes_by_key
+            .get(&key)
+            .is_some_and(|(existing, _)| existing.file_type() != inode.file_type())
+        {
+            inodes_by_key.remove(&key);
+        }
+        inodes_by_key.entry(key)
     }
 
     /// Remove an inode with the specified FUSE node ID from the map.
     pub fn remove(&mut self, node_id: u64) {
-        let inode = self.inodes_by_node_id.remove(node_id).unwrap();
-        if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
-            inodes_by_inode_nr.remove(&inode.inode_nr());
+        let Some(inode) = self.inodes_by_node_id.remove(node_id) else {
+            return;
+        };
+        // Only drop the by-key entry if it still points at THIS node: on
+        // path-keyed volumes the path may have been repointed to a newer inode
+        // (via delete+recreate or `evict_dedup_key`), which must not be lost.
+        if let Entry::Occupied(entry) = self.inodes_by_key.entry(inode.dedup_key()) {
+            if entry.get().1 == node_id {
+                entry.remove();
+            }
         }
+    }
+
+    /// Detach a dedup entry so a later lookup gets a fresh node id instead of
+    /// aliasing a removed, renamed, or type-replaced file. The inode stays in
+    /// `inodes_by_node_id` for any live fd or watch.
+    pub fn evict_dedup_key(&mut self, key: &DedupKey) {
+        self.inodes_by_key.remove(key);
     }
 
     /// Clears the map, preserving the root inode.
     pub fn clear(&mut self) {
-        let root_inode = Arc::clone(self.inodes_by_node_id.get(FUSE_ROOT_ID).unwrap());
+        if self.aggregate {
+            // Node 1 is synthetic and not stored here; drop everything and resume
+            // allocating node IDs after the reserved root id.
+            self.inodes_by_node_id.clear();
+            self.inodes_by_key.clear();
+            return;
+        }
+
+        let Some(root_inode) = self.inodes_by_node_id.get(FUSE_ROOT_ID).cloned() else {
+            self.inodes_by_node_id.clear();
+            self.inodes_by_key.clear();
+            return;
+        };
         self.inodes_by_node_id.clear();
 
         // Re-insert the root inode.
-        assert!(self.inodes_by_node_id.insert(Arc::clone(&root_inode)) == FUSE_ROOT_ID);
+        let inserted = self.inodes_by_node_id.insert(Arc::clone(&root_inode));
+        assert_eq!(
+            inserted,
+            Some(FUSE_ROOT_ID),
+            "root inode ID changed during clear"
+        );
 
-        // Clear the inode number map if it's supported.
-        if let Some(inodes_by_inode_nr) = self.inodes_by_inode_nr.as_mut() {
-            inodes_by_inode_nr.clear();
-            inodes_by_inode_nr.insert(root_inode.inode_nr(), (root_inode, FUSE_ROOT_ID));
+        // Rebuild the dedup map with just the root.
+        self.inodes_by_key.clear();
+        let key = root_inode.dedup_key();
+        self.inodes_by_key.insert(key, (root_inode, FUSE_ROOT_ID));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HandleMap;
+    use super::VirtioFs;
+    use fuse::Fuse;
+    use fuse::Request;
+    use fuse::protocol::*;
+    use std::collections::BTreeMap;
+    use std::collections::HashSet;
+    use std::path::Path;
+    use std::sync::Arc;
+    use test_with_tracing::test;
+    use zerocopy::FromBytes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
+
+    fn request(node_id: u64) -> Request {
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + 2) as u32,
+            opcode: FUSE_LOOKUP,
+            nodeid: node_id,
+            ..fuse_in_header::new_zeroed()
+        };
+        let mut bytes = header.as_bytes().to_vec();
+        bytes.extend_from_slice(b".\0");
+        Request::new(bytes.as_slice()).unwrap()
+    }
+
+    pub(super) fn read_directory(
+        fs: &VirtioFs,
+        file: &super::VirtioFsFile,
+        mut offset: u64,
+        size: u32,
+        plus: bool,
+    ) -> BTreeMap<String, (u64, u32)> {
+        let mut entries = BTreeMap::new();
+        let mut offsets = HashSet::new();
+        loop {
+            let data = file.read_dir(fs, offset, size, plus).unwrap();
+            assert!(data.len() <= size as usize);
+            if data.is_empty() {
+                return entries;
+            }
+            let mut remaining = data.as_slice();
+            while !remaining.is_empty() {
+                let (entry, rest) = if plus {
+                    let (entry, rest) = fuse_direntplus::read_from_prefix(remaining).unwrap();
+                    assert_eq!(entry.dirent.ino, entry.entry_out.attr.ino);
+                    assert_eq!(entry.dirent.file_type, entry.entry_out.attr.mode >> 12);
+                    if entry.entry_out.nodeid != 0 {
+                        fs.forget(entry.entry_out.nodeid, 1);
+                    }
+                    (entry.dirent, rest)
+                } else {
+                    fuse_dirent::read_from_prefix(remaining).unwrap()
+                };
+                let name = std::str::from_utf8(&rest[..entry.namelen as usize])
+                    .unwrap()
+                    .to_owned();
+                assert!(
+                    entries
+                        .insert(name.clone(), (entry.ino, entry.file_type))
+                        .is_none(),
+                    "duplicate entry {name}"
+                );
+                assert_ne!(entry.off, offset, "directory offset did not advance");
+                assert!(offsets.insert(entry.off), "repeated directory offset");
+                offset = entry.off;
+                let header_size = if plus {
+                    size_of::<fuse_direntplus>()
+                } else {
+                    size_of::<fuse_dirent>()
+                };
+                remaining = &remaining[fuse_dirent_align(header_size + entry.namelen as usize)..];
+            }
         }
+    }
+
+    fn assert_directory_parity(
+        root: &Path,
+        options: Option<&super::LxVolumeOptions>,
+        names: &BTreeMap<String, u32>,
+    ) {
+        for aggregate in [false, true] {
+            let fs = if aggregate {
+                let fs = VirtioFs::new_aggregate();
+                fs.add_child("share", root, options).unwrap();
+                fs
+            } else {
+                VirtioFs::new(root, options).unwrap()
+            };
+            let node_id = if aggregate {
+                fs.lookup_synthetic_root("share".as_ref()).unwrap().nodeid
+            } else {
+                FUSE_ROOT_ID
+            };
+            let inode = fs.get_inode(node_id).unwrap();
+            let mut expected = BTreeMap::from([
+                (".".to_owned(), (inode.guest_inode_nr(), lx::DT_DIR as u32)),
+                ("..".to_owned(), (inode.guest_inode_nr(), lx::DT_DIR as u32)),
+            ]);
+            for (name, file_type) in names {
+                let attr = inode.lookup_child(name.as_str().as_ref()).unwrap().1;
+                expected.insert(name.clone(), (attr.ino, *file_type));
+            }
+            for size in [256, 4096] {
+                for plus in [false, true] {
+                    let file = Arc::clone(&inode)
+                        .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                        .unwrap();
+                    let initial_inodes = fs.inner.inodes.read().inodes_by_node_id.values.len();
+                    assert_eq!(
+                        read_directory(&fs, &file, 0, size, plus),
+                        expected,
+                        "aggregate={aggregate}, size={size}, plus={plus}"
+                    );
+                    assert_eq!(
+                        fs.inner.inodes.read().inodes_by_node_id.values.len(),
+                        initial_inodes
+                    );
+                    assert_eq!(
+                        file.read_dir(&fs, 0, 0, plus).unwrap_err(),
+                        lx::Error::EINVAL
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readdir_and_readdirplus_match_through_eof() {
+        for count in [0, 150] {
+            let root = tempfile::tempdir().unwrap();
+            let mut names = BTreeMap::new();
+            for i in 0..count {
+                let name = format!("entry{i:03}");
+                let file_type = if i % 3 == 0 {
+                    std::fs::create_dir(root.path().join(&name)).unwrap();
+                    lx::DT_DIR
+                } else {
+                    std::fs::write(root.path().join(&name), b"data").unwrap();
+                    lx::DT_REG
+                };
+                names.insert(name, file_type as u32);
+            }
+            assert_directory_parity(root.path(), None, &names);
+        }
+    }
+
+    #[test]
+    fn plain_readdir_does_not_increment_existing_lookup() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let entry = fs.lookup_helper(&inode, "file".as_ref()).unwrap();
+        let file = inode.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap();
+        for _ in 0..2 {
+            assert!(!file.read_dir(&fs, 0, 4096, false).unwrap().is_empty());
+        }
+        fs.forget(entry.nodeid, 1);
+        assert!(fs.inner.inodes.read().get(entry.nodeid).is_none());
+    }
+
+    #[test]
+    fn readdirplus_retains_lookup_references() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let entry = fs.lookup_helper(&inode, "file".as_ref()).unwrap();
+        let file = inode.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap();
+        let data = file.read_dir(&fs, 0, 4096, true).unwrap();
+        let mut remaining = data.as_slice();
+        let mut found = false;
+        while !remaining.is_empty() {
+            let (dirent, rest) = fuse_direntplus::read_from_prefix(remaining).unwrap();
+            if &rest[..dirent.dirent.namelen as usize] == b"file" {
+                assert_eq!(dirent.entry_out.nodeid, entry.nodeid);
+                assert_eq!(dirent.dirent.ino, entry.attr.ino);
+                found = true;
+            }
+            remaining = &remaining[fuse_dirent_align(
+                size_of::<fuse_direntplus>() + dirent.dirent.namelen as usize,
+            )..];
+        }
+        assert!(found);
+        fs.forget(entry.nodeid, 1);
+        assert!(fs.inner.inodes.read().get(entry.nodeid).is_some());
+        fs.forget(entry.nodeid, 1);
+        assert!(fs.inner.inodes.read().get(entry.nodeid).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn readdir_and_readdirplus_match_sandbox_filtering_through_eof() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM;
+
+        for include_visible in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let mut all_names = BTreeMap::new();
+            for i in 0..150 {
+                let (name, file_type) = match i % 4 {
+                    0 => {
+                        let name = format!("blocked{i:03}.EXE");
+                        std::fs::write(root.path().join(&name), b"data").unwrap();
+                        (name, lx::DT_REG)
+                    }
+                    1 => {
+                        let name = format!("directory{i:03}.ExE");
+                        std::fs::create_dir(root.path().join(&name)).unwrap();
+                        (name, lx::DT_DIR)
+                    }
+                    n => {
+                        let name = format!("hidden{i:03}");
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .attributes(if n == 2 {
+                                FILE_ATTRIBUTE_HIDDEN
+                            } else {
+                                FILE_ATTRIBUTE_SYSTEM
+                            })
+                            .open(root.path().join(&name))
+                            .unwrap();
+                        (name, lx::DT_REG)
+                    }
+                };
+                all_names.insert(name, file_type as u32);
+            }
+            let mut visible_names = BTreeMap::new();
+            if include_visible {
+                std::fs::write(root.path().join("allowed"), b"data").unwrap();
+                visible_names.insert("allowed".to_owned(), lx::DT_REG as u32);
+                std::fs::create_dir(root.path().join("visible-directory")).unwrap();
+                visible_names.insert("visible-directory".to_owned(), lx::DT_DIR as u32);
+                all_names.extend(visible_names.clone());
+            }
+            for sandbox in [false, true] {
+                let mut options = super::LxVolumeOptions::new();
+                options
+                    .sandbox(sandbox)
+                    .sandbox_disallowed_extensions(vec!["exe"]);
+                assert_directory_parity(
+                    root.path(),
+                    Some(&options),
+                    if sandbox { &visible_names } else { &all_names },
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn readdirplus_skips_cached_entries_that_no_longer_pass_lookup() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+
+        for hide in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            for name in ["a", "b", "c"] {
+                std::fs::write(root.path().join(name), b"data").unwrap();
+            }
+            let mut options = super::LxVolumeOptions::new();
+            options.sandbox(true);
+            let fs = VirtioFs::new(root.path(), Some(&options)).unwrap();
+            let inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+            let file = Arc::clone(&inode)
+                .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                .unwrap();
+            let mut expected = BTreeMap::new();
+            for name in ["a", "b", "c"] {
+                let attr = inode.lookup_child(name.as_ref()).unwrap().1;
+                expected.insert(name.to_owned(), (attr.ino, lx::DT_REG as u32));
+            }
+
+            // Return the dots and one child, leaving the other children cached.
+            let data = file.read_dir(&fs, 0, 96, false).unwrap();
+            let mut remaining = data.as_slice();
+            let mut offset = 0;
+            let mut first_child = None;
+            while !remaining.is_empty() {
+                let (entry, rest) = fuse_dirent::read_from_prefix(remaining).unwrap();
+                let name = std::str::from_utf8(&rest[..entry.namelen as usize]).unwrap();
+                if name != "." && name != ".." {
+                    assert!(first_child.replace(name.to_owned()).is_none());
+                }
+                offset = entry.off;
+                remaining = &remaining
+                    [fuse_dirent_align(size_of::<fuse_dirent>() + entry.namelen as usize)..];
+            }
+            expected.remove(&first_child.unwrap());
+            let victim = expected.keys().next().unwrap().clone();
+            std::fs::remove_file(root.path().join(&victim)).unwrap();
+            if hide {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .attributes(FILE_ATTRIBUTE_HIDDEN)
+                    .open(root.path().join(&victim))
+                    .unwrap();
+            }
+            assert_eq!(
+                inode.lookup_child(victim.as_str().as_ref()).err().unwrap(),
+                if hide {
+                    lx::Error::EACCES
+                } else {
+                    lx::Error::ENOENT
+                }
+            );
+            assert_eq!(read_directory(&fs, &file, offset, 256, false), expected);
+            expected.remove(&victim);
+            assert_eq!(read_directory(&fs, &file, offset, 256, true), expected);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_readdir_rejects_renamed_and_replaced_directory() {
+        for aggregate in [false, true] {
+            for continuation in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                std::fs::create_dir(root.path().join("allowed")).unwrap();
+                for name in ["a", "b", "c"] {
+                    std::fs::write(root.path().join("allowed").join(name), b"data").unwrap();
+                }
+                let mut options = super::LxVolumeOptions::new();
+                options
+                    .sandbox(true)
+                    .sandbox_disallowed_extensions(vec!["exe"]);
+                let fs = if aggregate {
+                    let fs = VirtioFs::new_aggregate();
+                    fs.add_child("share", root.path(), Some(&options)).unwrap();
+                    fs
+                } else {
+                    VirtioFs::new(root.path(), Some(&options)).unwrap()
+                };
+                let root_id = if aggregate {
+                    fs.lookup_synthetic_root("share".as_ref()).unwrap().nodeid
+                } else {
+                    FUSE_ROOT_ID
+                };
+                let root_inode = fs.get_inode(root_id).unwrap();
+                let entry = fs.lookup_helper(&root_inode, "allowed".as_ref()).unwrap();
+                let inode = fs.get_inode(entry.nodeid).unwrap();
+                let file = Arc::clone(&inode)
+                    .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                    .unwrap();
+                let mut offset = 0;
+                let mut expected_names =
+                    BTreeMap::from([".", "..", "a", "b", "c"].map(|name| (name.to_owned(), ())));
+                if continuation {
+                    let data = file.read_dir(&fs, 0, 96, false).unwrap();
+                    let mut remaining = data.as_slice();
+                    while !remaining.is_empty() {
+                        let (entry, rest) = fuse_dirent::read_from_prefix(remaining).unwrap();
+                        let name = std::str::from_utf8(&rest[..entry.namelen as usize]).unwrap();
+                        assert!(expected_names.remove(name).is_some());
+                        offset = entry.off;
+                        remaining = &remaining[fuse_dirent_align(
+                            size_of::<fuse_dirent>() + entry.namelen as usize,
+                        )..];
+                    }
+                    assert!(offset > 2);
+                }
+
+                let host = lxutil::LxVolume::new(root.path()).unwrap();
+                host.rename("allowed", "blocked.EXE", 0).unwrap();
+                std::fs::create_dir(root.path().join("allowed")).unwrap();
+                assert_ne!(host.lstat("allowed").unwrap().inode_nr, inode.inode_nr());
+                // Both FUSE getters report the cached guest inode, hiding the mismatch.
+                assert_eq!(inode.get_attr().unwrap().ino, file.get_attr().unwrap().ino);
+                assert_eq!(
+                    file.read_dir(&fs, offset, 4096, false).unwrap_err(),
+                    lx::Error::EACCES,
+                    "aggregate={aggregate}, continuation={continuation}"
+                );
+
+                std::fs::remove_dir(root.path().join("allowed")).unwrap();
+                host.rename("blocked.EXE", "allowed", 0).unwrap();
+                let entries = read_directory(&fs, &file, offset, 256, false);
+                assert_eq!(
+                    entries.keys().collect::<Vec<_>>(),
+                    expected_names.keys().collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_readdir_revalidates_sandbox_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("parent").join("child")).unwrap();
+        std::fs::write(root.path().join("parent").join("child").join("file"), b"").unwrap();
+        let mut options = super::LxVolumeOptions::new();
+        options
+            .sandbox(true)
+            .sandbox_disallowed_extensions(vec!["exe"]);
+        let fs = VirtioFs::new(root.path(), Some(&options)).unwrap();
+        let parent = fs
+            .get_inode(FUSE_ROOT_ID)
+            .unwrap()
+            .lookup_child("parent".as_ref())
+            .unwrap()
+            .0;
+        let inode = Arc::new(parent.lookup_child("child".as_ref()).unwrap().0);
+        let file = Arc::clone(&inode)
+            .open(lx::O_RDONLY | lx::O_DIRECTORY)
+            .unwrap();
+        assert!(!file.read_dir(&fs, 0, 4096, false).unwrap().is_empty());
+
+        // An open handle must not bypass policy after its inode path is refreshed.
+        inode.lookup(std::path::PathBuf::from("blocked.EXE").join("child"));
+        assert_eq!(
+            file.read_dir(&fs, 0, 4096, false).unwrap_err(),
+            lx::Error::EACCES
+        );
+    }
+
+    #[test]
+    fn unused_reservations_release_on_drop() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        fs.inner.files.write().next_handle = u64::MAX;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+
+        let file = fs.reserve_file().unwrap();
+        let inode = fs.reserve_inode().unwrap();
+        assert!(matches!(fs.reserve_file(), Err(lx::Error::ENOSPC)));
+        assert!(matches!(fs.reserve_inode(), Err(lx::Error::ENOSPC)));
+        drop(file);
+        drop(inode);
+
+        assert_eq!(fs.reserve_file().unwrap().reservation.handle, u64::MAX);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    #[test]
+    fn stale_guard_drop_preserves_current_reservations() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let stale_file = fs.reserve_file().unwrap();
+        let stale_inode = fs.reserve_inode().unwrap();
+        fs.destroy();
+
+        let current_file = fs.reserve_file().unwrap();
+        let current_inode = fs.reserve_inode().unwrap();
+        assert_eq!(
+            stale_file.reservation.handle,
+            current_file.reservation.handle
+        );
+        assert_eq!(
+            stale_inode.reservation.handle,
+            current_inode.reservation.handle
+        );
+        drop(stale_file);
+        drop(stale_inode);
+
+        assert_eq!(
+            fs.reserve_file().unwrap().reservation.handle,
+            current_file.reservation.handle + 1
+        );
+        assert_eq!(
+            fs.reserve_inode().unwrap().reservation.handle,
+            current_inode.reservation.handle + 1
+        );
+    }
+
+    #[test]
+    fn older_guard_drop_preserves_newer_reservations() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let older_file = fs.reserve_file().unwrap();
+        let older_inode = fs.reserve_inode().unwrap();
+        let newer_file = fs.reserve_file().unwrap();
+        let newer_inode = fs.reserve_inode().unwrap();
+        drop(older_file);
+        drop(older_inode);
+
+        assert_eq!(
+            fs.reserve_file().unwrap().reservation.handle,
+            newer_file.reservation.handle + 1
+        );
+        assert_eq!(
+            fs.reserve_inode().unwrap().reservation.handle,
+            newer_inode.reservation.handle + 1
+        );
+    }
+
+    #[test]
+    fn create_releases_inode_when_file_reservation_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        fs.inner.files.write().next_handle = 0;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+
+        let result = fs.create(
+            &request(FUSE_ROOT_ID),
+            lx::LxStr::from_bytes(b"file"),
+            &fuse_create_in::new_zeroed(),
+        );
+
+        assert!(matches!(result, Err(lx::Error::ENOSPC)));
+        assert!(!root.path().join("file").exists());
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    #[test]
+    fn create_releases_both_reservations_on_host_failure() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"original").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        fs.inner.files.write().next_handle = u64::MAX;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+
+        let result = fs.create(
+            &request(FUSE_ROOT_ID),
+            lx::LxStr::from_bytes(b"file"),
+            &fuse_create_in {
+                flags: (lx::O_CREAT | lx::O_EXCL | lx::O_RDWR) as u32,
+                mode: 0o600,
+                ..fuse_create_in::new_zeroed()
+            },
+        );
+
+        assert!(matches!(result, Err(lx::Error::EEXIST)));
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"original"
+        );
+        assert_eq!(fs.reserve_file().unwrap().reservation.handle, u64::MAX);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    #[test]
+    fn deduplicated_inode_releases_unused_reservation() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let root_inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let (inode, _) = root_inode
+            .lookup_child(lx::LxStr::from_bytes(b"file"))
+            .unwrap();
+        let (existing, node_id) = fs.insert_inode(inode).unwrap();
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+
+        let reservation = fs.reserve_inode().unwrap();
+        let (inode, _) = root_inode
+            .lookup_child(lx::LxStr::from_bytes(b"file"))
+            .unwrap();
+        let (reused, reused_node_id) = reservation.insert(inode).unwrap();
+
+        assert!(Arc::ptr_eq(&existing, &reused));
+        assert_eq!(reused_node_id, node_id);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    #[test]
+    fn fsync_dir_with_fdatasync() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let request = request(FUSE_ROOT_ID);
+        let open = fs
+            .open_dir(&request, (lx::O_RDONLY | lx::O_DIRECTORY) as u32)
+            .unwrap();
+
+        for flags in [0, FUSE_FSYNC_FDATASYNC] {
+            fs.fsync_dir(&request, open.fh, flags).unwrap();
+        }
+
+        fs.release_dir(
+            &request,
+            &fuse_release_in {
+                fh: open.fh,
+                ..fuse_release_in::new_zeroed()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn direct_root_ignores_forget_across_destroy() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+
+        fs.forget(FUSE_ROOT_ID, 1);
+        fs.destroy();
+
+        assert!(fs.get_inode(FUSE_ROOT_ID).is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "root inode ID changed during clear")]
+    fn clear_rejects_corrupt_root_allocator() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        fs.inner.inodes.write().inodes_by_node_id.initial_handle = FUSE_ROOT_ID + 1;
+
+        fs.destroy();
+    }
+
+    #[test]
+    fn file_reservation_does_not_survive_destroy() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let (inode, _) = fs
+            .get_inode(FUSE_ROOT_ID)
+            .unwrap()
+            .lookup_child(lx::LxStr::from_bytes(b"file"))
+            .unwrap();
+        let (inode, node_id) = fs.insert_inode(inode).unwrap();
+        assert_eq!(node_id, FUSE_ROOT_ID + 1);
+
+        let stale = fs.reserve_file().unwrap();
+        assert_eq!(stale.reservation.handle, 1);
+        let file = inode.open(lx::O_RDONLY).unwrap();
+        fs.destroy();
+
+        assert_eq!(stale.insert(file).unwrap_err(), lx::Error::ENOSPC);
+
+        let (inode, _) = fs
+            .get_inode(FUSE_ROOT_ID)
+            .unwrap()
+            .lookup_child(lx::LxStr::from_bytes(b"file"))
+            .unwrap();
+        let (inode, node_id) = fs.insert_inode(inode).unwrap();
+        assert_eq!(node_id, FUSE_ROOT_ID + 1);
+        let current = fs.reserve_file().unwrap();
+        assert_eq!(current.reservation.handle, 1);
+        let file = inode.open(lx::O_RDONLY).unwrap();
+        assert_eq!(current.insert(file).unwrap(), 1);
+        let next = fs.reserve_file().unwrap();
+        assert_eq!(next.reservation.handle, 2);
+    }
+
+    #[test]
+    fn inode_reservation_does_not_survive_destroy() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("first"), b"first").unwrap();
+        std::fs::write(root.path().join("second"), b"second").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let root_inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let stale = fs.reserve_inode().unwrap();
+        assert_eq!(stale.reservation.handle, FUSE_ROOT_ID + 1);
+        let (stale_inode, _) = root_inode
+            .lookup_child(lx::LxStr::from_bytes(b"first"))
+            .unwrap();
+        fs.destroy();
+
+        assert!(matches!(
+            stale.insert(stale_inode),
+            Err(err) if err == lx::Error::ENOSPC
+        ));
+
+        let root_inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let (first, _) = root_inode
+            .lookup_child(lx::LxStr::from_bytes(b"first"))
+            .unwrap();
+        let (_, first_node_id) = fs.insert_inode(first).unwrap();
+        assert_eq!(first_node_id, FUSE_ROOT_ID + 1);
+        let (second, _) = root_inode
+            .lookup_child(lx::LxStr::from_bytes(b"second"))
+            .unwrap();
+        let (_, second_node_id) = fs.insert_inode(second).unwrap();
+        assert_eq!(second_node_id, FUSE_ROOT_ID + 2);
+    }
+
+    #[test]
+    fn handle_map_stops_after_max_handle() {
+        let mut handles = HandleMap::starting_at(u64::MAX);
+
+        assert_eq!(handles.insert("last"), Some(u64::MAX));
+        assert_eq!(handles.get(u64::MAX), Some(&"last"));
+        assert_eq!(handles.insert("overflow"), None);
+    }
+
+    #[test]
+    fn handle_map_rejects_occupied_next_handle() {
+        let mut handles = HandleMap::starting_at(7);
+
+        assert_eq!(handles.insert("existing"), Some(7));
+        handles.next_handle = 7;
+        assert_eq!(handles.insert("collision"), None);
+        assert_eq!(handles.get(7), Some(&"existing"));
+    }
+
+    #[test]
+    fn handle_map_clear_resets_allocation() {
+        let mut handles = HandleMap::starting_at(7);
+
+        assert_eq!(handles.insert("old"), Some(7));
+        handles.clear();
+        assert_eq!(handles.get(7), None);
+        assert_eq!(handles.insert("new"), Some(7));
+    }
+
+    #[test]
+    fn handle_map_ignores_stale_reservation_release() {
+        let mut handles = HandleMap::starting_at(7);
+        let stale = handles.reserve().unwrap();
+        assert_eq!(stale.handle, 7);
+        handles.clear();
+
+        let current = handles.reserve().unwrap();
+        assert_eq!(current.handle, 7);
+        handles.release_reservation(&stale);
+        assert!(handles.insert_reserved(&current, "current").is_ok());
+        assert_eq!(handles.insert("next"), Some(8));
+    }
+
+    #[test]
+    fn handle_map_reuses_latest_released_reservation() {
+        let mut handles = HandleMap::starting_at(u64::MAX);
+
+        let reservation = handles.reserve().unwrap();
+        assert_eq!(reservation.handle, u64::MAX);
+        handles.release_reservation(&reservation);
+        assert_eq!(handles.insert("last"), Some(u64::MAX));
     }
 }

@@ -116,6 +116,7 @@ open_enum::open_enum! {
         CONSOLE = 3,
         RNG = 4,
         P9 = 9,
+        RTC = 17,
         VSOCK = 19,
         FS = 26,
         PMEM = 27,
@@ -137,7 +138,7 @@ pub mod pci {
             NOTIFY_CFG = 2,
             ISR_CFG = 3,
             DEVICE_CFG = 4,
-            // PCI_CFG = 5,
+            PCI_CFG = 5,
             SHARED_MEMORY_CFG = 8,
         }
     }

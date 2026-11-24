@@ -141,7 +141,7 @@ pub unsafe fn ap_entry() -> ! {
         );
     }
     globals.cpu_status().store(CpuStatus::REMOVED.0, Release);
-    raise_attention();
+    raise_attention(true);
     park_until(|| None)
 }
 
@@ -220,7 +220,7 @@ fn ap_run(globals: &mut VpGlobals) {
 
         log!("request done");
         cpu_status.store(CpuStatus::IDLE.0, Release);
-        raise_attention();
+        raise_attention(false);
     }
 }
 
@@ -553,12 +553,17 @@ fn translate_gva(command_page: &mut CommandPage) {
     .unwrap();
 }
 
-fn raise_attention() {
+fn raise_attention(is_removal: bool) {
     let control = control();
     control.needs_attention.store(1, Release);
     let vector = control.response_vector.load(Relaxed);
     if vector != 0 {
-        log!("ipi vector {vector}");
+        // If we are performing a removal operation we could be taken over by
+        // Linux at any point. Logging includes taking a lock, and we don't
+        // want to risk getting stopped while holding that lock.
+        if !is_removal {
+            log!("ipi vector {vector}");
+        }
         // SAFETY: no safety requirements.
         unsafe {
             write_msr(

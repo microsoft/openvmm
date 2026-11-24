@@ -37,6 +37,7 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
         if let Some(max_queues) = resource.max_queues {
             builder = builder.max_queues(max_queues);
         }
+        builder = builder.enable_rx_gso(resource.enable_rx_gso);
 
         let endpoint = resolver
             .resolve(
@@ -47,7 +48,7 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
             )
             .await?;
 
-        let device = builder.build(input.driver_source, endpoint.0, resource.mac_address);
+        let device = builder.build(input.driver_source, endpoint.0, resource.mac_address)?;
 
         Ok(device.into())
     }

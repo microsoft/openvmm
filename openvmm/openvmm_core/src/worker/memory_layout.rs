@@ -19,8 +19,8 @@
 use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
 use anyhow::Context;
 use anyhow::bail;
-use cxl_spec::spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
-use cxl_spec::spec::CXL_HPA_ALIGNMENT;
+use cxl_spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::CXL_HPA_ALIGNMENT;
 use memory_range::MemoryRange;
 use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
@@ -127,6 +127,8 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// Number of virtio-mmio device slots to allocate in 32-bit MMIO space.
     /// A single contiguous region of `count * 4 KiB` is allocated.
     pub virtio_mmio_count: usize,
+    /// Place PCIe ECAM below 4 GiB for x86 guests that cannot use high ECAM.
+    pub pcie_ecam_below_4gb: bool,
     /// Optional IGVM VTL2 private-memory request. This is allocated after all
     /// VTL0-visible RAM and MMIO and is carried separately from ordinary RAM.
     pub vtl2_layout: Option<Vtl2MemoryLayoutRequest>,
@@ -144,11 +146,12 @@ pub(super) struct MemoryLayoutInput<'a> {
     pub physical_address_size: u8,
 }
 
-/// Architectural reserved zone for x86_64: LAPIC, IOAPIC, battery, TPM.
-const ARCH_RESERVED_X86_64: MemoryRange = MemoryRange::new(0xFE00_0000..0x1_0000_0000);
-
-/// Architectural reserved zone for aarch64: GIC, PL011, battery.
-const ARCH_RESERVED_AARCH64: MemoryRange = MemoryRange::new(0xEF00_0000..0x1_0000_0000);
+/// Architectural reserved zone: LAPIC, IOAPIC, battery, TPM on x86_64;
+/// GIC, PL011, battery on aarch64.
+const ARCH_RESERVED: MemoryRange = cfg_select! {
+    guest_arch = "x86_64" => MemoryRange::new(0xFE00_0000..0x1_0000_0000),
+    guest_arch = "aarch64" => MemoryRange::new(0xEF00_0000..0x1_0000_0000),
+};
 
 pub(super) fn resolve_memory_layout(
     input: MemoryLayoutInput<'_>,
@@ -182,15 +185,10 @@ pub(super) fn resolve_memory_layout(
         builder.reserve("low-ram-gap", MemoryRange::new(0..input.ram_start_address));
     }
 
-    let arch_reserved = if cfg!(guest_arch = "x86_64") {
-        ARCH_RESERVED_X86_64
-    } else {
-        ARCH_RESERVED_AARCH64
-    };
     let four_gb = 4 * GB;
     let low_mmio_size = u64::from(input.layout.chipset_low_mmio_size)
         .next_multiple_of(0x1000)
-        .max(arch_reserved.len());
+        .max(ARCH_RESERVED.len());
     let chipset_low_mmio = MemoryRange::new(four_gb - low_mmio_size..four_gb);
     builder.fixed("chipset-low-mmio", chipset_low_mmio);
 
@@ -232,11 +230,15 @@ pub(super) fn resolve_memory_layout(
         }
     }
 
-    // ECAM: always dynamically allocated below 4GB (since Linux on x86_64
-    // refuses to use ECAM above 4GB unless the BIOS is of a special shape).
-    //
-    // TODO: fix the Linux loader and move this above 4GB before the layout
-    // is stabilized.
+    // ECAM normally lives above 4GB, keeping low MMIO free for device BARs.
+    // Some direct-boot kernels cannot discover high ECAM without the firmware
+    // interfaces used during a conventional boot, so allow callers to request
+    // 32-bit placement as a compatibility workaround.
+    let ecam_placement = if input.pcie_ecam_below_4gb {
+        Placement::Mmio32
+    } else {
+        Placement::Mmio64
+    };
     for se in &mut segment_ecams {
         let bus_count = u64::from(se.max_bus - se.min_bus) + 1;
         builder.request(
@@ -244,7 +246,7 @@ pub(super) fn resolve_memory_layout(
             &mut se.range,
             bus_count * PCIE_ECAM_BYTES_PER_BUS,
             PCIE_ECAM_BYTES_PER_BUS,
-            Placement::Mmio32,
+            ecam_placement,
         );
     }
 
@@ -343,7 +345,7 @@ pub(super) fn resolve_memory_layout(
         );
         let (name, size) = match kind {
             // SMMUv3: 128 KiB region (two 64 KiB pages).
-            PcieIommuConfig::Smmu => ("smmu", SMMU_SIZE),
+            PcieIommuConfig::Smmu { .. } => ("smmu", SMMU_SIZE),
             // AMD IOMMU: 16 KiB per AMD IOMMU spec §3.4.
             PcieIommuConfig::AmdVi => ("amd-iommu", 0x4000),
             // Intel VT-d: 4 KiB per VT-d spec.
@@ -433,7 +435,7 @@ pub(super) fn resolve_memory_layout(
     // until `allocate`.
     let iommu_ranges = match iommu_kind {
         None => ResolvedIommuRanges::None,
-        Some(PcieIommuConfig::Smmu) => ResolvedIommuRanges::Smmu(iommu_ranges),
+        Some(PcieIommuConfig::Smmu { .. }) => ResolvedIommuRanges::Smmu(iommu_ranges),
         Some(PcieIommuConfig::AmdVi) => ResolvedIommuRanges::AmdVi(iommu_ranges),
         Some(PcieIommuConfig::IntelVtd) => ResolvedIommuRanges::IntelVtd(iommu_ranges),
     };
@@ -612,14 +614,10 @@ mod tests {
 
     const MB: u64 = 1024 * 1024;
     // Match the production defaults from `vm_manifest_builder`.
-    #[cfg(guest_arch = "x86_64")]
-    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = 128 * 1024 * 1024;
-    #[cfg(guest_arch = "aarch64")]
-    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = 512 * 1024 * 1024;
-    #[cfg(guest_arch = "x86_64")]
-    const ARCH_RESERVED: MemoryRange = ARCH_RESERVED_X86_64;
-    #[cfg(guest_arch = "aarch64")]
-    const ARCH_RESERVED: MemoryRange = ARCH_RESERVED_AARCH64;
+    const DEFAULT_CHIPSET_LOW_MMIO_SIZE: u32 = cfg_select! {
+        guest_arch = "x86_64" => 128 * 1024 * 1024,
+        guest_arch = "aarch64" => 512 * 1024 * 1024,
+    };
     const DEFAULT_CHIPSET_HIGH_MMIO_SIZE: u64 = 512 * 1024 * 1024;
     const DEFAULT_VTL2_CHIPSET_MMIO_SIZE: u64 = GB;
 
@@ -638,6 +636,7 @@ mod tests {
             layout: DEFAULT_LAYOUT,
             pcie_root_complexes: &[],
             virtio_mmio_count: 0,
+            pcie_ecam_below_4gb: false,
             vtl2_layout,
             ram_start_address: 0,
             vtl2_framebuffer_size: 0,
@@ -666,6 +665,7 @@ mod tests {
             segment: 0,
             start_bus: 0,
             end_bus: 0,
+            legacy_pci_config_io: false,
             low_mmio,
             high_mmio,
             ports: Vec::new(),
@@ -748,8 +748,8 @@ mod tests {
         let ranges = &actual.pcie_root_complex_ranges[0];
 
         assert!(
-            ranges.ecam_range.end() <= 4 * GB,
-            "ECAM should be below 4 GB"
+            ranges.ecam_range.start() >= 4 * GB,
+            "ECAM should be above 4 GB"
         );
         assert_eq!(ranges.low_mmio.len(), 64 * MB);
         assert_eq!(ranges.high_mmio.len(), GB);
@@ -770,6 +770,20 @@ mod tests {
     }
 
     #[test]
+    fn pcie_ecam_can_be_placed_below_4gb() {
+        let root_complexes = [pcie_root_complex(
+            PcieMmioRangeConfig::Dynamic { size: 64 * MB },
+            PcieMmioRangeConfig::Dynamic { size: GB },
+        )];
+        let mut config = input(&[512 * MB], None);
+        config.pcie_root_complexes = &root_complexes;
+        config.pcie_ecam_below_4gb = true;
+
+        let actual = resolve_memory_layout(config).unwrap();
+        assert!(actual.pcie_root_complex_ranges[0].ecam_range.end() <= 4 * GB);
+    }
+
+    #[test]
     fn shared_segment_gets_contiguous_ecam() {
         // Two root complexes on the same segment with disjoint bus ranges
         // must get ECAM sub-ranges within a single contiguous block, so
@@ -781,6 +795,7 @@ mod tests {
                 segment: 0,
                 start_bus: 0,
                 end_bus: 15,
+                legacy_pci_config_io: false,
                 low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
@@ -795,6 +810,7 @@ mod tests {
                 segment: 0,
                 start_bus: 16,
                 end_bus: 31,
+                legacy_pci_config_io: false,
                 low_mmio: PcieMmioRangeConfig::Dynamic { size: 32 * MB },
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
                 ports: Vec::new(),
@@ -833,6 +849,7 @@ mod tests {
             segment: 0,
             start_bus: 0,
             end_bus: 255,
+            legacy_pci_config_io: false,
             low_mmio: PcieMmioRangeConfig::Dynamic { size: 64 * MB },
             high_mmio: PcieMmioRangeConfig::Dynamic { size: GB },
             ports: Vec::new(),
@@ -1031,33 +1048,6 @@ mod tests {
             err.to_string().contains("must end at or below 4 GiB"),
             "unexpected error: {err}"
         );
-    }
-
-    #[test]
-    fn ecam_below_256mb_is_rejected() {
-        // Force ECAM placement below 256 MiB by reserving most of the free
-        // Mmio32 window for low_mmio. The fixed chipset_low_mmio at the top
-        // of 32-bit space leaves 3968 MiB on x86_64 and 3584 MiB on aarch64
-        // for dynamic Mmio32 requests; size low_mmio to push ECAM near
-        // 127 MiB on both. The resolver must bail because MCFG cannot
-        // represent a bus-0 base below the ECAM start.
-        let low_mmio_size = if cfg!(guest_arch = "x86_64") {
-            3840 * MB
-        } else {
-            3456 * MB
-        };
-        let root_complexes = [pcie_root_complex(
-            PcieMmioRangeConfig::Dynamic {
-                size: low_mmio_size,
-            },
-            PcieMmioRangeConfig::Dynamic { size: GB },
-        )];
-        let mut config = input(&[2 * GB], None);
-        config.pcie_root_complexes = &root_complexes;
-
-        let err = resolve_memory_layout(config).unwrap_err();
-
-        assert!(err.to_string().contains("ECAM"), "unexpected error: {err}");
     }
 
     #[test]

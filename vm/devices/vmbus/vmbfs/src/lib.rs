@@ -20,6 +20,9 @@ mod protocol;
 pub mod resolver;
 pub mod single_file_backing;
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -30,8 +33,9 @@ use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
+use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmcore::save_restore::SavedStateNotSupported;
+use vmbus_ring::RingMem;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
@@ -51,7 +55,7 @@ impl VmbfsDevice {
 
 #[async_trait]
 impl SimpleVmbusDevice for VmbfsDevice {
-    type SavedState = SavedStateNotSupported;
+    type SavedState = save_restore::state::SavedState;
     type Runner = VmbfsChannel;
 
     fn offer(&self) -> OfferParams {
@@ -87,27 +91,27 @@ impl SimpleVmbusDevice for VmbfsDevice {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(runner.process(self)).await
+        let check = stop.check_handle()?;
+        stop.until_stopped(runner.process(self, &check)).await?
     }
 
     fn supports_save_restore(
         &mut self,
     ) -> Option<
-        &mut dyn vmbus_channel::simple::SaveRestoreSimpleVmbusDevice<
-            SavedState = Self::SavedState,
-            Runner = Self::Runner,
-        >,
+        &mut dyn SaveRestoreSimpleVmbusDevice<SavedState = Self::SavedState, Runner = Self::Runner>,
     > {
-        None
+        Some(self)
     }
 }
 
 #[doc(hidden)] // used as an associated type in a trait but not part of the public API
 #[derive(InspectMut)]
-pub struct VmbfsChannel {
+pub struct VmbfsChannel<M: RingMem = GpadlRingMem> {
     state: State,
     #[inspect(mut)]
-    pipe: vmbus_async::pipe::MessagePipe<GpadlRingMem>,
+    pipe: vmbus_async::pipe::MessagePipe<M>,
+    // A scratch buffer for reading messages. This is allocated once and reused for each message.
+    // It does not hold any meaningful state.
     buf: Vec<u8>,
 }
 
@@ -128,18 +132,29 @@ enum Request {
     },
 }
 
-impl VmbfsChannel {
-    async fn process(&mut self, dev: &mut VmbfsDevice) {
-        match self.process_inner(dev).await {
+impl<M: RingMem + Unpin> VmbfsChannel<M> {
+    async fn process(
+        &mut self,
+        dev: &mut VmbfsDevice,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
+        match self.process_inner(dev, check).await {
             Ok(()) => {}
+            Err(DeviceError::Cancelled(cancelled)) => return Err(cancelled),
             Err(err) => {
                 tracing::error!(error = &err as &dyn std::error::Error, "vmbfs failed");
             }
         }
+        Ok(())
     }
 
-    async fn process_inner(&mut self, dev: &mut VmbfsDevice) -> Result<(), DeviceError> {
+    async fn process_inner(
+        &mut self,
+        dev: &mut VmbfsDevice,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), DeviceError> {
         loop {
+            check.check()?;
             self.pipe
                 .wait_write_ready(protocol::MAX_MESSAGE_SIZE)
                 .await
@@ -310,6 +325,8 @@ fn parse_path(buf: &[u8]) -> Result<String, DeviceError> {
 
 #[derive(Debug, Error)]
 enum DeviceError {
+    #[error("cancelled")]
+    Cancelled(Cancelled),
     #[error("vmbus pipe error")]
     Pipe(#[source] std::io::Error),
     #[error("message too short")]
@@ -326,4 +343,67 @@ enum DeviceError {
     InvalidMessageType(protocol::MessageType),
     #[error("read too large")]
     ReadTooLarge,
+}
+
+impl From<Cancelled> for DeviceError {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
+}
+
+mod save_restore {
+    use super::*;
+
+    pub mod state {
+        use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateRoot;
+
+        #[derive(Copy, Clone, Protobuf)]
+        #[mesh(package = "vmbfs")]
+        pub enum State {
+            #[mesh(1)]
+            VersionRequest,
+            #[mesh(2)]
+            Ready,
+        }
+
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "vmbfs")]
+        pub struct SavedState {
+            #[mesh(1)]
+            pub state: State,
+        }
+    }
+
+    impl SaveRestoreSimpleVmbusDevice for VmbfsDevice {
+        fn save_open(&mut self, runner: &Self::Runner) -> state::SavedState {
+            let Self::Runner {
+                state,
+                pipe: _,
+                buf: _,
+            } = runner;
+            state::SavedState {
+                state: match state {
+                    State::VersionRequest => state::State::VersionRequest,
+                    State::Ready => state::State::Ready,
+                },
+            }
+        }
+
+        fn restore_open(
+            &mut self,
+            saved_state: Self::SavedState,
+            channel: vmbus_channel::RawAsyncChannel<GpadlRingMem>,
+        ) -> Result<Self::Runner, vmbus_channel::channel::ChannelOpenError> {
+            let Self::SavedState { state } = saved_state;
+            Ok(VmbfsChannel {
+                state: match state {
+                    state::State::VersionRequest => State::VersionRequest,
+                    state::State::Ready => State::Ready,
+                },
+                pipe: vmbus_async::pipe::MessagePipe::new(channel)?,
+                buf: vec![0; protocol::MAX_MESSAGE_SIZE],
+            })
+        }
+    }
 }

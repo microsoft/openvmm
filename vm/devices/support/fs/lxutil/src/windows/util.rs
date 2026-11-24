@@ -36,7 +36,7 @@ use zerocopy::KnownLayout;
 // N.B. This is the same base value used for ObGetObjectSecurity.
 static LX_UTIL_FS_SECURITY_DESCRIPTOR_SIZE: AtomicUsize = AtomicUsize::new(256);
 
-// Minimum permissions needed to access a file's metadata.
+// Permissions needed for handle-based metadata queries.
 pub const MINIMUM_PERMISSIONS: W32Fs::FILE_ACCESS_RIGHTS = W32Fs::FILE_ACCESS_RIGHTS(
     W32Fs::FILE_READ_ATTRIBUTES.0 | W32Fs::FILE_READ_EA.0 | W32Fs::READ_CONTROL.0,
 );
@@ -85,6 +85,13 @@ file_information_classes!(
     SystemServices::FILE_END_OF_FILE_INFORMATION = FileSystem::FileEndOfFileInformation;
 );
 
+#[derive(Default)]
+pub struct OpenOptions<'a> {
+    pub file_attributes: W32Fs::FILE_FLAGS_AND_ATTRIBUTES,
+    pub create_options: FileSystem::NTCREATEFILE_CREATE_OPTIONS,
+    pub ea_buffer: Option<&'a [u8]>,
+}
+
 // Open a file using NtCreateFile.
 // Returns the create result from the IO_STATUS_BLOCK along with the handle.
 // N.B. The handle will always be opened synchronously.
@@ -93,21 +100,26 @@ pub fn open_relative_file(
     path: &Path,
     desired_access: W32Fs::FILE_ACCESS_RIGHTS,
     creation_disposition: FileSystem::NTCREATEFILE_CREATE_DISPOSITION,
-    file_attributes: W32Fs::FILE_FLAGS_AND_ATTRIBUTES,
-    create_options: FileSystem::NTCREATEFILE_CREATE_OPTIONS,
-    ea_buffer: Option<&[u8]>,
+    options: OpenOptions<'_>,
 ) -> lx::Result<(OwnedHandle, usize)> {
+    if root.is_some() {
+        crate::path::validate_relative_path(path)?;
+    }
     let path = dos_to_nt_path(root, path)?;
     let mut oa = windows::ObjectAttributes::new();
-    oa.name(&path)
-        .attributes(Foundation::OBJ_CASE_INSENSITIVE.0);
+    let mut attributes = Foundation::OBJ_CASE_INSENSITIVE.0;
+    if root.is_some() {
+        // FILE_OPEN_REPARSE_POINT only protects the final component.
+        attributes |= Foundation::OBJ_DONT_REPARSE.0;
+    }
+    oa.name(&path).attributes(attributes);
     if let Some(handle) = root {
         oa.root(handle.as_handle());
     }
 
     let mut handle = Default::default();
     let mut iosb = Default::default();
-    let (ea_ptr, ea_len) = if let Some(ea) = ea_buffer {
+    let (ea_ptr, ea_len) = if let Some(ea) = options.ea_buffer {
         (Some(ea.as_ptr().cast()), ea.len() as u32)
     } else {
         (None, 0)
@@ -119,10 +131,10 @@ pub fn open_relative_file(
             oa.as_ptr().cast(),
             &mut iosb,
             None,
-            file_attributes,
+            options.file_attributes,
             W32Fs::FILE_SHARE_READ | W32Fs::FILE_SHARE_WRITE | W32Fs::FILE_SHARE_DELETE,
             creation_disposition,
-            create_options | FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+            options.create_options | FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
             ea_ptr,
             ea_len,
         );
@@ -142,9 +154,10 @@ pub fn reopen_file(
         "".as_ref(),
         desired_access,
         FileSystem::FILE_OPEN,
-        Default::default(),
-        FileSystem::FILE_OPEN_REPARSE_POINT,
-        None,
+        OpenOptions {
+            create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+            ..Default::default()
+        },
     )?;
 
     Ok(handle)
@@ -155,29 +168,32 @@ fn get_token_for_access_check() -> lx::Result<OwnedHandle> {
     let mut client_token_raw = Foundation::HANDLE::default();
     let mut duplicate_token_raw = Foundation::HANDLE::default();
     // SAFETY: Calling Win32 API as documented.
-    let result = unsafe {
-        check_status(FileSystem::NtOpenThreadToken(
+    //
+    // N.B. The raw NTSTATUS is inspected directly (rather than going through
+    //      `check_status`) so that `STATUS_NO_TOKEN` can be distinguished from
+    //      other failures. `check_status` maps the NTSTATUS to an `lx::Error`
+    //      errno, which cannot be compared against an NTSTATUS constant.
+    let status = unsafe {
+        FileSystem::NtOpenThreadToken(
             Threading::GetCurrentThread(),
             Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
             true,
             &mut client_token_raw,
-        ))
+        )
     };
 
-    if let Err(e) = result {
-        // Use the process token if there's no token.
-        if e.value() == Foundation::STATUS_NO_TOKEN.0 {
-            // SAFETY: Calling Win32 API as documented.
-            unsafe {
-                let _ = check_status(FileSystem::NtOpenProcessToken(
-                    Threading::GetCurrentProcess(),
-                    Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
-                    &mut client_token_raw,
-                ))?;
-            }
-        } else {
-            return Err(e);
+    if status == Foundation::STATUS_NO_TOKEN {
+        // The thread is not impersonating, so use the process token instead.
+        // SAFETY: Calling Win32 API as documented.
+        unsafe {
+            let _ = check_status(FileSystem::NtOpenProcessToken(
+                Threading::GetCurrentProcess(),
+                Security::TOKEN_QUERY.0 | Security::TOKEN_DUPLICATE.0,
+                &mut client_token_raw,
+            ))?;
         }
+    } else {
+        let _ = check_status(status)?;
     }
 
     // Create the RAII handle now so it gets closed on drop if we need
@@ -213,7 +229,10 @@ fn get_token_for_access_check() -> lx::Result<OwnedHandle> {
             },
             EffectiveOnly: false,
         };
-        let mut object_attributes = Wdk::Foundation::OBJECT_ATTRIBUTES::default();
+        let mut object_attributes = Wdk::Foundation::OBJECT_ATTRIBUTES {
+            Length: size_of::<Wdk::Foundation::OBJECT_ATTRIBUTES>() as u32,
+            ..Default::default()
+        };
         object_attributes.SecurityQualityOfService =
             ptr::from_ref::<W32Sec::SECURITY_QUALITY_OF_SERVICE>(&security_qos).cast();
 
@@ -361,6 +380,10 @@ pub fn get_attributes(
         return get_attributes_by_handle(fs_context, state, existing_handle);
     }
 
+    if root_handle.is_some() {
+        crate::path::validate_relative_path(path)?;
+    }
+
     // If NtQueryInformationByName is supported, use it.
     if fs_context.compatibility_flags.supports_query_by_name() {
         let pathu = dos_to_nt_path(root_handle, path)?;
@@ -374,11 +397,12 @@ pub fn get_attributes(
             let symlink_len = if let Ok((handle, _)) = open_relative_file(
                 root_handle,
                 path,
-                MINIMUM_PERMISSIONS,
+                W32Fs::FILE_READ_ATTRIBUTES,
                 FileSystem::FILE_OPEN,
-                Default::default(),
-                FileSystem::FILE_OPEN_REPARSE_POINT,
-                None,
+                OpenOptions {
+                    create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                    ..Default::default()
+                },
             ) {
                 // Return 0 here on failure to duplicate LxUtil behavior
                 fs::read_link_length(&handle, state).unwrap_or(0)
@@ -404,9 +428,10 @@ pub fn get_attributes(
             path,
             MINIMUM_PERMISSIONS,
             FileSystem::FILE_OPEN,
-            Default::default(),
-            FileSystem::FILE_OPEN_REPARSE_POINT,
-            None,
+            OpenOptions {
+                create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                ..Default::default()
+            },
         )?;
 
         get_attributes_by_handle(fs_context, state, &handle)
@@ -476,7 +501,7 @@ pub fn dos_to_nt_path(
     Ok(path)
 }
 
-// Convert Linux open flags o a Windows access mask.
+// Convert Linux open flags to a Windows access mask.
 pub fn open_flags_to_access_mask(flags: i32) -> W32Fs::FILE_ACCESS_RIGHTS {
     let mut mask = MINIMUM_PERMISSIONS;
     mask |= match flags & lx::O_ACCESS_MASK {
@@ -507,17 +532,13 @@ pub fn open_flags_to_attributes_options(
     FileSystem::NTCREATEFILE_CREATE_OPTIONS,
 ) {
     let mut file_attributes = Default::default();
-    let mut create_options = Default::default();
+    let mut create_options = FileSystem::FILE_OPEN_REPARSE_POINT;
 
     if flags & lx::O_DIRECTORY != 0 {
         file_attributes |= W32Fs::FILE_ATTRIBUTE_DIRECTORY;
         create_options |= FileSystem::FILE_DIRECTORY_FILE;
     } else {
         file_attributes |= W32Fs::FILE_ATTRIBUTE_NORMAL;
-    }
-
-    if flags & lx::O_NOFOLLOW != 0 {
-        create_options |= FileSystem::FILE_OPEN_REPARSE_POINT;
     }
 
     (file_attributes, create_options)
@@ -557,13 +578,15 @@ pub fn file_info_to_stat(
     let mut stat = fs::get_lx_attr(
         fs_context,
         &mut information.stat,
-        fs::LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE,
-        block_size,
-        options.default_uid,
-        options.default_gid,
-        options.umask,
-        options.dmask,
-        options.fmask,
+        fs::LxAttrOptions {
+            flags: fs::LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE,
+            block_size,
+            default_uid: options.default_uid,
+            default_gid: options.default_gid,
+            umask: options.umask,
+            fmask: options.fmask,
+            dmask: options.dmask,
+        },
     )?;
 
     // The uid, gid and mode options are applied to all files, even if they have metadata.
@@ -701,7 +724,12 @@ pub fn query_information_file_by_name<T: FileInformationClass>(
         Length: size_of::<Wdk::Foundation::OBJECT_ATTRIBUTES>() as _,
         RootDirectory: root_handle,
         ObjectName: path.as_ptr().cast(),
-        Attributes: Foundation::OBJ_FORCE_ACCESS_CHECK as _,
+        Attributes: Foundation::OBJ_FORCE_ACCESS_CHECK
+            | if parent_handle.is_some() {
+                Foundation::OBJ_DONT_REPARSE
+            } else {
+                Foundation::OBJECT_ATTRIBUTE_FLAGS(0)
+            },
         SecurityDescriptor: ptr::null_mut(),
         SecurityQualityOfService: ptr::null_mut(),
     };
@@ -835,6 +863,7 @@ pub fn nt_status_to_lx(status: Foundation::NTSTATUS) -> lx::Error {
         | Foundation::STATUS_PRIVILEGE_NOT_HELD
         | Foundation::STATUS_PRIVILEGED_INSTRUCTION => lx::EPERM,
         Foundation::STATUS_IO_REPARSE_TAG_NOT_HANDLED => lx::ENXIO,
+        Foundation::STATUS_REPARSE_POINT_ENCOUNTERED => lx::ELOOP,
         Foundation::STATUS_MAPPED_FILE_SIZE_ZERO => lx::ENOEXEC,
         Foundation::STATUS_DISK_FULL => lx::ENOSPC,
         Foundation::STATUS_NOT_IMPLEMENTED => lx::ENOSYS,
@@ -973,19 +1002,18 @@ pub fn set_attr(
     mut attr: SetAttributes,
 ) -> lx::Result<()> {
     set_attr_check_kill_priv(handle, state, &mut attr)?;
-    set_attr_core(handle, handle, state, &attr)
+    set_attr_core(handle, state, &attr)
 }
 
 /// Set the attributes of a file (assumes the kill privilege check was already done)
 /// N.B. All functions attempting to change attributes should call set_attr_check_kill_priv() first.
 pub fn set_attr_core(
     handle: &OwnedHandle,
-    truncate_handle: &OwnedHandle,
     state: &super::VolumeState,
     attr: &SetAttributes,
 ) -> lx::Result<()> {
     if let Some(size) = attr.size {
-        fs::truncate(truncate_handle, size as u64)?;
+        fs::truncate(handle, size as u64)?;
     }
 
     if state.options.metadata && (attr.mode.is_some() || attr.uid.is_some() || attr.gid.is_some()) {

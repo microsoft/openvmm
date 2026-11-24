@@ -1002,6 +1002,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                                 ip_checksum,
                                 l4_checksum,
                                 l4_protocol,
+                                offload: net_backend::RxOffload::default(),
                                 vlan: vlantag,
                             },
                         );
@@ -1340,10 +1341,10 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 // Drop the LSO packet if it only has a header segment.
                 // In production builds, this check always runs.
                 // For tests, use test hooks to bypass this check for allowing code coverage.
-                #[cfg(not(test))]
-                let check_lso_segment_count = true;
-                #[cfg(test)]
-                let check_lso_segment_count = !self.test_configuration.allow_lso_pkt_with_one_sge;
+                let check_lso_segment_count = cfg_select! {
+                    test => !self.test_configuration.allow_lso_pkt_with_one_sge,
+                    _ => true,
+                };
                 if check_lso_segment_count && used_segments == segments.len() {
                     return Ok(None);
                 }

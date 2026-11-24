@@ -139,6 +139,7 @@ pub struct MshvEmulationCache {
     gs: SegmentRegister,
     ss: SegmentRegister,
     cr0: u64,
+    cr4: u64,
     efer: u64,
     rip: u64,
     rflags: RFlags,
@@ -670,7 +671,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         };
         UhHypercallHandler::MSHV_DISPATCHER.dispatch(
             guest_memory,
-            hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
+            hv1_hypercall::X64RegisterIo::new(handler, is_64bit, true),
         );
     }
 
@@ -1045,6 +1046,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             HvX64RegisterName::Gs,
             HvX64RegisterName::Ss,
             HvX64RegisterName::Cr0,
+            HvX64RegisterName::Cr4,
             HvX64RegisterName::Efer,
         ];
         let mut values = [FromZeros::new_zeroed(); NAMES.len()];
@@ -1052,7 +1054,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             .get_vp_registers(vtl, NAMES, &mut values)
             .expect("register query should not fail");
 
-        let [rsp, es, ds, fs, gs, ss, cr0, efer] = values;
+        let [rsp, es, ds, fs, gs, ss, cr0, cr4, efer] = values;
 
         let header = self
             .runner
@@ -1067,6 +1069,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             gs: from_seg(gs.into()),
             ss: from_seg(ss.into()),
             cr0: cr0.as_u64(),
+            cr4: cr4.as_u64(),
             efer: efer.as_u64(),
             rip: header.rip,
             rflags: header.rflags.into(),
@@ -1160,6 +1163,10 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
 
     fn cr0(&mut self) -> u64 {
         self.cache.cr0
+    }
+
+    fn cr4(&mut self) -> u64 {
+        self.cache.cr4
     }
 
     fn rflags(&mut self) -> RFlags {
@@ -1259,7 +1266,9 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         //
         // For VTL 0, the alias map guards for read and write permissions, so only check VTL execute
         // permissions. Because VTL 2 will not restrict execute exclusively, only VTL 1 execute
-        // permissions need to be checked and therefore only check permissions if VTL 1 is allowed.
+        // permissions need to be checked and therefore only check permissions once VTL 1
+        // protections are enabled. However on non-isolated partitions we don't intercept
+        // VTL 1 enablement, so we just check if VTL 1 is supported at all.
         //
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
@@ -1273,6 +1282,14 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             // Should always be called after translate gva with the tlb lock flag
             // or with an initial translation.
             debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
+
+            // An intercept can report a gpa that is unmapped or even outside the
+            // partition's address space, and the hypervisor fails the whole
+            // hypercall for those rather than reporting a per-page result. Only
+            // mapped lower VTL RAM can carry VTL protections anyway.
+            if !self.vp.partition.is_gpa_lower_vtl_ram(gpa) {
+                return Ok(());
+            }
 
             let mbec_user_execute = self
                 .vp
@@ -1621,6 +1638,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
     }
 
     fn set_tsc(&mut self, value: &vp::Tsc) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Self::Error> {
         self.set_register_state(value)
     }
 

@@ -1,0 +1,26 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "product_policy"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+manifest = ["dep:serde", "dep:base64"]
+inspect = ["dep:inspect"]
+
+[dependencies]
+mesh_protobuf.workspace = true
+paste.workspace = true
+
+anyhow.workspace = true
+base64 = { workspace = true, optional = true, features = ["alloc"] }
+inspect = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["alloc", "derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

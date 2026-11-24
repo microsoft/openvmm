@@ -26,6 +26,30 @@ pub enum Vendor {
     Arm,
 }
 
+impl Vendor {
+    /// Detect the vendor of the host CPU the test is running on.
+    pub fn host() -> Self {
+        cfg_select! {
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            target_arch = "x86_64" => {
+                let result = safe_intrinsics::cpuid(
+                    x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0,
+                    0,
+                );
+                let vendor =
+                    x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx);
+                if vendor.is_amd_compatible() {
+                    Vendor::Amd
+                } else {
+                    assert!(vendor.is_intel_compatible());
+                    Vendor::Intel
+                }
+            }
+            _ => Vendor::Arm,
+        }
+    }
+}
+
 /// Types of isolation supported.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IsolationType {
@@ -44,9 +68,25 @@ pub enum VmmType {
     OpenVmm,
     /// Microsoft Hyper-V.
     HyperV,
+    /// QEMU.
+    Qemu,
 }
 
-/// Information about the VM host, retrieved via PowerShell on Windows.
+/// Hypervisor backends that OpenVMM can use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenVmmHypervisor {
+    /// Linux Microsoft Hypervisor backend.
+    Mshv,
+    /// Linux KVM backend.
+    Kvm,
+    /// Windows Hypervisor Platform backend.
+    Whp,
+    /// macOS Hypervisor Framework backend.
+    Hvf,
+}
+
+/// Information about the VM host. On Windows, petri reads it with the
+/// `Get-VMHost` PowerShell cmdlet. On Linux, petri probes MSHV for SNP support.
 #[derive(Debug, Clone)]
 pub struct VmHostInfo {
     /// VBS support status
@@ -60,23 +100,24 @@ pub struct VmHostInfo {
 /// Platform-specific host context extending the base HostContext
 #[derive(Debug, Clone)]
 pub struct HostContext {
-    /// VmHost information retrieved via PowerShell
+    /// VM host information, if petri can get it on this host
     pub vm_host_info: Option<VmHostInfo>,
     /// CPU vendor
     pub vendor: Vendor,
     /// Execution environment
     pub execution_environment: ExecutionEnvironment,
-    /// Whether the host hypervisor supports software VPCI device emulation
-    pub vpci_supported: bool,
+    /// Hypervisor backend that OpenVMM will select on this host.
+    pub openvmm_hypervisor: Option<OpenVmmHypervisor>,
+    /// Whether the selected OpenVMM backend supports nested partition reset.
+    pub nested_reset_supported: bool,
 }
 
 impl HostContext {
     /// Create a new host context by querying host information
     pub async fn new() -> Self {
-        let is_nested = {
+        let is_nested = cfg_select! {
             // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(target_arch = "x86_64")]
-            {
+            target_arch = "x86_64" => {{
                 let result = safe_intrinsics::cpuid(
                     hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
                     0,
@@ -88,65 +129,62 @@ impl HostContext {
                         | (result.edx as u128) << 96,
                 )
                 .nested()
-            }
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                false
-            }
+            }}
+            _ => false,
         };
 
-        let vendor = {
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(target_arch = "x86_64")]
-            {
-                let result = safe_intrinsics::cpuid(
-                    x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0,
-                    0,
-                );
-                if x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
-                    .is_amd_compatible()
+        let vendor = Vendor::host();
+
+        let openvmm_hypervisor = cfg_select! {
+            target_os = "linux" => {
+                if fs_err::File::open("/dev/mshv").is_ok() {
+                    Some(OpenVmmHypervisor::Mshv)
+                } else if fs_err::File::options()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/kvm")
+                    .is_ok()
                 {
-                    Vendor::Amd
+                    Some(OpenVmmHypervisor::Kvm)
                 } else {
-                    assert!(
-                        x86defs::cpuid::Vendor::from_ebx_ecx_edx(
-                            result.ebx, result.ecx, result.edx
-                        )
-                        .is_intel_compatible()
-                    );
-                    Vendor::Intel
+                    None
                 }
             }
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                Vendor::Arm
-            }
+            windows => Some(OpenVmmHypervisor::Whp),
+            target_os = "macos" => Some(OpenVmmHypervisor::Hvf),
+            _ => None,
         };
 
-        let vm_host_info = {
-            #[cfg(windows)]
-            {
-                crate::vm::hyperv::powershell::run_get_vm_host()
-                    .await
-                    .ok()
-                    .map(|info| VmHostInfo {
-                        vbs_supported: info.guest_isolation_types.contains(
-                            &crate::vm::hyperv::powershell::HyperVGuestStateIsolationType::Vbs,
-                        ),
-                        snp_status: info.snp_status,
-                        tdx_status: info.tdx_status,
-                    })
-            }
-            #[cfg(not(windows))]
-            {
-                None
-            }
+        let nested_reset_supported = match openvmm_hypervisor {
+            Some(OpenVmmHypervisor::Kvm) => openvmm_hypervisors::kvm_nested_state_available(),
+            Some(OpenVmmHypervisor::Mshv) => openvmm_hypervisors::mshv_partition_scrub_available(),
+            Some(OpenVmmHypervisor::Whp) => openvmm_hypervisors::whp_nested_reset_available(),
+            _ => false,
         };
 
-        // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
-        let vpci_supported = cfg!(windows);
+        let vm_host_info = cfg_select! {
+            windows => crate::vm::hyperv::powershell::run_get_vm_host()
+                .await
+                .ok()
+                .map(|info| VmHostInfo {
+                    vbs_supported: info.guest_isolation_types.contains(
+                        &crate::vm::hyperv::powershell::HyperVGuestStateIsolationType::Vbs,
+                    ),
+                    snp_status: info.snp_status,
+                    tdx_status: info.tdx_status,
+                }),
+            _ => {
+                // MSHV has no SNP capability query, so probe by creating a
+                // temporary SNP partition. Only AMD hosts can support SNP.
+                (vendor == Vendor::Amd && openvmm_hypervisor == Some(OpenVmmHypervisor::Mshv)).then(
+                    || VmHostInfo {
+                        vbs_supported: false,
+                        snp_status: openvmm_hypervisors::mshv_snp_available(),
+                        tdx_status: false,
+                    },
+                )
+            }
+        };
 
         Self {
             vm_host_info,
@@ -156,7 +194,8 @@ impl HostContext {
             } else {
                 ExecutionEnvironment::Baremetal
             },
-            vpci_supported,
+            openvmm_hypervisor,
+            nested_reset_supported,
         }
     }
 }
@@ -167,6 +206,18 @@ pub enum TestRequirement {
     ExecutionEnvironment(ExecutionEnvironment),
     /// Vendor requirement.
     Vendor(Vendor),
+    /// Hypervisor backend that OpenVMM must select on the host.
+    OpenVmmHypervisor(OpenVmmHypervisor),
+    /// A host capability probe evaluated only during runtime host filtering.
+    ///
+    /// Combine this with a backend requirement using [`Self::and`] to avoid
+    /// probing backends that are not available on the host.
+    ///
+    /// The probe runs synchronously before test execution, including when
+    /// listing tests for nextest. Artifact enumeration does not evaluate it.
+    /// Callers should cache expensive probes and report probe errors from the
+    /// test body rather than treating errors as unsupported capabilities.
+    HostCapability(fn() -> bool),
     /// Isolation requirement.
     Isolation(IsolationType),
     /// Requires a named capability advertised by the execution environment or
@@ -179,7 +230,12 @@ pub enum TestRequirement {
     /// add capabilities that it detects itself. A test requiring a capability
     /// that is not available is skipped, so such tests automatically
     /// self-exclude on any host that cannot satisfy them.
-    RequiresCapability(&'static str),
+    RequiresCapability {
+        /// Capability name.
+        name: &'static str,
+        /// VMM used by the test, which may affect capability availability.
+        vmm: VmmType,
+    },
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
@@ -209,17 +265,13 @@ impl TestRequirement {
 
     /// Evaluate if this requirement is satisfied with the given host context
     pub fn is_satisfied(&self, context: &HostContext) -> bool {
-        self.is_satisfied_with_capabilities(context, &available_capabilities(context))
-    }
-
-    fn is_satisfied_with_capabilities(
-        &self,
-        context: &HostContext,
-        capabilities: &BTreeSet<&'static str>,
-    ) -> bool {
         match self {
             TestRequirement::ExecutionEnvironment(env) => context.execution_environment == *env,
             TestRequirement::Vendor(vendor) => context.vendor == *vendor,
+            TestRequirement::OpenVmmHypervisor(hypervisor) => {
+                context.openvmm_hypervisor == Some(*hypervisor)
+            }
+            TestRequirement::HostCapability(probe) => probe(),
             TestRequirement::Isolation(isolation_type) => {
                 if let Some(vm_host_info) = &context.vm_host_info {
                     match isolation_type {
@@ -231,16 +283,16 @@ impl TestRequirement {
                     false
                 }
             }
-            TestRequirement::RequiresCapability(name) => capabilities.contains(name),
+            TestRequirement::RequiresCapability { name, vmm } => {
+                available_capabilities(context, *vmm).contains(name)
+            }
             TestRequirement::And(req1, req2) => {
-                req1.is_satisfied_with_capabilities(context, capabilities)
-                    && req2.is_satisfied_with_capabilities(context, capabilities)
+                req1.is_satisfied(context) && req2.is_satisfied(context)
             }
             TestRequirement::Or(req1, req2) => {
-                req1.is_satisfied_with_capabilities(context, capabilities)
-                    || req2.is_satisfied_with_capabilities(context, capabilities)
+                req1.is_satisfied(context) || req2.is_satisfied(context)
             }
-            TestRequirement::Not(req) => !req.is_satisfied_with_capabilities(context, capabilities),
+            TestRequirement::Not(req) => !req.is_satisfied(context),
             TestRequirement::Any => true,
         }
     }
@@ -256,11 +308,47 @@ pub fn is_known_capability(name: &str) -> bool {
     known_capability(name).is_some()
 }
 
-fn available_capabilities(context: &HostContext) -> BTreeSet<&'static str> {
+fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'static str> {
     let mut capabilities = BTreeSet::new();
 
-    if context.vpci_supported {
+    // Software VPCI devices are supported by Hyper-V and by the OpenVMM
+    // backends that implement virtual device creation.
+    if matches!(
+        (vmm, context.openvmm_hypervisor),
+        (VmmType::HyperV, _)
+            | (
+                VmmType::OpenVmm,
+                Some(OpenVmmHypervisor::Whp | OpenVmmHypervisor::Mshv)
+            )
+    ) {
         capabilities.insert(capabilities::VPCI);
+    }
+
+    // virt_mshv cannot currently reset partitions running Windows.
+    // This is due to two issues:
+    // * A hypervisor issue that prevents locked hv#1 MSRs from being set by the host VMM.
+    // * Missing support for the HvScrubPartition hypercall.
+    // Once either of these are fixed, we can remove this check and feature.
+    if !matches!(
+        (vmm, context.openvmm_hypervisor),
+        (VmmType::OpenVmm, Some(OpenVmmHypervisor::Mshv))
+    ) {
+        capabilities.insert(capabilities::WINDOWS_PARTITION_RESET);
+    }
+
+    // Nested virtualization is supported by the x86 OpenVMM backends and QEMU.
+    if matches!(
+        (vmm, context.openvmm_hypervisor),
+        (
+            VmmType::OpenVmm,
+            Some(OpenVmmHypervisor::Kvm | OpenVmmHypervisor::Whp | OpenVmmHypervisor::Mshv)
+        ) | (VmmType::Qemu, _)
+    ) {
+        capabilities.insert(capabilities::NESTED_VIRT);
+    }
+
+    if vmm == VmmType::OpenVmm && context.nested_reset_supported {
+        capabilities.insert(capabilities::NESTED_RESET);
     }
 
     match std::env::var("PETRI_CAPABILITIES") {
@@ -281,25 +369,6 @@ fn available_capabilities(context: &HostContext) -> BTreeSet<&'static str> {
     }
 
     capabilities
-}
-
-/// Result of evaluating all requirements for a test
-#[derive(Debug, Clone)]
-pub struct TestEvaluationResult {
-    /// Name of the test being evaluated
-    pub test_name: String,
-    /// Overall result: can the test be run?
-    pub can_run: bool,
-}
-
-impl TestEvaluationResult {
-    /// Create a new result indicating the test can run (no requirements)
-    pub fn new(test_name: &str) -> Self {
-        Self {
-            test_name: test_name.to_string(),
-            can_run: true,
-        }
-    }
 }
 
 /// Container for test requirements that can be evaluated
@@ -323,5 +392,71 @@ pub fn can_run_test_with_context(
         config.requirements.is_satisfied(context)
     } else {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host_context(openvmm_hypervisor: OpenVmmHypervisor) -> HostContext {
+        HostContext {
+            vm_host_info: None,
+            vendor: Vendor::Intel,
+            execution_environment: ExecutionEnvironment::Baremetal,
+            openvmm_hypervisor: Some(openvmm_hypervisor),
+            nested_reset_supported: false,
+        }
+    }
+
+    #[test]
+    fn capabilities_are_evaluated_for_the_selected_vmm() {
+        let requirement = |vmm| TestRequirement::RequiresCapability {
+            name: capabilities::WINDOWS_PARTITION_RESET,
+            vmm,
+        };
+        let mshv = host_context(OpenVmmHypervisor::Mshv);
+
+        assert!(!requirement(VmmType::OpenVmm).is_satisfied(&mshv));
+        assert!(requirement(VmmType::HyperV).is_satisfied(&mshv));
+        assert!(requirement(VmmType::OpenVmm).is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+    }
+
+    #[test]
+    fn nested_virt_capability_matches_the_selected_backend() {
+        let requirement = TestRequirement::RequiresCapability {
+            name: capabilities::NESTED_VIRT,
+            vmm: VmmType::OpenVmm,
+        };
+
+        assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Hvf)));
+    }
+
+    #[test]
+    fn openvmm_hypervisor_requirement_matches_the_selected_backend() {
+        let requirement = TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Mshv);
+        assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Whp)));
+        let mut without_hypervisor = host_context(OpenVmmHypervisor::Mshv);
+        without_hypervisor.openvmm_hypervisor = None;
+        assert!(!requirement.is_satisfied(&without_hypervisor));
+    }
+
+    #[test]
+    fn capability_probes_are_short_circuited_by_backend_requirements() {
+        let requirement = TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Kvm).and(
+            TestRequirement::HostCapability(|| panic!("unavailable backend must not be probed")),
+        );
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
+        assert!(
+            !TestRequirement::HostCapability(|| false)
+                .is_satisfied(&host_context(OpenVmmHypervisor::Kvm))
+        );
+        assert!(
+            TestRequirement::HostCapability(|| true)
+                .is_satisfied(&host_context(OpenVmmHypervisor::Kvm))
+        );
     }
 }

@@ -66,14 +66,12 @@ fn setup_dll_search_path_inner() -> bool {
         return false;
     }
 
-    // xtask-fmt allow-target-arch sys-crate
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    // xtask-fmt allow-target-arch sys-crate
-    } else if cfg!(target_arch = "x86_64") {
-        "x64"
-    } else {
-        return false;
+    let arch = cfg_select! {
+        // xtask-fmt allow-target-arch sys-crate
+        target_arch = "aarch64" => "arm64",
+        // xtask-fmt allow-target-arch sys-crate
+        target_arch = "x86_64" => "x64",
+        _ => return false,
     };
 
     let mut versions: Vec<PathBuf> = std::fs::read_dir(&kits_root)
@@ -309,7 +307,8 @@ fn dll_validates_large_memory() {
     );
     let blob = builder.finish();
 
-    let buf = Cursor::new(Vec::new());
+    let mut tmp = tempfile::Builder::new().suffix(".vmrs").tempfile().unwrap();
+    let buf = std::io::BufWriter::new(tmp.as_file_mut());
     let mut vmrs = VmrsWriter::new(buf).unwrap();
 
     // 500 MiB of memory at GPA 0 — 500 × 1 MiB blocks.
@@ -330,17 +329,18 @@ fn dll_validates_large_memory() {
     }
 
     let mut mem = StampReader;
-    let vmrs_data = vmrs.finish(&blob, &mut mem).unwrap().into_inner();
+    vmrs.finish(&blob, &mut mem).unwrap().into_inner().unwrap();
+    let vmrs_len = tmp.as_file().metadata().unwrap().len();
     eprintln!(
         "Built large VMRS: {} bytes ({} MiB, {} blocks)",
-        vmrs_data.len(),
-        vmrs_data.len() / 1_048_576,
+        vmrs_len,
+        vmrs_len / MIB,
         BLOCK_COUNT
     );
 
     // Verify round-trip through our reader: spot-check a few blocks.
     {
-        let mut reader = hvs_file::reader::HvsFileReader::open(Cursor::new(&vmrs_data)).unwrap();
+        let mut reader = hvs_file::reader::HvsFileReader::open(tmp.reopen().unwrap()).unwrap();
         for i in [0u64, 1, 249, 250, 499] {
             let data = reader
                 .read_array(&format!("/savedstate/RamBlock{i}"))
@@ -352,9 +352,6 @@ fn dll_validates_large_memory() {
     }
 
     // Verify the DLL can load the file.
-    let mut tmp = tempfile::Builder::new().suffix(".vmrs").tempfile().unwrap();
-    std::io::Write::write_all(&mut tmp, &vmrs_data).unwrap();
-
     let vmrs_path = tmp.path();
     let wide_path: Vec<u16> = vmrs_path
         .to_str()

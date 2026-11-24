@@ -2,21 +2,20 @@
 // Licensed under the MIT License.
 
 use super::CxlComponentRegister;
-use crate::spec;
-use crate::spec::CxlComponentRegisterType;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use cxl_spec::CxlComponentRegisterType;
 use inspect::Inspect;
 use std::collections::BTreeMap;
 
 /// Returns the absolute byte offset where the primary cache/mem section begins.
 fn cachemem_primary_section_start() -> usize {
-    spec::CXL_COMPONENT_REG_RANGE_CACHEMEM_PRIMARY_OFFSET as usize
+    cxl_spec::CXL_COMPONENT_REG_RANGE_CACHEMEM_PRIMARY_OFFSET as usize
 }
 
 /// Returns the total byte length of the primary cache/mem section.
 fn cachemem_primary_section_len() -> usize {
-    spec::CXL_COMPONENT_REG_RANGE_CACHEMEM_PRIMARY_SIZE_BYTES as usize
+    cxl_spec::CXL_COMPONENT_REG_RANGE_CACHEMEM_PRIMARY_SIZE_BYTES as usize
 }
 
 /// Sparse representation of a 64-KiB CXL component register aperture.
@@ -46,7 +45,7 @@ struct CacheMemDirectoryEntry {
 
 /// Size of one cache/mem region page used by the capability directory model.
 fn cachemem_region_size() -> usize {
-    spec::CXL_CACHEMEM_REGION_SIZE_BYTES as usize
+    cxl_spec::CXL_CACHEMEM_REGION_SIZE_BYTES as usize
 }
 
 /// End (exclusive) of a 4-KiB cache/mem region page.
@@ -56,7 +55,7 @@ fn cachemem_region_end(region_base: usize) -> usize {
 
 /// End (exclusive) of the capability-directory area inside one cache/mem region.
 fn cachemem_directory_end(region_base: usize, entry_count: usize) -> usize {
-    let header_size = spec::CXL_CACHEMEM_CAPABILITY_ARRAY_ENTRY_SIZE_BYTES as usize;
+    let header_size = cxl_spec::CXL_CACHEMEM_CAPABILITY_ARRAY_ENTRY_SIZE_BYTES as usize;
     region_base + header_size * (entry_count + 1)
 }
 
@@ -177,7 +176,7 @@ impl CxlComponentRegisters {
             return false;
         };
 
-        if end > spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES as usize {
+        if end > cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES as usize {
             return false;
         }
 
@@ -252,7 +251,7 @@ impl CxlComponentRegisters {
 
         // Convert absolute aperture address -> dword index within this page.
         let index = (offset - region_base)
-            / (spec::CXL_CACHEMEM_CAPABILITY_ARRAY_ENTRY_SIZE_BYTES as usize);
+            / (cxl_spec::CXL_CACHEMEM_CAPABILITY_ARRAY_ENTRY_SIZE_BYTES as usize);
 
         let entry_count = self
             .cachemem_entries_for_region(region_base as u16)
@@ -261,13 +260,13 @@ impl CxlComponentRegisters {
 
         // Index 0 is always the required CXL Capability Header.
         if index == 0 {
-            return spec::CxlCacheMemCapabilityHeader::encode(entry_count);
+            return cxl_spec::CxlCacheMemCapabilityHeader::encode(entry_count);
         }
 
         // Use precomputed per-page sorted entries instead of filtering all registers.
         let entries = self.cachemem_entries_for_region(region_base as u16)?;
 
-        if entries.len() > spec::CXL_CACHEMEM_CAPABILITY_ARRAY_MAX_ENTRIES {
+        if entries.len() > cxl_spec::CXL_CACHEMEM_CAPABILITY_ARRAY_MAX_ENTRIES {
             return None;
         }
 
@@ -282,7 +281,7 @@ impl CxlComponentRegisters {
 
         // Pointer is encoded as an offset inside this 4-KiB page.
         let pointer = entry.start_offset - region_base as u16;
-        spec::CxlCacheMemCapabilityArrayEntry::encode(
+        cxl_spec::CxlCacheMemCapabilityArrayEntry::encode(
             entry.capability_id,
             entry.capability_version,
             pointer,
@@ -296,7 +295,7 @@ impl CxlComponentRegisters {
         let end = offset.checked_add(len)?;
         if !matches!(len, 4 | 8)
             || !offset.is_multiple_of(len)
-            || end > spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES as usize
+            || end > cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES as usize
         {
             return None;
         }
@@ -355,7 +354,7 @@ impl CxlComponentRegisters {
 
     /// Returns the component register aperture length in bytes.
     pub fn len(&self) -> usize {
-        spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES as usize
+        cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES as usize
     }
 
     /// Returns the absolute component offset for a capability id.
@@ -503,7 +502,6 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use crate::component_registers::test_helper::TestCxlComponentRegisterBlock;
-    use crate::spec;
     use chipset_device::io::IoResult;
     use vmcore::save_restore::SaveRestore;
 
@@ -664,10 +662,10 @@ mod tests {
     fn component_register_space_rejects_when_section_capacity_is_exhausted() {
         // Fill every 4-KiB primary cachemem page with one max-sized payload block.
         let mut regs = CxlComponentRegisters::new();
-        let page_count = (spec::CXL_COMPONENT_REG_RANGE_CACHEMEM_PRIMARY_SIZE_BYTES as usize)
-            / (spec::CXL_CACHEMEM_REGION_SIZE_BYTES as usize);
-        let max_payload_len = (spec::CXL_CACHEMEM_REGION_SIZE_BYTES as usize)
-            - (2 * spec::CXL_CACHEMEM_CAPABILITY_ARRAY_ENTRY_SIZE_BYTES as usize);
+        let page_count = (cxl_spec::CXL_COMPONENT_REG_RANGE_CACHEMEM_PRIMARY_SIZE_BYTES as usize)
+            / (cxl_spec::CXL_CACHEMEM_REGION_SIZE_BYTES as usize);
+        let max_payload_len = (cxl_spec::CXL_CACHEMEM_REGION_SIZE_BYTES as usize)
+            - (2 * cxl_spec::CXL_CACHEMEM_CAPABILITY_ARRAY_ENTRY_SIZE_BYTES as usize);
 
         for _ in 0..page_count {
             assert!(

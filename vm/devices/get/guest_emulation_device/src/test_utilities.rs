@@ -147,6 +147,15 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                         .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                         self.vmgs[0] = notification.event_log_id.0 as u8;
                     }
+                    HostNotifications::IPMI_SEL => {
+                        let notification = get_protocol::IpmiSelNotification::read_from_prefix(
+                            &message_buf[..size_of::<get_protocol::IpmiSelNotification>()],
+                        )
+                        .unwrap()
+                        .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                        let bytes = notification.as_bytes();
+                        self.vmgs[..bytes.len()].copy_from_slice(bytes);
+                    }
                     HostNotifications::POWER_OFF => {
                         state.power_client.power_request(PowerRequest::PowerOff);
                     }
@@ -243,6 +252,7 @@ pub fn create_host_channel(
     let guest_config = GuestConfig {
         firmware: GuestFirmwareConfig::Uefi {
             firmware_debug: false,
+            enable_memory_protections: false,
             enable_vpci_boot: false,
             disable_frontpage: false,
             console_mode: UefiConsoleMode::DEFAULT,
@@ -257,6 +267,8 @@ pub fn create_host_channel(
         secure_boot_enabled: false,
         secure_boot_template: SecureBootTemplateType::SECURE_BOOT_DISABLED,
         enable_battery: false,
+        enable_ipmi: false,
+        enable_hibernation: false,
         no_persistent_secrets: true,
         guest_state_lifetime: Default::default(),
         guest_state_encryption_policy: Default::default(),
@@ -264,6 +276,7 @@ pub fn create_host_channel(
         hardware_sealing_policy: Default::default(),
         efi_diagnostics_log_level: Default::default(),
         force_dma_bounce_enabled: false,
+        smbios: Default::default(),
     };
 
     let halt_reason = Arc::new(Mutex::new(None));
@@ -282,6 +295,7 @@ pub fn create_host_channel(
     let mut ged_state: GuestEmulationDevice = GuestEmulationDevice::new(
         guest_config,
         halt.into(),
+        None,
         None,
         recv,
         None,

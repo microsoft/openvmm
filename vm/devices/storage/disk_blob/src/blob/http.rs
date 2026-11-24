@@ -127,6 +127,12 @@ impl HttpBlob {
 #[async_trait]
 impl Blob for HttpBlob {
     async fn read(&self, mut buf: &mut [u8], offset: u64) -> io::Result<()> {
+        // HTTP byte ranges are inclusive at both ends, so an empty one cannot
+        // be expressed, and computing the end offset below would underflow.
+        // There is nothing to fetch in any case.
+        if buf.is_empty() {
+            return Ok(());
+        }
         let mut response = self
             .tokio_handle
             .spawn(

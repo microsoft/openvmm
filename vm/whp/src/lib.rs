@@ -521,6 +521,35 @@ impl Partition {
         }
     }
 
+    /// Reads the partition's SLAT (nested page table) mapping counters,
+    /// reporting how many guest pages the hypervisor has mapped at 4 KB, 2 MB,
+    /// and 1 GB granularity.
+    ///
+    /// Returns [`WHvError`] with `WHV_E_UNKNOWN_PROPERTY` if the host platform
+    /// does not support the memory counter set; callers should treat this as
+    /// "counters unavailable" rather than a fatal error.
+    pub fn memory_counters(&self) -> Result<abi::WHV_PARTITION_MEMORY_COUNTERS> {
+        let mut counters = abi::WHV_PARTITION_MEMORY_COUNTERS::default();
+        // SAFETY: passing a correctly sized buffer for the counter set per the
+        // WHvGetPartitionCounters contract.
+        unsafe {
+            let len = size_of_val(&counters) as u32;
+            let mut outn = 0;
+            check_hresult(api::WHvGetPartitionCounters(
+                self.handle,
+                abi::WHvPartitionCounterSetMemory,
+                std::ptr::from_mut(&mut counters).cast::<u8>(),
+                len,
+                &mut outn,
+            ))?;
+            // Unlike `get_property`, it is fine for `outn` to be smaller than
+            // `len`: `counters` is zero-initialized, so if an older host fills
+            // in fewer counters than our struct defines, the trailing (unknown)
+            // counters simply read back as zero rather than garbage.
+        }
+        Ok(counters)
+    }
+
     pub fn vp(&self, index: u32) -> Processor<'_> {
         Processor {
             partition: self,

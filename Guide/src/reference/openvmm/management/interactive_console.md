@@ -7,11 +7,9 @@ To enter OpenVMM's interactive command mode, launch OpenVMM, and type `ctrl-q`.
 
 You can then type the following commands (followed by return):
 
-```admonish danger title="Disclaimer"
-The following list is not exhaustive and may be out of date.
-
-The most up to date reference is always the code itself. For a full list of
-commands, please invoke the `help` command.
+```admonish note title="Command reference"
+This page summarizes the interactive commands. Enter `help` in the interactive
+console for the commands supported by the running binary.
 ```
 
 * `q` / `quit`: quit the program.
@@ -40,8 +38,12 @@ commands, please invoke the `help` command.
   Requires file-backed guest memory (`--memory file=<FILE>`).
 * `psr` / `pulse-save-restore`: do a pulsed save-restore cycle.
 * `reset`: reset the VM.
-* `shutdown [-r] [-h] [-f]`: send a shutdown/reboot/hibernate
-  request to the VM.
+* `shutdown [-a | [-r | -h] [-f]]`: send a shutdown/reboot/hibernate
+  request through the Hyper-V shutdown integration component, or use `-a`
+  to inject an ACPI power-button event.
+  `-a` cannot be combined with `-r`, `-h`, or `-f`.
+  Completion means event injection, not that the guest has halted.
+  The guest must handle the power-button event and configure it to shut down.
 * `ch` / `clear-halt`: clear the current halt condition.
 * `read-memory <GPA> <SIZE> [-f <FILE>]`: read guest memory.
 * `write-memory <GPA> [HEX] [-f <FILE>]`: write guest memory.

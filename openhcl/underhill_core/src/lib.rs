@@ -12,10 +12,13 @@ mod diag;
 mod dispatch;
 mod emuplat;
 mod get_tracing;
+mod hardware_reseal;
+mod hibernate;
 mod inspect_internal;
 mod inspect_proc;
 mod livedump;
 mod loader;
+mod measured_product_policy;
 mod nvme_manager;
 mod options;
 mod reference_time;
@@ -328,6 +331,7 @@ async fn launch_workers(
         vmbus_max_version: opt.vmbus_max_version,
         vmbus_enable_mnf: opt.vmbus_enable_mnf,
         vmbus_force_confidential_external_memory: opt.vmbus_force_confidential_external_memory,
+        vmbus_force_gpa_pinning: opt.vmbus_force_gpa_pinning,
         vmbus_channel_unstick_delay: (opt.vmbus_channel_unstick_delay_ms != 0)
             .then(|| Duration::from_millis(opt.vmbus_channel_unstick_delay_ms)),
         cmdline_append: opt.cmdline_append.clone(),
@@ -420,10 +424,9 @@ async fn launch_workers(
                         listener,
                         req_chan: send,
                         vp_count,
-                        target_arch: if cfg!(guest_arch = "x86_64") {
-                            debug_worker_defs::TargetArch::X86_64
-                        } else {
-                            debug_worker_defs::TargetArch::Aarch64
+                        target_arch: cfg_select! {
+                            guest_arch = "x86_64" => debug_worker_defs::TargetArch::X86_64,
+                            guest_arch = "aarch64" => debug_worker_defs::TargetArch::Aarch64,
                         },
                     },
                 )

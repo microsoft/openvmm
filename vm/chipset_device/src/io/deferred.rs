@@ -42,7 +42,7 @@ use std::task::ready;
 #[derive(Debug)]
 pub struct DeferredToken {
     is_read: bool,
-    recv: mesh::OneshotReceiver<Result<(u64, usize), IoError>>,
+    recv: mesh::OneshotReceiver<Result<Box<[u8]>, IoError>>,
 }
 
 impl DeferredToken {
@@ -59,9 +59,9 @@ impl DeferredToken {
         assert!(self.is_read, "defer type mismatch");
         let r = ready!(Pin::new(&mut self.recv).poll(cx));
         match r {
-            Ok(Ok((v, len))) => {
-                assert_eq!(len, bytes.len(), "defer size mismatch");
-                bytes.copy_from_slice(&v.to_ne_bytes()[..len]);
+            Ok(Ok(data)) => {
+                assert_eq!(data.len(), bytes.len(), "defer size mismatch");
+                bytes.copy_from_slice(&data);
                 Poll::Ready(Ok(()))
             }
             Ok(Err(e)) => Poll::Ready(Err(e)),
@@ -101,15 +101,13 @@ impl DeferredToken {
 /// A deferred read operation.
 #[derive(Debug)]
 pub struct DeferredRead {
-    send: mesh::OneshotSender<Result<(u64, usize), IoError>>,
+    send: mesh::OneshotSender<Result<Box<[u8]>, IoError>>,
 }
 
 impl DeferredRead {
     /// Completes the read operation with the specified data.
     pub fn complete(self, bytes: &[u8]) {
-        let mut v = [0; 8];
-        v[..bytes.len()].copy_from_slice(bytes);
-        self.send.send(Ok((u64::from_ne_bytes(v), bytes.len())));
+        self.send.send(Ok(bytes.into()));
     }
 
     /// Completes the read operation with an error.
@@ -121,13 +119,13 @@ impl DeferredRead {
 /// A deferred write operation.
 #[derive(Debug)]
 pub struct DeferredWrite {
-    send: mesh::OneshotSender<Result<(u64, usize), IoError>>,
+    send: mesh::OneshotSender<Result<Box<[u8]>, IoError>>,
 }
 
 impl DeferredWrite {
     /// Completes the write operation.
     pub fn complete(self) {
-        self.send.send(Ok((0, 0)));
+        self.send.send(Ok(Box::default()));
     }
 
     /// Completes the write operation with an error.

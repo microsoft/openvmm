@@ -39,7 +39,9 @@ futures.workspace = true
 hvdef.workspace = true
 once_cell.workspace = true
 pal_uring.workspace = true
+storage_tests.workspace = true
 tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

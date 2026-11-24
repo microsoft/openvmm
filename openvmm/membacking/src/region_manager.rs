@@ -11,6 +11,7 @@ use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingBacking;
 use crate::mapping_manager::MappingManagerClient;
 use crate::mapping_manager::MappingParams;
+use crate::mapping_manager::MemoryPolicy;
 use crate::mapping_manager::VaMapper;
 use crate::partition_mapper::PartitionMapper;
 use anyhow::Context as _;
@@ -241,7 +242,7 @@ fn inspect_regions(regions: &Vec<Region>) -> impl '_ + Inspect {
         let mut resp = req.respond();
         for region in regions {
             resp.field(
-                &format!("{}:{}", region.params.range, &region.params.name),
+                &format!("{}:{}", region.params.range, region.params.name),
                 inspect::adhoc(|req| {
                     req.respond()
                         .field("map_params", region.map_params)
@@ -316,7 +317,7 @@ struct RegionMappingParams {
     /// pages directly and it is exposed to DMA targets only by host VA).
     backing: MappingBacking,
     writable: bool,
-    numa_node: Option<u32>,
+    policy: MemoryPolicy,
 }
 
 fn range_within(outer: MemoryRange, inner: MemoryRange) -> MemoryRange {
@@ -681,7 +682,7 @@ impl RegionManagerTask {
                     backing: params.backing.clone(),
                     writable,
                     mapping_type: region.params.mapping_type,
-                    numa_node: params.numa_node,
+                    policy: params.policy,
                 })
                 .await?;
 
@@ -783,7 +784,7 @@ impl RegionManagerTaskInner {
                     backing: mapping.params.backing.clone(),
                     writable: mapping.params.writable && map_params.writable,
                     mapping_type: region.params.mapping_type,
-                    numa_node: mapping.params.numa_node,
+                    policy: mapping.params.policy,
                 })
                 .await
             {
@@ -1083,7 +1084,7 @@ impl RegionHandle {
         range_in_region: MemoryRange,
         backing: MappingBacking,
         writable: bool,
-        numa_node: Option<u32>,
+        policy: MemoryPolicy,
     ) -> Result<(), RemoteError> {
         self.req_send
             .call(
@@ -1094,7 +1095,7 @@ impl RegionHandle {
                         range_in_region,
                         backing,
                         writable,
-                        numa_node,
+                        policy,
                     },
                 ),
             )
@@ -1137,6 +1138,7 @@ mod tests {
     use crate::mapping_manager::Mappable;
     use crate::mapping_manager::MappingBacking;
     use crate::mapping_manager::MappingManager;
+    use crate::mapping_manager::MemoryPolicy;
     use crate::region_manager::AddRegionError;
     use crate::region_manager::DmaMapRequest;
     use crate::region_manager::DmaTarget;
@@ -1232,7 +1234,7 @@ mod tests {
             }
         }
 
-        let mm = MappingManager::new(spawn, 0x200000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(spawn, 0x200000, None);
         let mut task = TestTask(RegionManagerTask::new(mm.client().clone()));
 
         let high = task.add(1, 0x1000..0x3000).await.unwrap();
@@ -1263,7 +1265,7 @@ mod tests {
 
     impl DmaTestTask {
         fn new(spawn: impl Spawn) -> Self {
-            let mm = MappingManager::new(spawn, 0x200000, Vec::new(), None);
+            let mm = MappingManager::new_without_primary(spawn, 0x200000, None);
             Self {
                 task: RegionManagerTask::new(mm.client().clone()),
                 mappable: test_mappable(),
@@ -1305,7 +1307,7 @@ mod tests {
                             file_offset: 0,
                         },
                         writable: true,
-                        numa_node: None,
+                        policy: MemoryPolicy::none(),
                     },
                 )
                 .await
@@ -1319,11 +1321,9 @@ mod tests {
                     id,
                     RegionMappingParams {
                         range_in_region: MemoryRange::new(range_in_region),
-                        backing: MappingBacking::Private {
-                            transparent_hugepages: false,
-                        },
+                        backing: MappingBacking::Private,
                         writable: true,
-                        numa_node: None,
+                        policy: MemoryPolicy::none(),
                     },
                 )
                 .await
@@ -1453,11 +1453,9 @@ mod tests {
                 r,
                 RegionMappingParams {
                     range_in_region: MemoryRange::new(0x8000..0xC000),
-                    backing: MappingBacking::Private {
-                        transparent_hugepages: false,
-                    },
+                    backing: MappingBacking::Private,
                     writable: true,
-                    numa_node: None,
+                    policy: MemoryPolicy::none(),
                 },
             )
             .await;
@@ -1591,7 +1589,7 @@ mod tests {
                         file_offset: 0,
                     },
                     writable: true,
-                    numa_node: None,
+                    policy: MemoryPolicy::none(),
                 },
             )
             .await;
