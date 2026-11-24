@@ -21,6 +21,8 @@ cfg_select! {
         mod native;
         mod nmi;
         #[cfg(target_os = "linux")]
+        mod pv_kick;
+        #[cfg(target_os = "linux")]
         mod registers;
         #[cfg(target_os = "linux")]
         mod restore;

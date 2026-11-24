@@ -137,6 +137,11 @@ pub enum KvmError {
         "VP {vp_index} is in system management mode (SMM) or has a system management interrupt (SMI) pending, which a save cannot hold: the guest has not finished handling an SMI"
     )]
     SmmState { vp_index: u32 },
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "VP {vp_index} cannot be halted: it holds a paravirtual kick that the guest sent it, which KVM clears only from Linux 6.15 on"
+    )]
+    PvKick { vp_index: u32 },
 }
 
 #[derive(Inspect)]
