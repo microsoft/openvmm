@@ -1014,6 +1014,7 @@ mod save_restore {
             use super::save;
             use super::state;
             use super::test_runner;
+            use super::test_topology;
             use crate::partition_unit::PartitionUnitRunner;
             use futures::FutureExt;
             use pal_async::local::block_on;
@@ -1160,6 +1161,26 @@ mod save_restore {
                 // halt, does not hear of it again.
                 assert_eq!(runner.halt_reason, Some(HaltReason::PowerOff));
                 assert!(client.try_recv().is_err());
+            }
+
+            #[test]
+            fn detach_clears_no_debug_state_that_the_debugger_did_not_set() {
+                let (mut runner, _, _) = test_runner();
+                // A VP whose runner does not run, so that a request to it
+                // waits.
+                let vp = test_topology().vps_arch().next().unwrap();
+                let _vp_runner = runner.vp_set.add(vp);
+                drop(attach(&mut runner));
+
+                // The debugger set no debug state, so its detach completes at
+                // once, without asking the VPs to clear any, which panics on
+                // backends without debugging support.
+                assert!(
+                    runner
+                        .handle_gdb(DebugRequest::Detach)
+                        .now_or_never()
+                        .is_some()
+                );
             }
 
             #[test]
