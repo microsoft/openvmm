@@ -23,11 +23,11 @@ tracelimit.workspace = true
 
 anyhow.workspace = true
 parking_lot.workspace = true
-slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
+pal_async.workspace = true
 test_with_tracing.workspace = true
 
 [build-dependencies]
