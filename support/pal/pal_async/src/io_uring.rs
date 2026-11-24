@@ -16,7 +16,7 @@ use std::io;
 ///
 /// All types that participate in the `Driver` blanket impl on Linux must
 /// implement this trait. There is no default—implementors must explicitly
-/// return `None` if they do not support io-uring, so that wrapper types
+/// return an error if they do not support io-uring, so that wrapper types
 /// do not silently drop the capability.
 #[cfg(target_os = "linux")]
 pub trait IoUringDriver {
@@ -25,8 +25,11 @@ pub trait IoUringDriver {
     /// Use [`NoIoUring`] if the driver does not support io-uring.
     type Submitter: IoUringSubmit;
 
-    /// Returns an io-uring submitter.
-    fn io_uring_submitter(&self) -> Option<&Self::Submitter>;
+    /// Returns an io-uring submitter, or the error that keeps the driver from
+    /// providing one: an error of kind [`io::ErrorKind::Unsupported`] if the
+    /// driver does not support io-uring, or the error with which setting up
+    /// its io-uring failed, such as `ENOMEM` from `io_uring_setup`.
+    fn io_uring_submitter(&self) -> io::Result<&Self::Submitter>;
 }
 
 /// A type that represents the absence of io-uring support.

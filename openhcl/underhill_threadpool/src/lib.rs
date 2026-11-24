@@ -672,8 +672,8 @@ impl TimerDriver for ThreadpoolDriver {
 impl pal_async::io_uring::IoUringDriver for ThreadpoolDriver {
     type Submitter = IoInitiator;
 
-    fn io_uring_submitter(&self) -> Option<&IoInitiator> {
-        Some(self.client(None).initiator())
+    fn io_uring_submitter(&self) -> io::Result<&IoInitiator> {
+        Ok(self.client(None).initiator())
     }
 }
 
@@ -776,7 +776,7 @@ impl TimerDriver for RetargetableDriver {
 impl pal_async::io_uring::IoUringDriver for RetargetableDriver {
     type Submitter = IoInitiator;
 
-    fn io_uring_submitter(&self) -> Option<&IoInitiator> {
-        Some(self.inner.current_driver().initiator())
+    fn io_uring_submitter(&self) -> io::Result<&IoInitiator> {
+        Ok(self.inner.current_driver().initiator())
     }
 }

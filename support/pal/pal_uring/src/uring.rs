@@ -345,8 +345,8 @@ impl pal_async::io_uring::IoUringSubmit for IoInitiator {
 impl pal_async::io_uring::IoUringDriver for IoInitiator {
     type Submitter = Self;
 
-    fn io_uring_submitter(&self) -> Option<&Self> {
-        Some(self)
+    fn io_uring_submitter(&self) -> io::Result<&Self> {
+        Ok(self)
     }
 }
 

@@ -223,7 +223,10 @@ impl crate::process::macos::ProcessWaitDriver for LocalDriver {
 impl crate::io_uring::IoUringDriver for LocalDriver {
     type Submitter = crate::io_uring::NoIoUring;
 
-    fn io_uring_submitter(&self) -> Option<&Self::Submitter> {
-        None
+    fn io_uring_submitter(&self) -> io::Result<&Self::Submitter> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "driver does not support io-uring",
+        ))
     }
 }

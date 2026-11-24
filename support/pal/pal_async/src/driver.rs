@@ -84,15 +84,24 @@ pub trait Driver: 'static + Send + Sync {
         handle: RawHandle,
     ) -> io::Result<PollImpl<dyn IoOverlapped>>;
 
-    /// Returns whether the given opcode is supported by the ring.
+    /// Returns whether the driver's io-uring supports the given opcode, setting
+    /// up the io-uring if the driver has not yet.
+    ///
+    /// Fails with the error that keeps the driver from providing an io-uring:
+    /// one of kind [`io::ErrorKind::Unsupported`] if the driver does not
+    /// support io-uring, or the error with which setting up its io-uring
+    /// failed, such as `ENOMEM` from `io_uring_setup`. A later call tries to
+    /// set it up again.
     #[cfg(target_os = "linux")]
-    fn io_uring_probe(&self, opcode: u8) -> bool;
+    fn io_uring_probe(&self, opcode: u8) -> io::Result<bool>;
 
     /// Submits an io-uring SQE for asynchronous execution.
     ///
     /// Returns a future that completes with the IO result. The future **aborts
     /// the process** if dropped while the IO is in flight, since there is no
-    /// way to synchronously cancel an in-flight io-uring operation.
+    /// way to synchronously cancel an in-flight io-uring operation. The future
+    /// fails with the error of [`Driver::io_uring_probe`] if the driver cannot
+    /// provide an io-uring.
     ///
     /// # Safety
     ///
@@ -200,11 +209,10 @@ where
         Ok(smallbox::smallbox!(self.new_wait(fd, read_size)?))
     }
 
-    fn io_uring_probe(&self, opcode: u8) -> bool {
+    fn io_uring_probe(&self, opcode: u8) -> io::Result<bool> {
         use crate::io_uring::IoUringSubmit as _;
 
-        self.io_uring_submitter()
-            .is_some_and(|submitter| submitter.probe(opcode))
+        Ok(self.io_uring_submitter()?.probe(opcode))
     }
 
     unsafe fn io_uring_submit(
@@ -215,12 +223,7 @@ where
 
         Box::pin(async move {
             // SAFETY: caller guarantees contract
-            unsafe {
-                self.io_uring_submitter()
-                    .ok_or(io::ErrorKind::Unsupported)?
-                    .submit(sqe)
-            }
-            .await
+            unsafe { self.io_uring_submitter()?.submit(sqe) }.await
         })
     }
 }
@@ -277,7 +280,7 @@ impl Driver for Box<dyn Driver> {
     }
 
     #[cfg(target_os = "linux")]
-    fn io_uring_probe(&self, opcode: u8) -> bool {
+    fn io_uring_probe(&self, opcode: u8) -> io::Result<bool> {
         self.as_ref().io_uring_probe(opcode)
     }
 
@@ -338,7 +341,7 @@ impl Driver for Arc<dyn Driver> {
     }
 
     #[cfg(target_os = "linux")]
-    fn io_uring_probe(&self, opcode: u8) -> bool {
+    fn io_uring_probe(&self, opcode: u8) -> io::Result<bool> {
         self.as_ref().io_uring_probe(opcode)
     }
 

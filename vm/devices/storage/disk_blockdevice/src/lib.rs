@@ -189,7 +189,9 @@ pub enum NewDeviceError {
     InvalidFileType,
     #[error("invalid disk size {0:#x}")]
     InvalidDiskSize(u64),
-    #[error("driver does not support io-uring")]
+    #[error("failed to set up io-uring")]
+    IoUringSetup(#[source] std::io::Error),
+    #[error("io-uring does not support IORING_OP_READ")]
     NoIoUring,
 }
 
@@ -201,6 +203,10 @@ impl BlockDevice {
     /// * `read_only` - Indicates whether the device is opened for read-only access.
     /// * `driver` - The async driver to use for issuing IOs (must support io-uring).
     /// * `always_bounce` - Whether to always use bounce buffers for IOs, even for those that are aligned.
+    ///
+    /// Fails with [`NewDeviceError::IoUringSetup`], carrying the driver's
+    /// error, such as the errno of `io_uring_setup`, if the driver cannot set
+    /// up its io-uring.
     pub async fn new(
         file: fs::File,
         read_only: bool,
@@ -209,13 +215,18 @@ impl BlockDevice {
         bounce_buffer_tracker: Option<Arc<BounceBufferTracker>>,
         always_bounce: bool,
     ) -> Result<BlockDevice, NewDeviceError> {
-        if !driver.io_uring_probe(opcode::Read::CODE) {
+        let probe = |opcode| {
+            driver
+                .io_uring_probe(opcode)
+                .map_err(NewDeviceError::IoUringSetup)
+        };
+        if !probe(opcode::Read::CODE)? {
             return Err(NewDeviceError::NoIoUring);
         }
-        assert!(driver.io_uring_probe(opcode::Write::CODE));
-        assert!(driver.io_uring_probe(opcode::Readv::CODE));
-        assert!(driver.io_uring_probe(opcode::Writev::CODE));
-        assert!(driver.io_uring_probe(opcode::Fsync::CODE));
+        assert!(probe(opcode::Write::CODE)?);
+        assert!(probe(opcode::Readv::CODE)?);
+        assert!(probe(opcode::Writev::CODE)?);
+        assert!(probe(opcode::Fsync::CODE)?);
 
         let metadata = file.metadata().map_err(DiskError::Io)?;
 
@@ -248,7 +259,7 @@ impl BlockDevice {
             // Discard on a file is serviced via `fallocate(PUNCH_HOLE)`, issued
             // asynchronously through io-uring. Only offer it when the file is
             // writable and the ring supports the FALLOCATE opcode (Linux 5.6+).
-            let allow_discard = !read_only && driver.io_uring_probe(opcode::Fallocate::CODE);
+            let allow_discard = !read_only && probe(opcode::Fallocate::CODE)?;
             DeviceMetadata::from_file(&file, &metadata, allow_discard)
                 .map_err(NewDeviceError::DeviceMetadata)?
         } else {
@@ -1015,6 +1026,59 @@ mod tests {
         let test_file = tempfile::tempfile().unwrap();
         test_file.set_len(1024 * 64).unwrap();
         new_block_device_from(test_file)
+    }
+
+    /// A driver that cannot set up its io-uring fails the device with the
+    /// error of the set-up, such as the errno of `io_uring_setup`, rather than
+    /// with a claim that the driver does not support io-uring.
+    #[test]
+    fn io_uring_setup_failure_names_its_error() {
+        use seccompiler::BpfProgram;
+        use seccompiler::SeccompAction;
+        use seccompiler::SeccompFilter;
+
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(1024 * 64).unwrap();
+        // Refuse io_uring_setup with ENOMEM, as a host under memory pressure
+        // can, on a thread of its own: a seccomp filter binds only the thread
+        // that installs it, and the threads that this one starts.
+        let error = std::thread::spawn(move || {
+            let filter: BpfProgram = SeccompFilter::new(
+                [(libc::SYS_io_uring_setup, vec![])].into(),
+                SeccompAction::Allow,
+                SeccompAction::Errno(libc::ENOMEM as u32),
+                std::env::consts::ARCH.try_into().unwrap(),
+            )
+            .unwrap()
+            .try_into()
+            .unwrap();
+            seccompiler::apply_filter(&filter).unwrap();
+            let pool = pal_async::DefaultPool::new();
+            block_on(BlockDevice::new(
+                file,
+                false,
+                pool.driver(),
+                None,
+                None,
+                false,
+            ))
+            .err()
+        })
+        .join()
+        .unwrap()
+        .expect("the device was created without an io-uring");
+        let chain = std::iter::successors(Some(&error as &dyn std::error::Error), |error| {
+            error.source()
+        })
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+        assert_eq!(
+            chain,
+            [
+                "failed to set up io-uring".to_owned(),
+                std::io::Error::from_raw_os_error(libc::ENOMEM).to_string(),
+            ]
+        );
     }
 
     /// A loop device over a temporary file, detached when dropped.

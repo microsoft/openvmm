@@ -465,16 +465,14 @@ impl TimerDriver for EpollDriver {
 impl crate::io_uring::IoUringDriver for EpollDriver {
     type Submitter = EpollIoUring;
 
-    fn io_uring_submitter(&self) -> Option<&EpollIoUring> {
-        self.inner
-            .io_uring
-            .get_or_try_init(|| {
-                EpollIoUring::new(
-                    self.inner.epfd.0.as_raw_fd(),
-                    self.inner.wake_event.as_fd().as_raw_fd(),
-                )
-            })
-            .ok()
+    fn io_uring_submitter(&self) -> io::Result<&EpollIoUring> {
+        // A failed set-up leaves the cell empty, so the next call tries again.
+        self.inner.io_uring.get_or_try_init(|| {
+            EpollIoUring::new(
+                self.inner.epfd.0.as_raw_fd(),
+                self.inner.wake_event.as_fd().as_raw_fd(),
+            )
+        })
     }
 }
 
@@ -558,5 +556,43 @@ mod tests {
     #[test]
     fn uring_works() {
         EpollPool::run_with(executor_tests::io_uring_tests::uring_tests)
+    }
+
+    /// A failed set-up of the io-uring reports its error, with the errno of
+    /// `io_uring_setup`, rather than that the driver lacks io-uring support,
+    /// and does not stick: the next probe sets the io-uring up.
+    #[test]
+    fn uring_setup_failure_is_reported_and_retried() {
+        use crate::driver::Driver;
+        use io_uring::opcode;
+        use seccompiler::BpfProgram;
+        use seccompiler::SeccompAction;
+        use seccompiler::SeccompFilter;
+
+        let pool = EpollPool::new();
+        let driver = pool.driver();
+        // Refuse io_uring_setup with ENOMEM, as a host under memory pressure
+        // can, on a thread of its own: a seccomp filter binds only the thread
+        // that installs it, and the threads that this one starts.
+        let error = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let filter: BpfProgram = SeccompFilter::new(
+                        [(libc::SYS_io_uring_setup, vec![])].into(),
+                        SeccompAction::Allow,
+                        SeccompAction::Errno(libc::ENOMEM as u32),
+                        std::env::consts::ARCH.try_into().unwrap(),
+                    )
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+                    seccompiler::apply_filter(&filter).unwrap();
+                    driver.io_uring_probe(opcode::Nop::CODE).unwrap_err()
+                })
+                .join()
+                .unwrap()
+        });
+        assert_eq!(error.raw_os_error(), Some(libc::ENOMEM));
+        assert!(driver.io_uring_probe(opcode::Nop::CODE).unwrap());
     }
 }
