@@ -209,10 +209,8 @@ describes the source definitions.
   * `restricted_read` - reject reads of unwritten blocks and reads that
     span sequential zones
 
-  ```bash
-  openvmm --vmbus-scsi id=smr0 \
-    --disk file:smr.vhdx,on=smr0,zoned,zone_size=256M,\
-conventional_zones=524,max_open_zones=128
+  ```text
+  openvmm --vmbus-scsi id=smr0 --disk file:smr.vhdx,on=smr0,zoned,zone_size=256M,conventional_zones=524,max_open_zones=128
   ```
 
   The `zoned` option wraps the ordinary backing disk with the

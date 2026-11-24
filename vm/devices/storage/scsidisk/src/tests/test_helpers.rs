@@ -36,6 +36,7 @@ pub struct TestDiskStorageState {
     pub fail_next_write_once: bool,
     pub fail_next_sync_once: bool,
     pub fail_sync_on_count: Option<u64>,
+    pub partial_write_once: Option<(u64, usize)>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -91,6 +92,7 @@ impl TestDisk {
             fail_next_write_once: false,
             fail_next_sync_once: false,
             fail_sync_on_count: None,
+            partial_write_once: None,
         }));
         (
             TestDisk {
@@ -179,6 +181,24 @@ impl DiskIo for TestDisk {
         }
         if state.storage.len() < end_point {
             return Err(DiskError::IllegalBlock);
+        }
+        if state
+            .partial_write_once
+            .is_some_and(|(target_sector, _)| target_sector == sector)
+        {
+            let (_, partial_bytes) = state.partial_write_once.take().unwrap();
+            let mut data = vec![0; buffers.len()];
+            buffers.reader().read(&mut data)?;
+            let partial_bytes = partial_bytes.min(data.len());
+            state.storage[offset..offset + partial_bytes].copy_from_slice(&data[..partial_bytes]);
+            state.operations.push(TestDiskOperation::Write {
+                sector,
+                bytes: partial_bytes,
+                fua,
+            });
+            return Err(DiskError::Io(std::io::Error::other(
+                "injected partial write failure",
+            )));
         }
         buffers
             .reader()
