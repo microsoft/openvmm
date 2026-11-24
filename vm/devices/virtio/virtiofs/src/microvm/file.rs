@@ -297,7 +297,24 @@ impl VirtioFsFile {
         }
     }
 
+    /// Lists this handle's directory into the entries that the access policy
+    /// shows, `.` and `..` included, in the host's order, and fails with
+    /// `E2BIG` when they exceed a handle's bounds of
+    /// [`MAX_DIRECTORY_ENTRIES_PER_HANDLE`] entries or
+    /// [`MAX_DIRECTORY_SNAPSHOT_BYTES`] of names. The entries that the policy
+    /// hides count toward neither bound, wherever the host lists them.
     fn build_microvm_directory_snapshot(&self) -> lx::Result<Vec<SavedDirectoryEntry>> {
+        self.build_microvm_directory_snapshot_within(MAX_DIRECTORY_ENTRIES_PER_HANDLE)
+    }
+
+    /// Lists this handle's directory as
+    /// [`Self::build_microvm_directory_snapshot`] does, into at most
+    /// `max_entries` entries. Tests pass fewer than a handle's bound, since a
+    /// directory of that many entries takes seconds to create on Windows.
+    pub(crate) fn build_microvm_directory_snapshot_within(
+        &self,
+        max_entries: usize,
+    ) -> lx::Result<Vec<SavedDirectoryEntry>> {
         let stat = self.object_stat()?;
         if stat.mode & lx::S_IFMT != lx::S_IFDIR {
             return Err(lx::Error::ENOTDIR);
@@ -307,9 +324,6 @@ impl VirtioFsFile {
         let mut total_bytes = 0usize;
         let mut entries = Vec::new();
         let mut add_entry = |entry: lx::DirEntry| -> lx::Result<bool> {
-            if entries.len() == MAX_DIRECTORY_ENTRIES_PER_HANDLE {
-                return Err(lx::Error::E2BIG);
-            }
             let name = entry.name.as_bytes();
             if name.is_empty() || name.len() > MAX_DIRECTORY_ENTRY_NAME_BYTES {
                 return Err(lx::Error::EINVAL);
@@ -321,6 +335,11 @@ impl VirtioFsFile {
                     Err(error) if error == lx::Error::EACCES => return Ok(true),
                     Err(error) => return Err(error),
                 }
+            }
+            // Only here, so that the entries that the policy hides count
+            // toward neither bound.
+            if entries.len() == max_entries {
+                return Err(lx::Error::E2BIG);
             }
             total_bytes = total_bytes
                 .checked_add(name.len())
