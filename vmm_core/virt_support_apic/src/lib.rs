@@ -164,11 +164,28 @@ fn bank_mask(vector: u8) -> (usize, u32) {
     (vector as usize / 32, 1 << (vector % 32))
 }
 
+/// Returns whether a DFR value selects the cluster model rather than the flat
+/// model.
+///
+/// The model field, bits 31:28, is `0b0000` for the cluster model and `0b1111`
+/// for the flat model, and the SDM reserves its other values. A guest can write
+/// those, and a saved state can hold them, so bit 31 selects the model of a
+/// reserved one, as it does in Hyper-V's APIC: a write of `0x7fff_ffff`
+/// switches that APIC from the flat model to the cluster model, and a write of
+/// `0xefff_ffff` switches it back.
 fn cluster_mode(value: u32) -> bool {
     match Dfr(value | 0x0fff_ffff) {
         Dfr::CLUSTERED_MODE => true,
         Dfr::FLAT_MODE => false,
-        _ => unreachable!("Unknown DFR value {value}"),
+        _ => {
+            let cluster = value & 0x8000_0000 == 0;
+            tracelimit::warn_ratelimited!(
+                dfr = format_args!("{value:#x}"),
+                cluster,
+                "reserved dfr model"
+            );
+            cluster
+        }
     }
 }
 
@@ -3681,5 +3698,70 @@ mod tests {
         target.enable_offload();
         fixed_msi(&set, 1, 0x80, false);
         assert_eq!(target.scan(&mut vmtime, true).interrupt, None);
+    }
+
+    /// The DFR's model field, bits 31:28, selects the flat model with `0b1111`
+    /// and the cluster model with `0b0000`, and the SDM reserves its other
+    /// values. A guest write or a saved state with a reserved model must not
+    /// panic: bit 31 selects the model, as in Hyper-V's APIC, and the DFR reads
+    /// back that model.
+    #[test]
+    fn dfr_reserved_model_follows_bit_31() {
+        const DFR_ADDR: u64 = ((APIC_BASE_PAGE as u64) << 12) | 0xe0;
+        fn read_dfr(apic: &mut LocalApic, client: &mut TestClient) -> u32 {
+            let mut data = [0; 4];
+            apic.access(client).mmio_read(DFR_ADDR, &mut data);
+            u32::from_le_bytes(data)
+        }
+
+        let (_set, mut apic) = new_apic();
+        let mut client = TestClient::default();
+        // Each write selects the model other than the current one, so that
+        // ignoring the write would read back the wrong model. Hyper-V's APIC
+        // reads back the same values after these writes, and the high-byte
+        // writes below.
+        for (value, expected) in [
+            (0x0fff_ffff, Dfr::CLUSTERED_MODE),
+            (0xefff_ffff, Dfr::FLAT_MODE),
+            (0x7fff_ffff, Dfr::CLUSTERED_MODE),
+            (0x8fff_ffff, Dfr::FLAT_MODE),
+            (0x1234_5678, Dfr::CLUSTERED_MODE),
+            (0xffff_ffff, Dfr::FLAT_MODE),
+            (0x0000_0000, Dfr::CLUSTERED_MODE),
+        ] {
+            apic.access(&mut client)
+                .mmio_write(DFR_ADDR, &u32::to_le_bytes(value));
+            assert_eq!(
+                read_dfr(&mut apic, &mut client),
+                expected.0,
+                "guest wrote DFR {value:#x}"
+            );
+        }
+
+        // A one-byte write to the DFR's high byte writes the model too.
+        for (byte, expected) in [(0x80, Dfr::FLAT_MODE), (0x70, Dfr::CLUSTERED_MODE)] {
+            apic.access(&mut client).mmio_write(DFR_ADDR + 3, &[byte]);
+            assert_eq!(
+                read_dfr(&mut apic, &mut client),
+                expected.0,
+                "guest wrote DFR high byte {byte:#x}"
+            );
+        }
+
+        // A restore selects the model of a saved DFR the same way.
+        for (dfr, expected) in [
+            (0xefff_ffff, Dfr::FLAT_MODE),
+            (0x7fff_ffff, Dfr::CLUSTERED_MODE),
+        ] {
+            let mut state = apic.save();
+            state.registers[ApicRegister::DFR.0 as usize] = dfr;
+            apic.restore(&state).unwrap();
+            assert_eq!(
+                read_dfr(&mut apic, &mut client),
+                expected.0,
+                "restored DFR {dfr:#x}"
+            );
+            assert_eq!(apic.save().registers().dfr, expected.0);
+        }
     }
 }
