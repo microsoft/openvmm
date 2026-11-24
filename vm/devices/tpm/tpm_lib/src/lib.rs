@@ -289,6 +289,8 @@ pub struct AllocateNvIndicesParams {
     pub mitigate_legacy_akcert: bool,
     /// Create the AKCert index if it is not present.
     pub create_if_missing: bool,
+    /// Whether the TPM blob was recovered from a corrupted state.
+    pub recovered: bool,
 }
 
 impl<E: TpmEngine> TpmEngineHelper<E> {
@@ -808,7 +810,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
                 let will_mitigate_cert =
                     params.mitigate_legacy_akcert && cert.len() == TPM_DEFAULT_AKCERT_SIZE;
 
-                if will_mitigate_cert {
+                if params.recovered && will_mitigate_cert {
                     self.write_mitigation_marker(auth_value);
                 }
 
