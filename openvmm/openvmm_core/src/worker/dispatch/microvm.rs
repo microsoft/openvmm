@@ -211,8 +211,18 @@ impl LoadedVm {
 
         if self.snapshot_restore.input_gated {
             // A boundary under the armed post-restore input gate is the
-            // guest's acknowledgement of the restore.
-            self.snapshot_restore.restore_acknowledged();
+            // guest's acknowledgement of the restore. One that the run loop
+            // handles only after the gate's deadline is too late, and stops
+            // the VM as the deadline does. One in time stops the deadline,
+            // which the run loop does not watch while the boundary is
+            // established; the boundary then holds the acknowledged VM,
+            // still gated, until the controller releases it or rolls it
+            // back, and one that fails to establish tears the VM down.
+            if !self.snapshot_restore.restore_acknowledged() {
+                request.transaction_complete.complete(());
+                self.handle_restore_gate_timeout().await;
+                return false;
+            }
         }
         if !self.snapshot_restore.input_gated {
             // The gate waits for every unit. When a unit fails it, roll it

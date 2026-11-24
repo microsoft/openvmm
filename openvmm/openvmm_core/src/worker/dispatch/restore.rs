@@ -135,7 +135,8 @@ pub(super) struct SnapshotRestore {
     ready_sink: Option<File>,
     /// Timeout for the post-restore input gate, when required.
     pub(super) gate_timeout: Option<Duration>,
-    /// Deadline for the guest to acknowledge the post-restore input gate.
+    /// Deadline for the guest to acknowledge the post-restore input gate,
+    /// which an acknowledgement in time clears.
     pub(super) gate_deadline: Option<Instant>,
     /// Profile span covering the post-restore input gate.
     pub(super) gate_profile: Option<ProfileSpan>,
@@ -217,9 +218,22 @@ impl SnapshotRestore {
         }
     }
 
-    /// Ends the `restore/guest_repair` profile phase when the guest
-    /// acknowledges a gated restore.
-    pub(super) fn restore_acknowledged(&mut self) {
+    /// Handles the guest's acknowledgement of a gated restore, and returns
+    /// whether it came in time, before the gate's deadline, which bounds only
+    /// the acknowledgement. An acknowledgement in time stops the deadline and
+    /// ends the `restore/guest_repair` profile phase. Host input stays gated:
+    /// the snapshot boundary at which the guest acknowledged, which has no
+    /// deadline of its own, holds the VM until the snapshot controller
+    /// releases the boundary or rolls it back. A late acknowledgement changes
+    /// nothing.
+    pub(super) fn restore_acknowledged(&mut self) -> bool {
+        if self
+            .gate_deadline
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            return false;
+        }
+        self.gate_deadline = None;
         // The guest selects the packet before it acknowledges the restore, so
         // handle a selection that the run loop has not handled yet first.
         if let Some(result) = self
@@ -235,6 +249,7 @@ impl SnapshotRestore {
         if let Some(repair) = self.repair_profile.take() {
             repair.complete("restore", "guest_repair", Default::default());
         }
+        true
     }
 }
 
@@ -537,6 +552,44 @@ mod tests {
             assert!(matches!(
                 restore.next_event(&driver).await,
                 RestoreEvent::GateExpired
+            ));
+        });
+    }
+
+    #[test]
+    fn acknowledgement_stops_the_gate_deadline() {
+        pal_async::DefaultPool::run_with(async |driver| {
+            let deadline = Instant::now() + Duration::from_millis(500);
+            let mut restore = SnapshotRestore {
+                gate_deadline: Some(deadline),
+                gate_profile: Some(ProfileSpan::start()),
+                input_gated: true,
+                ..Default::default()
+            };
+            assert!(restore.restore_acknowledged());
+            // The snapshot controller holds the acknowledgement past the
+            // deadline, which bounds only the acknowledgement.
+            PolledTimer::new(&driver).sleep_until(deadline).await;
+            assert!(restore.next_event(&driver).now_or_never().is_none());
+            // Host input stays gated until the controller releases the
+            // acknowledgement's boundary.
+            assert!(restore.input_gated);
+        });
+    }
+
+    #[test]
+    fn late_acknowledgement_keeps_the_expired_gate_deadline() {
+        pal_async::DefaultPool::run_with(async |driver| {
+            let mut restore = SnapshotRestore {
+                gate_deadline: Some(Instant::now()),
+                gate_profile: Some(ProfileSpan::start()),
+                input_gated: true,
+                ..Default::default()
+            };
+            assert!(!restore.restore_acknowledged());
+            assert!(matches!(
+                restore.next_event(&driver).now_or_never(),
+                Some(RestoreEvent::GateExpired)
             ));
         });
     }
