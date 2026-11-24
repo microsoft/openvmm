@@ -222,10 +222,11 @@ impl Fuse for BlockingDestroyFs {
     }
 }
 
-/// A `FUSE_INIT` that arrives while the session ends, as from another queue
-/// while the session handles `FUSE_DESTROY`, waits until the session has
-/// ended: `init` runs only once `destroy` has returned, and the session keeps
-/// the negotiation that it then completes.
+/// A `FUSE_INIT` that the session dispatches while it ends, once it has marked
+/// itself uninitialized, as from another queue while the session handles
+/// `FUSE_DESTROY`, waits until the session has ended: `init` runs only once
+/// `destroy` has returned, and the session keeps the negotiation that it then
+/// completes.
 #[test]
 fn init_waits_for_the_end_of_the_session() {
     let calls = Arc::default();
@@ -241,7 +242,8 @@ fn init_waits_for_the_end_of_the_session() {
     let (done, finished) = mpsc::channel();
     let (locked, finished_early, error) = thread::scope(|scope| {
         scope.spawn(|| session.destroy());
-        // Wait until `destroy` has started.
+        // Wait until the file system's `destroy` has started, by which time the
+        // session has marked itself uninitialized.
         barrier.wait();
         // FUSE_INIT negotiates under this lock, which the session must hold
         // until it has ended.

@@ -114,8 +114,9 @@ impl Session {
     /// End the session.
     ///
     /// This puts the session in a state where it can accept another FUSE_INIT message. This allows
-    /// a virtiofs file system to be remounted after unmount. A FUSE_INIT that arrives while the
-    /// session ends waits until it has ended.
+    /// a virtiofs file system to be remounted after unmount. A FUSE_INIT that the session
+    /// dispatches once this has marked it uninitialized waits until the session has ended; one
+    /// that the session dispatches before then fails, as on any initialized session.
     ///
     /// This invokes the file system's destroy callback if it hadn't been called already.
     pub fn destroy(&self) {
