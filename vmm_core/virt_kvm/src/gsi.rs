@@ -14,7 +14,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use virt::irqfd::IrqFdRoute;
 
-const NUM_GSIS: usize = 2048;
+/// The number of GSIs in a VM's routing table.
+pub(crate) const NUM_GSIS: usize = 2048;
 
 /// The GSI routing table configured for a VM.
 #[derive(Debug)]

@@ -109,6 +109,14 @@ does, and checks that it reads as halted and does not run on. KVM clears the
 kick only from Linux 6.15 on; before, the case requires the backend to refuse
 the halt instead. It writes its code into the fixture's RAM, so it registers by
 hand.
+The SynIC of each VP of a KVM partition with Hyper-V enlightenments has a route
+of its own in the partition's table of 2048 GSIs, after the 24 lines of the
+I/O APIC, so such a partition can have at most 2024 VPs. The KVM-only case
+`refuses_more_enlightened_vps_than_synic_routes`, in `vp_count.rs`, creates
+partitions without building them, so without creating their VPs, and checks
+that one of 2025 enlightened VPs is refused with an error, and that one of 2024
+enlightened VPs, and one of 2025 VPs without enlightenments, are not. It
+creates partitions of its own, so it registers by hand.
 
 The contract functions operate on the public `virt` interfaces. Each function
 has an adjacent `backend_test!` declaration that registers it with Petri for
