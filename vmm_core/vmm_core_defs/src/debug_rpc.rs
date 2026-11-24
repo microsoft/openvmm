@@ -18,7 +18,8 @@ use virt::x86::SegmentRegister;
 pub enum DebugRequest {
     /// The debugger has been attached.
     Attach,
-    /// The debugger has been detached.
+    /// The debugger has been detached, which the debug worker sends when a
+    /// session ends, however it ends.
     ///
     /// The VM clears the session's debug state, and reports its halts to its
     /// client again, starting with a recorded halt that went to the debugger

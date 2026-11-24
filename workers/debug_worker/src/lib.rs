@@ -207,25 +207,23 @@ where
                         let state_machine_fut = async {
                             match architecture {
                                 Architecture::X86_64 => {
-                                    run_state_machine(
+                                    run_state_machine::<gdb::arch::x86::X86_64_QEMU>(
                                         socket,
-                                        VmTarget::<gdb::arch::x86::X86_64_QEMU>::new(&mut vm_proxy),
+                                        &mut vm_proxy,
                                     )
                                     .await
                                 }
                                 Architecture::I8086 => {
-                                    run_state_machine(
+                                    run_state_machine::<gdb::arch::x86::I8086>(
                                         socket,
-                                        VmTarget::<gdb::arch::x86::I8086>::new(&mut vm_proxy),
+                                        &mut vm_proxy,
                                     )
                                     .await
                                 }
                                 Architecture::Aarch64 => {
-                                    run_state_machine(
+                                    run_state_machine::<gdbstub_arch::aarch64::AArch64>(
                                         socket,
-                                        VmTarget::<gdbstub_arch::aarch64::AArch64>::new(
-                                            &mut vm_proxy,
-                                        ),
+                                        &mut vm_proxy,
                                     )
                                     .await
                                 }
@@ -272,7 +270,7 @@ where
 
 async fn run_state_machine<T: TargetArch>(
     socket: PolledSocket<Socket>,
-    mut vm_target: VmTarget<'_, T>,
+    vm_proxy: &mut VmProxy,
 ) -> Result<(), gdbstub::stub::GdbStubError<anyhow::Error, std::io::Error>> {
     use gdbstub::common::Signal;
     use gdbstub::stub::DisconnectReason;
@@ -280,7 +278,9 @@ async fn run_state_machine<T: TargetArch>(
     use gdbstub::stub::MultiThreadStopReason;
     use gdbstub::stub::state_machine::GdbStubStateMachine;
 
-    vm_target.send_req(DebugRequest::Attach);
+    // Dropping the session detaches the debugger, however the session ends.
+    let mut session = vm_proxy.attach();
+    let mut vm_target = VmTarget::<T>::new(&mut session);
     let (init_break_send, init_break_recv) = mesh::oneshot();
     vm_target.send_req(DebugRequest::Resume {
         response: init_break_send,
@@ -461,5 +461,193 @@ impl gdbstub::conn::Connection for SocketConnection {
 
     fn flush(&mut self) -> Result<(), Self::Error> {
         self.0.get_mut().flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_state_machine;
+    use crate::gdb::VmProxy;
+    use crate::gdb::arch::x86::X86_64_QEMU;
+    use futures::AsyncReadExt;
+    use futures::AsyncWriteExt;
+    use futures::future::Either;
+    use gdbstub::stub::GdbStubError;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use pal_async::socket::PolledSocket;
+    use socket2::Socket;
+    use std::net::TcpListener;
+    use std::net::TcpStream;
+    use test_with_tracing::test;
+    use vmm_core_defs::debug_rpc::DebugRequest;
+    use vmm_core_defs::debug_rpc::DebugStopReason;
+
+    type SessionResult = Result<(), GdbStubError<anyhow::Error, std::io::Error>>;
+
+    /// Returns a VM proxy for one VP, and the receiver of its requests.
+    fn vm() -> (VmProxy, mesh::Receiver<DebugRequest>) {
+        let (send, recv) = mesh::channel();
+        (VmProxy::new(send, 1), recv)
+    }
+
+    /// Returns both ends of a connection to the stub: GDB's, and the stub's.
+    fn connect(driver: &DefaultDriver) -> (PolledSocket<Socket>, PolledSocket<Socket>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let gdb = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stub, _) = listener.accept().unwrap();
+        (
+            PolledSocket::new(driver, Socket::from(gdb)).unwrap(),
+            PolledSocket::new(driver, Socket::from(stub)).unwrap(),
+        )
+    }
+
+    /// Runs a debugger session on `stub` against `vm`.
+    async fn session(stub: PolledSocket<Socket>, vm: &mut VmProxy) -> SessionResult {
+        run_state_machine::<X86_64_QEMU>(stub, vm).await
+    }
+
+    /// Sends `data` to the stub as a GDB packet.
+    async fn send(gdb: &mut PolledSocket<Socket>, data: &str) {
+        let checksum = data.bytes().fold(0u8, |sum, byte| sum.wrapping_add(byte));
+        gdb.write_all(format!("${data}#{checksum:02x}").as_bytes())
+            .await
+            .unwrap();
+    }
+
+    /// Returns the data of the next packet that the stub sends to GDB.
+    async fn receive(gdb: &mut PolledSocket<Socket>) -> String {
+        let mut byte = [0];
+        // Skip the stub's acknowledgements of GDB's packets.
+        while byte != *b"$" {
+            gdb.read_exact(&mut byte).await.unwrap();
+        }
+        let mut data = Vec::new();
+        loop {
+            gdb.read_exact(&mut byte).await.unwrap();
+            if byte == *b"#" {
+                break;
+            }
+            data.push(byte[0]);
+        }
+        gdb.read_exact(&mut [0; 2]).await.unwrap();
+        String::from_utf8(data).unwrap()
+    }
+
+    /// Serves the requests with which the stub attaches, as a running VM does,
+    /// which the stub's break stops.
+    async fn attach(requests: &mut mesh::Receiver<DebugRequest>) {
+        assert!(matches!(
+            requests.recv().await.unwrap(),
+            DebugRequest::Attach
+        ));
+        let DebugRequest::Resume { response } = requests.recv().await.unwrap() else {
+            panic!("expected a resume");
+        };
+        assert!(matches!(
+            requests.recv().await.unwrap(),
+            DebugRequest::Break
+        ));
+        response.send(DebugStopReason::Break);
+    }
+
+    /// Asserts that the stub detached the debugger from the VM, and requested
+    /// nothing more.
+    fn assert_detached(requests: &mut mesh::Receiver<DebugRequest>) {
+        assert!(matches!(requests.try_recv().unwrap(), DebugRequest::Detach));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[async_test]
+    async fn the_debugger_detaches_when_gdb_detaches(driver: DefaultDriver) {
+        let (mut vm, mut requests) = vm();
+        let (mut gdb, stub) = connect(&driver);
+        let client = async {
+            attach(&mut requests).await;
+            send(&mut gdb, "D").await;
+            assert_eq!(receive(&mut gdb).await, "OK");
+        };
+        let (result, ()) = futures::join!(session(stub, &mut vm), client);
+        result.unwrap();
+        assert_detached(&mut requests);
+    }
+
+    #[async_test]
+    async fn the_debugger_detaches_when_the_connection_drops(driver: DefaultDriver) {
+        for running in [false, true] {
+            let (mut vm, mut requests) = vm();
+            let (mut gdb, stub) = connect(&driver);
+            let client = async {
+                attach(&mut requests).await;
+                let mut resume = None;
+                if running {
+                    // GDB continues the VM, and goes away while it runs.
+                    send(&mut gdb, "vCont;c").await;
+                    assert!(matches!(
+                        requests.recv().await.unwrap(),
+                        DebugRequest::SetDebugState { vp: 0, .. }
+                    ));
+                    resume = Some(requests.recv().await.unwrap());
+                    assert!(matches!(resume, Some(DebugRequest::Resume { .. })));
+                }
+                drop(gdb);
+                resume
+            };
+            let (result, _resume) = futures::join!(session(stub, &mut vm), client);
+            assert!(result.is_err());
+            assert_detached(&mut requests);
+        }
+    }
+
+    #[async_test]
+    async fn the_debugger_detaches_when_the_session_is_dropped(driver: DefaultDriver) {
+        let (mut vm, mut requests) = vm();
+        let (_gdb, stub) = connect(&driver);
+        {
+            let session = Box::pin(session(stub, &mut vm));
+            let client = Box::pin(attach(&mut requests));
+            let Either::Right(((), session)) = futures::future::select(session, client).await
+            else {
+                panic!("the session ended");
+            };
+            // The worker drops a session when it stops or restarts.
+            drop(session);
+        }
+        assert_detached(&mut requests);
+    }
+
+    #[async_test]
+    async fn a_session_does_not_set_the_breakpoints_of_the_previous_one(driver: DefaultDriver) {
+        let (mut vm, mut requests) = vm();
+
+        // GDB sets a hardware breakpoint, and goes away.
+        let (mut gdb, stub) = connect(&driver);
+        let client = async {
+            attach(&mut requests).await;
+            send(&mut gdb, "Z1,1000,1").await;
+            assert_eq!(receive(&mut gdb).await, "OK");
+            drop(gdb);
+        };
+        let (result, ()) = futures::join!(session(stub, &mut vm), client);
+        assert!(result.is_err());
+        assert_detached(&mut requests);
+
+        // The next session's first resume sets no breakpoint.
+        let (mut gdb, stub) = connect(&driver);
+        let client = async {
+            attach(&mut requests).await;
+            send(&mut gdb, "vCont;c").await;
+            let DebugRequest::SetDebugState { vp: 0, state } = requests.recv().await.unwrap()
+            else {
+                panic!("expected the debug state of VP 0");
+            };
+            assert_eq!(state.breakpoints, [None; 4]);
+            let resume = requests.recv().await.unwrap();
+            drop(gdb);
+            resume
+        };
+        let (result, _resume) = futures::join!(session(stub, &mut vm), client);
+        assert!(result.is_err());
+        assert_detached(&mut requests);
     }
 }

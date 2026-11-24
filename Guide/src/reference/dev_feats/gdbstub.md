@@ -119,6 +119,15 @@ You may find [this blog post](https://blog.mattjustice.com/2018/08/24/gdb-for-wi
 useful, as it includes a table of common `gdb` commands along with their WinDbg
 counterparts.
 
+Detaching GDB, or losing its connection, ends the debugging session: the
+hardware breakpoints and single-stepping that GDB set are cleared, and OpenVMM
+handles the VM's halts, such as a guest power-off or reset, which go to the
+debugger while one is attached. GDB removes the software breakpoints that it
+writes into guest memory when it detaches, but not when it loses its connection
+while the VM runs. A VM that the debugger stopped stays halted, and OpenVMM
+reports that halt like any other; `clear-halt` in the interactive console
+resumes it.
+
 ## Connecting via WinDbg
 
 WinDbg doesn't understand the GDB Remote Serial Protocol directly, but
