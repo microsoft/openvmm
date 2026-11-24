@@ -121,6 +121,16 @@ backend!(whp, Whp, virt_whp::Whp, |hv1| Ok(virt_whp::Whp {
     user_mode_apic: false,
     offload_enlightenments: hv1,
 }));
+// WHP with the APIC that the VMM emulates, as `whp:user_mode_apic` gives it,
+// and as Hv1 without the hypervisor's enlightenments does. Only the cases of
+// the `user_mode_apic` module register for it.
+#[cfg(windows)]
+backend!(whp_user_mode_apic, Whp, virt_whp::Whp, |hv1| Ok(
+    virt_whp::Whp {
+        user_mode_apic: true,
+        offload_enlightenments: hv1,
+    }
+));
 
 /// Registers a contract function for each native backend at its definition site.
 macro_rules! backend_test {
