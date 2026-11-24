@@ -285,3 +285,178 @@ impl RendererCore {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use framebuffer::FRAMEBUFFER_SIZE;
+    use framebuffer::FramebufferDevice;
+    use framebuffer::View;
+    use guestmem::MappableGuestMemory;
+    use guestmem::MappedMemoryRegion;
+    use guestmem::MemoryMapper;
+    use pal_async::DefaultDriver;
+    use pal_async::DefaultPool;
+    use sparse_mmap::alloc_shared_memory;
+    use test_with_tracing::test;
+
+    struct NoGuestMappings;
+
+    impl MemoryMapper for NoGuestMappings {
+        fn new_region(
+            &self,
+            _len: usize,
+            _debug_name: String,
+        ) -> std::io::Result<(Box<dyn MappableGuestMemory>, Arc<dyn MappedMemoryRegion>)> {
+            Err(std::io::Error::other(
+                "render tests do not map guest memory",
+            ))
+        }
+    }
+
+    fn renderer_fixture(driver: &DefaultDriver) -> (RendererCore, View) {
+        let memory = alloc_shared_memory(FRAMEBUFFER_SIZE, "vga-render-test").unwrap();
+        let (framebuffer, access) = framebuffer::framebuffer(memory, FRAMEBUFFER_SIZE, 0).unwrap();
+        let device = FramebufferDevice::new(Box::new(NoGuestMappings), framebuffer, None).unwrap();
+        let control = device.control();
+        let vram = control.memory().unwrap();
+        (
+            RendererCore {
+                control,
+                timer: PolledTimer::new(driver),
+                vram,
+            },
+            access.view().unwrap(),
+        )
+    }
+
+    fn graphics_state(
+        bits_per_pixel: u8,
+        width: u16,
+        height: u16,
+        line_offset_pixels: u16,
+    ) -> GraphicsRenderState {
+        GraphicsRenderState {
+            bits_per_pixel,
+            cur_page_start_offset: 0,
+            line_offset_pixels,
+            width,
+            height,
+            pixel_double: false,
+            pixel_pan: 0,
+            mapping_table: [0; 256],
+        }
+    }
+
+    fn screenshot(view: &mut View, expected_resolution: (u16, u16)) -> Vec<u32> {
+        assert_eq!(view.resolution(), expected_resolution);
+        let (width, height) = expected_resolution;
+        let mut pixels = vec![0; width as usize * height as usize];
+        for (row, line) in pixels.chunks_exact_mut(width as usize).enumerate() {
+            view.read_line(row as u16, line.as_mut_bytes());
+        }
+        pixels
+    }
+
+    fn text_state() -> TextRenderState {
+        let mut mapping_table = [0; 256];
+        mapping_table[..5]
+            .copy_from_slice(&[0x00000000, 0x00ff0000, 0x0000ff00, 0x00ffffff, 0x000000ff]);
+        TextRenderState {
+            text: TextModeState {
+                current_text_columns: 80,
+                lo_res_text_mode: false,
+                mono_text_mode: false,
+                character_set_512: false,
+                char_set_1: 0,
+                char_set_2: 0,
+                text_char_width: 8,
+                text_char_height: 2,
+                text_rows: 1,
+                blinking_enabled: false,
+                blinking_state: false,
+                draw_text_cursor: false,
+                cursor_first_scanline: 0,
+                cursor_last_scanline: 0,
+                cursor_row: 0,
+                cursor_col: 0,
+                cursor_blink_state: true,
+            },
+            cur_page_start_offset: 0x1000,
+            mapping_table,
+        }
+    }
+
+    #[test]
+    fn rgb565_expands_components_and_skips_scanline_padding() {
+        let pool = DefaultPool::new();
+        let (mut renderer, mut view) = renderer_fixture(&pool.driver());
+        let source = [
+            0xf800u16, 0x07e0, 0x001f, 0xffff, 0x1234, 0xabcd, 0, 0x8000, 0x0400, 0x0010,
+        ];
+        renderer.vram.write_at(0, source.as_bytes()).unwrap();
+
+        renderer.render(&RenderState::Graphics(graphics_state(16, 4, 2, 6)));
+
+        assert_eq!(
+            screenshot(&mut view, (4, 2)),
+            [
+                0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff, 0x00000000, 0x00840000, 0x00008200,
+                0x00000084,
+            ]
+        );
+    }
+
+    #[test]
+    fn direct_color_uses_source_pitch_and_keeps_vram_live() {
+        let pool = DefaultPool::new();
+        let (mut renderer, mut view) = renderer_fixture(&pool.driver());
+        let source = [
+            0x00ff0000u32,
+            0x0000ff00,
+            0xdeadbeef,
+            0x000000ff,
+            0x00ffffff,
+        ];
+        renderer.vram.write_at(0, source.as_bytes()).unwrap();
+
+        renderer.render(&RenderState::Graphics(graphics_state(32, 2, 2, 3)));
+
+        assert_eq!(
+            screenshot(&mut view, (2, 2)),
+            [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
+        );
+
+        renderer.vram.write_plain(12, &0x00123456u32).unwrap();
+        assert_eq!(
+            screenshot(&mut view, (2, 2)),
+            [0x00ff0000, 0x0000ff00, 0x00123456, 0x00ffffff]
+        );
+    }
+
+    #[test]
+    fn text_renders_font_bits_attributes_and_selected_page() {
+        let pool = DefaultPool::new();
+        let (mut renderer, mut view) = renderer_fixture(&pool.driver());
+        renderer.vram.write_at(0x8000, &[0x41, 0x21]).unwrap();
+        renderer.vram.write_at(0x8008, &[0x42, 0x34]).unwrap();
+        renderer.vram.write_plain(0x2082, &0x81u8).unwrap();
+        renderer.vram.write_plain(0x2086, &0x42u8).unwrap();
+        renderer.vram.write_plain(0x2102, &0x18u8).unwrap();
+        renderer.vram.write_plain(0x2106, &0x24u8).unwrap();
+        let state = text_state();
+
+        renderer.render(&RenderState::Text(state.clone()));
+
+        let mut expected = vec![0; 640 * 2];
+        expected[..16].copy_from_slice(
+            &[1, 2, 2, 2, 2, 2, 2, 1, 3, 3, 3, 4, 4, 3, 3, 3]
+                .map(|index| state.mapping_table[index]),
+        );
+        expected[640..656].copy_from_slice(
+            &[2, 1, 2, 2, 2, 2, 1, 2, 3, 3, 4, 3, 3, 4, 3, 3]
+                .map(|index| state.mapping_table[index]),
+        );
+        assert_eq!(screenshot(&mut view, (640, 2)), expected);
+    }
+}

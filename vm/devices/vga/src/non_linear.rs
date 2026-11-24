@@ -83,3 +83,121 @@ pub fn blit_non_linear4to32(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn palette() -> [u32; 256] {
+        std::array::from_fn(|index| 0x00102030 + index as u32 * 0x00010203)
+    }
+
+    #[test]
+    fn planar_pixels_follow_plane_order_and_source_pitch() {
+        let vram = GuestMemory::allocate(4096);
+        let colors = palette();
+        vram.write_at(
+            16,
+            &[
+                0x55, 0x33, 0x0f, 0x00, 0xff, 0xff, 0xff, 0xff, 0x55, 0x33, 0x0f, 0xff,
+            ],
+        )
+        .unwrap();
+        vram.fill_at(252, 0xa5, 72).unwrap();
+
+        blit_non_linear4to32(
+            &vram,
+            &Parameters {
+                column_left: 0,
+                column_right: 8,
+                clip_left: 0,
+                clip_right: 8,
+                row_number_top: 0,
+                row_number_bottom: 2,
+            },
+            &colors,
+            0,
+            false,
+            false,
+            16,
+            2,
+            256,
+            32,
+        );
+
+        let mut pixels = [0u32; 16];
+        vram.read_at(256, zerocopy::IntoBytes::as_mut_bytes(&mut pixels))
+            .unwrap();
+        assert_eq!(pixels, colors[..16]);
+        assert_eq!(vram.read_plain::<u32>(252).unwrap(), 0xa5a5a5a5);
+        assert_eq!(vram.read_plain::<u32>(320).unwrap(), 0xa5a5a5a5);
+    }
+
+    #[test]
+    fn planar_pixel_panning_starts_with_selected_pixel() {
+        let vram = GuestMemory::allocate(4096);
+        let colors = palette();
+        vram.write_at(0, &[0x55, 0x33, 0x0f, 0x00]).unwrap();
+
+        blit_non_linear4to32(
+            &vram,
+            &Parameters {
+                column_left: 0,
+                column_right: 5,
+                clip_left: 0,
+                clip_right: 5,
+                row_number_top: 0,
+                row_number_bottom: 1,
+            },
+            &colors,
+            3,
+            false,
+            false,
+            0,
+            1,
+            256,
+            20,
+        );
+
+        let mut pixels = [0u32; 5];
+        vram.read_at(256, zerocopy::IntoBytes::as_mut_bytes(&mut pixels))
+            .unwrap();
+        assert_eq!(pixels, colors[3..8]);
+    }
+
+    #[test]
+    fn planar_pixel_doubling_repeats_columns_and_rows() {
+        let vram = GuestMemory::allocate(4096);
+        let colors = palette();
+        vram.write_at(0, &[0x55, 0x33, 0x0f, 0x00]).unwrap();
+
+        blit_non_linear4to32(
+            &vram,
+            &Parameters {
+                column_left: 0,
+                column_right: 16,
+                clip_left: 0,
+                clip_right: 16,
+                row_number_top: 0,
+                row_number_bottom: 2,
+            },
+            &colors,
+            0,
+            true,
+            true,
+            0,
+            1,
+            256,
+            64,
+        );
+
+        let expected = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7].map(|index| colors[index]);
+        for offset in [256, 320] {
+            let mut pixels = [0u32; 16];
+            vram.read_at(offset, zerocopy::IntoBytes::as_mut_bytes(&mut pixels))
+                .unwrap();
+            assert_eq!(pixels, expected);
+        }
+    }
+}
