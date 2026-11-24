@@ -142,6 +142,11 @@ pub enum KvmError {
     SmmState { vp_index: u32 },
     #[cfg(guest_arch = "x86_64")]
     #[error(
+        "VP {vp_index} is in KVM MP state {mp_state}, which a save cannot hold (9 is the AP reset hold of an SEV-ES or SEV-SNP guest)"
+    )]
+    UnsupportedMpState { vp_index: u32, mp_state: u32 },
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
         "VP {vp_index} cannot be halted: it holds a paravirtual kick that the guest sent it, which KVM clears only from Linux 6.15 on"
     )]
     PvKick { vp_index: u32 },

@@ -301,16 +301,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn activity(&mut self) -> Result<vp::Activity, Self::Error> {
-        let mp_state = match self.kvm().get_mp_state()? {
-            kvm::KVM_MP_STATE_RUNNABLE => vp::MpState::Running,
-            kvm::KVM_MP_STATE_UNINITIALIZED => vp::MpState::WaitForSipi, // TODO: add a state for this
-            kvm::KVM_MP_STATE_INIT_RECEIVED => vp::MpState::WaitForSipi,
-            kvm::KVM_MP_STATE_HALTED => vp::MpState::Halted,
-            kvm::KVM_MP_STATE_SIPI_RECEIVED => todo!("handle intermediate sipi states"),
-            state => {
-                panic!("unrecognized mp state {}", state);
-            }
-        };
+        let mp_state = mp_state_from_kvm(self.vp.vpindex.index(), self.kvm().get_mp_state()?)?;
         let events = self.kvm().get_vcpu_events()?;
         let (interrupt_shadow, interrupt_shadow_kind) = shadow::from_kvm(events.interrupt.shadow);
 
@@ -821,6 +812,29 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 }
 
+/// Returns the MP state of the activity of the VP `vp_index` for `mp_state`,
+/// the MP state that KVM reports for it.
+///
+/// An SEV-ES or SEV-SNP guest can have an AP wait in its AP reset hold, which
+/// it asks for through the GHCB, and which KVM reports as
+/// `KVM_MP_STATE_AP_RESET_HOLD`. KVM wakes such an AP as it wakes a halted one,
+/// but it keeps the guest's request, which an INIT and a SIPI complete instead
+/// of starting the AP at the SIPI's vector, so no state of the activity
+/// describes the hold. Since the guest chooses it, this refuses it, and any
+/// other state that the activity does not describe: a save of such a VP fails,
+/// and an inspection shows no activity for it. KVM reports no other such state
+/// for an x86 vCPU: `KVM_SET_MP_STATE` takes `KVM_MP_STATE_SIPI_RECEIVED` only
+/// for compatibility, as waiting for a SIPI with one pending.
+fn mp_state_from_kvm(vp_index: u32, mp_state: u32) -> Result<vp::MpState, KvmError> {
+    match mp_state {
+        kvm::KVM_MP_STATE_RUNNABLE => Ok(vp::MpState::Running),
+        kvm::KVM_MP_STATE_UNINITIALIZED => Ok(vp::MpState::WaitForSipi), // TODO: add a state for this
+        kvm::KVM_MP_STATE_INIT_RECEIVED => Ok(vp::MpState::WaitForSipi),
+        kvm::KVM_MP_STATE_HALTED => Ok(vp::MpState::Halted),
+        mp_state => Err(KvmError::UnsupportedMpState { vp_index, mp_state }),
+    }
+}
+
 /// Returns the pending interruption that `events` holds.
 ///
 /// OpenVMM does not enable `KVM_CAP_EXCEPTION_PAYLOAD`, so
@@ -1026,6 +1040,7 @@ mod tests {
     use super::check_restorable_shadow_kind;
     use super::check_restored_efer;
     use super::kvm_lapic_page;
+    use super::mp_state_from_kvm;
     use super::pending_interruption;
     use crate::KvmError;
     use test_with_tracing::test;
@@ -1034,6 +1049,7 @@ mod tests {
     use virt::x86::vp::Activity;
     use virt::x86::vp::ApicRegisters;
     use virt::x86::vp::InterruptShadowKind;
+    use virt::x86::vp::MpState;
     use virt::x86::vp::PendingEvent;
     use virt::x86::vp::PendingInterruption;
     use x86defs::X64_EFER_LMA;
@@ -1461,6 +1477,39 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn the_activity_refuses_the_mp_states_that_it_does_not_describe() {
+        // A new AP is uninitialized, and an AP that took an INIT waits for its
+        // SIPI, which the activity holds alike.
+        for (mp_state, expected) in [
+            (kvm::KVM_MP_STATE_RUNNABLE, MpState::Running),
+            (kvm::KVM_MP_STATE_UNINITIALIZED, MpState::WaitForSipi),
+            (kvm::KVM_MP_STATE_INIT_RECEIVED, MpState::WaitForSipi),
+            (kvm::KVM_MP_STATE_HALTED, MpState::Halted),
+        ] {
+            assert_eq!(mp_state_from_kvm(3, mp_state).unwrap(), expected);
+        }
+        // The AP reset hold that an SEV-ES or SEV-SNP guest asks for, the
+        // state that KVM takes but never reports, one of another architecture,
+        // and one that KVM does not define.
+        for mp_state in [
+            kvm::KVM_MP_STATE_AP_RESET_HOLD,
+            kvm::KVM_MP_STATE_SIPI_RECEIVED,
+            kvm::KVM_MP_STATE_SUSPENDED,
+            u32::MAX,
+        ] {
+            let err = mp_state_from_kvm(3, mp_state).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    KvmError::UnsupportedMpState { vp_index: 3, mp_state: refused }
+                        if refused == mp_state
+                ),
+                "{mp_state}: {err:?}"
+            );
+        }
+    }
 }
 
 /// Restores of one-shot LAPIC timers through `KVM_SET_LAPIC`, with a real-mode
@@ -1862,5 +1911,102 @@ mod exception_kvm_tests {
                 "set injected {injected}, pending {pending}"
             );
         }
+    }
+}
+
+/// Tests against the host's KVM, with a partition built as a VMM builds one, of
+/// a VP in an MP state that the activity does not describe.
+#[cfg(test)]
+mod mp_state_kvm_tests {
+    use crate::Kvm;
+    use crate::KvmError;
+    use guestmem::GuestMemory;
+    use hvdef::Vtl;
+    use pal_async::DefaultPool;
+    use test_with_tracing::test;
+    use virt::BindProcessor;
+    use virt::Hypervisor;
+    use virt::PartitionConfig;
+    use virt::Processor;
+    use virt::ProtoPartition;
+    use virt::ProtoPartitionConfig;
+    use virt::state::StateError;
+    use virt::x86::vp::AccessVpState;
+    use vm_topology::memory::MemoryLayout;
+    use vm_topology::processor::TopologyBuilder;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
+
+    const RAM_LEN: u64 = 0x10_0000;
+
+    /// An SEV-ES or SEV-SNP guest puts an AP in its AP reset hold through the
+    /// GHCB. `KVM_SET_MP_STATE` puts any vCPU with an in-kernel LAPIC there, so
+    /// this puts an AP of a partition without isolation there, with no guest.
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn a_save_refuses_an_ap_in_its_reset_hold() {
+        DefaultPool::run_with(async |driver| {
+            let keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+            let vmtime = keeper.builder().build(&driver).await.unwrap();
+            let topology = TopologyBuilder::new_x86().build(2).unwrap();
+            let mem_layout = MemoryLayout::new(RAM_LEN, &[], &[], &[], None).unwrap();
+            let guest_memory = GuestMemory::allocate(RAM_LEN as usize);
+            let (_partition, mut binders) = Kvm::new()
+                .unwrap()
+                .new_partition(ProtoPartitionConfig {
+                    processor_topology: &topology,
+                    hv_config: None,
+                    vmtime: &vmtime,
+                    isolation: virt::ProtoPartitionIsolation::None,
+                    nested_virt: false,
+                    user_mode_memory_faults: false,
+                    lazy_memory_registration: false,
+                    time_abi: None,
+                })
+                .unwrap()
+                .build(PartitionConfig {
+                    mem_layout: &mem_layout,
+                    guest_memory: &guest_memory,
+                    cpuid: &[],
+                    vtl0_alias_map: None,
+                    fault_resolver: None,
+                })
+                .unwrap();
+            let mut ap = binders[1].bind().unwrap();
+            ap.kvm
+                .set_mp_state(kvm::KVM_MP_STATE_AP_RESET_HOLD)
+                .unwrap();
+
+            // Reading the activity, as a save and an inspection do, fails.
+            let mut state = ap.access_state(Vtl::Vtl0);
+            let err = state.activity().unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    KvmError::UnsupportedMpState {
+                        vp_index: 1,
+                        mp_state: kvm::KVM_MP_STATE_AP_RESET_HOLD,
+                    }
+                ),
+                "{err:?}"
+            );
+            let err = state.save_all().unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    StateError::Access {
+                        err: KvmError::UnsupportedMpState { vp_index: 1, .. },
+                        ..
+                    }
+                ),
+                "{err:?}"
+            );
+            // The AP stays in its hold, where a capture that rolls back
+            // leaves the guest.
+            assert_eq!(
+                ap.kvm.get_mp_state().unwrap(),
+                kvm::KVM_MP_STATE_AP_RESET_HOLD
+            );
+        })
     }
 }
