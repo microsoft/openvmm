@@ -437,11 +437,12 @@ restore flow over both transports:
   a tier gate host input until the guest acknowledges the restore.
 * `restore_ready_path` names an existing Unix domain socket on Linux or a
   `//./pipe/...` named pipe on Windows. `ResumeVM` writes and flushes exactly
-  `OPENVMM_RESTORE_READY_V1\n` after all fatal restore startup work completes.
-  For a gated restore, this occurs after guest repair succeeds and host input
-  is re-enabled, while the restored vCPU remains stopped. Signaling failure makes `ResumeVM` fail and tears down the
-  managed VM. The peer must accept and read concurrently with `ResumeVM`;
-  Windows flush completion waits until the complete frame has been consumed.
+  `OPENVMM_RESTORE_READY_V1\n` once the restored VM's devices have started,
+  and before it releases a restored vCPU. A gated restore does so with host
+  input still gated: guest repair and its acknowledgement follow the event.
+  Signaling failure makes `ResumeVM` fail and tears down the managed VM. The
+  peer must accept and read concurrently with `ResumeVM`; Windows flush
+  completion waits until the complete frame has been consumed.
 
 On cold boot, `DevicesConfig.virtio_consoles` may hold one entry, which
 configures a microVM Unix socket or named-pipe endpoint, or, with an empty
