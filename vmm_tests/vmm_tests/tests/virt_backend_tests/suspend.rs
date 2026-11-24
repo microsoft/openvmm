@@ -8,7 +8,8 @@
 //! that suspended it. The guest of these tests is code that suspends its own
 //! VP, in real mode, and in 64-bit mode with paging for one case, since a
 //! hypervisor does not keep a suspend state that the VMM writes, and a VP that
-//! was never run has none of its own.
+//! was never run has none of its own. A partition that cannot hold the idle
+//! state refuses it instead.
 
 use super::fixture::Fixture;
 use anyhow::Context as _;
@@ -635,3 +636,51 @@ petri::multitest!(vec![
         },
     ),
 ]);
+
+/// Restores an idle activity into the VP of a partition with the user-mode
+/// APIC, which must refuse it, and leave the activity as it was.
+fn user_mode_apic_refuses_idle(fixture: &Fixture, hv: &mut virt_whp::Whp) -> anyhow::Result<()> {
+    hv.user_mode_apic = true;
+    let (_partition, mut binder) = fixture.build(hv, true)?;
+    let mut processor = binder.bind()?;
+    let mut state = processor.access_state(Vtl::Vtl0);
+    let before = state.activity()?;
+    // The user-mode APIC keeps the MP state and the pending NMI itself, and
+    // the rest of the activity in WHP's registers, so the refused activity
+    // differs from the VP's in some of each, which shows a write of either
+    // that precedes the refusal.
+    let idle = vp::Activity {
+        mp_state: vp::MpState::Idle,
+        nmi_pending: !before.nmi_pending,
+        nmi_masked: !before.nmi_masked,
+        interrupt_shadow: !before.interrupt_shadow,
+        ..Default::default()
+    };
+    match state.set_activity(&idle) {
+        Err(err)
+            if matches!(
+                (&err as &(dyn std::error::Error + 'static)).downcast_ref::<virt_whp::Error>(),
+                Some(virt_whp::Error::UnsupportedState(_))
+            ) => {}
+        result => anyhow::bail!(
+            "restoring an idle VP with the user-mode APIC did not refuse it: {result:?}"
+        ),
+    }
+    anyhow::ensure!(
+        state.activity()? == before,
+        "the refused restore changed the activity"
+    );
+    Ok(())
+}
+
+// Only the hypervisor's APIC suspends a VP in its `rdmsr` of the guest idle MSR,
+// so only a partition with it saves an idle VP, but a snapshot does not record
+// which APIC captured it. The user-mode APIC cannot hold the state, since an
+// interrupt wakes an idle VP even with its interrupts disabled, so its restore
+// must refuse the state, rather than abort the VMM, or restore it as halted.
+petri::multitest!(vec![crate::native::whp::test(
+    "whp::user_mode_apic_refuses_an_idle_vp_hv1",
+    true,
+    supported_hv1,
+    async |driver, mut hv| user_mode_apic_refuses_idle(&Fixture::new(driver).await?, &mut hv),
+)]);
