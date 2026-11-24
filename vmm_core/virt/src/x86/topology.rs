@@ -202,9 +202,15 @@ fn cache_parameters_cpuid(
 
         // The level 3 cache is not per-VP; indicate that it is per-socket.
         // The level comes from the cache's own descriptor: `eax` carries only
-        // the topology fields.
+        // the topology fields. The sharing count has 12 bits, so above 4096
+        // VPs per socket it saturates, as AMD's leaf 8000001Dh does, and a
+        // guest sees an L3 cache per 4096 APIC IDs.
         if CacheParametersEax::from(result[0]).cache_level() == 3 {
-            eax.set_threads_sharing_cache_minus_one(topology.reserved_vps_per_socket() - 1);
+            const MAX_THREADS_SHARING_CACHE_MINUS_ONE: u32 = 0xfff;
+            eax.set_threads_sharing_cache_minus_one(min(
+                MAX_THREADS_SHARING_CACHE_MINUS_ONE,
+                topology.reserved_vps_per_socket() - 1,
+            ));
         }
 
         let eax_mask = CacheParametersEax::new()
@@ -592,6 +598,7 @@ mod tests {
 mod effective_cpuid_tests {
     use super::*;
     use crate::CpuidLeafSet;
+    use test_with_tracing::test;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::x86::X2ApicState;
 
@@ -764,6 +771,47 @@ mod effective_cpuid_tests {
                 // The null cache that ends the enumeration keeps its native
                 // value.
                 assert_eq!(set.result(0x8000_001d, 4, &[0; 4]), [0; 4]);
+            }
+        }
+    }
+
+    /// Leaf 4 on Intel, and leaf 0x8000001D on AMD, count the logical
+    /// processors that share a cache in 12 bits, so at most 4096. The L3
+    /// cache of a larger socket reports that maximum, and the L1 and L2
+    /// caches keep their per-core counts, even in a VM with a single VP.
+    #[test]
+    fn l3_sharing_saturates_above_4096_vps_per_socket() {
+        let vendors: [(CpuidFn<'_>, u32); 2] = [(&intel_cpuid, 4), (&amd_cpuid, 0x8000_001d)];
+        for (cpuid, leaf) in vendors {
+            for (vps_per_socket, l3_sharing) in [(4096, 4096), (4097, 4096), (32768, 4096)] {
+                for smt in [false, true] {
+                    let topology = TopologyBuilder::new_x86()
+                        .vps_per_socket(vps_per_socket)
+                        .smt_enabled(smt)
+                        .x2apic(X2ApicState::Supported)
+                        .build(1)
+                        .unwrap();
+                    let threads_per_core = if smt { 2 } else { 1 };
+                    let mut leaves = Vec::new();
+                    topology_cpuid(&topology, cpuid, &mut leaves).unwrap();
+                    let set = CpuidLeafSet::new(leaves);
+                    for subleaf in 0..4 {
+                        let eax = CacheParametersEax::from(
+                            set.result(leaf, subleaf, &cpuid(leaf, subleaf))[0],
+                        );
+                        let sharing = if eax.cache_level() == 3 {
+                            l3_sharing
+                        } else {
+                            threads_per_core
+                        };
+                        assert_eq!(
+                            eax.threads_sharing_cache_minus_one() + 1,
+                            sharing,
+                            "leaf {leaf:#x}, {vps_per_socket} VPs per socket, smt {smt}, \
+                             subleaf {subleaf}"
+                        );
+                    }
+                }
             }
         }
     }
