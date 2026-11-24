@@ -163,24 +163,23 @@ mod tests {
         assert_eq!(set.result(2, 0, &DEFAULT), DEFAULT);
     }
 
-    // Test: Look up a leaf whose entry only covers some bits (a mask).
-    // Expected: Masked bits come from the entry; all other bits come from the
-    //       default.
+    // Test: Look up a leaf whose entry masks ECX bit 20 (set in the default)
+    //       and bit 22 (clear in the default), with the entry clearing bit 20
+    //       and setting every other bit.
+    // Expected: Bit 20 is cleared and bit 22 is set; all other bits come from
+    //       the default.
     #[test]
     fn masked_leaf_overrides_only_masked_bits() {
-        let set = CpuidLeafSet::new(vec![CpuidLeaf::new(1, [0, 0, 0xffff_ffff, 0]).masked([
+        let set = CpuidLeafSet::new(vec![CpuidLeaf::new(1, [0, 0, !(1 << 20), 0]).masked([
             0,
             0,
-            1 << 21,
+            1 << 20 | 1 << 22,
             0,
         ])]);
 
         let result = set.result(1, 0, &DEFAULT);
 
-        assert_eq!(result[0], DEFAULT[0]);
-        assert_eq!(result[1], DEFAULT[1]);
-        assert_eq!(result[2], DEFAULT[2] | 1 << 21);
-        assert_eq!(result[3], DEFAULT[3]);
+        assert_eq!(result, [DEFAULT[0], DEFAULT[1], 0x3363_3333, DEFAULT[3]]);
     }
 
     // Test: Merge two entries for the same leaf and subleaf, where the later
