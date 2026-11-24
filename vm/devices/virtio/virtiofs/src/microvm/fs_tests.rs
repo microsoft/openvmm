@@ -1383,6 +1383,57 @@ fn microvm_listings_of_more_names_than_a_handle_holds_fail_with_e2big() {
     assert_eq!(read_root(&fs, open_root(&fs), false), Err(lx::Error::E2BIG));
 }
 
+/// A handle's listing holds at most MAX_DIRECTORY_ENTRIES_PER_HANDLE entries,
+/// `.` and `..` included, and a directory that shows more fails with E2BIG.
+/// The entries that the access policy hides count toward no bound, so one
+/// that the host lists after the shown entries that fill a listing does not
+/// fail it with E2BIG (microsoft/nvx#2093). A directory of that many entries
+/// takes seconds to create on Windows, so smaller bounds stand in for the
+/// handle's.
+#[test]
+fn microvm_listings_count_only_the_entries_that_the_policy_shows() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    let files = ["a", "b", "c"];
+    for file in files {
+        std::fs::write(root_path.join(file), b"").unwrap();
+    }
+    // The host lists the files in an order of its own, so each is hidden in
+    // turn, and one of them is the last that the host lists.
+    for hidden in files {
+        let profile = MicroVmVirtioFsProfile::from_attachment(
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(root_path).unwrap(),
+            true,
+            vec![hidden.to_owned()],
+        )
+        .unwrap();
+        let fs = VirtioFs::new_microvm(root_path, profile).unwrap();
+        let directory = fs.get_file(FUSE_ROOT_ID, open_root(&fs)).unwrap();
+        let listed = directory
+            .build_microvm_directory_snapshot_within(4)
+            .map(|entries| {
+                let mut names: Vec<_> = entries
+                    .into_iter()
+                    .map(|entry| String::from_utf8(entry.name).unwrap())
+                    .collect();
+                names.sort();
+                names
+            });
+        let expected: Vec<_> = [".", ".."]
+            .into_iter()
+            .chain(files.into_iter().filter(|&file| file != hidden))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(listed, Ok(expected), "hidden={hidden}");
+        assert_eq!(
+            directory.build_microvm_directory_snapshot_within(3).err(),
+            Some(lx::Error::E2BIG),
+            "hidden={hidden}"
+        );
+    }
+}
+
 #[test]
 fn hard_link_aliases_restore_and_reject_missing_or_replaced_names() {
     let temporary_directory = tempdir().unwrap();
