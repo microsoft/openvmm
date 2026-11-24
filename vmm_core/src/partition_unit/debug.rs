@@ -22,6 +22,9 @@ pub struct DebuggerState {
     rpc: Option<mesh::Receiver<DebugRequest>>,
     attached: bool,
     halt_reported: bool,
+    /// Whether the recorded halt went to the debugger instead of the client,
+    /// which then hears of it when the debugger detaches.
+    halt_withheld: bool,
     /// Whether the debugger holds the VPs stopped without a halt reason, as it
     /// does from a break into the stopped unit until it resumes them.
     holds_vps: bool,
@@ -35,6 +38,7 @@ impl DebuggerState {
             rpc,
             attached: false,
             halt_reported: false,
+            halt_withheld: false,
             holds_vps: false,
         }
     }
@@ -58,8 +62,15 @@ impl DebuggerState {
         std::future::pending().await
     }
 
+    /// Routes a newly recorded halt to the debugger instead of the client, if a
+    /// debugger is attached. Returns whether it did.
+    pub fn route_halt(&mut self, reason: &HaltReason) -> bool {
+        self.halt_withheld = self.report_halt_to_debugger(reason);
+        self.halt_withheld
+    }
+
     /// Returns true if the reason was reported to the debugger.
-    pub fn report_halt_to_debugger(&mut self, reason: &HaltReason) -> bool {
+    fn report_halt_to_debugger(&mut self, reason: &HaltReason) -> bool {
         if !self.attached {
             return false;
         }
@@ -102,10 +113,13 @@ impl PartitionUnitRunner {
                     );
                 }
                 // Report the halt reason to the client since the debugger won't
-                // be there to get it.
-                if let Some(reason) = self.halt_reason.clone() {
+                // be there to get it, unless the client already has it.
+                if std::mem::take(&mut self.debugger_state.halt_withheld)
+                    && let Some(reason) = self.halt_reason.clone()
+                {
                     self.client_notify_send.send(reason);
                 }
+                self.debugger_state.halt_reported = false;
                 self.debugger_state.attached = false;
                 if self.debugger_state.release_vps() {
                     self.try_start();
