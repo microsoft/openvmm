@@ -334,7 +334,8 @@ repair must not wait for a virtio-fs reply. Resetting a device does not release
 its input either: a device that the guest resets and starts again before the
 acknowledgement stays gated until OpenVMM releases device input. The
 acknowledgement is bounded by
-`--restore-gate-timeout-ms` (60000 milliseconds by default). A control-console
+`--restore-gate-timeout-ms` (60000 milliseconds by default), but the release
+of device input that follows it is not. A control-console
 host can connect while input is gated, but OpenVMM reads its authentication
 only after the release, so its `--microvm-control-auth-timeout-ms` deadline
 starts over when the gate releases. Platform manifests

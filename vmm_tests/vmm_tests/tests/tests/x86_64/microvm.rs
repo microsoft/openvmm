@@ -6,6 +6,9 @@
 use anyhow::Context;
 use mesh::CancelContext;
 use openvmm_defs::rpc::SnapshotQuiesceError;
+use pal_async::DefaultDriver;
+use pal_async::timer::Instant;
+use pal_async::timer::PolledTimer;
 use petri::PetriHaltReason;
 use petri::PetriVm;
 use petri::PetriVmBuilder;
@@ -429,5 +432,57 @@ async fn restore_gate_stops_a_late_acknowledgement(
         boundary.is_err(),
         "the guest's acknowledgement after the gate's timeout reached a snapshot boundary"
     );
+    vm.teardown().await
+}
+
+/// The timeout of a microVM's post-restore input gate bounds only the guest's
+/// acknowledgement: the snapshot boundary that holds the acknowledgement holds
+/// the VM, with host input still gated, until the VM's snapshot controller
+/// releases it, however long after the gate's deadline. The test arms the
+/// gate of a cold boot, which the VM worker gates as it gates a restore, and
+/// releases the guest's acknowledgement only once the deadline has passed.
+#[openvmm_test_no_agent(linux_direct_x64)]
+async fn restore_gate_deadline_ends_at_the_acknowledgement(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    /// The gate's timeout, within which the guest boots and acknowledges.
+    const GATE_TIMEOUT: Duration = Duration::from_secs(10);
+    /// How long after the gate's deadline the test releases the
+    /// acknowledgement, which leaves the worker time to act on the deadline.
+    const RELEASE_DELAY: Duration = Duration::from_secs(2);
+    const RELEASED: &[u8] = b"GATE-RELEASED\n";
+
+    let mut vm = run_snapshot_controller_guest(
+        config.modify_backend(|config| config.with_microvm_restore_gate(GATE_TIMEOUT)),
+        &format!(
+            "{SNAPSHOT_REQUEST}{}{}",
+            portb_output(RELEASED)?,
+            power_off(GUEST_STATUS),
+        ),
+    )
+    .await?;
+    // The VM worker armed the gate's deadline when it started the VM, before
+    // the launch returned.
+    let deadline = Instant::now() + GATE_TIMEOUT;
+
+    wait_for_snapshot_boundary(&mut vm).await?;
+    PolledTimer::new(&driver)
+        .sleep_until(deadline + RELEASE_DELAY)
+        .await;
+    vm.backend()
+        .release_microvm_snapshot_boundary()
+        .await
+        .context(
+            "the VM worker did not hold the guest's acknowledgement past the gate's deadline",
+        )?;
+    wait_for_guest_output(
+        &mut vm,
+        RELEASED,
+        "the guest did not continue after its acknowledgement's release",
+    )
+    .await?;
+    wait_for_power_off(&mut vm, GUEST_STATUS).await?;
     vm.teardown().await
 }
