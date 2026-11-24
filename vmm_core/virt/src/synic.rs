@@ -758,4 +758,211 @@ mod tests {
         drop(handle);
         assert!(synic.fast_paths.lock().is_empty());
     }
+
+    type Post = (Vtl, VpIndex, u8, u32, Vec<u8>);
+
+    /// A synic that records guest messages, guest event ports, and monitor
+    /// page activity, and that supports monitor pages.
+    #[derive(Default)]
+    struct RecordingSynic {
+        port_map: SynicPortMap,
+        posts: Mutex<Vec<Post>>,
+        event_ports: Mutex<Vec<(Vtl, u32, u8, u16)>>,
+        monitors: Arc<Mutex<Vec<(MonitorId, u32)>>>,
+        monitor_pages: Mutex<Vec<(Vtl, Option<u64>)>>,
+    }
+
+    struct NullGuestEventPort;
+
+    impl GuestEventPort for NullGuestEventPort {
+        fn interrupt(&self) -> vmcore::interrupt::Interrupt {
+            vmcore::interrupt::Interrupt::null()
+        }
+
+        fn set_target_vp(&mut self, _vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+            Ok(())
+        }
+    }
+
+    /// Unregisters its monitor when dropped.
+    struct MonitorHandle {
+        monitors: Arc<Mutex<Vec<(MonitorId, u32)>>>,
+        connection_id: u32,
+    }
+
+    impl Drop for MonitorHandle {
+        fn drop(&mut self) {
+            self.monitors
+                .lock()
+                .retain(|&(_, id)| id != self.connection_id);
+        }
+    }
+
+    impl Synic for RecordingSynic {
+        fn port_map(&self) -> &SynicPortMap {
+            &self.port_map
+        }
+
+        fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
+            self.posts
+                .lock()
+                .push((vtl, vp, sint, typ, payload.to_vec()));
+        }
+
+        fn new_guest_event_port(
+            self: Arc<Self>,
+            vtl: Vtl,
+            vp: u32,
+            sint: u8,
+            flag: u16,
+        ) -> Box<dyn GuestEventPort> {
+            self.event_ports.lock().push((vtl, vp, sint, flag));
+            Box::new(NullGuestEventPort)
+        }
+
+        fn prefer_os_events(&self) -> bool {
+            true
+        }
+
+        fn monitor_support(&self) -> Option<&dyn SynicMonitor> {
+            Some(self)
+        }
+    }
+
+    impl SynicMonitor for RecordingSynic {
+        fn register_monitor(
+            &self,
+            monitor_id: MonitorId,
+            connection_id: u32,
+        ) -> Box<dyn Sync + Send> {
+            self.monitors.lock().push((monitor_id, connection_id));
+            Box::new(MonitorHandle {
+                monitors: self.monitors.clone(),
+                connection_id,
+            })
+        }
+
+        fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+            self.monitor_pages.lock().push((vtl, gpa));
+            Ok(())
+        }
+
+        fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<u64>> {
+            self.monitor_pages.lock().push((vtl, Some(0x5000)));
+            Ok(Some(0x5000))
+        }
+    }
+
+    // Test: Create a guest message port for VTL1, VP 2, SINT 3, post a
+    //       message, retarget the port to VP 5, and post again.
+    // Expected: Each message reaches the synic for the port's VTL and SINT
+    //       with its type and payload, first on VP 2 and then on VP 5.
+    #[test]
+    fn guest_message_port_posts_to_its_target_vp() {
+        let synic = Arc::new(RecordingSynic::default());
+        let ports = SynicPorts::new(synic.clone());
+        let mut port = ports.new_guest_message_port(Vtl::Vtl1, 2, 3).unwrap();
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        assert!(port.poll_post_message(&mut cx, 0x10, b"one").is_ready());
+        port.set_target_vp(5).unwrap();
+        assert!(port.poll_post_message(&mut cx, 0x11, b"two").is_ready());
+
+        assert_eq!(
+            *synic.posts.lock(),
+            [
+                (Vtl::Vtl1, VpIndex::new(2), 3, 0x10, b"one".to_vec()),
+                (Vtl::Vtl1, VpIndex::new(5), 3, 0x11, b"two".to_vec()),
+            ]
+        );
+    }
+
+    // Test: Create a guest event port and ask whether OS events are preferred
+    //       on a synic that prefers them.
+    // Expected: The event port is created by the synic for the requested VTL,
+    //       VP, SINT, and flag, and the preference is passed through.
+    #[test]
+    fn guest_event_port_and_os_event_preference_pass_through() {
+        let synic = Arc::new(RecordingSynic::default());
+        let ports = SynicPorts::new(synic.clone());
+
+        let _port = ports
+            .new_guest_event_port(99, Vtl::Vtl2, 4, 6, 12, None)
+            .unwrap();
+
+        assert_eq!(*synic.event_ports.lock(), [(Vtl::Vtl2, 4, 6, 12)]);
+        assert!(ports.prefer_os_events());
+    }
+
+    // Test: On a synic with monitor pages, add an event port with monitor ID
+    //       9, set the monitor page, allocate one, and drop the port; then add
+    //       a monitored event port on a synic without monitor pages.
+    // Expected: The monitor is registered for the port's connection ID and
+    //       unregistered when the port is dropped; setting the page passes the
+    //       outgoing (child-to-parent) GPA; an allocated page is reported as
+    //       the outgoing GPA. Without monitor support, no monitor access is
+    //       offered and the port is still added.
+    #[test]
+    fn monitor_pages_and_monitored_ports() {
+        let synic = Arc::new(RecordingSynic::default());
+        let ports = SynicPorts::new(synic.clone());
+        let monitor_info = MonitorInfo {
+            monitor_id: MonitorId(9),
+            latency: std::time::Duration::from_millis(1),
+        };
+
+        let handle = ports
+            .add_event_port(
+                30,
+                Vtl::Vtl0,
+                Arc::new(TestEventPort::default()),
+                Some(monitor_info),
+            )
+            .unwrap();
+        assert_eq!(*synic.monitors.lock(), [(MonitorId(9), 30)]);
+
+        let monitor = ports.monitor_support().unwrap();
+        monitor
+            .set_monitor_page(
+                Vtl::Vtl0,
+                Some(MonitorPageGpas {
+                    parent_to_child: 0x3000,
+                    child_to_parent: 0x4000,
+                }),
+            )
+            .unwrap();
+        monitor.set_monitor_page(Vtl::Vtl0, None).unwrap();
+        let allocated = monitor.allocate_monitor_page(Vtl::Vtl1).unwrap().unwrap();
+        assert_eq!(
+            (allocated.parent_to_child, allocated.child_to_parent),
+            (0, 0x5000)
+        );
+        assert_eq!(
+            *synic.monitor_pages.lock(),
+            [
+                (Vtl::Vtl0, Some(0x4000)),
+                (Vtl::Vtl0, None),
+                (Vtl::Vtl1, Some(0x5000))
+            ]
+        );
+
+        drop(handle);
+        assert!(synic.monitors.lock().is_empty());
+
+        let plain = Arc::new(TestSynic::default());
+        let plain_ports = SynicPorts::new(plain.clone());
+        assert!(plain_ports.monitor_support().is_none());
+        let _handle = plain_ports
+            .add_event_port(
+                31,
+                Vtl::Vtl0,
+                Arc::new(TestEventPort::default()),
+                Some(monitor_info),
+            )
+            .unwrap();
+        plain
+            .port_map()
+            .handle_signal_event(Vtl::Vtl0, 31, 0)
+            .unwrap();
+    }
 }

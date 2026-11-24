@@ -231,4 +231,35 @@ mod tests {
             );
         }
     }
+
+    // Test: Build a set from two entries for leaf 7 subleaf 0 (merged) and an
+    //       unmasked entry for leaf 1, then list and consume its leaves.
+    // Expected: Both APIs return the merged values, masks, and subleaf indices.
+    #[test]
+    fn leaf_set_lists_merged_leaves_and_masks() {
+        let set = CpuidLeafSet::new(vec![
+            CpuidLeaf::new(7, [0xa, 0, 0, 0])
+                .indexed(0)
+                .masked([0xf, 0, 0, 0]),
+            CpuidLeaf::new(1, [0x906ea, 0, 0, 0]),
+            CpuidLeaf::new(7, [0xb0, 0, 0, 0])
+                .indexed(0)
+                .masked([0xf0, 0, 0, 0]),
+        ]);
+
+        let expected = [
+            (1, None, [0x906ea, 0, 0, 0], [!0; 4]),
+            (7, Some(0), [0xba, 0, 0, 0], [0xff, 0, 0, 0]),
+        ];
+        let leaf_state = |leaf: &CpuidLeaf| (leaf.function, leaf.index, leaf.result, leaf.mask);
+        assert_eq!(
+            set.leaves().iter().map(leaf_state).collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(set.result(7, 0, &[0; 4])[0], 0xba);
+        assert_eq!(
+            set.into_leaves().iter().map(leaf_state).collect::<Vec<_>>(),
+            expected
+        );
+    }
 }

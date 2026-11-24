@@ -1001,3 +1001,154 @@ pub trait EmulatorMonitorSupport {
     #[must_use]
     fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::Context;
+    use std::task::Wake;
+    use test_with_tracing::test;
+
+    /// A waker that counts how many times it has been woken.
+    #[derive(Default)]
+    struct CountWakes(AtomicUsize);
+
+    impl Wake for CountWakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl CountWakes {
+        fn count(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    // Test: Classify every isolation type, convert each to the hypervisor's
+    //       isolation type and back, and convert an unknown hypervisor value.
+    // Expected: Only None is unisolated; SNP, TDX, and CCA are hardware
+    //       isolated but VBS isn't; every type round-trips; the unknown value
+    //       is rejected.
+    #[test]
+    fn isolation_types_classify_and_round_trip() {
+        let all = [
+            IsolationType::None,
+            IsolationType::Vbs,
+            IsolationType::Snp,
+            IsolationType::Tdx,
+            IsolationType::Cca,
+        ];
+        assert_eq!(
+            all.map(|t| t.is_isolated()),
+            [false, true, true, true, true]
+        );
+        assert_eq!(
+            all.map(|t| t.is_hardware_isolated()),
+            [false, false, true, true, true]
+        );
+        for t in all {
+            assert_eq!(IsolationType::from_hv(t.to_hv()).unwrap(), t);
+        }
+        assert!(IsolationType::from_hv(hvdef::HvPartitionIsolationType(0x7f)).is_err());
+    }
+
+    // Test: Classify each partition isolation configuration and each initial
+    //       page import type.
+    // Expected: Each configuration maps to its isolation type (SNP regardless
+    //       of its boot configuration) and only None is unisolated; only
+    //       shared imports are visible to the host.
+    #[test]
+    fn isolation_config_and_page_imports_classify() {
+        let snp = ProtoPartitionIsolation::Snp(SnpPartitionConfig::DirectBoot {
+            restricted_injection: false,
+        });
+        let configs = [
+            (ProtoPartitionIsolation::None, IsolationType::None),
+            (ProtoPartitionIsolation::Vbs, IsolationType::Vbs),
+            (snp, IsolationType::Snp),
+            (ProtoPartitionIsolation::Tdx, IsolationType::Tdx),
+            (ProtoPartitionIsolation::Cca, IsolationType::Cca),
+        ];
+        for (config, expected) in configs {
+            assert_eq!(config.isolation_type(), expected);
+            assert_eq!(config.is_isolated(), expected != IsolationType::None);
+        }
+
+        for import in [
+            InitialPageImportType::Normal,
+            InitialPageImportType::NormalUnmeasured,
+            InitialPageImportType::VpContext,
+            InitialPageImportType::Secrets,
+            InitialPageImportType::Cpuid,
+            InitialPageImportType::CpuidExtendedState,
+        ] {
+            assert_eq!(import.page_visibility(), PageVisibility::Exclusive);
+        }
+        assert_eq!(
+            InitialPageImportType::Shared.page_visibility(),
+            PageVisibility::Shared
+        );
+    }
+
+    // Test: Run a future that's already complete under a stop checker, then
+    //       a future that never completes, and request a stop while it waits.
+    // Expected: The complete future's result is returned; the waiting one
+    //       stays pending until the stop, which wakes it, and then fails with
+    //       a stop error. check() and is_stopping() report the stop.
+    #[test]
+    fn stop_request_wakes_and_ends_waiting_vp() {
+        let source = StopVpSource::new();
+        let mut stop = source.checker();
+        let wakes = Arc::new(CountWakes::default());
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+
+        let done = pin!(stop.until_stop(async { 5 })).as_mut().poll(&mut cx);
+        assert!(matches!(done, Poll::Ready(Ok(5))));
+        assert!(stop.check().is_ok() && !source.is_stopping());
+
+        let mut waiting = Box::pin(stop.until_stop(std::future::pending::<()>()));
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(wakes.count(), 0);
+
+        source.stop();
+        assert_eq!(wakes.count(), 1);
+        assert!(matches!(
+            waiting.as_mut().poll(&mut cx),
+            Poll::Ready(Err(VpStopped(())))
+        ));
+        drop(waiting);
+        assert!(stop.check().is_err() && source.is_stopping());
+        assert!(matches!(
+            VpHaltReason::from(stop.check().unwrap_err()),
+            VpHaltReason::Stop(_)
+        ));
+    }
+
+    // Test: Request a yield twice, wait for it, and request again; also wait
+    //       when no yield was requested.
+    // Expected: Only the first request needs a signal; waiting yields once
+    //       (waking itself so it runs again) and then completes; after that a
+    //       new request needs a signal again. Without a request, waiting
+    //       completes immediately.
+    #[test]
+    fn yield_request_yields_once() {
+        let needs_yield = NeedsYield::new();
+        let wakes = Arc::new(CountWakes::default());
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(pin!(needs_yield.maybe_yield()).poll(&mut cx).is_ready());
+
+        assert!(needs_yield.request_yield());
+        assert!(!needs_yield.request_yield());
+        let mut yielding = pin!(needs_yield.maybe_yield());
+        assert!(yielding.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(wakes.count(), 1);
+        assert!(yielding.as_mut().poll(&mut cx).is_ready());
+
+        assert!(needs_yield.request_yield());
+    }
+}

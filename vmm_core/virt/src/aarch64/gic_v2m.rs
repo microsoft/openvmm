@@ -55,3 +55,35 @@ impl SignalMsi for GicV2mSignalMsi {
         self.irqcon.set_spi_irq(data, true);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aarch64::gic_software_device::tests::RecordGic;
+    use test_with_tracing::test;
+
+    // Test: Signal MSIs to a v2m frame at 0x2000_0000 owning SPIs 64-95:
+    //       one to the SETSPI_NS doorbell for SPI 70, one to another address,
+    //       and doorbell writes for SPIs just outside the frame's range.
+    // Expected: Only the doorbell write for SPI 70 asserts an SPI; the others
+    //       are dropped.
+    #[test]
+    fn only_doorbell_writes_in_range_assert_spis() {
+        let gic = Arc::new(RecordGic::default());
+        let v2m = GicV2mSignalMsi::new(
+            &GicV2mInfo {
+                frame_base: 0x2000_0000,
+                spi_base: 64,
+                spi_count: 32,
+            },
+            gic.clone(),
+        );
+
+        v2m.signal_msi(None, 0x2000_0040, 70);
+        v2m.signal_msi(None, 0x2000_0044, 70);
+        v2m.signal_msi(None, 0x2000_0040, 63);
+        v2m.signal_msi(None, 0x2000_0040, 96);
+
+        assert_eq!(*gic.0.lock(), [(70, true)]);
+    }
+}

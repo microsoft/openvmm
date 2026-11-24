@@ -10146,6 +10146,7 @@ dependencies = [
  "inspect",
  "memory_range",
  "mesh_protobuf",
+ "pal_async",
  "pal_event",
  "parking_lot",
  "pci_core",
