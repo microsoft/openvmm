@@ -12,9 +12,11 @@ use crate::WhpPartitionInner;
 use crate::WhpProcessor;
 use crate::WhpResultExt;
 use crate::WhpVpRef;
+use hvdef::HvRegisterValue;
 use hvdef::HvVtlEntryReason;
 use hvdef::HvX64PendingEventReg0;
 use hvdef::HvX64PendingInterruptionRegister;
+use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use inspect::Inspect;
 use std::sync::atomic::Ordering;
@@ -36,6 +38,7 @@ use vmcore::vmtime::VmTimeAccess;
 use whp::get_registers;
 use whp::set_registers;
 use x86defs::RFlags;
+use zerocopy::FromZeros;
 
 impl WhpPartitionInner {
     pub fn lint(&self, vp_index: VpIndex, vtl: Vtl, index: usize) {
@@ -276,18 +279,35 @@ impl WhpProcessor<'_> {
                 lapic.nmi_pending = value.nmi_pending;
                 self.state.halted = halted;
 
-                let value = vp::Activity {
-                    mp_state: vp::MpState::Running,
-                    nmi_pending: false,
-                    nmi_masked: value.nmi_masked,
-                    interrupt_shadow: value.interrupt_shadow,
-                    pending_event: value.pending_event,
-                    pending_interruption: value.pending_interruption,
-                    nmi_pending_count: None,
-                    interrupt_shadow_kind: None,
-                };
-
-                self.vp.set_register_state(vtl, &value)?;
+                // The VMM keeps the halt and the wait for a SIPI itself, so the
+                // hypervisor's internal activity state stays running, and WHP,
+                // which does not emulate the APIC here, denies a write of it,
+                // even of the running state. Write only the other activity
+                // registers, which hold the rest of the activity.
+                assert_eq!(
+                    value.names(),
+                    &[
+                        HvX64RegisterName::InternalActivityState,
+                        HvX64RegisterName::PendingInterruption,
+                        HvX64RegisterName::InterruptState,
+                        HvX64RegisterName::PendingEvent0,
+                    ]
+                );
+                let mut values = [HvRegisterValue::new_zeroed(); 4];
+                value.get_values(values.iter_mut());
+                let [_, pending_interruption, interrupt_state, pending_event] = values;
+                set_registers!(
+                    self.vp.whp(vtl),
+                    [
+                        (
+                            whp::Register64::PendingInterruption,
+                            pending_interruption.as_u64()
+                        ),
+                        (whp::Register64::InterruptState, interrupt_state.as_u64()),
+                        (whp::Register128::PendingEvent, pending_event.as_u128()),
+                    ]
+                )
+                .for_op("set activity registers")?;
             }
             LocalApicKind::Offloaded => {
                 self.vp.set_register_state(vtl, value)?;

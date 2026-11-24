@@ -117,6 +117,20 @@ partitions without building them, so without creating their VPs, and checks
 that one of 2025 enlightened VPs is refused with an error, and that one of 2024
 enlightened VPs, and one of 2025 VPs without enlightenments, are not. It
 creates partitions of its own, so it registers by hand.
+WHP also has a backend, `whp_user_mode_apic`, whose APIC the VMM emulates, as
+`whp:user_mode_apic` has it, for the cases of `user_mode_apic.rs` alone. The
+VMM keeps such a VP's halt and its wait for a SIPI, and WHP, which keeps the
+rest of its activity, denies a write of the hypervisor's internal activity
+state.
+`restores_the_activity_in_each_state` restores an activity in each state that
+the VMM keeps, with every other part of the activity set, which must read back
+as it was given, in the VP and, from a save of it, in a new partition's VP.
+`restores_a_new_vp_into_a_new_partition` restores a save of a new VP into a new
+partition, as a snapshot of a VM that has not run does, without Hv1 and with
+it. `an_init_makes_an_ap_wait_for_a_sipi` sends the AP of a fixture of two VPs
+an INIT, which must make it wait for a SIPI, and then a SIPI, which must start
+it at the SIPI's vector, twice. They register by hand, since each builds two
+partitions or one of two VPs.
 
 The contract functions operate on the public `virt` interfaces. Each function
 has an adjacent `backend_test!` declaration that registers it with Petri for

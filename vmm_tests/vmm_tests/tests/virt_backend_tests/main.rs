@@ -36,6 +36,8 @@ cfg_select! {
         mod suspend;
         mod time;
         mod unsupported_state;
+        #[cfg(windows)]
+        mod user_mode_apic;
         #[cfg(target_os = "linux")]
         mod vp_count;
         #[cfg(target_os = "linux")]
