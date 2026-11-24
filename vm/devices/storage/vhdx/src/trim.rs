@@ -398,6 +398,11 @@ impl<F: AsyncFile> VhdxFile<F> {
             }
 
             // 9f. Release the trim claim — I/O can resume on this block.
+            //
+            // Sector-bitmap bits are not cleared here. They are meaningful
+            // only while the payload is PartiallyPresent. The allocator that
+            // next publishes that state clears the block before the BAT
+            // update becomes visible.
             drop(claim);
 
             // Quota check: force flush if too many deferred releases.
