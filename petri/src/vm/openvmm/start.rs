@@ -203,12 +203,14 @@ impl PetriVmConfigOpenVmm {
 
         let microvm_snapshot_boundary =
             super::microvm::take_worker_snapshot_channels(&mut resources);
+        let restore_gate_timeout = super::microvm::take_worker_restore_gate_timeout(&mut resources);
         let (worker, halt_notif) = Worker::launch(
             &host,
             config,
             shared_memory,
             saved_state,
             microvm_snapshot_boundary,
+            restore_gate_timeout,
         )
         .await
         .context("failed to launch vm worker")?;
