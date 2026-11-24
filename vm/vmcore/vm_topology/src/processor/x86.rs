@@ -6,6 +6,7 @@
 use super::ArchTopology;
 use super::HostTopologyError;
 use super::InvalidTopology;
+use super::MAX_VPS_PER_SOCKET;
 use super::ProcessorTopology;
 use super::TopologyBuilder;
 use super::VpIndex;
@@ -100,6 +101,11 @@ impl TopologyBuilder<X86Topology> {
     ///
     /// Note that this only queries SMT state and the socket size, it does not
     /// otherwise affect APIC configuration.
+    ///
+    /// Fails with [`HostTopologyError::UnsupportedVpsPerSocket`] when the
+    /// socket size is outside the range of [`Self::vps_per_socket`], rather
+    /// than clamping it, so that the topology never silently differs from the
+    /// host's.
     pub fn from_cpuid(
         cpuid: &mut dyn FnMut(u32, u32) -> [u32; 4],
     ) -> Result<Self, HostTopologyError> {
@@ -176,6 +182,10 @@ impl TopologyBuilder<X86Topology> {
             return Err(HostTopologyError::UnsupportedThreadsPerCore(
                 threads_per_core,
             ));
+        }
+
+        if !(1..=MAX_VPS_PER_SOCKET).contains(&vps_per_socket) {
+            return Err(HostTopologyError::UnsupportedVpsPerSocket(vps_per_socket));
         }
 
         Ok(Self {
@@ -315,4 +325,94 @@ pub enum ApicMode {
     /// x2APIC mode supported and enabled at boot.
     #[cfg_attr(feature = "inspect", inspect(rename = "x2apic_enabled"))]
     X2ApicEnabled,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    /// Returns the CPUID of an Intel host whose leaf 0Bh reports two threads
+    /// per core and `1 << core_shift` VPs per socket.
+    fn intel_host(core_shift: u32) -> impl FnMut(u32, u32) -> [u32; 4] {
+        move |leaf, subleaf| {
+            let level = |shift, level_type: TopologyLevelType| {
+                let eax = ExtendedTopologyEax::new().with_x2_apic_shift(shift);
+                let ecx = ExtendedTopologyEcx::new()
+                    .with_level_number(subleaf as u8)
+                    .with_level_type(level_type.0);
+                [eax.into(), 0, ecx.into(), 0]
+            };
+            match (CpuidFunction(leaf), subleaf) {
+                (CpuidFunction::VendorAndMaxFunction, _) => {
+                    let (ebx, ecx, edx) = Vendor::INTEL.to_ebx_ecx_edx();
+                    [CpuidFunction::ExtendedTopologyEnumeration.0, ebx, ecx, edx]
+                }
+                (CpuidFunction::ExtendedTopologyEnumeration, 0) => level(1, TopologyLevelType::SMT),
+                (CpuidFunction::ExtendedTopologyEnumeration, 1) => {
+                    level(core_shift, TopologyLevelType::CORE)
+                }
+                _ => [0; 4],
+            }
+        }
+    }
+
+    /// Returns the CPUID of an AMD host without leaf 0Bh, whose leaf 80000008h
+    /// counts `nc + 1` threads per socket and whose leaf 8000001Eh has a
+    /// `ThreadsPerComputeUnit` of 2.
+    fn amd_host(nc: u8) -> impl FnMut(u32, u32) -> [u32; 4] {
+        move |leaf, _| match CpuidFunction(leaf) {
+            CpuidFunction::VendorAndMaxFunction => {
+                let (ebx, ecx, edx) = Vendor::AMD.to_ebx_ecx_edx();
+                [
+                    CpuidFunction::ExtendedTopologyEnumeration.0 - 1,
+                    ebx,
+                    ecx,
+                    edx,
+                ]
+            }
+            CpuidFunction::ExtendedMaxFunction => {
+                [CpuidFunction::ProcessorTopologyDefinition.0, 0, 0, 0]
+            }
+            CpuidFunction::ExtendedAddressSpaceSizes => {
+                let ecx = ExtendedAddressSpaceSizesEcx::new().with_nc(nc);
+                [0, 0, ecx.into(), 0]
+            }
+            CpuidFunction::ProcessorTopologyDefinition => {
+                let ebx = ProcessorTopologyDefinitionEbx::new().with_threads_per_compute_unit(2);
+                [0, ebx.into(), 0, 0]
+            }
+            _ => [0; 4],
+        }
+    }
+
+    /// Leaf 0Bh's core level can describe up to 2^31 VPs per socket, and the
+    /// builder supports at most 32768.
+    #[test]
+    fn host_vps_per_socket_above_the_range_are_refused() {
+        assert!(matches!(
+            TopologyBuilder::from_cpuid(&mut intel_host(16)),
+            Err(HostTopologyError::UnsupportedVpsPerSocket(65536))
+        ));
+        let topology = TopologyBuilder::from_cpuid(&mut intel_host(15))
+            .unwrap()
+            .build(1)
+            .unwrap();
+        assert_eq!(topology.vps_per_socket(), 32768);
+    }
+
+    /// Leaf 80000008h can count fewer threads per socket than a core has,
+    /// which leaves no VPs in a socket.
+    #[test]
+    fn host_vps_per_socket_below_the_range_are_refused() {
+        assert!(matches!(
+            TopologyBuilder::from_cpuid(&mut amd_host(0)),
+            Err(HostTopologyError::UnsupportedVpsPerSocket(0))
+        ));
+        let topology = TopologyBuilder::from_cpuid(&mut amd_host(1))
+            .unwrap()
+            .build(1)
+            .unwrap();
+        assert_eq!(topology.vps_per_socket(), 1);
+    }
 }

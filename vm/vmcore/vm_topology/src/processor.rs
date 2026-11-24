@@ -68,6 +68,10 @@ pub enum HostTopologyError {
     /// The host topology has more than 2 threads per core.
     #[error("unsupported thread-per-core count {0}")]
     UnsupportedThreadsPerCore(u32),
+    /// The host topology has a number of VPs per socket outside 1 to 32768,
+    /// the range that [`TopologyBuilder::vps_per_socket`] clamps to.
+    #[error("unsupported VP-per-socket count {0}")]
+    UnsupportedVpsPerSocket(u32),
 }
 
 /// Error when building a [`ProcessorTopology`].
@@ -112,8 +116,10 @@ impl<T: ArchTopology> TopologyBuilder<T> {
     ///
     /// The number of VPs per socket will be rounded up to a power of 2 for
     /// purposes of defining the x2APIC ID.
+    ///
+    /// A count outside 1 to 32768 is clamped to that range.
     pub fn vps_per_socket(&mut self, count: u32) -> &mut Self {
-        self.vps_per_socket = count.clamp(1, 32768);
+        self.vps_per_socket = count.clamp(1, MAX_VPS_PER_SOCKET);
         self
     }
 
@@ -167,6 +173,12 @@ impl<T: ArchTopology> ProcessorTopology<T> {
 ///
 /// The topology API models SMT as a boolean, so two is the only possibility.
 pub(crate) const THREADS_PER_CORE: u32 = 2;
+
+/// The largest number of VPs per socket that a [`TopologyBuilder`] supports.
+///
+/// An x86 guest's CPUID cannot describe larger sockets: AMD's leaf 80000008h
+/// gives the log2 of a socket's reserved VPs in 4 bits.
+const MAX_VPS_PER_SOCKET: u32 = 32768;
 
 impl<
     #[cfg(feature = "inspect")] T: ArchTopology + inspect::Inspect,
