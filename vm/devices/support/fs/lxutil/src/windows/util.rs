@@ -1202,6 +1202,15 @@ pub fn create_link(
         HeaderVec::<FILE_LINK_INFORMATION, u16, 1>::with_capacity(link, new_path.len());
     buffer.extend_tail_from_slice(new_path.as_slice());
 
+    // NtSetInformationFile fails with STATUS_INFO_LENGTH_MISMATCH for a buffer
+    // shorter than the whole FILE_LINK_INFORMATION, whose size counts the first
+    // FileName unit and the trailing padding (24 bytes on 64-bit Windows), while
+    // the header above stops at FileName. Pad a name of one UTF-16 unit with a
+    // NUL that FileNameLength leaves out.
+    while buffer.total_byte_len() < size_of::<FileSystem::FILE_LINK_INFORMATION>() {
+        buffer.push_tail(0);
+    }
+
     set_information_file(handle, &buffer)?;
 
     Ok(())
