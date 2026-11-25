@@ -377,7 +377,9 @@ mod tests {
     #[ignore = "known bug: L3 sharing is never applied and leaf 4 is unindexed"]
     fn intel_cache_sharing_is_reported_per_cache_level() {
         for (smt, per_core) in [(true, 2), (false, 1)] {
-            let guest = guest(&host(Vendor::INTEL, 0x1f), &topology(8, smt));
+            let host = host(Vendor::INTEL, 0x1f);
+            let topology = topology(8, smt);
+            let guest = guest(&host, &topology);
             let threads = |subleaf| {
                 CacheParametersEax::from(guest(4, subleaf)[0]).threads_sharing_cache_minus_one() + 1
             };
@@ -385,6 +387,29 @@ mod tests {
             assert_eq!(threads(0), per_core, "L1, smt {smt}");
             assert_eq!(threads(1), per_core, "L2, smt {smt}");
             assert_eq!(threads(2), 8, "L3, smt {smt}");
+
+            // Also compose indexed base leaves with overrides, as KVM does.
+            let mut leaves = (0..3)
+                .map(|subleaf| CpuidLeaf::new(4, host.query(4, subleaf)).indexed(subleaf))
+                .collect::<Vec<_>>();
+            topology_cpuid(&topology, &|eax, ecx| host.query(eax, ecx), &mut leaves).unwrap();
+            let set = CpuidLeafSet::new(leaves);
+            for subleaf in 0..3 {
+                let mut expected = host.query(4, subleaf);
+                expected[0] = CacheParametersEax::from(expected[0])
+                    .with_cores_per_socket_minus_one(8 / per_core - 1)
+                    .with_threads_sharing_cache_minus_one(if subleaf == 2 {
+                        7
+                    } else {
+                        per_core - 1
+                    })
+                    .into();
+                assert_eq!(
+                    set.result(4, subleaf, &[0; 4]),
+                    expected,
+                    "composed subleaf {subleaf}, smt {smt}"
+                );
+            }
         }
     }
 

@@ -439,15 +439,15 @@ mod tests {
 
     // IGNORED: this test fails because of a known bug. retarget_interrupt
     // stores the new vector and multicast flag before it validates the target
-    // VPs, so a retarget that fails still changes the vector. Re-enable this
-    // test together with the fix by removing #[ignore].
+    // VPs, and the first target before validating the remaining VPs. A failed
+    // retarget can therefore change the vector and destination. Re-enable
+    // this test together with the fix by removing #[ignore].
     //
-    // Test: Retarget a registered interrupt with a new vector but an
-    //       invalid target VP, then signal it.
-    // Expected: The retarget fails and the interrupt is still delivered to
-    //       its original APIC with its original vector.
+    // Test: Retarget with an invalid first VP, then with a valid first VP
+    //       followed by an invalid VP, signaling after each failed request.
+    // Expected: Each failure preserves the original APIC and vector.
     #[async_test]
-    #[ignore = "known bug: failed retarget still changes the vector"]
+    #[ignore = "known bug: failed retarget changes the vector or destination"]
     async fn failed_retarget_leaves_interrupt_unchanged() {
         let devices = devices();
         let msi = Arc::new(RecordMsi::default());
@@ -457,13 +457,15 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            devices
-                .retarget_interrupt(7, interrupt.address, 0, &params(0x60, &[9]))
-                .is_err()
-        );
-        device.signal_msi(None, interrupt.address, 0);
-        assert_eq!(msi.take(), [(4, 0x41)]);
+        for targets in [&[9][..], &[1, 9][..]] {
+            assert_eq!(
+                devices.retarget_interrupt(7, interrupt.address, 0, &params(0x60, targets)),
+                Err(HvError::InvalidParameter),
+                "targets: {targets:?}"
+            );
+            device.signal_msi(None, interrupt.address, 0);
+            assert_eq!(msi.take(), [(4, 0x41)], "targets: {targets:?}");
+        }
     }
 
     // Test: Unregister an interrupt and signal it, and signal an address that
