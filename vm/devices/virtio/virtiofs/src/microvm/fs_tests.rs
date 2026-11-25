@@ -4,13 +4,16 @@
 //! Tests for microVM filesystem persistence and limits.
 
 use super::policy_tests::create;
+use super::policy_tests::error;
 use super::policy_tests::lookup;
 use super::policy_tests::mkdir;
 use super::policy_tests::name;
 use super::policy_tests::open;
+use super::policy_tests::owned;
 use super::policy_tests::read_node;
 use super::policy_tests::release;
 use super::policy_tests::request;
+use super::policy_tests::write;
 use super::profile::MICROVM_ATTACHMENT_ID;
 use super::profile::MICROVM_FUSE_MAJOR;
 use super::profile::MICROVM_FUSE_MAX_WRITE;
@@ -41,6 +44,7 @@ use fuse::SessionInfoState;
 use fuse::SessionState;
 use fuse::protocol::FUSE_ASYNC_READ;
 use fuse::protocol::FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
+use fuse::protocol::FUSE_GETATTR_FH;
 use fuse::protocol::FUSE_INIT;
 use fuse::protocol::FUSE_INIT_EXT;
 use fuse::protocol::FUSE_ROOT_ID;
@@ -1198,6 +1202,65 @@ fn readonly_profile_rejects_a_writable_saved_handle() {
     state.handles[0].open_flags = lx::O_RDWR as u32 | lx::O_NOFOLLOW as u32;
 
     assert!(validate_microvm_state(&state, &profile).is_err());
+}
+
+/// Linux's access mode 3 opens a file for neither reading nor writing, so
+/// `FUSE_OPEN` gives such a handle of a file that the guest may not write too:
+/// on a read-only share, and outside the writable paths of a read-write share.
+/// A restore must reopen that handle with the same access, as it reopens the
+/// handles of the other access modes.
+#[test]
+fn a_handle_that_neither_reads_nor_writes_survives_save_and_restore() {
+    let cases: [(bool, &[&str]); 3] = [(false, &[]), (true, &[]), (false, &["out"])];
+    for (read_only, writable_paths) in cases {
+        let case = format!("read_only={read_only}, writable_paths={writable_paths:?}");
+        let temporary_directory = tempdir().unwrap();
+        let root_path = temporary_directory.path();
+        std::fs::create_dir(root_path.join("out")).unwrap();
+        std::fs::write(root_path.join("file"), b"data").unwrap();
+        let profile = MicroVmVirtioFsProfile::from_attachment_with_policy(
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(root_path).unwrap(),
+            read_only,
+            Vec::new(),
+            Vec::new(),
+            owned(writable_paths),
+        )
+        .unwrap();
+        let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let node_id = lookup(&source, "file").unwrap();
+        let fh = open(&source, node_id, lx::O_NOACCESS).unwrap();
+        let state = source
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+
+        let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let session = Session::new(destination.clone());
+        if let Err(error) = destination.restore_microvm_state(&profile, state, &session) {
+            panic!("{case}: {error:#}");
+        }
+        destination
+            .get_attr(&request(node_id), FUSE_GETATTR_FH, fh)
+            .unwrap();
+        let mut read = fuse_read_in::new_zeroed();
+        read.fh = fh;
+        read.size = 64;
+        assert_eq!(
+            error(destination.read(&request(node_id), &read)),
+            lx::Error::EBADF,
+            "{case}"
+        );
+        assert_eq!(
+            error(write(&destination, node_id, fh, b"guest")),
+            lx::Error::EBADF,
+            "{case}"
+        );
+        assert_eq!(
+            std::fs::read(root_path.join("file")).unwrap(),
+            b"data",
+            "{case}"
+        );
+    }
 }
 
 #[test]

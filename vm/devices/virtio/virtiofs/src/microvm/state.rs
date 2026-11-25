@@ -31,6 +31,7 @@ use super::saved_state::SavedState;
 use crate::FuseNegotiation;
 use crate::file::VirtioFsFile;
 use crate::inode::VirtioFsVolume;
+use crate::opens_for_writing;
 use anyhow::Context;
 use fuse::SessionInfoState;
 use fuse::SessionState;
@@ -526,7 +527,9 @@ pub(crate) fn validate_microvm_state(
             "saved handle has an unsupported object kind"
         );
         let reopen_flags = reopen_flags(handle.open_flags)?;
-        let writable_handle = reopen_flags & lx::O_ACCESS_MASK as u32 != lx::O_RDONLY as u32;
+        // As for `FUSE_OPEN`, only an open for writing needs a writable node:
+        // access mode 3 opens the file for neither reading nor writing.
+        let writable_handle = opens_for_writing(reopen_flags as i32);
         if readonly {
             anyhow::ensure!(
                 !writable_handle,
@@ -609,10 +612,6 @@ pub(crate) fn reopen_flags(saved: u32) -> anyhow::Result<u32> {
         saved & !allowed == 0,
         "saved handle has unsupported open flags {:#x}",
         saved
-    );
-    anyhow::ensure!(
-        saved & lx::O_ACCESS_MASK as u32 != lx::O_NOACCESS as u32,
-        "saved handle has invalid access mode"
     );
     Ok(saved & !(lx::O_CREAT as u32 | lx::O_EXCL as u32 | lx::O_TRUNC as u32))
 }
