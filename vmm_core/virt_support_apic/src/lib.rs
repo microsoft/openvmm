@@ -3233,15 +3233,18 @@ mod tests {
         assert_eq!(pending(&mut apic, &mut client), Some(TEST_VECTOR));
     }
 
+    // IGNORED: MMIO passes reserved TPR bits to CR8, and the x2APIC TPR MSR
+    // does not reject writes with reserved bits set. The Hyper-V TPR MSR
+    // already rejects values above 0xff. Re-enable this test together with
+    // the fixes by removing #[ignore].
+    //
+    // Test: A guest writes TPR with bits above bit 7 set, through xAPIC MMIO
+    //       and through the x2APIC TPR MSR.
+    // Expected: MMIO ignores reserved bits; the x2APIC MSR write faults
+    //       without changing CR8.
     #[test]
-    #[ignore = "known bug: TPR writes pass reserved bits through to CR8"]
-    fn tpr_write_ignores_reserved_bits() {
-        // Test: a guest writes TPR with bits above bit 7 set, through xAPIC
-        // MMIO and through the x2APIC TPR MSR.
-        // Expected: only bits 7:4 reach CR8 and TPR reads back as an 8-bit
-        // value.
-        // Known bug: the value is shifted but not masked, so CR8 receives up
-        // to 28 bits. The Hyper-V TPR MSR already rejects values above 0xff.
+    #[ignore = "known bugs: MMIO passes reserved TPR bits to CR8; x2APIC accepts them"]
+    fn tpr_writes_handle_reserved_bits_by_mode() {
         let set = LocalApicSet::builder().x2apic_capable(true).build();
         let mut client = TestClient::default();
         let mut apic = add_enabled(&set, 0, 0, &mut client);
@@ -3250,8 +3253,12 @@ mod tests {
         assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::TPR), 0x30);
 
         enter_x2apic(&mut apic, &mut client);
-        write_reg(&mut apic, &mut client, ApicRegister::TPR, 0xffff_ff46);
-        assert_eq!(client.cr8, 4);
+        assert!(matches!(
+            apic.access(&mut client)
+                .msr_write(ApicRegister::TPR.x2apic_msr(), 0xffff_ff46),
+            Err(MsrError::InvalidAccess)
+        ));
+        assert_eq!(client.cr8, 3);
     }
 
     fn vectors(list: &[u8]) -> [u32; 8] {
