@@ -503,9 +503,11 @@ pub(crate) fn validate_microvm_state(
     } else {
         anyhow::ensure!(root_count == 1, "saved inode table must contain one root");
     }
+    // Node 1 is the root, which the next node ID must pass even where no saved
+    // inode holds it: an aggregate's synthetic root has no saved inode.
     anyhow::ensure!(
-        state.next_node_id > largest_node_id,
-        "saved next inode ID can reuse an active ID"
+        state.next_node_id > largest_node_id.max(FUSE_ROOT_ID),
+        "saved next inode ID can reuse a reserved or active ID"
     );
 
     let mut largest_handle_id = 0;

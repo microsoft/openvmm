@@ -691,6 +691,47 @@ fn children_never_get_the_synthetic_root_handle() {
         .unwrap();
 }
 
+/// No child's root gets node 1, the synthetic root's, for which an aggregate's
+/// state saves no node. A restored state whose next node ID is 1 would give
+/// that node to the first child that the guest looks up: the device would
+/// route the child's requests to the synthetic root, and the next save would
+/// record the child's root as node 1, which a restore refuses. A restore
+/// therefore refuses that state, as it refuses a next node ID that a saved node
+/// holds, and restores the state of a new aggregate, whose first node is 2.
+#[test]
+fn children_never_get_the_synthetic_root_node() {
+    let roots = Roots::new();
+    let children = [
+        Child::new("work", &roots.work, false),
+        Child::new("tools", &roots.tools, true),
+    ];
+    let profile = profile(&children);
+    let source = aggregate(&children);
+    let state = || {
+        source
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap()
+    };
+    let new_state = state();
+    assert!(new_state.inodes.is_empty());
+    assert_eq!(new_state.next_node_id, FUSE_ROOT_ID + 1);
+
+    let mut reserved = state();
+    reserved.next_node_id = FUSE_ROOT_ID;
+    let fs = aggregate(&children);
+    let session = Session::new(fs.clone());
+    let error = fs
+        .restore_microvm_state(&profile, reserved, &session)
+        .unwrap_err();
+    assert!(error.to_string().contains("next inode ID"), "{error:#}");
+
+    let fs = aggregate(&children);
+    let session = Session::new(fs.clone());
+    fs.restore_microvm_state(&profile, state(), &session)
+        .unwrap();
+    assert_eq!(lookup(&fs, "work"), Ok(FUSE_ROOT_ID + 1));
+}
+
 #[test]
 fn a_hidden_child_root_exposes_only_its_allowed_paths() {
     let roots = Roots::new();
