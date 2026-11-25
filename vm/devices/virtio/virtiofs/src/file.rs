@@ -28,6 +28,9 @@ pub(crate) struct DirectorySnapshot {
 pub struct VirtioFsFile {
     pub(crate) file: RwLock<LxFile>,
     pub(crate) inode: Arc<VirtioFsInode>,
+    /// The host open options of `file`, which a microVM snapshot saves and a
+    /// restore reopens it with, so never the guest-only flags that
+    /// `util::create_flags` consumes.
     open_flags: u32,
     pub(crate) directory_snapshot: RwLock<DirectorySnapshot>,
 }

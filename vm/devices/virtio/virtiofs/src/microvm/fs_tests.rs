@@ -1271,6 +1271,53 @@ fn reopen_flags_preserve_safe_status_bits_and_reject_effects() {
     assert!(reopen_flags(0x80000000).is_err());
 }
 
+/// A handle that `FUSE_CREATE` returns records the flags that the server
+/// opened the file with, as one that `FUSE_OPEN` returns does, without
+/// `__FMODE_EXEC`, `O_LARGEFILE`, and `O_NOFOLLOW`, which only the guest uses,
+/// so a snapshot restores the handle, still open for writing. A snapshot from
+/// a release that recorded the guest's flags as they came restores it too: a
+/// Linux guest adds `O_LARGEFILE`, whose value depends on the architecture, to
+/// every create, and may add `O_NOFOLLOW`, but never `__FMODE_EXEC`.
+#[test]
+fn a_create_handle_saves_and_restores_without_guest_only_flags() {
+    let guest_only = lx::__FMODE_EXEC | lx::O_LARGEFILE | lx::O_NOFOLLOW;
+    for earlier_release in [false, true] {
+        let temporary_directory = tempdir().unwrap();
+        let root_path = temporary_directory.path();
+        let profile = MicroVmVirtioFsProfile::from_attachment(
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(root_path).unwrap(),
+            false,
+            Vec::new(),
+        )
+        .unwrap();
+        let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let (node_id, fh) = create_with_flags(
+            &source,
+            FUSE_ROOT_ID,
+            "file",
+            lx::O_RDWR | lx::O_CREAT | guest_only,
+        )
+        .unwrap();
+        let mut state = source
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+        let saved_flags = state.handles[0].open_flags;
+        if earlier_release {
+            state.handles[0].open_flags |= (lx::O_LARGEFILE | lx::O_NOFOLLOW) as u32;
+        }
+
+        let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let session = Session::new(destination.clone());
+        destination
+            .restore_microvm_state(&profile, state, &session)
+            .unwrap();
+        assert_eq!(saved_flags, (lx::O_RDWR | lx::O_CREAT) as u32);
+        assert_eq!(write(&destination, node_id, fh, b"guest").unwrap(), 5);
+        assert_eq!(read_node(&destination, node_id), b"guest");
+    }
+}
+
 #[test]
 fn readonly_profile_rejects_a_writable_saved_handle() {
     let temporary_directory = tempdir().unwrap();

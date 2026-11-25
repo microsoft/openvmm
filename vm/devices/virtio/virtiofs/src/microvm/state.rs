@@ -586,7 +586,6 @@ pub(crate) fn reopen_flags(saved: u32) -> anyhow::Result<u32> {
     const O_NONBLOCK: u32 = 0x800;
     const O_DSYNC: u32 = 0x1000;
     const O_SYNC: u32 = 0x101000;
-    const O_LARGEFILE: u32 = 0x8000;
     const O_CLOEXEC: u32 = 0x80000;
     const O_TMPFILE: u32 = 0x410000;
 
@@ -607,7 +606,9 @@ pub(crate) fn reopen_flags(saved: u32) -> anyhow::Result<u32> {
         | O_NONBLOCK
         | O_DSYNC
         | O_SYNC
-        | O_LARGEFILE
+        // A release that recorded a created file's guest flags saved the
+        // guest's `O_LARGEFILE`, whose value depends on the architecture.
+        | lx::O_LARGEFILE as u32
         | O_CLOEXEC;
     anyhow::ensure!(
         saved & !allowed == 0,
