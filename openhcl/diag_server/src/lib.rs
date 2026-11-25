@@ -403,4 +403,93 @@ mod tests {
 
         assert!(unix_socket::UnixStream::connect(&control).is_err());
     }
+
+    // Test: Convert successful replies, nested errors and both cancellation reasons to RPC results.
+    // Expected: Success bytes survive unchanged; failures retain their code, context and empty details.
+    #[test]
+    fn rpc_results_preserve_payloads_and_error_categories() {
+        assert_eq!(grpc_result(Ok(Ok(vec![0, 0xff, 7]))).unwrap(), [0, 0xff, 7]);
+        let error = grpc_result::<()>(Ok(Err(
+            anyhow::anyhow!("backend failed").context("save failed")
+        )))
+        .unwrap_err();
+        assert_eq!(error.code, Code::Unknown as i32);
+        assert_eq!(error.message, "save failed: backend failed");
+        assert!(error.details.is_empty());
+        for (reason, code) in [
+            (CancelReason::Cancelled, Code::Cancelled),
+            (CancelReason::DeadlineExceeded, Code::DeadlineExceeded),
+        ] {
+            let error = grpc_result::<()>(Err(reason)).unwrap_err();
+            assert_eq!(error.code, code as i32);
+            assert!(!error.message.is_empty());
+            assert!(error.details.is_empty());
+        }
+    }
+
+    // Test: Dispatch all non-inspect service classes through a full Unix-socket RPC server.
+    // Expected: Ping/control work, invalid stream IDs report errors and cancellation still shuts down.
+    #[async_test]
+    async fn unix_server_dispatches_rpc_services_and_shuts_down(driver: DefaultDriver) {
+        let directory = tempfile::tempdir().unwrap();
+        let control = directory.path().join("control.sock");
+        let data = directory.path().join("data.sock");
+        let server = DiagServer::new_unix(&control, &data).unwrap();
+        let (cancel, cancelled) = mesh::oneshot();
+        let (requests, mut receive) = mesh::channel();
+        let server_driver = driver.clone();
+        let server = driver.spawn("test-full-diag-server", async move {
+            server.serve(&server_driver, cancelled, requests).await
+        });
+        let client = mesh_rpc::Client::new(
+            &driver,
+            mesh_rpc::client::UnixDialier::new(driver.clone(), control.clone()),
+        );
+        client
+            .call()
+            .start(diag_proto::OpenhclDiag::Ping, ())
+            .await
+            .unwrap();
+        let (result, ()) = futures::join!(
+            client.call().start(diag_proto::UnderhillDiag::Pause, ()),
+            async {
+                let DiagRequest::Pause(rpc) = receive.recv().await.unwrap() else {
+                    panic!("expected pause")
+                };
+                rpc.complete(Ok(()));
+            },
+        );
+        result.unwrap();
+        let error = client
+            .call()
+            .start(
+                diag_proto::UnderhillDiag::Kmsg,
+                diag_proto::KmsgRequest {
+                    conn: 999,
+                    follow: false,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, Code::Unknown as i32);
+        assert!(error.message.contains("invalid connection id"));
+        let error = client
+            .call()
+            .start(
+                azure_profiler_proto::AzureProfiler::Profile,
+                azure_profiler_proto::ProfileRequest {
+                    conn: 999,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, Code::Unknown as i32);
+        assert!(error.message.contains("invalid connection id"));
+        drop(client);
+        cancel.send(());
+        server.await.unwrap();
+        assert!(unix_socket::UnixStream::connect(&control).is_err());
+        assert!(unix_socket::UnixStream::connect(&data).is_err());
+    }
 }
