@@ -123,6 +123,7 @@ impl Profile {
 /// added by this builder. Landlock, where enforced, further limits proc access;
 /// the proc mount's own restrictions still apply.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct Builder {
     inner: ProfileInner,
 }
@@ -334,6 +335,7 @@ impl Restrictions {
 /// Narrowing-only ratchet builder. There is deliberately no "unfiltered"
 /// escape here — a ratchet only ever subtracts.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct RestrictionsBuilder {
     inner: RestrictionsInner,
 }
