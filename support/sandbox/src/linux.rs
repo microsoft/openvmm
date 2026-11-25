@@ -201,6 +201,14 @@ fn mount_and_pivot_filesystem(grants: &[FsGrant], staging: &Path) -> Result<(), 
             libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
         )
         .map_err(fs_required)?;
+        // Keep the worker's comm file writable for Mesh naming. Install this
+        // exception after the recursive read-only restrictions on proc.
+        mount_namespace::bind_mount(
+            Path::new("/proc/self/comm"),
+            &proc_target.join("self/comm"),
+            libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV | libc::MOUNT_ATTR_NOEXEC,
+        )
+        .map_err(fs_required)?;
     }
 
     // Pivot root: staging becomes `/`, old root moves to `staging/.old_root`.
@@ -519,8 +527,10 @@ mod tests {
             "empty",
             "missing-grant",
             "mount-failure",
+            "pivot-failure",
             "root-grant",
             "proc-bind-failure",
+            "proc-comm-missing",
         ] {
             let output = Command::new("unshare")
                 .args(["--user", "--map-root-user", "--mount"])
@@ -552,6 +562,7 @@ mod tests {
         }
         fs_err::create_dir("/run/grant").unwrap();
         fs_err::write("/run/grant/marker", "preserved").unwrap();
+        assert!(mount_namespace::mount_proc(Path::new("/run/proc-probe")).is_err());
         let scenario = std::env::var("SANDBOX_STAGING_SCENARIO").unwrap();
         match scenario.as_str() {
             "file" => fs_err::write("/tmp/.sandbox-root", "unrelated").unwrap(),
@@ -591,22 +602,31 @@ mod tests {
             drop_all_capabilities().unwrap();
         }
         hardening::set_no_new_privs().unwrap();
-        if scenario == "proc-bind-failure" {
+        if matches!(scenario.as_str(), "proc-bind-failure" | "proc-comm-missing") {
             // Hide the host proc mount so a fresh proc mount is denied in
             // this user namespace, while a fallback bind remains possible.
             mount_namespace::mount_tmpfs(Path::new("/proc")).unwrap();
             fs_err::write("/proc/marker", "fallback").unwrap();
-            assert!(mount_namespace::mount_proc(Path::new("/run/proc-probe")).is_err());
+            profile = Profile::deny_all();
+        }
+        if matches!(scenario.as_str(), "proc-bind-failure" | "pivot-failure") {
+            let (nr, errno) = if scenario == "proc-bind-failure" {
+                (libc::SYS_mount_setattr, libc::ENOSYS)
+            } else {
+                (libc::SYS_pivot_root, libc::EPERM)
+            };
             let filter: seccompiler::BpfProgram = seccompiler::SeccompFilter::new(
-                std::collections::BTreeMap::from([(libc::SYS_mount_setattr, Vec::new())]),
+                std::collections::BTreeMap::from([(nr, Vec::new())]),
                 seccompiler::SeccompAction::Allow,
-                seccompiler::SeccompAction::Errno(libc::ENOSYS as u32),
+                seccompiler::SeccompAction::Errno(errno as u32),
                 std::env::consts::ARCH.try_into().unwrap(),
             )
             .unwrap()
             .try_into()
             .unwrap();
             seccomp::apply_filter_all_threads(&filter).unwrap();
+        }
+        if scenario == "proc-bind-failure" {
             assert_eq!(
                 mount_namespace::bind_mount(
                     Path::new("/proc"),
@@ -622,7 +642,6 @@ mod tests {
                 "fallback",
             );
             mount_namespace::umount(Path::new("/run/proc-probe")).unwrap();
-            profile = Profile::deny_all();
         }
         let result = apply_filesystem(&profile.build().inner.fs);
         match scenario.as_str() {
@@ -636,7 +655,7 @@ mod tests {
                 Err(Error::ApplyFailed { source, .. })
                     if source.kind() == io::ErrorKind::InvalidInput
             )),
-            "mount-failure" => assert!(matches!(
+            "mount-failure" | "pivot-failure" => assert!(matches!(
                 result,
                 Err(Error::ApplyFailed { source, .. })
                     if source.kind() == io::ErrorKind::PermissionDenied
@@ -646,7 +665,29 @@ mod tests {
                 Err(Error::ApplyFailed { primitive: "filesystem", source })
                     if source.raw_os_error() == Some(libc::ENOSYS)
             )),
-            _ => result.unwrap(),
+            "proc-comm-missing" => assert!(matches!(
+                result,
+                Err(Error::ApplyFailed { primitive: "filesystem", source })
+                    if source.kind() == io::ErrorKind::NotFound
+            )),
+            _ => {
+                result.unwrap();
+                drop_all_capabilities().unwrap();
+                fs_err::write("/proc/self/comm", "sandbox-proc").unwrap();
+                assert_eq!(
+                    fs_err::read_to_string("/proc/self/comm").unwrap(),
+                    "sandbox-proc\n",
+                );
+                assert_eq!(
+                    fs_err::write(
+                        format!("/proc/self/task/{}/comm", std::process::id()),
+                        "sandbox-proc",
+                    )
+                    .unwrap_err()
+                    .kind(),
+                    io::ErrorKind::ReadOnlyFilesystem,
+                );
+            }
         }
         let mut actual = entries
             .map(|entry| entry.unwrap().file_name())
