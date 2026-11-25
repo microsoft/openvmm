@@ -15,7 +15,11 @@ const LX_UTIL_CASE_SENSITIVE: &str = "system.wsl_case_sensitive";
 
 const LX_UTIL_XATTR_NAME_PREFIX: &str = "LX.";
 const LX_UTIL_XATTR_NAME_PREFIX_LENGTH: usize = LX_UTIL_XATTR_NAME_PREFIX.len();
-const LX_UTIL_XATTR_NAME_MAX: usize = u16::MAX as usize - LX_UTIL_XATTR_NAME_PREFIX_LENGTH;
+
+/// The longest EA name, prefix included, that NTFS accepts. `EaNameLength` is one byte, and NTFS
+/// rejects a name of 255 bytes.
+const LX_UTILP_EA_NAME_MAX: usize = 254;
+const LX_UTIL_XATTR_NAME_MAX: usize = LX_UTILP_EA_NAME_MAX - LX_UTIL_XATTR_NAME_PREFIX_LENGTH;
 
 const LX_UTILP_XATTR_QUERY_RESTART_SCAN: i32 = 0x1;
 const LX_UTILP_XATTR_QUERY_RETURN_SINGLE_ENTRY: i32 = 0x2;
@@ -114,26 +118,27 @@ pub fn get_system(handle: &OwnedHandle, name: &str, value: Option<&mut [u8]>) ->
     Ok(1)
 }
 
-/// Copy the Linux EA attribute prefix and the specified name into the start of the provided buffer.
-fn set_name(name: &str, buffer: &mut [u8]) -> lx::Result<usize> {
+/// Copy the Linux EA attribute prefix and the specified name into the start of the provided buffer,
+/// and return the length of the resulting EA name.
+fn set_name(name: &str, buffer: &mut [u8]) -> lx::Result<u8> {
     let name_bytes = name.as_bytes();
 
-    if name_bytes.len() >= LX_UTIL_XATTR_NAME_MAX {
+    if name_bytes.len() > LX_UTIL_XATTR_NAME_MAX {
         return Err(lx::Error::ERANGE);
     }
 
-    let total_required = LX_UTIL_XATTR_NAME_PREFIX_LENGTH + name_bytes.len() + 1;
+    let ea_name_len = LX_UTIL_XATTR_NAME_PREFIX_LENGTH + name_bytes.len();
+    let total_required = ea_name_len + 1;
     if buffer.len() < total_required {
         return Err(lx::Error::ERANGE);
     }
 
     buffer[..LX_UTIL_XATTR_NAME_PREFIX_LENGTH]
         .copy_from_slice(LX_UTIL_XATTR_NAME_PREFIX.as_bytes());
-    buffer[LX_UTIL_XATTR_NAME_PREFIX_LENGTH..LX_UTIL_XATTR_NAME_PREFIX_LENGTH + name_bytes.len()]
-        .copy_from_slice(name_bytes);
-    buffer[LX_UTIL_XATTR_NAME_PREFIX_LENGTH + name_bytes.len()] = 0;
+    buffer[LX_UTIL_XATTR_NAME_PREFIX_LENGTH..ea_name_len].copy_from_slice(name_bytes);
+    buffer[ea_name_len] = 0;
 
-    Ok(LX_UTIL_XATTR_NAME_PREFIX_LENGTH + name_bytes.len())
+    ea_name_len.try_into().map_err(|_| lx::Error::ERANGE)
 }
 
 /// Queries an EA on a file.
@@ -167,7 +172,7 @@ fn query_ea(
 
         let header = FileGetEaInformation {
             next_entry_offset: Unalign::new(0),
-            ea_name_length: name_len as u8,
+            ea_name_length: name_len,
         };
         buffer[..size_of::<FileGetEaInformation>()].copy_from_slice(header.as_bytes());
         Some(buffer)
@@ -354,13 +359,13 @@ pub fn set(handle: &OwnedHandle, name: &str, value: &[u8], flags: i32) -> lx::Re
     let ea_info = FileFullEaInformation {
         next_entry_offset: Unalign::new(0),
         flags: 0,
-        ea_name_length: name_len as u8,
+        ea_name_length: name_len,
         ea_value_length: Unalign::new(value_size as u16),
     };
     buffer[..size_of::<FileFullEaInformation>()].copy_from_slice(ea_info.as_bytes());
 
     // Set the EA value header.
-    let ea_value_start = size_of::<FileFullEaInformation>() + name_len + 1;
+    let ea_value_start = size_of::<FileFullEaInformation>() + usize::from(name_len) + 1;
     buffer[ea_value_start..ea_value_start + 4]
         .copy_from_slice(&LX_UTILP_EA_VALUE_HEADER.to_le_bytes());
 
@@ -492,7 +497,7 @@ pub fn remove(handle: &OwnedHandle, name: &str) -> lx::Result<()> {
     let ea_info = FileFullEaInformation {
         next_entry_offset: Unalign::new(0),
         flags: 0,
-        ea_name_length: name_len as u8,
+        ea_name_length: name_len,
         ea_value_length: Unalign::new(0), // Zero length to remove the attribute
     };
     buf[..size_of::<FileFullEaInformation>()].copy_from_slice(ea_info.as_bytes());

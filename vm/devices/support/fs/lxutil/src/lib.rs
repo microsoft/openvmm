@@ -500,10 +500,10 @@ impl LxVolume {
     /// Extended attribute names are not case sensitive. They are stored as upper case in NTFS but
     /// `list_xattr` will report them as lower case for greater compatibility with Linux.
     ///
-    /// Extended attribute names are prefixed with "LX.", and have a slightly shorter maximum length
-    /// limit than Linux. Attribute values are prefixed with a 4-byte header to allow for "empty"
-    /// values, which NTFS does not normally allow. `get_xattr` and `list_xattr` will strip these
-    /// prefixes.
+    /// Extended attribute names are prefixed with "LX.", so they can be at most 251 bytes long
+    /// rather than 255 as on Linux; longer names fail with `ERANGE`. Attribute values are prefixed
+    /// with a 4-byte header to allow for "empty" values, which NTFS does not normally allow.
+    /// `get_xattr` and `list_xattr` will strip these prefixes.
     ///
     /// Security for accessing the various attribute namespaces is not enforced.
     ///
@@ -531,10 +531,10 @@ impl LxVolume {
     /// Extended attribute names are not case sensitive. They are stored as upper case in NTFS but
     /// `list_xattr` will report them as lower case for greater compatibility with Linux.
     ///
-    /// Extended attribute names are prefixed with "LX.", and have a slightly shorter maximum length
-    /// limit than Linux. Attribute values are prefixed with a 4-byte header to allow for "empty"
-    /// values, which NTFS does not normally allow. `get_xattr` and `list_xattr` will strip these
-    /// prefixes.
+    /// Extended attribute names are prefixed with "LX.", so they can be at most 251 bytes long
+    /// rather than 255 as on Linux; longer names fail with `ERANGE`. Attribute values are prefixed
+    /// with a 4-byte header to allow for "empty" values, which NTFS does not normally allow.
+    /// `get_xattr` and `list_xattr` will strip these prefixes.
     ///
     /// Security for accessing the various attribute namespaces is not enforced.
     pub fn get_xattr(
@@ -557,10 +557,10 @@ impl LxVolume {
     /// Extended attribute names are not case sensitive. They are stored as upper case in NTFS but
     /// `list_xattr` will report them as lower case for greater compatibility with Linux.
     ///
-    /// Extended attribute names are prefixed with "LX.", and have a slightly shorter maximum length
-    /// limit than Linux. Attribute values are prefixed with a 4-byte header to allow for "empty"
-    /// values, which NTFS does not normally allow. `get_xattr` and `list_xattr` will strip these
-    /// prefixes.
+    /// Extended attribute names are prefixed with "LX.", so they can be at most 251 bytes long
+    /// rather than 255 as on Linux; longer names fail with `ERANGE`. Attribute values are prefixed
+    /// with a 4-byte header to allow for "empty" values, which NTFS does not normally allow.
+    /// `get_xattr` and `list_xattr` will strip these prefixes.
     ///
     /// Security for accessing the various attribute namespaces is not enforced.
     pub fn list_xattr(&self, path: impl AsRef<Path>, list: Option<&mut [u8]>) -> lx::Result<usize> {
@@ -574,10 +574,10 @@ impl LxVolume {
     /// Extended attribute names are not case sensitive. They are stored as upper case in NTFS but
     /// `list_xattr` will report them as lower case for greater compatibility with Linux.
     ///
-    /// Extended attribute names are prefixed with "LX.", and have a slightly shorter maximum length
-    /// limit than Linux. Attribute values are prefixed with a 4-byte header to allow for "empty"
-    /// values, which NTFS does not normally allow. `get_xattr` and `list_xattr` will strip these
-    /// prefixes.
+    /// Extended attribute names are prefixed with "LX.", so they can be at most 251 bytes long
+    /// rather than 255 as on Linux; longer names fail with `ERANGE`. Attribute values are prefixed
+    /// with a 4-byte header to allow for "empty" values, which NTFS does not normally allow.
+    /// `get_xattr` and `list_xattr` will strip these prefixes.
     ///
     /// Security for accessing the various attribute namespaces is not enforced.
     pub fn remove_xattr(
@@ -2548,6 +2548,91 @@ mod tests {
 
         assert_eq!(size, 3);
         assert_eq!(&buffer[..3], b"baz");
+    }
+
+    #[test]
+    fn xattr_name_length() {
+        // Linux allows names of up to 255 bytes. On Windows, an attribute is an NTFS extended
+        // attribute named "LX." and the attribute's name, and NTFS allows EA names of up to 254
+        // bytes.
+        const NAME_MAX: usize = if cfg!(windows) { 251 } else { 255 };
+
+        fn name(len: usize) -> Vec<u8> {
+            let mut name = b"user.a".to_vec();
+            name.resize(len, b'x');
+            name
+        }
+
+        let env = TestEnv::new();
+        env.create_file("testfile", "test");
+        env.volume
+            .set_xattr("testfile", "user.a", b"secret", 0)
+            .unwrap();
+
+        // An attribute with the longest name can be set, read, and removed.
+        let longest = name(NAME_MAX);
+        let longest = lx::LxStr::from_bytes(&longest);
+        env.volume
+            .set_xattr("testfile", longest, b"long", 0)
+            .unwrap();
+
+        let mut value = [0u8; 16];
+        let size = env
+            .volume
+            .get_xattr("testfile", longest, Some(&mut value))
+            .unwrap();
+
+        assert_eq!(&value[..size], b"long");
+        env.volume.remove_xattr("testfile", longest).unwrap();
+        let err = env.volume.get_xattr("testfile", longest, None).unwrap_err();
+
+        assert_eq!(err.value(), lx::ENODATA);
+
+        // A longer name fails with ERANGE, rather than reaching an attribute whose name it starts
+        // with.
+        for len in NAME_MAX + 1..=262 {
+            let long = name(len);
+            let long = lx::LxStr::from_bytes(&long);
+            let results = [
+                (
+                    "get",
+                    env.volume
+                        .get_xattr("testfile", long, Some(&mut value))
+                        .map(drop),
+                ),
+                (
+                    "get size",
+                    env.volume.get_xattr("testfile", long, None).map(drop),
+                ),
+                ("set", env.volume.set_xattr("testfile", long, b"long", 0)),
+                (
+                    "create",
+                    env.volume
+                        .set_xattr("testfile", long, b"long", lx::XATTR_CREATE),
+                ),
+                (
+                    "replace",
+                    env.volume
+                        .set_xattr("testfile", long, b"long", lx::XATTR_REPLACE),
+                ),
+                ("remove", env.volume.remove_xattr("testfile", long)),
+            ];
+
+            for (operation, result) in results {
+                assert_eq!(
+                    result.map_err(|err| err.value()),
+                    Err(lx::ERANGE),
+                    "{operation} of a {len}-byte name"
+                );
+            }
+        }
+
+        let size = env
+            .volume
+            .get_xattr("testfile", "user.a", Some(&mut value))
+            .unwrap();
+
+        assert_eq!(&value[..size], b"secret");
     }
 
     // This test is disabled in CI on Windows only, because it requires NTFS support for setting
