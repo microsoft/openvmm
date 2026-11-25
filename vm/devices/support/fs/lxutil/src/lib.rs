@@ -2399,6 +2399,25 @@ mod tests {
     }
 
     #[test]
+    fn link_to_a_one_character_name() {
+        let env = TestEnv::new();
+        env.create_file("testfile", "test");
+        let stat = env.volume.lstat("testfile").unwrap();
+
+        // On Windows, a name of one UTF-16 unit makes the shortest
+        // FILE_LINK_INFORMATION buffer.
+        env.volume.link("testfile", "a").unwrap();
+        let stat2 = env.volume.lstat("a").unwrap();
+        assert_eq!(stat2.inode_nr, stat.inode_nr);
+        assert_eq!(stat2.link_count, 2);
+
+        let stat2 = env.volume.link_stat("testfile", "b").unwrap();
+        assert_eq!(stat2.inode_nr, stat.inode_nr);
+        assert_eq!(stat2.link_count, 3);
+        assert_eq!(fs::read(env.root_dir.path().join("b")).unwrap(), b"test");
+    }
+
+    #[test]
     fn stat_fs() {
         let env = TestEnv::new();
         let stat_fs = env.volume.stat_fs("").unwrap();
