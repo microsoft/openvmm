@@ -3,7 +3,9 @@
 
 //! Tests for microVM filesystem persistence and limits.
 
+use super::policy_tests::create;
 use super::policy_tests::lookup;
+use super::policy_tests::mkdir;
 use super::policy_tests::name;
 use super::policy_tests::open;
 use super::policy_tests::read_node;
@@ -46,6 +48,7 @@ use fuse::protocol::fuse_dirent_align;
 use fuse::protocol::fuse_direntplus;
 use fuse::protocol::fuse_in_header;
 use fuse::protocol::fuse_init_in;
+use fuse::protocol::fuse_mknod_in;
 use fuse::protocol::fuse_read_in;
 use fuse::protocol::fuse_release_in;
 use std::path::Path;
@@ -173,6 +176,84 @@ fn largest_restored_next_node_id_is_never_handed_out() {
     restored
         .restore_microvm_state(&profile, state, &session)
         .unwrap();
+}
+
+/// A saved state may also hold the last node ID that the node table hands
+/// out, `u64::MAX - 1`. `MKDIR`, `MKNOD`, `SYMLINK`, and `CREATE` reserve the
+/// node ID of the object that they make before they make it on the host, so
+/// the object takes that ID even though the table can hand out no other: the
+/// reply returns the object's node rather than fail and leave the object on
+/// the host without one. The next request that makes an object then fails
+/// with `ENOSPC` before it changes the host, and the state saves the node and
+/// the next node ID `u64::MAX`, which a restore accepts.
+#[test]
+fn a_created_object_takes_the_last_node_id() {
+    for operation in ["MKDIR", "MKNOD", "SYMLINK", "CREATE"] {
+        let temporary_directory = tempdir().unwrap();
+        let root_path = temporary_directory.path();
+        let profile = MicroVmVirtioFsProfile::from_attachment(
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(root_path).unwrap(),
+            false,
+            Vec::new(),
+        )
+        .unwrap();
+        let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let mut state = source
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+        state.next_node_id = u64::MAX - 1;
+        let fs = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let session = Session::new(fs.clone());
+        fs.restore_microvm_state(&profile, state, &session).unwrap();
+
+        let make = |object: &str| -> lx::Result<u64> {
+            let parent = request(FUSE_ROOT_ID);
+            match operation {
+                "MKDIR" => mkdir(&fs, FUSE_ROOT_ID, object),
+                "MKNOD" => {
+                    let arg = fuse_mknod_in {
+                        mode: lx::S_IFREG | 0o644,
+                        rdev: 0,
+                        umask: 0,
+                        padding: 0,
+                    };
+                    Ok(fs.mknod(&parent, name(object), &arg)?.nodeid)
+                }
+                "SYMLINK" => Ok(fs.symlink(&parent, name(object), name("target"))?.nodeid),
+                "CREATE" => {
+                    let (node_id, fh) = create(&fs, FUSE_ROOT_ID, object)?;
+                    release(&fs, node_id, fh);
+                    Ok(node_id)
+                }
+                _ => unreachable!(),
+            }
+        };
+        let on_host = |object: &str| root_path.join(object).symlink_metadata().is_ok();
+
+        assert_eq!(make("first"), Ok(u64::MAX - 1), "{operation}");
+        assert!(on_host("first"), "{operation}");
+        assert_eq!(lookup(&fs, "first"), Ok(u64::MAX - 1), "{operation}");
+        assert_eq!(make("second"), Err(lx::Error::ENOSPC), "{operation}");
+        assert!(!on_host("second"), "{operation}");
+
+        let state = fs
+            .save_microvm_state(&profile, SessionState::default())
+            .unwrap();
+        assert_eq!(state.next_node_id, u64::MAX, "{operation}");
+        assert!(
+            state
+                .inodes
+                .iter()
+                .any(|inode| inode.node_id == u64::MAX - 1),
+            "{operation}"
+        );
+        let restored = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+        let session = Session::new(restored.clone());
+        restored
+            .restore_microvm_state(&profile, state, &session)
+            .unwrap();
+    }
 }
 
 /// A reset or `FUSE_DESTROY` ends a restored session as it ends a new one, so

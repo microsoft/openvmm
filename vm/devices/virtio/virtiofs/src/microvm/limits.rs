@@ -28,6 +28,33 @@ impl InodeMap {
     }
 
     pub(crate) fn preflight_microvm_insert(&self, inode: &VirtioFsInode) -> lx::Result<()> {
+        self.preflight_microvm_insert_with(inode, false)
+    }
+
+    /// Checks an insert of `inode` with the node ID that a reservation holds
+    /// (see [`InodeMap::insert_reserved`]).
+    ///
+    /// Unlike [`Self::preflight_microvm_insert`], this does not check that the
+    /// table can hand out another node ID, since the insert takes none: a
+    /// request that reserved the last node ID, `u64::MAX - 1`, must still be
+    /// able to insert the node of the object that it has made on the host,
+    /// rather than fail and leave that object there without a node. The
+    /// inode and alias limits apply as to any insert.
+    pub(crate) fn preflight_microvm_reserved_insert(
+        &self,
+        inode: &VirtioFsInode,
+    ) -> lx::Result<()> {
+        self.preflight_microvm_insert_with(inode, true)
+    }
+
+    /// Checks an insert of `inode`, whose node, if it adds one, takes the node
+    /// ID that a reservation holds if `reserved`, and otherwise the table's
+    /// next node ID.
+    fn preflight_microvm_insert_with(
+        &self,
+        inode: &VirtioFsInode,
+        reserved: bool,
+    ) -> lx::Result<()> {
         let path = inode.clone_path();
         Self::validate_microvm_alias_path(&path)?;
         // The insert aliases the inode under the dedup key only if it reuses
@@ -35,12 +62,20 @@ impl InodeMap {
         if let Some(existing) = self.reused(inode) {
             return self.preflight_microvm_alias_add(existing, &path);
         }
-        self.preflight_microvm_new_inode(&path)
+        self.preflight_microvm_node(&path, reserved)
     }
 
     pub(crate) fn preflight_microvm_new_inode(&self, path: &Path) -> lx::Result<()> {
+        self.preflight_microvm_node(path, false)
+    }
+
+    /// Checks a new node at `path` against the inode and alias limits and,
+    /// unless a reservation holds its node ID (`reserved`), checks that the
+    /// table can hand out its next node ID.
+    fn preflight_microvm_node(&self, path: &Path, reserved: bool) -> lx::Result<()> {
         Self::validate_microvm_alias_path(path)?;
-        if self.inodes_by_node_id.values.len() >= MAX_INODES || !self.inodes_by_node_id.can_insert()
+        if self.inodes_by_node_id.values.len() >= MAX_INODES
+            || (!reserved && !self.inodes_by_node_id.can_insert())
         {
             return Err(lx::Error::ENOSPC);
         }
