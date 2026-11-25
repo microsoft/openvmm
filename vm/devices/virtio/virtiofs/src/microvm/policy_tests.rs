@@ -102,7 +102,7 @@ pub(super) fn create(fs: &VirtioFs, parent: u64, file_name: &str) -> lx::Result<
 
 /// Creates and opens a file with the open flags `flags`, and returns its node
 /// ID and handle.
-fn create_with_flags(
+pub(super) fn create_with_flags(
     fs: &VirtioFs,
     parent: u64,
     file_name: &str,

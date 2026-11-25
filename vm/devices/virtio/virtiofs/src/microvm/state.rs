@@ -599,6 +599,7 @@ pub(crate) fn reopen_flags(saved: u32) -> anyhow::Result<u32> {
         | lx::O_EXCL as u32
         | lx::O_TRUNC as u32
         | lx::O_APPEND as u32
+        | lx::O_DIRECT as u32
         | lx::O_DIRECTORY as u32
         | lx::O_NOFOLLOW as u32
         | lx::O_NOATIME as u32

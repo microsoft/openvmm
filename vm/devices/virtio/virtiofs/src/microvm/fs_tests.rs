@@ -4,6 +4,7 @@
 //! Tests for microVM filesystem persistence and limits.
 
 use super::policy_tests::create;
+use super::policy_tests::create_with_flags;
 use super::policy_tests::error;
 use super::policy_tests::lookup;
 use super::policy_tests::mkdir;
@@ -1161,6 +1162,89 @@ fn saved_negotiation_must_match_the_exact_microvm_policy() {
     state.negotiation.want2 = FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
     state.negotiation.max_background = 1;
     assert!(validate_microvm_state(&state, &profile).is_err());
+}
+
+/// The guest's FUSE client passes `O_DIRECT` in the flags of `FUSE_OPEN` and
+/// `FUSE_CREATE`, which the server accepts, keeps in the handle's open flags,
+/// and passes to the host open. A restore reopens such a handle with
+/// `O_DIRECT` and the access that the guest opened it with, rather than refuse
+/// the saved state.
+#[test]
+fn handles_opened_with_o_direct_restore_with_it() {
+    // The flags that FUSE_OPEN and FUSE_CREATE record for the handles below,
+    // and those with which a restore reopens them, whatever the host
+    // filesystem.
+    for (saved, reopened) in [
+        (lx::O_RDWR | lx::O_DIRECT, lx::O_RDWR | lx::O_DIRECT),
+        (
+            lx::O_WRONLY | lx::O_CREAT | lx::O_DIRECT,
+            lx::O_WRONLY | lx::O_DIRECT,
+        ),
+    ] {
+        assert_eq!(
+            reopen_flags(saved as u32).unwrap(),
+            reopened as u32,
+            "{saved:#x}"
+        );
+    }
+
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::write(root_path.join("opened"), b"data").unwrap();
+    // Linux lets a filesystem refuse O_DIRECT, as tmpfs did before Linux 6.6.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let probe = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(lx::O_DIRECT)
+            .open(root_path.join("opened"));
+        match probe {
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
+                eprintln!("skipping: the host filesystem refuses O_DIRECT: {error}");
+                return;
+            }
+            probe => drop(probe.unwrap()),
+        }
+    }
+    let profile = MicroVmVirtioFsProfile::from_attachment(
+        MICROVM_ATTACHMENT_ID.to_owned(),
+        microvm_root_identity(root_path).unwrap(),
+        false,
+        Vec::new(),
+    )
+    .unwrap();
+    let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let opened = lookup(&source, "opened").unwrap();
+    let opened_fh = open(&source, opened, lx::O_RDWR | lx::O_DIRECT).unwrap();
+    let (created, created_fh) = create_with_flags(
+        &source,
+        FUSE_ROOT_ID,
+        "created",
+        lx::O_WRONLY | lx::O_CREAT | lx::O_DIRECT,
+    )
+    .unwrap();
+    let state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+
+    let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+    destination
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+    for (node_id, fh, access) in [
+        (opened, opened_fh, lx::O_RDWR),
+        (created, created_fh, lx::O_WRONLY),
+    ] {
+        let file = destination.get_file(node_id, fh).unwrap();
+        assert_eq!(
+            file.open_flags(),
+            (access | lx::O_DIRECT) as u32,
+            "node {node_id}"
+        );
+    }
 }
 
 #[test]
