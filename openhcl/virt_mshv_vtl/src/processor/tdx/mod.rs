@@ -675,6 +675,10 @@ impl HardwareIsolatedBacking for TdxBacked {
         vtl: GuestVtl,
         event: HvX64PendingExceptionEvent,
     ) {
+        if event.vector() == u16::from(x86defs::Exception::PAGE_FAULT.0) {
+            this.runner.set_cr2(event.exception_parameter());
+        }
+
         let new_intr = InterruptionInformation::new()
             .with_valid(true)
             .with_deliver_error_code(event.deliver_error_code())
