@@ -848,6 +848,13 @@ impl LxVolume {
         mut options: super::LxCreateOptions,
     ) -> lx::Result<OwnedHandle> {
         assert!(path.is_relative() && !path.as_os_str().is_empty());
+
+        // Linux has no symbolic link with an empty target: symlink(2) fails one with ENOENT,
+        // before it looks at the link's path, so do the same before creating anything.
+        if target.is_empty() {
+            return Err(lx::Error::ENOENT);
+        }
+
         self.check_sandbox_enforcement(path)?;
 
         // Handle filesystems that do not support reparse points.
@@ -2024,6 +2031,18 @@ mod tests {
         assert!(lx::s_islnk(stat.mode.into()));
         assert_eq!(stat.file_size, target.len() as u64);
         assert_eq!(volume.read_link(path).unwrap(), target);
+    }
+
+    /// An NT link's reparse buffer starts with a whole `REPARSE_DATA_BUFFER`,
+    /// which extends past the start of the link's names, so the buffer of an
+    /// empty target could not hold it, and is refused with `ENOENT`, as Linux
+    /// refuses the target.
+    #[test]
+    fn nt_link_reparse_buffer_refuses_an_empty_target() {
+        assert_eq!(
+            util::create_nt_link_reparse_buffer(ffi::OsStr::new(""), 0).unwrap_err(),
+            lx::Error::ENOENT
+        );
     }
 
     #[test]

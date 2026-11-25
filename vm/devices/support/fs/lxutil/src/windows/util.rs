@@ -604,6 +604,12 @@ pub fn file_info_to_stat(
 
 // Create the reparse buffer for an NT symlink.
 pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr, flags: u32) -> lx::Result<Vec<u8>> {
+    // The whole REPARSE_DATA_BUFFER written below extends past the start of the names, so the
+    // buffer can hold it only if the target is not empty. Linux fails an empty target with ENOENT.
+    if target.is_empty() {
+        return Err(lx::Error::ENOENT);
+    }
+
     let mut link_target: windows::UnicodeString =
         target.try_into().map_err(|_| lx::Error::EINVAL)?;
 
@@ -619,7 +625,8 @@ pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr, flags: u32) -> lx::Res
 
     let mut reparse = vec![0; local_size];
 
-    // SAFETY: The buffer is large enough to hold the reparse data.
+    // SAFETY: The buffer is large enough to hold the reparse data, since the
+    // target is not empty: its two copies reach past the end of the struct.
     // This is necessary because unfortunately the Windows types don't
     // implement the necessary traits to use zerocopy.
     unsafe {
