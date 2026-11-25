@@ -9,16 +9,20 @@ use closeable_mutex::CloseableMutex;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::BoxFuture;
+use futures::future::Fuse;
 use futures::task::ArcWake;
 use futures::task::WakerRef;
 use futures::task::waker_ref;
 use inspect::InspectMut;
+use mesh::error::RemoteError;
+use mesh::rpc::FailableRpc;
 use pal_async::task::Spawn;
 use state_unit::SpawnedUnit;
 use state_unit::StateRequest;
 use state_unit::StateUnit;
 use std::sync::Arc;
 use std::task::Context;
+use vmcore::device_state::InputHookCompletion;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -97,6 +101,8 @@ impl InspectMut for ArcMutexChipsetDeviceUnit {
 trait DynDevice: InspectMut + Send {
     fn start(&mut self);
     async fn stop(&mut self);
+    fn quiesce_input(&mut self) -> InputHookCompletion;
+    fn resume_input(&mut self) -> InputHookCompletion;
     async fn reset(&mut self);
     fn poll_device(&mut self, cx: &mut Context<'_>);
     async fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
@@ -111,6 +117,14 @@ impl<T: VmmChipsetDevice> DynDevice for T {
 
     async fn stop(&mut self) {
         self.stop().await
+    }
+
+    fn quiesce_input(&mut self) -> InputHookCompletion {
+        self.quiesce_input()
+    }
+
+    fn resume_input(&mut self) -> InputHookCompletion {
+        self.resume_input()
     }
 
     async fn reset(&mut self) {
@@ -166,11 +180,49 @@ impl ArcMutexChipsetDeviceUnit {
     }
 
     pub async fn run(mut self, mut state_change: mesh::Receiver<StateRequest>) -> Self {
+        // An input hook request, whose answer waits for the hook's completion.
+        // The unit keeps polling the device meanwhile, since vCPUs may still
+        // access it and the completion may wait for the device to progress.
+        let mut input_hook: Option<(FailableRpc<(), ()>, InputHookCompletion)> = None;
+        // A state request that the unit has received but not applied. A
+        // transaction sends no request before the input hook is answered, but
+        // a dropped one can. Since only an inspection may overlap the hook, any
+        // other request waits for it, and the unit receives no other request
+        // until it has applied this one.
+        let mut request = None;
+        let mut closed = false;
         loop {
-            enum Event<'a> {
-                StateChange(StateRequest),
-                Poll(WakerRef<'a>),
+            if let Some(req) = request
+                .take_if(|req| input_hook.is_none() || matches!(req, StateRequest::Inspect(_)))
+            {
+                match req {
+                    StateRequest::QuiesceInput(rpc) => {
+                        input_hook = Some((rpc, StateUnit::quiesce_input(&mut self)));
+                    }
+                    StateRequest::ResumeInput(rpc) => {
+                        input_hook = Some((rpc, StateUnit::resume_input(&mut self)));
+                    }
+                    req => req.apply(&mut self).await,
+                }
+                continue;
             }
+            if closed && input_hook.is_none() {
+                break;
+            }
+
+            enum Event<'a> {
+                StateChange(Option<StateRequest>),
+                Poll(WakerRef<'a>),
+                InputHookDone(anyhow::Result<()>),
+            }
+
+            // Wait for state requests until the channel closes, but not while a
+            // request waits for the input hook.
+            let mut state_change_fut = if closed || request.is_some() {
+                Fuse::terminated()
+            } else {
+                state_change.next().fuse()
+            };
 
             // Wait for poll requests.
             let poll_fut = async {
@@ -183,26 +235,34 @@ impl ArcMutexChipsetDeviceUnit {
                 std::future::pending().await
             };
 
+            // Wait for the completion of the pending input hook.
+            let mut input_hook_fut = match &mut input_hook {
+                Some((_, completion)) => completion.fuse(),
+                None => Fuse::terminated(),
+            };
+
             let event = futures::select! {
-                req = state_change.next() => {
-                    if let Some(req) = req {
-                        Event::StateChange(req)
-                    } else {
-                        break;
-                    }
+                req = state_change_fut => {
+                    Event::StateChange(req)
                 }
                 waker = poll_fut.fuse() => {
                     Event::Poll(waker)
                 }
+                result = input_hook_fut => {
+                    Event::InputHookDone(result)
+                }
             };
 
             match event {
-                Event::StateChange(req) => {
-                    req.apply(&mut self).await;
-                }
+                Event::StateChange(None) => closed = true,
+                Event::StateChange(Some(req)) => request = Some(req),
                 Event::Poll(waker) => {
                     let mut device = self.device.lock();
                     device.poll_device(&mut Context::from_waker(&waker));
+                }
+                Event::InputHookDone(result) => {
+                    let (rpc, _) = input_hook.take().expect("input hook is pending");
+                    rpc.complete(result.map_err(RemoteError::new));
                 }
             }
         }
@@ -232,6 +292,20 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
         //    (e.g., no calls are made to the device while the VM is stopped).
         //
         // These are currently not true.
+    }
+
+    fn quiesce_input(&mut self) -> InputHookCompletion {
+        // VPs are still running during input transitions, so keep the mutex
+        // open: a concurrent guest access waits for the hook, as for any other
+        // device call, instead of panicking on a closed mutex. The hook is
+        // synchronous, and the unit awaits its completion after the lock is
+        // released, so a guest access never waits for asynchronous work, which
+        // might need the executor that the guest access would block.
+        self.device.lock().quiesce_input()
+    }
+
+    fn resume_input(&mut self) -> InputHookCompletion {
+        self.device.lock().resume_input()
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {
@@ -264,21 +338,36 @@ mod tests {
     use chipset_device::io::IoResult;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::pio::PortIoIntercept;
+    use chipset_device::poll_device::PollDevice;
     use chipset_device_resources::ResolvedChipsetDevice;
     use closeable_mutex::CloseableMutex;
+    use futures::future::Either;
     use futures::poll;
     use inspect::InspectMut;
+    use mesh::rpc::FailableRpc;
+    use mesh::rpc::PendingFailableRpc;
+    use mesh::rpc::RpcSend;
     use pal_async::DefaultDriver;
+    use pal_async::DefaultPool;
     use pal_async::async_test;
+    use pal_async::task::Spawn;
+    use pal_async::timer::PolledTimer;
+    use state_unit::StateRequest;
     use state_unit::StateUnit;
     use state_unit::StateUnits;
+    use std::pin::pin;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::task::Context;
     use std::task::Poll;
+    use std::task::Waker;
+    use std::time::Duration;
     use test_with_tracing::test;
     use vmcore::device_state::ChangeDeviceState;
+    use vmcore::device_state::InputHookCompletion;
     use vmcore::save_restore::AsyncSaveRestore;
     use vmcore::save_restore::NoSavedState;
     use vmcore::save_restore::RestoreError;
@@ -755,5 +844,325 @@ mod tests {
                 assert_eq!(data, [0xff; 4]);
             }
         }
+    }
+
+    /// A device whose input hooks signal that they ran and complete only when
+    /// the test releases them.
+    struct InputHookDevice {
+        started: Option<mesh::OneshotSender<()>>,
+        release: Option<mesh::OneshotReceiver<()>>,
+    }
+
+    impl InputHookDevice {
+        fn hook(&mut self) -> InputHookCompletion {
+            self.started.take().expect("hook runs once").send(());
+            let release = self.release.take().expect("hook runs once");
+            InputHookCompletion::new(async move {
+                release
+                    .await
+                    .map_err(|_| anyhow::anyhow!("hook release dropped"))
+            })
+        }
+    }
+
+    impl ChipsetDevice for InputHookDevice {}
+
+    impl InspectMut for InputHookDevice {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.respond();
+        }
+    }
+
+    impl ChangeDeviceState for InputHookDevice {
+        fn start(&mut self) {}
+
+        fn quiesce_input(&mut self) -> InputHookCompletion {
+            self.hook()
+        }
+
+        fn resume_input(&mut self) -> InputHookCompletion {
+            self.hook()
+        }
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+    }
+
+    impl AsyncSaveRestore for InputHookDevice {
+        type SavedState = NoSavedState;
+
+        async fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        async fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    /// Sends `request` to the unit of an [`InputHookDevice`] whose hook does not
+    /// complete until a guest access to the device, on the same single-threaded
+    /// executor, releases it, as when a VP and the unit share a CPU's thread in
+    /// OpenHCL's threadpool.
+    ///
+    /// The guest access locks the device as MMIO and PIO dispatch do. If the
+    /// hook held the lock until its completion, the guest access would block
+    /// the executor that must complete the hook, so this fails after a timeout
+    /// instead of hanging.
+    fn input_hook_with_guest_access_on_one_executor(
+        request: fn(FailableRpc<(), ()>) -> StateRequest,
+    ) {
+        let (done_send, done_recv) = mpsc::channel();
+        std::thread::spawn(move || {
+            DefaultPool::run_with(async |driver| {
+                let (started_send, started_recv) = mesh::oneshot();
+                let (release_send, release_recv) = mesh::oneshot();
+                let device = Arc::new(CloseableMutex::new(InputHookDevice {
+                    started: Some(started_send),
+                    release: Some(release_recv),
+                }));
+                let unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+                let (send, recv) = mesh::channel();
+                let unit_task = driver.spawn("unit", unit.run(recv));
+                let guest_access = driver.spawn("guest-access", async move {
+                    started_recv.await.unwrap();
+                    drop(device.lock_if_open().expect("device is open"));
+                    release_send.send(());
+                });
+                send.call_failable(request, ()).await.unwrap();
+                guest_access.await;
+                drop(send);
+                unit_task.await;
+            });
+            done_send.send(()).unwrap();
+        });
+        done_recv
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a guest access deadlocked with an input hook on its executor");
+    }
+
+    #[test]
+    fn input_hooks_do_not_block_guest_access_on_their_executor() {
+        input_hook_with_guest_access_on_one_executor(StateRequest::QuiesceInput);
+        input_hook_with_guest_access_on_one_executor(StateRequest::ResumeInput);
+    }
+
+    /// A device whose input hooks complete only once the unit polls the device
+    /// after the hook ran, as a device that finishes reading host input when it
+    /// is polled would.
+    #[derive(Default)]
+    struct PolledHookDevice {
+        waker: Option<Waker>,
+        hook_started: Option<mesh::OneshotSender<()>>,
+        polled: Option<mesh::OneshotSender<()>>,
+    }
+
+    impl PolledHookDevice {
+        fn hook(&mut self) -> InputHookCompletion {
+            if let Some(hook_started) = self.hook_started.take() {
+                hook_started.send(());
+            }
+            let (send, recv) = mesh::oneshot();
+            self.polled = Some(send);
+            InputHookCompletion::new(async move {
+                recv.await
+                    .map_err(|_| anyhow::anyhow!("poll signal dropped"))
+            })
+        }
+    }
+
+    impl ChipsetDevice for PolledHookDevice {
+        fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
+            Some(self)
+        }
+    }
+
+    impl PollDevice for PolledHookDevice {
+        fn poll_device(&mut self, cx: &mut Context<'_>) {
+            self.waker = Some(cx.waker().clone());
+            if let Some(polled) = self.polled.take() {
+                polled.send(());
+            }
+        }
+    }
+
+    impl InspectMut for PolledHookDevice {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.respond();
+        }
+    }
+
+    impl ChangeDeviceState for PolledHookDevice {
+        fn start(&mut self) {}
+
+        fn quiesce_input(&mut self) -> InputHookCompletion {
+            self.hook()
+        }
+
+        fn resume_input(&mut self) -> InputHookCompletion {
+            self.hook()
+        }
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+    }
+
+    impl AsyncSaveRestore for PolledHookDevice {
+        type SavedState = NoSavedState;
+
+        async fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        async fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    /// Starts the unit of a new [`PolledHookDevice`], with the device.
+    async fn start_polled_hook_unit(
+        driver: &DefaultDriver,
+    ) -> (
+        Arc<CloseableMutex<PolledHookDevice>>,
+        mesh::Sender<StateRequest>,
+        pal_async::task::Task<ArcMutexChipsetDeviceUnit>,
+    ) {
+        let device = Arc::new(CloseableMutex::new(PolledHookDevice::default()));
+        let unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+        let (send, recv) = mesh::channel();
+        let unit_task = driver.spawn("unit", unit.run(recv));
+        send.call(StateRequest::Start, ()).await.unwrap();
+        (device, send, unit_task)
+    }
+
+    /// Sends `request` to the unit of `device`, without waiting for its answer,
+    /// and returns once the device's hook has run.
+    async fn start_polled_hook(
+        device: &CloseableMutex<PolledHookDevice>,
+        send: &mesh::Sender<StateRequest>,
+        request: fn(FailableRpc<(), ()>) -> StateRequest,
+    ) -> PendingFailableRpc<()> {
+        let (started_send, started_recv) = mesh::oneshot();
+        device.lock().hook_started = Some(started_send);
+        let hook = send.call_failable(request, ());
+        started_recv.await.unwrap();
+        hook
+    }
+
+    /// Asks the unit of `device` to poll it.
+    fn request_poll(device: &CloseableMutex<PolledHookDevice>) {
+        device
+            .lock()
+            .waker
+            .as_ref()
+            .expect("device was polled")
+            .wake_by_ref();
+    }
+
+    /// Waits for `fut`, failing after a timeout with `message`.
+    async fn with_timeout<T>(
+        driver: &DefaultDriver,
+        fut: impl Future<Output = T>,
+        message: &str,
+    ) -> T {
+        let mut timer = PolledTimer::new(driver);
+        let timeout = timer.sleep(Duration::from_secs(10));
+        match futures::future::select(pin!(fut), pin!(timeout)).await {
+            Either::Left((output, _)) => output,
+            Either::Right(_) => panic!("{message}"),
+        }
+    }
+
+    #[async_test]
+    async fn input_hooks_keep_polling_the_device(driver: DefaultDriver) {
+        let (device, send, unit_task) = start_polled_hook_unit(&driver).await;
+
+        let requests: [fn(FailableRpc<(), ()>) -> StateRequest; 2] =
+            [StateRequest::QuiesceInput, StateRequest::ResumeInput];
+        for request in requests {
+            let hook = start_polled_hook(&device, &send, request).await;
+            request_poll(&device);
+            with_timeout(
+                &driver,
+                hook,
+                "the unit did not poll the device during an input hook",
+            )
+            .await
+            .unwrap();
+        }
+
+        send.call(StateRequest::Stop, ()).await.unwrap();
+        drop(send);
+        unit_task.await;
+    }
+
+    #[async_test]
+    async fn queued_request_waits_for_a_polled_input_hook(driver: DefaultDriver) {
+        let (device, send, unit_task) = start_polled_hook_unit(&driver).await;
+
+        // Drop the answer to the hook, as a dropped input transaction would,
+        // and stop the unit while the hook is pending.
+        drop(start_polled_hook(&device, &send, StateRequest::QuiesceInput).await);
+        let mut stop = pin!(send.call(StateRequest::Stop, ()));
+        PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(100))
+            .await;
+        assert!(poll!(stop.as_mut()).is_pending());
+
+        // The stop waits for the hook, which the unit completes when it polls
+        // the device.
+        request_poll(&device);
+        with_timeout(
+            &driver,
+            stop,
+            "the unit did not poll the device before a stop",
+        )
+        .await
+        .unwrap();
+        drop(send);
+        unit_task.await;
+    }
+
+    #[async_test]
+    async fn closed_channel_waits_for_a_polled_input_hook(driver: DefaultDriver) {
+        let (device, send, unit_task) = start_polled_hook_unit(&driver).await;
+
+        // Drop the answer to the hook and close the unit's channel, as a
+        // removal that follows a dropped input transaction would.
+        drop(start_polled_hook(&device, &send, StateRequest::QuiesceInput).await);
+        drop(send);
+        PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(100))
+            .await;
+
+        // The unit exits once the hook completes, when it polls the device.
+        request_poll(&device);
+        with_timeout(
+            &driver,
+            unit_task,
+            "the unit did not poll the device before exiting",
+        )
+        .await;
+    }
+
+    #[async_test]
+    async fn inspection_does_not_wait_for_a_polled_input_hook(driver: DefaultDriver) {
+        let (device, send, unit_task) = start_polled_hook_unit(&driver).await;
+
+        let hook = start_polled_hook(&device, &send, StateRequest::QuiesceInput).await;
+        let mut inspection = inspect::inspect("", &inspect::send(&send, StateRequest::Inspect));
+        with_timeout(
+            &driver,
+            inspection.resolve(),
+            "the inspection waited for the input hook",
+        )
+        .await;
+
+        request_poll(&device);
+        hook.await.unwrap();
+        drop(send);
+        unit_task.await;
     }
 }

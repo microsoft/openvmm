@@ -6,6 +6,41 @@
 #![forbid(unsafe_code)]
 
 use std::future::Future;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
+
+/// The completion of a device's input hook, such as
+/// [`ChangeDeviceState::quiesce_input`].
+///
+/// An input hook runs synchronously, with exclusive access to the device. The
+/// work that it must wait for, such as a request to a device task, completes in
+/// this future instead, which the caller awaits after it gives up that access.
+#[must_use = "an input hook is complete only once its completion is awaited"]
+pub struct InputHookCompletion(Option<Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>>);
+
+impl InputHookCompletion {
+    /// Returns the completion of a hook that has nothing left to wait for.
+    pub fn ready() -> Self {
+        Self(None)
+    }
+
+    /// Returns a completion that waits for `future`.
+    pub fn new(future: impl 'static + Send + Future<Output = anyhow::Result<()>>) -> Self {
+        Self(Some(Box::pin(future)))
+    }
+}
+
+impl Future for InputHookCompletion {
+    type Output = anyhow::Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match &mut self.get_mut().0 {
+            Some(future) => future.as_mut().poll(cx),
+            None => Poll::Ready(Ok(())),
+        }
+    }
+}
 
 /// Trait for transitioning device state.
 pub trait ChangeDeviceState {
@@ -26,6 +61,31 @@ pub trait ChangeDeviceState {
     // it. This may also require changing state units to wait for device start
     // to finish, which may require a bunch of other changes.
     fn start(&mut self);
+
+    /// Stops accepting new host input before a snapshot vCPU boundary.
+    ///
+    /// This runs with exclusive access to the device, which for a chipset
+    /// device means with its lock held while vCPUs may still access the device,
+    /// so it must not block. The work that stopping input must wait for, such
+    /// as a request to a device task, belongs in the returned completion, which
+    /// the caller awaits after it releases the device. Meanwhile, the device
+    /// keeps serving vCPUs and being polled.
+    ///
+    /// [`ChangeDeviceState::resume_input`] may be called even if the completion
+    /// fails or is not awaited.
+    fn quiesce_input(&mut self) -> InputHookCompletion {
+        InputHookCompletion::ready()
+    }
+
+    /// Resumes host input after a failed snapshot transaction.
+    ///
+    /// This must be safe whether or not [`ChangeDeviceState::quiesce_input`]
+    /// completed and idempotent across repeated recovery attempts. Like that
+    /// hook, it must not block, and the caller awaits its completion after it
+    /// releases the device.
+    fn resume_input(&mut self) -> InputHookCompletion {
+        InputHookCompletion::ready()
+    }
 
     /// Pauses guest-request processing in a save-consistent state.
     ///
