@@ -388,12 +388,14 @@ pub fn apply_denylist(extra_deny_names: &[&str], deny_action: SeccompAction) -> 
     }
 
     let filter = build_denylist_filter(&extra, deny_action)?;
-    apply_filter_all_threads(&filter)?;
     // Force clone3 to ENOSYS so the libc thread path falls back to the
     // argument-filtered `clone`; clone3's flags live behind a pointer seccomp
     // can't inspect.
     let clone3 = build_clone3_enosys_filter()?;
-    apply_filter_all_threads(&clone3)
+    // seccompiler sets no_new_privs via prctl for each installation, so install
+    // the main filter last in case the profile blanket-denies prctl.
+    apply_filter_all_threads(&clone3)?;
+    apply_filter_all_threads(&filter)
 }
 
 fn finalize_filter(
@@ -598,6 +600,49 @@ mod tests {
         }
         // SAFETY: Release the mapping obtained above; it is no longer used.
         assert_eq!(unsafe { libc::munmap(mapping, LEN) }, 0);
+    }
+
+    #[test]
+    fn denylist_can_block_prctl_during_initial_installation() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::seccomp::tests::helper_deny_prctl",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "prctl denial helper failed ({}):\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_deny_prctl() {
+        apply_denylist(&["prctl"], SeccompAction::Errno(libc::EACCES as u32)).unwrap();
+
+        // SAFETY: This read-only query takes no pointer arguments.
+        let result = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
+        assert_eq!(result, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::EACCES)
+        );
+
+        // SAFETY: Null arguments cannot create a child if the overlay regresses.
+        let result = unsafe { libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize) };
+        assert_eq!(result, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ENOSYS)
+        );
     }
 
     #[test]
