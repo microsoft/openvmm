@@ -262,7 +262,8 @@ pub enum Syscalls {
     /// argument-level guards on `ioctl`, `clone`, `prctl`, and `socket` — and
     /// additionally blocks every syscall named here. An empty list installs
     /// just the built-in baseline. Unknown names are a hard error at apply
-    /// time.
+    /// time. On x86-64, workers and their libraries must use the native 64-bit
+    /// syscall ABI; both i386 and x32 syscall ABIs are rejected.
     Deny(Vec<String>),
 }
 

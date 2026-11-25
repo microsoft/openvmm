@@ -323,6 +323,9 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
 /// with `deny_action`, and installs the argument-level guards on `ioctl`,
 /// `clone`, `prctl`, and `socket`.
 ///
+/// On x86-64, only the native 64-bit syscall ABI is supported: seccompiler
+/// kills i386 calls, and x32 calls receive `deny_action`.
+///
 /// The filter's `mismatch_action` is `Allow`: any syscall not named here (and
 /// not caught by an argument-level guard) passes through. The complementary
 /// `clone3`-to-`ENOSYS` overlay is installed separately by [`apply_denylist`].
@@ -352,7 +355,55 @@ pub fn build_denylist_filter(
         rules.insert(nr, Vec::new());
     }
 
-    finalize_filter(rules, SeccompAction::Allow, deny_action, arch)
+    let bpf = finalize_filter(rules, SeccompAction::Allow, deny_action.clone(), arch)?;
+    #[cfg(target_arch = "x86_64")]
+    let bpf = {
+        // x32 shares x86-64's audit architecture, but sets bit 30 in the
+        // syscall number. Other architectures must still reach seccompiler's
+        // architecture check, regardless of their syscall number.
+        const AUDIT_ARCH_X86_64: u32 = 62 | 0x8000_0000 | 0x4000_0000;
+        const X32_BIT: u32 = 0x4000_0000;
+        let prefix = [
+            seccompiler::sock_filter {
+                code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                jt: 0,
+                jf: 0,
+                k: 4,
+            },
+            seccompiler::sock_filter {
+                code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 3,
+                k: AUDIT_ARCH_X86_64,
+            },
+            seccompiler::sock_filter {
+                code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                jt: 0,
+                jf: 0,
+                k: 0,
+            },
+            seccompiler::sock_filter {
+                code: (libc::BPF_JMP | libc::BPF_JSET | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 1,
+                k: X32_BIT,
+            },
+            seccompiler::sock_filter {
+                code: (libc::BPF_RET | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 0,
+                k: deny_action.into(),
+            },
+        ];
+        // Preserve seccompiler's length limit after adding the ABI check.
+        if bpf.len() + prefix.len() >= 4096 {
+            return Err(io::Error::other(
+                "seccomp BPF filter including x32 guard is too large",
+            ));
+        }
+        prefix.into_iter().chain(bpf).collect()
+    };
+    Ok(bpf)
 }
 
 /// Resolve `extra_deny_names` into syscall numbers, build the denylist filter
@@ -506,6 +557,126 @@ fn socket_deny_rules() -> io::Result<Vec<SeccompRule>> {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn denylist_rejects_x32_syscalls() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::seccomp::tests::helper_deny_x32",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "x32 denial helper failed ({}):\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[ignore]
+    fn helper_deny_x32() {
+        const X32_BIT: libc::c_long = 0x4000_0000;
+        let x32_getpid = X32_BIT | libc::SYS_getpid;
+        // SAFETY: getpid takes no arguments, including under the x32 ABI.
+        let pid = unsafe { libc::syscall(libc::SYS_getpid) };
+        assert!(pid > 0);
+        // Distinguish our filter from kernels without x32 support or outer
+        // filters returning ENOSYS/EPERM.
+        // SAFETY: As above.
+        let unfiltered = unsafe { libc::syscall(x32_getpid) };
+        if unfiltered == -1 {
+            assert_ne!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::EACCES)
+            );
+        }
+
+        apply_denylist(&[], SeccompAction::Errno(libc::EACCES as u32)).unwrap();
+
+        // SAFETY: These read-only queries take no arguments.
+        assert_eq!(unsafe { libc::syscall(libc::SYS_getpid) }, pid);
+        // SAFETY: As above.
+        assert_eq!(unsafe { libc::syscall(x32_getpid) }, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::EACCES)
+        );
+
+        // The main filter must reject x32 even for the clone3 overlay.
+        // SAFETY: Null arguments cannot create a child if either filter regresses.
+        let result =
+            unsafe { libc::syscall(X32_BIT | libc::SYS_clone3, std::ptr::null::<u8>(), 0usize) };
+        assert_eq!(result, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::EACCES)
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn denylist_kills_compat_abis() {
+        use std::os::unix::process::ExitStatusExt;
+
+        for abi in ["i386", "x32"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "unix::seccomp::tests::helper_kill_compat_abi",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("SANDBOX_TEST_ABI", abi)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.signal(),
+                Some(libc::SIGSYS),
+                "{abi} helper failed ({}):\nstdout: {}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[ignore]
+    fn helper_kill_compat_abi() {
+        let abi = std::env::var("SANDBOX_TEST_ABI").unwrap();
+        apply_denylist(&[], SeccompAction::KillProcess).unwrap();
+        match abi.as_str() {
+            "i386" => {
+                // SAFETY: i386 getpid (20) takes no arguments. Conservatively
+                // clobber caller-saved registers if the syscall returns.
+                unsafe {
+                    std::arch::asm!(
+                        "int 0x80",
+                        in("eax") 20u32,
+                        clobber_abi("C"),
+                        options(nostack),
+                    );
+                }
+            }
+            "x32" => {
+                // SAFETY: x32 getpid takes no arguments.
+                unsafe { libc::syscall(0x4000_0000 | libc::SYS_getpid) };
+            }
+            _ => panic!("unknown test ABI: {abi}"),
+        }
+        panic!("{abi} syscall was not killed");
+    }
 
     #[test]
     fn worker_profiles_preserve_numa_binding_policy() {
