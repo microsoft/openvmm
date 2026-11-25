@@ -1420,6 +1420,23 @@ mod tests {
     }
 
     #[test]
+    fn pwrite_refuses_negative_offsets() {
+        // Linux fails a write at a negative offset with EINVAL. Windows takes the offsets -1 and
+        // -2 for FILE_WRITE_TO_END_OF_FILE and FILE_USE_FILE_POINTER_POSITION, which write at the
+        // end of the file and at the file pointer instead.
+        let env = TestEnv::new();
+        env.create_file("testfile", "x");
+        let file = env.volume.open("testfile", lx::O_RDWR, None).unwrap();
+        for offset in [-1, -2, lx::off_t::MIN] {
+            assert_eq!(file.pwrite(b"X", offset, 0).unwrap_err(), lx::Error::EINVAL);
+        }
+        assert_eq!(
+            fs::read(env.root_dir.path().join("testfile")).unwrap(),
+            b"x"
+        );
+    }
+
+    #[test]
     fn append_truncate() {
         // A file opened with O_APPEND must still support ftruncate, matching Linux behavior. On
         // Windows, O_APPEND strips FILE_WRITE_DATA to enforce append-only writes, which previously

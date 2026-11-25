@@ -1407,6 +1407,11 @@ impl LxFile {
         offset: lx::off_t,
         thread_uid: lx::uid_t,
     ) -> lx::Result<usize> {
+        // Linux fails a write at a negative offset with EINVAL, while NtWriteFile takes -1 and -2
+        // for FILE_WRITE_TO_END_OF_FILE and FILE_USE_FILE_POINTER_POSITION.
+        if offset < 0 {
+            return Err(lx::Error::EINVAL);
+        }
         unsafe {
             // When metadata is enabled, the Linux behavior of clearing set-user-ID and set-group-ID
             // on write must be emulated. This should actually be based on CAP_FSETID, but that
@@ -1452,6 +1457,10 @@ impl LxFile {
     where
         F: FnMut(lx::DirEntry) -> lx::Result<bool>,
     {
+        // A negative offset is no position in a directory: Linux fails a seek to one with EINVAL.
+        if offset < 0 {
+            return Err(lx::Error::EINVAL);
+        }
         if self.enumerator.is_none() {
             self.enumerator = Some(readdir::DirectoryEnumerator::new(false)?);
         }
@@ -1719,6 +1728,25 @@ mod tests {
         let refreshed = directory_entries(&mut dir, DOT_ENTRY_COUNT);
         assert_eq!(refreshed.len(), 2);
         assert!(!refreshed.iter().any(|entry| entry.name == second.name));
+    }
+
+    #[test]
+    fn read_dir_refuses_negative_offsets() {
+        // virtio-fs and Plan 9 pass a guest's offset of 2^63 or more on as a negative one, which
+        // Linux refuses with EINVAL.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"").unwrap();
+        let volume = LxVolume::new(root.path(), &LxVolumeOptions::new()).unwrap();
+        let mut dir = volume.open(Path::new(""), lx::O_DIRECTORY, None).unwrap();
+        for offset in [-1, lx::off_t::MIN] {
+            let mut entries = 0;
+            let result = dir.read_dir(offset, |_| {
+                entries += 1;
+                Ok(true)
+            });
+            assert_eq!(result.unwrap_err(), lx::Error::EINVAL);
+            assert_eq!(entries, 0);
+        }
     }
 
     #[test]
