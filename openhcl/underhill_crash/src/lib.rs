@@ -646,9 +646,12 @@ mod tests {
     use super::*;
     use futures::io::Cursor;
     use pal_async::async_test;
+    use std::sync::atomic::Ordering;
     use test_with_tracing::test;
     use vmbus_async::pipe::connected_message_pipes;
+    use vmbus_channel::connected_async_channels;
     use vmbus_ring::FlatRingMem;
+    use vmbus_ring::Ring;
 
     // Large enough for the biggest message: a full dump data payload.
     // Tests use the second pipe as the host because only that endpoint
@@ -807,5 +810,54 @@ mod tests {
             futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
 
         result.expect_err("closed channel was reported as success");
+    }
+
+    /// An unaligned outgoing consumer offset fails streaming when the writer
+    /// exhausts its cached space. The host stays open and sends no error.
+    #[async_test]
+    async fn send_dump_propagates_streaming_error() {
+        let (guest, host) = connected_async_channels(RING_SIZE);
+        let outgoing = guest.out_ring.mem().clone();
+        let guest = MessagePipe::new(guest).unwrap();
+        let mut host = MessagePipe::new(host).unwrap();
+        let mut source = Cursor::new(test_dump(1 << 20));
+        let os_version = os_version();
+
+        let host_task = async {
+            host_negotiate(&mut host).await;
+            outgoing.control()[1].store(1, Ordering::Relaxed);
+        };
+
+        let (result, ()) =
+            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+
+        let error = result.expect_err("failed streaming was reported as success");
+        assert_eq!(error.to_string(), "failed to stream dump");
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+    }
+
+    /// The dump fits in the writer's cached ring space, but completion does not.
+    /// Refreshing space then detects the invalid consumer offset, without a
+    /// read-side failure or host error masking the completion error.
+    #[async_test]
+    async fn send_dump_propagates_completion_error() {
+        let (guest, host) = connected_async_channels(4096);
+        let outgoing = guest.out_ring.mem().clone();
+        let guest = MessagePipe::new(guest).unwrap();
+        let mut host = MessagePipe::new(host).unwrap();
+        let mut source = Cursor::new(test_dump(3800));
+        let os_version = os_version();
+
+        let host_task = async {
+            host_negotiate(&mut host).await;
+            outgoing.control()[1].store(1, Ordering::Relaxed);
+        };
+
+        let (result, ()) =
+            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+
+        let error = result.expect_err("failed completion was reported as success");
+        assert_eq!(error.to_string(), "failed to complete dump");
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
     }
 }

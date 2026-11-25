@@ -9700,6 +9700,7 @@ dependencies = [
  "tracing-subscriber",
  "underhill_confidentiality",
  "vmbus_async",
+ "vmbus_channel",
  "vmbus_ring",
  "vmbus_user_channel",
  "zerocopy",

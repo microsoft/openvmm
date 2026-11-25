@@ -26,6 +26,7 @@ zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 test_with_tracing.workspace = true
+vmbus_channel.workspace = true
 
 [build-dependencies]
 build_rs_git_info.workspace = true
