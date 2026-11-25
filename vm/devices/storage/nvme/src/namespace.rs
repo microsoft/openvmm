@@ -12,7 +12,6 @@ use crate::spec;
 use crate::spec::nvm;
 use disk_backend::Disk;
 use guestmem::GuestMemory;
-use guid::Guid;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
 use zerocopy::FromBytes;
@@ -27,61 +26,17 @@ pub struct Namespace {
     mem: GuestMemory,
     block_shift: u32,
     pr: bool,
-    /// 16-byte unique identifier for this namespace, computed once at
-    /// construction. Prefers the backing disk's `disk_id()` when
-    /// available; otherwise synthesizes a stable identifier from the
-    /// containing subsystem and the nsid (see [`synthesize_nguid`]).
-    /// This ensures every namespace exposes a non-zero NGUID, which
-    /// lets hosts derive stable per-namespace unique identifiers and
-    /// keeps the inline NGUID consistent with the NIDT=NSGUID
-    /// (NGUID, in NVMe spec terms) entry in the Identify Namespace
-    /// Identification Descriptor List.
-    nguid: [u8; 16],
-}
-
-/// Synthesize a 16-byte NGUID for a namespace whose backing disk does
-/// not supply its own [`Disk::disk_id`]. The result is deterministic
-/// in `(subsystem_id, nsid)`: stable across emulator restarts, distinct
-/// per namespace within a subsystem, and distinct across subsystems.
-///
-/// The NVMe Base specification (section 4.7.1.2 / NVM Command Set
-/// section 5.1.13.7 Figure 97) describes NGUID as an EUI-64-based 16-byte
-/// identifier that the controller "assigns to the namespace when the
-/// namespace is created". For a software-emulated namespace whose backing
-/// store carries no such identifier, deriving one from the controller's
-/// stable subsystem identity and the namespace's nsid is a reasonable
-/// drop-in: it satisfies the "stable, unique within the subsystem"
-/// property the spec ascribes to NGUID, and it lets the inline NGUID and
-/// the NIDT=NSGUID (NGUID in the NVMe spec) descriptor in the
-/// Identification Descriptor List be reported consistently and
-/// non-zero in all cases.
-///
-/// Implementation: SHA-256 of `subsystem_id` bytes followed by `nsid` in
-/// little-endian, truncated to the first 16 bytes.
-fn synthesize_nguid(subsystem_id: Guid, nsid: u32) -> [u8; 16] {
-    use sha2::Digest;
-    let mut h = sha2::Sha256::new();
-    let ss_bytes: [u8; 16] = subsystem_id.into();
-    h.update(ss_bytes);
-    h.update(nsid.to_le_bytes());
-    let digest = h.finalize();
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&digest[..16]);
-    out
+    /// Stable backing-store identity, when the disk supplies one.
+    ///
+    /// A missing or all-zero disk ID is not replaced with a controller/NSID
+    /// derived value: those identify an attachment slot, not the backing
+    /// namespace, and can be reused for a different disk.
+    nguid: Option<[u8; 16]>,
 }
 
 impl Namespace {
-    pub fn new(mem: GuestMemory, subsystem_id: Guid, nsid: u32, disk: Disk) -> Self {
-        // Treat both "no disk_id at all" and "disk_id is all zeros" as
-        // absent: an all-zero NGUID is indistinguishable from "no
-        // identifier" to a spec-following host, and would violate the
-        // NVMe rule that a NIDT=NSGUID (NGUID) descriptor must not
-        // carry a zero NID. In either case, fall through to the
-        // deterministic-from-(subsystem_id, nsid) synthesis.
-        let nguid = match disk.disk_id() {
-            Some(id) if id != [0u8; 16] => id,
-            _ => synthesize_nguid(subsystem_id, nsid),
-        };
+    pub fn new(mem: GuestMemory, nsid: u32, disk: Disk) -> Self {
+        let nguid = disk.disk_id().filter(|id| *id != [0; 16]);
         Self {
             block_shift: disk.sector_size().trailing_zeros(),
             pr: disk.pr().is_some(),
@@ -116,14 +71,9 @@ impl Namespace {
             nlbaf: 0,
             flbas: nvm::Flbas::new().with_low_index(0),
             rescap,
-            // Populate the inline NGUID field of Identify Namespace (offset
-            // 104..120) so guests that read NGUID from the inline data
-            // structure -- rather than only from the Identify Namespace
-            // Identification Descriptor List (CNS 03h) -- get a real,
-            // non-zero unique identifier. EUI64 is left as zero; there is
-            // no general way to derive a unique 8-byte EUI from the backing
-            // disk.
-            nguid: self.nguid,
+            // Populate the inline field only when the backing store supplies
+            // a suitable identity. EUI64 remains zero.
+            nguid: self.nguid.unwrap_or_default(),
             nsattr: nvm::Nsattr::new().with_write_protected(self.disk.is_read_only()),
             ..FromZeros::new_zeroed()
         };
@@ -131,21 +81,18 @@ impl Namespace {
     }
 
     pub fn namespace_id_descriptor(&self, buf: &mut [u8]) {
+        buf.fill(0);
+        let Some(nguid) = self.nguid else {
+            return;
+        };
         let id = nvm::NamespaceIdentificationDescriptor::mut_from_prefix(buf)
             .unwrap()
             .0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-        // Always emit a single NIDT=NSGUID (NGUID in the NVMe spec)
-        // descriptor carrying the cached 16-byte identifier. Per NVMe
-        // Base specification, a controller shall not report a
-        // NIDT=NSGUID descriptor with a zero NID; the
-        // synthesized/zero-rejecting logic in [`Namespace::new`]
-        // guarantees `nguid` is non-zero for every namespace, so
-        // this constraint is met unconditionally.
         *id = nvm::NamespaceIdentificationDescriptor {
             nidt: nvm::NamespaceIdentifierType::NSGUID.0,
-            nidl: size_of_val(&self.nguid) as u8,
+            nidl: size_of_val(&nguid) as u8,
             rsvd: [0, 0],
-            nid: self.nguid,
+            nid: nguid,
         };
     }
 
@@ -410,10 +357,10 @@ mod tests {
 
     /// Convenience: build a `Namespace` with a `TestDisk` backing, run
     /// `Namespace::identify`, and return the 4 KiB response buffer.
-    fn identify_buf_for(subsystem_id: Guid, nsid: u32, disk_id: Option<[u8; 16]>) -> Vec<u8> {
+    fn identify_buf_for(nsid: u32, disk_id: Option<[u8; 16]>) -> Vec<u8> {
         let disk = Disk::new(TestDisk { disk_id }).unwrap();
         let mem = GuestMemory::empty();
-        let ns = Namespace::new(mem, subsystem_id, nsid, disk);
+        let ns = Namespace::new(mem, nsid, disk);
         let mut buf = vec![0u8; 4096];
         ns.identify(&mut buf);
         buf
@@ -422,10 +369,10 @@ mod tests {
     /// Convenience: build a `Namespace` with a `TestDisk` backing, run
     /// `Namespace::namespace_id_descriptor`, and return the 4 KiB
     /// response buffer.
-    fn descriptor_buf_for(subsystem_id: Guid, nsid: u32, disk_id: Option<[u8; 16]>) -> Vec<u8> {
+    fn descriptor_buf_for(nsid: u32, disk_id: Option<[u8; 16]>) -> Vec<u8> {
         let disk = Disk::new(TestDisk { disk_id }).unwrap();
         let mem = GuestMemory::empty();
-        let ns = Namespace::new(mem, subsystem_id, nsid, disk);
+        let ns = Namespace::new(mem, nsid, disk);
         let mut buf = vec![0u8; 4096];
         ns.namespace_id_descriptor(&mut buf);
         buf
@@ -442,7 +389,7 @@ mod tests {
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
             0x32, 0x10,
         ];
-        let buf = identify_buf_for(Guid::new_random(), 1, Some(want));
+        let buf = identify_buf_for(1, Some(want));
         assert_eq!(
             &buf[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN],
             &want,
@@ -455,60 +402,41 @@ mod tests {
         );
     }
 
-    /// When the backing disk reports no identifier, the inline NGUID
-    /// field must still be non-zero (synthesized from the namespace's
-    /// `(subsystem_id, nsid)` pair). EUI64 stays zero.
+    /// When the backing disk reports no identifier, the inline NGUID and EUI64
+    /// fields remain zero.
     #[test]
-    fn test_identify_namespace_synthesizes_inline_nguid_when_disk_has_no_id() {
-        let subsystem_id = Guid::new_random();
-        let buf = identify_buf_for(subsystem_id, 1, None);
-        let nguid: &[u8] = &buf[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN];
-        assert_ne!(
-            nguid, &[0u8; NGUID_LEN],
-            "inline NGUID must be synthesized to a non-zero value when the backing \
-             disk has no identifier"
+    fn test_identify_namespace_leaves_nguid_zero_when_disk_has_no_id() {
+        let buf = identify_buf_for(1, None);
+        assert_eq!(
+            &buf[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN],
+            &[0u8; NGUID_LEN]
         );
-        // Must match the helper's output exactly.
-        assert_eq!(nguid, &synthesize_nguid(subsystem_id, 1));
         assert_eq!(
             &buf[EUI64_OFFSET..EUI64_OFFSET + EUI64_LEN],
             &[0u8; EUI64_LEN]
         );
     }
 
-    /// A pathological backing disk that returns `Some([0; 16])` from
-    /// `disk_id()` is treated the same as "no identifier" -- the
-    /// emulator must fall through to the synthesized NGUID rather
-    /// than caching and reporting an all-zero NGUID (which would
-    /// violate the spec rule against a NIDT=NSGUID descriptor with
-    /// a zero NID).
+    /// A pathological all-zero backing ID is treated as absent.
     #[test]
     fn test_identify_namespace_treats_zero_disk_id_as_absent() {
-        let subsystem_id = Guid::new_random();
-        let buf = identify_buf_for(subsystem_id, 5, Some([0u8; 16]));
-        let nguid: &[u8] = &buf[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN];
-        assert_ne!(
-            nguid, &[0u8; NGUID_LEN],
-            "inline NGUID must not be zero even when disk_id() returns Some([0; 16])"
+        let buf = identify_buf_for(5, Some([0u8; 16]));
+        assert_eq!(
+            &buf[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN],
+            &[0u8; NGUID_LEN]
         );
-        // Must match what synthesize_nguid would produce for the same
-        // (subsystem_id, nsid) pair.
-        assert_eq!(nguid, &synthesize_nguid(subsystem_id, 5));
     }
 
-    /// The NIDT=NSGUID (NGUID in the NVMe spec) descriptor returned
-    /// by CNS=03h must match the inline NGUID byte-for-byte,
-    /// regardless of whether the underlying NGUID came from the
-    /// backing disk or from the synthesized fallback.
+    /// The NIDT=NSGUID (NGUID in the NVMe spec) descriptor returned by CNS=03h
+    /// must match the backing identity copied into the inline NGUID.
     #[test]
     fn test_namespace_id_descriptor_matches_inline_nguid_with_disk_id() {
         let want: [u8; 16] = [
             0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
             0xff, 0x00,
         ];
-        let subsystem_id = Guid::new_random();
-        let inline = identify_buf_for(subsystem_id, 1, Some(want));
-        let desc = descriptor_buf_for(subsystem_id, 1, Some(want));
+        let inline = identify_buf_for(1, Some(want));
+        let desc = descriptor_buf_for(1, Some(want));
         // Descriptor layout: byte 0 = NIDT, byte 1 = NIDL, bytes 2-3
         // reserved, bytes 4..20 = NID.
         assert_eq!(desc[0], nvm::NamespaceIdentifierType::NSGUID.0);
@@ -520,49 +448,14 @@ mod tests {
         );
     }
 
-    /// Same consistency property when the NGUID had to be synthesized.
-    /// This is the case that previously violated the spec (zero NID
-    /// in a NIDT=NSGUID (NGUID) descriptor): the synthesized non-zero
-    /// NGUID makes the descriptor list well-formed.
+    /// Without a backing identity, CNS=03h contains no descriptor.
     #[test]
-    fn test_namespace_id_descriptor_matches_inline_nguid_without_disk_id() {
-        let subsystem_id = Guid::new_random();
-        let inline = identify_buf_for(subsystem_id, 7, None);
-        let desc = descriptor_buf_for(subsystem_id, 7, None);
-        assert_eq!(desc[0], nvm::NamespaceIdentifierType::NSGUID.0);
-        assert_eq!(desc[1] as usize, NGUID_LEN);
-        let nid = &desc[4..4 + NGUID_LEN];
-        assert_ne!(nid, &[0u8; NGUID_LEN]);
-        assert_eq!(nid, &inline[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN]);
-        assert_eq!(nid, &synthesize_nguid(subsystem_id, 7));
+    fn test_namespace_id_descriptor_is_empty_without_disk_id() {
+        let desc = descriptor_buf_for(7, None);
+        assert!(desc.iter().all(|byte| *byte == 0));
     }
 
-    /// `synthesize_nguid` must be a pure function of `(subsystem_id,
-    /// nsid)`. Same inputs -> same output; any change in either input
-    /// produces a different output.
-    #[test]
-    fn test_synthesize_nguid_is_deterministic_and_distinct() {
-        let s1 = Guid::new_random();
-        let s2 = Guid::new_random();
-
-        // Deterministic.
-        assert_eq!(synthesize_nguid(s1, 1), synthesize_nguid(s1, 1));
-
-        // Different nsid in the same subsystem -> different NGUID.
-        assert_ne!(synthesize_nguid(s1, 1), synthesize_nguid(s1, 2));
-
-        // Different subsystems with the same nsid -> different NGUIDs.
-        assert_ne!(synthesize_nguid(s1, 1), synthesize_nguid(s2, 1));
-
-        // And of course non-zero.
-        assert_ne!(synthesize_nguid(s1, 1), [0u8; 16]);
-    }
-    use super::Namespace;
-    use crate::error::CommandResult;
-    use crate::spec;
-    use crate::spec::nvm;
     use disklayer_ram::ram_disk;
-    use guestmem::GuestMemory;
     use pal_async::async_test;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
@@ -573,10 +466,7 @@ mod tests {
     fn read_only_namespace() -> (GuestMemory, Namespace) {
         let mem = GuestMemory::allocate(0x2000);
         let disk = ram_disk(1 << 20, true).unwrap();
-        (
-            mem.clone(),
-            Namespace::new(mem, Guid::new_random(), 1, disk),
-        )
+        (mem.clone(), Namespace::new(mem, 1, disk))
     }
 
     /// Builds a command for `opcode` with its data buffer at `DATA_GPA`.
@@ -620,12 +510,7 @@ mod tests {
     fn identify_reports_read_only_as_write_protected() {
         for read_only in [false, true] {
             let mem = GuestMemory::allocate(0x1000);
-            let namespace = Namespace::new(
-                mem,
-                Guid::new_random(),
-                1,
-                ram_disk(1 << 20, read_only).unwrap(),
-            );
+            let namespace = Namespace::new(mem, 1, ram_disk(1 << 20, read_only).unwrap());
             let mut id = nvm::IdentifyNamespace::new_zeroed();
             namespace.identify(id.as_mut_bytes());
             assert_eq!(

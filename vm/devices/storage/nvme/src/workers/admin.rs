@@ -486,7 +486,6 @@ impl AdminHandler {
         let namespace = &*match self.namespaces.entry(nsid) {
             btree_map::Entry::Vacant(entry) => entry.insert(Arc::new(Namespace::new(
                 self.config.mem.clone(),
-                self.config.subsystem_id,
                 nsid,
                 disk,
             ))),
