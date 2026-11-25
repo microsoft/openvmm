@@ -153,11 +153,12 @@ impl VirtioFsFile {
                         Ok(false) => break,
                         // As in `read_dir_with`, skip an entry whose name is
                         // gone, as after an unlink or a rename since the
-                        // snapshot listed it, or reaches an object that the
-                        // access policy hides, as through a hard link to a
-                        // hidden file. Failing the read instead would fail
-                        // every later read too, since each starts at the
-                        // entry, so the guest could never list past it.
+                        // snapshot listed it, or since a rename of an ancestor
+                        // made its path too long to look up, or reaches an
+                        // object that the access policy hides, as through a
+                        // hard link to a hidden file. Failing the read instead
+                        // would fail every later read too, since each starts
+                        // at the entry, so the guest could never list past it.
                         Err(error) if error == lx::Error::ENOENT || error == lx::Error::EACCES => {
                             skipped += 1;
                         }
@@ -195,6 +196,11 @@ impl VirtioFsFile {
     /// entry that does not fit, or that fails, holds none. An entry whose name
     /// reaches the object of this handle's own node hands the guest no node,
     /// so it holds none either.
+    ///
+    /// An entry whose path a rename of an ancestor has made exceed
+    /// [`MAX_PATH_BYTES`](super::saved_state::MAX_PATH_BYTES) since the
+    /// snapshot listed it fails with `ENOENT`, as one whose name is gone does:
+    /// no lookup reaches it, and a new snapshot would leave it out.
     fn write_microvm_entry_plus(
         &self,
         fs: &VirtioFs,
@@ -208,7 +214,14 @@ impl VirtioFsFile {
         if !buffer.check_dir_entry_plus(name) {
             return Ok(false);
         }
-        let (child, attr) = self.inode.lookup_child(name)?;
+        // A lookup fails with E2BIG only for a path that exceeds
+        // MAX_PATH_BYTES. The E2BIG of insert_lookup instead reports the bound
+        // of the names that the nodes hold, at which the read must fail.
+        let (child, attr) = match self.inode.lookup_child(name) {
+            Ok(found) => found,
+            Err(error) if error == lx::Error::E2BIG => return Err(lx::Error::ENOENT),
+            Err(error) => return Err(error),
+        };
         // The snapshot numbers each entry as an object of this directory's
         // host device. The host lists a mount point or a btrfs subvolume,
         // whose lookup reaches another device, by the number of another
@@ -297,12 +310,15 @@ impl VirtioFsFile {
         }
     }
 
-    /// Lists this handle's directory into the entries that the access policy
-    /// shows, `.` and `..` included, in the host's order, and fails with
-    /// `E2BIG` when they exceed a handle's bounds of
+    /// Lists this handle's directory, `.` and `..` included, in the host's
+    /// order, without the entries whose paths the access policy hides, or
+    /// whose names or paths every lookup refuses: names that no FUSE request
+    /// carries or that the share refuses, and paths longer than
+    /// [`MAX_PATH_BYTES`](super::saved_state::MAX_PATH_BYTES). It fails with
+    /// `E2BIG` when the entries that it lists exceed a handle's bounds of
     /// [`MAX_DIRECTORY_ENTRIES_PER_HANDLE`] entries or
-    /// [`MAX_DIRECTORY_SNAPSHOT_BYTES`] of names. The entries that the policy
-    /// hides count toward neither bound, wherever the host lists them.
+    /// [`MAX_DIRECTORY_SNAPSHOT_BYTES`] of names, toward which the entries
+    /// that it leaves out never count, wherever the host lists them.
     fn build_microvm_directory_snapshot(&self) -> lx::Result<Vec<SavedDirectoryEntry>> {
         self.build_microvm_directory_snapshot_within(MAX_DIRECTORY_ENTRIES_PER_HANDLE)
     }
@@ -325,19 +341,34 @@ impl VirtioFsFile {
         let mut entries = Vec::new();
         let mut add_entry = |entry: lx::DirEntry| -> lx::Result<bool> {
             let name = entry.name.as_bytes();
-            if name.is_empty() || name.len() > MAX_DIRECTORY_ENTRY_NAME_BYTES {
-                return Err(lx::Error::EINVAL);
-            }
             if name != b"." && name != b".." {
+                // Leave out, as the entries whose paths the policy hides,
+                // those whose names or paths every lookup refuses: no FUSE
+                // request carries a name that `check_name` refuses, such as
+                // one longer than NAME_MAX, 255 bytes, which a Windows name of
+                // fewer UTF-16 code units can exceed, and `child_path`, as for
+                // a lookup, refuses a name that the share refuses, such as one
+                // that holds `:` or `\`, with EINVAL, and a path that exceeds
+                // MAX_PATH_BYTES with E2BIG. Failing instead would hide every
+                // other entry of the directory too.
+                if fuse::check_name(name).is_err() {
+                    return Ok(true);
+                }
                 match self.inode.child_path(&entry.name) {
                     Ok(path) if self.inode.volume.entry_listable(&path, entry.file_type) => {}
                     Ok(_) => return Ok(true),
-                    Err(error) if error == lx::Error::EACCES => return Ok(true),
+                    Err(error)
+                        if error == lx::Error::EACCES
+                            || error == lx::Error::EINVAL
+                            || error == lx::Error::E2BIG =>
+                    {
+                        return Ok(true);
+                    }
                     Err(error) => return Err(error),
                 }
             }
-            // Only here, so that the entries that the policy hides count
-            // toward neither bound.
+            // Only here, so that the entries left out count toward neither
+            // bound.
             if entries.len() == max_entries {
                 return Err(lx::Error::E2BIG);
             }

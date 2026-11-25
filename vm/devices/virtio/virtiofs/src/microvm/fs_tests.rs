@@ -21,6 +21,7 @@ use super::profile::MICROVM_FUSE_MAX_WRITE;
 use super::profile::MICROVM_FUSE_MIN_MINOR;
 use super::profile::MicroVmVirtioFsProfile;
 use super::profile::microvm_root_identity;
+use super::saved_state::MAX_ALIAS_BYTES;
 use super::saved_state::MAX_ALIASES_PER_INODE;
 use super::saved_state::MAX_DIRECTORY_ENTRIES;
 use super::saved_state::MAX_DIRECTORY_ENTRY_NAME_BYTES;
@@ -29,6 +30,7 @@ use super::saved_state::MAX_INODES;
 use super::saved_state::MAX_PATH_BYTES;
 use super::state::encode_relative_path;
 use super::state::fuse_negotiation_from_session;
+use super::state::relative_path_encoded_len;
 use super::state::reopen_flags;
 use super::state::session_state_from_saved;
 use super::state::validate_microvm_state;
@@ -1705,6 +1707,220 @@ fn microvm_listings_count_only_the_entries_that_the_policy_shows() {
             directory.build_microvm_directory_snapshot_within(3).err(),
             Some(lx::Error::E2BIG),
             "hidden={hidden}"
+        );
+    }
+}
+
+/// Returns the names that the directory node `node_id` lists through the
+/// handle `fh` from its start, sorted, as FUSE_READDIR or, with `plus`,
+/// FUSE_READDIRPLUS lists them.
+fn listed_names(fs: &VirtioFs, node_id: u64, fh: u64, plus: bool) -> Vec<String> {
+    let directory = fs.get_file(node_id, fh).unwrap();
+    crate::tests::read_directory(fs, &directory, 0, 4096, plus)
+        .into_keys()
+        .collect()
+}
+
+/// Every path of a microVM share refuses a name that holds a colon or a
+/// backslash, so the guest can look up no entry of such a name. A listing
+/// must leave the entry out, as it leaves out the entries that the access
+/// policy hides, rather than fail and hide every other entry with it
+/// (microsoft/nvx#2133). Windows stores neither character in a name, but
+/// lists the private-use characters that stand for them, as in the names that
+/// WSL gives such files, as the characters themselves, and the one that stands
+/// for NUL as NUL, which no path holds either.
+#[test]
+fn microvm_listings_leave_out_names_that_the_share_refuses() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    // Each refused name, as the guest sees it and as the host stores it.
+    let refused: &[(&str, &str)] = if cfg!(windows) {
+        &[
+            ("a:b", "a\u{f03a}b"),
+            ("a\\b", "a\u{f05c}b"),
+            ("a\0b", "a\u{f000}b"),
+        ]
+    } else {
+        &[("a:b", "a:b"), ("a\\b", "a\\b")]
+    };
+    std::fs::write(root_path.join("plain"), b"").unwrap();
+    for (_, host_name) in refused {
+        std::fs::write(root_path.join(host_name), b"").unwrap();
+    }
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    for (guest_name, _) in refused {
+        assert_eq!(
+            lookup(&fs, guest_name),
+            Err(lx::Error::EINVAL),
+            "{guest_name:?}"
+        );
+    }
+    for plus in [false, true] {
+        assert_eq!(
+            listed_names(&fs, FUSE_ROOT_ID, open_root(&fs), plus),
+            [".", "..", "plain"],
+            "plus={plus}"
+        );
+    }
+}
+
+/// Returns the components of a relative path of `characters` ASCII
+/// characters: `a`, then components of at most 100 characters.
+fn path_components(characters: usize) -> Vec<String> {
+    let mut components = vec!["a".to_owned()];
+    let mut left = characters - 1;
+    while left > 0 {
+        // Each component takes a separator too, so leave no room for an
+        // empty one.
+        let length = if left > 102 { 100 } else { left - 1 };
+        components.push("d".repeat(length));
+        left -= length + 1;
+    }
+    components
+}
+
+/// The guest can look up no entry whose path exceeds MAX_PATH_BYTES, which a
+/// rename of an ancestor can make it do. A listing must leave such an entry
+/// out, as it leaves out the entries that the access policy hides, rather
+/// than fail and hide every other entry with it (microsoft/nvx#2133). So must
+/// READDIRPLUS of a listing taken before the rename, as that of a handle that
+/// stays open across it: failing at the entry instead would fail every later
+/// read too, since each starts at the entry, so the guest could never list
+/// past it.
+#[test]
+fn microvm_listings_leave_out_entries_whose_paths_exceed_the_bound() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    // The bound in ASCII characters, each of which a path holds in one byte
+    // on Linux, and in a UTF-16 code unit of two on Windows.
+    let max_characters = MAX_PATH_BYTES / relative_path_encoded_len(Path::new("a")).unwrap();
+    // A directory below `a` whose path leaves room for the entry `long`
+    // until the guest renames `a` to a name of 255 characters, after which
+    // only `short` fits.
+    let directory = path_components(max_characters - 400);
+    let long = "l".repeat(200);
+    let host_directory = directory
+        .iter()
+        .fold(root_path.to_path_buf(), |path, component| {
+            path.join(component)
+        });
+    std::fs::create_dir_all(&host_directory).unwrap();
+    for entry in ["short", long.as_str()] {
+        std::fs::write(host_directory.join(entry), b"").unwrap();
+    }
+    let profile = MicroVmVirtioFsProfile::from_attachment(
+        MICROVM_ATTACHMENT_ID.to_owned(),
+        microvm_root_identity(root_path).unwrap(),
+        false,
+        Vec::new(),
+    )
+    .unwrap();
+    let fs = VirtioFs::new_microvm(root_path, profile).unwrap();
+    let node_id = lookup(&fs, &directory.join("/")).unwrap();
+    let open_directory = || {
+        fs.open_dir(&request(node_id), lx::O_RDONLY as u32)
+            .unwrap()
+            .fh
+    };
+    let fh = open_directory();
+    assert_eq!(
+        listed_names(&fs, node_id, fh, false),
+        [".", "..", long.as_str(), "short"]
+    );
+    let listing_before = fs.get_file(node_id, fh).unwrap().directory_entries();
+    // Windows renames no directory below an open handle, so a restored
+    // listing stands for that of a handle open across the rename.
+    let mut arg = fuse_release_in::new_zeroed();
+    arg.fh = fh;
+    fs.release_dir(&request(node_id), &arg).unwrap();
+
+    fs.rename(
+        &request(FUSE_ROOT_ID),
+        name("a"),
+        FUSE_ROOT_ID,
+        name(&"a".repeat(255)),
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        fs.lookup(&request(node_id), name(&long)).err(),
+        Some(lx::Error::E2BIG)
+    );
+    for plus in [false, true] {
+        assert_eq!(
+            listed_names(&fs, node_id, open_directory(), plus),
+            [".", "..", "short"],
+            "plus={plus}"
+        );
+    }
+    let fh = open_directory();
+    fs.get_file(node_id, fh)
+        .unwrap()
+        .restore_directory_snapshot(
+            &fs.inner.directory_snapshot_budget.read(),
+            true,
+            listing_before,
+        )
+        .unwrap();
+    assert_eq!(listed_names(&fs, node_id, fh, true), [".", "..", "short"]);
+}
+
+/// READDIRPLUS skips a listed name whose path has grown past MAX_PATH_BYTES,
+/// for which a lookup fails with E2BIG, but must fail at a name whose node
+/// the bound of the names that the nodes hold refuses with E2BIG too: the
+/// guest can look the name up once it forgets other nodes, so skipping it
+/// would leave a reachable entry out of the listing.
+#[test]
+fn readdirplus_fails_at_an_entry_whose_node_exceeds_the_bound_on_names() {
+    let temporary_directory = tempdir().unwrap();
+    let (fs, directory) =
+        microvm_with_an_open_root(temporary_directory.path(), &["entry", "filler"]);
+    // A plain READDIR lists the directory without looking its entries up.
+    directory.read_dir(&fs, 0, 4096, false).unwrap();
+    // Track `filler` under names of the longest path, until the nodes hold
+    // as many bytes of names as they can.
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let (filler, _) = fs
+        .insert_inode(root.lookup_child(name("filler")).unwrap().0)
+        .unwrap();
+    let longest = MAX_PATH_BYTES / relative_path_encoded_len(Path::new("a")).unwrap();
+    for index in 0..MAX_ALIAS_BYTES / MAX_PATH_BYTES {
+        filler.add_alias(PathBuf::from(format!("{index:0>longest$}")));
+    }
+
+    let offset = offset_of(&directory, b"entry");
+    assert_eq!(
+        directory.read_dir(&fs, offset, 4096, true).unwrap_err(),
+        lx::Error::E2BIG
+    );
+}
+
+/// No FUSE request carries a name longer than NAME_MAX, 255 bytes, so the
+/// guest can look up no entry of such a name, which a Windows host stores in
+/// fewer UTF-16 code units, each of which takes up to three bytes in UTF-8. A
+/// listing must leave the entry out, as it leaves out the entries that the
+/// access policy hides, rather than fail and hide every other entry with it
+/// (microsoft/nvx#2133).
+#[cfg(windows)]
+#[test]
+fn microvm_listings_leave_out_names_longer_than_a_request_carries() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    // 100 UTF-16 code units, and 300 bytes in UTF-8.
+    let long = "\u{4e00}".repeat(100);
+    assert_eq!(
+        fuse::check_name(long.as_bytes()),
+        Err(lx::Error::ENAMETOOLONG)
+    );
+    for entry in ["plain", long.as_str()] {
+        std::fs::write(root_path.join(entry), b"").unwrap();
+    }
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    for plus in [false, true] {
+        assert_eq!(
+            listed_names(&fs, FUSE_ROOT_ID, open_root(&fs), plus),
+            [".", "..", "plain"],
+            "plus={plus}"
         );
     }
 }
