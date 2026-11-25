@@ -404,3 +404,51 @@ async fn terminal_input_reaches_the_child(driver: DefaultDriver) {
         0
     );
 }
+
+// Test: Echo a multi-buffer binary stream through pipe-backed and raw child IO,
+//       then close stdin while receiving stdout, stderr and the exit status.
+// Expected: Every byte survives, EOF lets the child finish, and its final stderr
+//       marker and nonzero exit status arrive without waiting for client close.
+#[async_test]
+async fn exec_drains_binary_streams_after_stdin_eof(driver: DefaultDriver) {
+    let f = Fixture::new(&driver);
+    let expected: Vec<_> = (0..131_073).map(|i| (i % 256) as u8).collect();
+    for raw_socket_io in [false, true] {
+        let (stdin_id, mut stdin) = f.connect(&driver).await;
+        let (stdout_id, mut stdout) = f.connect(&driver).await;
+        let (stderr_id, mut stderr) = f.connect(&driver).await;
+        let child = f
+            .handler
+            .handle_exec(
+                &driver,
+                &ExecRequest {
+                    command: "/bin/sh".into(),
+                    args: vec!["-c".into(), "cat; printf finished >&2; exit 23".into()],
+                    stdin: stdin_id,
+                    stdout: stdout_id,
+                    stderr: stderr_id,
+                    raw_socket_io,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut output = Vec::new();
+        let mut error = Vec::new();
+        let wait = WaitRequest { pid: child.pid };
+        let ((), read_output, read_error, status) = futures::join!(
+            async {
+                stdin.write_all(&expected).await.unwrap();
+                stdin.close().await.unwrap();
+            },
+            stdout.read_to_end(&mut output),
+            stderr.read_to_end(&mut error),
+            f.handler.handle_wait(&wait),
+        );
+        read_output.unwrap();
+        read_error.unwrap();
+        assert_eq!(output, expected);
+        assert_eq!(error, b"finished");
+        assert_eq!(status.unwrap().exit_code, 23);
+    }
+}
