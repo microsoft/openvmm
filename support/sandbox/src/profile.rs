@@ -121,10 +121,11 @@ impl Profile {
 /// Combinations requiring both write and execute access are rejected during
 /// [`apply`](crate::apply).
 ///
-/// The backend also provides writable scratch storage at `/tmp` and attempts
-/// to mount `/proc`. These are implicit backend facilities, not explicit grants
-/// added by this builder. Landlock, where enforced, further limits proc access;
-/// the proc mount's own restrictions still apply.
+/// The backend also provides writable scratch storage at `/tmp` and requires
+/// either a fresh `/proc` mount or a restricted bind of the host's `/proc`.
+/// These are implicit backend facilities, not explicit grants added by this
+/// builder. Landlock, where enforced, further limits proc access; the proc
+/// mount's own restrictions still apply.
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct Builder {

@@ -127,8 +127,9 @@ A new network namespace is also required unless the profile selects
 Landlock supplements the mount boundary where available. Its rules degrade
 according to the kernel ABI, and failure logs a warning rather than aborting
 startup. It is not the primary filesystem boundary. The filesystem setup also
-provides scratch storage and a best-effort proc view; a profile with no
-explicit grants is not a process with no filesystem objects.
+provides scratch storage and requires either a fresh proc mount or a restricted
+bind of the host's proc mount. A profile with no explicit grants is not a
+process with no filesystem objects.
 
 After filesystem setup, the backend locks securebits, drops capabilities,
 and sets `no_new_privs`. Seccomp, when selected by the profile, is installed

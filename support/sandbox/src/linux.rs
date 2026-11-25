@@ -15,10 +15,10 @@
 //! and `no_new_privs` return [`Error`] on failure. The caller
 //! must terminate the worker; restrictions already applied are not rolled back.
 //!
-//! The proc view is best-effort. Landlock is supplementary: it adapts to older
-//! kernel ABIs and logs failures while retaining the mount boundary. Seccomp
-//! is opt-in, but once selected with [`Syscalls::Deny`], installation is
-//! required and failure returns an error.
+//! The proc view requires either a fresh mount or a restricted host bind.
+//! Landlock is supplementary: it adapts to older kernel ABIs and logs failures
+//! while retaining the mount boundary. Seccomp is opt-in, but once selected
+//! with [`Syscalls::Deny`], installation is required and failure returns an error.
 
 use crate::Error;
 use crate::profile::Access;
@@ -192,15 +192,15 @@ fn mount_and_pivot_filesystem(grants: &[FsGrant], staging: &Path) -> Result<(), 
         mount_namespace::bind_mount(source, &target, attributes).map_err(fs_required)?;
     }
 
-    // Best-effort `/proc`: works cleanly in a PID namespace and is still useful
-    // for `/proc/self` when we don't have one.
+    // Prefer a fresh `/proc`; require a restricted host bind if that fails.
     let proc_target = staging.join("proc");
     if mount_namespace::mount_proc(&proc_target).is_err() {
-        let _ = mount_namespace::bind_mount(
+        mount_namespace::bind_mount(
             Path::new("/proc"),
             &proc_target,
             libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
-        );
+        )
+        .map_err(fs_required)?;
     }
 
     // Pivot root: staging becomes `/`, old root moves to `staging/.old_root`.
@@ -520,6 +520,7 @@ mod tests {
             "missing-grant",
             "mount-failure",
             "root-grant",
+            "proc-bind-failure",
         ] {
             let output = Command::new("unshare")
                 .args(["--user", "--map-root-user", "--mount"])
@@ -590,6 +591,39 @@ mod tests {
             drop_all_capabilities().unwrap();
         }
         hardening::set_no_new_privs().unwrap();
+        if scenario == "proc-bind-failure" {
+            // Hide the host proc mount so a fresh proc mount is denied in
+            // this user namespace, while a fallback bind remains possible.
+            mount_namespace::mount_tmpfs(Path::new("/proc")).unwrap();
+            fs_err::write("/proc/marker", "fallback").unwrap();
+            assert!(mount_namespace::mount_proc(Path::new("/run/proc-probe")).is_err());
+            let filter: seccompiler::BpfProgram = seccompiler::SeccompFilter::new(
+                std::collections::BTreeMap::from([(libc::SYS_mount_setattr, Vec::new())]),
+                seccompiler::SeccompAction::Allow,
+                seccompiler::SeccompAction::Errno(libc::ENOSYS as u32),
+                std::env::consts::ARCH.try_into().unwrap(),
+            )
+            .unwrap()
+            .try_into()
+            .unwrap();
+            seccomp::apply_filter_all_threads(&filter).unwrap();
+            assert_eq!(
+                mount_namespace::bind_mount(
+                    Path::new("/proc"),
+                    Path::new("/run/proc-probe"),
+                    libc::MOUNT_ATTR_RDONLY,
+                )
+                .unwrap_err()
+                .raw_os_error(),
+                Some(libc::ENOSYS),
+            );
+            assert_eq!(
+                fs_err::read_to_string("/run/proc-probe/marker").unwrap(),
+                "fallback",
+            );
+            mount_namespace::umount(Path::new("/run/proc-probe")).unwrap();
+            profile = Profile::deny_all();
+        }
         let result = apply_filesystem(&profile.build().inner.fs);
         match scenario.as_str() {
             "missing-grant" => assert!(matches!(
@@ -606,6 +640,11 @@ mod tests {
                 result,
                 Err(Error::ApplyFailed { source, .. })
                     if source.kind() == io::ErrorKind::PermissionDenied
+            )),
+            "proc-bind-failure" => assert!(matches!(
+                result,
+                Err(Error::ApplyFailed { primitive: "filesystem", source })
+                    if source.raw_os_error() == Some(libc::ENOSYS)
             )),
             _ => result.unwrap(),
         }
