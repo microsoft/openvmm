@@ -309,7 +309,9 @@ impl Fuse for VirtioFs {
         // on the inode number (if this is a non-exclusive create), so make sure to associate the
         // file with the returned inode.
         let (new_inode, node_id) = inode_reservation.insert(new_inode)?;
-        let file = VirtioFsFile::new(file, new_inode, arg.flags);
+        // As `open` does, record the host options rather than the guest's
+        // flags, so that a microVM snapshot saves no guest-only flag.
+        let file = VirtioFsFile::new(file, new_inode, options as u32);
         let fh = file_reservation.insert(file)?;
         Ok(CreateOut {
             entry: fuse_entry_out::new(
