@@ -94,6 +94,30 @@ struct SidecarClientState {
     vps: Vec<Mutex<VpState>>,
 }
 
+impl SidecarClientState {
+    /// Marks the VP at `index` as running, then starts it with `start`.
+    ///
+    /// The VP must be marked running before it is started, because the
+    /// completion reader expects a running VP as soon as the VP can complete.
+    /// If `start` fails, the VP is left stopped so that it can be started
+    /// again.
+    fn start_vp(
+        &self,
+        index: usize,
+        start: impl FnOnce() -> std::io::Result<()>,
+    ) -> Result<(), SidecarError> {
+        let old = std::mem::replace(&mut *self.vps[index].lock(), VpState::Running(None));
+        assert!(matches!(old, VpState::Stopped));
+        if let Err(err) = start() {
+            // The driver rejects a start before starting the CPU, so no
+            // completion will arrive for it. Return the VP to stopped.
+            *self.vps[index].lock() = VpState::Stopped;
+            return Err(SidecarError::Io(err));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 enum VpState {
     Stopped,
@@ -571,17 +595,13 @@ impl<'a> SidecarVp<'a> {
     }
 
     fn start_async(&mut self) -> Result<(), SidecarError> {
-        let old = std::mem::replace(
-            &mut *self.node.state.vps[self.index].lock(),
-            VpState::Running(None),
-        );
-        assert!(matches!(old, VpState::Stopped));
-        // SAFETY: no safety requirements on this ioctl.
-        unsafe {
-            ioctl::mshv_vtl_sidecar_start(self.node.state.file.as_raw_fd(), self.cpu)
-                .map_err(|err| SidecarError::Io(err.into()))?;
-        }
-        Ok(())
+        let fd = self.node.state.file.as_raw_fd();
+        let cpu = self.cpu;
+        self.node.state.start_vp(self.index, || {
+            // SAFETY: no safety requirements on this ioctl.
+            unsafe { ioctl::mshv_vtl_sidecar_start(fd, cpu) }?;
+            Ok(())
+        })
     }
 
     fn stop_async(&mut self) {
@@ -673,5 +693,116 @@ impl SidecarRun<'_, '_> {
 impl Drop for SidecarRun<'_, '_> {
     fn drop(&mut self) {
         assert!(self.waited, "failed to stop vp");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use pal_async::task::Spawn;
+    use test_with_tracing::test;
+
+    /// A one-VP node backed by anonymous memory and `/dev/null`, which
+    /// rejects every sidecar ioctl with `ENOTTY`.
+    fn test_node(driver: &DefaultDriver) -> SidecarNode {
+        let len = size_of::<VpSharedPages>();
+        // SAFETY: an anonymous private mapping has no preconditions. The
+        // result is checked below and unmapped by `Mapping::drop`.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(ptr, libc::MAP_FAILED);
+        SidecarNode {
+            mapping: Mapping(NonNull::new(ptr).unwrap(), len),
+            per_cpu_shmem_size: len,
+            cpus: 0..1,
+            _task: driver.spawn("test-sidecar-wait", async {}),
+            state: Arc::new(test_state()),
+            in_use: vec![AtomicBool::new(false)],
+        }
+    }
+
+    // Test: Run a VP through the public API when the driver rejects the
+    //       start ioctl (ENOTTY from /dev/null), then run it again with a new
+    //       accessor.
+    // Expected: Both runs return the driver error; the VP is left stopped
+    //       after each, so the retry does not panic.
+    #[async_test]
+    async fn rejected_run_leaves_vp_reusable(driver: DefaultDriver) {
+        let node = test_node(&driver);
+
+        for attempt in 0..2 {
+            let mut vp = node.vp(0).unwrap();
+            let Err(err) = vp.run() else {
+                panic!("run {attempt} unexpectedly started the VP");
+            };
+            assert!(
+                matches!(&err, SidecarError::Io(e) if e.raw_os_error() == Some(libc::ENOTTY)),
+                "unexpected error on run {attempt}: {err:?}"
+            );
+            assert!(
+                matches!(*node.state.vps[0].lock(), VpState::Stopped),
+                "rejected run {attempt} left the VP in state {:?}",
+                *node.state.vps[0].lock()
+            );
+        }
+    }
+
+    fn test_state() -> SidecarClientState {
+        SidecarClientState {
+            file: File::open("/dev/null").unwrap(),
+            vps: vec![Mutex::new(VpState::Stopped)],
+        }
+    }
+
+    // Test: Start a VP whose start request is rejected (as the sidecar driver
+    //       does with EBUSY before starting the CPU), then start it again.
+    // Expected: The rejected start returns the error and leaves the VP
+    //       stopped, so the second start succeeds instead of panicking.
+    #[test]
+    fn rejected_start_leaves_vp_stopped() {
+        let state = test_state();
+
+        let err = state
+            .start_vp(0, || Err(std::io::Error::from_raw_os_error(libc::EBUSY)))
+            .unwrap_err();
+        assert!(
+            matches!(&err, SidecarError::Io(e) if e.raw_os_error() == Some(libc::EBUSY)),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            matches!(*state.vps[0].lock(), VpState::Stopped),
+            "rejected start left the VP in state {:?}",
+            *state.vps[0].lock()
+        );
+
+        state.start_vp(0, || Ok(())).unwrap();
+        assert!(matches!(*state.vps[0].lock(), VpState::Running(None)));
+    }
+
+    // Test: Start a stopped VP successfully.
+    // Expected: The VP is already marked running while the start request is
+    //       issued, so a completion that arrives immediately finds it running.
+    #[test]
+    fn successful_start_marks_vp_running_before_starting() {
+        let state = test_state();
+
+        state
+            .start_vp(0, || {
+                assert!(matches!(*state.vps[0].lock(), VpState::Running(None)));
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(matches!(*state.vps[0].lock(), VpState::Running(None)));
     }
 }

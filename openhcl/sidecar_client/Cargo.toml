@@ -20,5 +20,8 @@ fs-err.workspace = true
 libc.workspace = true
 nix = { workspace = true, features = ["ioctl"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true
